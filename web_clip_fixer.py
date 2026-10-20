@@ -26,6 +26,7 @@ from core.workflow import (
     scan_folder_workflow,
     queue_job,
     run_pending_workflow,
+    set_manual_confirmation,
     update_item_row,
 )
 
@@ -160,6 +161,14 @@ class WebHandler(BaseHTTPRequestHandler):
 
         elif self.path == "/api/manual/refresh":
             self._start_job("refresh")
+
+        elif self.path == "/api/manual/confirm":
+            accepted = payload.get("accepted")
+            iid = payload.get("id")
+            if not isinstance(accepted, bool) or not isinstance(iid, str):
+                raise ValueError("需要有效的问题项及人工确认状态")
+            set_manual_confirmation(iid, accepted)
+            self._send_json({"ok": True})
 
         elif self.path in {"/api/manual/open", "/api/manual/recheck"}:
             iid = payload.get("id")

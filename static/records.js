@@ -82,10 +82,12 @@ function renderFilesTable(filesList) {
 
       const det = Number(f.clip_detected || 0);
       const fix = Number(f.clip_fixed || 0);
+      const accepted = Number(f.clip_accepted || 0);
       let clipHtml = '<span style="color:#059669; font-weight:600;">无切字</span>';
       if (det > 0) {
-        const clipColor = fix >= det ? '#059669' : '#d97706';
-        clipHtml = `<b style="color:${clipColor};">${fix} / ${det}</b>`;
+        const clipColor = fix + accepted >= det ? '#059669' : '#d97706';
+        clipHtml = `<b style="color:${clipColor};">${fix} / ${det}</b>` +
+          (accepted ? `<div>人工确认无需修复 ${accepted} 处</div>` : '');
       }
 
       const a1Html = f.normalized_a1
@@ -152,12 +154,14 @@ async function pollRecords() {
     const filesList = Object.values(data.files || {});
     const totalClips = filesList.reduce((acc, f) => acc + Number(f.clip_detected || 0), 0);
     const fixedClips = filesList.reduce((acc, f) => acc + Number(f.clip_fixed || 0), 0);
+    const acceptedClips = filesList.reduce((acc, f) => acc + Number(f.clip_accepted || 0), 0);
 
     document.getElementById('kpiTotal').innerText = total;
     document.getElementById('kpiDone').innerText = done;
     document.getElementById('kpiProcessing').innerText = Number(data.processing_files || 0);
     document.getElementById('kpiPending').innerText = Number(data.pending_files || 0);
-    document.getElementById('kpiClips').innerText = `${fixedClips} / ${totalClips}`;
+    document.getElementById('kpiClips').innerText = `${fixedClips} / ${totalClips}` +
+      (acceptedClips ? `（人工确认 ${acceptedClips}）` : '');
 
     renderFilesTable(filesList);
 

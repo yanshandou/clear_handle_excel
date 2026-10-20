@@ -76,6 +76,7 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
     with STATE_LOCK:
         if STATE["busy"]:
             return False
+        _expire_manual_confirmations()
         if kind in {"fix", "manual_open", "recheck"}:
             ids = (options or {}).get("selected_ids")
             if (
@@ -176,6 +177,9 @@ def try_acquire_busy() -> bool:
 
 
 def get_state_snapshot() -> dict[str, Any]:
+    with STATE_LOCK:
+        if not STATE["busy"]:
+            _expire_manual_confirmations()
     report_snap = get_execution_report_snapshot()
     with STATE_LOCK:
         return {
@@ -275,11 +279,92 @@ def _file_version(path: Path) -> dict[str, int]:
     return {"mtime_ns": stat.st_mtime_ns, "size": stat.st_size}
 
 
+def _sync_problem_counts(path: str, action: str) -> None:
+    items = [item for item in STATE["items"].values() if item["wb_path"] == path]
+    fixed = sum(item["status"] == "fixed" for item in items)
+    accepted = sum(item["status"] == "accepted" for item in items)
+    pending = len(items) - fixed - accepted
+    update_file_progress(
+        Path(path).name, status="needs_fix" if pending else "done",
+        clip_detected=len(items), clip_fixed=fixed, clip_accepted=accepted,
+        clip_unfixed=pending, current_action=action, error="",
+    )
+
+
+def _expire_manual_confirmations() -> None:
+    changed: set[str] = set()
+    versions: dict[str, dict[str, int] | None] = {}
+    for item in STATE["items"].values():
+        if item["status"] != "accepted":
+            continue
+        path = item["wb_path"]
+        if path not in versions:
+            try:
+                versions[path] = _file_version(Path(path))
+            except FileNotFoundError:
+                versions[path] = None
+        if versions[path] != item["manual_confirmation"]["file_version"]:
+            item["status"] = "needs_review"
+            item["review_reason"] = "文件版本已变化，之前的人工确认已失效，请重新检查"
+            changed.add(path)
+    if changed:
+        _persist_state()
+        for path in changed:
+            _sync_problem_counts(path, "文件已变化，人工确认失效，等待重新检查")
+            log_msg(f"人工确认已失效: {Path(path).name}，请重新检查")
+
+
+def set_manual_confirmation(item_id: str, accepted: bool) -> None:
+    with STATE_LOCK:
+        if STATE["busy"]:
+            raise ValueError("任务正在执行，请结束后再进行人工确认")
+        item = STATE["items"].get(item_id)
+        if item is None:
+            raise ValueError("问题项已更新，请刷新页面后重试")
+        previous = copy.deepcopy(item)
+        previous_job = copy.deepcopy(STATE["job"])
+        if accepted:
+            if item["status"] == "fixed":
+                raise ValueError("此项已自动修复，无需人工确认")
+            version = _file_version(Path(item["wb_path"]))
+            if item["status"] == "accepted":
+                raise ValueError("此项已人工确认，如需重新判断请先撤销")
+            item["manual_confirmation"] = {
+                "file_version": version,
+                "confirmed_at": datetime.now().isoformat(timespec="seconds"),
+                "previous_status": item["status"],
+            }
+            item["status"] = "accepted"
+            item["review_reason"] = "人工确认无需修复（仅当前已保存文件版本有效）"
+        else:
+            if item["status"] != "accepted":
+                raise ValueError("此项没有有效的人工确认")
+            item["status"] = item["manual_confirmation"]["previous_status"]
+            item["review_reason"] = "人工确认已撤销，重新纳入待处理"
+            del item["manual_confirmation"]
+        if STATE["job"] and STATE["job"]["status"] == "interrupted":
+            STATE["job"]["status"] = "cancelled"
+            STATE["job"]["pending_adjustment"] = None
+        try:
+            _persist_state()
+        except Exception:
+            item.clear()
+            item.update(previous)
+            STATE["job"] = previous_job
+            raise
+        _sync_problem_counts(item["wb_path"], item["review_reason"])
+        if previous_job and previous_job["status"] == "interrupted":
+            finish_execution_batch("已取消中断任务的续跑，按人工判断更新问题状态")
+        log_msg(f"{item['review_reason']}: [{item['wb_name']} / {item['sheet_name']} / {item['cell_addr']}]")
+        _persist_state()
+
+
 def _select_changed_problem_items() -> list[str]:
     with STATE_LOCK:
+        _expire_manual_confirmations()
         by_file: dict[str, list[str]] = {}
         for item in STATE["items"].values():
-            if item["status"] != "fixed":
+            if item["status"] not in {"fixed", "accepted"}:
                 by_file.setdefault(item["wb_path"], []).append(item["id"])
         checked_files = copy.deepcopy(STATE["checked_files"])
     selected: list[str] = []
@@ -584,8 +669,9 @@ def manual_review_workflow(selected_ids: list[str], *, open_excel: bool) -> None
         )
         with STATE_LOCK:
             _sync_row_height_in_state(item["wb_path"], item["sheet_name"], int(item["excel_row"]), height)
-            item["status"] = "manual_review"
-            item["review_reason"] = "请人工核对自动推测的行号；调整并保存后重新导出复检"
+            if item["status"] != "accepted":
+                item["status"] = "manual_review"
+                item["review_reason"] = "请人工核对自动推测的行号；调整并保存后重新导出复检"
             wb_items = [it for it in STATE["items"].values() if it["wb_path"] == item["wb_path"]]
             fixed = sum(it["status"] == "fixed" for it in wb_items)
             job["completed"].append(item["id"])
@@ -597,7 +683,7 @@ def manual_review_workflow(selected_ids: list[str], *, open_excel: bool) -> None
         log_msg(message)
         update_file_progress(
             item["wb_name"], status="needs_fix", current_action=message, error="",
-            clip_fixed=fixed, clip_unfixed=len(wb_items) - fixed,
+            clip_fixed=fixed, clip_unfixed=sum(it["status"] not in {"fixed", "accepted"} for it in wb_items),
         )
         finish_execution_batch("等待人工调整并保存 Excel")
         return
@@ -608,7 +694,7 @@ def manual_review_workflow(selected_ids: list[str], *, open_excel: bool) -> None
         selected = set(selected_ids)
         ids = [
             item["id"] for item in STATE["items"].values()
-            if item["id"] in selected or (item["wb_path"] in paths and item["status"] != "fixed")
+            if item["id"] in selected or (item["wb_path"] in paths and item["status"] not in {"fixed", "accepted"})
         ]
         job["options"]["selected_ids"] = ids
         _persist_state()
@@ -682,6 +768,23 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
                     raise ValueError(f"复检期间文件又被修改，本轮不提交，请保存完成后再次刷新: {Path(path).name}")
                 with STATE_LOCK:
                     previous = copy.deepcopy(STATE)
+                    protected = [
+                        item for item in STATE["items"].values()
+                        if item["wb_path"] == path and item["status"] == "accepted"
+                        and item["manual_confirmation"]["file_version"] == version
+                    ]
+                    for result in new_items.values():
+                        matches = [
+                            item for item in protected
+                            if item["sheet_name"] == result["sheet_name"]
+                            and item["text"] == result["text"]
+                            and item["page_index"] == result["page_index"]
+                            and all(abs(a - b) < 0.1 for a, b in zip(item["bbox"], result["bbox"]))
+                        ]
+                        if len(matches) == 1:
+                            result["status"] = "accepted"
+                            result["manual_confirmation"] = copy.deepcopy(matches[0]["manual_confirmation"])
+                            result["review_reason"] = matches[0]["review_reason"]
                     for collection in ("pages", "items"):
                         for key, value in list(STATE[collection].items()):
                             if value["wb_path"] == path and value["sheet_name"] in entry["sheets"]:
@@ -690,8 +793,9 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
                     STATE["items"].update(new_items)
                     wb_items = [it for it in STATE["items"].values() if it["wb_path"] == path]
                     fixed = sum(it["status"] == "fixed" for it in wb_items)
+                    accepted = sum(it["status"] == "accepted" for it in wb_items)
                     # 只有全部未解决项都被检查，才能更新整个文件的版本基线。
-                    if all(it["status"] == "fixed" or it["sheet_name"] in entry["sheets"] for it in wb_items):
+                    if all(it["status"] in {"fixed", "accepted"} or it["sheet_name"] in entry["sheets"] for it in wb_items):
                         STATE["checked_files"][path] = version
                     job["completed"].extend(entry["item_ids"])
                     try:
@@ -701,9 +805,10 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
                         STATE.update(previous)
                         raise
                 update_file_progress(
-                    Path(path).name, status="done" if fixed == len(wb_items) else "needs_fix",
-                    clip_detected=len(wb_items), clip_fixed=fixed, clip_unfixed=len(wb_items) - fixed,
-                    current_action=f"已重新检测问题工作表，当前剩余 {len(wb_items) - fixed} 处疑似压线", error="",
+                    Path(path).name, status="done" if fixed + accepted == len(wb_items) else "needs_fix",
+                    clip_detected=len(wb_items), clip_fixed=fixed, clip_accepted=accepted,
+                    clip_unfixed=len(wb_items) - fixed - accepted,
+                    current_action=f"已重新检测问题工作表，当前待处理 {len(wb_items) - fixed - accepted} 处，人工确认 {accepted} 处", error="",
                 )
             finally:
                 if workbook is not None:
@@ -793,7 +898,7 @@ def fix_selected_workflow(
 
                     for item in items:
                         current_item = item
-                        if item["status"] == "fixed":
+                        if item["status"] in {"fixed", "accepted"}:
                             continue
                         sheet_name = item["sheet_name"]
                         sheet = wb.Sheets(sheet_name)
@@ -803,6 +908,7 @@ def fix_selected_workflow(
                             peer for peer in items
                             if peer["sheet_name"] == sheet_name
                             and int(peer["excel_row"]) == target_row
+                            and peer["status"] != "accepted"
                         ]
                         pending = job["pending_adjustment"] if job else None
 
@@ -913,13 +1019,15 @@ def fix_selected_workflow(
                         ]
                         wb_total_clips = len(wb_all_items)
                         wb_fixed_clips = sum(1 for it in wb_all_items if it["status"] == "fixed")
-                        wb_unfixed_clips = wb_total_clips - wb_fixed_clips
+                        wb_accepted_clips = sum(it["status"] == "accepted" for it in wb_all_items)
+                        wb_unfixed_clips = wb_total_clips - wb_fixed_clips - wb_accepted_clips
 
                     update_file_progress(
                         wb_path.name,
                         status="done" if wb_unfixed_clips == 0 else "needs_fix",
                         clip_detected=wb_total_clips,
                         clip_fixed=wb_fixed_clips,
+                        clip_accepted=wb_accepted_clips,
                         clip_unfixed=wb_unfixed_clips,
                         normalized_a1=True,
                         current_action=f"已微调保存 (修复 {wb_fixed_clips}/{wb_total_clips} 处，A1/100% 已标准化)",

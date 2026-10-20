@@ -90,7 +90,7 @@ class PersistenceTests(unittest.TestCase):
         self.workflow.STATE.clear()
         self.workflow.STATE.update(copy.deepcopy(loaded))
         self.workflow.STATE["busy"] = False
-        if self.workflow.STATE["job"]["status"] == "running":
+        if self.workflow.STATE["job"] and self.workflow.STATE["job"]["status"] == "running":
             self.workflow.STATE["job"]["status"] = "interrupted"
 
     def test_custom_loop_limit_is_used_and_saved(self):
@@ -164,6 +164,74 @@ class PersistenceTests(unittest.TestCase):
     def test_manual_open_cannot_run_during_automatic_adjustment(self):
         self.workflow.STATE["busy"] = True
         self.assertFalse(self.workflow.queue_job("manual_open", {"selected_ids": ["item_1"]}))
+
+    def test_manual_confirmation_is_persistent_separate_from_fixed_and_reversible(self):
+        self.workflow.set_manual_confirmation("item_1", True)
+        saved = self.snapshot("workflow")["items"]["item_1"]
+        self.assertEqual(saved["status"], "accepted")
+        self.assertEqual(saved["manual_confirmation"]["file_version"], self.workflow._file_version(self.wb_path))
+        report = self.snapshot("report")["files"]["book.xlsx"]
+        self.assertEqual((report["clip_fixed"], report["clip_accepted"], report["clip_unfixed"]), (0, 1, 0))
+        self.assertEqual(report["status"], "done")
+        self.assertIn("人工确认", self.reporter.render_execution_markdown())
+        self.restart()
+        self.workflow.get_state_snapshot()
+        self.assertEqual(self.workflow.STATE["items"]["item_1"]["status"], "accepted")
+        self.assertEqual(self.workflow._select_changed_problem_items(), [])
+        self.workflow.set_manual_confirmation("item_1", False)
+        report = self.snapshot("report")["files"]["book.xlsx"]
+        self.assertEqual((report["clip_accepted"], report["clip_unfixed"]), (0, 1))
+        self.assertEqual(self.workflow.STATE["items"]["item_1"]["status"], "pending")
+        self.assertEqual(self.row.RowHeight, 15.0)
+        self.wb.Save.assert_not_called()
+
+    def test_modified_file_expires_confirmation_and_reenters_incremental_refresh(self):
+        self.workflow.STATE["checked_files"][str(self.wb_path)] = self.workflow._file_version(self.wb_path)
+        self.workflow.set_manual_confirmation("item_1", True)
+        self.touch_modified(self.wb_path)
+        state = self.workflow.get_state_snapshot()
+        self.assertEqual(state["items"]["item_1"]["status"], "needs_review")
+        self.assertEqual(self.workflow._select_changed_problem_items(), ["item_1"])
+        self.assertEqual(self.snapshot("report")["files"]["book.xlsx"]["clip_accepted"], 0)
+
+    def test_confirmed_item_cannot_be_automatically_adjusted_even_with_direct_request(self):
+        self.workflow.set_manual_confirmation("item_1", True)
+        self.start_fix()
+        self.sheet.ExportAsFixedFormat.assert_not_called()
+        self.detect.assert_not_called()
+        self.assertEqual(self.row.RowHeight, 15.0)
+        self.assertEqual(self.workflow.STATE["items"]["item_1"]["status"], "accepted")
+
+    def test_confirmation_rejects_busy_and_rolls_back_on_database_error(self):
+        self.workflow.STATE["busy"] = True
+        with self.assertRaisesRegex(ValueError, "正在执行"):
+            self.workflow.set_manual_confirmation("item_1", True)
+        self.workflow.STATE["busy"] = False
+        with patch.object(self.workflow, "save_snapshot", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.workflow.set_manual_confirmation("item_1", True)
+        self.assertEqual(self.workflow.STATE["items"]["item_1"]["status"], "pending")
+        self.assertNotIn("manual_confirmation", self.workflow.STATE["items"]["item_1"])
+
+    def test_confirmation_cancels_interrupted_adjustment_checkpoint(self):
+        self.sheet.ExportAsFixedFormat.side_effect = RuntimeError("export interrupted")
+        self.start_fix()
+        self.workflow.set_manual_confirmation("item_1", True)
+        saved = self.snapshot("workflow")
+        self.assertEqual(saved["job"]["status"], "cancelled")
+        self.assertIsNone(saved["job"]["pending_adjustment"])
+        self.assertFalse(self.workflow.get_state_snapshot()["can_resume"])
+
+    def test_forced_rescan_preserves_current_version_manual_confirmation_at_same_location(self):
+        self.workflow.STATE["items"]["item_1"]["bbox"] = [60, 90, 100, 105]
+        self.rescan.return_value = [{"text": "sample", "bbox": (60, 90, 100, 105), "line_y": 100}]
+        self.workflow.set_manual_confirmation("item_1", True)
+        self.workflow.queue_job("recheck", {"selected_ids": ["item_1"]})
+        self.workflow.run_pending_workflow()
+        self.assertEqual(len(self.workflow.STATE["items"]), 1)
+        item = next(iter(self.workflow.STATE["items"].values()))
+        self.assertEqual(item["status"], "accepted")
+        self.assertEqual(self.workflow._select_changed_problem_items(), [])
 
     def test_manual_recheck_exports_without_saving_or_increasing_height(self):
         self.detect.return_value = (False, "fixed", [0, 0, 10, 10], 0)
@@ -622,6 +690,18 @@ class PersistenceTests(unittest.TestCase):
             status, data = self.post(port, "/api/manual/refresh", {})
             self.assertEqual((status, data["ok"]), (200, True))
             self.assertEqual(self.snapshot("workflow")["job"]["kind"], "refresh")
+
+    def test_api_manual_confirmation_and_revoke(self):
+        with self.serve_api() as port:
+            for invalid in ({"id": "unknown", "accepted": True}, {"id": "item_1", "accepted": "true"}):
+                status, data = self.post(port, "/api/manual/confirm", invalid)
+                self.assertEqual((status, data["ok"]), (400, False))
+            status, data = self.post(port, "/api/manual/confirm", {"id": "item_1", "accepted": True})
+            self.assertEqual((status, data["ok"]), (200, True))
+            self.assertEqual(self.snapshot("workflow")["items"]["item_1"]["status"], "accepted")
+            status, data = self.post(port, "/api/manual/confirm", {"id": "item_1", "accepted": False})
+            self.assertEqual((status, data["ok"]), (200, True))
+            self.assertEqual(self.snapshot("workflow")["items"]["item_1"]["status"], "pending")
 
     def test_api_rejects_invalid_loop_limits_and_steps(self):
         with self.serve_api() as port:

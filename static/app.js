@@ -9,6 +9,16 @@ let activeHoverItemId = null;
 let workspaceRestored = false;
 let canResume = false;
 
+function isResolved(item) {
+  return item.status === 'fixed' || item.status === 'accepted';
+}
+
+function confirmationButton(item) {
+  const accepted = item.status === 'accepted';
+  if (item.status === 'fixed') return '';
+  return `<button class="btn btn-outline btn-sm" onclick="confirmManual('${escapeHtml(item.id)}', ${!accepted})">${accepted ? '撤销人工确认' : '人工确认：无需修复'}</button>`;
+}
+
 function escapeHtml(str) {
   return String(str ?? '')
     .replace(/&/g, '&amp;')
@@ -56,7 +66,7 @@ function syncNewItemsDefaultSelection(items) {
         selectedIds.add(id);
       }
     }
-    if (item.status === 'fixed') {
+    if (isResolved(item)) {
       selectedIds.delete(id);
     }
   });
@@ -64,13 +74,13 @@ function syncNewItemsDefaultSelection(items) {
 
 function toggleItemSelection(id) {
   const item = latestItems[id];
-  if (!item || item.status === 'fixed') return;
+  if (!item || isResolved(item)) return;
 
   const shouldSelect = !selectedIds.has(id);
   const targets = isLinkRowEnabled() ? getPeerItemsInSameRow(item) : [item];
 
   targets.forEach(t => {
-    if (t.status === 'fixed') return;
+    if (isResolved(t)) return;
     if (shouldSelect) {
       selectedIds.add(t.id);
     } else {
@@ -86,7 +96,7 @@ function toggleItemSelection(id) {
 
 function togglePageItems(pageId, select) {
   Object.values(latestItems).forEach(item => {
-    if (item.page_id !== pageId || item.status === 'fixed') return;
+    if (item.page_id !== pageId || isResolved(item)) return;
     if (select) {
       selectedIds.add(item.id);
     } else {
@@ -98,7 +108,7 @@ function togglePageItems(pageId, select) {
 
 function toggleAll(select) {
   Object.values(latestItems).forEach(item => {
-    if (item.status === 'fixed') {
+    if (isResolved(item)) {
       selectedIds.delete(item.id);
       return;
     }
@@ -124,6 +134,12 @@ function updateCount() {
 }
 
 function getItemVisualState(item) {
+  if (item.status === 'accepted') {
+    return {
+      boxClass: 'is-fixed', cardClass: 'fixed', badgeClass: 'badge-fixed',
+      badgeText: '人工确认无需修复', shortTag: `人工✓#${item.index_on_page || item.seq}`,
+    };
+  }
   if (item.status === 'fixed') {
     return {
       boxClass: 'is-fixed',
@@ -227,8 +243,8 @@ function updateMagnifierContent(item) {
   document.getElementById('magImg').src = item.image;
   document.getElementById('magText').textContent = `文字内容: ${item.text}`;
   document.getElementById('magHint').textContent =
-    item.status === 'fixed'
-      ? '✅ 该位置已完整显示，无需继续调整'
+    isResolved(item)
+      ? (item.status === 'accepted' ? '人工确认无需修复（当前已保存版本有效，可撤销）' : '✅ 该位置已完整显示，无需继续调整')
       : '💡 点击热区即可切换「选中修复 / 忽略」；可在画布下方胶囊直接微调行号';
 }
 
@@ -338,7 +354,8 @@ function renderCanvasStages(pages, items) {
     }
 
     const fixedCount = pageItems.filter(it => it.status === 'fixed').length;
-    const pendingCount = pageItems.length - fixedCount;
+    const acceptedCount = pageItems.filter(it => it.status === 'accepted').length;
+    const pendingCount = pageItems.length - fixedCount - acceptedCount;
 
     const pw = Math.max(1, Number(page.page_width) || 595);
     const ph = Math.max(1, Number(page.page_height) || 842);
@@ -392,6 +409,7 @@ function renderCanvasStages(pages, items) {
             <span onclick="event.stopPropagation();">
               <button class="btn btn-outline btn-sm" onclick="manualOpen('${escapeHtml(item.id)}')">在 Excel 中定位</button>
               <button class="btn btn-outline btn-sm" onclick="manualRecheck('${escapeHtml(item.id)}')">重新导出复检</button>
+              ${confirmationButton(item)}
             </span>
           </div>
         `;
@@ -405,7 +423,7 @@ function renderCanvasStages(pages, items) {
           <span style="color:#64748b;">/ ${escapeHtml(page.sheet_name)}</span>
           <span class="page-tag">第 ${Number(page.page_index) + 1} / ${Number(page.total_pages)} 页</span>
           <span style="font-size:12.5px; color:#475569;">
-            （待处理 <b>${pendingCount}</b> 处 · 已修复 <b style="color:#059669;">${fixedCount}</b> 处）
+            （待处理 <b>${pendingCount}</b> 处 · 已修复 <b style="color:#059669;">${fixedCount}</b> 处 · 人工确认 ${acceptedCount} 处）
           </span>
         </div>
         <div class="page-stage-actions">
@@ -524,6 +542,7 @@ function renderCards(items) {
       <div onclick="event.stopPropagation();">
         <button class="btn btn-outline btn-sm" onclick="manualOpen('${escapeHtml(id)}')">在 Excel 中定位</button>
         <button class="btn btn-outline btn-sm" onclick="manualRecheck('${escapeHtml(id)}')">重新导出复检（不加高）</button>
+        ${confirmationButton(item)}
         <p>${escapeHtml(item.review_reason || '自动调整无效时，请转人工核对行号、合并单元格及边框。')}</p>
       </div>
     `;
@@ -596,7 +615,7 @@ async function pollState() {
     syncNewItemsDefaultSelection(latestItems);
     if (!workspaceRestored && data.job && data.job.kind === 'fix') {
       selectedIds = new Set(data.job.options.selected_ids.filter(
-        id => latestItems[id] && latestItems[id].status !== 'fixed'
+        id => latestItems[id] && !isResolved(latestItems[id])
       ));
     }
     workspaceRestored = true;
@@ -711,6 +730,18 @@ async function refreshProblems() {
   try {
     hideMagnifier();
     await postAction('/api/manual/refresh', {});
+    await pollState();
+  } catch (e) { alert(e.message); }
+}
+
+async function confirmManual(id, accepted) {
+  const message = '确认此处无需修复？请先保存 Excel。人工结论仅对当前已保存版本有效，文件再次修改后需重新检查。'
+    + (canResume ? '\n此操作会取消中断任务的续跑，避免旧检查点覆盖人工结论。其他未解决项仍可重新选择处理。' : '');
+  if (accepted && !confirm(message)) return;
+  try {
+    hideMagnifier();
+    await postAction('/api/manual/confirm', { id, accepted });
+    if (!accepted) selectedIds.add(id);
     await pollState();
   } catch (e) { alert(e.message); }
 }

@@ -155,6 +155,7 @@ def update_file_progress(
     exported_pdfs: int | None = None,
     clip_detected: int | None = None,
     clip_fixed: int | None = None,
+    clip_accepted: int | None = None,
     clip_unfixed: int | None = None,
     normalized_a1: bool | None = None,
     error: str | None = None,
@@ -198,6 +199,8 @@ def update_file_progress(
             entry["clip_detected"] = int(clip_detected)
         if clip_fixed is not None:
             entry["clip_fixed"] = int(clip_fixed)
+        if clip_accepted is not None:
+            entry["clip_accepted"] = int(clip_accepted)
         if clip_unfixed is not None:
             entry["clip_unfixed"] = int(clip_unfixed)
         if normalized_a1 is not None:
@@ -241,6 +244,7 @@ def render_execution_markdown() -> str:
     files = list(state["files"].values())
     total_clips = sum(int(f.get("clip_detected", 0)) for f in files)
     fixed_clips = sum(int(f.get("clip_fixed", 0)) for f in files)
+    accepted_clips = sum(int(f.get("clip_accepted", 0)) for f in files)
     total_pdfs = sum(int(f.get("exported_pdfs", 0)) for f in files)
     total_bkp_del = sum(len(f.get("deleted_backups", [])) for f in files)
 
@@ -265,7 +269,7 @@ def render_execution_markdown() -> str:
     lines.extend([
         f"- **开始时间**：{state['started_at'] or '-'}",
         f"- **最后更新**：{state['updated_at'] or '-'}",
-        f"- **统计汇总**：共清理备份 Sheet **{total_bkp_del}** 个 ｜ 导出 PDF **{total_pdfs}** 份 ｜ 检出切字 **{total_clips}** 处（已修复 **{fixed_clips}** 处）",
+        f"- **统计汇总**：共清理备份 Sheet **{total_bkp_del}** 个 ｜ 导出 PDF **{total_pdfs}** 份 ｜ 检出切字 **{total_clips}** 处（已修复 **{fixed_clips}** 处，人工确认无需修复 **{accepted_clips}** 处）",
         "",
         "---",
         "",
@@ -283,6 +287,8 @@ def render_execution_markdown() -> str:
         det_cnt = int(f.get("clip_detected", 0))
         fix_cnt = int(f.get("clip_fixed", 0))
         clip_str = f"{fix_cnt} / {det_cnt}" if det_cnt > 0 else "无切字"
+        if f.get("clip_accepted", 0):
+            clip_str += f"（人工确认 {f['clip_accepted']}）"
         a1_str = "✓" if f.get("normalized_a1") else "-"
         note = f.get("error") or f.get("current_action") or "-"
         note_clean = str(note).replace("|", "｜").replace("\n", " ")
