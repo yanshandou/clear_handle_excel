@@ -43,6 +43,7 @@ clear_handle_excel/
 │   └── records.js                # 执行记录看板筛选、进度渲染与 Markdown 复制/导出逻辑
 ├── web_clip_fixer.py             # 【推荐】可视化 Web 切字检测与闭环微调启动入口
 ├── cli_all_in_one.py             # 命令行一键批处理脚本入口
+├── start.sh                      # 一键启动脚本（自动检测 Python 与依赖，支持 web / cli / menu 模式）
 └── requirements.txt              # Python 依赖清单
 ```
 
@@ -64,11 +65,14 @@ clear_handle_excel/
 适合需要**直观查看哪些文字压线、点选需要修复的位置并自动微调到完整显示**的场景。
 
 ### 1. 启动服务
-在项目根目录下运行：
-```powershell
+在项目根目录下运行一键启动脚本（会自动检查环境与依赖）：
+```bash
+./start.sh
+# 或者使用 Python 直接启动：
 python web_clip_fixer.py
 ```
 启动后会自动在浏览器打开 `http://127.0.0.1:8765`。
+*（补充：`./start.sh cli` 可直接启动命令行版，`./start.sh menu` 可调出交互选择菜单。）*
 
 ### 2. 五步操作流程
 1. **输入路径并扫描**

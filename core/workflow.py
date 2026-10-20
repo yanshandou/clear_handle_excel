@@ -11,7 +11,6 @@ from core.common import (
     EXCLUDE_PDF_SHEETS,
     XL_SHEET_VISIBLE,
     XL_TYPE_PDF,
-    append_record,
     as_bbox,
     is_backup_sheet,
     sanitize_filename,
@@ -189,10 +188,6 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool) -> None:
                                 wb.Sheets(bn).Delete()
                             wb.Save()
                             deleted_bkp_list = list(bkp_names)
-                            try:
-                                append_record(wb_path.name, all_names, bkp_names)
-                            except OSError as err:
-                                log_msg(f"  ⚠️ 清理日志写入失败 {wb_path.name}: {err}")
                             log_msg(f"  已清理 {len(bkp_names)} 个日期备份 Sheet")
 
                     update_file_progress(

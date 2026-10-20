@@ -153,10 +153,6 @@ def process_workbooks(
                             wb.Sheets(sheet_name).Delete()
                         deleted_list = list(backup_sheets)
                         need_save = True
-                        try:
-                            append_record(workbook_path.name, original_sheets, backup_sheets)
-                        except OSError as err:
-                            progress_write(f"日志写入失败 {workbook_path.name}: {err}")
                         progress_write(f"已清理: {workbook_path.name} (删除 {len(backup_sheets)} 个备份表)")
 
                 # 2. 智能增加多行文本的行高（防 PDF 切字）
