@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+_sheet_cleanup_backup_*/
+_backup_*/
+_exported_pdfs_*/
+_疑似切字_红框标注版/
+~$*.xlsx
+~$*.xlsm
