@@ -14,6 +14,7 @@ from core.pdf_detector import (
     render_crop_base64,
     render_page_overview,
 )
+from core.reporter import get_execution_report_snapshot, render_execution_markdown
 from core.workflow import (
     STATE,
     STATE_LOCK,
@@ -88,11 +89,23 @@ class WebHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path in {"/", "/index.html"}:
             self._serve_static_file("index.html")
+        elif parsed.path in {"/records", "/records.html"}:
+            self._serve_static_file("records.html")
         elif parsed.path.startswith("/static/"):
             rel = parsed.path.removeprefix("/static/")
             self._serve_static_file(rel)
         elif parsed.path == "/api/state":
             self._send_json(get_state_snapshot())
+        elif parsed.path == "/api/records":
+            self._send_json(get_execution_report_snapshot())
+        elif parsed.path == "/api/records/markdown":
+            md_bytes = render_execution_markdown().encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/markdown; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="execution_report.md"')
+            self.send_header("Content-Length", str(len(md_bytes)))
+            self.end_headers()
+            self.wfile.write(md_bytes)
         else:
             self.send_error(404)
 

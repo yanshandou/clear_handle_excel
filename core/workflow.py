@@ -32,6 +32,12 @@ from core.pdf_detector import (
     render_crop_base64,
     render_page_overview,
 )
+from core.reporter import (
+    finish_execution_batch,
+    get_execution_report_snapshot,
+    init_execution_batch,
+    update_file_progress,
+)
 
 STATE_LOCK = threading.RLock()
 
@@ -64,6 +70,7 @@ def try_acquire_busy() -> bool:
 
 
 def get_state_snapshot() -> dict[str, Any]:
+    report_snap = get_execution_report_snapshot()
     with STATE_LOCK:
         return {
             "busy": STATE["busy"],
@@ -72,6 +79,18 @@ def get_state_snapshot() -> dict[str, Any]:
             "logs": list(STATE["logs"][-40:]),
             "pages": copy.deepcopy(STATE["pages"]),
             "items": copy.deepcopy(STATE["items"]),
+            "progress": {
+                "task_name": report_snap["task_name"],
+                "status": report_snap["status"],
+                "total_files": report_snap["total_files"],
+                "completed_files": report_snap["completed_files"],
+                "processing_files": report_snap["processing_files"],
+                "pending_files": report_snap["pending_files"],
+                "error_files": report_snap["error_files"],
+                "progress_pct": report_snap["progress_pct"],
+                "current_file": report_snap["current_file"],
+                "current_step": report_snap["current_step"],
+            },
         }
 
 
@@ -128,6 +147,14 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool) -> None:
             STATE["pdf_folder"] = str(pdf_folder)
             STATE["backup_folder"] = str(backup_folder)
 
+        init_execution_batch(
+            task_name="Web 导出 PDF 与切字扫描",
+            folder=folder,
+            workbooks=workbooks,
+            pdf_folder=pdf_folder,
+            backup_folder=backup_folder,
+        )
+
         pythoncom.CoInitialize()
         excel = win32.DispatchEx("Excel.Application")
         excel.Visible = False
@@ -138,7 +165,15 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool) -> None:
         try:
             for wb_path in workbooks:
                 log_msg(f"正在处理并导出: {wb_path.name} ...")
+                update_file_progress(
+                    wb_path.name,
+                    status="processing",
+                    current_action="正在打开工作簿并检查备份表...",
+                )
                 wb = None
+                wb_exported_pdfs = 0
+                wb_detected_clips = 0
+                deleted_bkp_list: list[str] = []
                 try:
                     wb = excel.Workbooks.Open(str(wb_path.resolve()))
                     all_names = [s.Name for s in wb.Sheets]
@@ -153,11 +188,19 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool) -> None:
                             for bn in bkp_names:
                                 wb.Sheets(bn).Delete()
                             wb.Save()
+                            deleted_bkp_list = list(bkp_names)
                             try:
                                 append_record(wb_path.name, all_names, bkp_names)
                             except OSError as err:
                                 log_msg(f"  ⚠️ 清理日志写入失败 {wb_path.name}: {err}")
                             log_msg(f"  已清理 {len(bkp_names)} 个日期备份 Sheet")
+
+                    update_file_progress(
+                        wb_path.name,
+                        all_sheets=all_names,
+                        deleted_backups=deleted_bkp_list,
+                        current_action="正在导出 PDF 并检测切字...",
+                    )
 
                     file_stem = sanitize_filename(wb_path.stem)
                     for sheet in wb.Sheets:
@@ -179,6 +222,7 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool) -> None:
                                 IgnorePrintAreas=False,
                                 OpenAfterPublish=False,
                             )
+                            wb_exported_pdfs += 1
                         except Exception as e:
                             log_msg(f"  导出 PDF 失败 [{s_name}]: {e}")
                             continue
@@ -194,6 +238,7 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool) -> None:
                                 if not clipped:
                                     continue
 
+                                wb_detected_clips += len(clipped)
                                 page_id = f"page_{page_seq}_{_make_page_id(str(wb_path), s_name, p_idx)}"
                                 page_seq += 1
                                 page_img_b64, page_w, page_h = render_page_overview(page)
@@ -245,8 +290,40 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool) -> None:
                                         STATE["items"][item_id] = new_item
                         finally:
                             doc.close()
+
+                        update_file_progress(
+                            wb_path.name,
+                            exported_pdfs=wb_exported_pdfs,
+                            clip_detected=wb_detected_clips,
+                            clip_unfixed=wb_detected_clips,
+                        )
+
+                    if wb_detected_clips > 0:
+                        update_file_progress(
+                            wb_path.name,
+                            status="needs_fix",
+                            exported_pdfs=wb_exported_pdfs,
+                            clip_detected=wb_detected_clips,
+                            clip_unfixed=wb_detected_clips,
+                            current_action=f"已导出 {wb_exported_pdfs} 份 PDF，检出 {wb_detected_clips} 处切字待微调",
+                        )
+                    else:
+                        update_file_progress(
+                            wb_path.name,
+                            status="done",
+                            exported_pdfs=wb_exported_pdfs,
+                            clip_detected=0,
+                            clip_unfixed=0,
+                            current_action=f"已导出 {wb_exported_pdfs} 份 PDF，无切字异常",
+                        )
                 except Exception as err:
                     log_msg(f"❌ 处理文件出错 {wb_path.name}: {err}")
+                    update_file_progress(
+                        wb_path.name,
+                        status="error",
+                        error=str(err),
+                        current_action=f"处理出错: {err}",
+                    )
                 finally:
                     if wb is not None:
                         wb.Close(SaveChanges=False)
@@ -257,9 +334,9 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool) -> None:
         with STATE_LOCK:
             total_detected = len(STATE["items"])
             total_pages_with_clips = len(STATE["pages"])
-        log_msg(
-            f"✅ 扫描完成！在 {total_pages_with_clips} 页 PDF 中共检测到 {total_detected} 处疑似切字位置。"
-        )
+        summary_msg = f"✅ 扫描完成！在 {total_pages_with_clips} 页 PDF 中共检测到 {total_detected} 处疑似切字位置。"
+        log_msg(summary_msg)
+        finish_execution_batch(summary_msg)
     finally:
         with STATE_LOCK:
             STATE["busy"] = False
@@ -326,6 +403,15 @@ def fix_selected_workflow(
 
         backup_folder = Path(backup_folder_str)
         backup_folder.mkdir(parents=True, exist_ok=True)
+        with STATE_LOCK:
+            folder_path = Path(STATE["folder"]) if STATE["folder"] else backup_folder.parent
+
+        init_execution_batch(
+            task_name="Web 闭环行高微调",
+            folder=folder_path,
+            workbooks=[Path(p) for p in by_wb.keys()],
+            preserve_existing_files=True,
+        )
 
         pythoncom.CoInitialize()
         excel = win32.DispatchEx("Excel.Application")
@@ -340,6 +426,11 @@ def fix_selected_workflow(
                     shutil.copy2(wb_path, bkp_target)
 
                 log_msg(f"🔧 开始微调工作簿: {wb_path.name} (共 {len(items)} 处)...")
+                update_file_progress(
+                    wb_path.name,
+                    status="processing",
+                    current_action=f"正在微调 {len(items)} 处选中切字项...",
+                )
                 wb = None
                 touched_pdfs: set[Path] = set()
                 try:
@@ -421,8 +512,32 @@ def fix_selected_workflow(
                     normalize_workbook_view(excel, wb)
                     wb.Save()
                     log_msg(f"💾 已保存并完成 A1/100% 标准化: {wb_path.name}")
+
+                    with STATE_LOCK:
+                        wb_all_items = [
+                            it for it in STATE["items"].values() if it["wb_path"] == wb_path_str
+                        ]
+                        wb_total_clips = len(wb_all_items)
+                        wb_fixed_clips = sum(1 for it in wb_all_items if it["status"] == "fixed")
+                        wb_unfixed_clips = wb_total_clips - wb_fixed_clips
+
+                    update_file_progress(
+                        wb_path.name,
+                        status="done" if wb_unfixed_clips == 0 else "needs_fix",
+                        clip_detected=wb_total_clips,
+                        clip_fixed=wb_fixed_clips,
+                        clip_unfixed=wb_unfixed_clips,
+                        normalized_a1=True,
+                        current_action=f"已微调保存 (修复 {wb_fixed_clips}/{wb_total_clips} 处，A1/100% 已标准化)",
+                    )
                 except Exception as err:
                     log_msg(f"❌ 修复失败 {wb_path.name}: {err}")
+                    update_file_progress(
+                        wb_path.name,
+                        status="error",
+                        error=str(err),
+                        current_action=f"修复失败: {err}",
+                    )
                 finally:
                     if wb is not None:
                         wb.Close(SaveChanges=False)
@@ -430,7 +545,9 @@ def fix_selected_workflow(
             excel.Quit()
             pythoncom.CoUninitialize()
 
-        log_msg("🎉 所有选中项微调完毕！画布与放大镜截图已更新。")
+        done_msg = "🎉 所有选中项微调完毕！画布、放大镜截图与执行记录报告已更新。"
+        log_msg(done_msg)
+        finish_execution_batch(done_msg)
     finally:
         with STATE_LOCK:
             STATE["busy"] = False

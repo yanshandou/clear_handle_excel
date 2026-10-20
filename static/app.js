@@ -508,6 +508,28 @@ async function pollState() {
     logBox.innerText = (data.logs && data.logs.length > 0) ? data.logs.join('\n') : '等待操作...';
     logBox.scrollTop = logBox.scrollHeight;
 
+    if (data.progress) {
+      const p = data.progress;
+      const pct = Number(p.progress_pct || 0);
+      const navBadge = document.getElementById('navProgressBadge');
+      if (navBadge) {
+        navBadge.textContent = p.total_files > 0 ? `${p.completed_files}/${p.total_files} (${pct}%)` : '0%';
+      }
+      const miniStep = document.getElementById('miniStepText');
+      if (miniStep) {
+        miniStep.textContent = p.current_step || '等待开始任务...';
+      }
+      const miniStats = document.getElementById('miniStatsText');
+      if (miniStats) {
+        miniStats.textContent =
+          `已完成 ${p.completed_files} · 处理中 ${p.processing_files} · 待处理 ${p.pending_files}（总进度 ${pct}%）`;
+      }
+      const miniFill = document.getElementById('miniProgressFill');
+      if (miniFill) {
+        miniFill.style.width = `${Math.min(100, Math.max(0, pct))}%`;
+      }
+    }
+
     latestPages = data.pages || {};
     latestItems = data.items || {};
 

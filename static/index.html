@@ -12,11 +12,18 @@
       <h1>📐 Excel 导出 PDF 切字检测 &amp; 闭环行高微调器</h1>
       <span class="subtitle">整页画布热区点选 · 悬停 2.5x 高清放大镜 · 同行联动微调</span>
     </div>
-    <span id="statusText" class="status-pill">✅ 就绪</span>
+    <div class="header-nav">
+      <a href="/" class="nav-link active">📐 切字微调工作台</a>
+      <a href="/records" class="nav-link">
+        📊 执行记录与进度看板
+        <span id="navProgressBadge" class="nav-badge">0%</span>
+      </a>
+      <span id="statusText" class="status-pill">✅ 就绪</span>
+    </div>
   </header>
 
   <main class="container">
-    <!-- 顶部扫描控制栏 -->
+    <!-- 顶部扫描控制栏 + 实时文件进度条 -->
     <section class="panel">
       <div class="controls">
         <input
@@ -31,6 +38,20 @@
         <button class="btn btn-primary" id="scanBtn" onclick="startScan()">
           1. 导出 PDF 并扫描切字
         </button>
+        <a href="/records" class="btn btn-outline" title="查看每个 Excel 文件的处理进度与 Markdown 报告">
+          📊 查看执行记录看板 ↗
+        </a>
+      </div>
+
+      <!-- 紧凑型实时进度条 -->
+      <div id="miniProgressBox" class="mini-progress-box">
+        <div class="mini-progress-info">
+          <span id="miniStepText">等待开始任务...</span>
+          <span id="miniStatsText">已完成 0 · 处理中 0 · 待处理 0（总进度 0%）</span>
+        </div>
+        <div class="progress-track progress-track-sm">
+          <div id="miniProgressFill" class="progress-fill" style="width: 0%;"></div>
+        </div>
       </div>
     </section>
 

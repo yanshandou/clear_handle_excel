@@ -23,6 +23,11 @@ from core.excel_ops import (
     scan_workbook_sheets,
     win32,
 )
+from core.reporter import (
+    finish_execution_batch,
+    init_execution_batch,
+    update_file_progress,
+)
 
 __all__ = [
     "EXCEL_EXTENSIONS",
@@ -102,11 +107,27 @@ def process_workbooks(
     if do_export_pdf:
         pdf_folder.mkdir(parents=True, exist_ok=True)
 
+    init_execution_batch(
+        task_name="CLI 命令行批处理任务",
+        folder=backup_folder.parent,
+        workbooks=workbooks,
+        pdf_folder=pdf_folder if do_export_pdf else None,
+        backup_folder=backup_folder,
+    )
+
     try:
         for workbook_path in progress_iter(workbooks, desc="处理工作簿", unit="文件"):
             wb = None
             file_backed_up = False
             need_save = False
+            exported_count = 0
+            deleted_list: list[str] = []
+
+            update_file_progress(
+                workbook_path.name,
+                status="processing",
+                current_action="正在打开并处理工作簿...",
+            )
 
             try:
                 wb = excel.Workbooks.Open(str(workbook_path.resolve()))
@@ -130,6 +151,7 @@ def process_workbooks(
                         ensure_backup()
                         for sheet_name in backup_sheets:
                             wb.Sheets(sheet_name).Delete()
+                        deleted_list = list(backup_sheets)
                         need_save = True
                         try:
                             append_record(workbook_path.name, original_sheets, backup_sheets)
@@ -154,7 +176,6 @@ def process_workbooks(
 
                 # 4. 导出 PDF
                 if do_export_pdf:
-                    exported_count = 0
                     file_stem = sanitize_filename(workbook_path.stem)
                     for sheet in wb.Sheets:
                         sheet_name = sheet.Name
@@ -181,19 +202,37 @@ def process_workbooks(
 
                     progress_write(f"已导出 PDF: {workbook_path.name} (共 {exported_count} 个 Sheet)")
 
+                update_file_progress(
+                    workbook_path.name,
+                    status="done",
+                    all_sheets=original_sheets,
+                    deleted_backups=deleted_list,
+                    exported_pdfs=exported_count,
+                    normalized_a1=do_normalize_view,
+                    current_action=f"已完成 (清理 {len(deleted_list)} 表, 导出 {exported_count} 份 PDF)",
+                )
+
             except Exception as error:
                 progress_write(f"处理失败 {workbook_path.name}: {error}")
+                update_file_progress(
+                    workbook_path.name,
+                    status="error",
+                    error=str(error),
+                    current_action=f"处理失败: {error}",
+                )
             finally:
                 if wb is not None:
                     wb.Close(SaveChanges=False)
     finally:
         excel.Quit()
         pythoncom.CoUninitialize()
+        finish_execution_batch("CLI 批处理任务执行完毕")
 
     if backup_created:
         print(f"\n原始文件备份位置: {backup_folder}")
     if do_export_pdf:
         print(f"PDF 导出文件夹位置: {pdf_folder}")
+    print(f"Markdown 执行记录报告已保存至: {RECORD_PATH}")
 
 
 def main() -> None:
