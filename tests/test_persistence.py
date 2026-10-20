@@ -33,7 +33,9 @@ class PersistenceTests(unittest.TestCase):
         self.wb_path = self.folder / "book.xlsx"
         self.wb_path.write_bytes(b"test workbook")
         self.pdf_path = self.folder / "sheet.pdf"
-        self.pdf_path.touch()
+        with workflow.fitz.open() as doc:
+            doc.new_page()
+            doc.save(self.pdf_path)
         workflow.STATE.update(
             folder=str(self.folder),
             backup_folder=str(self.folder / "backup"),
@@ -62,6 +64,10 @@ class PersistenceTests(unittest.TestCase):
         self.patch_value(workflow, "_refresh_sheet_pages_in_state", Mock())
         self.detect = Mock(return_value=(True, "new", [0, 0, 10, 10], 0))
         self.patch_value(workflow, "is_region_still_clipped", self.detect)
+        self.rescan = Mock(return_value=[])
+        self.patch_value(workflow, "find_clipped_spans_on_page", self.rescan)
+        self.patch_value(workflow, "extract_sheet_snapshot", Mock(return_value={}))
+        self.patch_value(workflow, "match_excel_row", Mock(return_value=(2, "A2", 37.0)))
 
     def patch_value(self, target, name, value):
         patcher = patch.object(target, name, value)
@@ -168,16 +174,102 @@ class PersistenceTests(unittest.TestCase):
         self.wb.Save.assert_not_called()
         self.sheet.ExportAsFixedFormat.assert_called_once()
         self.assertEqual(self.row.RowHeight, 37.0)
-        self.assertEqual(self.snapshot("workflow")["items"]["item_1"]["status"], "fixed")
-        self.assertEqual(self.snapshot("workflow")["items"]["item_1"]["iterations"], 0)
+        self.assertNotIn("item_1", self.snapshot("workflow")["items"])
+        self.detect.assert_not_called()
+        self.rescan.assert_called_once()
+        self.assertEqual(self.snapshot("report")["files"]["book.xlsx"]["clip_detected"], 0)
 
-    def test_manual_recheck_ambiguous_result_requires_review(self):
+    def test_manual_recheck_discards_old_ambiguous_target_when_new_pdf_has_no_clips(self):
         self.detect.side_effect = self.workflow.RegionTrackingError("ambiguous target")
         self.workflow.queue_job("recheck", {"selected_ids": ["item_1"]})
         self.workflow.run_pending_workflow()
-        self.assertEqual(self.snapshot("workflow")["items"]["item_1"]["status"], "needs_review")
+        self.assertNotIn("item_1", self.snapshot("workflow")["items"])
+        self.detect.assert_not_called()
         self.assertEqual(self.row.RowHeight, 15.0)
         self.wb.Save.assert_not_called()
+
+    def install_old_page(self):
+        item = self.workflow.STATE["items"]["item_1"]
+        item.update(
+            text="er", status="needs_review", page_id="old_page",
+            review_reason="multiple old text candidates", bbox=[60, 500, 80, 520],
+        )
+        self.workflow.STATE["pages"]["old_page"] = {
+            "id": "old_page", "wb_path": str(self.wb_path), "wb_name": self.wb_path.name,
+            "sheet_name": "Sheet1", "pdf_path": str(self.pdf_path),
+            "page_index": 0, "total_pages": 1,
+            "page_width": 595, "page_height": 842, "image": "old image",
+        }
+
+    def test_real_pdf_repeated_text_without_lines_removes_stale_boxes_and_pages(self):
+        from core.pdf_detector import find_clipped_spans_on_page
+
+        self.install_old_page()
+        with self.workflow.fitz.open() as doc:
+            page = doc.new_page()
+            page.insert_text((60, 100), "er")
+            page.insert_text((60, 200), "er")
+            doc.save(self.pdf_path)
+        self.rescan.side_effect = find_clipped_spans_on_page
+        self.workflow.queue_job("recheck", {"selected_ids": ["item_1"]})
+        self.workflow.run_pending_workflow()
+        state = self.snapshot("workflow")
+        self.assertEqual(state["items"], {})
+        self.assertEqual(state["pages"], {})
+        self.assertEqual(state["job"]["status"], "completed")
+        self.detect.assert_not_called()
+        report = self.snapshot("report")["files"]["book.xlsx"]
+        self.assertEqual(report["clip_detected"], 0)
+        self.assertEqual(report["clip_unfixed"], 0)
+        self.assertEqual(report["status"], "done")
+
+    def test_real_pdf_fresh_scan_finds_new_clip_at_current_position_not_old_bbox(self):
+        from core.pdf_detector import find_clipped_spans_on_page
+
+        self.install_old_page()
+        with self.workflow.fitz.open() as doc:
+            page = doc.new_page()
+            page.insert_text((60, 100), "er")
+            page.insert_text((60, 200), "er")
+            spans = [
+                span for block in page.get_text("dict")["blocks"]
+                for line in block.get("lines", []) for span in line["spans"]
+            ]
+            bbox = tuple(spans[1]["bbox"])
+            line_y = (bbox[1] + bbox[3]) / 2
+            page.draw_line((55, line_y), (150, line_y), width=0.5)
+            doc.save(self.pdf_path)
+        self.rescan.side_effect = find_clipped_spans_on_page
+        self.workflow.queue_job("recheck", {"selected_ids": ["item_1"]})
+        self.workflow.run_pending_workflow()
+        state = self.snapshot("workflow")
+        self.assertNotIn("item_1", state["items"])
+        self.assertNotIn("old_page", state["pages"])
+        self.assertEqual(len(state["items"]), 1)
+        current = next(iter(state["items"].values()))
+        self.assertEqual(tuple(current["bbox"]), bbox)
+        self.assertEqual(current["status"], "pending")
+        self.assertNotIn("review_reason", current)
+        self.assertEqual(current["cell_addr"], "A2")
+        self.assertIn(current["page_id"], state["pages"])
+        self.workflow.match_excel_row.assert_called_once()
+        self.detect.assert_not_called()
+
+    def test_rescan_second_sheet_failure_keeps_all_old_items_and_pages(self):
+        self.install_old_page()
+        second = copy.deepcopy(self.workflow.STATE["items"]["item_1"])
+        second.update(id="item_2", sheet_name="Sheet2", pdf_path=str(self.folder / "second.pdf"))
+        self.workflow.STATE["items"]["item_2"] = second
+        before_items = copy.deepcopy(self.workflow.STATE["items"])
+        before_pages = copy.deepcopy(self.workflow.STATE["pages"])
+        self.sheet.ExportAsFixedFormat.side_effect = [None, RuntimeError("second sheet failed")]
+        self.workflow.queue_job("refresh")
+        self.workflow.run_pending_workflow()
+        saved = self.snapshot("workflow")
+        self.assertEqual(saved["items"], before_items)
+        self.assertEqual(saved["pages"], before_pages)
+        self.assertEqual(saved["job"]["completed"], [])
+        self.assertEqual(saved["job"]["status"], "interrupted")
 
     def add_problem_file(self, index, status="pending"):
         path = self.folder / f"book_{index}.xlsx"
@@ -188,6 +280,7 @@ class PersistenceTests(unittest.TestCase):
             pdf_path=str(self.folder / f"sheet_{index}.pdf"), status=status,
         )
         self.workflow.STATE["items"][item["id"]] = item
+        Path(item["pdf_path"]).write_bytes(self.pdf_path.read_bytes())
         self.workflow.STATE["checked_files"][str(path)] = self.workflow._file_version(path)
         return path, item
 
@@ -216,7 +309,7 @@ class PersistenceTests(unittest.TestCase):
             [str(paths[0]), str(paths[1])],
         )
         self.assertEqual(self.sheet.ExportAsFixedFormat.call_count, 2)
-        self.assertEqual(self.detect.call_count, 2)
+        self.assertEqual(self.rescan.call_count, 2)
         self.wb.Save.assert_not_called()
         self.assertEqual(self.row.RowHeight, 15.0)
         for iid, item in unaffected.items():
@@ -238,12 +331,14 @@ class PersistenceTests(unittest.TestCase):
         second.update(id="item_2", text="second", excel_row=3)
         third = copy.deepcopy(item)
         third.update(id="item_3", text="third", sheet_name="Sheet2", pdf_path=str(self.folder / "second.pdf"))
+        Path(third["pdf_path"]).write_bytes(self.pdf_path.read_bytes())
         self.workflow.STATE["items"].update(item_2=second, item_3=third)
         self.workflow.queue_job("refresh")
         self.workflow.run_pending_workflow()
         self.excel.Workbooks.Open.assert_called_once()
         self.assertEqual(self.sheet.ExportAsFixedFormat.call_count, 2)
-        self.assertEqual(self.detect.call_count, 3)
+        self.assertEqual(self.rescan.call_count, 2)
+        self.detect.assert_not_called()
         self.assertEqual(self.workflow.STATE["job"]["status"], "completed")
 
     def test_unchanged_file_can_be_forced_and_checks_all_its_unresolved_items(self):
@@ -253,7 +348,8 @@ class PersistenceTests(unittest.TestCase):
         self.workflow.STATE["items"]["item_2"] = second
         self.workflow.queue_job("recheck", {"selected_ids": ["item_1"]})
         self.workflow.run_pending_workflow()
-        self.assertEqual(self.detect.call_count, 2)
+        self.rescan.assert_called_once()
+        self.detect.assert_not_called()
         self.sheet.ExportAsFixedFormat.assert_called_once()
         self.excel.Workbooks.Open.assert_called_once()
         self.assertEqual(self.workflow.STATE["job"]["options"]["selected_ids"], ["item_1", "item_2"])

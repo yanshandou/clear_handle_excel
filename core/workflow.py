@@ -5,6 +5,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from core.common import (
     EXCEL_EXTENSIONS,
@@ -227,9 +228,46 @@ def update_item_row(item_id: str, new_row: int) -> bool:
         return True
 
 
-def _make_page_id(wb_path_str: str, sheet_name: str, page_index: int) -> str:
-    safe_key = re.sub(r"[^a-zA-Z0-9_\u4e00-\u9fff\u3040-\u30ff]", "_", f"{Path(wb_path_str).stem}_{sheet_name}")
-    return f"page_{safe_key}_{page_index + 1}"
+def _detect_sheet_results(
+    sheet: Any, wb_path: Path, sheet_name: str, pdf_path: Path, start_seq: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """从当前 PDF 构建新快照；不沿用旧文字、坐标或问题状态。"""
+    pages: dict[str, Any] = {}
+    items: dict[str, Any] = {}
+    sheet_snapshot = extract_sheet_snapshot(sheet)
+    generation = uuid4().hex
+    with fitz.open(pdf_path) as doc:
+        if not len(doc):
+            raise ValueError(f"导出的 PDF 没有页面: {pdf_path}")
+        for page_index in range(len(doc)):
+            page = doc[page_index]
+            clips = find_clipped_spans_on_page(page)
+            if not clips:
+                continue
+            page_id = f"page_{generation}_{page_index}"
+            image, width, height = render_page_overview(page)
+            pages[page_id] = {
+                "id": page_id, "wb_path": str(wb_path), "wb_name": wb_path.name,
+                "sheet_name": sheet_name, "pdf_path": str(pdf_path),
+                "page_index": page_index, "total_pages": len(doc),
+                "page_width": width, "page_height": height, "image": image,
+            }
+            for index, clip in enumerate(clips, start=1):
+                row, address, height = match_excel_row(
+                    sheet_snapshot, clip["text"], page_index, len(doc),
+                    clip["bbox"][1] / max(1.0, page.rect.height),
+                )
+                item_id = f"item_{generation}_{len(items)}"
+                items[item_id] = {
+                    "id": item_id, "seq": start_seq + len(items), "page_id": page_id,
+                    "index_on_page": index, "wb_path": str(wb_path), "wb_name": wb_path.name,
+                    "sheet_name": sheet_name, "pdf_path": str(pdf_path),
+                    "page_index": page_index, "text": clip["text"], "bbox": clip["bbox"],
+                    "excel_row": row, "cell_addr": address, "row_height": height,
+                    "image": render_crop_base64(page, clip["bbox"], highlight=True),
+                    "status": "pending", "iterations": 0,
+                }
+    return pages, items
 
 
 def _file_version(path: Path) -> dict[str, int]:
@@ -316,9 +354,6 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool, *, resume: bool 
         excel.DisplayAlerts = False
 
         item_seq = max((it["seq"] for it in STATE["items"].values()), default=0) + 1
-        page_seq = max(
-            (int(page_id.split("_", 2)[1]) for page_id in STATE["pages"]), default=0
-        ) + 1
         try:
             for wb_path in workbooks:
                 if job is not None and str(wb_path) in job["completed"]:
@@ -400,69 +435,12 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool, *, resume: bool 
                             log_msg(f"  导出 PDF 失败 [{s_name}]: {e}")
                             raise
 
-                        sheet_snapshot = extract_sheet_snapshot(sheet)
-
-                        doc = fitz.open(pdf_path)
-                        try:
-                            total_pages = len(doc)
-                            for p_idx in range(total_pages):
-                                page = doc[p_idx]
-                                clipped = find_clipped_spans_on_page(page)
-                                if not clipped:
-                                    continue
-
-                                wb_detected_clips += len(clipped)
-                                page_id = f"page_{page_seq}_{_make_page_id(str(wb_path), s_name, p_idx)}"
-                                page_seq += 1
-                                page_img_b64, page_w, page_h = render_page_overview(page)
-
-                                page_entry = {
-                                    "id": page_id,
-                                    "wb_path": str(wb_path),
-                                    "wb_name": wb_path.name,
-                                    "sheet_name": s_name,
-                                    "pdf_path": str(pdf_path),
-                                    "page_index": p_idx,
-                                    "total_pages": total_pages,
-                                    "page_width": page_w,
-                                    "page_height": page_h,
-                                    "image": page_img_b64,
-                                }
-                                with STATE_LOCK:
-                                    STATE["pages"][page_id] = page_entry
-
-                                for clip_idx, clip_info in enumerate(clipped, start=1):
-                                    _, by0, _, _ = clip_info["bbox"]
-                                    rel_y = by0 / max(1.0, page.rect.height)
-                                    excel_r, cell_addr, row_h = match_excel_row(
-                                        sheet_snapshot, clip_info["text"], p_idx, total_pages, rel_y
-                                    )
-                                    img_b64 = render_crop_base64(page, clip_info["bbox"], highlight=True)
-                                    item_id = f"item_{item_seq}"
-                                    item_seq += 1
-                                    new_item = {
-                                        "id": item_id,
-                                        "seq": item_seq - 1,
-                                        "page_id": page_id,
-                                        "index_on_page": clip_idx,
-                                        "wb_path": str(wb_path),
-                                        "wb_name": wb_path.name,
-                                        "sheet_name": s_name,
-                                        "pdf_path": str(pdf_path),
-                                        "page_index": p_idx,
-                                        "text": clip_info["text"],
-                                        "bbox": clip_info["bbox"],
-                                        "excel_row": excel_r,
-                                        "cell_addr": cell_addr,
-                                        "row_height": row_h,
-                                        "image": img_b64,
-                                        "status": "pending",  # pending / fixed / max_reached
-                                        "iterations": 0,
-                                    }
-                                    with STATE_LOCK:
-                                        STATE["items"][item_id] = new_item
-                        finally:
-                            doc.close()
+                        pages, items = _detect_sheet_results(sheet, wb_path, s_name, pdf_path, item_seq)
+                        wb_detected_clips += len(items)
+                        item_seq += len(items)
+                        with STATE_LOCK:
+                            STATE["pages"].update(pages)
+                            STATE["items"].update(items)
 
                         update_file_progress(
                             wb_path.name,
@@ -591,8 +569,14 @@ def _update_item_pdf_location(
 
 def manual_review_workflow(selected_ids: list[str], *, open_excel: bool) -> None:
     with STATE_LOCK:
-        items = [STATE["items"][iid] for iid in selected_ids]
         job = STATE["job"]
+        if not open_excel and "recheck_plan" in job["options"]:
+            items = []
+        else:
+            items = [STATE["items"][iid] for iid in selected_ids if iid not in job["completed"]]
+    if not open_excel and "recheck_plan" in job["options"]:
+        recheck_items_workflow(selected_ids)
+        return
     if open_excel:
         item = items[0]
         height = open_workbook_for_manual_review(
@@ -634,11 +618,22 @@ def manual_review_workflow(selected_ids: list[str], *, open_excel: bool) -> None
 def recheck_items_workflow(selected_ids: list[str]) -> None:
     with STATE_LOCK:
         job = STATE["job"]
-        by_file: dict[str, list[dict[str, Any]]] = {}
-        for iid in selected_ids:
-            if iid not in job["completed"]:
+        if "recheck_plan" not in job["options"]:
+            plan: dict[str, Any] = {}
+            for iid in selected_ids:
                 item = STATE["items"][iid]
-                by_file.setdefault(item["wb_path"], []).append(item)
+                entry = plan.setdefault(item["wb_path"], {"item_ids": [], "sheets": {}})
+                entry["item_ids"].append(iid)
+                existing = entry["sheets"].get(item["sheet_name"])
+                if existing is not None and existing != item["pdf_path"]:
+                    raise ValueError(f"同一工作表存在多个 PDF 路径，请重新扫描: {item['sheet_name']}")
+                entry["sheets"][item["sheet_name"]] = item["pdf_path"]
+            job["options"]["recheck_plan"] = plan
+            _persist_state()
+        by_file = {
+            path: entry for path, entry in job["options"]["recheck_plan"].items()
+            if not set(entry["item_ids"]).issubset(job["completed"])
+        }
     if not by_file:
         finish_execution_batch("复检任务已完成")
         return
@@ -654,82 +649,61 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
         excel = win32.DispatchEx("Excel.Application")
         excel.Visible = False
         excel.DisplayAlerts = False
-        for path, items in by_file.items():
+        for path, entry in by_file.items():
             workbook = None
             try:
                 version = _file_version(Path(path))
-                log_msg(f"刷新复检文件: {Path(path).name}（{len(items)} 处未解决/指定问题）")
+                log_msg(f"刷新复检文件: {Path(path).name}（重新检测 {len(entry['sheets'])} 个问题工作表）")
                 update_file_progress(
                     Path(path).name, status="processing",
-                    current_action=f"刷新复检 {len(items)} 处问题（不自动加高）", error="",
+                    current_action="根据新 PDF 重新检测问题工作表（不自动加高）", error="",
                 )
                 workbook = excel.Workbooks.Open(str(Path(path).resolve()), ReadOnly=True)
-                by_sheet: dict[str, list[dict[str, Any]]] = {}
-                for item in items:
-                    by_sheet.setdefault(item["sheet_name"], []).append(item)
-                results: list[dict[str, Any]] = []
-                resolved_pages: dict[str, int] = {}
-                exported_paths: set[Path] = set()
-                for sheet_name, sheet_items in by_sheet.items():
+                new_pages: dict[str, Any] = {}
+                new_items: dict[str, Any] = {}
+                with STATE_LOCK:
+                    next_seq = max((item["seq"] for item in STATE["items"].values()), default=0) + 1
+                for sheet_name, pdf_path_str in entry["sheets"].items():
                     sheet = workbook.Sheets(sheet_name)
-                    pdf_paths = {item["pdf_path"] for item in sheet_items}
-                    if len(pdf_paths) != 1:
-                        raise ValueError(f"同一工作表存在多个 PDF 路径，请重新扫描: {sheet_name}")
-                    pdf_path = Path(next(iter(pdf_paths)))
+                    pdf_path = Path(pdf_path_str)
                     sheet.ExportAsFixedFormat(
                         Type=XL_TYPE_PDF, Filename=str(pdf_path.resolve()),
                         Quality=0, IncludeDocProperties=True, IgnorePrintAreas=False,
                         OpenAfterPublish=False,
                     )
-                    exported_paths.add(pdf_path)
-                    for item in sheet_items:
-                        result = copy.deepcopy(item)
-                        result["row_height"] = round(
-                            float(sheet.Rows(int(item["excel_row"])).RowHeight or 15.0), 1
-                        )
-                        try:
-                            clipped, image, bbox, page_index = is_region_still_clipped(
-                                pdf_path, item["page_index"], item["text"], as_bbox(item["bbox"])
-                            )
-                        except RegionTrackingError as err:
-                            result["status"] = "needs_review"
-                            result["review_reason"] = str(err)
-                            log_msg(f"⚠️ 人工复检需确认: {err}")
-                        else:
-                            result["image"] = image
-                            result["bbox"] = bbox
-                            resolved_pages[result["id"]] = page_index
-                            result["status"] = "needs_review" if clipped else "fixed"
-                            result["review_reason"] = "仍检测到压线，请人工核对边框与行号" if clipped else ""
-                            log_msg(
-                                f"人工调整后复检 [{sheet_name} / {item['cell_addr']}]: "
-                                f"{'仍疑似压线，未增加行高' if clipped else '目标文字已完整显示'}"
-                            )
-                        results.append(result)
+                    pages, items = _detect_sheet_results(
+                        sheet, Path(path), sheet_name, pdf_path, next_seq,
+                    )
+                    next_seq += len(items)
+                    new_pages.update(pages)
+                    new_items.update(items)
+                    log_msg(f"  [{sheet_name}] 新 PDF 检出 {len(items)} 处疑似压线，将替换旧标记")
                 if _file_version(Path(path)) != version:
                     raise ValueError(f"复检期间文件又被修改，本轮不提交，请保存完成后再次刷新: {Path(path).name}")
                 with STATE_LOCK:
-                    for pdf_path in exported_paths:
-                        _refresh_sheet_pages_in_state(pdf_path)
-                    for result in results:
-                        if result["id"] in resolved_pages:
-                            _update_item_pdf_location(
-                                result, result["image"], as_bbox(result["bbox"]),
-                                resolved_pages[result["id"]],
-                            )
-                        STATE["items"][result["id"]].update(result)
+                    previous = copy.deepcopy(STATE)
+                    for collection in ("pages", "items"):
+                        for key, value in list(STATE[collection].items()):
+                            if value["wb_path"] == path and value["sheet_name"] in entry["sheets"]:
+                                del STATE[collection][key]
+                    STATE["pages"].update(new_pages)
+                    STATE["items"].update(new_items)
                     wb_items = [it for it in STATE["items"].values() if it["wb_path"] == path]
                     fixed = sum(it["status"] == "fixed" for it in wb_items)
                     # 只有全部未解决项都被检查，才能更新整个文件的版本基线。
-                    checked_ids = set(selected_ids)
-                    if all(it["status"] == "fixed" or it["id"] in checked_ids for it in wb_items):
+                    if all(it["status"] == "fixed" or it["sheet_name"] in entry["sheets"] for it in wb_items):
                         STATE["checked_files"][path] = version
-                    job["completed"].extend(item["id"] for item in items)
-                    _persist_state()
+                    job["completed"].extend(entry["item_ids"])
+                    try:
+                        _persist_state()
+                    except Exception:
+                        STATE.clear()
+                        STATE.update(previous)
+                        raise
                 update_file_progress(
                     Path(path).name, status="done" if fixed == len(wb_items) else "needs_fix",
-                    clip_fixed=fixed, clip_unfixed=len(wb_items) - fixed,
-                    current_action=f"已刷新复检 {len(items)} 处问题（未自动加高）", error="",
+                    clip_detected=len(wb_items), clip_fixed=fixed, clip_unfixed=len(wb_items) - fixed,
+                    current_action=f"已重新检测问题工作表，当前剩余 {len(wb_items) - fixed} 处疑似压线", error="",
                 )
             finally:
                 if workbook is not None:

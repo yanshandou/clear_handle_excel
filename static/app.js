@@ -42,6 +42,12 @@ function setViewMode(mode) {
 }
 
 function syncNewItemsDefaultSelection(items) {
+  for (const id of seenItemIds) {
+    if (!items[id]) {
+      seenItemIds.delete(id);
+      selectedIds.delete(id);
+    }
+  }
   Object.keys(items).forEach(id => {
     const item = items[id];
     if (!seenItemIds.has(id)) {
@@ -279,6 +285,12 @@ function hideMagnifier(item) {
 function renderCanvasStages(pages, items) {
   const container = document.getElementById('canvasView');
   const pageIds = Object.keys(pages);
+  for (const pageId of Object.keys(pagesSignatureCache)) {
+    if (!pages[pageId]) {
+      document.getElementById('stage_' + pageId)?.remove();
+      delete pagesSignatureCache[pageId];
+    }
+  }
 
   if (pageIds.length === 0) {
     container.innerHTML = '';
@@ -444,6 +456,12 @@ function renderCanvasStages(pages, items) {
 function renderCards(items) {
   const grid = document.getElementById('cardGrid');
   const keys = Object.keys(items);
+  for (const id of Object.keys(cardsSignatureCache)) {
+    if (!items[id]) {
+      document.getElementById('card_' + id)?.remove();
+      delete cardsSignatureCache[id];
+    }
+  }
   if (keys.length === 0) {
     grid.innerHTML = '';
     cardsSignatureCache = {};
@@ -565,6 +583,9 @@ async function pollState() {
 
     latestPages = data.pages || {};
     latestItems = data.items || {};
+    if (activeHoverItemId && !latestItems[activeHoverItemId]) {
+      hideMagnifier();
+    }
 
     const hasResults = Object.keys(latestPages).length > 0 || Object.keys(latestItems).length > 0;
     const emptyStage = document.getElementById('emptyStagePlaceholder');
@@ -675,7 +696,7 @@ async function manualOpen(id) {
 }
 
 async function manualRecheck(id) {
-  const message = '请先在 Excel 中保存手动修改。本次强制复检该文件的未解决项，不会自动增加行高。'
+  const message = '请先在 Excel 中保存手动修改。本次根据新 PDF 重新检测该文件的问题工作表并替换旧标记，不会自动增加行高。'
     + (canResume ? '\n此操作会替换上次中断任务的续跑检查点。' : '');
   if (!confirm(message)) return;
   try {
