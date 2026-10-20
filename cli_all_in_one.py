@@ -1,4 +1,3 @@
-import re
 import shutil
 import sys
 from collections.abc import Iterable, Iterator
@@ -6,18 +5,40 @@ from datetime import datetime
 from pathlib import Path
 from typing import TypeVar
 
-try:
-    import win32com.client as win32
-    import pythoncom
-except ImportError:
-    print("请先安装 pywin32: pip install pywin32")
-    sys.exit(1)
+from core.common import (
+    EXCEL_EXTENSIONS,
+    EXCLUDE_PDF_SHEETS,
+    RECORD_PATH,
+    XL_SHEET_VISIBLE,
+    XL_TYPE_PDF,
+    append_record,
+    is_backup_sheet,
+    sanitize_filename,
+    unique_pdf_path,
+)
+from core.excel_ops import (
+    adjust_row_heights_against_clipping,
+    normalize_workbook_view,
+    pythoncom,
+    scan_workbook_sheets,
+    win32,
+)
 
-try:
-    from openpyxl import load_workbook
-except ImportError:
-    print("请先安装 openpyxl: pip install openpyxl")
-    sys.exit(1)
+__all__ = [
+    "EXCEL_EXTENSIONS",
+    "EXCLUDE_PDF_SHEETS",
+    "RECORD_PATH",
+    "adjust_row_heights_against_clipping",
+    "append_record",
+    "is_backup_sheet",
+    "main",
+    "normalize_sheets_view",
+    "process_workbooks",
+    "progress_iter",
+    "progress_write",
+    "sanitize_filename",
+    "scan_workbook_sheets",
+]
 
 _T = TypeVar("_T")
 
@@ -57,181 +78,9 @@ def progress_write(message: str) -> None:
     sys.stderr.flush()
 
 
-DATE_PATTERN = re.compile(r"(?<!\d)((?:19|20)\d{6})(?!\d)")
-EXCEL_EXTENSIONS = {".xlsx", ".xlsm", ".xls"}
-EXCLUDE_PDF_SHEETS = {"変更履歴"}  # 不导出为 PDF 的 Sheet 名集合
-RECORD_PATH = Path(__file__).with_name("record.md")
-
-# Excel 常量
-XL_TYPE_PDF = 0
-XL_SHEET_VISIBLE = -1
-XL_WORKSHEET = -4167
-
-
-def is_backup_sheet(sheet_name: str) -> bool:
-    for match in DATE_PATTERN.finditer(sheet_name):
-        try:
-            datetime.strptime(match.group(1), "%Y%m%d")
-            return True
-        except ValueError:
-            continue
-    return False
-
-
-def sanitize_filename(name: str) -> str:
-    return re.sub(r'[\\/:*?"<>|\r\n\t]', "_", name).strip()
-
-
-def scan_workbook_sheets(workbook_path: Path) -> tuple[list[str], list[str]]:
-    if workbook_path.suffix.lower() == ".xls":
-        pythoncom.CoInitialize()
-        excel = win32.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
-        wb = None
-        try:
-            wb = excel.Workbooks.Open(str(workbook_path.resolve()), ReadOnly=True)
-            all_sheets = [sh.Name for sh in wb.Sheets]
-            backup_sheets = [name for name in all_sheets if is_backup_sheet(name)]
-            return all_sheets, backup_sheets
-        finally:
-            if wb is not None:
-                wb.Close(SaveChanges=False)
-            excel.Quit()
-            pythoncom.CoUninitialize()
-
-    workbook = load_workbook(workbook_path, read_only=True)
-    try:
-        all_sheets = list(workbook.sheetnames)
-        backup_sheets = [name for name in all_sheets if is_backup_sheet(name)]
-        return all_sheets, backup_sheets
-    finally:
-        workbook.close()
-
-
-def append_record(
-    workbook_name: str,
-    original_sheet_names: list[str],
-    removed_sheet_names: list[str],
-) -> None:
-    separator = ""
-    if RECORD_PATH.exists() and RECORD_PATH.stat().st_size > 0:
-        with RECORD_PATH.open("rb") as record:
-            record.seek(-1, 2)
-            separator = "\n" if record.read(1) == b"\n" else "\n\n"
-    removed_sheets = set(removed_sheet_names)
-    with RECORD_PATH.open("a", encoding="utf-8", newline="\n") as record:
-        record.write(f"{separator}## {workbook_name}\n\n")
-        for sheet_name in original_sheet_names:
-            display_name = f"~~{sheet_name}~~" if sheet_name in removed_sheets else sheet_name
-            record.write(f"- {display_name}\n")
-
-
-def _normalize_used_values(vals) -> list[tuple]:
-    if vals is None:
-        return []
-    if not isinstance(vals, tuple):
-        return [(vals,)]
-    if vals and not isinstance(vals[0], tuple):
-        return [vals]
-    return list(vals)
-
-
-def _unique_pdf_path(pdf_folder: Path, file_stem: str, safe_sheet_name: str, used_paths: set[Path]) -> Path:
-    candidate = pdf_folder / f"{file_stem}_{safe_sheet_name}.pdf"
-    counter = 2
-    while candidate in used_paths:
-        candidate = pdf_folder / f"{file_stem}_{safe_sheet_name}_{counter}.pdf"
-        counter += 1
-    used_paths.add(candidate)
-    return candidate
-
-
-def _is_sheet_already_height_adjusted(sheet) -> bool:
-    try:
-        for prop in sheet.CustomProperties:
-            if prop.Name == "_clip_height_adjusted":
-                return True
-    except Exception:
-        pass
-    return False
-
-
-def _mark_sheet_height_adjusted(sheet) -> None:
-    try:
-        sheet.CustomProperties.Add("_clip_height_adjusted", "1")
-    except Exception:
-        pass
-
-
-def adjust_row_heights_against_clipping(wb, extra_points: float = 6.0) -> None:
-    """
-    智能防切字调整：
-    不破坏单行表头或方眼紙格子，只针对【包含非空文本且原本行高 >= 22 磅的多行文本行】
-    增加安全余量（默认 +6.0 磅），防止导出 PDF 时因折行差异导致最后一行字母压底框。
-    """
-    for sheet in wb.Sheets:
-        if sheet.Visible != XL_SHEET_VISIBLE or sheet.Type != XL_WORKSHEET:
-            continue
-        if sheet.Name in EXCLUDE_PDF_SHEETS or is_backup_sheet(sheet.Name):
-            continue
-        if _is_sheet_already_height_adjusted(sheet):
-            continue
-
-        try:
-            used_range = sheet.UsedRange
-            row_count = used_range.Rows.Count
-            if row_count > 1500:  # 超大表跳过逐行遍历以保证速度
-                continue
-
-            rows_values = _normalize_used_values(used_range.Value)
-            adjusted_any = False
-
-            for r_idx in range(1, row_count + 1):
-                if r_idx <= len(rows_values):
-                    row_vals = rows_values[r_idx - 1]
-                    if not any(cell is not None and str(cell).strip() != "" for cell in row_vals):
-                        continue
-
-                row = used_range.Rows(r_idx)
-                current_h = row.RowHeight
-                # 只针对高度 >= 22 磅（说明里面至少有2行以上文字）且 < 300 磅的行加高
-                if current_h is not None and 22.0 <= current_h < 300.0:
-                    row.RowHeight = round(float(current_h) + extra_points, 1)
-                    adjusted_any = True
-
-            if adjusted_any:
-                _mark_sheet_height_adjusted(sheet)
-        except Exception:
-            pass
-
-
 def normalize_sheets_view(excel, wb) -> None:
     """将所有可见工作表定位到左上角 A1、缩放设为 100%，并停留在第一个可见 Sheet"""
-    if wb.Windows.Count > 0:
-        wb.Windows(1).Visible = True
-
-    first_visible_sheet = None
-
-    for sheet in wb.Sheets:
-        if sheet.Visible != XL_SHEET_VISIBLE:
-            continue
-        if first_visible_sheet is None:
-            first_visible_sheet = sheet
-
-        try:
-            sheet.Activate()
-            if sheet.Type == XL_WORKSHEET:
-                excel.Goto(sheet.Range("A1"), Scroll=True)
-            excel.ActiveWindow.Zoom = 100
-        except Exception as err:
-            progress_write(f"  视图重置跳过 [{wb.Name} -> {sheet.Name}]: {err}")
-
-    if first_visible_sheet is not None:
-        try:
-            first_visible_sheet.Activate()
-        except Exception:
-            pass
+    normalize_workbook_view(excel, wb, on_error=progress_write)
 
 
 def process_workbooks(
@@ -315,7 +164,7 @@ def process_workbooks(
                             continue
 
                         safe_sheet_name = sanitize_filename(sheet_name)
-                        pdf_path = _unique_pdf_path(pdf_folder, file_stem, safe_sheet_name, used_pdf_paths)
+                        pdf_path = unique_pdf_path(pdf_folder, file_stem, safe_sheet_name, used_pdf_paths)
 
                         try:
                             sheet.ExportAsFixedFormat(

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Excel 导出 PDF 切字检测 &amp; 闭环行高微调器</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-title">
+      <h1>📐 Excel 导出 PDF 切字检测 &amp; 闭环行高微调器</h1>
+      <span class="subtitle">整页画布热区点选 · 悬停 2.5x 高清放大镜 · 同行联动微调</span>
+    </div>
+    <span id="statusText" class="status-pill">✅ 就绪</span>
+  </header>
+
+  <main class="container">
+    <!-- 顶部扫描控制栏 -->
+    <section class="panel">
+      <div class="controls">
+        <input
+          type="text"
+          id="folderInput"
+          placeholder="粘贴 Excel 文件夹路径，例如 C:\Users\...\Desktop\excel_files"
+        >
+        <label class="checkbox-label">
+          <input type="checkbox" id="delBackupChk" checked>
+          顺便清理 YYYYMMDD 备份表
+        </label>
+        <button class="btn btn-primary" id="scanBtn" onclick="startScan()">
+          1. 导出 PDF 并扫描切字
+        </button>
+      </div>
+    </section>
+
+    <!-- 操作与视图模式工具栏 -->
+    <section class="panel toolbar-panel">
+      <div class="toolbar-left">
+        <button class="btn btn-outline" onclick="toggleAll(true)">全选待处理</button>
+        <button class="btn btn-outline" onclick="toggleAll(false)">取消全选</button>
+        <label class="checkbox-label" title="开启后，点击或悬停某处切字时自动联动同一 Excel 行的所有切字框">
+          <input type="checkbox" id="linkRowChk" checked>
+          🔗 同行联动勾选
+        </label>
+        <span class="selection-summary">
+          已选中 <b id="selCount">0</b> 处（涉及 <b id="selRowCount">0</b> 个 Excel 行）
+        </span>
+      </div>
+
+      <div class="view-switcher" role="tablist" aria-label="视图模式切换">
+        <button
+          type="button"
+          id="viewCanvasBtn"
+          class="view-tab active"
+          onclick="setViewMode('canvas')"
+        >
+          🗺️ 整页画布模式
+        </button>
+        <button
+          type="button"
+          id="viewCardsBtn"
+          class="view-tab"
+          onclick="setViewMode('cards')"
+        >
+          🔍 特写卡片模式
+        </button>
+      </div>
+
+      <div class="toolbar-right">
+        <label class="step-label">
+          每次递增(pt):
+          <input type="number" id="stepInput" value="3.0" step="0.5" min="0.5" max="30">
+        </label>
+        <button class="btn btn-success" id="fixBtn" onclick="startFix()">
+          2. 自动迭代微调选中项 (直到完整显示)
+        </button>
+      </div>
+    </section>
+
+    <!-- 图例提示条 + 日志折叠面板 -->
+    <section class="panel info-panel">
+      <div class="legend-bar">
+        <span class="legend-title">💡 画布交互说明：</span>
+        <span class="legend-item"><i class="dot dot-selected"></i> 蓝色框 = 已选中（将微调加高）</span>
+        <span class="legend-item"><i class="dot dot-ignored"></i> 灰色虚线框 = 已忽略（不处理）</span>
+        <span class="legend-item"><i class="dot dot-fixed"></i> 绿色框 = 已修复完整显示</span>
+        <span class="legend-item"><i class="dot dot-warn"></i> 橙红框 = 达最大微调次数</span>
+        <span class="legend-tip">鼠标悬停热区或下方胶囊可弹出 2.5 倍高清放大镜，点击即可切换勾选/忽略</span>
+      </div>
+      <div class="log-box" id="logBox">等待操作...</div>
+    </section>
+
+    <!-- 视图一：整页画布模式（方案一 Pro，默认） -->
+    <section id="canvasView" class="canvas-stage-list"></section>
+
+    <!-- 视图二：特写卡片模式 -->
+    <section id="cardGrid" class="card-grid hidden"></section>
+  </main>
+
+  <!-- 悬停 2.5x 高清放大镜浮动气泡 -->
+  <div id="magnifierPopover" class="magnifier-popover hidden" aria-hidden="true">
+    <div class="magnifier-header">
+      <div class="magnifier-title" id="magTitle"></div>
+      <span class="badge" id="magBadge"></span>
+    </div>
+    <div class="magnifier-img-wrap">
+      <img id="magImg" src="" alt="2.5x 高清局部放大预览">
+    </div>
+    <div class="magnifier-footer">
+      <div class="magnifier-text" id="magText"></div>
+      <div class="magnifier-hint" id="magHint"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
