@@ -8,9 +8,12 @@
 </head>
 <body>
   <header class="app-header">
-    <div class="header-title">
-      <h1>📐 Excel 导出 PDF 切字检测 &amp; 闭环行高微调器</h1>
-      <span class="subtitle">整页画布热区点选 · 悬停 2.5x 高清放大镜 · 同行联动微调</span>
+    <div class="header-brand">
+      <div class="header-logo-badge" aria-hidden="true">📐</div>
+      <div class="header-title">
+        <h1>Excel 导出 PDF 切字检测 &amp; 闭环行高微调器</h1>
+        <span class="subtitle">整页蓝图画布点选 · 悬停 2.5x 光学放大镜 · 同行联动智能微调</span>
+      </div>
     </div>
     <div class="header-nav">
       <a href="/" class="nav-link active">📐 切字微调工作台</a>
@@ -23,20 +26,31 @@
   </header>
 
   <main class="container">
-    <!-- 顶部扫描控制栏 + 实时文件进度条 -->
+    <!-- 步骤一：顶部扫描控制栏 + 实时文件进度条 -->
     <section class="panel">
+      <div class="panel-section-head">
+        <div class="panel-section-title">
+          <span class="step-chip">STEP 01</span>
+          <span>目标目录扫描与 PDF 切字检测</span>
+        </div>
+        <span class="panel-section-sub">自动备份原表 · 可选清理 YYYYMMDD 历史备份表 · 批量导出 PDF 扫描压线文字</span>
+      </div>
+
       <div class="controls">
-        <input
-          type="text"
-          id="folderInput"
-          placeholder="粘贴 Excel 文件夹路径，例如 C:\Users\...\Desktop\excel_files"
-        >
+        <div class="input-groove-wrap">
+          <span class="input-groove-icon" aria-hidden="true">📂</span>
+          <input
+            type="text"
+            id="folderInput"
+            placeholder="粘贴 Excel 文件夹路径，例如 C:\Users\...\Desktop\excel_files"
+          >
+        </div>
         <label class="checkbox-label">
           <input type="checkbox" id="delBackupChk" checked>
           顺便清理 YYYYMMDD 备份表
         </label>
         <button class="btn btn-primary" id="scanBtn" onclick="startScan()">
-          1. 导出 PDF 并扫描切字
+          🚀 1. 导出 PDF 并扫描切字
         </button>
         <a href="/records" class="btn btn-outline" title="查看每个 Excel 文件的处理进度与 Markdown 报告">
           📊 查看执行记录看板 ↗
@@ -55,61 +69,107 @@
       </div>
     </section>
 
-    <!-- 操作与视图模式工具栏 -->
+    <!-- 步骤二：操作与视图模式工具栏 -->
     <section class="panel toolbar-panel">
-      <div class="toolbar-left">
-        <button class="btn btn-outline" onclick="toggleAll(true)">全选待处理</button>
-        <button class="btn btn-outline" onclick="toggleAll(false)">取消全选</button>
-        <label class="checkbox-label" title="开启后，点击或悬停某处切字时自动联动同一 Excel 行的所有切字框">
-          <input type="checkbox" id="linkRowChk" checked>
-          🔗 同行联动勾选
-        </label>
-        <span class="selection-summary">
-          已选中 <b id="selCount">0</b> 处（涉及 <b id="selRowCount">0</b> 个 Excel 行）
-        </span>
+      <div class="panel-section-head" style="margin-bottom: 2px;">
+        <div class="panel-section-title">
+          <span class="step-chip step-chip-teal">STEP 02</span>
+          <span>画布勾选、视图切换与闭环行高微调</span>
+        </div>
+        <div class="view-switcher" role="tablist" aria-label="视图模式切换">
+          <button
+            type="button"
+            id="viewCanvasBtn"
+            class="view-tab active"
+            onclick="setViewMode('canvas')"
+          >
+            🗺️ 整页画布模式
+          </button>
+          <button
+            type="button"
+            id="viewCardsBtn"
+            class="view-tab"
+            onclick="setViewMode('cards')"
+          >
+            🔍 特写卡片模式
+          </button>
+        </div>
       </div>
 
-      <div class="view-switcher" role="tablist" aria-label="视图模式切换">
-        <button
-          type="button"
-          id="viewCanvasBtn"
-          class="view-tab active"
-          onclick="setViewMode('canvas')"
-        >
-          🗺️ 整页画布模式
-        </button>
-        <button
-          type="button"
-          id="viewCardsBtn"
-          class="view-tab"
-          onclick="setViewMode('cards')"
-        >
-          🔍 特写卡片模式
-        </button>
-      </div>
+      <div class="toolbar-body">
+        <div class="toolbar-left">
+          <button class="btn btn-outline" onclick="toggleAll(true)">☑ 全选待处理</button>
+          <button class="btn btn-outline" onclick="toggleAll(false)">☐ 取消全选</button>
+          <label class="checkbox-label" title="开启后，点击或悬停某处切字时自动联动同一 Excel 行的所有切字框">
+            <input type="checkbox" id="linkRowChk" checked>
+            🔗 同行联动勾选
+          </label>
+          <span class="selection-summary">
+            已选中 <b id="selCount">0</b> 处（涉及 <b id="selRowCount">0</b> 个 Excel 行）
+          </span>
+        </div>
 
-      <div class="toolbar-right">
-        <label class="step-label">
-          每次递增(pt):
-          <input type="number" id="stepInput" value="3.0" step="0.5" min="0.5" max="30">
-        </label>
-        <button class="btn btn-success" id="fixBtn" onclick="startFix()">
-          2. 自动迭代微调选中项 (直到完整显示)
-        </button>
+        <div class="toolbar-right">
+          <label class="step-label">
+            每次递增(pt):
+            <input type="number" id="stepInput" value="3.0" step="0.5" min="0.5" max="30">
+          </label>
+          <button class="btn btn-success" id="fixBtn" onclick="startFix()">
+            🔧 2. 自动迭代微调选中项 (直到完整显示)
+          </button>
+        </div>
       </div>
     </section>
 
-    <!-- 图例提示条 + 日志折叠面板 -->
+    <!-- 图例提示条 + 拟物显示屏日志面板 -->
     <section class="panel info-panel">
       <div class="legend-bar">
-        <span class="legend-title">💡 画布交互说明：</span>
+        <span class="legend-title">💡 标记图例：</span>
         <span class="legend-item"><i class="dot dot-selected"></i> 蓝色框 = 已选中（将微调加高）</span>
         <span class="legend-item"><i class="dot dot-ignored"></i> 灰色虚线框 = 已忽略（不处理）</span>
         <span class="legend-item"><i class="dot dot-fixed"></i> 绿色框 = 已修复完整显示</span>
         <span class="legend-item"><i class="dot dot-warn"></i> 橙红框 = 达最大微调次数</span>
-        <span class="legend-tip">鼠标悬停热区或下方胶囊可弹出 2.5 倍高清放大镜，点击即可切换勾选/忽略</span>
+        <span class="legend-tip">🔍 悬停热区或底部胶囊可弹出 2.5x 放大镜，点击即可切换勾选/忽略</span>
       </div>
-      <div class="log-box" id="logBox">等待操作...</div>
+      <div class="console-frame">
+        <div class="console-frame-bar">
+          <span class="console-dots"><i></i><i></i><i></i></span>
+          <span>SYSTEM CONSOLE · 实时处理日志</span>
+        </div>
+        <div class="log-box" id="logBox">等待操作...</div>
+      </div>
+    </section>
+
+    <!-- 初始引导空状态面板（扫描出结果后自动隐藏） -->
+    <section id="emptyStagePlaceholder" class="panel empty-stage-panel">
+      <div class="empty-stage-icon">🗺️</div>
+      <h2 class="empty-stage-title">准备就绪 · 等待扫描 Excel 文档</h2>
+      <p class="empty-stage-desc">
+        在上方输入 Excel 文件夹路径并点击「1. 导出 PDF 并扫描切字」，检出压线或切字的页面将在此处以蓝图灯箱画布展示。
+      </p>
+      <div class="workflow-steps-grid">
+        <div class="workflow-step-card">
+          <div class="workflow-step-num">1</div>
+          <div class="workflow-step-text">
+            <b>批量导出与压线扫描</b>
+            <span>自动跳过隐藏表与変更履歴，精准识别被单元格下边框切穿的文字坐标。</span>
+          </div>
+        </div>
+        <div class="workflow-step-card">
+          <div class="workflow-step-num">2</div>
+          <div class="workflow-step-text">
+            <b>整页画布点选 &amp; 2.5x 放大镜</b>
+            <span>悬停热区即时预览 2.5 倍高清局部特写，支持同行联动勾选与行号微调。</span>
+          </div>
+        </div>
+        <div class="workflow-step-card">
+          <div class="workflow-step-num">3</div>
+          <div class="workflow-step-text">
+            <b>闭环微调行高 &amp; A1 标准化</b>
+            <span>按步长自动递增行高并复检 PDF，完整显示即停止，最后自动重置 A1 与 100% 缩放。</span>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- 视图一：整页画布模式（方案一 Pro，默认） -->

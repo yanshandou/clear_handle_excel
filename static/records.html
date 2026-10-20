@@ -8,9 +8,12 @@
 </head>
 <body>
   <header class="app-header">
-    <div class="header-title">
-      <h1>📊 Excel 批处理与切字微调 · 执行记录看板</h1>
-      <span class="subtitle">实时追踪已处理 / 正在处理 / 待处理文件进度，自动同步生成 Markdown 报告</span>
+    <div class="header-brand">
+      <div class="header-logo-badge" aria-hidden="true">📊</div>
+      <div class="header-title">
+        <h1>Excel 批处理与切字微调 · 执行记录看板</h1>
+        <span class="subtitle">实时追踪已处理 / 正在处理 / 待处理文件进度，自动双写同步 Markdown 报告</span>
+      </div>
     </div>
     <div class="header-nav">
       <a href="/" class="nav-link">📐 切字微调工作台</a>
@@ -22,11 +25,19 @@
   <main class="container">
     <!-- 总体进度与核心指标面板 -->
     <section class="panel">
+      <div class="panel-section-head">
+        <div class="panel-section-title">
+          <span class="step-chip">OVERVIEW</span>
+          <span>当前批处理任务总览与核心指标</span>
+        </div>
+        <span class="panel-section-sub">实时同步 Web 工作台与 CLI 批处理运行状态</span>
+      </div>
+
       <div class="report-hero-top">
         <div>
           <div class="report-task-title">
             <span id="taskBadge" class="badge badge-selected">等待任务</span>
-            <h2 id="taskNameText" style="margin:0; font-size:17px;">尚未开始任务</h2>
+            <h2 id="taskNameText" style="margin:0; font-size:17.5px; color:var(--text-strong);">尚未开始任务</h2>
           </div>
           <div class="report-meta" id="folderMetaText">目标文件夹：暂无记录</div>
         </div>
@@ -78,6 +89,16 @@
 
     <!-- 文件执行状态明细表 -->
     <section class="panel">
+      <div class="panel-section-head">
+        <div class="panel-section-title">
+          <span class="step-chip step-chip-teal">DETAILS</span>
+          <span>Excel 文件执行状态与清理明细表</span>
+        </div>
+        <div style="font-size:12.5px; color:var(--text-muted); font-weight:600;">
+          💾 自动保存路径：项目根目录 <code>record.md</code> 及目标文件夹下 <code>_执行记录报告.md</code>
+        </div>
+      </div>
+
       <div class="table-toolbar">
         <div class="filter-pills" id="filterBar">
           <button type="button" class="filter-pill active" data-filter="all" onclick="setStatusFilter('all')">
@@ -98,9 +119,6 @@
           <button type="button" class="filter-pill" data-filter="error" onclick="setStatusFilter('error')">
             ❌ 异常 <span id="cntError" class="pill-count">0</span>
           </button>
-        </div>
-        <div style="font-size:12.5px; color:#64748b;">
-          💾 自动保存路径：项目根目录 <code>record.md</code> 及目标文件夹下 <code>_执行记录报告.md</code>
         </div>
       </div>
 
@@ -130,9 +148,12 @@
 
     <!-- 实时 Markdown 报告预览面板 -->
     <section class="panel">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-        <h3 style="margin:0; font-size:15px;">📝 Markdown 报告实时内容预览 (<code>record.md</code>)</h3>
-        <span id="copyToast" style="font-size:12.5px; color:#059669; font-weight:600;"></span>
+      <div class="panel-section-head">
+        <div class="panel-section-title">
+          <span class="step-chip">MARKDOWN</span>
+          <span>实时报告内容预览 (<code>record.md</code>)</span>
+        </div>
+        <span id="copyToast" style="font-size:12.5px; color:#059669; font-weight:700;"></span>
       </div>
       <pre id="markdownPreview" class="markdown-preview-box">等待生成报告...</pre>
     </section>

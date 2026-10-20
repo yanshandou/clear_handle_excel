@@ -533,6 +533,12 @@ async function pollState() {
     latestPages = data.pages || {};
     latestItems = data.items || {};
 
+    const hasResults = Object.keys(latestPages).length > 0 || Object.keys(latestItems).length > 0;
+    const emptyStage = document.getElementById('emptyStagePlaceholder');
+    if (emptyStage) {
+      emptyStage.classList.toggle('hidden', hasResults);
+    }
+
     syncNewItemsDefaultSelection(latestItems);
     renderCanvasStages(latestPages, latestItems);
     renderCards(latestItems);
