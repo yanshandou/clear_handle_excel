@@ -119,7 +119,8 @@ async function pollRecords() {
     latestReportData = data;
 
     const isRunning = data.status === 'running';
-    document.getElementById('statusText').innerText = isRunning ? '⏳ 任务执行中...' : '✅ 就绪';
+    document.getElementById('statusText').innerText = isRunning ? '⏳ 任务执行中...'
+      : (data.status === 'interrupted' ? '任务已中断，请回工作台继续' : '✅ 就绪');
 
     const taskBadge = document.getElementById('taskBadge');
     if (data.status === 'running') {
@@ -128,6 +129,9 @@ async function pollRecords() {
     } else if (data.status === 'completed') {
       taskBadge.className = 'badge badge-fixed';
       taskBadge.textContent = '✅ 已完成';
+    } else if (data.status === 'interrupted') {
+      taskBadge.className = 'badge badge-warn';
+      taskBadge.textContent = '已中断，等待继续';
     } else {
       taskBadge.className = 'badge badge-ignored';
       taskBadge.textContent = '⚪ 空闲';

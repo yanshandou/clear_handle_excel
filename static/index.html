@@ -52,6 +52,9 @@
         <button class="btn btn-primary" id="scanBtn" onclick="startScan()">
           🚀 1. 导出 PDF 并扫描切字
         </button>
+        <button class="btn btn-success hidden" id="resumeBtn" onclick="resumeTask()">
+          继续上次任务
+        </button>
         <a href="/records" class="btn btn-outline" title="查看每个 Excel 文件的处理进度与 Markdown 报告">
           📊 查看执行记录看板 ↗
         </a>
@@ -110,6 +113,14 @@
         </div>
 
         <div class="toolbar-right">
+          <button class="btn btn-outline" id="refreshBtn" onclick="refreshProblems()"
+            title="只复检已保存且修改时间变化的未解决问题文件，不自动增加行高">
+            刷新复检（仅已修改的问题文件）
+          </button>
+          <label class="step-label">
+            最大循环次数:
+            <input type="number" id="maxIterInput" value="6" step="1" min="1">
+          </label>
           <label class="step-label">
             每次递增(pt):
             <input type="number" id="stepInput" value="3.0" step="0.5" min="0.5" max="30">
@@ -128,9 +139,10 @@
         <span class="legend-item"><i class="dot dot-selected"></i> 蓝色框 = 已选中（将微调加高）</span>
         <span class="legend-item"><i class="dot dot-ignored"></i> 灰色虚线框 = 已忽略（不处理）</span>
         <span class="legend-item"><i class="dot dot-fixed"></i> 绿色框 = 已修复完整显示</span>
-        <span class="legend-item"><i class="dot dot-warn"></i> 橙红框 = 达最大微调次数</span>
+        <span class="legend-item"><i class="dot dot-warn"></i> 橙红框 = 达到上限 / 需人工复检</span>
         <span class="legend-tip">🔍 悬停热区或底部胶囊可弹出 2.5x 放大镜，点击即可切换勾选/忽略</span>
       </div>
+      <p>人工调整并保存后，点击「刷新复检」：仅检查修改时间已变化的未解决问题文件，不自动加高。单项「重新导出复检」可强制检查该文件的未解决项。</p>
       <div class="console-frame">
         <div class="console-frame-bar">
           <span class="console-dots"><i></i><i></i><i></i></span>

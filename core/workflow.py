@@ -20,6 +20,7 @@ from core.excel_ops import (
     extract_sheet_snapshot,
     match_excel_row,
     normalize_workbook_view,
+    open_workbook_for_manual_review,
     pythoncom,
     win32,
 )
@@ -30,13 +31,16 @@ from core.pdf_detector import (
     refresh_pdf_pages_overview,
     render_crop_base64,
     render_page_overview,
+    RegionTrackingError,
 )
 from core.reporter import (
     finish_execution_batch,
     get_execution_report_snapshot,
     init_execution_batch,
+    interrupt_execution_batch,
     update_file_progress,
 )
+from core.storage import load_snapshot, save_snapshot
 
 STATE_LOCK = threading.RLock()
 
@@ -49,7 +53,109 @@ STATE: dict[str, Any] = {
     "items": {},  # item_id -> 检测出的切字项详情
     "logs": [],
     "busy": False,
+    "settings": {"step_pt": 3.0, "max_iter": 6, "delete_backups": True},
+    "job": None,
+    "checked_files": {},  # wb_path -> 最近一次完整检查未解决项时的文件版本
 }
+
+_saved_state = load_snapshot("workflow")
+if _saved_state is not None:
+    STATE.update(_saved_state)
+    STATE["busy"] = False
+    if STATE["job"] and STATE["job"]["status"] == "running":
+        STATE["job"]["status"] = "interrupted"
+
+
+def _persist_state() -> None:
+    with STATE_LOCK:
+        save_snapshot("workflow", STATE)
+
+
+def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
+    with STATE_LOCK:
+        if STATE["busy"]:
+            return False
+        if kind in {"fix", "manual_open", "recheck"}:
+            ids = (options or {}).get("selected_ids")
+            if (
+                not isinstance(ids, list) or not ids
+                or any(not isinstance(iid, str) or iid not in STATE["items"] for iid in ids)
+            ):
+                raise ValueError("请选择有效的问题项")
+        previous = copy.deepcopy(STATE)
+        if kind == "resume":
+            if not STATE["job"] or STATE["job"]["status"] != "interrupted":
+                raise ValueError("没有可继续的中断任务")
+        else:
+            STATE["job"] = {
+                "kind": kind, "options": options or {}, "completed": [],
+                "pending_adjustment": None, "status": "running",
+            }
+            if kind == "fix":
+                for iid in STATE["job"]["options"]["selected_ids"]:
+                    STATE["items"][iid]["job_iterations"] = 0
+            STATE["settings"].update({
+                key: value for key, value in (options or {}).items()
+                if key in STATE["settings"]
+            })
+        STATE["job"]["status"] = "running"
+        STATE["busy"] = True
+        try:
+            _persist_state()
+        except Exception:
+            STATE.clear()
+            STATE.update(previous)
+            raise
+        return True
+
+
+def run_pending_workflow() -> None:
+    try:
+        with STATE_LOCK:
+            job = STATE["job"]
+            options = dict(job["options"])
+        if job["kind"] == "scan":
+            scan_folder_workflow(options["folder"], options["delete_backups"], resume=True)
+            expected = job.get("workbooks", [])
+        elif job["kind"] == "manual_open" and job["completed"]:
+            expected = options["selected_ids"]
+        elif job["kind"] in {"manual_open", "recheck"}:
+            manual_review_workflow(options["selected_ids"], open_excel=job["kind"] == "manual_open")
+            expected = options["selected_ids"]
+        elif job["kind"] == "refresh":
+            if "selected_ids" not in job["options"]:
+                ids = _select_changed_problem_items()
+                with STATE_LOCK:
+                    job["options"]["selected_ids"] = ids
+                    _persist_state()
+            ids = job["options"]["selected_ids"]
+            if ids:
+                recheck_items_workflow(ids)
+            else:
+                message = "刷新复检：没有修改过的未解决问题文件，未打开 Excel 或重新导出 PDF"
+                log_msg(message)
+                finish_execution_batch(message)
+            expected = ids
+        else:
+            fix_selected_workflow(
+                options["selected_ids"], options["step_pt"], options["max_iter"], resume=True
+            )
+            expected = options["selected_ids"]
+        with STATE_LOCK:
+            job["status"] = (
+                "completed" if set(expected).issubset(job["completed"]) else "interrupted"
+            )
+        if job["status"] == "interrupted":
+            interrupt_execution_batch("部分文件处理失败，可点击继续上次任务重试")
+    except Exception as err:
+        with STATE_LOCK:
+            STATE["job"]["status"] = "interrupted"
+        log_msg(f"❌ 任务中断，可继续上次任务: {err}")
+        interrupt_execution_batch(f"任务中断: {err}")
+    finally:
+        with STATE_LOCK:
+            STATE["busy"] = False
+            _persist_state()
 
 
 def log_msg(msg: str) -> None:
@@ -78,6 +184,9 @@ def get_state_snapshot() -> dict[str, Any]:
             "logs": list(STATE["logs"][-40:]),
             "pages": copy.deepcopy(STATE["pages"]),
             "items": copy.deepcopy(STATE["items"]),
+            "settings": dict(STATE["settings"]),
+            "can_resume": bool(STATE["job"] and STATE["job"]["status"] == "interrupted"),
+            "job": copy.deepcopy(STATE["job"]),
             "progress": {
                 "task_name": report_snap["task_name"],
                 "status": report_snap["status"],
@@ -95,9 +204,13 @@ def get_state_snapshot() -> dict[str, Any]:
 
 def update_item_row(item_id: str, new_row: int) -> bool:
     with STATE_LOCK:
-        if item_id not in STATE["items"]:
+        if (
+            STATE["busy"] or item_id not in STATE["items"]
+            or (STATE["job"] and STATE["job"]["status"] == "interrupted")
+        ):
             return False
         item = STATE["items"][item_id]
+        previous = dict(item)
         item["excel_row"] = new_row
         old_addr = str(item.get("cell_addr", ""))
         item["cell_addr"] = (
@@ -105,6 +218,12 @@ def update_item_row(item_id: str, new_row: int) -> bool:
             if re.search(r"\d+$", old_addr)
             else f"Row {new_row}"
         )
+        try:
+            _persist_state()
+        except Exception:
+            item.clear()
+            item.update(previous)
+            raise
         return True
 
 
@@ -113,18 +232,48 @@ def _make_page_id(wb_path_str: str, sheet_name: str, page_index: int) -> str:
     return f"page_{safe_key}_{page_index + 1}"
 
 
-def scan_folder_workflow(folder_str: str, delete_backups: bool) -> None:
+def _file_version(path: Path) -> dict[str, int]:
+    stat = path.stat()
+    return {"mtime_ns": stat.st_mtime_ns, "size": stat.st_size}
+
+
+def _select_changed_problem_items() -> list[str]:
+    with STATE_LOCK:
+        by_file: dict[str, list[str]] = {}
+        for item in STATE["items"].values():
+            if item["status"] != "fixed":
+                by_file.setdefault(item["wb_path"], []).append(item["id"])
+        checked_files = copy.deepcopy(STATE["checked_files"])
+    selected: list[str] = []
+    changed_files = 0
+    for path, ids in by_file.items():
+        if _file_version(Path(path)) != checked_files.get(path):
+            selected.extend(ids)
+            changed_files += 1
+            if path not in checked_files:
+                log_msg(f"刷新复检：{Path(path).name} 尚无检查时间戳，首次纳入复检")
+    log_msg(
+        f"刷新复检：{len(by_file)} 个未解决问题文件中，"
+        f"筛出 {changed_files} 个已修改文件、{len(selected)} 处问题"
+    )
+    return selected
+
+
+def scan_folder_workflow(folder_str: str, delete_backups: bool, *, resume: bool = False) -> None:
     with STATE_LOCK:
         STATE["busy"] = True
-        STATE["pages"].clear()
-        STATE["items"].clear()
-        STATE["logs"].clear()
+        job = STATE["job"] if resume else None
+        initialized = bool(job and "workbooks" in job)
+        if not initialized:
+            STATE["pages"].clear()
+            STATE["items"].clear()
+            STATE["logs"].clear()
+            STATE["checked_files"].clear()
 
     try:
         folder = Path(folder_str.strip().strip('"').strip("'")).expanduser().resolve()
         if not folder.is_dir():
-            log_msg(f"❌ 文件夹不存在: {folder}")
-            return
+            raise ValueError(f"文件夹不存在: {folder}")
 
         workbooks = sorted(
             p
@@ -132,37 +281,54 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool) -> None:
             if p.is_file() and p.suffix.lower() in EXCEL_EXTENSIONS and not p.name.startswith("~$")
         )
         if not workbooks:
-            log_msg("❌ 未找到 Excel 文件。")
-            return
+            raise ValueError("未找到 Excel 文件")
 
         timestamp = f"{datetime.now():%Y%m%d_%H%M%S}"
-        pdf_folder = folder / f"_exported_pdfs_{timestamp}"
-        backup_folder = folder / f"_backup_{timestamp}"
+        pdf_folder = Path(STATE["pdf_folder"]) if initialized else folder / f"_exported_pdfs_{timestamp}"
+        backup_folder = Path(STATE["backup_folder"]) if initialized else folder / f"_backup_{timestamp}"
+        if initialized:
+            assert job is not None
+            workbooks = [Path(path) for path in job["workbooks"]]
         pdf_folder.mkdir(parents=True, exist_ok=True)
-        used_pdf_paths: set[Path] = set()
+        used_pdf_paths = {Path(p["pdf_path"]) for p in STATE["pages"].values()}
 
         with STATE_LOCK:
             STATE["folder"] = str(folder)
             STATE["pdf_folder"] = str(pdf_folder)
             STATE["backup_folder"] = str(backup_folder)
 
-        init_execution_batch(
-            task_name="Web 导出 PDF 与切字扫描",
-            folder=folder,
-            workbooks=workbooks,
-            pdf_folder=pdf_folder,
-            backup_folder=backup_folder,
-        )
+        if not initialized:
+            init_execution_batch(
+                task_name="Web 导出 PDF 与切字扫描",
+                folder=folder,
+                workbooks=workbooks,
+                pdf_folder=pdf_folder,
+                backup_folder=backup_folder,
+            )
+        with STATE_LOCK:
+            if job is not None and not initialized:
+                job["workbooks"] = [str(path) for path in workbooks]
+            _persist_state()
 
         pythoncom.CoInitialize()
         excel = win32.DispatchEx("Excel.Application")
         excel.Visible = False
         excel.DisplayAlerts = False
 
-        item_seq = 1
-        page_seq = 1
+        item_seq = max((it["seq"] for it in STATE["items"].values()), default=0) + 1
+        page_seq = max(
+            (int(page_id.split("_", 2)[1]) for page_id in STATE["pages"]), default=0
+        ) + 1
         try:
             for wb_path in workbooks:
+                if job is not None and str(wb_path) in job["completed"]:
+                    continue
+                # 未完成的文件重新扫描，已完成文件的结果保持不变。
+                with STATE_LOCK:
+                    for collection in ("pages", "items"):
+                        for key in list(STATE[collection]):
+                            if STATE[collection][key]["wb_path"] == str(wb_path):
+                                del STATE[collection][key]
                 log_msg(f"正在处理并导出: {wb_path.name} ...")
                 update_file_progress(
                     wb_path.name,
@@ -176,27 +342,39 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool) -> None:
                 try:
                     wb = excel.Workbooks.Open(str(wb_path.resolve()))
                     all_names = [s.Name for s in wb.Sheets]
+                    if initialized:
+                        previous = get_execution_report_snapshot()["files"].get(wb_path.name, {})
+                        deleted_bkp_list = list(previous.get("deleted_backups", []))
+                        all_names = list(dict.fromkeys(previous.get("all_sheets", []) + all_names))
                     bkp_names = [n for n in all_names if is_backup_sheet(n)]
+                    current_names = {s.Name for s in wb.Sheets}
+                    bkp_names = [n for n in bkp_names if n in current_names]
 
                     if delete_backups and bkp_names:
                         if len(bkp_names) >= len(all_names):
                             log_msg(f"  ⚠️ 跳过删除备份表（全部工作表均为日期名）: {wb_path.name}")
                         else:
                             backup_folder.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(wb_path, backup_folder / wb_path.name)
+                            if not (backup_folder / wb_path.name).exists():
+                                shutil.copy2(wb_path, backup_folder / wb_path.name)
                             for bn in bkp_names:
                                 wb.Sheets(bn).Delete()
-                            wb.Save()
-                            deleted_bkp_list = list(bkp_names)
+                            deleted_bkp_list = list(dict.fromkeys(deleted_bkp_list + bkp_names))
                             log_msg(f"  已清理 {len(bkp_names)} 个日期备份 Sheet")
+                            update_file_progress(
+                                wb_path.name, all_sheets=all_names, deleted_backups=deleted_bkp_list
+                            )
+                            wb.Save()
 
                     update_file_progress(
                         wb_path.name,
                         all_sheets=all_names,
                         deleted_backups=deleted_bkp_list,
                         current_action="正在导出 PDF 并检测切字...",
+                        error="",
                     )
 
+                    scan_version = _file_version(wb_path)
                     file_stem = sanitize_filename(wb_path.stem)
                     for sheet in wb.Sheets:
                         s_name = sheet.Name
@@ -220,7 +398,7 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool) -> None:
                             wb_exported_pdfs += 1
                         except Exception as e:
                             log_msg(f"  导出 PDF 失败 [{s_name}]: {e}")
-                            continue
+                            raise
 
                         sheet_snapshot = extract_sheet_snapshot(sheet)
 
@@ -293,6 +471,8 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool) -> None:
                             clip_unfixed=wb_detected_clips,
                         )
 
+                    if _file_version(wb_path) != scan_version:
+                        raise ValueError(f"扫描期间文件已修改，请重新检查: {wb_path.name}")
                     if wb_detected_clips > 0:
                         update_file_progress(
                             wb_path.name,
@@ -311,6 +491,11 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool) -> None:
                             clip_unfixed=0,
                             current_action=f"已导出 {wb_exported_pdfs} 份 PDF，无切字异常",
                         )
+                    with STATE_LOCK:
+                        STATE["checked_files"][str(wb_path)] = scan_version
+                        if job is not None:
+                            job["completed"].append(str(wb_path))
+                        _persist_state()
                 except Exception as err:
                     log_msg(f"❌ 处理文件出错 {wb_path.name}: {err}")
                     update_file_progress(
@@ -334,7 +519,9 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool) -> None:
         finish_execution_batch(summary_msg)
     finally:
         with STATE_LOCK:
-            STATE["busy"] = False
+            if not resume:
+                STATE["busy"] = False
+                _persist_state()
 
 
 def _sync_row_height_in_state(wb_path_str: str, sheet_name: str, target_row: int, new_h: float) -> None:
@@ -372,10 +559,198 @@ def _refresh_sheet_pages_in_state(pdf_path: Path) -> None:
                 p["page_height"] = ph
 
 
+def _update_item_pdf_location(
+    item: dict[str, Any],
+    image: str,
+    bbox: tuple[float, float, float, float],
+    page_index: int,
+) -> None:
+    with STATE_LOCK:
+        if page_index != item["page_index"]:
+            page_entry = next(
+                (page for page in STATE["pages"].values()
+                 if page["pdf_path"] == item["pdf_path"] and page["page_index"] == page_index),
+                None,
+            )
+            if page_entry is None:
+                with fitz.open(item["pdf_path"]) as doc:
+                    overview, width, height = render_page_overview(doc[page_index])
+                    page_id = f"relocated_{item['id']}_{page_index}"
+                    page_entry = {
+                        "id": page_id, "wb_path": item["wb_path"], "wb_name": item["wb_name"],
+                        "sheet_name": item["sheet_name"], "pdf_path": item["pdf_path"],
+                        "page_index": page_index, "total_pages": len(doc),
+                        "page_width": width, "page_height": height, "image": overview,
+                    }
+                STATE["pages"][page_entry["id"]] = page_entry
+            item["page_id"] = page_entry["id"]
+        item["page_index"] = page_index
+        item["image"] = image
+        item["bbox"] = bbox
+
+
+def manual_review_workflow(selected_ids: list[str], *, open_excel: bool) -> None:
+    with STATE_LOCK:
+        items = [STATE["items"][iid] for iid in selected_ids]
+        job = STATE["job"]
+    if open_excel:
+        item = items[0]
+        height = open_workbook_for_manual_review(
+            Path(item["wb_path"]), item["sheet_name"], item["cell_addr"], int(item["excel_row"])
+        )
+        with STATE_LOCK:
+            _sync_row_height_in_state(item["wb_path"], item["sheet_name"], int(item["excel_row"]), height)
+            item["status"] = "manual_review"
+            item["review_reason"] = "请人工核对自动推测的行号；调整并保存后重新导出复检"
+            wb_items = [it for it in STATE["items"].values() if it["wb_path"] == item["wb_path"]]
+            fixed = sum(it["status"] == "fixed" for it in wb_items)
+            job["completed"].append(item["id"])
+            _persist_state()
+        message = (
+            f"已在 Excel 定位 [{item['wb_name']} / {item['sheet_name']} / {item['cell_addr']}]，"
+            "请人工检查并保存，然后点击重新导出复检（不会自动加高）"
+        )
+        log_msg(message)
+        update_file_progress(
+            item["wb_name"], status="needs_fix", current_action=message, error="",
+            clip_fixed=fixed, clip_unfixed=len(wb_items) - fixed,
+        )
+        finish_execution_batch("等待人工调整并保存 Excel")
+        return
+
+    # 单项强制复检也覆盖同文件的未解决项，避免只检查一项就推进整个文件的时间戳。
+    with STATE_LOCK:
+        paths = {item["wb_path"] for item in items}
+        selected = set(selected_ids)
+        ids = [
+            item["id"] for item in STATE["items"].values()
+            if item["id"] in selected or (item["wb_path"] in paths and item["status"] != "fixed")
+        ]
+        job["options"]["selected_ids"] = ids
+        _persist_state()
+    recheck_items_workflow(ids)
+
+
+def recheck_items_workflow(selected_ids: list[str]) -> None:
+    with STATE_LOCK:
+        job = STATE["job"]
+        by_file: dict[str, list[dict[str, Any]]] = {}
+        for iid in selected_ids:
+            if iid not in job["completed"]:
+                item = STATE["items"][iid]
+                by_file.setdefault(item["wb_path"], []).append(item)
+    if not by_file:
+        finish_execution_batch("复检任务已完成")
+        return
+    init_execution_batch(
+        task_name="人工调整后导出复检（不自动加高）",
+        folder=Path(STATE["folder"]),
+        workbooks=[Path(path) for path in by_file],
+        preserve_existing_files=True,
+    )
+    pythoncom.CoInitialize()
+    excel = None
+    try:
+        excel = win32.DispatchEx("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        for path, items in by_file.items():
+            workbook = None
+            try:
+                version = _file_version(Path(path))
+                log_msg(f"刷新复检文件: {Path(path).name}（{len(items)} 处未解决/指定问题）")
+                update_file_progress(
+                    Path(path).name, status="processing",
+                    current_action=f"刷新复检 {len(items)} 处问题（不自动加高）", error="",
+                )
+                workbook = excel.Workbooks.Open(str(Path(path).resolve()), ReadOnly=True)
+                by_sheet: dict[str, list[dict[str, Any]]] = {}
+                for item in items:
+                    by_sheet.setdefault(item["sheet_name"], []).append(item)
+                results: list[dict[str, Any]] = []
+                resolved_pages: dict[str, int] = {}
+                exported_paths: set[Path] = set()
+                for sheet_name, sheet_items in by_sheet.items():
+                    sheet = workbook.Sheets(sheet_name)
+                    pdf_paths = {item["pdf_path"] for item in sheet_items}
+                    if len(pdf_paths) != 1:
+                        raise ValueError(f"同一工作表存在多个 PDF 路径，请重新扫描: {sheet_name}")
+                    pdf_path = Path(next(iter(pdf_paths)))
+                    sheet.ExportAsFixedFormat(
+                        Type=XL_TYPE_PDF, Filename=str(pdf_path.resolve()),
+                        Quality=0, IncludeDocProperties=True, IgnorePrintAreas=False,
+                        OpenAfterPublish=False,
+                    )
+                    exported_paths.add(pdf_path)
+                    for item in sheet_items:
+                        result = copy.deepcopy(item)
+                        result["row_height"] = round(
+                            float(sheet.Rows(int(item["excel_row"])).RowHeight or 15.0), 1
+                        )
+                        try:
+                            clipped, image, bbox, page_index = is_region_still_clipped(
+                                pdf_path, item["page_index"], item["text"], as_bbox(item["bbox"])
+                            )
+                        except RegionTrackingError as err:
+                            result["status"] = "needs_review"
+                            result["review_reason"] = str(err)
+                            log_msg(f"⚠️ 人工复检需确认: {err}")
+                        else:
+                            result["image"] = image
+                            result["bbox"] = bbox
+                            resolved_pages[result["id"]] = page_index
+                            result["status"] = "needs_review" if clipped else "fixed"
+                            result["review_reason"] = "仍检测到压线，请人工核对边框与行号" if clipped else ""
+                            log_msg(
+                                f"人工调整后复检 [{sheet_name} / {item['cell_addr']}]: "
+                                f"{'仍疑似压线，未增加行高' if clipped else '目标文字已完整显示'}"
+                            )
+                        results.append(result)
+                if _file_version(Path(path)) != version:
+                    raise ValueError(f"复检期间文件又被修改，本轮不提交，请保存完成后再次刷新: {Path(path).name}")
+                with STATE_LOCK:
+                    for pdf_path in exported_paths:
+                        _refresh_sheet_pages_in_state(pdf_path)
+                    for result in results:
+                        if result["id"] in resolved_pages:
+                            _update_item_pdf_location(
+                                result, result["image"], as_bbox(result["bbox"]),
+                                resolved_pages[result["id"]],
+                            )
+                        STATE["items"][result["id"]].update(result)
+                    wb_items = [it for it in STATE["items"].values() if it["wb_path"] == path]
+                    fixed = sum(it["status"] == "fixed" for it in wb_items)
+                    # 只有全部未解决项都被检查，才能更新整个文件的版本基线。
+                    checked_ids = set(selected_ids)
+                    if all(it["status"] == "fixed" or it["id"] in checked_ids for it in wb_items):
+                        STATE["checked_files"][path] = version
+                    job["completed"].extend(item["id"] for item in items)
+                    _persist_state()
+                update_file_progress(
+                    Path(path).name, status="done" if fixed == len(wb_items) else "needs_fix",
+                    clip_fixed=fixed, clip_unfixed=len(wb_items) - fixed,
+                    current_action=f"已刷新复检 {len(items)} 处问题（未自动加高）", error="",
+                )
+            finally:
+                if workbook is not None:
+                    workbook.Close(SaveChanges=False)
+        message = f"刷新复检完成：本轮检查 {len(by_file)} 个文件，未自动增加行高"
+        log_msg(message)
+        finish_execution_batch(message)
+    finally:
+        try:
+            if excel is not None:
+                excel.Quit()
+        finally:
+            pythoncom.CoUninitialize()
+
+
 def fix_selected_workflow(
     selected_ids: list[str],
     step_pt: float = 3.0,
     max_iter: int = 6,
+    *,
+    resume: bool = False,
 ) -> None:
     """
     针对用户勾选的热区/卡片：
@@ -384,16 +759,22 @@ def fix_selected_workflow(
     """
     with STATE_LOCK:
         STATE["busy"] = True
+        job = STATE["job"] if resume else None
         by_wb: dict[str, list[dict[str, Any]]] = {}
         for iid in selected_ids:
             item = STATE["items"].get(iid)
-            if item:
+            if item and (job is None or iid not in job["completed"]):
                 by_wb.setdefault(item["wb_path"], []).append(item)
+                if not resume:
+                    item["job_iterations"] = 0
         backup_folder_str = STATE["backup_folder"]
 
     try:
         if not by_wb:
-            log_msg("⚠️ 没有选中任何需要修复的项。")
+            if job is not None and set(selected_ids).issubset(job["completed"]):
+                finish_execution_batch("上次微调任务已完成")
+            else:
+                log_msg("⚠️ 没有选中任何需要修复的项。")
             return
 
         backup_folder = Path(backup_folder_str)
@@ -415,6 +796,9 @@ def fix_selected_workflow(
 
         try:
             for wb_path_str, items in by_wb.items():
+                if job is not None and job["pending_adjustment"]:
+                    pending_id = job["pending_adjustment"]["item_id"]
+                    items.sort(key=lambda item: item["id"] != pending_id)
                 wb_path = Path(wb_path_str)
                 bkp_target = backup_folder / wb_path.name
                 if not bkp_target.exists():
@@ -425,46 +809,69 @@ def fix_selected_workflow(
                     wb_path.name,
                     status="processing",
                     current_action=f"正在微调 {len(items)} 处选中切字项...",
+                    error="",
                 )
                 wb = None
                 touched_pdfs: set[Path] = set()
+                current_item: dict[str, Any] | None = None
                 try:
                     wb = excel.Workbooks.Open(str(wb_path.resolve()))
-                    adjusted_rows_in_batch: set[tuple[str, int]] = set()
 
                     for item in items:
+                        current_item = item
+                        if item["status"] == "fixed":
+                            continue
                         sheet_name = item["sheet_name"]
                         sheet = wb.Sheets(sheet_name)
                         target_row = max(1, int(item["excel_row"]))
                         pdf_path = Path(item["pdf_path"])
-                        row_key = (sheet_name, target_row)
+                        row_peers = [
+                            peer for peer in items
+                            if peer["sheet_name"] == sheet_name
+                            and int(peer["excel_row"]) == target_row
+                        ]
+                        pending = job["pending_adjustment"] if job else None
 
-                        # 先检查是否因为同行其他单元格的微调已经顺带修好了
-                        if (item["iterations"] > 0 or row_key in adjusted_rows_in_batch) and pdf_path.exists():
-                            still_clip, new_img, new_bbox, _ = is_region_still_clipped(
+                        if not pending:
+                            still_clip, new_img, new_bbox, resolved_page = is_region_still_clipped(
                                 pdf_path, item["page_index"], item["text"], as_bbox(item["bbox"])
                             )
+                            _update_item_pdf_location(item, new_img, new_bbox, resolved_page)
                             curr_h = round(float(sheet.Rows(target_row).RowHeight or 15.0), 1)
                             if not still_clip:
                                 with STATE_LOCK:
-                                    item["image"] = new_img
-                                    item["bbox"] = new_bbox
                                     item["status"] = "fixed"
                                     item["row_height"] = curr_h
                                 _sync_row_height_in_state(wb_path_str, sheet_name, target_row, curr_h)
-                                log_msg(f"  ✅ [{sheet_name} 行{target_row}] 已随同行调整自动恢复完整显示！")
+                                log_msg(f"  ✅ [{sheet_name} 行{target_row}] 复检目标文字已完整显示，无需继续加高")
+                                _persist_state()
                                 continue
 
-                        for it in range(1, max_iter + 1):
+                        used_iterations = max(int(peer.get("job_iterations", 0)) for peer in row_peers)
+                        for it in range(used_iterations + 1, max_iter + 1):
                             curr_h = float(sheet.Rows(target_row).RowHeight or 15.0)
-                            new_h = round(curr_h + step_pt, 1)
-                            sheet.Rows(target_row).RowHeight = new_h
-                            adjusted_rows_in_batch.add(row_key)
+                            if pending:
+                                if pending["item_id"] != item["id"]:
+                                    raise ValueError("微调检查点与待处理项不一致")
+                                new_h = pending["target_height"]
+                            else:
+                                new_h = round(curr_h + step_pt, 1)
+                                pending = {
+                                    "item_id": item["id"],
+                                    "target_height": new_h,
+                                    "iterations": int(item["iterations"]) + 1,
+                                    "peer_iterations": {
+                                        peer["id"]: int(peer["iterations"]) + 1 for peer in row_peers
+                                    },
+                                }
+                                if job is not None:
+                                    with STATE_LOCK:
+                                        job["pending_adjustment"] = pending
+                                        _persist_state()
 
-                            with STATE_LOCK:
-                                item["row_height"] = new_h
-                                item["iterations"] = int(item.get("iterations", 0)) + 1
-                            _sync_row_height_in_state(wb_path_str, sheet_name, target_row, new_h)
+                            # 先写入目标高度，再保存 Excel；重启后重放同一目标，不重复递增。
+                            sheet.Rows(target_row).RowHeight = new_h
+                            wb.Save()
 
                             sheet.ExportAsFixedFormat(
                                 Type=XL_TYPE_PDF,
@@ -476,32 +883,50 @@ def fix_selected_workflow(
                             )
                             touched_pdfs.add(pdf_path)
 
-                            still_clip, new_img, new_bbox, _ = is_region_still_clipped(
+                            still_clip, new_img, new_bbox, resolved_page = is_region_still_clipped(
                                 pdf_path, item["page_index"], item["text"], as_bbox(item["bbox"])
                             )
                             with STATE_LOCK:
-                                item["image"] = new_img
-                                item["bbox"] = new_bbox
+                                _update_item_pdf_location(item, new_img, new_bbox, resolved_page)
+                                item["row_height"] = new_h
+                                peer_iterations = pending.get("peer_iterations", {
+                                    peer["id"]: int(peer["iterations"]) + 1 for peer in row_peers
+                                })
+                                peer_iterations[item["id"]] = pending["iterations"]
+                                for peer in row_peers:
+                                    peer["iterations"] = peer_iterations[peer["id"]]
+                                    peer["job_iterations"] = it
+                                item["status"] = "fixed" if not still_clip else "pending"
+                                _sync_row_height_in_state(wb_path_str, sheet_name, target_row, new_h)
+                                if job is not None:
+                                    job["pending_adjustment"] = None
+                                _persist_state()
+                            pending = None
 
                             if not still_clip:
-                                with STATE_LOCK:
-                                    item["status"] = "fixed"
                                 log_msg(
                                     f"  ✅ [{sheet_name} 行{target_row}] 第 {it} 次微调后已完整显示！(高度 -> {new_h}pt)"
                                 )
                                 break
                             else:
                                 log_msg(
-                                    f"  ⏳ [{sheet_name} 行{target_row}] 第 {it} 次微调 ({new_h}pt) 仍略微压线，继续+..."
+                                    f"  ⏳ [{sheet_name} 行{target_row}] 第 {it} 次微调 ({new_h}pt) 目标仍疑似压线"
                                 )
                         else:
                             with STATE_LOCK:
                                 item["status"] = "max_reached"
-                            log_msg(f"  ⚠️ [{sheet_name} 行{target_row}] 已达最大微调次数 ({max_iter}次)")
+                                _persist_state()
+                            log_msg(
+                                f"  ⚠️ [{sheet_name} 行{target_row}] 已达同行共享微调上限 ({max_iter}次)，"
+                                "停止加高，请核对行号或检测结果"
+                            )
 
                     # 刷新该工作簿涉及到的所有整页 PDF 全景图
                     for touched_pdf in touched_pdfs:
                         _refresh_sheet_pages_in_state(touched_pdf)
+                    # 中断可能发生在轮次提交之后、全页图刷新之前。
+                    for pdf_path in {Path(item["pdf_path"]) for item in items} - touched_pdfs:
+                        _refresh_sheet_pages_in_state(pdf_path)
 
                     # 完成 A1 定位与 100% 缩放保存
                     normalize_workbook_view(excel, wb)
@@ -525,7 +950,16 @@ def fix_selected_workflow(
                         normalized_a1=True,
                         current_action=f"已微调保存 (修复 {wb_fixed_clips}/{wb_total_clips} 处，A1/100% 已标准化)",
                     )
+                    with STATE_LOCK:
+                        if job is not None:
+                            job["completed"].extend(item["id"] for item in items)
+                        _persist_state()
                 except Exception as err:
+                    if isinstance(err, RegionTrackingError) and current_item is not None:
+                        with STATE_LOCK:
+                            current_item["status"] = "needs_review"
+                            current_item["review_reason"] = str(err)
+                            _persist_state()
                     log_msg(f"❌ 修复失败 {wb_path.name}: {err}")
                     update_file_progress(
                         wb_path.name,
@@ -533,6 +967,7 @@ def fix_selected_workflow(
                         error=str(err),
                         current_action=f"修复失败: {err}",
                     )
+                    raise
                 finally:
                     if wb is not None:
                         wb.Close(SaveChanges=False)
@@ -545,4 +980,6 @@ def fix_selected_workflow(
         finish_execution_batch(done_msg)
     finally:
         with STATE_LOCK:
-            STATE["busy"] = False
+            if not resume:
+                STATE["busy"] = False
+                _persist_state()

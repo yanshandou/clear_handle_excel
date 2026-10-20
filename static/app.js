@@ -6,6 +6,8 @@ let latestItems = {};
 let pagesSignatureCache = {};
 let cardsSignatureCache = {};
 let activeHoverItemId = null;
+let workspaceRestored = false;
+let canResume = false;
 
 function escapeHtml(str) {
   return String(str ?? '')
@@ -125,13 +127,22 @@ function getItemVisualState(item) {
       shortTag: `✓#${item.index_on_page || item.seq}`,
     };
   }
+  if (item.status === 'needs_review' || item.status === 'manual_review') {
+    return {
+      boxClass: 'is-max-reached',
+      cardClass: 'max-reached',
+      badgeClass: 'badge-warn',
+      badgeText: item.status === 'manual_review' ? '等待人工调整并保存' : '需人工复检',
+      shortTag: `?#${item.index_on_page || item.seq}`,
+    };
+  }
   if (item.status === 'max_reached') {
     const isSel = selectedIds.has(item.id);
     return {
       boxClass: isSel ? 'is-selected' : 'is-max-reached',
       cardClass: (isSel ? 'selected ' : '') + 'max-reached',
       badgeClass: 'badge-warn',
-      badgeText: `⚠️ 达最大微调次数 (+${item.iterations}次)`,
+      badgeText: `⚠️ 达到上限，建议人工复检 (${item.iterations}次)`,
       shortTag: `⚠#${item.index_on_page || item.seq}`,
     };
   }
@@ -366,6 +377,10 @@ function renderCanvasStages(pages, items) {
                 onchange="updateRow('${escapeHtml(item.id)}', this.value)"
               >
             </label>
+            <span onclick="event.stopPropagation();">
+              <button class="btn btn-outline btn-sm" onclick="manualOpen('${escapeHtml(item.id)}')">在 Excel 中定位</button>
+              <button class="btn btn-outline btn-sm" onclick="manualRecheck('${escapeHtml(item.id)}')">重新导出复检</button>
+            </span>
           </div>
         `;
       })
@@ -457,7 +472,7 @@ function renderCards(items) {
     }
 
     const st = getItemVisualState(item);
-    const signature = `${item.status}|${item.iterations}|${item.row_height}|${item.excel_row}|${item.cell_addr}|${item.image}|${selectedIds.has(id)}`;
+    const signature = `${item.status}|${item.iterations}|${item.row_height}|${item.excel_row}|${item.cell_addr}|${item.image}|${item.review_reason || ''}|${selectedIds.has(id)}`;
     if (cardsSignatureCache[id] === signature) {
       return;
     }
@@ -488,6 +503,11 @@ function renderCards(items) {
           >
         </div>
       </div>
+      <div onclick="event.stopPropagation();">
+        <button class="btn btn-outline btn-sm" onclick="manualOpen('${escapeHtml(id)}')">在 Excel 中定位</button>
+        <button class="btn btn-outline btn-sm" onclick="manualRecheck('${escapeHtml(id)}')">重新导出复检（不加高）</button>
+        <p>${escapeHtml(item.review_reason || '自动调整无效时，请转人工核对行号、合并单元格及边框。')}</p>
+      </div>
     `;
   });
 }
@@ -499,10 +519,23 @@ async function pollState() {
   try {
     const res = await fetch('/api/state');
     const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '读取任务失败');
+
+    canResume = data.can_resume;
+    document.getElementById('resumeBtn').classList.toggle('hidden', !canResume);
+    document.getElementById('resumeBtn').disabled = data.busy;
+    if (!workspaceRestored) {
+      document.getElementById('folderInput').value = data.folder || '';
+      document.getElementById('stepInput').value = data.settings.step_pt;
+      document.getElementById('maxIterInput').value = data.settings.max_iter;
+      document.getElementById('delBackupChk').checked = data.settings.delete_backups;
+    }
 
     document.getElementById('scanBtn').disabled = data.busy;
     document.getElementById('fixBtn').disabled = data.busy;
-    document.getElementById('statusText').innerText = data.busy ? '⏳ 后台处理中...' : '✅ 就绪';
+    document.getElementById('refreshBtn').disabled = data.busy;
+    document.getElementById('statusText').innerText = data.busy
+      ? '⏳ 后台处理中...' : (canResume ? '任务已中断，可继续上次任务' : '✅ 就绪');
 
     const logBox = document.getElementById('logBox');
     logBox.innerText = (data.logs && data.logs.length > 0) ? data.logs.join('\n') : '等待操作...';
@@ -540,26 +573,53 @@ async function pollState() {
     }
 
     syncNewItemsDefaultSelection(latestItems);
+    if (!workspaceRestored && data.job && data.job.kind === 'fix') {
+      selectedIds = new Set(data.job.options.selected_ids.filter(
+        id => latestItems[id] && latestItems[id].status !== 'fixed'
+      ));
+    }
+    workspaceRestored = true;
     renderCanvasStages(latestPages, latestItems);
     renderCards(latestItems);
     refreshSelectionClasses();
-  } catch (e) {}
+  } catch (e) {
+    document.getElementById('statusText').innerText = `连接或读取失败: ${e.message}`;
+  }
+}
+
+async function postAction(path, payload) {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.ok) throw new Error(data.error || '操作未成功，任务可能正在执行');
+  return data;
 }
 
 async function updateRow(id, newRow) {
   const parsed = parseInt(newRow, 10);
   if (!Number.isFinite(parsed) || parsed < 1) return;
-  await fetch('/api/update_row', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, excel_row: parsed }),
-  });
+  try {
+    await postAction('/api/update_row', { id, excel_row: parsed });
+  } catch (e) { alert(e.message); }
 }
 
 async function startScan() {
   const folder = document.getElementById('folderInput').value.trim();
   if (!folder) {
     alert('请先输入 Excel 文件夹路径！');
+    return;
+  }
+  if (canResume && !confirm('开始新扫描会替换上次任务及其扫描结果，确定不继续上次任务吗？')) return;
+  try {
+    await postAction('/api/scan', {
+      folder,
+      delete_backups: document.getElementById('delBackupChk').checked,
+    });
+  } catch (e) {
+    alert(e.message);
     return;
   }
   selectedIds.clear();
@@ -571,14 +631,7 @@ async function startScan() {
   document.getElementById('cardGrid').innerHTML = '';
   updateCount();
 
-  await fetch('/api/scan', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      folder,
-      delete_backups: document.getElementById('delBackupChk').checked,
-    }),
-  });
+  await pollState();
 }
 
 async function startFix() {
@@ -586,16 +639,59 @@ async function startFix() {
     alert('请先在画布或卡片上选中要修复的位置！');
     return;
   }
-  const step = parseFloat(document.getElementById('stepInput').value) || 3.0;
+  const step = Number(document.getElementById('stepInput').value);
+  const maxIter = Number(document.getElementById('maxIterInput').value);
+  if (!Number.isFinite(step) || step < 0.5 || step > 30 ||
+      !Number.isSafeInteger(maxIter) || maxIter < 1) {
+    alert('每次递增必须为 0.5 至 30 pt，最大循环次数必须为正整数。');
+    return;
+  }
+  if (canResume && !confirm('新微调会替换上次任务的续跑进度，确定吗？')) return;
   hideMagnifier();
-  await fetch('/api/fix', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+  try {
+    await postAction('/api/fix', {
       selected_ids: Array.from(selectedIds),
       step_pt: step,
-    }),
-  });
+      max_iter: maxIter,
+    });
+    await pollState();
+  } catch (e) { alert(e.message); }
+}
+
+async function resumeTask() {
+  try {
+    await postAction('/api/resume', {});
+    await pollState();
+  } catch (e) { alert(e.message); }
+}
+
+async function manualOpen(id) {
+  if (canResume && !confirm('转人工将替换中断任务，旧检查点不再自动续跑。剩余项可重新选中处理。确定吗？')) return;
+  try {
+    hideMagnifier();
+    await postAction('/api/manual/open', { id });
+    await pollState();
+  } catch (e) { alert(e.message); }
+}
+
+async function manualRecheck(id) {
+  const message = '请先在 Excel 中保存手动修改。本次强制复检该文件的未解决项，不会自动增加行高。'
+    + (canResume ? '\n此操作会替换上次中断任务的续跑检查点。' : '');
+  if (!confirm(message)) return;
+  try {
+    hideMagnifier();
+    await postAction('/api/manual/recheck', { id });
+    await pollState();
+  } catch (e) { alert(e.message); }
+}
+
+async function refreshProblems() {
+  if (canResume && !confirm('刷新复检会替换上次中断任务的续跑检查点。请确认已保存人工调整，是否继续？')) return;
+  try {
+    hideMagnifier();
+    await postAction('/api/manual/refresh', {});
+    await pollState();
+  } catch (e) { alert(e.message); }
 }
 
 setInterval(pollState, 1200);

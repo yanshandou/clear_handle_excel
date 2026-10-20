@@ -9,4 +9,8 @@ _疑似切字_红框标注版/
 ~$*.xls
 record.md
 record_state.json
+execution.sqlite3
+execution.sqlite3-journal
+execution.sqlite3-wal
+execution.sqlite3-shm
 _执行记录报告.md

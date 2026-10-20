@@ -27,6 +27,43 @@ except ImportError:
     sys.exit(1)
 
 
+def open_workbook_for_manual_review(
+    workbook_path: Path, sheet_name: str, cell_address: str, row: int
+) -> float:
+    """定位到可见 Excel，交给用户编辑；不保存、不关闭用户的工作簿。"""
+    workbook_path = workbook_path.resolve(strict=True)
+    pythoncom.CoInitialize()
+    try:
+        try:
+            excel = win32.GetActiveObject("Excel.Application")
+        except pythoncom.com_error as err:
+            if err.args[0] != -2147221021:  # MK_E_UNAVAILABLE: 没有正在运行的 Excel
+                raise
+            excel = win32.DispatchEx("Excel.Application")
+        workbook = next(
+            (book for book in excel.Workbooks
+             if Path(book.FullName).resolve() == workbook_path),
+            None,
+        )
+        if workbook is None:
+            workbook = excel.Workbooks.Open(str(workbook_path))
+        sheet = workbook.Sheets(sheet_name)
+        excel.Visible = True
+        excel.WindowState = -4143  # xlNormal
+        if sheet.Visible != XL_SHEET_VISIBLE:
+            raise ValueError("目标工作表已隐藏，请先在 Excel 中取消隐藏后再定位")
+        workbook.Activate()
+        sheet.Activate()
+        if workbook.Windows.Count > 0:
+            workbook.Windows(1).Visible = True
+            workbook.Windows(1).WindowState = -4143  # xlNormal
+        address = cell_address if re.fullmatch(r"[A-Za-z]+[1-9]\d*", cell_address) else f"A{row}"
+        excel.Goto(sheet.Range(address), Scroll=True)
+        return round(float(sheet.Rows(row).RowHeight or 15.0), 1)
+    finally:
+        pythoncom.CoUninitialize()
+
+
 def scan_workbook_sheets(workbook_path: Path) -> tuple[list[str], list[str]]:
     """扫描工作簿中的所有 Sheet 名与包含日期的备份 Sheet 名（支持 .xlsx/.xlsm/.xls）"""
     if workbook_path.suffix.lower() == ".xls":

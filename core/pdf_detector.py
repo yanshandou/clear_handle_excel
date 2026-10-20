@@ -123,13 +123,11 @@ def texts_match(text_a: str, text_b: str) -> bool:
     b = re.sub(r"\s+", "", text_b.strip())
     if not a or not b:
         return False
-    if a in b or b in a:
-        return True
-    if len(a) >= 2 and len(b) >= 2:
-        for i in range(len(a) - 1):
-            if a[i : i + 2] in b:
-                return True
-    return False
+    return bool(a and b and a == b)
+
+
+class RegionTrackingError(ValueError):
+    """无法可靠定位原文字时中止调整，不能据此判定修复成功或继续加高。"""
 
 
 def is_region_still_clipped(
@@ -142,68 +140,44 @@ def is_region_still_clipped(
     重新导出 PDF 后，检查原来那个单元格区域内的对应文字是否还压线，
     返回: (still_clipped, new_crop_base64, updated_bbox, resolved_page_index)
     """
-    orig_x0, orig_y0, orig_x1, orig_y1 = orig_bbox
+    orig_x0, _, orig_x1, _ = orig_bbox
     doc = fitz.open(pdf_path)
     try:
-        if len(doc) == 0:
-            return False, "", orig_bbox, page_index
-        if page_index >= len(doc):
-            page_index = len(doc) - 1
-        page = doc[page_index]
-        clipped_list = find_clipped_spans_on_page(page)
+        matches: list[tuple[int, tuple[float, float, float, float]]] = []
+        # 行高调整可能改变缩放和分页；不能先找任意压线文字，再猜它是原目标。
+        for candidate_index in range(len(doc)):
+            page = doc[candidate_index]
+            text_dict = page.get_text("dict")
+            blocks = text_dict.get("blocks", []) if isinstance(text_dict, dict) else []
+            for block in blocks:
+                if block.get("type") != 0:
+                    continue
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        b = fitz.Rect(span["bbox"])
+                        if (
+                            texts_match(span.get("text", ""), orig_text)
+                            and b.x1 >= orig_x0 - 15 and b.x0 <= orig_x1 + 15
+                        ):
+                            matches.append((candidate_index, (b.x0, b.y0, b.x1, b.y1)))
 
-        still_clipped = False
-        target_bbox: tuple[float, float, float, float] | None = None
-        resolved_page_index = page_index
-
-        matched_clips: list[tuple[float, tuple[float, float, float, float]]] = []
-        for item in clipped_list:
-            bx0, by0, bx1, _ = item["bbox"]
-            if not (bx1 >= orig_x0 - 15 and bx0 <= orig_x1 + 15):
-                continue
-            y_dist = abs(by0 - orig_y0)
-            if (texts_match(item["text"], orig_text) and y_dist <= 100.0) or y_dist <= 20.0:
-                matched_clips.append((y_dist, item["bbox"]))
-
-        if matched_clips:
-            matched_clips.sort(key=lambda pair: pair[0])
-            still_clipped = True
-            target_bbox = matched_clips[0][1]
-
-        render_page = page
-        if target_bbox is None:
-            candidate_pages = [page_index]
-            if page_index + 1 < len(doc):
-                candidate_pages.append(page_index + 1)
-
-            for cand_p_idx in candidate_pages:
-                cand_page = doc[cand_p_idx]
-                cand_dict = cand_page.get_text("dict")
-                cand_blocks = cand_dict.get("blocks", []) if isinstance(cand_dict, dict) else []
-                span_matches: list[tuple[float, tuple[float, float, float, float]]] = []
-                for block in cand_blocks:
-                    if not isinstance(block, dict) or block.get("type") != 0:
-                        continue
-                    for line in block.get("lines", []):
-                        for span in line.get("spans", []):
-                            b = fitz.Rect(span["bbox"])
-                            if b.x1 >= orig_x0 - 15 and b.x0 <= orig_x1 + 15:
-                                span_text = span.get("text", "")
-                                y_dist = abs(b.y0 - orig_y0) if cand_p_idx == page_index else b.y0
-                                if texts_match(span_text, orig_text) and (
-                                    cand_p_idx != page_index or y_dist <= 120.0
-                                ):
-                                    span_matches.append((y_dist, (b.x0, b.y0, b.x1, b.y1)))
-                if span_matches:
-                    span_matches.sort(key=lambda pair: pair[0])
-                    target_bbox = span_matches[0][1]
-                    render_page = cand_page
-                    resolved_page_index = cand_p_idx
-                    break
-
-        if target_bbox is None:
-            target_bbox = (orig_x0, orig_y0, orig_x1, orig_y1)
-
+        if not matches:
+            raise RegionTrackingError(
+                f"无法定位原文字「{orig_text}」（原第 {page_index + 1} 页），"
+                "已停止自动加高，请检查 PDF、Excel 行号或重新扫描"
+            )
+        if len(matches) != 1:
+            raise RegionTrackingError(
+                f"原文字「{orig_text}」有 {len(matches)} 个候选位置，"
+                "无法唯一定位，已停止自动加高，请人工核对"
+            )
+        resolved_page_index, target_bbox = matches[0]
+        render_page = doc[resolved_page_index]
+        still_clipped = any(
+            texts_match(clip["text"], orig_text)
+            and all(abs(a - b) < 0.1 for a, b in zip(clip["bbox"], target_bbox))
+            for clip in find_clipped_spans_on_page(render_page)
+        )
         new_img = render_crop_base64(render_page, target_bbox, highlight=still_clipped)
         return still_clipped, new_img, target_bbox, resolved_page_index
     finally:

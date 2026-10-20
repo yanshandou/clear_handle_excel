@@ -1,5 +1,7 @@
 import json
 import mimetypes
+import math
+import sqlite3
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,7 +24,8 @@ from core.workflow import (
     get_state_snapshot,
     log_msg,
     scan_folder_workflow,
-    try_acquire_busy,
+    queue_job,
+    run_pending_workflow,
     update_item_row,
 )
 
@@ -110,30 +113,61 @@ class WebHandler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self) -> None:
-        length = int(self.headers.get("Content-Length", 0))
-        payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            if not isinstance(payload, dict):
+                raise ValueError("请求内容必须为 JSON 对象")
+            self._handle_post(payload)
+        except (ValueError, TypeError, UnicodeError) as err:
+            self._send_json({"ok": False, "error": str(err)}, status=400)
+        except (sqlite3.Error, OSError) as err:
+            log_msg(f"❌ 无法保存任务: {err}")
+            self._send_json({"ok": False, "error": f"无法保存任务: {err}"}, status=500)
 
+    def _handle_post(self, payload: dict) -> None:
         if self.path == "/api/scan":
-            if try_acquire_busy():
-                threading.Thread(
-                    target=scan_folder_workflow,
-                    args=(payload.get("folder", ""), bool(payload.get("delete_backups", True))),
-                    daemon=True,
-                ).start()
-            self._send_json({"ok": True})
+            folder = payload.get("folder")
+            if not isinstance(folder, str) or not folder.strip():
+                raise ValueError("请输入 Excel 文件夹路径")
+            self._start_job("scan", {
+                "folder": folder,
+                "delete_backups": bool(payload.get("delete_backups", True)),
+            })
 
         elif self.path == "/api/fix":
-            if try_acquire_busy():
-                try:
-                    step_pt = max(0.5, float(payload.get("step_pt", 3.0)))
-                except (TypeError, ValueError):
-                    step_pt = 3.0
-                threading.Thread(
-                    target=fix_selected_workflow,
-                    args=(payload.get("selected_ids", []), step_pt),
-                    daemon=True,
-                ).start()
-            self._send_json({"ok": True})
+            step_pt = float(payload.get("step_pt", 3.0))
+            max_iter = payload.get("max_iter", 6)
+            if not math.isfinite(step_pt) or not 0.5 <= step_pt <= 30:
+                raise ValueError("每次递增必须在 0.5 至 30 pt 之间")
+            if isinstance(max_iter, bool) or not isinstance(max_iter, int) or max_iter < 1:
+                raise ValueError("最大循环次数必须为正整数")
+            selected_ids = payload.get("selected_ids")
+            with STATE_LOCK:
+                if (
+                    not isinstance(selected_ids, list) or not selected_ids
+                    or any(not isinstance(iid, str) or iid not in STATE["items"] for iid in selected_ids)
+                ):
+                    raise ValueError("请选择有效的待修复项")
+            self._start_job("fix", {
+                "selected_ids": list(dict.fromkeys(selected_ids)),
+                "step_pt": step_pt,
+                "max_iter": max_iter,
+            })
+
+        elif self.path == "/api/resume":
+            self._start_job("resume")
+
+        elif self.path == "/api/manual/refresh":
+            self._start_job("refresh")
+
+        elif self.path in {"/api/manual/open", "/api/manual/recheck"}:
+            iid = payload.get("id")
+            with STATE_LOCK:
+                if not isinstance(iid, str) or iid not in STATE["items"]:
+                    raise ValueError("请选择有效的问题项")
+            kind = "manual_open" if self.path.endswith("/open") else "recheck"
+            self._start_job(kind, {"selected_ids": [iid]})
 
         elif self.path == "/api/update_row":
             iid = str(payload.get("id", ""))
@@ -144,9 +178,22 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
 
             updated = update_item_row(iid, new_row)
-            self._send_json({"ok": updated})
+            self._send_json(
+                {"ok": True} if updated else {
+                    "ok": False,
+                    "error": "行号未修改：项目不存在，或任务正在执行/等待续跑",
+                },
+                status=200 if updated else 409,
+            )
         else:
             self.send_error(404)
+
+    def _start_job(self, kind: str, options: dict | None = None) -> None:
+        if not queue_job(kind, options):
+            self._send_json({"ok": False, "error": "已有任务正在执行"}, status=409)
+            return
+        threading.Thread(target=run_pending_workflow, daemon=True).start()
+        self._send_json({"ok": True})
 
 
 def main() -> None:
@@ -164,4 +211,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -1,11 +1,13 @@
 import copy
 import json
+import logging
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from core.common import PROJECT_ROOT, RECORD_PATH
+from core.storage import load_snapshot, save_snapshot
 
 REPORT_LOCK = threading.RLock()
 REPORT_STATE_PATH = PROJECT_ROOT / "record_state.json"
@@ -36,6 +38,27 @@ EXECUTION_STATE: dict[str, Any] = {
     "current_step": "等待开始...",
     "files": {},  # wb_name -> file record dict
 }
+
+
+def _restore_report() -> None:
+    loaded = load_snapshot("report")
+    if loaded is None and REPORT_STATE_PATH.is_file():
+        loaded = json.loads(REPORT_STATE_PATH.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict) or "files" not in loaded:
+            raise ValueError("Invalid legacy execution report")
+        save_snapshot("report", loaded)
+    if loaded is not None:
+        EXECUTION_STATE.update(loaded)
+        if EXECUTION_STATE["status"] == "running":
+            EXECUTION_STATE["status"] = "interrupted"
+            EXECUTION_STATE["current_step"] = "任务已中断，请在工作台继续上次任务"
+            EXECUTION_STATE["current_file"] = ""
+            for entry in EXECUTION_STATE["files"].values():
+                if entry["status"] == "processing":
+                    entry["status"] = "pending"
+                    entry["current_action"] = "任务中断，等待继续"
+            _recompute_counters_unlocked()
+            save_snapshot("report", EXECUTION_STATE)
 
 
 def _now_str() -> str:
@@ -197,6 +220,19 @@ def finish_execution_batch(summary_step: str = "全部任务处理完毕") -> No
         _persist_and_write_markdown_unlocked()
 
 
+def interrupt_execution_batch(message: str) -> None:
+    with REPORT_LOCK:
+        EXECUTION_STATE["status"] = "interrupted"
+        EXECUTION_STATE["current_file"] = ""
+        EXECUTION_STATE["current_step"] = message
+        for entry in EXECUTION_STATE["files"].values():
+            if entry["status"] == "processing":
+                entry["status"] = "pending"
+                entry["current_action"] = "任务中断，等待继续"
+        _recompute_counters_unlocked()
+        _persist_and_write_markdown_unlocked()
+
+
 def render_execution_markdown() -> str:
     """根据当前所有文件的处理状态生成结构化 Markdown 报告"""
     with REPORT_LOCK:
@@ -212,6 +248,7 @@ def render_execution_markdown() -> str:
         "idle": "⚪ 空闲",
         "running": "🔄 正在执行中",
         "completed": "✅ 已全部完成",
+        "interrupted": "⏸ 已中断，等待继续",
     }.get(state["status"], state["status"])
 
     lines: list[str] = [
@@ -282,19 +319,13 @@ def render_execution_markdown() -> str:
 
 
 def _persist_and_write_markdown_unlocked() -> None:
-    try:
-        REPORT_STATE_PATH.write_text(
-            json.dumps(EXECUTION_STATE, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except OSError:
-        pass
+    save_snapshot("report", EXECUTION_STATE)
 
     md_text = render_execution_markdown()
     try:
         RECORD_PATH.write_text(md_text, encoding="utf-8", newline="\n")
     except OSError:
-        pass
+        logging.exception("无法写入执行记录 Markdown: %s", RECORD_PATH)
 
     folder_str = EXECUTION_STATE.get("folder", "")
     if folder_str:
@@ -305,23 +336,15 @@ def _persist_and_write_markdown_unlocked() -> None:
                     md_text, encoding="utf-8", newline="\n"
                 )
             except OSError:
-                pass
+                logging.exception("无法写入目标目录的执行记录 Markdown: %s", folder_path)
 
 
 def get_execution_report_snapshot() -> dict[str, Any]:
-    """获取当前执行记录快照（若内存中尚未加载且存在本地持久化文件，则自动恢复）"""
+    """获取已从数据库恢复的执行记录快照。"""
     with REPORT_LOCK:
-        if (
-            not EXECUTION_STATE["files"]
-            and EXECUTION_STATE["status"] == "idle"
-            and REPORT_STATE_PATH.is_file()
-        ):
-            try:
-                loaded = json.loads(REPORT_STATE_PATH.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict) and "files" in loaded:
-                    EXECUTION_STATE.update(loaded)
-            except Exception:
-                pass
         snapshot = copy.deepcopy(EXECUTION_STATE)
         snapshot["markdown"] = render_execution_markdown()
         return snapshot
+
+
+_restore_report()
