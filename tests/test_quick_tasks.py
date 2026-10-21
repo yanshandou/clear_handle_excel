@@ -384,16 +384,92 @@ class QuickTaskTests(unittest.TestCase):
         self.assertNotIn("delete_backups", self.workflow.STATE["settings"])
 
     def test_api_clean_preview_is_read_only(self):
-        self.add_book("a.xlsx", ["Main", "Main_20250101"])
+        self.add_book("a.xlsx", ["Main", "Main_20250101", "❓Draft"])
         with self.serve_api() as port:
             status, body = self.request(port, "POST", "/api/clean/preview", {"folder": str(self.folder)})
             data = json.loads(body)
             self.assertEqual((status, data["ok"]), (200, True))
             self.assertEqual(data["files"][0]["backups"], ["Main_20250101"])
+            self.assertEqual(data["files"][0]["uncertain"], ["❓Draft"])
             status, body = self.request(port, "POST", "/api/clean/preview", {"folder": ""})
             self.assertEqual(status, 400)
         self.assertIsNone(self.workflow.STATE["job"])
         self.assertEqual(self.books["a.xlsx"].saved, [])
+
+    def test_clean_sheets_with_custom_plan_deletes_checked_and_marks_uncertain_with_emoji(self):
+        # 用户自定义勾选：取消默认勾选的 Main_20250101（改为待定），手动勾选 SubSheet 删除
+        self.add_book("spec.xlsx", ["Main", "Main_20250101", "SubSheet"])
+        self.add_book("plain.xlsx", ["OnlySheet"])
+
+        plan = {
+            "spec.xlsx": {
+                "delete": ["SubSheet"],
+                "uncertain": ["Main_20250101"],
+            },
+            "plain.xlsx": {
+                "delete": [],
+                "uncertain": [],
+            },
+        }
+        self.assertTrue(
+            self.workflow.queue_job("clean_sheets", {"folder": str(self.folder), "plan": plan})
+        )
+        self.workflow.run_pending_workflow()
+        job = self.workflow.STATE["job"]
+        self.assertEqual(job["status"], "completed")
+
+        # SubSheet 被删除，Main_20250101 被加上 ❓ 前缀保留
+        self.assertEqual(self.books["spec.xlsx"].saved, [["Main", "❓Main_20250101"]])
+        # 原文件按原名备份，工作簿文件本身重命名为 ❓spec.xlsx
+        backup_folder = Path(job["options"]["backup_folder"])
+        self.assertEqual((backup_folder / "spec.xlsx").read_bytes(), b"original spec.xlsx")
+        self.assertFalse((self.folder / "spec.xlsx").exists())
+        self.assertTrue((self.folder / "❓spec.xlsx").exists())
+        # plain.xlsx 无需修改，未用 Excel 打开
+        self.assertEqual(self.excel.opened, [("spec.xlsx", False)])
+
+        files = self.report_files()
+        self.assertEqual(files["spec.xlsx"]["deleted_backups"], ["SubSheet"])
+        self.assertEqual(files["spec.xlsx"]["uncertain_sheets"], ["❓Main_20250101"])
+        self.assertEqual(files["spec.xlsx"]["renamed_to"], "❓spec.xlsx")
+
+    def test_clean_sheets_unmarks_uncertain_and_restores_filename(self):
+        # 第二次扫描处理已带 ❓ 的文件：将 ❓Draft 取消待定改为普通保留，文件与 Sheet 自动去掉 ❓
+        self.add_book("❓spec.xlsx", ["Main", "❓Draft"])
+        plan = {
+            "❓spec.xlsx": {
+                "delete": [],
+                "uncertain": [],
+            },
+        }
+        self.assertTrue(
+            self.workflow.queue_job("clean_sheets", {"folder": str(self.folder), "plan": plan})
+        )
+        self.workflow.run_pending_workflow()
+
+        self.assertEqual(self.books["❓spec.xlsx"].saved, [["Main", "Draft"]])
+        self.assertFalse((self.folder / "❓spec.xlsx").exists())
+        self.assertTrue((self.folder / "spec.xlsx").exists())
+        self.assertEqual(self.report_files()["❓spec.xlsx"]["renamed_to"], "spec.xlsx")
+
+    def test_api_quick_task_validates_clean_plan(self):
+        self.add_book("a.xlsx", ["Main", "Sub"])
+        with self.serve_api() as port:
+            # 同一工作表不能同时在 delete 和 uncertain 中
+            status, body = self.request(port, "POST", "/api/quick_task", {
+                "kind": "clean_sheets",
+                "folder": str(self.folder),
+                "plan": {"a.xlsx": {"delete": ["Sub"], "uncertain": ["Sub"]}},
+            })
+            self.assertEqual((status, json.loads(body)["ok"]), (400, False))
+
+            # 合法的自定义精简方案
+            status, body = self.request(port, "POST", "/api/quick_task", {
+                "kind": "clean_sheets",
+                "folder": str(self.folder),
+                "plan": {"a.xlsx": {"delete": [], "uncertain": ["Sub"]}},
+            })
+            self.assertEqual((status, json.loads(body)["ok"]), (200, True))
 
 
 if __name__ == "__main__":

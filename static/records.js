@@ -72,6 +72,7 @@ function renderFilesTable(filesList) {
     .map(f => {
       const allSheets = f.all_sheets || [];
       const delSet = new Set(f.deleted_backups || []);
+      const uncSet = new Set(f.uncertain_sheets || []);
       let sheetsHtml = `<span style="color:#64748b;">共 ${allSheets.length} 个 Sheet</span>`;
       if (delSet.size > 0) {
         const delTags = Array.from(delSet)
@@ -79,6 +80,16 @@ function renderFilesTable(filesList) {
           .join(' ');
         sheetsHtml += `<div style="margin-top:4px;">已删备份: ${delTags}</div>`;
       }
+      if (uncSet.size > 0) {
+        const uncTags = Array.from(uncSet)
+          .map(s => `<span class="uncertain-sheet-tag">${escapeHtml(s)}</span>`)
+          .join(' ');
+        sheetsHtml += `<div style="margin-top:4px;">待定存疑: ${uncTags}</div>`;
+      }
+
+      const fileDisplayName = f.renamed_to && f.renamed_to !== f.name
+        ? `${escapeHtml(f.name)} <span style="color:#b45309; font-size:12px;">→ ${escapeHtml(f.renamed_to)}</span>`
+        : escapeHtml(f.name);
 
       const det = Number(f.clip_detected || 0);
       const fix = Number(f.clip_fixed || 0);
@@ -100,7 +111,7 @@ function renderFilesTable(filesList) {
       return `
         <tr class="${rowClass}">
           <td><b>${Number(f.index || 1)}</b></td>
-          <td><b>📄 ${escapeHtml(f.name)}</b></td>
+          <td><b>📄 ${fileDisplayName}</b></td>
           <td>${getFileStatusBadge(f.status)}</td>
           <td>${sheetsHtml}</td>
           <td style="text-align:center;"><b>${Number(f.exported_pdfs || 0)}</b></td>

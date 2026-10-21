@@ -3,12 +3,12 @@ const TASKS = {
     title: '精简 Sheet',
     icon: '🧹',
     theme: 'feature-violet',
-    sub: '删除名称带日期、bak、old、副本等标记的备份工作表',
+    sub: '扫描全部工作表，自由勾选要删除的表，或将拿不准的表标记为 ❓ 待定',
     notes: [
-      '识别规则：名称含 YYYYMMDD 日期、bak / backup、old / 旧（「新旧」「復旧」除外）、バックアップ / 备份、コピー / copy / 副本，或 Excel 复制产生的「 (2)」后缀',
-      '且同一工作簿里要有对应的原表：有「基本情報」才删「基本情報_20241003」；没有原表时它就是在用的表，保留',
-      '先列出每个文件保留和删除的工作表，确认后才会修改 Excel',
-      '删除前自动备份原文件到 _backup_时间戳 文件夹',
+      '自动初筛：名称含 YYYYMMDD 日期、bak / backup、old / 旧（「新旧」「復旧」除外）、バックアップ / 备份、コピー / copy / 副本或「 (2)」，且同工作簿存在原表的，默认勾选删除',
+      '自由调整：直接勾选或取消复选框即可决定删除哪些工作表（每个工作簿至少保留 1 个工作表）',
+      '存疑待定：拿不准的表可点「❓」标为待定——本次保留不删，并在该 Excel 文件名与该 Sheet 名前加上「❓」图标，按名称排序即可集中人工确认',
+      '安全备份：修改或重命名前自动按原文件名备份到 _backup_时间戳 文件夹',
     ],
     preview: true,
   },
@@ -50,6 +50,8 @@ let overview = null;
 let activeKind = null;
 let phase = 'form'; // form | preview | running | done
 let previewData = null;
+let sheetDecisions = {}; // { [fileName]: { [sheetName]: 'keep' | 'delete' | 'uncertain' } }
+let plainDetailsOpen = false;
 let pollSeq = 0;
 let minAcceptedSeq = 0; // 发起操作前已在途的轮询结果可能过期，直接丢弃
 
@@ -84,8 +86,112 @@ function canResumeActiveTask() {
   return Boolean(overview && overview.can_resume && overview.job && overview.job.kind === activeKind);
 }
 
-function countBackups(data) {
-  return data ? data.files.reduce((acc, f) => acc + f.backups.length, 0) : 0;
+function stripUncertainEmoji(name) {
+  return String(name ?? '').replace(/^❓+\s*/, '');
+}
+
+function addUncertainEmoji(name) {
+  const base = stripUncertainEmoji(name);
+  return base ? `❓${base}` : '❓';
+}
+
+function initSheetDecisions() {
+  sheetDecisions = {};
+  plainDetailsOpen = false;
+  if (!previewData || !Array.isArray(previewData.files)) return;
+  previewData.files.forEach(file => {
+    const delSet = new Set(file.backups || []);
+    const uncSet = new Set(file.uncertain || []);
+    const map = {};
+    (file.sheets || []).forEach(name => {
+      if (delSet.has(name)) map[name] = 'delete';
+      else if (uncSet.has(name)) map[name] = 'uncertain';
+      else map[name] = 'keep';
+    });
+    sheetDecisions[file.name] = map;
+  });
+}
+
+function getSheetState(fileName, sheetName) {
+  return (sheetDecisions[fileName] && sheetDecisions[fileName][sheetName]) || 'keep';
+}
+
+function toggleSheetDelete(fileIndex, sheetIndex, checked) {
+  const file = previewData?.files?.[fileIndex];
+  if (!file) return;
+  const sheetName = file.sheets[sheetIndex];
+  if (sheetName === undefined) return;
+  sheetDecisions[file.name] = sheetDecisions[file.name] || {};
+  sheetDecisions[file.name][sheetName] = checked ? 'delete' : 'keep';
+  renderPreview();
+  renderDialog();
+}
+
+function toggleSheetUncertain(fileIndex, sheetIndex) {
+  const file = previewData?.files?.[fileIndex];
+  if (!file) return;
+  const sheetName = file.sheets[sheetIndex];
+  if (sheetName === undefined) return;
+  const current = getSheetState(file.name, sheetName);
+  sheetDecisions[file.name] = sheetDecisions[file.name] || {};
+  sheetDecisions[file.name][sheetName] = current === 'uncertain' ? 'keep' : 'uncertain';
+  renderPreview();
+  renderDialog();
+}
+
+function resetSheetDecisions() {
+  initSheetDecisions();
+  renderPreview();
+  renderDialog();
+}
+
+function summarizeDecisions() {
+  const summary = {
+    deletedTotal: 0,
+    uncertainTotal: 0,
+    keptTotal: 0,
+    uncertainFiles: 0,
+    unmarkedCount: 0,
+    emptyFiles: [],
+  };
+  if (!previewData || !Array.isArray(previewData.files)) return summary;
+  previewData.files.forEach(file => {
+    let fileDel = 0;
+    let fileUnc = 0;
+    (file.sheets || []).forEach(name => {
+      const st = getSheetState(file.name, name);
+      if (st === 'delete') fileDel += 1;
+      else if (st === 'uncertain') fileUnc += 1;
+      else {
+        summary.keptTotal += 1;
+        if (String(name).startsWith('❓')) summary.unmarkedCount += 1;
+      }
+    });
+    summary.deletedTotal += fileDel;
+    summary.uncertainTotal += fileUnc;
+    if (fileUnc > 0) summary.uncertainFiles += 1;
+    else if (String(file.name).startsWith('❓') && file.sheets.length > 0) summary.unmarkedCount += 1;
+    if (file.sheets.length > 0 && fileDel >= file.sheets.length) {
+      summary.emptyFiles.push(file.name);
+    }
+  });
+  return summary;
+}
+
+function buildCleanPlan() {
+  const plan = {};
+  if (!previewData || !Array.isArray(previewData.files)) return plan;
+  previewData.files.forEach(file => {
+    const del = [];
+    const unc = [];
+    (file.sheets || []).forEach(name => {
+      const st = getSheetState(file.name, name);
+      if (st === 'delete') del.push(name);
+      else if (st === 'uncertain') unc.push(name);
+    });
+    plan[file.name] = { delete: del, uncertain: unc };
+  });
+  return plan;
 }
 
 /* ==========================================
@@ -192,9 +298,24 @@ function renderDialog() {
     btn.disabled = false;
     btn.textContent = canResumeActiveTask() ? '🔁 继续上次任务' : '再执行一次';
   } else if (phase === 'preview') {
-    const total = countBackups(previewData);
-    btn.disabled = total === 0 || busyOther;
-    btn.textContent = total ? `🧹 删除 ${total} 个备份表` : '没有可删除的备份表';
+    const stats = summarizeDecisions();
+    const hasAction = stats.deletedTotal > 0 || stats.uncertainTotal > 0 || stats.unmarkedCount > 0;
+    const hasError = stats.emptyFiles.length > 0;
+    btn.disabled = !hasAction || hasError || busyOther;
+    if (hasError) {
+      btn.textContent = '⚠️ 请至少保留 1 个工作表';
+      hint.textContent = `「${stats.emptyFiles[0]}」不能将所有工作表全部勾选删除`;
+    } else if (stats.deletedTotal > 0 && stats.uncertainTotal > 0) {
+      btn.textContent = `🧹 确认执行（删 ${stats.deletedTotal} 表 · 待定 ${stats.uncertainTotal} 表）`;
+    } else if (stats.deletedTotal > 0) {
+      btn.textContent = `🧹 删除 ${stats.deletedTotal} 个工作表`;
+    } else if (stats.uncertainTotal > 0) {
+      btn.textContent = `❓ 标记 ${stats.uncertainTotal} 个待定工作表`;
+    } else if (stats.unmarkedCount > 0) {
+      btn.textContent = `✨ 清除 ${stats.unmarkedCount} 处 ❓ 待定标记`;
+    } else {
+      btn.textContent = '没有勾选删除或待定的工作表';
+    }
   } else {
     // 预览只读取文件，后台忙时也允许
     btn.disabled = busyOther && !task.preview;
@@ -206,50 +327,105 @@ function renderDialog() {
   if (phase === 'running' || phase === 'done') renderRunBox();
 }
 
-// 按工作簿中的原有顺序列出全部工作表，标出保留与删除
-function previewFileItem(file, extraClass = '') {
-  const deleted = new Set(file.backups);
-  const kept = file.sheets.length - deleted.size;
-  const tags = file.sheets.map(name => deleted.has(name)
-    ? `<span class="preview-sheet-tag is-deleted" title="将删除">${escapeHtml(name)}</span>`
-    : `<span class="preview-sheet-tag is-kept" title="保留">${escapeHtml(name)}</span>`).join('');
+// 按工作簿中的原有顺序列出全部工作表，支持勾选删除与标记 ❓ 待定
+function previewFileItem(file, fileIndex, extraClass = '') {
+  let delCount = 0;
+  let uncCount = 0;
+  file.sheets.forEach(name => {
+    const st = getSheetState(file.name, name);
+    if (st === 'delete') delCount += 1;
+    else if (st === 'uncertain') uncCount += 1;
+  });
+  const kept = file.sheets.length - delCount - uncCount;
+  const allDeleted = file.sheets.length > 0 && delCount >= file.sheets.length;
+
+  const tags = file.sheets.map((name, sheetIndex) => {
+    const st = getSheetState(file.name, name);
+    const isDeleted = st === 'delete';
+    const isUncertain = st === 'uncertain';
+    const displayName = isUncertain
+      ? addUncertainEmoji(name)
+      : (name.startsWith('❓') ? `${stripUncertainEmoji(name)} (去❓)` : name);
+    return `
+      <span class="preview-sheet-tag is-${st}">
+        <label class="sheet-check-label" title="${isDeleted ? '已勾选删除（点击取消勾选）' : '勾选后删除此工作表'}">
+          <input type="checkbox" class="sheet-check-input" ${isDeleted ? 'checked' : ''}
+            onchange="toggleSheetDelete(${fileIndex}, ${sheetIndex}, this.checked)">
+          <span class="sheet-tag-name">${escapeHtml(displayName)}</span>
+        </label>
+        <button type="button" class="sheet-uncertain-btn ${isUncertain ? 'active' : ''}"
+          onclick="toggleSheetUncertain(${fileIndex}, ${sheetIndex})"
+          title="${isUncertain ? '已标记为待定（再次点击改为普通保留）' : '拿不准要不要删？点击标为「❓ 待定」：先不删，给文件名与该 Sheet 名加 ❓ 图标'}">
+          ${isUncertain ? '❓待定' : '❓'}
+        </button>
+      </span>`;
+  }).join('');
+
+  let renameBadge = '';
+  if (uncCount > 0) {
+    const targetFileName = addUncertainEmoji(file.name);
+    renameBadge = `<span class="preview-rename-badge" title="含待定 Sheet，文件名将带 ❓ 前缀以便按名称排序集中查看">🏷️ ${escapeHtml(targetFileName)}</span>`;
+  } else if (file.name.startsWith('❓') && file.sheets.length > 0) {
+    renameBadge = `<span class="preview-rename-badge is-restore" title="已无待定 Sheet，执行后将恢复原文件名">🏷️ 恢复为 ${escapeHtml(stripUncertainEmoji(file.name))}</span>`;
+  }
+
+  const countParts = [`保留 ${kept}`];
+  if (delCount) countParts.push(`<em>删除 ${delCount}</em>`);
+  if (uncCount) countParts.push(`<strong class="is-uncertain-count">❓待定 ${uncCount}</strong>`);
+
   return `
-    <li class="${extraClass}">
+    <li class="${extraClass} ${allDeleted ? 'is-warn' : ''}">
       <div class="preview-file-head">
-        <b>📄 ${escapeHtml(file.name)}</b>
-        ${file.sheets.length ? `<span class="preview-counts">保留 ${kept}${deleted.size ? ` · <em>删除 ${deleted.size}</em>` : ''}</span>` : ''}
+        <div class="preview-file-title">
+          <b>📄 ${escapeHtml(file.name)}</b>
+          ${renameBadge}
+        </div>
+        ${file.sheets.length ? `<span class="preview-counts">${countParts.join(' · ')}</span>` : ''}
       </div>
       ${file.note ? `<span class="preview-note">⚠️ ${escapeHtml(file.note)}</span>` : ''}
+      ${allDeleted ? `<span class="preview-note">⚠️ 不能删除全部工作表，请至少取消勾选 1 个或标为 ❓ 待定</span>` : ''}
       ${tags ? `<span class="preview-tags">${tags}</span>` : ''}
     </li>`;
 }
 
 function renderPreview() {
+  const detailsEl = document.querySelector('#previewBox details.preview-plain');
+  if (detailsEl) plainDetailsOpen = detailsEl.open;
+
   const files = previewData.files;
-  const withBackups = files.filter(f => f.backups.length);
-  const withNotes = files.filter(f => f.note);
-  const plain = files.filter(f => !f.backups.length && !f.note);
-  const deletedTotal = countBackups(previewData);
-  const keptTotal = files.reduce((acc, f) => acc + f.sheets.length, 0) - deletedTotal;
+  const indexed = files.map((file, idx) => ({ file, idx }));
+  const primary = indexed.filter(({ file }) =>
+    file.backups.length || (file.uncertain && file.uncertain.length) || file.note ||
+    file.sheets.some(s => getSheetState(file.name, s) !== 'keep')
+  );
+  const primarySet = new Set(primary.map(x => x.idx));
+  const plain = indexed.filter(({ idx }) => !primarySet.has(idx));
+  const stats = summarizeDecisions();
 
   document.getElementById('previewBox').innerHTML = `
-    <div class="preview-summary">
-      共 <b>${files.length}</b> 个 Excel 文件，其中 <b>${withBackups.length}</b> 个包含备份表：
-      将删除 <b class="is-deleted">${deletedTotal}</b> 个工作表，保留 <b>${keptTotal}</b> 个
+    <div class="preview-summary-row">
+      <div class="preview-summary">
+        共 <b>${files.length}</b> 个文件：
+        勾选删除 <b class="is-deleted">${stats.deletedTotal}</b> 个工作表 ·
+        标记待定 <b class="is-uncertain">${stats.uncertainTotal}</b> 个${stats.uncertainFiles ? `（<b>${stats.uncertainFiles}</b> 个文件将加 ❓ 前缀）` : ''} ·
+        保留 <b>${stats.keptTotal}</b> 个
+      </div>
+      <button type="button" class="btn btn-outline btn-sm preview-reset-btn" onclick="resetSheetDecisions()" title="恢复为系统自动识别的初始勾选状态">
+        ↺ 恢复默认勾选
+      </button>
     </div>
     <div class="preview-legend">
-      <span class="preview-sheet-tag is-kept">保留</span>
-      <span class="preview-sheet-tag is-deleted">删除</span>
-      <span>按工作簿中的顺序排列</span>
+      <span class="preview-sheet-tag is-deleted"><span class="sheet-tag-name">☑️ 勾选 = 删除</span></span>
+      <span class="preview-sheet-tag is-kept"><span class="sheet-tag-name">⬜ 未勾 = 保留</span></span>
+      <span class="preview-sheet-tag is-uncertain"><span class="sheet-tag-name">❓ 点击问号 = 待定（不删，文件名与 Sheet 加 ❓）</span></span>
     </div>
     <ul class="preview-list">
-      ${withBackups.map(f => previewFileItem(f)).join('')}
-      ${withNotes.map(f => previewFileItem(f, 'is-warn')).join('')}
+      ${primary.map(({ file, idx }) => previewFileItem(file, idx, file.note ? 'is-warn' : '')).join('')}
     </ul>
     ${plain.length ? `
-      <details class="preview-plain">
-        <summary>其余 ${plain.length} 个文件没有备份表，全部保留、不会被修改（点击展开）</summary>
-        <ul class="preview-list">${plain.map(f => previewFileItem(f)).join('')}</ul>
+      <details class="preview-plain" ${plainDetailsOpen ? 'open' : ''} ontoggle="plainDetailsOpen = this.open">
+        <summary>其余 ${plain.length} 个文件未检出备份表（点击展开可手动勾选删除或标记 ❓ 待定）</summary>
+        <ul class="preview-list">${plain.map(({ file, idx }) => previewFileItem(file, idx)).join('')}</ul>
       </details>` : ''}
   `;
 }
@@ -324,6 +500,7 @@ async function runPreview() {
   try {
     previewData = await postAction('/api/clean/preview', { folder });
     saveLastFolder(folder);
+    initSheetDecisions();
     phase = 'preview';
     renderPreview();
   } catch (e) {
@@ -336,8 +513,12 @@ async function startTask() {
   const folder = readFolderInput();
   if (!folder) return;
   if (overview && overview.can_resume && !confirm('开始新任务会替换上次中断任务的续跑进度，确定吗？')) return;
+  const payload = { kind: activeKind, folder };
+  if (activeKind === 'clean_sheets' && previewData) {
+    payload.plan = buildCleanPlan();
+  }
   try {
-    await postAction('/api/quick_task', { kind: activeKind, folder });
+    await postAction('/api/quick_task', payload);
   } catch (e) {
     alert(e.message);
     return;

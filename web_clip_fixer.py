@@ -36,6 +36,7 @@ from core.workflow import (
     run_pending_workflow,
     set_manual_confirmation,
     update_item_row,
+    validate_clean_plan,
 )
 
 __all__ = [
@@ -197,7 +198,10 @@ class WebHandler(BaseHTTPRequestHandler):
             if not isinstance(kind, str) or kind not in QUICK_TASK_NAMES:
                 raise ValueError("未知的功能")
             folder, _ = list_workbooks(_require_folder(payload))
-            self._start_job(kind, {"folder": str(folder)})
+            options: dict[str, object] = {"folder": str(folder)}
+            if kind == "clean_sheets" and "plan" in payload:
+                options["plan"] = validate_clean_plan(payload["plan"])
+            self._start_job(kind, options)
 
         elif self.path == "/api/clean/preview":
             self._send_json({"ok": True, **preview_backup_sheets(_require_folder(payload))})

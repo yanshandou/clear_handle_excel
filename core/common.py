@@ -16,8 +16,10 @@ EXCEL_COPY_SUFFIX_PATTERN = re.compile(r"\s\(\d+\)$")
 COPY_PHRASE_PATTERN = re.compile(r"copy\s+of|の?コピー|的?副本", re.IGNORECASE)
 # 版本号（如 _v2.4、ver1.0），比对原表时忽略
 VERSION_PATTERN = re.compile(r"(?<![a-z])v(?:er)?\.?\d+(?:\.\d+)*(?![a-z])", re.IGNORECASE)
-# 比对原表时忽略的空白、分隔符与括号
-NAME_SEPARATOR_PATTERN = re.compile(r"[\s_\-・.,、。()\[\]【】「」『』]+")
+# 比对原表时忽略的空白、分隔符、括号与待定标记
+UNCERTAIN_EMOJI = "❓"
+EXCEL_SHEET_MAX_LEN = 31
+NAME_SEPARATOR_PATTERN = re.compile(r"[\s_\-・.,、。()\[\]【】「」『』❓]+")
 EXCEL_EXTENSIONS = {".xlsx", ".xlsm", ".xls"}
 EXCLUDE_PDF_SHEETS = {"変更履歴"}  # 不导出为 PDF 的 Sheet 名集合
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -95,6 +97,38 @@ def find_backup_sheets(sheet_names: list[str]) -> list[str]:
         name for name in candidates
         if (base := _original_name_of(name)) and base in originals
     ]
+
+
+def is_uncertain_name(name: str) -> bool:
+    """判断文件名或工作表名是否带有「❓ 待定」前缀"""
+    return name.startswith(UNCERTAIN_EMOJI)
+
+
+def strip_uncertain_prefix(name: str) -> str:
+    """去掉文件名或工作表名前面的「❓」前缀"""
+    cleaned = name
+    while cleaned.startswith(UNCERTAIN_EMOJI):
+        cleaned = cleaned.removeprefix(UNCERTAIN_EMOJI).lstrip()
+    return cleaned or name
+
+
+def add_uncertain_prefix(name: str) -> str:
+    """为文件名或工作表名加上「❓」前缀（避免重复叠加）"""
+    return f"{UNCERTAIN_EMOJI}{strip_uncertain_prefix(name)}"
+
+
+def unique_sheet_name(desired: str, existing_names: set[str]) -> str:
+    """生成符合 Excel 31 字符限制且不与现有工作表重名的名称"""
+    trimmed = desired[:EXCEL_SHEET_MAX_LEN] or "Sheet"
+    if trimmed not in existing_names:
+        return trimmed
+    counter = 2
+    while True:
+        suffix = f"_{counter}"
+        candidate = f"{trimmed[:EXCEL_SHEET_MAX_LEN - len(suffix)]}{suffix}"
+        if candidate not in existing_names:
+            return candidate
+        counter += 1
 
 
 def sanitize_filename(name: str) -> str:
