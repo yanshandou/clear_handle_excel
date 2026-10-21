@@ -161,6 +161,8 @@ def init_execution_batch(
                     "current_action": "排队等待处理...",
                     "all_sheets": [],
                     "deleted_backups": [],
+                    "uncertain_sheets": [],
+                    "renamed_to": "",
                     "exported_pdfs": 0,
                     "clip_detected": 0,
                     "clip_fixed": 0,
@@ -181,6 +183,8 @@ def update_file_progress(
     current_action: str | None = None,
     all_sheets: list[str] | None = None,
     deleted_backups: list[str] | None = None,
+    uncertain_sheets: list[str] | None = None,
+    renamed_to: str | None = None,
     exported_pdfs: int | None = None,
     clip_detected: int | None = None,
     clip_fixed: int | None = None,
@@ -201,6 +205,8 @@ def update_file_progress(
                 "current_action": "",
                 "all_sheets": [],
                 "deleted_backups": [],
+                "uncertain_sheets": [],
+                "renamed_to": "",
                 "exported_pdfs": 0,
                 "clip_detected": 0,
                 "clip_fixed": 0,
@@ -222,6 +228,10 @@ def update_file_progress(
             entry["all_sheets"] = list(all_sheets)
         if deleted_backups is not None:
             entry["deleted_backups"] = list(deleted_backups)
+        if uncertain_sheets is not None:
+            entry["uncertain_sheets"] = list(uncertain_sheets)
+        if renamed_to is not None:
+            entry["renamed_to"] = str(renamed_to)
         if exported_pdfs is not None:
             entry["exported_pdfs"] = int(exported_pdfs)
         if clip_detected is not None:
@@ -276,6 +286,7 @@ def render_execution_markdown() -> str:
     accepted_clips = sum(int(f.get("clip_accepted", 0)) for f in files)
     total_pdfs = sum(int(f.get("exported_pdfs", 0)) for f in files)
     total_bkp_del = sum(len(f.get("deleted_backups", [])) for f in files)
+    total_uncertain = sum(len(f.get("uncertain_sheets", [])) for f in files)
 
     status_badge = {
         "idle": "⚪ 空闲",
@@ -283,6 +294,17 @@ def render_execution_markdown() -> str:
         "completed": "✅ 已全部完成",
         "interrupted": "⏸ 已中断，等待继续",
     }.get(state["status"], state["status"])
+
+    summary_parts = [
+        f"共清理备份 Sheet **{total_bkp_del}** 个",
+        *(
+            [f"待定存疑 Sheet **{total_uncertain}** 个"]
+            if total_uncertain
+            else []
+        ),
+        f"导出 PDF **{total_pdfs}** 份",
+        f"检出切字 **{total_clips}** 处（已修复 **{fixed_clips}** 处，人工确认无需修复 **{accepted_clips}** 处）",
+    ]
 
     lines: list[str] = [
         "# 📊 Excel 批处理与切字检查执行记录报告",
@@ -298,7 +320,7 @@ def render_execution_markdown() -> str:
     lines.extend([
         f"- **开始时间**：{state['started_at'] or '-'}",
         f"- **最后更新**：{state['updated_at'] or '-'}",
-        f"- **统计汇总**：共清理备份 Sheet **{total_bkp_del}** 个 ｜ 导出 PDF **{total_pdfs}** 份 ｜ 检出切字 **{total_clips}** 处（已修复 **{fixed_clips}** 处，人工确认无需修复 **{accepted_clips}** 处）",
+        f"- **统计汇总**：{' ｜ '.join(summary_parts)}",
         "",
         "---",
         "",
@@ -321,9 +343,12 @@ def render_execution_markdown() -> str:
         a1_str = "✓" if f.get("normalized_a1") else "-"
         note = f.get("error") or f.get("current_action") or "-"
         note_clean = str(note).replace("|", "｜").replace("\n", " ")
+        display_name = f"**{f['name']}**"
+        if f.get("renamed_to") and f["renamed_to"] != f["name"]:
+            display_name += f" → `{f['renamed_to']}`"
 
         lines.append(
-            f"| {f['index']} | **{f['name']}** | {st_label} | {sheet_cnt} | {bkp_cnt} | {pdf_cnt} | {clip_str} | {a1_str} | {note_clean} | {f['updated_at']} |"
+            f"| {f['index']} | {display_name} | {st_label} | {sheet_cnt} | {bkp_cnt} | {pdf_cnt} | {clip_str} | {a1_str} | {note_clean} | {f['updated_at']} |"
         )
 
     lines.extend([
@@ -336,14 +361,20 @@ def render_execution_markdown() -> str:
 
     for f in files:
         st_label = STATUS_LABELS.get(f["status"], f["status"])
-        lines.append(f"### {f['index']}. {f['name']} （{st_label}）")
+        title_name = f["name"]
+        if f.get("renamed_to") and f["renamed_to"] != f["name"]:
+            title_name += f" → {f['renamed_to']}"
+        lines.append(f"### {f['index']}. {title_name} （{st_label}）")
         lines.append("")
         all_sheets = f.get("all_sheets", [])
         deleted_set = set(f.get("deleted_backups", []))
+        uncertain_set = set(f.get("uncertain_sheets", []))
         if all_sheets:
             for sh in all_sheets:
                 if sh in deleted_set:
                     lines.append(f"- ~~{sh}~~ *(已作为备份表清理)*")
+                elif sh in uncertain_set:
+                    lines.append(f"- **{sh}** *(❓ 待定存疑，已标记图标)*")
                 else:
                     lines.append(f"- {sh}")
         else:

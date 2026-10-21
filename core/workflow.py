@@ -11,13 +11,18 @@ from uuid import uuid4
 from core.common import (
     EXCEL_EXTENSIONS,
     EXCLUDE_PDF_SHEETS,
+    UNCERTAIN_EMOJI,
     XL_SHEET_VISIBLE,
     XL_TYPE_PDF,
+    add_uncertain_prefix,
     as_bbox,
     console_print,
     find_backup_sheets,
+    is_uncertain_name,
     sanitize_filename,
+    strip_uncertain_prefix,
     unique_pdf_path,
+    unique_sheet_name,
 )
 from core.excel_ops import (
     extract_sheet_snapshot,
@@ -1323,12 +1328,17 @@ def fix_selected_workflow(
 
 
 def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
-    """只读列出每个工作簿的全部工作表及其中将被精简的备份表；不修改文件，也不占用后台任务。"""
+    """只读列出每个工作簿的全部工作表、默认勾选删除的备份表及已带 ❓ 的待定表；不修改文件，也不占用后台任务。"""
     folder, workbooks = list_workbooks(folder_str)
     files: list[dict[str, Any]] = []
     for wb_path in workbooks:
         entry: dict[str, Any] = {
-            "name": wb_path.name, "sheet_count": 0, "sheets": [], "backups": [], "note": "",
+            "name": wb_path.name,
+            "sheet_count": 0,
+            "sheets": [],
+            "backups": [],
+            "uncertain": [],
+            "note": "",
         }
         try:
             all_names, backups = scan_workbook_sheets(wb_path)
@@ -1336,58 +1346,274 @@ def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
             entry["note"] = f"无法读取: {err}"
         else:
             entry["sheet_count"] = len(all_names)
-            entry["sheets"] = all_names  # 保持工作簿中的原有顺序，便于对照保留与删除
-            if backups and len(backups) >= len(all_names):
+            entry["sheets"] = all_names  # 保持工作簿中的原有顺序，便于对照保留、删除与待定
+            uncertain = [s for s in all_names if is_uncertain_name(s)]
+            entry["uncertain"] = uncertain
+            default_delete = [s for s in backups if s not in set(uncertain)]
+            if default_delete and len(default_delete) >= len(all_names):
                 entry["note"] = "全部工作表均被识别为备份表，将跳过删除"
             else:
-                entry["backups"] = backups
+                entry["backups"] = default_delete
         files.append(entry)
     return {"folder": str(folder), "files": files}
 
 
-def _clean_backup_sheets(get_excel: Callable[[], Any], wb_path: Path, backup_folder: Path) -> None:
+def validate_clean_plan(plan: Any) -> dict[str, dict[str, list[str]]]:
+    """校验前端提交的精简 Sheet 选择方案：{文件名: {"delete": [...], "uncertain": [...]}}"""
+    if not isinstance(plan, dict):
+        raise ValueError("精简方案格式无效")
+    normalized: dict[str, dict[str, list[str]]] = {}
+    for wb_name, item in plan.items():
+        if not isinstance(wb_name, str) or not wb_name or not isinstance(item, dict):
+            raise ValueError("精简方案格式无效")
+        delete_list = item.get("delete", [])
+        uncertain_list = item.get("uncertain", [])
+        if (
+            not isinstance(delete_list, list)
+            or not isinstance(uncertain_list, list)
+            or any(not isinstance(s, str) or not s for s in delete_list)
+            or any(not isinstance(s, str) or not s for s in uncertain_list)
+        ):
+            raise ValueError("工作表选择列表格式无效")
+        del_dedup = list(dict.fromkeys(delete_list))
+        unc_dedup = list(dict.fromkeys(uncertain_list))
+        if set(del_dedup) & set(unc_dedup):
+            raise ValueError(f"{wb_name} 中同一工作表不能同时勾选删除和标记待定")
+        normalized[wb_name] = {"delete": del_dedup, "uncertain": unc_dedup}
+    return normalized
+
+
+def _resolve_clean_targets(
+    all_names: list[str], file_plan: dict[str, list[str]] | None
+) -> tuple[list[str], list[str], list[tuple[str, str]], bool]:
+    """根据工作表列表与用户选择，返回 (待删除表, 待定表, [(原表名, 新表名)], 是否试图删空整本工作簿)"""
+    if file_plan is None:
+        candidates = find_backup_sheets(all_names)
+        delete_all = bool(all_names and len(candidates) >= len(all_names))
+        to_delete = [] if delete_all else candidates
+        uncertain_sel = [s for s in all_names if s not in set(to_delete) and is_uncertain_name(s)]
+    else:
+        del_set = set(file_plan.get("delete", []))
+        unc_set = set(file_plan.get("uncertain", []))
+        candidates = [s for s in all_names if s in del_set]
+        delete_all = bool(all_names and len(candidates) >= len(all_names))
+        to_delete = [] if delete_all else candidates
+        uncertain_sel = [s for s in all_names if s not in set(to_delete) and s in unc_set]
+
+    if delete_all:
+        return [], [], [], True
+
+    kept_names = [s for s in all_names if s not in set(to_delete)]
+    uncertain_set = set(uncertain_sel)
+    occupied = set(kept_names)
+    renames: list[tuple[str, str]] = []
+    for name in kept_names:
+        if name in uncertain_set and not is_uncertain_name(name):
+            occupied.discard(name)
+            new_name = unique_sheet_name(add_uncertain_prefix(name), occupied)
+            occupied.add(new_name)
+            if new_name != name:
+                renames.append((name, new_name))
+        elif file_plan is not None and name not in uncertain_set and is_uncertain_name(name):
+            occupied.discard(name)
+            new_name = unique_sheet_name(strip_uncertain_prefix(name), occupied)
+            occupied.add(new_name)
+            if new_name != name:
+                renames.append((name, new_name))
+    return to_delete, uncertain_sel, renames, False
+
+
+def _target_workbook_path(wb_path: Path, has_uncertain: bool, *, has_plan: bool) -> Path:
+    """包含待定 Sheet 的文件加 ❓ 前缀；待定全部解除后（用户提交方案时）自动恢复原文件名"""
+    if has_uncertain:
+        if not is_uncertain_name(wb_path.name):
+            candidate = wb_path.with_name(add_uncertain_prefix(wb_path.name))
+            if candidate != wb_path and not candidate.exists():
+                return candidate
+    elif has_plan and is_uncertain_name(wb_path.name):
+        candidate = wb_path.with_name(strip_uncertain_prefix(wb_path.name))
+        if candidate != wb_path and not candidate.exists():
+            return candidate
+    return wb_path
+
+
+def _sync_renamed_workbook_in_state(
+    old_path: Path, new_path: Path, sheet_rename_map: dict[str, str]
+) -> None:
+    """文件或工作表因 ❓ 标记改名时，同步更新工作台已有的扫描记录"""
+    old_str = str(old_path)
+    new_str = str(new_path)
+    if old_str == new_str and not sheet_rename_map:
+        return
+    with STATE_LOCK:
+        for collection in ("pages", "items"):
+            for entry in STATE[collection].values():
+                if entry.get("wb_path") == old_str:
+                    entry["wb_path"] = new_str
+                    entry["wb_name"] = new_path.name
+                    if entry.get("sheet_name") in sheet_rename_map:
+                        entry["sheet_name"] = sheet_rename_map[entry["sheet_name"]]
+        if old_str != new_str and old_str in STATE["checked_files"]:
+            STATE["checked_files"][new_str] = STATE["checked_files"].pop(old_str)
+
+
+def _format_clean_action(
+    deleted_list: list[str],
+    uncertain_list: list[str],
+    orig_name: str,
+    final_name: str,
+    unmarked_any: bool,
+) -> str:
+    parts: list[str] = []
+    if deleted_list:
+        parts.append(f"已删除 {len(deleted_list)} 个备份 Sheet")
+    if uncertain_list:
+        parts.append(f"标记 {len(uncertain_list)} 个待定 Sheet（{UNCERTAIN_EMOJI}）")
+    elif unmarked_any:
+        parts.append(f"已清除 {UNCERTAIN_EMOJI} 待定标记")
+    if final_name != orig_name:
+        parts.append(f"文件名已改为 {final_name}")
+    if not parts:
+        return "没有备份表，无需精简"
+    return "，".join(parts)
+
+
+def _clean_backup_sheets(
+    get_excel: Callable[[], Any],
+    wb_path: Path,
+    backup_folder: Path,
+    file_plan: dict[str, list[str]] | None = None,
+) -> None:
     # 续跑时沿用本批次已记录的删除明细，避免保存后中断导致记录丢失
     previous = get_execution_report_snapshot()["files"].get(wb_path.name, {})
     deleted = list(previous.get("deleted_backups", []))
+    uncertain_recorded = list(previous.get("uncertain_sheets", []))
 
-    def record(all_names: list[str], action: str) -> None:
+    def record(
+        all_names: list[str],
+        action: str,
+        *,
+        uncertain: list[str] | None = None,
+        renamed_to: str = "",
+    ) -> None:
         update_file_progress(
-            wb_path.name, status="done", current_action=action, deleted_backups=deleted,
+            wb_path.name,
+            status="done",
+            current_action=action,
+            deleted_backups=deleted,
+            uncertain_sheets=uncertain if uncertain is not None else uncertain_recorded,
+            renamed_to=renamed_to,
             all_sheets=list(dict.fromkeys(previous.get("all_sheets", []) + all_names)),
         )
 
     if wb_path.suffix.lower() != ".xls":
-        # 先用 openpyxl 只读预检，没有备份表的文件不必用 Excel 打开
+        # 先用 openpyxl 只读预检，无需修改工作表的文件不必用 Excel 打开
         try:
-            all_names, backups = scan_workbook_sheets(wb_path)
+            pre_names, _ = scan_workbook_sheets(wb_path)
         except Exception:
-            backups = None  # 预检失败时交给 Excel 判断
-        if backups == []:
-            record(all_names, f"已删除 {len(deleted)} 个备份 Sheet" if deleted else "没有备份表，无需精简")
-            return
+            pre_names = None  # 预检失败时交给 Excel 判断
+        if pre_names is not None:
+            to_delete, uncertain_sel, renames, del_all = _resolve_clean_targets(pre_names, file_plan)
+            target_path = _target_workbook_path(
+                wb_path, bool(uncertain_sel), has_plan=file_plan is not None
+            )
+            if not del_all and not to_delete and not renames:
+                if target_path != wb_path:
+                    _backup_original(wb_path, backup_folder)
+                    wb_path.rename(target_path)
+                    _sync_renamed_workbook_in_state(wb_path, target_path, {})
+                action = _format_clean_action(
+                    deleted,
+                    uncertain_sel,
+                    wb_path.name,
+                    target_path.name,
+                    is_uncertain_name(wb_path.name) and not is_uncertain_name(target_path.name),
+                )
+                if target_path != wb_path or uncertain_sel:
+                    log_msg(f"  {action}")
+                record(
+                    pre_names,
+                    action,
+                    uncertain=uncertain_sel,
+                    renamed_to=target_path.name if target_path != wb_path else "",
+                )
+                return
 
     wb = get_excel().Workbooks.Open(str(wb_path.resolve()))
+    rename_map: dict[str, str] = {}
+    target_path = wb_path
+    final_names: list[str] = []
+    final_uncertain: list[str] = []
+    unmarked_sheet = False
+    need_file_rename = False
     try:
         all_names = [sheet.Name for sheet in wb.Sheets]
-        backups = find_backup_sheets(all_names)
-        if not backups:
-            action = f"已删除 {len(deleted)} 个备份 Sheet" if deleted else "没有备份表，无需精简"
-        elif len(backups) >= len(all_names):
-            action = "全部工作表均被识别为备份表，已跳过删除"
+        to_delete, uncertain_sel, renames, del_all = _resolve_clean_targets(all_names, file_plan)
+        if del_all:
+            action = (
+                "全部工作表均被识别为备份表，已跳过删除"
+                if file_plan is None
+                else "全部工作表均被勾选删除，已跳过删除"
+            )
             log_msg(f"  ⚠️ {action}: {wb_path.name}")
+            final_names = all_names
+        elif not to_delete and not renames:
+            target_path = _target_workbook_path(
+                wb_path, bool(uncertain_sel), has_plan=file_plan is not None
+            )
+            need_file_rename = target_path != wb_path
+            final_names = all_names
+            final_uncertain = uncertain_sel
+            action = _format_clean_action(
+                deleted,
+                final_uncertain,
+                wb_path.name,
+                target_path.name,
+                is_uncertain_name(wb_path.name) and not is_uncertain_name(target_path.name),
+            )
         else:
             _backup_original(wb_path, backup_folder)
-            for name in backups:
+            for name in to_delete:
                 wb.Sheets(name).Delete()
-            deleted = list(dict.fromkeys(deleted + backups))
-            # 先记录删除明细再保存，保存后中断也能在续跑时保留记录
-            update_file_progress(wb_path.name, deleted_backups=deleted)
+            deleted = list(dict.fromkeys(deleted + to_delete))
+            rename_map = dict(renames)
+            for old_name, new_name in renames:
+                if is_uncertain_name(old_name) and not is_uncertain_name(new_name):
+                    unmarked_sheet = True
+                wb.Sheets(old_name).Name = new_name
+            final_names = [rename_map.get(s, s) for s in all_names]
+            final_uncertain = [rename_map.get(s, s) for s in uncertain_sel]
+            target_path = _target_workbook_path(
+                wb_path, bool(final_uncertain), has_plan=file_plan is not None
+            )
+            need_file_rename = target_path != wb_path
+            # 先记录删除与待定明细再保存，保存后中断也能在续跑时保留记录
+            update_file_progress(
+                wb_path.name, deleted_backups=deleted, uncertain_sheets=final_uncertain,
+            )
             wb.Save()
-            action = f"已删除 {len(deleted)} 个备份 Sheet"
+            action = _format_clean_action(
+                deleted,
+                final_uncertain,
+                wb_path.name,
+                target_path.name,
+                unmarked_sheet or (is_uncertain_name(wb_path.name) and not is_uncertain_name(target_path.name)),
+            )
             log_msg(f"  {action}")
-        record(all_names, action)
     finally:
         wb.Close(SaveChanges=False)
+
+    if need_file_rename:
+        _backup_original(wb_path, backup_folder)
+        wb_path.rename(target_path)
+    if need_file_rename or rename_map:
+        _sync_renamed_workbook_in_state(wb_path, target_path, rename_map)
+    record(
+        final_names,
+        action,
+        uncertain=final_uncertain,
+        renamed_to=target_path.name if need_file_rename else "",
+    )
 
 
 def _export_workbook_pdfs(
@@ -1493,7 +1719,15 @@ def quick_task_workflow(kind: str) -> None:
             exported: list[Path] = []
             try:
                 if kind == "clean_sheets":
-                    _clean_backup_sheets(get_excel, wb_path, Path(options["backup_folder"]))
+                    clean_plan = options.get("plan")
+                    file_plan = (
+                        clean_plan.get(wb_path.name, {"delete": [], "uncertain": []})
+                        if isinstance(clean_plan, dict)
+                        else None
+                    )
+                    _clean_backup_sheets(
+                        get_excel, wb_path, Path(options["backup_folder"]), file_plan=file_plan,
+                    )
                 elif kind == "export_pdf":
                     exported = _export_workbook_pdfs(
                         get_excel, wb_path, Path(options["pdf_folder"]), used_pdf_paths
@@ -1519,7 +1753,12 @@ def quick_task_workflow(kind: str) -> None:
 
     files = list(get_execution_report_snapshot()["files"].values())
     if kind == "clean_sheets":
-        detail = f"共删除 {sum(len(f['deleted_backups']) for f in files)} 个备份 Sheet"
+        deleted_total = sum(len(f["deleted_backups"]) for f in files)
+        uncertain_total = sum(len(f.get("uncertain_sheets", [])) for f in files)
+        uncertain_files = sum(bool(f.get("uncertain_sheets")) for f in files)
+        detail = f"共删除 {deleted_total} 个备份 Sheet"
+        if uncertain_total:
+            detail += f"，标记 {uncertain_total} 个待定 Sheet（{uncertain_files} 个文件已加 {UNCERTAIN_EMOJI} 前缀）"
     elif kind == "export_pdf":
         detail = f"共导出 {sum(int(f['exported_pdfs']) for f in files)} 份 PDF"
     else:
