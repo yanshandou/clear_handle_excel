@@ -343,7 +343,7 @@ def render_execution_markdown() -> str:
         if all_sheets:
             for sh in all_sheets:
                 if sh in deleted_set:
-                    lines.append(f"- ~~{sh}~~ *(已作为日期备份表清理)*")
+                    lines.append(f"- ~~{sh}~~ *(已作为备份表清理)*")
                 else:
                     lines.append(f"- {sh}")
         else:

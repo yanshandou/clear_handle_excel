@@ -53,7 +53,7 @@ STATE_LOCK = threading.RLock()
 
 # 主页上可单独执行的批处理功能（job kind -> 任务名）
 QUICK_TASK_NAMES = {
-    "clean_sheets": "精简 Sheet（删除 YYYYMMDD 备份表）",
+    "clean_sheets": "精简 Sheet（删除备份表）",
     "export_pdf": "批量导出 PDF",
     "normalize_view": "视图标准化（A1 + 100% 缩放）",
 }
@@ -67,7 +67,7 @@ STATE: dict[str, Any] = {
     "items": {},  # item_id -> 检测出的切字项详情
     "logs": [],
     "busy": False,
-    "settings": {"step_pt": 3.0, "max_iter": 6, "delete_backups": True},
+    "settings": {"step_pt": 3.0, "max_iter": 6},
     "job": None,
     "checked_files": {},  # wb_path -> 最近一次完整检查未解决项时的文件版本
 }
@@ -440,7 +440,7 @@ def list_workbooks(folder_str: str) -> tuple[Path, list[Path]]:
 
 
 def _is_exportable_sheet(sheet: Any) -> bool:
-    """可见、且不是変更履歴或日期备份表的工作表才导出 PDF"""
+    """可见、且不是変更履歴或备份表的工作表才导出 PDF"""
     name = sheet.Name
     return (
         name not in EXCLUDE_PDF_SHEETS
@@ -547,13 +547,13 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool, *, resume: bool 
 
                     if delete_backups and bkp_names:
                         if len(bkp_names) >= len(all_names):
-                            log_msg(f"  ⚠️ 跳过删除备份表（全部工作表均为日期名）: {wb_path.name}")
+                            log_msg(f"  ⚠️ 跳过删除备份表（全部工作表均为备份表）: {wb_path.name}")
                         else:
                             _backup_original(wb_path, backup_folder)
                             for bn in bkp_names:
                                 wb.Sheets(bn).Delete()
                             deleted_bkp_list = list(dict.fromkeys(deleted_bkp_list + bkp_names))
-                            log_msg(f"  已清理 {len(bkp_names)} 个日期备份 Sheet")
+                            log_msg(f"  已清理 {len(bkp_names)} 个备份 Sheet")
                             update_file_progress(
                                 wb_path.name, all_sheets=all_names, deleted_backups=deleted_bkp_list
                             )
@@ -1169,7 +1169,7 @@ def fix_selected_workflow(
 
 
 def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
-    """只读列出每个工作簿的全部工作表及其中将被精简的日期备份表；不修改文件，也不占用后台任务。"""
+    """只读列出每个工作簿的全部工作表及其中将被精简的备份表；不修改文件，也不占用后台任务。"""
     folder, workbooks = list_workbooks(folder_str)
     files: list[dict[str, Any]] = []
     for wb_path in workbooks:
@@ -1184,7 +1184,7 @@ def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
             entry["sheet_count"] = len(all_names)
             entry["sheets"] = all_names  # 保持工作簿中的原有顺序，便于对照保留与删除
             if backups and len(backups) >= len(all_names):
-                entry["note"] = "全部工作表均为日期名，将跳过删除"
+                entry["note"] = "全部工作表均被识别为备份表，将跳过删除"
             else:
                 entry["backups"] = backups
         files.append(entry)
@@ -1209,7 +1209,7 @@ def _clean_backup_sheets(get_excel: Callable[[], Any], wb_path: Path, backup_fol
         except Exception:
             backups = None  # 预检失败时交给 Excel 判断
         if backups == []:
-            record(all_names, f"已删除 {len(deleted)} 个日期备份 Sheet" if deleted else "没有日期备份表，无需精简")
+            record(all_names, f"已删除 {len(deleted)} 个备份 Sheet" if deleted else "没有备份表，无需精简")
             return
 
     wb = get_excel().Workbooks.Open(str(wb_path.resolve()))
@@ -1217,9 +1217,9 @@ def _clean_backup_sheets(get_excel: Callable[[], Any], wb_path: Path, backup_fol
         all_names = [sheet.Name for sheet in wb.Sheets]
         backups = [name for name in all_names if is_backup_sheet(name)]
         if not backups:
-            action = f"已删除 {len(deleted)} 个日期备份 Sheet" if deleted else "没有日期备份表，无需精简"
+            action = f"已删除 {len(deleted)} 个备份 Sheet" if deleted else "没有备份表，无需精简"
         elif len(backups) >= len(all_names):
-            action = "全部工作表均为日期名，已跳过删除"
+            action = "全部工作表均被识别为备份表，已跳过删除"
             log_msg(f"  ⚠️ {action}: {wb_path.name}")
         else:
             _backup_original(wb_path, backup_folder)
@@ -1229,7 +1229,7 @@ def _clean_backup_sheets(get_excel: Callable[[], Any], wb_path: Path, backup_fol
             # 先记录删除明细再保存，保存后中断也能在续跑时保留记录
             update_file_progress(wb_path.name, deleted_backups=deleted)
             wb.Save()
-            action = f"已删除 {len(deleted)} 个日期备份 Sheet"
+            action = f"已删除 {len(deleted)} 个备份 Sheet"
             log_msg(f"  {action}")
         record(all_names, action)
     finally:
@@ -1367,7 +1367,7 @@ def quick_task_workflow(kind: str) -> None:
 
     files = list(get_execution_report_snapshot()["files"].values())
     if kind == "clean_sheets":
-        detail = f"共删除 {sum(len(f['deleted_backups']) for f in files)} 个日期备份 Sheet"
+        detail = f"共删除 {sum(len(f['deleted_backups']) for f in files)} 个备份 Sheet"
     elif kind == "export_pdf":
         detail = f"共导出 {sum(int(f['exported_pdfs']) for f in files)} 份 PDF"
     else:

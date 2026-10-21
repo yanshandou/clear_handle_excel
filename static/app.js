@@ -565,7 +565,7 @@ async function pollState() {
       document.getElementById('folderInput').value = data.folder || '';
       document.getElementById('stepInput').value = data.settings.step_pt;
       document.getElementById('maxIterInput').value = data.settings.max_iter;
-      document.getElementById('delBackupChk').checked = data.settings.delete_backups;
+      // 「顺便清理备份表」会直接删除且不预览，不沿用上次的勾选，每次扫描都需手动勾选
     }
 
     document.getElementById('scanBtn').disabled = data.busy;

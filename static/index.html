@@ -34,7 +34,7 @@
           <span class="step-chip">STEP 01</span>
           <span>目标目录扫描与 PDF 切字检测</span>
         </div>
-        <span class="panel-section-sub">自动备份原表 · 可选清理 YYYYMMDD 历史备份表 · 批量导出 PDF 扫描压线文字</span>
+        <span class="panel-section-sub">自动备份原表 · 可选清理历史备份表（日期 / bak / 副本等） · 批量导出 PDF 扫描压线文字</span>
       </div>
 
       <div class="controls">
@@ -46,9 +46,9 @@
             placeholder="粘贴 Excel 文件夹路径，例如 C:\Users\...\Desktop\excel_files"
           >
         </div>
-        <label class="checkbox-label">
-          <input type="checkbox" id="delBackupChk" checked>
-          顺便清理 YYYYMMDD 备份表
+        <label class="checkbox-label" title="不预览、直接删除识别出的备份表；不确定时先在主页用「精简 Sheet」预览">
+          <input type="checkbox" id="delBackupChk">
+          顺便清理备份表（日期 / bak / 副本等）
         </label>
         <button class="btn btn-primary" id="scanBtn" onclick="startScan()">
           🚀 1. 导出 PDF 并扫描切字

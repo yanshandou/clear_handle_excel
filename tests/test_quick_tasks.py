@@ -352,6 +352,24 @@ class QuickTaskTests(unittest.TestCase):
             })
             self.assertEqual((status, json.loads(body)["ok"]), (409, False))
 
+    def test_api_scan_deletes_backups_only_when_explicitly_requested(self):
+        self.add_book("a.xlsx", ["Sheet1"])
+        with self.serve_api() as port:
+            for payload, expected in (
+                ({"folder": str(self.folder)}, False),
+                ({"folder": str(self.folder), "delete_backups": "true"}, False),
+                ({"folder": str(self.folder), "delete_backups": 1}, False),
+                ({"folder": str(self.folder), "delete_backups": True}, True),
+            ):
+                with self.subTest(payload=payload):
+                    self.workflow.STATE["busy"] = False
+                    status, body = self.request(port, "POST", "/api/scan", payload)
+                    self.assertEqual((status, json.loads(body)["ok"]), (200, True))
+                    job = storage.load_snapshot("workflow")["job"]
+                    self.assertIs(job["options"]["delete_backups"], expected)
+        # 不再作为「上次提交的参数」保存，页面每次都从不勾选开始
+        self.assertNotIn("delete_backups", self.workflow.STATE["settings"])
+
     def test_api_clean_preview_is_read_only(self):
         self.add_book("a.xlsx", ["Main", "Main_20250101"])
         with self.serve_api() as port:

@@ -3,11 +3,12 @@ const TASKS = {
     title: '精简 Sheet',
     icon: '🧹',
     theme: 'feature-violet',
-    sub: '删除名称中带 YYYYMMDD 日期的备份工作表',
+    sub: '删除名称带日期、bak、old、副本等标记的备份工作表',
     notes: [
-      '先列出将被删除的备份表，确认后才会修改 Excel',
+      '识别规则：名称含 YYYYMMDD 日期、bak / backup、old / 旧（「新旧」「復旧」除外）、バックアップ / 备份、コピー / copy / 副本，或 Excel 复制产生的「 (2)」后缀',
+      '先列出每个文件保留和删除的工作表，确认后才会修改 Excel',
       '删除前自动备份原文件到 _backup_时间戳 文件夹',
-      '全部工作表都是日期名的工作簿会跳过，不会被删空',
+      '全部工作表都是备份表的工作簿会跳过，不会被删空',
     ],
     preview: true,
   },
@@ -18,7 +19,7 @@ const TASKS = {
     sub: '把每个工作簿的可见工作表分别导出为 PDF',
     notes: [
       '以只读方式打开 Excel，不修改原文件',
-      '跳过隐藏表、変更履歴和日期备份表',
+      '跳过隐藏表、変更履歴和备份表',
       'PDF 输出到所选文件夹下的 _exported_pdfs_时间戳 文件夹',
     ],
     runLabel: '📄 开始导出',
@@ -233,7 +234,7 @@ function renderPreview() {
 
   document.getElementById('previewBox').innerHTML = `
     <div class="preview-summary">
-      共 <b>${files.length}</b> 个 Excel 文件，其中 <b>${withBackups.length}</b> 个包含日期备份表：
+      共 <b>${files.length}</b> 个 Excel 文件，其中 <b>${withBackups.length}</b> 个包含备份表：
       将删除 <b class="is-deleted">${deletedTotal}</b> 个工作表，保留 <b>${keptTotal}</b> 个
     </div>
     <div class="preview-legend">

@@ -5,6 +5,12 @@ from pathlib import Path
 from typing import Any
 
 DATE_PATTERN = re.compile(r"(?<!\d)((?:19|20)\d{6})(?!\d)")
+# 独立出现的英文备份标记（前后不是字母），如 _bak、Sheet1-BAK、一覧_old；Bakery、Threshold 不算
+BACKUP_WORD_PATTERN = re.compile(r"(?<![a-z])(?:bak|backup|old|copy)(?![a-z])", re.IGNORECASE)
+# 日文/中文备份标记；「旧」不含「新旧」「復旧」（如 新旧対照表、障害復旧手順 是正式资料）
+BACKUP_TEXT_PATTERN = re.compile(r"バックアップ|备份|コピー|副本|(?<![新復])旧")
+# Excel 复制工作表时自动追加的「 (2)」后缀；不带空格的「一覧(2)」多为续页，不算
+EXCEL_COPY_SUFFIX_PATTERN = re.compile(r"\s\(\d+\)$")
 EXCEL_EXTENSIONS = {".xlsx", ".xlsm", ".xls"}
 EXCLUDE_PDF_SHEETS = {"変更履歴"}  # 不导出为 PDF 的 Sheet 名集合
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -31,7 +37,14 @@ def console_print(text: str) -> None:
 
 
 def is_backup_sheet(sheet_name: str) -> bool:
-    """判断工作表名称是否包含有效的 YYYYMMDD 日期格式"""
+    """判断工作表是否为备份表：名称含有效 YYYYMMDD 日期、bak/backup/old/copy、
+    バックアップ/备份/旧/コピー/副本，或带 Excel 复制产生的「 (2)」后缀"""
+    if (
+        BACKUP_WORD_PATTERN.search(sheet_name)
+        or BACKUP_TEXT_PATTERN.search(sheet_name)
+        or EXCEL_COPY_SUFFIX_PATTERN.search(sheet_name)
+    ):
+        return True
     for match in DATE_PATTERN.finditer(sheet_name):
         try:
             datetime.strptime(match.group(1), "%Y%m%d")

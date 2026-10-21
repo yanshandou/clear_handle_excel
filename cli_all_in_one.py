@@ -257,7 +257,7 @@ def main() -> None:
             all_sheets, backup_sheets = scan_workbook_sheets(workbook_path)
             if backup_sheets:
                 if len(backup_sheets) >= len(all_sheets):
-                    progress_write(f"警告: {workbook_path.name} 所有工作表均为日期名，将跳过删除。")
+                    progress_write(f"警告: {workbook_path.name} 所有工作表均被识别为备份表，将跳过删除。")
                 else:
                     pending_delete.append((workbook_path, backup_sheets))
         except Exception as error:
@@ -265,7 +265,7 @@ def main() -> None:
 
     do_delete = False
     if pending_delete:
-        print("\n检测到以下包含 YYYYMMDD 日期的备份工作表:")
+        print("\n检测到以下备份工作表（名称含日期、bak/backup、old/旧、バックアップ/备份、コピー/copy/副本，或 Excel 副本「 (2)」）:")
         for workbook_path, sheet_names in pending_delete:
             print(f"\n{workbook_path.name}")
             for sheet_name in sheet_names:
@@ -273,7 +273,7 @@ def main() -> None:
         if input("\n[1/4] 是否删除这些备份工作表？(输入 y 确认): ").strip().lower() == "y":
             do_delete = True
     else:
-        print("\n[1/4] 没有找到需要删除的 YYYYMMDD 备份工作表。")
+        print("\n[1/4] 没有找到需要删除的备份工作表。")
 
     do_fix_clipping = (
         input("\n[2/4] 是否智能加高多行文本行的高度（防导出 PDF 切字）？(输入 y 确认): ")
@@ -290,7 +290,7 @@ def main() -> None:
     )
 
     do_pdf = (
-        input("\n[4/4] 是否将工作表导出为 PDF（排除「変更履歴」及日期备份表）？(输入 y 确认): ")
+        input("\n[4/4] 是否将工作表导出为 PDF（排除「変更履歴」及备份表）？(输入 y 确认): ")
         .strip()
         .lower()
         == "y"
