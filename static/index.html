@@ -97,6 +97,15 @@
           >
             🔍 特写卡片模式
           </button>
+          <button
+            type="button"
+            id="viewTriageBtn"
+            class="view-tab"
+            onclick="setViewMode('triage')"
+            title="一次看一处：← 保留、→ 跳过、Backspace 撤销，也可以左右拖动卡片"
+          >
+            🃏 逐个筛选
+          </button>
         </div>
       </div>
 
@@ -195,6 +204,29 @@
 
     <!-- 视图二：特写卡片模式 -->
     <section id="cardGrid" class="card-grid hidden"></section>
+
+    <!-- 视图三：逐个筛选（← 保留 / 跳过 →） -->
+    <section id="triageView" class="panel triage-panel hidden" aria-label="逐个筛选">
+      <div class="triage-progress">
+        <span id="triageProgressText">已筛选 0 / 0</span>
+        <div class="progress-track progress-track-sm">
+          <div id="triageProgressFill" class="progress-fill" style="width: 0%;"></div>
+        </div>
+      </div>
+      <div id="triageStage" class="triage-stage"></div>
+      <div class="triage-actions">
+        <button type="button" class="btn btn-outline triage-keep-btn" onclick="triageDecide('keep')">
+          ← 保留（需要修复）
+        </button>
+        <button type="button" class="btn btn-outline" id="triageUndoBtn" onclick="triageUndo()">
+          ↶ 撤销上一步
+        </button>
+        <button type="button" class="btn btn-primary" onclick="triageDecide('skip')">
+          跳过（无需修复）→
+        </button>
+      </div>
+      <p class="triage-hint">键盘 ← 保留、→ 跳过、Backspace 撤销；也可以按住卡片向左 / 向右拖动。跳过会立即保存，保留只记录在本浏览器里，用来标记已看过。</p>
+    </section>
   </main>
 
   <!-- 悬停 2.5x 高清放大镜浮动气泡 -->

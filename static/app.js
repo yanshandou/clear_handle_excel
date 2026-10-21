@@ -1,4 +1,4 @@
-let currentViewMode = 'canvas'; // 'canvas' | 'cards'
+let currentViewMode = 'canvas'; // 'canvas' | 'cards' | 'triage'
 let latestPages = {};
 let serverItems = {}; // 服务器返回的问题项
 let latestItems = {}; // 叠加尚未保存的跳过决定后的问题项，页面以此渲染
@@ -17,7 +17,16 @@ let inFlightSkips = new Map(); // 正在提交的决定
 let skipRequest = null;
 let skipCancelsResumeConfirmed = false;
 
+// 逐个筛选：「保留」只表示已看过、需要修复（问题项仍为待修复），记在本浏览器里用于定位下一处
+let triageKept = new Set();
+let triageHistory = []; // [{ id, action: 'keep' | 'skip' }]，用于撤销
+let triageCurrentId = null;
+let triageDrag = null;
+let triageAnimationTimer = null;
+const TRIAGE_SWIPE_THRESHOLD = 110;
+
 const ONLY_PENDING_STORAGE_KEY = 'clear_handle_excel.onlyPending';
+const TRIAGE_KEPT_STORAGE_KEY = 'clear_handle_excel.triageKept';
 const RECHECK_TITLE = '请先在 Excel 中保存手动修改。根据新 PDF 重新检测该文件的问题工作表并替换旧标记，不会自动增加行高';
 
 function isResolved(item) {
@@ -48,12 +57,17 @@ function getPeerItemsInSameRow(targetItem) {
 }
 
 function setViewMode(mode) {
-  currentViewMode = mode === 'cards' ? 'cards' : 'canvas';
+  currentViewMode = ['cards', 'triage'].includes(mode) ? mode : 'canvas';
   document.getElementById('viewCanvasBtn').classList.toggle('active', currentViewMode === 'canvas');
   document.getElementById('viewCardsBtn').classList.toggle('active', currentViewMode === 'cards');
+  document.getElementById('viewTriageBtn').classList.toggle('active', currentViewMode === 'triage');
   document.getElementById('canvasView').classList.toggle('hidden', currentViewMode !== 'canvas');
   document.getElementById('cardGrid').classList.toggle('hidden', currentViewMode !== 'cards');
+  document.getElementById('triageView').classList.toggle('hidden', currentViewMode !== 'triage');
   hideMagnifier();
+  triageCurrentId = null;
+  refreshItemClasses();
+  renderTriage();
 }
 
 function setOnlyPending(onlyPending) {
@@ -85,19 +99,19 @@ function applyPendingSkips() {
   }
 }
 
-function toggleSkip(id) {
+// 返回是否已生效（任务执行中或用户取消时返回 false）
+function setSkip(id, skip) {
   const item = latestItems[id];
-  if (!item || item.status === 'fixed') return;
+  if (!item || item.status === 'fixed') return false;
   if (isBusy) {
     alert('任务执行中，请结束后再标记跳过。');
-    return;
+    return false;
   }
   if (canResume && !skipCancelsResumeConfirmed) {
     // 跳过本身可随时撤销，只有会取消中断任务续跑点（不可撤销）时才提示
-    if (!confirm('标记跳过会取消上次中断任务的续跑，避免旧检查点覆盖人工判断。确定吗？')) return;
+    if (!confirm('标记跳过会取消上次中断任务的续跑，避免旧检查点覆盖人工判断。确定吗？')) return false;
     skipCancelsResumeConfirmed = true;
   }
-  const skip = item.status !== 'accepted';
   const baseline = inFlightSkips.has(id) ? inFlightSkips.get(id) : serverItems[id]?.status === 'accepted';
   if (skip === baseline) {
     pendingSkips.delete(id);
@@ -107,6 +121,12 @@ function toggleSkip(id) {
   applyPendingSkips();
   renderItems();
   flushSkips();
+  return true;
+}
+
+function toggleSkip(id) {
+  const item = latestItems[id];
+  if (item) setSkip(id, item.status !== 'accepted');
 }
 
 function flushSkips() {
@@ -250,15 +270,16 @@ function refreshItemClasses() {
   document.getElementById('cntSkipped').innerText = totals.skipped;
   document.getElementById('cntFixed').innerText = totals.fixed;
   const hasItems = Object.keys(latestItems).length > 0;
-  document.getElementById('allDoneHint').classList.toggle(
-    'hidden', !hasItems || totals.pending + totals.review > 0,
-  );
+  const showAllDone = hasItems && totals.pending + totals.review === 0
+    && document.body.classList.contains('only-pending') && currentViewMode !== 'triage';
+  document.getElementById('allDoneHint').classList.toggle('hidden', !showAllDone);
 }
 
 function renderItems() {
   renderCanvasStages(latestPages, latestItems);
   renderCards(latestItems);
   refreshItemClasses();
+  renderTriage();
   if (activeHoverItemId && latestItems[activeHoverItemId]) {
     updateMagnifierContent(latestItems[activeHoverItemId]);
   }
@@ -599,6 +620,221 @@ function renderCards(items) {
 }
 
 /* ==========================================
+   视图三：逐个筛选（← 保留 / 跳过 →）
+   ========================================== */
+function loadTriageKept() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(TRIAGE_KEPT_STORAGE_KEY) || '[]'));
+  } catch (e) {
+    return new Set();
+  }
+}
+
+function saveTriageKept() {
+  try {
+    localStorage.setItem(TRIAGE_KEPT_STORAGE_KEY, JSON.stringify([...triageKept]));
+  } catch (e) {}
+}
+
+// 尚未判断的问题，按扫描顺序排列；跳过的已解决，保留的记在 triageKept
+function triageQueue() {
+  return Object.values(latestItems)
+    .filter(item => !isResolved(item) && !triageKept.has(item.id))
+    .sort((a, b) => (a.seq || 0) - (b.seq || 0));
+}
+
+function renderTriage() {
+  if (currentViewMode !== 'triage') return;
+  const reviewable = Object.values(latestItems).filter(item => item.status !== 'fixed');
+  const skipped = reviewable.filter(item => item.status === 'accepted').length;
+  const kept = reviewable.filter(item => !isResolved(item) && triageKept.has(item.id)).length;
+  const queue = triageQueue();
+  const decided = skipped + kept;
+  document.getElementById('triageProgressText').textContent =
+    `已筛选 ${decided} / ${reviewable.length}（保留 ${kept} · 跳过 ${skipped} · 剩余 ${queue.length}）`;
+  document.getElementById('triageProgressFill').style.width =
+    `${reviewable.length ? Math.round((decided / reviewable.length) * 100) : 0}%`;
+  document.getElementById('triageUndoBtn').disabled = triageHistory.length === 0;
+
+  // 拖动或飞出动画进行中不换卡
+  if (triageDrag || triageAnimationTimer) return;
+  const stage = document.getElementById('triageStage');
+  const next = queue[0];
+  if (!next) {
+    triageCurrentId = null;
+    const signature = `done|${kept}|${skipped}|${reviewable.length}`;
+    if (stage.dataset.signature === signature) return;
+    stage.dataset.signature = signature;
+    stage.innerHTML = reviewable.length ? `
+      <div class="triage-done">
+        <b>🎉 已全部筛选完</b>
+        <span>保留 ${kept} 处、跳过 ${skipped} 处。点「自动迭代微调待修复项」处理保留的项。</span>
+        ${kept ? '<button type="button" class="btn btn-outline btn-sm" onclick="triageRestartKept()">重新筛选已保留的项</button>' : ''}
+      </div>` : '<div class="triage-done"><span>暂无切字问题，请先扫描。</span></div>';
+    return;
+  }
+
+  const page = latestPages[next.page_id];
+  const signature = `${next.id}|${next.status}|${next.image}|${page ? page.image.length : 0}`;
+  if (stage.dataset.signature === signature) return;
+  stage.dataset.signature = signature;
+  triageCurrentId = next.id;
+
+  const st = getItemVisualState(next);
+  const peers = getPeerItemsInSameRow(next).length;
+  let pageHtml = '';
+  if (page) {
+    const pw = Math.max(1, Number(page.page_width) || 595);
+    const ph = Math.max(1, Number(page.page_height) || 842);
+    const [x0, y0, x1, y1] = next.bbox;
+    const box = [
+      `left:${Math.max(0, ((x0 - 4) / pw) * 100).toFixed(3)}%`,
+      `top:${Math.max(0, ((y0 - 3) / ph) * 100).toFixed(3)}%`,
+      `width:${Math.min(100, ((x1 - x0 + 8) / pw) * 100).toFixed(3)}%`,
+      `height:${Math.min(100, ((y1 - y0 + 6) / ph) * 100).toFixed(3)}%`,
+    ].join(';');
+    pageHtml = `
+      <div class="triage-page" title="这处问题在整页中的位置">
+        <img src="${page.image}" alt="整页位置" draggable="false">
+        <div class="triage-page-box" style="${box}"></div>
+      </div>`;
+  }
+  stage.innerHTML = `
+    <div class="triage-card ${next.status === 'pending' ? '' : 'is-review'}" id="triageCard">
+      <div class="triage-stamp triage-stamp-keep">保留</div>
+      <div class="triage-stamp triage-stamp-skip">跳过</div>
+      <div class="triage-card-head">
+        <div>
+          <b>#${Number(next.seq || 1)} ${escapeHtml(next.wb_name)}</b>
+          <span style="color:#64748b;">/ ${escapeHtml(next.sheet_name)}（第 ${Number(next.page_index) + 1} 页）</span>
+        </div>
+        <span class="badge ${st.badgeClass}">${escapeHtml(next.status === 'pending' ? '待筛选' : st.badgeText)}</span>
+      </div>
+      <div class="triage-card-body">
+        <div class="triage-crop"><img src="${next.image}" alt="2.5x 局部特写" draggable="false"></div>
+        ${pageHtml}
+      </div>
+      <div class="triage-card-foot">
+        定位 <b>${escapeHtml(next.cell_addr)}</b>（Excel 第 ${Number(next.excel_row) || 1} 行 · 行高 ${escapeHtml(next.row_height)}pt${peers > 1 ? ` · 同行共 ${peers} 处切字` : ''}）<br>
+        文字：${escapeHtml(next.text)}
+        ${next.status !== 'pending' && next.review_reason ? `<br><span style="color:#b45309;">${escapeHtml(next.review_reason)}</span>` : ''}
+      </div>
+    </div>
+  `;
+  attachTriageSwipe(document.getElementById('triageCard'));
+}
+
+function resetTriageCard(card) {
+  if (!card) return;
+  card.style.transform = '';
+  card.style.setProperty('--keep-opacity', 0);
+  card.style.setProperty('--skip-opacity', 0);
+}
+
+function finishTriageAnimation() {
+  if (!triageAnimationTimer) return;
+  clearTimeout(triageAnimationTimer);
+  triageAnimationTimer = null;
+  renderTriage();
+}
+
+function triageDecide(action) {
+  finishTriageAnimation();
+  const item = latestItems[triageCurrentId];
+  if (!item || isResolved(item)) return;
+  const card = document.getElementById('triageCard');
+  // 先占住动画计时，避免下面标记跳过触发的重新渲染立刻换卡
+  triageAnimationTimer = setTimeout(finishTriageAnimation, 180);
+  if (action === 'skip') {
+    if (!setSkip(item.id, true)) {
+      clearTimeout(triageAnimationTimer);
+      triageAnimationTimer = null;
+      resetTriageCard(card);
+      return;
+    }
+  } else {
+    triageKept.add(item.id);
+    saveTriageKept();
+  }
+  triageHistory.push({ id: item.id, action });
+  if (card) {
+    card.style.transform = '';
+    card.style.setProperty(action === 'skip' ? '--skip-opacity' : '--keep-opacity', 1);
+    card.classList.add(action === 'skip' ? 'fly-right' : 'fly-left');
+  }
+  renderTriage();
+}
+
+function triageUndo() {
+  finishTriageAnimation();
+  const last = triageHistory.pop();
+  if (!last) return;
+  if (last.action === 'skip' && latestItems[last.id]) {
+    if (!setSkip(last.id, false)) {
+      triageHistory.push(last);
+      return;
+    }
+  } else {
+    triageKept.delete(last.id);
+    saveTriageKept();
+  }
+  renderTriage();
+}
+
+function triageRestartKept() {
+  triageKept.clear();
+  saveTriageKept();
+  triageHistory = [];
+  renderTriage();
+}
+
+function attachTriageSwipe(card) {
+  card.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || triageAnimationTimer) return;
+    triageDrag = { startX: e.clientX, dx: 0 };
+    card.setPointerCapture(e.pointerId);
+    card.classList.add('dragging');
+  });
+  card.addEventListener('pointermove', e => {
+    if (!triageDrag) return;
+    const dx = e.clientX - triageDrag.startX;
+    triageDrag.dx = dx;
+    card.style.transform = `translateX(${dx}px) rotate(${dx / 25}deg)`;
+    card.style.setProperty('--keep-opacity', Math.min(1, Math.max(0, -dx / TRIAGE_SWIPE_THRESHOLD)));
+    card.style.setProperty('--skip-opacity', Math.min(1, Math.max(0, dx / TRIAGE_SWIPE_THRESHOLD)));
+  });
+  const end = () => {
+    if (!triageDrag) return;
+    const { dx } = triageDrag;
+    triageDrag = null;
+    card.classList.remove('dragging');
+    if (Math.abs(dx) >= TRIAGE_SWIPE_THRESHOLD) {
+      triageDecide(dx < 0 ? 'keep' : 'skip');
+    } else {
+      resetTriageCard(card);
+      renderTriage(); // 拖动期间若有数据更新，补一次渲染
+    }
+  };
+  card.addEventListener('pointerup', end);
+  card.addEventListener('pointercancel', end);
+}
+
+document.addEventListener('keydown', e => {
+  if (currentViewMode !== 'triage' || e.repeat || e.altKey) return;
+  if (e.target.closest && e.target.closest('input, textarea, select')) return;
+  if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    triageDecide('keep');
+  } else if (e.key === 'ArrowRight') {
+    e.preventDefault();
+    triageDecide('skip');
+  } else if (e.key === 'Backspace' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z')) {
+    e.preventDefault();
+    triageUndo();
+  }
+});
+
+/* ==========================================
    后端状态轮询与接口调用
    ========================================== */
 async function pollState() {
@@ -659,6 +895,9 @@ async function pollState() {
     for (const id of [...pendingSkips.keys()]) {
       if (!serverItems[id]) pendingSkips.delete(id);
     }
+    const keptBefore = triageKept.size;
+    triageKept = new Set([...triageKept].filter(id => serverItems[id]));
+    if (triageKept.size !== keptBefore) saveTriageKept();
     applyPendingSkips();
     if (activeHoverItemId && !latestItems[activeHoverItemId]) {
       hideMagnifier();
@@ -800,6 +1039,7 @@ let savedOnlyPending = false;
 try {
   savedOnlyPending = localStorage.getItem(ONLY_PENDING_STORAGE_KEY) === '1';
 } catch (e) {}
+triageKept = loadTriageKept();
 setOnlyPending(savedOnlyPending);
 
 setInterval(pollState, 1200);
