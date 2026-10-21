@@ -1169,17 +1169,20 @@ def fix_selected_workflow(
 
 
 def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
-    """只读列出每个工作簿将被精简的日期备份表；不修改文件，也不占用后台任务。"""
+    """只读列出每个工作簿的全部工作表及其中将被精简的日期备份表；不修改文件，也不占用后台任务。"""
     folder, workbooks = list_workbooks(folder_str)
     files: list[dict[str, Any]] = []
     for wb_path in workbooks:
-        entry: dict[str, Any] = {"name": wb_path.name, "sheet_count": 0, "backups": [], "note": ""}
+        entry: dict[str, Any] = {
+            "name": wb_path.name, "sheet_count": 0, "sheets": [], "backups": [], "note": "",
+        }
         try:
             all_names, backups = scan_workbook_sheets(wb_path)
         except Exception as err:
             entry["note"] = f"无法读取: {err}"
         else:
             entry["sheet_count"] = len(all_names)
+            entry["sheets"] = all_names  # 保持工作簿中的原有顺序，便于对照保留与删除
             if backups and len(backups) >= len(all_names):
                 entry["note"] = "全部工作表均为日期名，将跳过删除"
             else:

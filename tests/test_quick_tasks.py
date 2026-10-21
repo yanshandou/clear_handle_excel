@@ -261,7 +261,7 @@ class QuickTaskTests(unittest.TestCase):
         self.assertIn(b"\\u2705", output)
 
     def test_preview_lists_backups_without_opening_excel(self):
-        self.add_book("a.xlsx", ["Main", "Main_20250101"])
+        self.add_book("a.xlsx", ["表紙", "Main_20250101", "Main"])
         self.add_book("b.xlsx", ["X_20250101"])
         self.add_book("c.xlsx", ["Main"])
         (self.folder / "d.xlsx").write_bytes(b"broken")
@@ -271,10 +271,14 @@ class QuickTaskTests(unittest.TestCase):
         files = {f["name"]: f for f in data["files"]}
         self.assertEqual(sorted(files), ["a.xlsx", "b.xlsx", "c.xlsx", "d.xlsx"])
         self.assertEqual(files["a.xlsx"]["backups"], ["Main_20250101"])
+        # 全部工作表按原顺序返回，页面据此同时列出保留与删除的工作表
+        self.assertEqual(files["a.xlsx"]["sheets"], ["表紙", "Main_20250101", "Main"])
         self.assertEqual(files["b.xlsx"]["backups"], [])
+        self.assertEqual(files["b.xlsx"]["sheets"], ["X_20250101"])
         self.assertIn("全部工作表", files["b.xlsx"]["note"])
-        self.assertEqual(files["c.xlsx"]["backups"], [])
+        self.assertEqual((files["c.xlsx"]["backups"], files["c.xlsx"]["sheets"]), ([], ["Main"]))
         self.assertTrue(files["d.xlsx"]["note"].startswith("无法读取"))
+        self.assertEqual(files["d.xlsx"]["sheets"], [])
         self.dispatch.assert_not_called()
 
     @contextmanager

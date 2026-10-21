@@ -205,32 +205,51 @@ function renderDialog() {
   if (phase === 'running' || phase === 'done') renderRunBox();
 }
 
+// 按工作簿中的原有顺序列出全部工作表，标出保留与删除
+function previewFileItem(file, extraClass = '') {
+  const deleted = new Set(file.backups);
+  const kept = file.sheets.length - deleted.size;
+  const tags = file.sheets.map(name => deleted.has(name)
+    ? `<span class="preview-sheet-tag is-deleted" title="将删除">${escapeHtml(name)}</span>`
+    : `<span class="preview-sheet-tag is-kept" title="保留">${escapeHtml(name)}</span>`).join('');
+  return `
+    <li class="${extraClass}">
+      <div class="preview-file-head">
+        <b>📄 ${escapeHtml(file.name)}</b>
+        ${file.sheets.length ? `<span class="preview-counts">保留 ${kept}${deleted.size ? ` · <em>删除 ${deleted.size}</em>` : ''}</span>` : ''}
+      </div>
+      ${file.note ? `<span class="preview-note">⚠️ ${escapeHtml(file.note)}</span>` : ''}
+      ${tags ? `<span class="preview-tags">${tags}</span>` : ''}
+    </li>`;
+}
+
 function renderPreview() {
   const files = previewData.files;
   const withBackups = files.filter(f => f.backups.length);
   const withNotes = files.filter(f => f.note);
-  const plainCount = files.length - withBackups.length - withNotes.length;
+  const plain = files.filter(f => !f.backups.length && !f.note);
+  const deletedTotal = countBackups(previewData);
+  const keptTotal = files.reduce((acc, f) => acc + f.sheets.length, 0) - deletedTotal;
 
   document.getElementById('previewBox').innerHTML = `
     <div class="preview-summary">
-      共 <b>${files.length}</b> 个 Excel 文件，其中 <b>${withBackups.length}</b> 个包含
-      <b>${countBackups(previewData)}</b> 个日期备份表
+      共 <b>${files.length}</b> 个 Excel 文件，其中 <b>${withBackups.length}</b> 个包含日期备份表：
+      将删除 <b class="is-deleted">${deletedTotal}</b> 个工作表，保留 <b>${keptTotal}</b> 个
+    </div>
+    <div class="preview-legend">
+      <span class="preview-sheet-tag is-kept">保留</span>
+      <span class="preview-sheet-tag is-deleted">删除</span>
+      <span>按工作簿中的顺序排列</span>
     </div>
     <ul class="preview-list">
-      ${withBackups.map(f => `
-        <li>
-          <b>📄 ${escapeHtml(f.name)}</b>
-          <span class="preview-tags">
-            ${f.backups.map(s => `<span class="deleted-sheet-tag preview-sheet-tag">${escapeHtml(s)}</span>`).join('')}
-          </span>
-        </li>`).join('')}
-      ${withNotes.map(f => `
-        <li class="is-warn">
-          <b>📄 ${escapeHtml(f.name)}</b>
-          <span>⚠️ ${escapeHtml(f.note)}</span>
-        </li>`).join('')}
+      ${withBackups.map(f => previewFileItem(f)).join('')}
+      ${withNotes.map(f => previewFileItem(f, 'is-warn')).join('')}
     </ul>
-    ${plainCount ? `<div class="preview-foot">其余 ${plainCount} 个文件没有备份表，不会被修改。</div>` : ''}
+    ${plain.length ? `
+      <details class="preview-plain">
+        <summary>其余 ${plain.length} 个文件没有备份表，全部保留、不会被修改（点击展开）</summary>
+        <ul class="preview-list">${plain.map(f => previewFileItem(f)).join('')}</ul>
+      </details>` : ''}
   `;
 }
 
