@@ -76,7 +76,7 @@ function renderFilesTable(filesList) {
       let sheetsHtml = `<span style="color:#64748b;">共 ${allSheets.length} 个 Sheet</span>`;
       if (delSet.size > 0) {
         const delTags = Array.from(delSet)
-          .map(s => `<span class="deleted-sheet-tag">~~${escapeHtml(s)}~~</span>`)
+          .map(s => `<span class="deleted-sheet-tag">${escapeHtml(s)}</span>`)
           .join(' ');
         sheetsHtml += `<div style="margin-top:4px;">已删备份: ${delTags}</div>`;
       }

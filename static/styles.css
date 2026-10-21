@@ -1920,6 +1920,7 @@ input[type="text"] {
   border-radius: 6px;
   margin-right: 4px;
   border: 1px solid rgba(239, 68, 68, 0.3);
+  text-decoration: line-through;
 }
 
 .empty-cell {
