@@ -2725,8 +2725,37 @@ button.preview-sheet-tag:active {
 
 .clean-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr));
   align-items: start;
+}
+
+/* 瀑布流：由 clean.js 按卡片高度设置 grid-row-end: span N（每行 1px，间距算在 span 里） */
+.clean-grid.is-masonry {
+  grid-auto-rows: 1px;
+  row-gap: 0;
+}
+
+.clean-folder-group {
+  margin-top: 12px;
+}
+
+.clean-folder-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 2px 6px;
+  border-bottom: 1px solid rgba(176, 196, 226, 0.55);
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text-strong);
+  word-break: break-all;
+}
+
+.clean-folder-title span {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
 }
 
 .clean-placeholder {

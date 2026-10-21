@@ -31,6 +31,9 @@ class BackupMarkerTests(unittest.TestCase):
             "機能一覧(2)",
             "一覧（３）",
             "個別支援計画書_様式１（基本情報）(2)_20221005",
+            # 带分隔符或括号的日期
+            "概要(2018-02-26)",
+            "概要_2018.02.26",
         ):
             with self.subTest(name=name):
                 self.assertTrue(has_backup_marker(name))
@@ -63,7 +66,28 @@ class FindBackupSheetsTests(unittest.TestCase):
         self.assertEqual(find_backup_sheets([
             "変更履歴", "個別支援計画書情報", "基本情報_20241003", "具体的な支援目標及び支援計画_20241003",
         ]), [])
-        self.assertEqual(find_backup_sheets(["基本情報_20241003", "基本情報_20250101"]), [])
+        # 只有一个日期版本时它就是在用的表
+        self.assertEqual(find_backup_sheets(["表紙", "基本情報_20241003"]), [])
+
+    def test_older_dated_versions_without_original_are_backups(self):
+        # 多个日期版本都没有原表：保留最新的一个，更早的视为备份
+        self.assertEqual(find_backup_sheets(["基本情報_20241003", "基本情報_20250101"]), ["基本情報_20241003"])
+        self.assertEqual(find_backup_sheets([
+            "変更履歴", "介護サービス状況調査表", "20170113要介護度別状況調査表",
+            "20161207要介護度別状況調査表", "20161108要介護度別状況調査表", "20161012要介護度別状況調査表",
+        ]), ["20161207要介護度別状況調査表", "20161108要介護度別状況調査表", "20161012要介護度別状況調査表"])
+        # 不同写法的日期也按日期先后比较
+        self.assertEqual(find_backup_sheets(["一覧(2018-02-26)", "一覧_20190301"]), ["一覧(2018-02-26)"])
+        # 名称不同的不互相影响
+        self.assertEqual(find_backup_sheets(["A_20240101", "B_20230101"]), [])
+
+    def test_separated_and_bracketed_dates_match_original(self):
+        names = [
+            "概要", "概要(2018-02-26)", "概要_2018.02.27", "概要（2018-02-28）", "概要 2018/03/01",
+            "一覧", "一覧_2018-0226", "一覧_2018-02-30",
+        ]
+        # 分隔符前后不一致、无效日期都不算
+        self.assertEqual(find_backup_sheets(names), names[1:5])
 
     def test_backup_with_original_is_found(self):
         # SSKJG2100_利用者負担額調整.xlsx
