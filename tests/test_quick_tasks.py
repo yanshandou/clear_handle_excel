@@ -116,8 +116,13 @@ class QuickTaskTests(unittest.TestCase):
         self.books[name] = FakeWorkbook(name, sheets, hidden, self.events)
         return path
 
-    def read_sheet_names(self, path):
-        """模拟 openpyxl 只读读取工作表名"""
+    def read_sheet_names(self, path, get_excel=None):
+        """模拟 openpyxl 只读读取工作表名；.xls 通过传入的共享 Excel 打开"""
+        if get_excel is not None:
+            book = get_excel().Workbooks.Open(str(path), ReadOnly=True)
+            names = [sheet.Name for sheet in book.sheets]
+            book.Close(SaveChanges=False)
+            return names, self.workflow.find_backup_sheets(names)
         p = Path(path)
         try:
             rel = p.resolve().relative_to(self.folder.resolve()).as_posix()
@@ -182,6 +187,20 @@ class QuickTaskTests(unittest.TestCase):
 
         self.assertEqual(job["status"], "completed")
         self.dispatch.assert_not_called()
+
+    def test_preview_reuses_one_excel_for_all_xls_files(self):
+        self.add_book("a.xls", ["Main", "Main_20250101"])
+        self.add_book("sub/b.xls", ["X"])
+        self.add_book("c.xlsx", ["Y"])
+        data = self.workflow.preview_backup_sheets(str(self.folder))
+
+        files = {f["name"]: f for f in data["files"]}
+        self.assertEqual(files["a.xls"]["backups"], ["Main_20250101"])
+        self.assertEqual(files["sub/b.xls"]["sheets"], ["X"])
+        self.assertEqual(files["c.xlsx"]["sheets"], ["Y"])
+        self.dispatch.assert_called_once()
+        self.excel.Quit.assert_called_once()
+        self.assertEqual([key for key, _ in self.excel.opened], ["a.xls", "sub/b.xls"])
 
     def test_export_pdf_is_read_only_and_skips_hidden_history_and_backup_sheets(self):
         self.reporter.init_execution_batch(
