@@ -1,6 +1,6 @@
 import unittest
 
-from core.common import find_backup_sheets, find_clean_targets, has_backup_marker
+from core.common import find_backup_sheets, find_clean_targets, find_contained_sheets, has_backup_marker
 
 
 class BackupMarkerTests(unittest.TestCase):
@@ -148,6 +148,21 @@ class CleanTargetTests(unittest.TestCase):
         ])
         # 只影响精简 Sheet，不算备份表（导出 PDF 时照常导出）
         self.assertEqual(find_backup_sheets(names), ["概要20220816"])
+
+
+class ContainedSheetTests(unittest.TestCase):
+    def test_name_containing_another_defaults_to_uncertain(self):
+        names = [
+            "一覧", "一覧詳細", "請求書", "請求書明細", "請求書_20240101",
+            "Sheet1", "Sheet12", "表", "表紙", "❓概要", "概要メモ", "自動生成_一覧",
+        ]
+        # 已带 ❓ 的表也可作为被包含的名称（概要メモ）；已默认删除（請求書_20240101）、已带 ❓、自動生成、数字被切开（Sheet12）、单字被包含（表紙）都不算
+        self.assertEqual(find_contained_sheets(names), ["一覧詳細", "請求書明細", "概要メモ"])
+
+    def test_backup_targets_are_not_used_as_reference(self):
+        names = ["概要", "概要_bak", "概要_bak詳細"]
+        self.assertEqual(find_contained_sheets(names), ["概要_bak詳細"])
+        self.assertEqual(find_contained_sheets(["一覧1340", "一覧"]), ["一覧1340"])
 
 
 if __name__ == "__main__":
