@@ -324,38 +324,7 @@ def render_execution_markdown() -> str:
         "",
         "---",
         "",
-        "## 一、 文件处理进度总表",
-        "",
-        "| # | 文件名 | 处理状态 | 总 Sheet 数 | 已删备份表 | 导出 PDF 数 | 切字 (已修/检出) | A1+100% | 当前步骤 / 备注 | 更新时间 |",
-        "|---:|---|---|---:|---:|---:|---:|:---:|---|---|",
-    ])
-
-    for f in files:
-        st_label = STATUS_LABELS.get(f["status"], f["status"])
-        sheet_cnt = len(f.get("all_sheets", []))
-        bkp_cnt = len(f.get("deleted_backups", []))
-        pdf_cnt = int(f.get("exported_pdfs", 0))
-        det_cnt = int(f.get("clip_detected", 0))
-        fix_cnt = int(f.get("clip_fixed", 0))
-        clip_str = f"{fix_cnt} / {det_cnt}" if det_cnt > 0 else "无切字"
-        if f.get("clip_accepted", 0):
-            clip_str += f"（人工确认 {f['clip_accepted']}）"
-        a1_str = "✓" if f.get("normalized_a1") else "-"
-        note = f.get("error") or f.get("current_action") or "-"
-        note_clean = str(note).replace("|", "｜").replace("\n", " ")
-        display_name = f"**{f['name']}**"
-        if f.get("renamed_to") and f["renamed_to"] != f["name"]:
-            display_name += f" → `{f['renamed_to']}`"
-
-        lines.append(
-            f"| {f['index']} | {display_name} | {st_label} | {sheet_cnt} | {bkp_cnt} | {pdf_cnt} | {clip_str} | {a1_str} | {note_clean} | {f['updated_at']} |"
-        )
-
-    lines.extend([
-        "",
-        "---",
-        "",
-        "## 二、 各工作簿 Sheet 清理与处理明细",
+        "## 各工作簿处理与 Sheet 明细",
         "",
     ])
 
@@ -366,9 +335,43 @@ def render_execution_markdown() -> str:
             title_name += f" → {f['renamed_to']}"
         lines.append(f"### {f['index']}. {title_name} （{st_label}）")
         lines.append("")
+
         all_sheets = f.get("all_sheets", [])
         deleted_set = set(f.get("deleted_backups", []))
         uncertain_set = set(f.get("uncertain_sheets", []))
+        sheet_cnt = len(all_sheets)
+        bkp_cnt = len(deleted_set)
+        unc_cnt = len(uncertain_set)
+        pdf_cnt = int(f.get("exported_pdfs", 0))
+        det_cnt = int(f.get("clip_detected", 0))
+        fix_cnt = int(f.get("clip_fixed", 0))
+        note = str(f.get("error") or f.get("current_action") or "-").replace("\n", " ")
+
+        sheet_meta = f"共 {sheet_cnt} 个 Sheet"
+        sheet_sub: list[str] = []
+        if bkp_cnt:
+            sheet_sub.append(f"已删 {bkp_cnt}")
+        if unc_cnt:
+            sheet_sub.append(f"待定 {unc_cnt}")
+        if sheet_sub:
+            sheet_meta += f"（{' · '.join(sheet_sub)}）"
+
+        meta_parts: list[str] = [note, sheet_meta]
+        if pdf_cnt > 0:
+            meta_parts.append(f"导出 PDF {pdf_cnt} 份")
+        if det_cnt > 0:
+            clip_str = f"切字 {fix_cnt}/{det_cnt}"
+            if f.get("clip_accepted", 0):
+                clip_str += f"（人工确认 {f['clip_accepted']}）"
+            meta_parts.append(clip_str)
+        if f.get("normalized_a1"):
+            meta_parts.append("A1+100% 已标准化")
+        if f.get("updated_at"):
+            meta_parts.append(str(f["updated_at"]))
+
+        lines.append(f"> {' ｜ '.join(meta_parts)}")
+        lines.append("")
+
         if all_sheets:
             for sh in all_sheets:
                 if sh in deleted_set:
