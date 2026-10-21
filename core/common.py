@@ -5,7 +5,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-DATE_PATTERN = re.compile(r"(?<!\d)((?:19|20)\d{6})(?!\d)")
+# 日期：20220929，或用同一种分隔符隔开的 2018-02-26 / 2018.02.26 / 2018/02/26（括号由比对原表时忽略）
+DATE_PATTERN = re.compile(r"(?<!\d)((?:19|20)\d{2})([-/.]?)(\d{2})\2(\d{2})(?!\d)")
 # 独立出现的英文备份标记（前后不是字母），如 _bak、Sheet1-BAK、一覧_old；Bakery、Threshold 不算
 BACKUP_WORD_PATTERN = re.compile(r"(?<![a-z])(?:bak|backup|old|copy)(?![a-z])", re.IGNORECASE)
 # 日文/中文备份标记；「旧」不含「新旧」「復旧」（如 新旧対照表、障害復旧手順 是正式资料）
@@ -56,8 +57,19 @@ def _is_valid_date(text: str) -> bool:
         return False
 
 
+def _date_of(match: re.Match[str]) -> str | None:
+    """DATE_PATTERN 匹配到的有效日期（YYYYMMDD），无效日期返回 None"""
+    text = match.group(1) + match.group(3) + match.group(4)
+    return text if _is_valid_date(text) else None
+
+
+def _latest_date_in(name: str) -> str | None:
+    dates = [d for m in DATE_PATTERN.finditer(unicodedata.normalize("NFKC", name)) if (d := _date_of(m))]
+    return max(dates) if dates else None
+
+
 def has_backup_marker(sheet_name: str) -> bool:
-    """名称是否带备份标记：有效 YYYYMMDD 日期、bak/backup/old/copy、
+    """名称是否带备份标记：有效日期（YYYYMMDD 或 YYYY-MM-DD 等）、bak/backup/old/copy、
     バックアップ/备份/旧/コピー/副本，或复制产生的「(2)」后缀。
 
     只是候选条件，是否真的是备份表见 find_backup_sheets。
@@ -66,7 +78,7 @@ def has_backup_marker(sheet_name: str) -> bool:
         BACKUP_WORD_PATTERN.search(sheet_name)
         or BACKUP_TEXT_PATTERN.search(sheet_name)
         or EXCEL_COPY_SUFFIX_PATTERN.search(unicodedata.normalize("NFKC", sheet_name))
-        or any(_is_valid_date(m.group(1)) for m in DATE_PATTERN.finditer(sheet_name))
+        or _latest_date_in(sheet_name) is not None
     )
 
 
@@ -80,7 +92,7 @@ def _comparable_name(name: str) -> str:
 def _original_name_of(backup_name: str) -> str:
     """去掉备份标记后的原表名称，如 基本情報_20241003 → 基本情報"""
     text = unicodedata.normalize("NFKC", backup_name)
-    text = DATE_PATTERN.sub(lambda m: "" if _is_valid_date(m.group(1)) else m.group(0), text)
+    text = DATE_PATTERN.sub(lambda m: "" if _date_of(m) else m.group(0), text)
     text = EXCEL_COPY_SUFFIX_PATTERN.sub("", text)
     text = COPY_PHRASE_PATTERN.sub("", text)
     text = BACKUP_WORD_PATTERN.sub("", text)
@@ -92,14 +104,25 @@ def find_backup_sheets(sheet_names: list[str]) -> list[str]:
     """找出工作簿中的备份表：名称带备份标记，且去掉标记后能在同一工作簿找到对应的原表。
 
     找不到原表时（如只有 基本情報_20241003 而没有 基本情報），带标记的表就是当前在用的版本，
-    保留不删，导出 PDF 时也照常导出。
+    保留不删，导出 PDF 时也照常导出。若同一名称有多个日期版本、都找不到原表，
+    只保留日期最新的一个（如 20170113要介護度別状況調査表），更早的日期版本视为备份。
     """
     candidates = [name for name in sheet_names if has_backup_marker(name)]
     originals = {_comparable_name(name) for name in sheet_names if name not in candidates}
-    return [
-        name for name in candidates
-        if (base := _original_name_of(name)) and base in originals
-    ]
+    backups: set[str] = set()
+    dated_without_original: dict[str, list[tuple[str, str]]] = {}
+    for name in candidates:
+        base = _original_name_of(name)
+        if not base:
+            continue
+        if base in originals:
+            backups.add(name)
+        elif (date := _latest_date_in(name)) is not None:
+            dated_without_original.setdefault(base, []).append((date, name))
+    for versions in dated_without_original.values():
+        newest = max(date for date, _ in versions)
+        backups.update(name for date, name in versions if date < newest)
+    return [name for name in candidates if name in backups]
 
 
 def is_auto_generated_sheet(sheet_name: str) -> bool:

@@ -62,6 +62,9 @@ function addUncertainEmoji(name) {
    ========================================== */
 const MARK_PALETTE_SIZE = 5;
 
+// 20220929，或用同一种分隔符隔开的 2018-02-26 / 2018.02.26 / 2018/02/26
+const DATE_RE = /(?<!\d)((?:19|20)\d{2})([-/.]?)(\d{2})\2(\d{2})(?!\d)/g;
+
 function isValidYmdDate(yyyymmdd) {
   if (!/^(?:19|20)\d{6}$/.test(yyyymmdd)) return false;
   const y = Number(yyyymmdd.slice(0, 4));
@@ -77,10 +80,10 @@ function hasBackupMarker(sheetName) {
   if (/(?<![a-z])(?:bak|backup|old|copy)(?![a-z])/i.test(text)) return true;
   if (/バックアップ|备份|コピー|副本|(?<![新復])旧/.test(text)) return true;
   if (/\s*\(\d+\)[\s_\-・.]*$/.test(text)) return true;
-  const dateRe = /(?<!\d)((?:19|20)\d{6})(?!\d)/g;
+  const dateRe = new RegExp(DATE_RE.source, 'g');
   let m;
   while ((m = dateRe.exec(text)) !== null) {
-    if (isValidYmdDate(m[1])) return true;
+    if (isValidYmdDate(m[1] + m[3] + m[4])) return true;
   }
   return false;
 }
@@ -142,7 +145,7 @@ function analyzeSheetName(displayName, { stripBackup = false, stripVersion = tru
   };
 
   if (stripBackup) {
-    applyStrip(/(?<!\d)((?:19|20)\d{6})(?!\d)/g, m => isValidYmdDate(m[1]), true);
+    applyStrip(DATE_RE, m => isValidYmdDate(m[1] + m[3] + m[4]), true);
     applyStrip(/\s*\(\d+\)[\s_\-・.]*$/g, null, true);
     applyStrip(/copy\s+of|の?コピー|的?副本/gi, null, true);
     applyStrip(/(?<![a-z])(?:bak|backup|old|copy)(?![a-z])/gi, null, true);
