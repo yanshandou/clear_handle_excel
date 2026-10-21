@@ -27,7 +27,7 @@ function getFileStatusBadge(status) {
     case 'pending':
       return '<span class="badge badge-ignored">⏳ 待处理</span>';
     case 'needs_fix':
-      return '<span class="badge badge-pending">🔧 待微调切字</span>';
+      return '<span class="badge badge-pending">🔧 待人工修改</span>';
     case 'done':
       return '<span class="badge badge-fixed">✅ 已完成</span>';
     case 'error':

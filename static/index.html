@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Excel 导出 PDF 切字检测 &amp; 闭环行高微调器</title>
+  <title>Excel 导出 PDF 切字检查工作台</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -11,13 +11,13 @@
     <div class="header-brand">
       <div class="header-logo-badge" aria-hidden="true">📐</div>
       <div class="header-title">
-        <h1>Excel 导出 PDF 切字检测 &amp; 闭环行高微调器</h1>
-        <span class="subtitle">整页蓝图画布点选 · 悬停 2.5x 光学放大镜 · 同行联动智能微调</span>
+        <h1>Excel 导出 PDF 切字检查工作台</h1>
+        <span class="subtitle">整页画布 · 2.5x 放大镜 · 人工筛选 · 增量复检</span>
       </div>
     </div>
     <div class="header-nav">
       <a href="/" class="nav-link">🏠 主页</a>
-      <a href="/workbench" class="nav-link active">📐 切字微调工作台</a>
+      <a href="/workbench" class="nav-link active">📐 切字检查工作台</a>
       <a href="/records" class="nav-link">
         📊 执行记录与进度看板
         <span id="navProgressBadge" class="nav-badge">0%</span>
@@ -32,9 +32,9 @@
       <div class="panel-section-head">
         <div class="panel-section-title">
           <span class="step-chip">STEP 01</span>
-          <span>目标目录扫描与 PDF 切字检测</span>
+          <span>扫描切字（再次扫描只检查新文件和改过的问题）</span>
         </div>
-        <span class="panel-section-sub">自动备份原表 · 可选清理历史备份表（日期 / bak / 副本等） · 批量导出 PDF 扫描压线文字</span>
+        <span class="panel-section-sub">首次完整检查 · 之后增量复检：未修改的文件沿用上次结果，改过的只查有问题的工作表</span>
       </div>
 
       <div class="controls">
@@ -50,8 +50,12 @@
           <input type="checkbox" id="delBackupChk">
           顺便清理备份表（日期 / bak / 副本等）
         </label>
+        <label class="checkbox-label" title="忽略上次的检查记录，所有文件从头检查；跳过的位置仍按同一处文字保持跳过">
+          <input type="checkbox" id="fullScanChk">
+          完整重新扫描
+        </label>
         <button class="btn btn-primary" id="scanBtn" onclick="startScan()">
-          🚀 1. 导出 PDF 并扫描切字
+          🚀 扫描切字
         </button>
         <button class="btn btn-success hidden" id="resumeBtn" onclick="resumeTask()">
           继续上次任务
@@ -78,7 +82,7 @@
       <div class="panel-section-head" style="margin-bottom: 2px;">
         <div class="panel-section-title">
           <span class="step-chip step-chip-teal">STEP 02</span>
-          <span>人工筛选跳过、视图切换与闭环行高微调</span>
+          <span>人工筛选：跳过无需修改的，其余在 Excel 中人工修改</span>
         </div>
         <div class="view-switcher" role="tablist" aria-label="视图模式切换">
           <button
@@ -116,27 +120,13 @@
             只看待处理
           </label>
           <span class="selection-summary">
-            待修复 <b id="cntPendingFix">0</b> · 需人工 <b id="cntReview">0</b>
+            待人工修改 <b id="cntPendingFix">0</b> · 新发现 <b id="cntNew">0</b>
             · 已跳过 <b id="cntSkipped">0</b> · 已修复 <b id="cntFixed">0</b>
           </span>
         </div>
 
         <div class="toolbar-right">
-          <button class="btn btn-outline" id="refreshBtn" onclick="refreshProblems()"
-            title="只复检已保存且修改时间变化的未解决问题文件，不自动增加行高">
-            刷新复检（仅已修改的问题文件）
-          </button>
-          <label class="step-label">
-            最大循环次数:
-            <input type="number" id="maxIterInput" value="6" step="1" min="1">
-          </label>
-          <label class="step-label">
-            每次递增(pt):
-            <input type="number" id="stepInput" value="3.0" step="0.5" min="0.5" max="30">
-          </label>
-          <button class="btn btn-success" id="fixBtn" onclick="startFix()" title="只处理蓝色「待修复」的项，跳过的项不会被加高">
-            🔧 2. 自动迭代微调待修复项 (直到完整显示)
-          </button>
+          <span class="toolbar-hint">在 Excel 中修改并保存后，再点上方「扫描切字」复检，改好的会自动记为已修复。</span>
         </div>
       </div>
     </section>
@@ -145,14 +135,14 @@
     <section class="panel info-panel">
       <div class="legend-bar">
         <span class="legend-title">💡 标记图例：</span>
-        <span class="legend-item"><i class="dot dot-selected"></i> 蓝色框 = 待修复（自动微调时加高）</span>
-        <span class="legend-item"><i class="dot dot-ignored"></i> 灰色虚线框 = 已跳过（人工确认无需修复）</span>
-        <span class="legend-item"><i class="dot dot-fixed"></i> 绿色框 = 已修复完整显示</span>
-        <span class="legend-item"><i class="dot dot-warn"></i> 橙红框 = 达到上限 / 需人工复检</span>
+        <span class="legend-item"><i class="dot dot-selected"></i> 蓝色框 = 待人工修改（标「新」= 本次复检新发现）</span>
+        <span class="legend-item"><i class="dot dot-ignored"></i> 灰色虚线框 = 已跳过（人工确认无需修改）</span>
+        <span class="legend-item"><i class="dot dot-fixed"></i> 绿色 = 已修复（复检未再检出）</span>
+        <span class="legend-item"><i class="dot dot-warn"></i> 橙色框 = 已在 Excel 中定位 / 需人工复检</span>
         <span class="legend-tip">🔍 悬停可看 2.5x 放大镜；点击框即可跳过，再点一次撤销</span>
       </div>
-      <p>先人工筛一遍：无需修复的位置直接点击问题框跳过，再点一次撤销；跳过的项不会被自动加高。筛完后点「自动迭代微调待修复项」，只处理剩下的蓝色框。勾选「只看待处理」可隐藏已跳过和已修复的项。</p>
-      <p>跳过会立即保存，保存 Excel 文件不会让它失效；重新检测（复检、刷新复检、全量重新扫描）时，同一工作表里同样的文字（按出现顺序）仍保持跳过。人工调整并保存后，点击「刷新复检」只重新检测已修改文件的问题工作表，不自动加高。</p>
+      <p>① 先人工筛一遍：无需修改的位置点击问题框跳过（或用「🃏 逐个筛选」），再点一次撤销。② 剩下的在 Excel 中人工修改（可点「在 Excel 中定位」直接跳到单元格），保存。③ 再点「扫描切字」：只检查改过的问题文件里有问题的工作表，不再压线的自动记为已修复。</p>
+      <p>跳过和已修复的位置以后都不会再检查；未修改的文件直接沿用上次结果，不会重新打开。保存 Excel 不会让跳过失效。勾选「只看待处理」可隐藏已跳过和已修复的项。</p>
       <div class="console-frame">
         <div class="console-frame-bar">
           <span class="console-dots"><i></i><i></i><i></i></span>
@@ -167,7 +157,7 @@
       <div class="empty-stage-icon">🗺️</div>
       <h2 class="empty-stage-title">准备就绪 · 等待扫描 Excel 文档</h2>
       <p class="empty-stage-desc">
-        在上方输入 Excel 文件夹路径并点击「1. 导出 PDF 并扫描切字」，检出压线或切字的页面将在此处以蓝图灯箱画布展示。
+        在上方输入 Excel 文件夹路径并点击「扫描切字」，检出压线或切字的页面将在此处以蓝图灯箱画布展示。
       </p>
       <div class="workflow-steps-grid">
         <div class="workflow-step-card">
@@ -181,14 +171,14 @@
           <div class="workflow-step-num">2</div>
           <div class="workflow-step-text">
             <b>人工筛选 &amp; 2.5x 放大镜</b>
-            <span>悬停即时预览 2.5 倍高清特写，无需修复的位置点击即可跳过，减少自动微调的工作量。</span>
+            <span>悬停即时预览 2.5 倍高清特写，无需修改的位置点击即可跳过，以后不再检查。</span>
           </div>
         </div>
         <div class="workflow-step-card">
           <div class="workflow-step-num">3</div>
           <div class="workflow-step-text">
-            <b>闭环微调行高 &amp; A1 标准化</b>
-            <span>按步长自动递增行高并复检 PDF，完整显示即停止，最后自动重置 A1 与 100% 缩放。</span>
+            <b>人工修改 &amp; 增量复检</b>
+            <span>在 Excel 中修改并保存后再次扫描，只检查改过的问题文件，不再压线的自动记为已修复。</span>
           </div>
         </div>
       </div>
@@ -216,13 +206,13 @@
       <div id="triageStage" class="triage-stage"></div>
       <div class="triage-actions">
         <button type="button" class="btn btn-outline triage-keep-btn" onclick="triageDecide('keep')">
-          ← 保留（需要修复）
+          ← 保留（需人工修改）
         </button>
         <button type="button" class="btn btn-outline" id="triageUndoBtn" onclick="triageUndo()">
           ↶ 撤销上一步
         </button>
         <button type="button" class="btn btn-primary" onclick="triageDecide('skip')">
-          跳过（无需修复）→
+          跳过（无需修改）→
         </button>
       </div>
       <p class="triage-hint">键盘 ← 保留、→ 跳过、Backspace 撤销；也可以按住卡片向左 / 向右拖动。跳过会立即保存，保留只记录在本浏览器里，用来标记已看过。</p>

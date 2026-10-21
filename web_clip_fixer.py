@@ -169,6 +169,7 @@ class WebHandler(BaseHTTPRequestHandler):
             self._start_job("scan", {
                 "folder": folder,
                 "delete_backups": payload.get("delete_backups") is True,
+                "full": payload.get("full") is True,
             })
 
         elif self.path == "/api/fix":

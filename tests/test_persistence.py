@@ -339,25 +339,37 @@ class PersistenceTests(unittest.TestCase):
         report = self.snapshot("report")["files"]["book.xlsx"]
         self.assertEqual((report["clip_accepted"], report["clip_unfixed"]), (1, 1))
 
-    def test_full_rescan_keeps_confirmation_for_same_text(self):
-        self.workflow.set_manual_confirmation("item_1", True)
+    def prepare_scan_sheet(self, clips):
         self.sheet.Name = "Sheet1"
         self.sheet.Visible = -1
         self.sheet.ExportAsFixedFormat.side_effect = (
             lambda **kwargs: shutil.copyfile(self.pdf_path, kwargs["Filename"])
         )
         self.wb.Sheets = [self.sheet]
-        self.rescan.return_value = [{"text": "sample", "bbox": (60, 300, 100, 315), "line_y": 310}]
-        self.workflow.queue_job("scan", {"folder": str(self.folder), "delete_backups": False})
-        self.workflow.run_pending_workflow()
+        self.rescan.return_value = clips
 
-        saved = self.snapshot("workflow")
-        self.assertEqual(saved["job"]["status"], "completed")
-        self.assertNotIn("item_1", saved["items"])
-        [item] = saved["items"].values()
-        self.assertEqual(item["status"], "accepted")
-        report = self.snapshot("report")["files"]["book.xlsx"]
-        self.assertEqual((report["status"], report["clip_accepted"], report["clip_unfixed"]), ("done", 1, 0))
+    def test_rescan_keeps_confirmation_and_id_for_same_text(self):
+        self.workflow.set_manual_confirmation("item_1", True)
+        self.prepare_scan_sheet([{"text": "sample", "bbox": (60, 300, 100, 315), "line_y": 310}])
+        for full in (False, True):
+            with self.subTest(full=full):
+                self.workflow.STATE["busy"] = False
+                self.workflow.queue_job("scan", {
+                    "folder": str(self.folder), "delete_backups": False, "full": full,
+                })
+                self.workflow.run_pending_workflow()
+
+                saved = self.snapshot("workflow")
+                self.assertEqual(saved["job"]["status"], "completed")
+                # 同一处问题沿用原编号，页面上的筛选记录不丢
+                self.assertEqual(list(saved["items"]), ["item_1"])
+                self.assertEqual(saved["items"]["item_1"]["status"], "accepted")
+                self.assertEqual(saved["items"]["item_1"]["bbox"], [60, 300, 100, 315])
+                report = self.snapshot("report")["files"]["book.xlsx"]
+                self.assertEqual(
+                    (report["status"], report["clip_accepted"], report["clip_unfixed"]), ("done", 1, 0),
+                )
+                self.touch_modified(self.wb_path)
 
     def test_confirmed_item_cannot_be_automatically_adjusted_even_with_direct_request(self):
         self.workflow.set_manual_confirmation("item_1", True)
@@ -407,16 +419,19 @@ class PersistenceTests(unittest.TestCase):
         self.wb.Save.assert_not_called()
         self.sheet.ExportAsFixedFormat.assert_called_once()
         self.assertEqual(self.row.RowHeight, 37.0)
-        self.assertNotIn("item_1", self.snapshot("workflow")["items"])
+        # 未再检出：记为已修复并保留记录，不再处理
+        item = self.snapshot("workflow")["items"]["item_1"]
+        self.assertEqual((item["status"], item["page_id"]), ("fixed", None))
         self.detect.assert_not_called()
         self.rescan.assert_called_once()
-        self.assertEqual(self.snapshot("report")["files"]["book.xlsx"]["clip_detected"], 0)
+        report = self.snapshot("report")["files"]["book.xlsx"]
+        self.assertEqual((report["clip_detected"], report["clip_fixed"], report["clip_unfixed"]), (1, 1, 0))
 
     def test_manual_recheck_discards_old_ambiguous_target_when_new_pdf_has_no_clips(self):
         self.detect.side_effect = self.workflow.RegionTrackingError("ambiguous target")
         self.workflow.queue_job("recheck", {"selected_ids": ["item_1"]})
         self.workflow.run_pending_workflow()
-        self.assertNotIn("item_1", self.snapshot("workflow")["items"])
+        self.assertEqual(self.snapshot("workflow")["items"]["item_1"]["status"], "fixed")
         self.detect.assert_not_called()
         self.assertEqual(self.row.RowHeight, 15.0)
         self.wb.Save.assert_not_called()
@@ -447,12 +462,14 @@ class PersistenceTests(unittest.TestCase):
         self.workflow.queue_job("recheck", {"selected_ids": ["item_1"]})
         self.workflow.run_pending_workflow()
         state = self.snapshot("workflow")
-        self.assertEqual(state["items"], {})
+        # 旧框和旧页面不再显示，问题记为已修复
         self.assertEqual(state["pages"], {})
+        self.assertEqual(state["items"]["item_1"]["status"], "fixed")
+        self.assertIsNone(state["items"]["item_1"]["page_id"])
         self.assertEqual(state["job"]["status"], "completed")
         self.detect.assert_not_called()
         report = self.snapshot("report")["files"]["book.xlsx"]
-        self.assertEqual(report["clip_detected"], 0)
+        self.assertEqual(report["clip_fixed"], 1)
         self.assertEqual(report["clip_unfixed"], 0)
         self.assertEqual(report["status"], "done")
 
@@ -476,10 +493,10 @@ class PersistenceTests(unittest.TestCase):
         self.workflow.queue_job("recheck", {"selected_ids": ["item_1"]})
         self.workflow.run_pending_workflow()
         state = self.snapshot("workflow")
-        self.assertNotIn("item_1", state["items"])
         self.assertNotIn("old_page", state["pages"])
-        self.assertEqual(len(state["items"]), 1)
-        current = next(iter(state["items"].values()))
+        # 同一工作表里该文字仅此一处压线，对应到原问题并沿用编号，坐标更新为当前位置
+        self.assertEqual(list(state["items"]), ["item_1"])
+        current = state["items"]["item_1"]
         self.assertEqual(tuple(current["bbox"]), bbox)
         self.assertEqual(current["occurrence"], [1, 2])
         self.assertEqual(current["status"], "pending")

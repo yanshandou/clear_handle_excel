@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>执行记录与进度看板 - Excel PDF 切字微调工具</title>
+  <title>执行记录与进度看板 - Excel PDF 切字检查工具</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -11,13 +11,13 @@
     <div class="header-brand">
       <div class="header-logo-badge" aria-hidden="true">📊</div>
       <div class="header-title">
-        <h1>Excel 批处理与切字微调 · 执行记录看板</h1>
+        <h1>Excel 批处理与切字检查 · 执行记录看板</h1>
         <span class="subtitle">实时追踪已处理 / 正在处理 / 待处理文件进度，自动双写同步 Markdown 报告</span>
       </div>
     </div>
     <div class="header-nav">
       <a href="/" class="nav-link">🏠 主页</a>
-      <a href="/workbench" class="nav-link">📐 切字微调工作台</a>
+      <a href="/workbench" class="nav-link">📐 切字检查工作台</a>
       <a href="/records" class="nav-link active">📊 执行记录与进度看板</a>
       <span id="statusText" class="status-pill">✅ 就绪</span>
     </div>
@@ -112,7 +112,7 @@
             ⏳ 待处理 <span id="cntPending" class="pill-count">0</span>
           </button>
           <button type="button" class="filter-pill" data-filter="needs_fix" onclick="setStatusFilter('needs_fix')">
-            🔧 待微调切字 <span id="cntNeedsFix" class="pill-count">0</span>
+            🔧 待人工修改 <span id="cntNeedsFix" class="pill-count">0</span>
           </button>
           <button type="button" class="filter-pill" data-filter="done" onclick="setStatusFilter('done')">
             ✅ 已完成 <span id="cntDone" class="pill-count">0</span>

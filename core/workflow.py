@@ -52,6 +52,8 @@ from core.storage import load_snapshot, save_snapshot
 STATE_LOCK = threading.RLock()
 
 MANUAL_CONFIRMED_REASON = "人工确认无需修复"
+MANUALLY_FIXED_REASON = "人工修改后重新检测未再检出压线"
+RESOLVED_STATUSES = {"accepted", "fixed"}
 
 # 主页上可单独执行的批处理功能（job kind -> 任务名）
 QUICK_TASK_NAMES = {
@@ -131,7 +133,9 @@ def run_pending_workflow() -> None:
             job = STATE["job"]
             options = dict(job["options"])
         if job["kind"] == "scan":
-            scan_folder_workflow(options["folder"], options["delete_backups"], resume=True)
+            scan_folder_workflow(
+                options["folder"], options["delete_backups"], full=options.get("full", False), resume=True,
+            )
             expected = job.get("workbooks", [])
         elif job["kind"] == "manual_open" and job["completed"]:
             expected = options["selected_ids"]
@@ -332,23 +336,23 @@ def _same_text_problem(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return (a["wb_path"], a["sheet_name"], a["text"]) == (b["wb_path"], b["sheet_name"], b["text"])
 
 
-def _confirmation_record(item: dict[str, Any]) -> dict[str, Any]:
-    """重新检测时用来对应同一处问题的人工确认记录（不含截图等大字段）"""
+def _problem_record(item: dict[str, Any]) -> dict[str, Any]:
+    """完整重新扫描前记下旧问题项（不含截图等大字段），用于对应同一处问题"""
     return {
         key: copy.deepcopy(item.get(key))
-        for key in ("wb_path", "sheet_name", "text", "occurrence", "manual_confirmation")
+        for key in ("id", "seq", "wb_path", "sheet_name", "text", "occurrence", "status", "manual_confirmation")
     }
 
 
-def _carry_over_confirmations(new_items: dict[str, Any], confirmed: list[dict[str, Any]]) -> int:
-    """把人工确认带到重新检测出的同一处问题上，返回带过去的数量。
+def _match_previous(new_items: dict[str, Any], previous: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """为重新检测出的问题找到对应的旧问题项，返回 {新问题 id: 旧问题项}（一一对应）。
 
     同一处 = 同一工作簿、工作表、文字，且在同列相同文字中的出现顺序与总数都一致；
-    不要求页码和坐标相同（加高行、重新分页后位置会变）。相同文字数量变化等
-    无法可靠对应的情况按新问题处理，不猜测。
+    不要求页码和坐标相同（改行高、重新分页后位置会变）。相同文字数量变化等
+    无法可靠对应的情况视为新问题，不猜测。
     """
-    remaining = list(confirmed)
-    carried = 0
+    remaining = list(previous)
+    matched: dict[str, dict[str, Any]] = {}
     for result in new_items.values():
         same_text = [old for old in remaining if _same_text_problem(old, result)]
         if not same_text:
@@ -367,11 +371,44 @@ def _carry_over_confirmations(new_items: dict[str, Any], confirmed: list[dict[st
         if len(matches) != 1:
             continue
         remaining.remove(matches[0])
-        result["status"] = "accepted"
-        result["manual_confirmation"] = copy.deepcopy(matches[0]["manual_confirmation"])
-        result["review_reason"] = MANUAL_CONFIRMED_REASON
-        carried += 1
-    return carried
+        matched[result["id"]] = matches[0]
+    return matched
+
+
+def _merge_redetected(
+    new_items: dict[str, Any], previous: list[dict[str, Any]], *, mark_new: bool, keep_unmatched: bool,
+) -> dict[str, Any]:
+    """合并重新检测结果与旧问题项，返回以问题 id 为键的结果。
+
+    - 对应上的：沿用旧 id 和序号（页面上的筛选记录不丢）；已跳过的仍跳过，其余仍压线则待人工处理
+    - 新检出、对应不上的：mark_new 时标为「新发现」
+    - 旧问题未再检出（keep_unmatched 时保留记录）：未解决的记为已修复，已跳过 / 已修复的保持不变
+    """
+    matched = _match_previous(new_items, previous)
+    merged: dict[str, Any] = {}
+    for item in new_items.values():
+        old = matched.get(item["id"])
+        item["is_new"] = mark_new and old is None
+        if old is not None:
+            item["id"], item["seq"] = old["id"], old["seq"]
+            if old["status"] == "accepted":
+                item["status"] = "accepted"
+                item["manual_confirmation"] = copy.deepcopy(old["manual_confirmation"])
+                item["review_reason"] = MANUAL_CONFIRMED_REASON
+        merged[item["id"]] = item
+    if keep_unmatched:
+        matched_ids = {old["id"] for old in matched.values()}
+        for old in previous:
+            if old["id"] in matched_ids:
+                continue
+            record = copy.deepcopy(old)
+            record["page_id"] = None  # 原页面已无此处压线，只在卡片中保留记录
+            record["is_new"] = False
+            if record["status"] not in RESOLVED_STATUSES:
+                record["status"] = "fixed"
+                record["review_reason"] = MANUALLY_FIXED_REASON
+            merged[record["id"]] = record
+    return merged
 
 
 def _set_item_confirmation(item: dict[str, Any], accepted: bool) -> None:
@@ -525,169 +562,226 @@ def _backup_original(wb_path: Path, backup_folder: Path) -> None:
         shutil.copy2(wb_path, backup_folder / wb_path.name)
 
 
-def scan_folder_workflow(folder_str: str, delete_backups: bool, *, resume: bool = False) -> None:
+def _scan_plan(workbooks: list[Path], *, rescan_all: bool) -> dict[str, dict[str, Any]]:
+    """决定每个文件本次怎么检查：full 整个文件 / sheets 只查还有问题的工作表 / skip 沿用上次结果"""
+    plan: dict[str, dict[str, Any]] = {}
+    for wb_path in workbooks:
+        path = str(wb_path)
+        items = [item for item in STATE["items"].values() if item["wb_path"] == path]
+        scanned = not rescan_all and (path in STATE["checked_files"] or bool(items))
+        if not scanned:
+            plan[path] = {"mode": "full", "scanned": False}
+        elif _file_version(wb_path) == STATE["checked_files"].get(path):
+            plan[path] = {"mode": "skip", "scanned": True}
+        else:
+            # 改过的文件：还有问题的只查问题工作表，之前已没问题的整个文件重新检查
+            sheets = sorted({item["sheet_name"] for item in items if item["status"] not in RESOLVED_STATUSES})
+            plan[path] = (
+                {"mode": "sheets", "sheets": sheets, "scanned": True} if sheets
+                else {"mode": "full", "scanned": True}
+            )
+    return plan
+
+
+def _scan_one_workbook(
+    excel: Any,
+    wb_path: Path,
+    entry: dict[str, Any],
+    previous: list[dict[str, Any]],
+    *,
+    job: dict[str, Any] | None,
+    resumed: bool,
+    rescan_all: bool,
+    delete_backups: bool,
+    backup_folder: Path,
+    pdf_folder: Path,
+    used_pdf_paths: set[Path],
+) -> None:
+    """检查一个工作簿；所有工作表检测完成后才一次性替换该文件的旧结果，中途失败不影响旧记录。"""
+    path = str(wb_path)
+    sheets_only = set(entry["sheets"]) if entry["mode"] == "sheets" else None
+    log_msg(
+        f"正在检查: {wb_path.name}"
+        + (f"（只查有问题的工作表：{'、'.join(entry['sheets'])}）" if sheets_only else " ...")
+    )
+    update_file_progress(wb_path.name, status="processing", current_action="正在打开工作簿...", error="")
+    wb = excel.Workbooks.Open(str(wb_path.resolve()))
+    try:
+        all_names = [s.Name for s in wb.Sheets]
+        deleted_bkp_list: list[str] = []
+        if resumed:
+            previous_report = get_execution_report_snapshot()["files"].get(wb_path.name, {})
+            deleted_bkp_list = list(previous_report.get("deleted_backups", []))
+            all_names = list(dict.fromkeys(previous_report.get("all_sheets", []) + all_names))
+        current_names = {s.Name for s in wb.Sheets}
+        bkp_names = [n for n in find_backup_sheets(all_names) if n in current_names]
+        if delete_backups and bkp_names:
+            if len(bkp_names) >= len(all_names):
+                log_msg(f"  ⚠️ 跳过删除备份表（全部工作表均为备份表）: {wb_path.name}")
+            else:
+                _backup_original(wb_path, backup_folder)
+                for bn in bkp_names:
+                    wb.Sheets(bn).Delete()
+                deleted_bkp_list = list(dict.fromkeys(deleted_bkp_list + bkp_names))
+                log_msg(f"  已清理 {len(bkp_names)} 个备份 Sheet")
+                update_file_progress(wb_path.name, all_sheets=all_names, deleted_backups=deleted_bkp_list)
+                wb.Save()
+        update_file_progress(
+            wb_path.name, all_sheets=all_names, deleted_backups=deleted_bkp_list,
+            current_action="正在导出 PDF 并检测切字...",
+        )
+
+        scan_version = _file_version(wb_path)
+        file_stem = sanitize_filename(wb_path.stem)
+        sheets = [s for s in _exportable_sheets(wb) if sheets_only is None or s.Name in sheets_only]
+        with STATE_LOCK:
+            next_seq = max((it["seq"] for it in STATE["items"].values()), default=0) + 1
+        file_pages: dict[str, Any] = {}
+        file_items: dict[str, Any] = {}
+        for sheet in sheets:
+            s_name = sheet.Name
+            update_file_progress(wb_path.name, current_action=f"正在导出并检测 [{s_name}]...")
+            pdf_path = unique_pdf_path(pdf_folder, file_stem, sanitize_filename(s_name), used_pdf_paths)
+            try:
+                _export_sheet_pdf(sheet, pdf_path)
+            except Exception as e:
+                log_msg(f"  导出 PDF 失败 [{s_name}]: {e}")
+                raise
+            pages, items = _detect_sheet_results(sheet, wb_path, s_name, pdf_path, next_seq)
+            next_seq += len(items)
+            file_pages.update(pages)
+            file_items.update(items)
+        if _file_version(wb_path) != scan_version:
+            raise ValueError(f"扫描期间文件已修改，请重新检查: {wb_path.name}")
+    finally:
+        wb.Close(SaveChanges=False)
+
+    merged = _merge_redetected(file_items, previous, mark_new=entry["scanned"], keep_unmatched=not rescan_all)
+    fixed_now = sum(
+        old["status"] not in RESOLVED_STATUSES and merged.get(old["id"], {}).get("status") == "fixed"
+        for old in previous
+    )
+    with STATE_LOCK:
+        for collection in ("pages", "items"):
+            for key, value in list(STATE[collection].items()):
+                if value["wb_path"] == path and (sheets_only is None or value["sheet_name"] in sheets_only):
+                    del STATE[collection][key]
+        STATE["pages"].update(file_pages)
+        STATE["items"].update(merged)
+        STATE["checked_files"][path] = scan_version
+        if job is not None:
+            job["completed"].append(path)
+        _persist_state()
+        wb_items = [item for item in STATE["items"].values() if item["wb_path"] == path]
+        unresolved = sum(item["status"] not in RESOLVED_STATUSES for item in wb_items)
+        new_count = sum(bool(item.get("is_new")) for item in wb_items if item["status"] not in RESOLVED_STATUSES)
+        parts = [f"检查 {len(sheets)} 个工作表"]
+        parts.append(
+            f"待处理 {unresolved} 处" + (f"（新发现 {new_count} 处）" if new_count else "")
+            if unresolved else "无待处理切字"
+        )
+        if fixed_now:
+            parts.append(f"本次确认已修复 {fixed_now} 处")
+        _sync_problem_counts(path, "，".join(parts))
+    update_file_progress(wb_path.name, exported_pdfs=len(sheets))
+
+
+def scan_folder_workflow(
+    folder_str: str, delete_backups: bool, *, full: bool = False, resume: bool = False,
+) -> None:
+    """扫描切字。同一文件夹再次扫描时增量检查：新文件完整检查，未修改的文件沿用上次结果，
+    修改过的文件只查还有问题的工作表（之前已没问题的整个文件重新检查）。
+    full=True 时忽略上次记录完整重新扫描，跳过的位置仍按同一处文字保留。"""
     with STATE_LOCK:
         STATE["busy"] = True
         job = STATE["job"] if resume else None
         initialized = bool(job and "workbooks" in job)
-        if job is not None and "confirmed" in job:
-            confirmed = job["confirmed"]
-        else:
-            # 重新扫描会清空旧结果；先记下人工确认（存入任务以便续跑），检测到同一处问题时沿用
-            confirmed = [
-                _confirmation_record(item) for item in STATE["items"].values() if item["status"] == "accepted"
-            ]
-            if job is not None:
-                job["confirmed"] = confirmed
-        if not initialized:
-            STATE["pages"].clear()
-            STATE["items"].clear()
-            STATE["logs"].clear()
-            STATE["checked_files"].clear()
 
     try:
-        folder, workbooks = list_workbooks(folder_str)
-
-        timestamp = f"{datetime.now():%Y%m%d_%H%M%S}"
-        pdf_folder = Path(STATE["pdf_folder"]) if initialized else folder / f"_exported_pdfs_{timestamp}"
-        backup_folder = Path(STATE["backup_folder"]) if initialized else folder / f"_backup_{timestamp}"
         if initialized:
             assert job is not None
+            folder = Path(STATE["folder"])
             workbooks = [Path(path) for path in job["workbooks"]]
-        pdf_folder.mkdir(parents=True, exist_ok=True)
-        used_pdf_paths = {Path(p["pdf_path"]) for p in STATE["pages"].values()}
-
-        with STATE_LOCK:
-            STATE["folder"] = str(folder)
-            STATE["pdf_folder"] = str(pdf_folder)
-            STATE["backup_folder"] = str(backup_folder)
-
-        if not initialized:
+            # 旧版本留下的扫描任务没有检查计划，按完整扫描继续
+            plan = job.get("plan") or {str(path): {"mode": "full", "scanned": False} for path in workbooks}
+            rescan_all = job.get("rescan_all", "plan" not in job)
+            stash = job.get("stash", job.get("confirmed", []))
+            pdf_folder = Path(STATE["pdf_folder"])
+            backup_folder = Path(STATE["backup_folder"])
+        else:
+            folder, workbooks = list_workbooks(folder_str)
+            timestamp = f"{datetime.now():%Y%m%d_%H%M%S}"
+            pdf_folder = folder / f"_exported_pdfs_{timestamp}"
+            backup_folder = folder / f"_backup_{timestamp}"
+            with STATE_LOCK:
+                rescan_all = full or str(folder) != STATE["folder"]
+                stash = []
+                if rescan_all:
+                    # 完整重新扫描会清空旧结果；先记下旧问题（存入任务以便续跑），检测到同一处时沿用编号与跳过状态
+                    stash = [_problem_record(item) for item in STATE["items"].values()]
+                    STATE["pages"].clear()
+                    STATE["items"].clear()
+                    STATE["checked_files"].clear()
+                STATE["logs"].clear()
+                plan = _scan_plan(workbooks, rescan_all=rescan_all)
+                STATE.update(folder=str(folder), pdf_folder=str(pdf_folder), backup_folder=str(backup_folder))
+                if job is not None:
+                    job.update(
+                        workbooks=[str(path) for path in workbooks], plan=plan,
+                        rescan_all=rescan_all, stash=stash,
+                    )
             init_execution_batch(
-                task_name="Web 导出 PDF 与切字扫描",
+                task_name="Web 切字扫描（完整）" if rescan_all else "Web 切字扫描（增量）",
                 folder=folder,
                 workbooks=workbooks,
                 pdf_folder=pdf_folder,
                 backup_folder=backup_folder,
             )
-        with STATE_LOCK:
-            if job is not None and not initialized:
-                job["workbooks"] = [str(path) for path in workbooks]
-            _persist_state()
+            with STATE_LOCK:
+                _persist_state()
+        pdf_folder.mkdir(parents=True, exist_ok=True)
+        used_pdf_paths = {Path(p["pdf_path"]) for p in STATE["pages"].values()}
+        skipped = [path for path, entry in plan.items() if entry["mode"] == "skip"]
+        log_msg(
+            f"{'完整扫描' if rescan_all else '增量扫描'}：共 {len(workbooks)} 个文件，"
+            f"{len(workbooks) - len(skipped)} 个需要检查，{len(skipped)} 个未修改、沿用上次结果"
+        )
 
+        excel = None
         pythoncom.CoInitialize()
-        excel = win32.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
-
-        item_seq = max((it["seq"] for it in STATE["items"].values()), default=0) + 1
         try:
             for wb_path in workbooks:
-                if job is not None and str(wb_path) in job["completed"]:
+                path = str(wb_path)
+                if job is not None and path in job["completed"]:
                     continue
-                # 未完成的文件重新扫描，已完成文件的结果保持不变。
-                with STATE_LOCK:
-                    for collection in ("pages", "items"):
-                        for key in list(STATE[collection]):
-                            if STATE[collection][key]["wb_path"] == str(wb_path):
-                                del STATE[collection][key]
-                log_msg(f"正在处理并导出: {wb_path.name} ...")
-                update_file_progress(
-                    wb_path.name,
-                    status="processing",
-                    current_action="正在打开工作簿并检查备份表...",
-                )
-                wb = None
-                wb_exported_pdfs = 0
-                wb_detected_clips = 0
-                wb_accepted_clips = 0
-                deleted_bkp_list: list[str] = []
-                try:
-                    wb = excel.Workbooks.Open(str(wb_path.resolve()))
-                    all_names = [s.Name for s in wb.Sheets]
-                    if initialized:
-                        previous = get_execution_report_snapshot()["files"].get(wb_path.name, {})
-                        deleted_bkp_list = list(previous.get("deleted_backups", []))
-                        all_names = list(dict.fromkeys(previous.get("all_sheets", []) + all_names))
-                    bkp_names = find_backup_sheets(all_names)
-                    current_names = {s.Name for s in wb.Sheets}
-                    bkp_names = [n for n in bkp_names if n in current_names]
-
-                    if delete_backups and bkp_names:
-                        if len(bkp_names) >= len(all_names):
-                            log_msg(f"  ⚠️ 跳过删除备份表（全部工作表均为备份表）: {wb_path.name}")
-                        else:
-                            _backup_original(wb_path, backup_folder)
-                            for bn in bkp_names:
-                                wb.Sheets(bn).Delete()
-                            deleted_bkp_list = list(dict.fromkeys(deleted_bkp_list + bkp_names))
-                            log_msg(f"  已清理 {len(bkp_names)} 个备份 Sheet")
-                            update_file_progress(
-                                wb_path.name, all_sheets=all_names, deleted_backups=deleted_bkp_list
-                            )
-                            wb.Save()
-
-                    update_file_progress(
-                        wb_path.name,
-                        all_sheets=all_names,
-                        deleted_backups=deleted_bkp_list,
-                        current_action="正在导出 PDF 并检测切字...",
-                        error="",
-                    )
-
-                    scan_version = _file_version(wb_path)
-                    file_stem = sanitize_filename(wb_path.stem)
-                    for sheet in _exportable_sheets(wb):
-                        s_name = sheet.Name
-
-                        pdf_path = unique_pdf_path(
-                            pdf_folder, file_stem, sanitize_filename(s_name), used_pdf_paths
-                        )
-                        try:
-                            _export_sheet_pdf(sheet, pdf_path)
-                            wb_exported_pdfs += 1
-                        except Exception as e:
-                            log_msg(f"  导出 PDF 失败 [{s_name}]: {e}")
-                            raise
-
-                        pages, items = _detect_sheet_results(sheet, wb_path, s_name, pdf_path, item_seq)
-                        wb_accepted_clips += _carry_over_confirmations(items, confirmed)
-                        wb_detected_clips += len(items)
-                        item_seq += len(items)
-                        with STATE_LOCK:
-                            STATE["pages"].update(pages)
-                            STATE["items"].update(items)
-
-                        update_file_progress(
-                            wb_path.name,
-                            exported_pdfs=wb_exported_pdfs,
-                            clip_detected=wb_detected_clips,
-                            clip_accepted=wb_accepted_clips,
-                            clip_unfixed=wb_detected_clips - wb_accepted_clips,
-                        )
-
-                    if _file_version(wb_path) != scan_version:
-                        raise ValueError(f"扫描期间文件已修改，请重新检查: {wb_path.name}")
-                    wb_unfixed_clips = wb_detected_clips - wb_accepted_clips
-                    accepted_note = f"，{wb_accepted_clips} 处沿用人工确认" if wb_accepted_clips else ""
-                    update_file_progress(
-                        wb_path.name,
-                        status="needs_fix" if wb_unfixed_clips else "done",
-                        exported_pdfs=wb_exported_pdfs,
-                        clip_detected=wb_detected_clips,
-                        clip_accepted=wb_accepted_clips,
-                        clip_unfixed=wb_unfixed_clips,
-                        current_action=(
-                            f"已导出 {wb_exported_pdfs} 份 PDF，检出 {wb_unfixed_clips} 处切字待微调{accepted_note}"
-                            if wb_unfixed_clips
-                            else f"已导出 {wb_exported_pdfs} 份 PDF，无待处理切字{accepted_note}"
-                        ),
-                    )
+                entry = plan[path]
+                if entry["mode"] == "skip":
                     with STATE_LOCK:
-                        STATE["checked_files"][str(wb_path)] = scan_version
+                        _sync_problem_counts(path, "文件未修改，沿用上次检查结果")
                         if job is not None:
-                            job["completed"].append(str(wb_path))
-                        _persist_state()
+                            job["completed"].append(path)
+                    continue
+                if excel is None:
+                    # 按需启动 Excel：全部文件都未修改时不必打开
+                    excel = win32.DispatchEx("Excel.Application")
+                    excel.Visible = False
+                    excel.DisplayAlerts = False
+                if rescan_all:
+                    previous = [record for record in stash if record["wb_path"] == path]
+                else:
+                    with STATE_LOCK:
+                        previous = [
+                            copy.deepcopy(item) for item in STATE["items"].values()
+                            if item["wb_path"] == path
+                            and (entry["mode"] == "full" or item["sheet_name"] in entry["sheets"])
+                        ]
+                try:
+                    _scan_one_workbook(
+                        excel, wb_path, entry, previous,
+                        job=job, resumed=initialized, rescan_all=rescan_all,
+                        delete_backups=delete_backups, backup_folder=backup_folder,
+                        pdf_folder=pdf_folder, used_pdf_paths=used_pdf_paths,
+                    )
                 except Exception as err:
                     log_msg(f"❌ 处理文件出错 {wb_path.name}: {err}")
                     update_file_progress(
@@ -696,20 +790,25 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool, *, resume: bool 
                         error=str(err),
                         current_action=f"处理出错: {err}",
                     )
-                finally:
-                    if wb is not None:
-                        wb.Close(SaveChanges=False)
         finally:
-            excel.Quit()
-            pythoncom.CoUninitialize()
+            try:
+                if excel is not None:
+                    excel.Quit()
+            finally:
+                pythoncom.CoUninitialize()
 
         with STATE_LOCK:
-            total_detected = len(STATE["items"])
-            total_pages_with_clips = len(STATE["pages"])
-            total_accepted = sum(item["status"] == "accepted" for item in STATE["items"].values())
-        summary_msg = f"✅ 扫描完成！在 {total_pages_with_clips} 页 PDF 中共检测到 {total_detected} 处疑似切字位置。"
-        if total_accepted:
-            summary_msg += f"其中 {total_accepted} 处沿用之前的人工确认。"
+            items = list(STATE["items"].values())
+            unresolved = [item for item in items if item["status"] not in RESOLVED_STATUSES]
+            new_total = sum(bool(item.get("is_new")) for item in unresolved)
+            fixed_total = sum(item["status"] == "fixed" for item in items)
+            accepted_total = sum(item["status"] == "accepted" for item in items)
+        summary_msg = (
+            f"✅ 扫描完成：检查 {len(workbooks) - len(skipped)} 个文件"
+            + (f"，{len(skipped)} 个未修改沿用上次结果" if skipped else "")
+            + f"。当前待处理 {len(unresolved)} 处" + (f"（新发现 {new_total} 处）" if new_total else "")
+            + f"，已修复 {fixed_total} 处，已跳过 {accepted_total} 处。"
+        )
         log_msg(summary_msg)
         finish_execution_batch(summary_msg)
     finally:
@@ -923,22 +1022,21 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
                     next_seq += len(items)
                     new_pages.update(pages)
                     new_items.update(items)
-                    log_msg(f"  [{sheet_name}] 新 PDF 检出 {len(items)} 处疑似压线，将替换旧标记")
+                    log_msg(f"  [{sheet_name}] 新 PDF 检出 {len(items)} 处疑似压线")
                 if _file_version(Path(path)) != version:
                     raise ValueError(f"复检期间文件又被修改，本轮不提交，请保存完成后再次刷新: {Path(path).name}")
                 with STATE_LOCK:
                     previous = copy.deepcopy(STATE)
-                    _carry_over_confirmations(new_items, [
+                    merged = _merge_redetected(new_items, [
                         item for item in STATE["items"].values()
                         if item["wb_path"] == path and item["sheet_name"] in entry["sheets"]
-                        and item["status"] == "accepted"
-                    ])
+                    ], mark_new=True, keep_unmatched=True)
                     for collection in ("pages", "items"):
                         for key, value in list(STATE[collection].items()):
                             if value["wb_path"] == path and value["sheet_name"] in entry["sheets"]:
                                 del STATE[collection][key]
                     STATE["pages"].update(new_pages)
-                    STATE["items"].update(new_items)
+                    STATE["items"].update(merged)
                     wb_items = [it for it in STATE["items"].values() if it["wb_path"] == path]
                     fixed = sum(it["status"] == "fixed" for it in wb_items)
                     accepted = sum(it["status"] == "accepted" for it in wb_items)

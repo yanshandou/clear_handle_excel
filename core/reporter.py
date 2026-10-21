@@ -15,7 +15,7 @@ REPORT_STATE_PATH = PROJECT_ROOT / "record_state.json"
 STATUS_LABELS = {
     "pending": "⏳ 待处理",
     "processing": "🔄 正在处理",
-    "needs_fix": "🔧 已扫描 (待微调)",
+    "needs_fix": "🔧 已扫描（待人工修改）",
     "done": "✅ 已完成",
     "error": "❌ 处理失败",
 }
@@ -150,7 +150,7 @@ def init_execution_batch(
             if preserve_existing_files and wb_name in EXECUTION_STATE["files"]:
                 existing = EXECUTION_STATE["files"][wb_name]
                 existing["status"] = "pending"
-                existing["current_action"] = "排队等待微调..."
+                existing["current_action"] = "排队等待处理..."
                 existing["updated_at"] = _time_str()
             else:
                 EXECUTION_STATE["files"][wb_name] = {
@@ -285,7 +285,7 @@ def render_execution_markdown() -> str:
     }.get(state["status"], state["status"])
 
     lines: list[str] = [
-        "# 📊 Excel 批处理与切字微调执行记录报告",
+        "# 📊 Excel 批处理与切字检查执行记录报告",
         "",
         f"- **当前任务**：{state['task_name']}",
         f"- **任务状态**：{status_badge}（当前进度：**{state['progress_pct']}%**，`{state['completed_files']}/{state['total_files']}` 个文件）",

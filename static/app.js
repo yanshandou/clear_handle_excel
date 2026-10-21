@@ -17,7 +17,7 @@ let inFlightSkips = new Map(); // 正在提交的决定
 let skipRequest = null;
 let skipCancelsResumeConfirmed = false;
 
-// 逐个筛选：「保留」只表示已看过、需要修复（问题项仍为待修复），记在本浏览器里用于定位下一处
+// 逐个筛选：「保留」只表示已看过、需人工修改（问题项状态不变），记在本浏览器里用于定位下一处
 let triageKept = new Set();
 let triageHistory = []; // [{ id, action: 'keep' | 'skip' }]，用于撤销
 let triageCurrentId = null;
@@ -152,7 +152,7 @@ function flushSkips() {
   return skipRequest;
 }
 
-// 发起后台任务前先保存所有跳过决定，确保自动微调、复检和重新扫描看到的是最新筛选结果
+// 发起后台任务前先保存所有跳过决定，确保复检和重新扫描看到的是最新筛选结果
 async function syncSkips() {
   while (skipRequest || pendingSkips.size) {
     await (skipRequest || flushSkips());
@@ -164,7 +164,7 @@ function getItemVisualState(item) {
   if (item.status === 'accepted') {
     return {
       boxClass: 'is-ignored is-resolved', cardClass: 'skipped is-resolved', badgeClass: 'badge-ignored',
-      badgeText: '已跳过（无需修复）', shortTag: `跳过#${tagNo}`,
+      badgeText: '已跳过（无需修改）', shortTag: `跳过#${tagNo}`,
     };
   }
   if (item.status === 'fixed') {
@@ -172,17 +172,18 @@ function getItemVisualState(item) {
       boxClass: 'is-fixed is-resolved',
       cardClass: 'fixed is-resolved',
       badgeClass: 'badge-fixed',
-      badgeText: `✓ 已修复 (+${item.iterations}次)`,
+      badgeText: item.iterations ? `✓ 已修复 (+${item.iterations}次)` : '✓ 已修复（复检通过）',
       shortTag: `✓#${tagNo}`,
     };
   }
+  const newTag = item.is_new ? '新' : '';
   if (item.status === 'needs_review' || item.status === 'manual_review') {
     return {
       boxClass: 'is-max-reached',
       cardClass: 'max-reached',
       badgeClass: 'badge-warn',
-      badgeText: item.status === 'manual_review' ? '等待人工调整并保存' : '需人工复检',
-      shortTag: `?#${tagNo}`,
+      badgeText: item.status === 'manual_review' ? '已在 Excel 中定位，修改并保存后重新扫描' : '需人工复检',
+      shortTag: `${newTag}?#${tagNo}`,
     };
   }
   if (item.status === 'max_reached') {
@@ -197,19 +198,22 @@ function getItemVisualState(item) {
   return {
     boxClass: 'is-selected',
     cardClass: 'selected',
-    badgeClass: 'badge-selected',
-    badgeText: '待修复（点击可跳过）',
-    shortTag: `#${tagNo}`,
+    badgeClass: item.is_new ? 'badge-pending' : 'badge-selected',
+    badgeText: item.is_new ? '🆕 新发现 · 待人工修改' : '待人工修改（点击可跳过）',
+    shortTag: `${newTag}#${tagNo}`,
   };
 }
 
+// open = 还需人工处理（含已在 Excel 中定位等状态）；isNew = 其中本次复检新发现的
 function countByState(items) {
-  const counts = { pending: 0, review: 0, skipped: 0, fixed: 0 };
+  const counts = { open: 0, isNew: 0, skipped: 0, fixed: 0 };
   items.forEach(item => {
-    if (item.status === 'pending') counts.pending += 1;
-    else if (item.status === 'accepted') counts.skipped += 1;
+    if (item.status === 'accepted') counts.skipped += 1;
     else if (item.status === 'fixed') counts.fixed += 1;
-    else counts.review += 1;
+    else {
+      counts.open += 1;
+      if (item.is_new) counts.isNew += 1;
+    }
   });
   return counts;
 }
@@ -242,10 +246,10 @@ function refreshItemClasses() {
 
     const skipped = item.status === 'accepted';
     document.querySelectorAll(`.skip-btn[data-item-id="${CSS.escape(item.id)}"]`).forEach(btn => {
-      btn.textContent = skipped ? '撤销跳过' : '跳过（无需修复）';
+      btn.textContent = skipped ? '撤销跳过' : '跳过（无需修改）';
       btn.title = skipped
         ? '撤销跳过，重新纳入处理'
-        : '跳过此处（人工确认无需修复）；保存文件或重新检测时，同一处文字仍保持跳过';
+        : '跳过此处（人工确认无需修改）；之后扫描不再检查这一处';
     });
   });
 
@@ -256,21 +260,21 @@ function refreshItemClasses() {
   Object.keys(latestPages).forEach(pageId => {
     const counts = countByState(itemsByPage[pageId] || []);
     const stage = document.getElementById('stage_' + pageId);
-    if (stage) stage.classList.toggle('page-resolved', counts.pending + counts.review === 0);
+    if (stage) stage.classList.toggle('page-resolved', counts.open === 0);
     const label = document.getElementById('stagecounts_' + pageId);
     if (label) {
-      label.innerHTML = `（待修复 <b>${counts.pending}</b> · 需人工 <b>${counts.review}</b> · `
+      label.innerHTML = `（待人工修改 <b>${counts.open}</b>${counts.isNew ? `（新发现 ${counts.isNew}）` : ''} · `
         + `已跳过 ${counts.skipped} · 已修复 <b style="color:#059669;">${counts.fixed}</b>）`;
     }
   });
 
   const totals = countByState(Object.values(latestItems));
-  document.getElementById('cntPendingFix').innerText = totals.pending;
-  document.getElementById('cntReview').innerText = totals.review;
+  document.getElementById('cntPendingFix').innerText = totals.open;
+  document.getElementById('cntNew').innerText = totals.isNew;
   document.getElementById('cntSkipped').innerText = totals.skipped;
   document.getElementById('cntFixed').innerText = totals.fixed;
   const hasItems = Object.keys(latestItems).length > 0;
-  const showAllDone = hasItems && totals.pending + totals.review === 0
+  const showAllDone = hasItems && totals.open === 0
     && document.body.classList.contains('only-pending') && currentViewMode !== 'triage';
   document.getElementById('allDoneHint').classList.toggle('hidden', !showAllDone);
 }
@@ -319,10 +323,10 @@ function updateMagnifierContent(item) {
 
   document.getElementById('magImg').src = item.image;
   document.getElementById('magText').textContent = `文字内容: ${item.text}`;
-  let hint = '💡 点击框即可跳过此处（无需修复），再点一次撤销；可在画布下方胶囊修正行号';
-  if (item.status === 'accepted') hint = '已跳过（人工确认无需修复），再点一次可撤销';
-  else if (item.status === 'fixed') hint = '✅ 该位置已完整显示，无需继续调整';
-  else if (item.status !== 'pending') hint = '需人工处理：可在 Excel 中定位或重新导出复检；确认无需修复时点击框跳过';
+  let hint = '💡 无需修改就点击框跳过（再点撤销）；需要修改的在 Excel 中改好保存后重新扫描';
+  if (item.status === 'accepted') hint = '已跳过（人工确认无需修改），之后扫描不再检查；再点一次可撤销';
+  else if (item.status === 'fixed') hint = '✅ 复检未再检出压线，已记为已修复';
+  else if (item.status !== 'pending') hint = '需人工处理：在 Excel 中修改保存后重新扫描；确认无需修改时点击框跳过';
   document.getElementById('magHint').textContent = hint;
 }
 
@@ -511,7 +515,7 @@ function renderCanvasStages(pages, items) {
       </div>
 
       <div class="capsule-bar">
-        <span class="capsule-bar-label">🎯 本页切字定位 &amp; 行号微调：</span>
+        <span class="capsule-bar-label">🎯 本页切字定位 &amp; 行号修正：</span>
         ${capsulesHtml}
       </div>
     `;
@@ -599,7 +603,7 @@ function renderCards(items) {
           定位: <b>${escapeHtml(item.cell_addr)}</b> | 当前行高: <b>${escapeHtml(item.row_height)}pt</b><br>
           <span style="color:#64748b;">文字: ${escapeHtml(item.text)}</span>
         </div>
-        <div class="row-adjust" title="如果行号有偏差可手动微调">
+        <div class="row-adjust" title="如果行号有偏差可手动修正">
           行号:
           <input
             type="number"
@@ -611,9 +615,9 @@ function renderCards(items) {
       </div>
       <div onclick="event.stopPropagation();">
         <button class="btn btn-outline btn-sm" onclick="manualOpen('${escapeHtml(id)}')">在 Excel 中定位</button>
-        <button class="btn btn-outline btn-sm" title="${RECHECK_TITLE}" onclick="manualRecheck('${escapeHtml(id)}')">重新导出复检（不加高）</button>
+        <button class="btn btn-outline btn-sm" title="${RECHECK_TITLE}" onclick="manualRecheck('${escapeHtml(id)}')">重新导出复检</button>
         ${skipButton(item)}
-        <p>${escapeHtml(item.review_reason || '自动调整无效时，请转人工核对行号、合并单元格及边框。')}</p>
+        <p>${escapeHtml(item.review_reason || '无需修改就跳过；需要修改的在 Excel 中改好保存后重新扫描。')}</p>
       </div>
     `;
   });
@@ -668,7 +672,7 @@ function renderTriage() {
     stage.innerHTML = reviewable.length ? `
       <div class="triage-done">
         <b>🎉 已全部筛选完</b>
-        <span>保留 ${kept} 处、跳过 ${skipped} 处。点「自动迭代微调待修复项」处理保留的项。</span>
+        <span>保留 ${kept} 处、跳过 ${skipped} 处。保留的请在 Excel 中修改并保存，再点「扫描切字」复检。</span>
         ${kept ? '<button type="button" class="btn btn-outline btn-sm" onclick="triageRestartKept()">重新筛选已保留的项</button>' : ''}
       </div>` : '<div class="triage-done"><span>暂无切字问题，请先扫描。</span></div>';
     return;
@@ -708,7 +712,7 @@ function renderTriage() {
           <b>#${Number(next.seq || 1)} ${escapeHtml(next.wb_name)}</b>
           <span style="color:#64748b;">/ ${escapeHtml(next.sheet_name)}（第 ${Number(next.page_index) + 1} 页）</span>
         </div>
-        <span class="badge ${st.badgeClass}">${escapeHtml(next.status === 'pending' ? '待筛选' : st.badgeText)}</span>
+        <span class="badge ${st.badgeClass}">${escapeHtml(next.status === 'pending' ? (next.is_new ? '🆕 新发现 · 待筛选' : '待筛选') : st.badgeText)}</span>
       </div>
       <div class="triage-card-body">
         <div class="triage-crop"><img src="${next.image}" alt="2.5x 局部特写" draggable="false"></div>
@@ -852,14 +856,10 @@ async function pollState() {
     document.getElementById('resumeBtn').disabled = data.busy;
     if (!workspaceRestored) {
       document.getElementById('folderInput').value = data.folder || '';
-      document.getElementById('stepInput').value = data.settings.step_pt;
-      document.getElementById('maxIterInput').value = data.settings.max_iter;
       // 「顺便清理备份表」会直接删除且不预览，不沿用上次的勾选，每次扫描都需手动勾选
     }
 
     document.getElementById('scanBtn').disabled = data.busy;
-    document.getElementById('fixBtn').disabled = data.busy;
-    document.getElementById('refreshBtn').disabled = data.busy;
     document.getElementById('statusText').innerText = data.busy
       ? '⏳ 后台处理中...' : (canResume ? '任务已中断，可继续上次任务' : '✅ 就绪');
 
@@ -941,17 +941,20 @@ async function startScan() {
     alert('请先输入 Excel 文件夹路径！');
     return;
   }
-  if (canResume && !confirm('开始新扫描会替换上次任务及其扫描结果，确定不继续上次任务吗？')) return;
+  if (canResume && !confirm('开始扫描会替换上次中断任务的续跑进度，确定不继续上次任务吗？')) return;
   await syncSkips();
+  const fullScanChk = document.getElementById('fullScanChk');
   try {
     await postAction('/api/scan', {
       folder,
       delete_backups: document.getElementById('delBackupChk').checked,
+      full: fullScanChk.checked,
     });
   } catch (e) {
     alert(e.message);
     return;
   }
+  fullScanChk.checked = false; // 完整重新扫描只对本次有效，避免下次误用
   pagesSignatureCache = {};
   cardsSignatureCache = {};
   hideMagnifier();
@@ -959,32 +962,6 @@ async function startScan() {
   document.getElementById('cardGrid').innerHTML = '';
 
   await pollState();
-}
-
-async function startFix() {
-  await syncSkips();
-  const ids = Object.values(latestItems).filter(item => item.status === 'pending').map(item => item.id);
-  if (ids.length === 0) {
-    alert('没有待修复的项。需人工复检的项可先「重新导出复检」，确认无需修复的直接点击跳过。');
-    return;
-  }
-  const step = Number(document.getElementById('stepInput').value);
-  const maxIter = Number(document.getElementById('maxIterInput').value);
-  if (!Number.isFinite(step) || step < 0.5 || step > 30 ||
-      !Number.isSafeInteger(maxIter) || maxIter < 1) {
-    alert('每次递增必须为 0.5 至 30 pt，最大循环次数必须为正整数。');
-    return;
-  }
-  if (canResume && !confirm('新微调会替换上次任务的续跑进度，确定吗？')) return;
-  hideMagnifier();
-  try {
-    await postAction('/api/fix', {
-      selected_ids: ids,
-      step_pt: step,
-      max_iter: maxIter,
-    });
-    await pollState();
-  } catch (e) { alert(e.message); }
 }
 
 async function resumeTask() {
@@ -1013,16 +990,6 @@ async function manualRecheck(id) {
   try {
     hideMagnifier();
     await postAction('/api/manual/recheck', { id });
-    await pollState();
-  } catch (e) { alert(e.message); }
-}
-
-async function refreshProblems() {
-  if (canResume && !confirm('刷新复检会替换上次中断任务的续跑检查点。请确认已保存人工调整，是否继续？')) return;
-  await syncSkips();
-  try {
-    hideMagnifier();
-    await postAction('/api/manual/refresh', {});
     await pollState();
   } catch (e) { alert(e.message); }
 }
