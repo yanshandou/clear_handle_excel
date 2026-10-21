@@ -8,7 +8,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
-from core.common import STATIC_DIR, console_print, is_backup_sheet, sanitize_filename
+from core.common import STATIC_DIR, console_print, find_backup_sheets, sanitize_filename
 from core.excel_ops import extract_sheet_snapshot, match_excel_row, normalize_workbook_view
 from core.pdf_detector import (
     extract_page_lines,
@@ -45,7 +45,7 @@ __all__ = [
     "extract_sheet_snapshot",
     "find_clipped_spans_on_page",
     "fix_selected_workflow",
-    "is_backup_sheet",
+    "find_backup_sheets",
     "is_region_still_clipped",
     "log_msg",
     "main",

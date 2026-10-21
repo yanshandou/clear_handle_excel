@@ -1,10 +1,10 @@
 import unittest
 
-from core.common import is_backup_sheet
+from core.common import find_backup_sheets, has_backup_marker
 
 
-class BackupSheetRuleTests(unittest.TestCase):
-    def test_backup_sheet_names(self):
+class BackupMarkerTests(unittest.TestCase):
+    def test_names_with_backup_markers(self):
         for name in (
             # 名称含有效日期
             "20170119営業所用外部事業所設定",
@@ -29,9 +29,9 @@ class BackupSheetRuleTests(unittest.TestCase):
             "Sheet1 (12)",
         ):
             with self.subTest(name=name):
-                self.assertTrue(is_backup_sheet(name))
+                self.assertTrue(has_backup_marker(name))
 
-    def test_regular_sheet_names_are_kept(self):
+    def test_names_without_backup_markers(self):
         for name in (
             "変更履歴",
             "利用者負担額調整",
@@ -52,7 +52,38 @@ class BackupSheetRuleTests(unittest.TestCase):
             "画面ID_123456789",
         ):
             with self.subTest(name=name):
-                self.assertFalse(is_backup_sheet(name))
+                self.assertFalse(has_backup_marker(name))
+
+
+class FindBackupSheetsTests(unittest.TestCase):
+    def test_dated_sheets_without_original_are_kept(self):
+        # SSPLG1100_個別支援計画書情報.xlsx：没有 基本情報 等原表，带日期的就是在用的表
+        self.assertEqual(find_backup_sheets([
+            "変更履歴", "個別支援計画書情報", "基本情報_20241003", "具体的な支援目標及び支援計画_20241003",
+        ]), [])
+        self.assertEqual(find_backup_sheets(["基本情報_20241003", "基本情報_20250101"]), [])
+
+    def test_backup_with_original_is_found(self):
+        # SSKJG2100_利用者負担額調整.xlsx
+        self.assertEqual(find_backup_sheets([
+            "変更履歴", "利用者負担額調整", "Sheet1", "利用者負担額調整_bak",
+        ]), ["利用者負担額調整_bak"])
+
+    def test_original_matches_ignoring_spaces_versions_and_width(self):
+        # SSOPG1000_計画 実績設定.xlsx：原表名带空格，备份带版本号
+        self.assertEqual(find_backup_sheets([
+            "計画 実績設定", "20181213計画実績設定_v2.4", "20180529計画実績設定",
+        ]), ["20181213計画実績設定_v2.4", "20180529計画実績設定"])
+        self.assertEqual(find_backup_sheets(["ＡＢＣ一覧", "abc一覧_BAK"]), ["abc一覧_BAK"])
+
+    def test_every_marker_requires_its_original(self):
+        names = [
+            "機能設計", "機能設計（バックアップ）", "旧機能設計", "Copy of 機能設計", "機能設計_old",
+            "一覧", "一覧 (2)", "Sheet1のコピー", "20250101",
+        ]
+        self.assertEqual(find_backup_sheets(names), [
+            "機能設計（バックアップ）", "旧機能設計", "Copy of 機能設計", "機能設計_old", "一覧 (2)",
+        ])
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import re
 import sys
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,12 @@ BACKUP_WORD_PATTERN = re.compile(r"(?<![a-z])(?:bak|backup|old|copy)(?![a-z])", 
 BACKUP_TEXT_PATTERN = re.compile(r"バックアップ|备份|コピー|副本|(?<![新復])旧")
 # Excel 复制工作表时自动追加的「 (2)」后缀；不带空格的「一覧(2)」多为续页，不算
 EXCEL_COPY_SUFFIX_PATTERN = re.compile(r"\s\(\d+\)$")
+# 去掉备份标记、找原表时额外去掉的写法（「Sheet1のコピー」的「の」、「Copy of 一覧」的「of」）
+COPY_PHRASE_PATTERN = re.compile(r"copy\s+of|の?コピー|的?副本", re.IGNORECASE)
+# 版本号（如 _v2.4、ver1.0），比对原表时忽略
+VERSION_PATTERN = re.compile(r"(?<![a-z])v(?:er)?\.?\d+(?:\.\d+)*(?![a-z])", re.IGNORECASE)
+# 比对原表时忽略的空白、分隔符与括号
+NAME_SEPARATOR_PATTERN = re.compile(r"[\s_\-・.,、。()\[\]【】「」『』]+")
 EXCEL_EXTENSIONS = {".xlsx", ".xlsm", ".xls"}
 EXCLUDE_PDF_SHEETS = {"変更履歴"}  # 不导出为 PDF 的 Sheet 名集合
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -36,22 +43,58 @@ def console_print(text: str) -> None:
         print(text.encode(encoding, errors="backslashreplace").decode(encoding))
 
 
-def is_backup_sheet(sheet_name: str) -> bool:
-    """判断工作表是否为备份表：名称含有效 YYYYMMDD 日期、bak/backup/old/copy、
-    バックアップ/备份/旧/コピー/副本，或带 Excel 复制产生的「 (2)」后缀"""
-    if (
+def _is_valid_date(text: str) -> bool:
+    try:
+        datetime.strptime(text, "%Y%m%d")
+        return True
+    except ValueError:
+        return False
+
+
+def has_backup_marker(sheet_name: str) -> bool:
+    """名称是否带备份标记：有效 YYYYMMDD 日期、bak/backup/old/copy、
+    バックアップ/备份/旧/コピー/副本，或 Excel 复制产生的「 (2)」后缀。
+
+    只是候选条件，是否真的是备份表见 find_backup_sheets。
+    """
+    return bool(
         BACKUP_WORD_PATTERN.search(sheet_name)
         or BACKUP_TEXT_PATTERN.search(sheet_name)
         or EXCEL_COPY_SUFFIX_PATTERN.search(sheet_name)
-    ):
-        return True
-    for match in DATE_PATTERN.finditer(sheet_name):
-        try:
-            datetime.strptime(match.group(1), "%Y%m%d")
-            return True
-        except ValueError:
-            continue
-    return False
+        or any(_is_valid_date(m.group(1)) for m in DATE_PATTERN.finditer(sheet_name))
+    )
+
+
+def _comparable_name(name: str) -> str:
+    """用于比对原表的名称：统一全角半角与大小写，忽略版本号、空白与分隔符"""
+    text = unicodedata.normalize("NFKC", name).lower()
+    text = VERSION_PATTERN.sub("", text)
+    return NAME_SEPARATOR_PATTERN.sub("", text)
+
+
+def _original_name_of(backup_name: str) -> str:
+    """去掉备份标记后的原表名称，如 基本情報_20241003 → 基本情報"""
+    text = unicodedata.normalize("NFKC", backup_name)
+    text = DATE_PATTERN.sub(lambda m: "" if _is_valid_date(m.group(1)) else m.group(0), text)
+    text = EXCEL_COPY_SUFFIX_PATTERN.sub("", text)
+    text = COPY_PHRASE_PATTERN.sub("", text)
+    text = BACKUP_WORD_PATTERN.sub("", text)
+    text = BACKUP_TEXT_PATTERN.sub("", text)
+    return _comparable_name(text)
+
+
+def find_backup_sheets(sheet_names: list[str]) -> list[str]:
+    """找出工作簿中的备份表：名称带备份标记，且去掉标记后能在同一工作簿找到对应的原表。
+
+    找不到原表时（如只有 基本情報_20241003 而没有 基本情報），带标记的表就是当前在用的版本，
+    保留不删，导出 PDF 时也照常导出。
+    """
+    candidates = [name for name in sheet_names if has_backup_marker(name)]
+    originals = {_comparable_name(name) for name in sheet_names if name not in candidates}
+    return [
+        name for name in candidates
+        if (base := _original_name_of(name)) and base in originals
+    ]
 
 
 def sanitize_filename(name: str) -> str:

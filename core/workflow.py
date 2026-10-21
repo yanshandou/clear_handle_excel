@@ -15,7 +15,7 @@ from core.common import (
     XL_TYPE_PDF,
     as_bbox,
     console_print,
-    is_backup_sheet,
+    find_backup_sheets,
     sanitize_filename,
     unique_pdf_path,
 )
@@ -439,14 +439,16 @@ def list_workbooks(folder_str: str) -> tuple[Path, list[Path]]:
     return folder, workbooks
 
 
-def _is_exportable_sheet(sheet: Any) -> bool:
-    """可见、且不是変更履歴或备份表的工作表才导出 PDF"""
-    name = sheet.Name
-    return (
-        name not in EXCLUDE_PDF_SHEETS
-        and not is_backup_sheet(name)
+def _exportable_sheets(wb: Any) -> list[Any]:
+    """可见、且不是変更履歴或备份表的工作表才导出 PDF（备份表按整个工作簿判断）"""
+    sheets = list(wb.Sheets)
+    backup_names = set(find_backup_sheets([sheet.Name for sheet in sheets]))
+    return [
+        sheet for sheet in sheets
+        if sheet.Name not in EXCLUDE_PDF_SHEETS
+        and sheet.Name not in backup_names
         and sheet.Visible == XL_SHEET_VISIBLE
-    )
+    ]
 
 
 def _export_sheet_pdf(sheet: Any, pdf_path: Path) -> None:
@@ -541,7 +543,7 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool, *, resume: bool 
                         previous = get_execution_report_snapshot()["files"].get(wb_path.name, {})
                         deleted_bkp_list = list(previous.get("deleted_backups", []))
                         all_names = list(dict.fromkeys(previous.get("all_sheets", []) + all_names))
-                    bkp_names = [n for n in all_names if is_backup_sheet(n)]
+                    bkp_names = find_backup_sheets(all_names)
                     current_names = {s.Name for s in wb.Sheets}
                     bkp_names = [n for n in bkp_names if n in current_names]
 
@@ -569,9 +571,7 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool, *, resume: bool 
 
                     scan_version = _file_version(wb_path)
                     file_stem = sanitize_filename(wb_path.stem)
-                    for sheet in wb.Sheets:
-                        if not _is_exportable_sheet(sheet):
-                            continue
+                    for sheet in _exportable_sheets(wb):
                         s_name = sheet.Name
 
                         pdf_path = unique_pdf_path(
@@ -1215,7 +1215,7 @@ def _clean_backup_sheets(get_excel: Callable[[], Any], wb_path: Path, backup_fol
     wb = get_excel().Workbooks.Open(str(wb_path.resolve()))
     try:
         all_names = [sheet.Name for sheet in wb.Sheets]
-        backups = [name for name in all_names if is_backup_sheet(name)]
+        backups = find_backup_sheets(all_names)
         if not backups:
             action = f"已删除 {len(deleted)} 个备份 Sheet" if deleted else "没有备份表，无需精简"
         elif len(backups) >= len(all_names):
@@ -1243,9 +1243,7 @@ def _export_workbook_pdfs(
     try:
         file_stem = sanitize_filename(wb_path.stem)
         exported: list[Path] = []
-        for sheet in wb.Sheets:
-            if not _is_exportable_sheet(sheet):
-                continue
+        for sheet in _exportable_sheets(wb):
             pdf_path = unique_pdf_path(
                 pdf_folder, file_stem, sanitize_filename(sheet.Name), used_pdf_paths
             )

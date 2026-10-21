@@ -9,7 +9,7 @@ from core.common import (
     XL_SHEET_VISIBLE,
     XL_WORKSHEET,
     col_index_to_letters,
-    is_backup_sheet,
+    find_backup_sheets,
     normalize_used_values,
 )
 
@@ -65,7 +65,7 @@ def open_workbook_for_manual_review(
 
 
 def scan_workbook_sheets(workbook_path: Path) -> tuple[list[str], list[str]]:
-    """扫描工作簿中的所有 Sheet 名与包含日期的备份 Sheet 名（支持 .xlsx/.xlsm/.xls）"""
+    """扫描工作簿中的所有 Sheet 名与其中的备份 Sheet 名（支持 .xlsx/.xlsm/.xls）"""
     if workbook_path.suffix.lower() == ".xls":
         pythoncom.CoInitialize()
         excel = win32.DispatchEx("Excel.Application")
@@ -75,8 +75,7 @@ def scan_workbook_sheets(workbook_path: Path) -> tuple[list[str], list[str]]:
         try:
             wb = excel.Workbooks.Open(str(workbook_path.resolve()), ReadOnly=True)
             all_sheets = [sh.Name for sh in wb.Sheets]
-            backup_sheets = [name for name in all_sheets if is_backup_sheet(name)]
-            return all_sheets, backup_sheets
+            return all_sheets, find_backup_sheets(all_sheets)
         finally:
             if wb is not None:
                 wb.Close(SaveChanges=False)
@@ -86,8 +85,7 @@ def scan_workbook_sheets(workbook_path: Path) -> tuple[list[str], list[str]]:
     workbook = load_workbook(workbook_path, read_only=True)
     try:
         all_sheets = list(workbook.sheetnames)
-        backup_sheets = [name for name in all_sheets if is_backup_sheet(name)]
-        return all_sheets, backup_sheets
+        return all_sheets, find_backup_sheets(all_sheets)
     finally:
         workbook.close()
 
@@ -115,10 +113,11 @@ def adjust_row_heights_against_clipping(wb: Any, extra_points: float = 6.0) -> N
     不破坏单行表头或方眼紙格子，只针对【包含非空文本且原本行高 >= 22 磅的多行文本行】
     增加安全余量（默认 +6.0 磅），并通过自定义属性保证幂等性。
     """
+    backup_names = set(find_backup_sheets([sheet.Name for sheet in wb.Sheets]))
     for sheet in wb.Sheets:
         if sheet.Visible != XL_SHEET_VISIBLE or sheet.Type != XL_WORKSHEET:
             continue
-        if sheet.Name in EXCLUDE_PDF_SHEETS or is_backup_sheet(sheet.Name):
+        if sheet.Name in EXCLUDE_PDF_SHEETS or sheet.Name in backup_names:
             continue
         if _is_sheet_already_height_adjusted(sheet):
             continue

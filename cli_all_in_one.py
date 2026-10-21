@@ -12,7 +12,7 @@ from core.common import (
     XL_SHEET_VISIBLE,
     XL_TYPE_PDF,
     append_record,
-    is_backup_sheet,
+    find_backup_sheets,
     sanitize_filename,
     unique_pdf_path,
 )
@@ -35,7 +35,7 @@ __all__ = [
     "RECORD_PATH",
     "adjust_row_heights_against_clipping",
     "append_record",
-    "is_backup_sheet",
+    "find_backup_sheets",
     "main",
     "normalize_sheets_view",
     "process_workbooks",
@@ -132,7 +132,7 @@ def process_workbooks(
             try:
                 wb = excel.Workbooks.Open(str(workbook_path.resolve()))
                 original_sheets = [sh.Name for sh in wb.Sheets]
-                backup_sheets = [name for name in original_sheets if is_backup_sheet(name)]
+                backup_sheets = find_backup_sheets(original_sheets)
 
                 def ensure_backup():
                     nonlocal backup_created, file_backed_up
@@ -173,9 +173,10 @@ def process_workbooks(
                 # 4. 导出 PDF
                 if do_export_pdf:
                     file_stem = sanitize_filename(workbook_path.stem)
+                    remaining_backups = set(find_backup_sheets([sheet.Name for sheet in wb.Sheets]))
                     for sheet in wb.Sheets:
                         sheet_name = sheet.Name
-                        if sheet_name in EXCLUDE_PDF_SHEETS or is_backup_sheet(sheet_name):
+                        if sheet_name in EXCLUDE_PDF_SHEETS or sheet_name in remaining_backups:
                             continue
                         if sheet.Visible != XL_SHEET_VISIBLE:
                             continue
@@ -265,7 +266,10 @@ def main() -> None:
 
     do_delete = False
     if pending_delete:
-        print("\n检测到以下备份工作表（名称含日期、bak/backup、old/旧、バックアップ/备份、コピー/copy/副本，或 Excel 副本「 (2)」）:")
+        print(
+            "\n检测到以下备份工作表（名称含日期、bak/backup、old/旧、バックアップ/备份、コピー/copy/副本，"
+            "或 Excel 副本「 (2)」，且同一工作簿中存在对应的原表）:"
+        )
         for workbook_path, sheet_names in pending_delete:
             print(f"\n{workbook_path.name}")
             for sheet_name in sheet_names:

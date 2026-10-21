@@ -123,7 +123,7 @@ class QuickTaskTests(unittest.TestCase):
         if book is None:
             raise ValueError("文件已损坏")
         names = [sheet.Name for sheet in book.sheets]
-        return names, [name for name in names if self.workflow.is_backup_sheet(name)]
+        return names, self.workflow.find_backup_sheets(names)
 
     def run_task(self, kind):
         self.assertTrue(self.workflow.queue_job(kind, {"folder": str(self.folder)}))
@@ -139,17 +139,17 @@ class QuickTaskTests(unittest.TestCase):
         self.workflow.STATE.update(copy.deepcopy(loaded))
         self.workflow.STATE["busy"] = False
 
-    def test_clean_sheets_backs_up_before_deleting_only_dated_sheets(self):
-        self.add_book("a.xlsx", ["機能設計", "機能設計_20250315_bak", "Sheet1_20261020"])
+    def test_clean_sheets_backs_up_before_deleting_only_backups_with_original(self):
+        self.add_book("a.xlsx", ["機能設計", "機能設計_20250315_bak", "基本情報_20241003", "Sheet1 (2)"])
         self.add_book("b.xlsx", ["Sheet1"])
         job = self.run_task("clean_sheets")
 
         self.assertEqual(job["status"], "completed")
-        self.assertEqual(self.books["a.xlsx"].saved, [["機能設計"]])
+        # 没有 基本情報、Sheet1 原表，带标记的这两张是在用的表，保留
+        self.assertEqual(self.books["a.xlsx"].saved, [["機能設計", "基本情報_20241003", "Sheet1 (2)"]])
         self.assertEqual(
-            self.events[:4],
-            [("backup", "a.xlsx"), ("delete", "機能設計_20250315_bak"),
-             ("delete", "Sheet1_20261020"), ("save", "a.xlsx")],
+            self.events[:3],
+            [("backup", "a.xlsx"), ("delete", "機能設計_20250315_bak"), ("save", "a.xlsx")],
         )
         backup_folder = Path(job["options"]["backup_folder"])
         self.assertEqual((backup_folder / "a.xlsx").read_bytes(), b"original a.xlsx")
@@ -157,17 +157,22 @@ class QuickTaskTests(unittest.TestCase):
         # 预检没有备份表的文件不会用 Excel 打开
         self.assertEqual(self.excel.opened, [("a.xlsx", False)])
         files = self.report_files()
-        self.assertEqual(files["a.xlsx"]["deleted_backups"], ["機能設計_20250315_bak", "Sheet1_20261020"])
+        self.assertEqual(files["a.xlsx"]["deleted_backups"], ["機能設計_20250315_bak"])
         self.assertEqual(files["b.xlsx"]["status"], "done")
 
-    def test_clean_sheets_never_deletes_every_sheet(self):
-        self.add_book("dated.xlsx", ["S_20250101", "S_20250102"])
+    def test_dated_sheets_without_original_are_not_deleted(self):
+        # 只有 基本情報_20241003、没有 基本情報 时，带日期的就是在用的表
+        self.add_book("SSPLG1100_個別支援計画書情報.xlsx", [
+            "変更履歴", "個別支援計画書情報", "基本情報_20241003", "具体的な支援目標及び支援計画_20241003",
+        ])
         job = self.run_task("clean_sheets")
 
         self.assertEqual(job["status"], "completed")
-        self.assertEqual(self.books["dated.xlsx"].saved, [])
-        self.assertEqual(len(self.books["dated.xlsx"].sheets), 2)
-        self.assertIn("跳过", self.report_files()["dated.xlsx"]["current_action"])
+        self.dispatch.assert_not_called()
+        self.assertEqual(len(self.books["SSPLG1100_個別支援計画書情報.xlsx"].sheets), 4)
+        self.assertEqual(
+            self.report_files()["SSPLG1100_個別支援計画書情報.xlsx"]["current_action"], "没有备份表，无需精简",
+        )
 
     def test_clean_sheets_skips_excel_entirely_when_no_backups(self):
         self.add_book("a.xlsx", ["Sheet1"])
@@ -180,19 +185,26 @@ class QuickTaskTests(unittest.TestCase):
         self.reporter.init_execution_batch(
             "old", self.folder, [], backup_folder=self.root / "old_backup",
         )
-        self.add_book("spec.xlsx", ["表紙", "変更履歴", "機能_20250101", "隠し"], hidden=["隠し"])
+        self.add_book(
+            "spec.xlsx", ["表紙", "変更履歴", "表紙_20250101", "基本情報_20241003", "隠し"], hidden=["隠し"],
+        )
         job = self.run_task("export_pdf")
 
         self.assertEqual(job["status"], "completed")
         self.assertEqual(self.excel.opened, [("spec.xlsx", True)])
         book = self.books["spec.xlsx"]
         self.assertEqual(book.saved, [])
-        self.assertEqual([s.Name for s in book.sheets if s.ExportAsFixedFormat.called], ["表紙"])
+        # 表紙_20250101 有原表，是备份表；基本情報_20241003 没有原表，照常导出
+        self.assertEqual(
+            [s.Name for s in book.sheets if s.ExportAsFixedFormat.called], ["表紙", "基本情報_20241003"],
+        )
         pdf_folder = Path(job["options"]["pdf_folder"])
-        self.assertEqual([p.name for p in pdf_folder.iterdir()], ["spec_表紙.pdf"])
+        self.assertEqual(
+            sorted(p.name for p in pdf_folder.iterdir()), ["spec_基本情報_20241003.pdf", "spec_表紙.pdf"],
+        )
         self.assertNotIn("backup_folder", job["options"])
         report = self.reporter.get_execution_report_snapshot()
-        self.assertEqual(report["files"]["spec.xlsx"]["exported_pdfs"], 1)
+        self.assertEqual(report["files"]["spec.xlsx"]["exported_pdfs"], 2)
         self.assertEqual(report["pdf_folder"], str(pdf_folder))
         # 新批次不沿用上一批的备份目录
         self.assertEqual(report["backup_folder"], "")
@@ -273,9 +285,10 @@ class QuickTaskTests(unittest.TestCase):
         self.assertEqual(files["a.xlsx"]["backups"], ["Main_20250101"])
         # 全部工作表按原顺序返回，页面据此同时列出保留与删除的工作表
         self.assertEqual(files["a.xlsx"]["sheets"], ["表紙", "Main_20250101", "Main"])
+        # 没有原表 X，X_20250101 不是备份表
         self.assertEqual(files["b.xlsx"]["backups"], [])
         self.assertEqual(files["b.xlsx"]["sheets"], ["X_20250101"])
-        self.assertIn("全部工作表", files["b.xlsx"]["note"])
+        self.assertEqual(files["b.xlsx"]["note"], "")
         self.assertEqual((files["c.xlsx"]["backups"], files["c.xlsx"]["sheets"]), ([], ["Main"]))
         self.assertTrue(files["d.xlsx"]["note"].startswith("无法读取"))
         self.assertEqual(files["d.xlsx"]["sheets"], [])
