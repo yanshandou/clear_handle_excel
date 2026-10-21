@@ -32,6 +32,17 @@
         <h2>常用功能</h2>
         <p>选择一项开始。会修改 Excel 的操作都会先备份原文件，处理进度可在「执行记录与进度看板」查看。</p>
       </div>
+      <div class="home-hero-actions">
+        <button type="button" class="btn btn-outline btn-sm" id="exportProgressBtn" onclick="exportProgress()"
+          title="把扫描结果、人工判断、续跑点和执行记录保存为备份文件">
+          ⬇ 导出进度
+        </button>
+        <button type="button" class="btn btn-outline btn-sm" id="importProgressBtn" onclick="pickProgressFile()"
+          title="从备份文件恢复进度，会替换当前全部进度">
+          ⬆ 导入进度
+        </button>
+        <input type="file" id="progressFileInput" class="hidden" accept=".json,application/json">
+      </div>
     </section>
 
     <!-- 最近任务状态条：有任务记录时显示 -->

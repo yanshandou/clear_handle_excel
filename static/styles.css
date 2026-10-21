@@ -1758,6 +1758,20 @@ input[type="text"] {
   gap: 24px;
 }
 
+.home-hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.home-hero-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .home-hero h2 {
   margin: 0;
   font-size: 22px;

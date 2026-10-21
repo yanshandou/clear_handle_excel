@@ -4,6 +4,7 @@ import math
 import sqlite3
 import threading
 import webbrowser
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -21,9 +22,11 @@ from core.workflow import (
     QUICK_TASK_NAMES,
     STATE,
     STATE_LOCK,
+    export_progress,
     fix_selected_workflow,
     get_overview_snapshot,
     get_state_snapshot,
+    import_progress,
     list_workbooks,
     log_msg,
     preview_backup_sheets,
@@ -75,11 +78,15 @@ class WebHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         del format, args  # 保持终端清爽
 
-    def _send_bytes(self, body: bytes, content_type: str, status: int = 200) -> None:
+    def _send_bytes(
+        self, body: bytes, content_type: str, status: int = 200, filename: str | None = None,
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if filename is not None:
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.end_headers()
         self.wfile.write(body)
 
@@ -115,6 +122,17 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_json(get_state_snapshot())
         elif parsed.path == "/api/overview":
             self._send_json(get_overview_snapshot())
+        elif parsed.path == "/api/progress/export":
+            try:
+                progress = export_progress()
+            except ValueError as err:
+                self._send_json({"ok": False, "error": str(err)}, status=409)
+                return
+            self._send_bytes(
+                json.dumps(progress, ensure_ascii=False).encode("utf-8"),
+                "application/json; charset=utf-8",
+                filename=f"excel_progress_{datetime.now():%Y%m%d_%H%M%S}.json",
+            )
         elif parsed.path == "/api/records":
             self._send_json(get_execution_report_snapshot())
         elif parsed.path == "/api/records/markdown":
@@ -131,7 +149,10 @@ class WebHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         try:
             length = int(self.headers.get("Content-Length", 0))
-            payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            except json.JSONDecodeError:
+                raise ValueError("请求内容不是有效的 JSON（文件可能已损坏）") from None
             if not isinstance(payload, dict):
                 raise ValueError("请求内容必须为 JSON 对象")
             self._handle_post(payload)
@@ -178,6 +199,9 @@ class WebHandler(BaseHTTPRequestHandler):
 
         elif self.path == "/api/clean/preview":
             self._send_json({"ok": True, **preview_backup_sheets(_require_folder(payload))})
+
+        elif self.path == "/api/progress/import":
+            self._send_json({"ok": True, **import_progress(payload)})
 
         elif self.path == "/api/resume":
             self._start_job("resume")

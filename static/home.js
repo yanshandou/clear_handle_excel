@@ -97,6 +97,9 @@ function renderHeader() {
     p.total_files > 0 ? `${p.completed_files}/${p.total_files} (${pct}%)` : '0%';
   document.getElementById('statusText').innerText = overview.busy
     ? '⏳ 后台处理中...' : (overview.can_resume ? '任务已中断，可继续上次任务' : '✅ 就绪');
+  // 任务执行中进度还在变化，不允许导出或导入
+  document.getElementById('exportProgressBtn').disabled = overview.busy;
+  document.getElementById('importProgressBtn').disabled = overview.busy;
 }
 
 function renderStrip() {
@@ -338,6 +341,66 @@ async function resumeTask() {
 }
 
 /* ==========================================
+   进度备份：导出 / 导入
+   ========================================== */
+async function exportProgress() {
+  const btn = document.getElementById('exportProgressBtn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/progress/export');
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || '导出进度失败');
+    }
+    const blob = await res.blob();
+    const match = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '');
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = match ? match[1] : 'excel_progress.json';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.disabled = Boolean(overview && overview.busy);
+  }
+}
+
+function pickProgressFile() {
+  const input = document.getElementById('progressFileInput');
+  input.value = '';
+  input.click();
+}
+
+async function importProgressFile(file) {
+  const message = `导入「${file.name}」会替换当前全部进度（扫描结果、人工判断、续跑点和执行记录），无法撤销。\n`
+    + '建议先点「导出进度」备份当前进度。确定导入吗？';
+  if (!confirm(message)) return;
+  try {
+    const res = await fetch('/api/progress/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: await file.text(),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || '操作未成功');
+    const lines = [
+      `已导入进度（导出于 ${data.exported_at || '未知时间'}）`,
+      `切字问题 ${data.items} 处 · 执行记录 ${data.files} 个文件`,
+    ];
+    if (data.can_resume) lines.push('包含中断的任务，可点击「继续上次任务」继续。');
+    data.warnings.forEach(warning => lines.push(`⚠️ ${warning}`));
+    alert(lines.join('\n'));
+  } catch (e) {
+    alert(`导入失败：${e.message}`);
+  }
+  minAcceptedSeq = pollSeq + 1;
+  await pollState();
+}
+
+/* ==========================================
    后端状态轮询与接口调用
    ========================================== */
 async function pollState() {
@@ -391,6 +454,11 @@ taskFolderInput.addEventListener('input', () => {
 });
 taskFolderInput.addEventListener('keydown', e => {
   if (e.key === 'Enter') onPrimaryAction();
+});
+
+document.getElementById('progressFileInput').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (file) importProgressFile(file);
 });
 
 setInterval(pollState, 1200);

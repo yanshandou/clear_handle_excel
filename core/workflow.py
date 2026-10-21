@@ -44,6 +44,7 @@ from core.reporter import (
     get_execution_report_snapshot,
     init_execution_batch,
     interrupt_execution_batch,
+    replace_execution_report,
     update_file_progress,
 )
 from core.storage import load_snapshot, save_snapshot
@@ -1375,3 +1376,118 @@ def quick_task_workflow(kind: str) -> None:
     )
     log_msg(message)
     finish_execution_batch(message)
+
+
+PROGRESS_FORMAT = "clear_handle_excel.progress"
+PROGRESS_VERSION = 1
+_WORKFLOW_FIELD_TYPES = {
+    "folder": str, "pdf_folder": str, "backup_folder": str, "pages": dict, "items": dict,
+    "logs": list, "settings": dict, "checked_files": dict,
+}
+
+
+def _version_or_none(path: str) -> dict[str, int] | None:
+    try:
+        return _file_version(Path(path))
+    except FileNotFoundError:
+        return None
+
+
+def _referenced_workbooks(state: dict[str, Any]) -> set[str]:
+    paths = {item["wb_path"] for item in state["items"].values()}
+    paths.update(state["checked_files"])
+    if state["job"]:
+        paths.update(state["job"].get("workbooks", []))
+    return paths
+
+
+def export_progress() -> dict[str, Any]:
+    """导出当前进度（工作台状态 + 执行记录），并记录相关 Excel 的文件版本供导入时比对。"""
+    with STATE_LOCK:
+        if STATE["busy"]:
+            raise ValueError("任务执行中，请等任务结束后再导出进度")
+        workflow_state = copy.deepcopy(STATE)
+        report_state = get_execution_report_snapshot()
+    report_state.pop("markdown", None)
+    return {
+        "format": PROGRESS_FORMAT,
+        "version": PROGRESS_VERSION,
+        "exported_at": datetime.now().isoformat(timespec="seconds"),
+        "file_versions": {
+            path: _version_or_none(path) for path in sorted(_referenced_workbooks(workflow_state))
+        },
+        "workflow": workflow_state,
+        "report": report_state,
+    }
+
+
+def import_progress(data: Any) -> dict[str, Any]:
+    """用导出的进度整体替换当前进度。
+
+    导出后若相关 Excel 已被修改或缺失，取消中断任务的续跑点，避免把旧检查点（如目标行高）
+    重放到新版本文件上；扫描结果与人工判断保留，人工确认按文件版本规则自动失效。
+    """
+    if not isinstance(data, dict) or data.get("format") != PROGRESS_FORMAT:
+        raise ValueError("不是本工具导出的进度文件")
+    if data.get("version") != PROGRESS_VERSION:
+        raise ValueError(f"不支持的进度文件版本: {data.get('version')}")
+    workflow_state = data.get("workflow")
+    if (
+        not isinstance(workflow_state, dict)
+        or any(not isinstance(workflow_state.get(key), kind) for key, kind in _WORKFLOW_FIELD_TYPES.items())
+        or not isinstance(workflow_state.get("job"), (dict, type(None)))
+    ):
+        raise ValueError("进度文件损坏：缺少工作台状态")
+    file_versions = data.get("file_versions")
+    if not isinstance(file_versions, dict):
+        raise ValueError("进度文件损坏：缺少文件版本信息")
+
+    imported = copy.deepcopy(workflow_state)
+    imported["busy"] = False
+    job = imported["job"]
+    changed = sorted(
+        Path(path).name for path, version in file_versions.items() if _version_or_none(path) != version
+    )
+    warnings: list[str] = []
+    if changed:
+        names = "、".join(changed[:5]) + (" 等" if len(changed) > 5 else "")
+        warnings.append(f"导出后有 {len(changed)} 个 Excel 文件已修改或缺失：{names}")
+    cancelled = False
+    if job and job["status"] in {"running", "interrupted"}:
+        if changed:
+            job["status"] = "cancelled"
+            job["pending_adjustment"] = None
+            cancelled = True
+            warnings.append("已取消上次中断任务的续跑，避免旧检查点覆盖新版本文件；扫描结果和人工判断仍保留")
+        else:
+            job["status"] = "interrupted"
+
+    with STATE_LOCK:
+        if STATE["busy"]:
+            raise ValueError("任务执行中，请等任务结束后再导入进度")
+        previous_report = get_execution_report_snapshot()
+        replace_execution_report(data.get("report"))  # 先校验并替换执行记录，格式不对时什么都不改
+        previous = copy.deepcopy(STATE)
+        STATE.clear()
+        STATE.update(imported)
+        try:
+            _persist_state()
+        except Exception:
+            STATE.clear()
+            STATE.update(previous)
+            replace_execution_report(previous_report)
+            raise
+        if cancelled:
+            finish_execution_batch("已导入进度备份；导出后 Excel 有变化，已取消中断任务的续跑")
+        log_msg(f"📥 已导入进度备份（导出于 {data.get('exported_at') or '未知时间'}）")
+        for warning in warnings:
+            log_msg(f"  ⚠️ {warning}")
+        _expire_manual_confirmations()
+        _persist_state()
+        return {
+            "exported_at": data.get("exported_at", ""),
+            "items": len(STATE["items"]),
+            "files": len(get_execution_report_snapshot()["files"]),
+            "can_resume": bool(job and job["status"] == "interrupted"),
+            "warnings": warnings,
+        }

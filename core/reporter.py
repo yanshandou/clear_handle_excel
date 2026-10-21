@@ -49,16 +49,44 @@ def _restore_report() -> None:
         save_snapshot("report", loaded)
     if loaded is not None:
         EXECUTION_STATE.update(loaded)
-        if EXECUTION_STATE["status"] == "running":
-            EXECUTION_STATE["status"] = "interrupted"
-            EXECUTION_STATE["current_step"] = "任务已中断，可在主页或工作台继续上次任务"
-            EXECUTION_STATE["current_file"] = ""
-            for entry in EXECUTION_STATE["files"].values():
-                if entry["status"] == "processing":
-                    entry["status"] = "pending"
-                    entry["current_action"] = "任务中断，等待继续"
-            _recompute_counters_unlocked()
+        if _mark_running_as_interrupted_unlocked():
             save_snapshot("report", EXECUTION_STATE)
+
+
+def _mark_running_as_interrupted_unlocked() -> bool:
+    """恢复的记录若停在执行中，说明任务已中断；返回是否有修改。"""
+    if EXECUTION_STATE["status"] != "running":
+        return False
+    EXECUTION_STATE["status"] = "interrupted"
+    EXECUTION_STATE["current_step"] = "任务已中断，可在主页或工作台继续上次任务"
+    EXECUTION_STATE["current_file"] = ""
+    for entry in EXECUTION_STATE["files"].values():
+        if entry["status"] == "processing":
+            entry["status"] = "pending"
+            entry["current_action"] = "任务中断，等待继续"
+    _recompute_counters_unlocked()
+    return True
+
+
+def replace_execution_report(state: dict[str, Any]) -> None:
+    """导入进度时整体替换执行记录，并同步写入数据库与 Markdown 报告。"""
+    if (
+        not isinstance(state, dict)
+        or not isinstance(state.get("files"), dict)
+        or not isinstance(state.get("status"), str)
+    ):
+        raise ValueError("进度文件损坏：缺少执行记录")
+    with REPORT_LOCK:
+        previous = copy.deepcopy(EXECUTION_STATE)
+        EXECUTION_STATE.update(copy.deepcopy(state))
+        EXECUTION_STATE.pop("markdown", None)
+        _mark_running_as_interrupted_unlocked()
+        try:
+            _persist_and_write_markdown_unlocked()
+        except Exception:
+            EXECUTION_STATE.clear()
+            EXECUTION_STATE.update(previous)
+            raise
 
 
 def _now_str() -> str:
