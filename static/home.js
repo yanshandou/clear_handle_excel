@@ -3,11 +3,11 @@ const TASKS = {
     title: '精简 Sheet',
     icon: '🧹',
     theme: 'feature-violet',
-    sub: '扫描全部工作表，自由勾选要删除的表，或将拿不准的表标记为 ❓ 待定',
+    sub: '扫描全部工作表，单击标签即可在「保留 / 删除 / ❓待定」三种状态间切换',
     notes: [
-      '自动初筛：名称含 YYYYMMDD 日期、bak / backup、old / 旧（「新旧」「復旧」除外）、バックアップ / 备份、コピー / copy / 副本或「 (2)」，且同工作簿存在原表的，默认勾选删除',
-      '自由调整：直接勾选或取消复选框即可决定删除哪些工作表（每个工作簿至少保留 1 个工作表）',
-      '存疑待定：拿不准的表可点「❓」标为待定——本次保留不删，并在该 Excel 文件名与该 Sheet 名前加上「❓」图标，按名称排序即可集中人工确认',
+      '自动初筛：名称含 YYYYMMDD 日期、bak / backup、old / 旧（「新旧」「復旧」除外）、バックアップ / 备份、コピー / copy / 副本或「 (2)」，且同工作簿存在原表的，默认标为「删除」',
+      '单击切换：直接单击任意工作表标签，即可在「保留 → 删除 → ❓待定 → 保留」之间循环切换（每个工作簿至少保留 1 个工作表）',
+      '存疑待定：标为「❓待定」的工作表本次保留不删，并在该 Excel 文件名与该 Sheet 名前加上「❓」图标，按名称排序即可集中人工确认',
       '安全备份：修改或重命名前自动按原文件名备份到 _backup_时间戳 文件夹',
     ],
     preview: true,
@@ -112,29 +112,24 @@ function initSheetDecisions() {
   });
 }
 
+const NEXT_SHEET_STATE = {
+  keep: 'delete',
+  delete: 'uncertain',
+  uncertain: 'keep',
+};
+
 function getSheetState(fileName, sheetName) {
   return (sheetDecisions[fileName] && sheetDecisions[fileName][sheetName]) || 'keep';
 }
 
-function toggleSheetDelete(fileIndex, sheetIndex, checked) {
-  const file = previewData?.files?.[fileIndex];
-  if (!file) return;
-  const sheetName = file.sheets[sheetIndex];
-  if (sheetName === undefined) return;
-  sheetDecisions[file.name] = sheetDecisions[file.name] || {};
-  sheetDecisions[file.name][sheetName] = checked ? 'delete' : 'keep';
-  renderPreview();
-  renderDialog();
-}
-
-function toggleSheetUncertain(fileIndex, sheetIndex) {
+function cycleSheetState(fileIndex, sheetIndex) {
   const file = previewData?.files?.[fileIndex];
   if (!file) return;
   const sheetName = file.sheets[sheetIndex];
   if (sheetName === undefined) return;
   const current = getSheetState(file.name, sheetName);
   sheetDecisions[file.name] = sheetDecisions[file.name] || {};
-  sheetDecisions[file.name][sheetName] = current === 'uncertain' ? 'keep' : 'uncertain';
+  sheetDecisions[file.name][sheetName] = NEXT_SHEET_STATE[current] || 'keep';
   renderPreview();
   renderDialog();
 }
@@ -304,7 +299,7 @@ function renderDialog() {
     btn.disabled = !hasAction || hasError || busyOther;
     if (hasError) {
       btn.textContent = '⚠️ 请至少保留 1 个工作表';
-      hint.textContent = `「${stats.emptyFiles[0]}」不能将所有工作表全部勾选删除`;
+      hint.textContent = `「${stats.emptyFiles[0]}」不能将所有工作表全部标为删除`;
     } else if (stats.deletedTotal > 0 && stats.uncertainTotal > 0) {
       btn.textContent = `🧹 确认执行（删 ${stats.deletedTotal} 表 · 待定 ${stats.uncertainTotal} 表）`;
     } else if (stats.deletedTotal > 0) {
@@ -314,7 +309,7 @@ function renderDialog() {
     } else if (stats.unmarkedCount > 0) {
       btn.textContent = `✨ 清除 ${stats.unmarkedCount} 处 ❓ 待定标记`;
     } else {
-      btn.textContent = '没有勾选删除或待定的工作表';
+      btn.textContent = '没有标记删除或待定的工作表';
     }
   } else {
     // 预览只读取文件，后台忙时也允许
@@ -327,7 +322,7 @@ function renderDialog() {
   if (phase === 'running' || phase === 'done') renderRunBox();
 }
 
-// 按工作簿中的原有顺序列出全部工作表，支持勾选删除与标记 ❓ 待定
+// 按工作簿中的原有顺序列出全部工作表，单击标签循环切换「保留 / 删除 / ❓待定」
 function previewFileItem(file, fileIndex, extraClass = '') {
   let delCount = 0;
   let uncCount = 0;
@@ -345,20 +340,13 @@ function previewFileItem(file, fileIndex, extraClass = '') {
     const isUncertain = st === 'uncertain';
     const displayName = isUncertain
       ? addUncertainEmoji(name)
-      : (name.startsWith('❓') ? `${stripUncertainEmoji(name)} (去❓)` : name);
-    return `
-      <span class="preview-sheet-tag is-${st}">
-        <label class="sheet-check-label" title="${isDeleted ? '已勾选删除（点击取消勾选）' : '勾选后删除此工作表'}">
-          <input type="checkbox" class="sheet-check-input" ${isDeleted ? 'checked' : ''}
-            onchange="toggleSheetDelete(${fileIndex}, ${sheetIndex}, this.checked)">
-          <span class="sheet-tag-name">${escapeHtml(displayName)}</span>
-        </label>
-        <button type="button" class="sheet-uncertain-btn ${isUncertain ? 'active' : ''}"
-          onclick="toggleSheetUncertain(${fileIndex}, ${sheetIndex})"
-          title="${isUncertain ? '已标记为待定（再次点击改为普通保留）' : '拿不准要不要删？点击标为「❓ 待定」：先不删，给文件名与该 Sheet 名加 ❓ 图标'}">
-          ${isUncertain ? '❓待定' : '❓'}
-        </button>
-      </span>`;
+      : (name.startsWith('❓') ? stripUncertainEmoji(name) : name);
+    const tip = isDeleted
+      ? '当前：删除（单击切换为「❓待定」，再点切换为「保留」）'
+      : (isUncertain
+        ? '当前：❓待定，本次不删并给文件名与 Sheet 加 ❓（单击切换为「保留」）'
+        : '当前：保留（单击切换为「删除」）');
+    return `<button type="button" class="preview-sheet-tag is-${st}" onclick="cycleSheetState(${fileIndex}, ${sheetIndex})" title="${tip}">${escapeHtml(displayName)}</button>`;
   }).join('');
 
   let renameBadge = '';
@@ -383,7 +371,7 @@ function previewFileItem(file, fileIndex, extraClass = '') {
         ${file.sheets.length ? `<span class="preview-counts">${countParts.join(' · ')}</span>` : ''}
       </div>
       ${file.note ? `<span class="preview-note">⚠️ ${escapeHtml(file.note)}</span>` : ''}
-      ${allDeleted ? `<span class="preview-note">⚠️ 不能删除全部工作表，请至少取消勾选 1 个或标为 ❓ 待定</span>` : ''}
+      ${allDeleted ? `<span class="preview-note">⚠️ 不能删除全部工作表，请单击标签至少将 1 个改为「保留」或「❓待定」</span>` : ''}
       ${tags ? `<span class="preview-tags">${tags}</span>` : ''}
     </li>`;
 }
@@ -406,25 +394,28 @@ function renderPreview() {
     <div class="preview-summary-row">
       <div class="preview-summary">
         共 <b>${files.length}</b> 个文件：
-        勾选删除 <b class="is-deleted">${stats.deletedTotal}</b> 个工作表 ·
-        标记待定 <b class="is-uncertain">${stats.uncertainTotal}</b> 个${stats.uncertainFiles ? `（<b>${stats.uncertainFiles}</b> 个文件将加 ❓ 前缀）` : ''} ·
+        删除 <b class="is-deleted">${stats.deletedTotal}</b> 个 ·
+        待定 <b class="is-uncertain">${stats.uncertainTotal}</b> 个${stats.uncertainFiles ? `（<b>${stats.uncertainFiles}</b> 个文件加 ❓）` : ''} ·
         保留 <b>${stats.keptTotal}</b> 个
       </div>
-      <button type="button" class="btn btn-outline btn-sm preview-reset-btn" onclick="resetSheetDecisions()" title="恢复为系统自动识别的初始勾选状态">
-        ↺ 恢复默认勾选
+      <button type="button" class="btn btn-outline btn-sm preview-reset-btn" onclick="resetSheetDecisions()" title="恢复为系统自动识别的初始标记状态">
+        ↺ 恢复默认
       </button>
     </div>
     <div class="preview-legend">
-      <span class="preview-sheet-tag is-deleted"><span class="sheet-tag-name">☑️ 勾选 = 删除</span></span>
-      <span class="preview-sheet-tag is-kept"><span class="sheet-tag-name">⬜ 未勾 = 保留</span></span>
-      <span class="preview-sheet-tag is-uncertain"><span class="sheet-tag-name">❓ 点击问号 = 待定（不删，文件名与 Sheet 加 ❓）</span></span>
+      <span class="preview-sheet-tag is-keep">保留</span>
+      <span>→</span>
+      <span class="preview-sheet-tag is-delete">删除</span>
+      <span>→</span>
+      <span class="preview-sheet-tag is-uncertain">❓待定</span>
+      <span>（直接单击工作表标签即可循环切换状态）</span>
     </div>
     <ul class="preview-list">
       ${primary.map(({ file, idx }) => previewFileItem(file, idx, file.note ? 'is-warn' : '')).join('')}
     </ul>
     ${plain.length ? `
       <details class="preview-plain" ${plainDetailsOpen ? 'open' : ''} ontoggle="plainDetailsOpen = this.open">
-        <summary>其余 ${plain.length} 个文件未检出备份表（点击展开可手动勾选删除或标记 ❓ 待定）</summary>
+        <summary>其余 ${plain.length} 个文件未检出备份表（点击展开，单击标签可改为删除或 ❓待定）</summary>
         <ul class="preview-list">${plain.map(({ file, idx }) => previewFileItem(file, idx)).join('')}</ul>
       </details>` : ''}
   `;
