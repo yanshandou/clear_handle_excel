@@ -60,18 +60,7 @@
       </div>
     </section>
 
-    <!-- 扫描完成后吸顶显示：汇总、图例、恢复默认与执行按钮 -->
-    <section id="cleanActionBar" class="panel clean-actionbar hidden">
-      <div class="clean-actionbar-main">
-        <div id="cleanSummary" class="preview-summary"></div>
-        <div class="clean-actionbar-buttons">
-          <span id="cleanHint" class="task-hint"></span>
-          <button type="button" class="btn btn-outline btn-sm preview-reset-btn" onclick="resetSheetDecisions()" title="恢复为系统自动识别的初始标记状态">
-            ↺ 恢复默认
-          </button>
-          <button type="button" class="btn btn-primary" id="execBtn" onclick="startTask()">🧹 执行</button>
-        </div>
-      </div>
+    <section id="cleanLegend" class="clean-legend hidden">
       <div class="preview-legend">
         <span class="preview-sheet-tag is-keep">保留</span>
         <span>→</span>
@@ -90,6 +79,20 @@
     </section>
 
     <section id="previewBox" class="preview-box clean-preview hidden"></section>
+
+    <!-- 扫描完成后悬浮在窗口底部：汇总、恢复默认与执行按钮；滚到最后时落回最后一张卡片下方，不遮挡卡片 -->
+    <section id="cleanActionBar" class="panel clean-actionbar hidden">
+      <div class="clean-actionbar-main">
+        <div id="cleanSummary" class="preview-summary"></div>
+        <div class="clean-actionbar-buttons">
+          <span id="cleanHint" class="task-hint"></span>
+          <button type="button" class="btn btn-outline btn-sm preview-reset-btn" onclick="resetSheetDecisions()" title="恢复为系统自动识别的初始标记状态">
+            ↺ 恢复默认
+          </button>
+          <button type="button" class="btn btn-primary" id="execBtn" onclick="startTask()">🧹 执行</button>
+        </div>
+      </div>
+    </section>
 
     <section id="cleanRunBox" class="panel task-run-box hidden">
       <div class="mini-progress-box">

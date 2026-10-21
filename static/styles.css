@@ -2664,11 +2664,18 @@ button.preview-sheet-tag:active {
   min-width: 150px;
 }
 
+/* 顶部导航栏本身吸顶（z-index 100），吸顶的操作栏会被它挡住，所以改为悬浮在窗口底部 */
 .clean-actionbar {
   position: sticky;
-  top: 8px;
+  bottom: 12px;
   z-index: 20;
+  box-shadow: 0 -4px 18px rgba(15, 29, 70, 0.12), var(--shadow-panel);
   padding: 12px 18px;
+  font-size: 13px;
+}
+
+.clean-legend {
+  padding: 0 4px;
   font-size: 13px;
 }
 

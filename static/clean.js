@@ -446,6 +446,7 @@ function renderPage() {
 
   document.getElementById('cleanFolderInput').disabled = working;
   document.getElementById('cleanActionBar').classList.toggle('hidden', phase !== 'preview');
+  document.getElementById('cleanLegend').classList.toggle('hidden', phase !== 'preview');
   document.getElementById('previewBox').classList.toggle('hidden', phase !== 'preview');
   document.getElementById('previewBox').classList.toggle('is-busy', pending !== null);
   document.getElementById('cleanRunBox').classList.toggle('hidden', phase !== 'running' && phase !== 'done');
