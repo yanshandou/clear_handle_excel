@@ -521,10 +521,10 @@ function previewFileItem(file, fileIndex, extraClass = '') {
 
   let renameBadge = '';
   if (uncCount > 0) {
-    const targetFileName = addUncertainEmoji(file.name);
+    const targetFileName = splitDirAndBase(addUncertainEmoji(file.name))[1];
     renameBadge = `<span class="preview-rename-badge" title="含待定 Sheet，文件名将带 ❓ 前缀以便按名称排序集中查看">🏷️ ${escapeHtml(targetFileName)}</span>`;
   } else if (hasUncertainEmoji(file.name) && file.sheets.length > 0) {
-    renameBadge = `<span class="preview-rename-badge is-restore" title="已无待定 Sheet，执行后将恢复原文件名">🏷️ 恢复为 ${escapeHtml(stripUncertainEmoji(file.name))}</span>`;
+    renameBadge = `<span class="preview-rename-badge is-restore" title="已无待定 Sheet，执行后将恢复原文件名">🏷️ 恢复为 ${escapeHtml(splitDirAndBase(stripUncertainEmoji(file.name))[1])}</span>`;
   }
 
   const countParts = [`保留 ${kept}`];
@@ -535,7 +535,7 @@ function previewFileItem(file, fileIndex, extraClass = '') {
     <li class="${extraClass} ${allDeleted ? 'is-warn' : ''}">
       <div class="preview-file-head">
         <div class="preview-file-title">
-          <b>📄 ${escapeHtml(file.name)}</b>
+          <b title="${escapeHtml(file.name)}">📄 ${escapeHtml(splitDirAndBase(file.name)[1])}</b>
           ${renameBadge}
         </div>
         ${file.sheets.length ? `<span class="preview-counts">${countParts.join(' · ')}</span>` : ''}
@@ -544,6 +544,41 @@ function previewFileItem(file, fileIndex, extraClass = '') {
       ${allDeleted ? `<span class="preview-note">⚠️ 不能删除全部工作表，请单击标签至少将 1 个改为「保留」或「待定」</span>` : ''}
       ${tags ? `<span class="preview-tags">${tags}</span>` : ''}
     </li>`;
+}
+
+// 按所在文件夹分组：文件夹路径只在组标题显示一次，卡片里只显示文件名
+function renderFolderGroups(items, extraClassOf = () => '') {
+  const groups = new Map();
+  items.forEach(item => {
+    const [dir] = splitDirAndBase(item.file.name);
+    if (!groups.has(dir)) groups.set(dir, []);
+    groups.get(dir).push(item);
+  });
+  return Array.from(groups, ([dir, group]) => `
+    <div class="clean-folder-group">
+      <div class="clean-folder-title" title="${escapeHtml(dir || '所选文件夹')}">
+        📁 ${escapeHtml(dir ? dir.replace(/[\\/]$/, '') : '（所选文件夹）')}
+        <span>${group.length} 个文件</span>
+      </div>
+      <ul class="preview-list clean-grid">
+        ${group.map(({ file, idx }) => previewFileItem(file, idx, extraClassOf(file))).join('')}
+      </ul>
+    </div>`).join('');
+}
+
+// 瀑布流：每张卡片按自身高度占用若干 1px 的网格行，矮卡片下方不再留空，且保持从左到右的阅读顺序
+const MASONRY_GAP = 8;
+
+function layoutMasonry() {
+  document.querySelectorAll('#previewBox .clean-grid').forEach(grid => {
+    if (!grid.offsetParent) return; // 折叠中的列表展开时再排
+    grid.classList.add('is-masonry');
+    grid.querySelectorAll(':scope > li').forEach(li => {
+      li.style.gridRowEnd = '';
+      const height = li.getBoundingClientRect().height;
+      li.style.gridRowEnd = `span ${Math.ceil(height + MASONRY_GAP)}`;
+    });
+  });
 }
 
 function renderPreview() {
@@ -562,15 +597,14 @@ function renderPreview() {
   document.getElementById('previewBox').innerHTML = `
     ${primary.length ? `
       <h3 class="clean-section-title">检出备份表或待定表的文件（${primary.length}）</h3>
-      <ul class="preview-list clean-grid">
-        ${primary.map(({ file, idx }) => previewFileItem(file, idx, file.note ? 'is-warn' : '')).join('')}
-      </ul>` : '<p class="clean-empty-note">没有检出备份表，可在下方其余文件中单击标签手动标记。</p>'}
+      ${renderFolderGroups(primary, file => (file.note ? 'is-warn' : ''))}` : '<p class="clean-empty-note">没有检出备份表，可在下方其余文件中单击标签手动标记。</p>'}
     ${plain.length ? `
-      <details class="preview-plain" ${plainDetailsOpen ? 'open' : ''} ontoggle="plainDetailsOpen = this.open">
+      <details class="preview-plain" ${plainDetailsOpen ? 'open' : ''} ontoggle="plainDetailsOpen = this.open; layoutMasonry()">
         <summary>其余 ${plain.length} 个文件未检出备份表（点击展开，单击标签可改为删除或待定）</summary>
-        <ul class="preview-list clean-grid">${plain.map(({ file, idx }) => previewFileItem(file, idx)).join('')}</ul>
+        ${renderFolderGroups(plain)}
       </details>` : ''}
   `;
+  layoutMasonry();
 }
 
 function renderRunBox() {
@@ -731,6 +765,12 @@ cleanFolderInput.addEventListener('input', () => {
 });
 cleanFolderInput.addEventListener('keydown', e => {
   if (e.key === 'Enter') runPreview();
+});
+
+let masonryTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(masonryTimer);
+  masonryTimer = setTimeout(layoutMasonry, 120);
 });
 
 setInterval(pollState, 1200);
