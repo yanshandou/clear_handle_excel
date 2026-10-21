@@ -17,6 +17,7 @@
     </div>
     <div class="header-nav">
       <a href="/" class="nav-link active">🏠 主页</a>
+      <a href="/clean" class="nav-link">🧹 精简 Sheet</a>
       <a href="/workbench" class="nav-link">📐 切字检查工作台</a>
       <a href="/records" class="nav-link">
         📊 执行记录与进度看板
@@ -67,14 +68,14 @@
     </section>
 
     <section class="feature-grid" aria-label="常用功能">
-      <button type="button" class="feature-card feature-violet" onclick="openTask('clean_sheets')">
+      <a href="/clean" class="feature-card feature-violet">
         <span class="feature-text">
           <span class="feature-title">精简 Sheet</span>
           <span class="feature-sub">删除日期、bak、副本等备份表</span>
           <span class="feature-meta" id="meta_clean_sheets">先预览，确认后删除</span>
         </span>
         <span class="feature-orb" aria-hidden="true"><span class="feature-icon">🧹</span></span>
-      </button>
+      </a>
 
       <button type="button" class="feature-card feature-sky" onclick="openTask('export_pdf')">
         <span class="feature-text">
@@ -105,12 +106,12 @@
     </section>
   </main>
 
-  <!-- 单项功能对话框：填写文件夹 → (预览) → 执行 → 查看结果 -->
+  <!-- 单项功能对话框：填写文件夹 → 执行 → 查看结果（精简 Sheet 在独立页面 /clean） -->
   <dialog id="taskDialog" class="task-dialog" aria-labelledby="taskDialogTitle">
-    <div id="taskDialogHead" class="task-dialog-head feature-violet">
-      <span id="taskDialogIcon" class="task-dialog-icon" aria-hidden="true">🧹</span>
+    <div id="taskDialogHead" class="task-dialog-head feature-sky">
+      <span id="taskDialogIcon" class="task-dialog-icon" aria-hidden="true">📄</span>
       <div class="task-dialog-heading">
-        <h2 id="taskDialogTitle">精简 Sheet</h2>
+        <h2 id="taskDialogTitle">导出 PDF</h2>
         <p id="taskDialogSub"></p>
       </div>
       <button type="button" class="task-dialog-close" onclick="closeTask()" aria-label="关闭">✕</button>
@@ -124,8 +125,6 @@
         <span class="input-groove-icon" aria-hidden="true">📂</span>
         <input type="text" id="taskFolderInput" placeholder="例如 C:\Users\...\Desktop\excel_files">
       </div>
-
-      <div id="previewBox" class="preview-box hidden"></div>
 
       <div id="taskRunBox" class="task-run-box hidden">
         <div class="mini-progress-box">

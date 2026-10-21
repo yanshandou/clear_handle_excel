@@ -113,6 +113,8 @@ class WebHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path in {"/", "/home.html"}:
             self._serve_static_file("home.html")
+        elif parsed.path in {"/clean", "/clean.html"}:
+            self._serve_static_file("clean.html")
         elif parsed.path in {"/workbench", "/index.html"}:
             self._serve_static_file("index.html")
         elif parsed.path in {"/records", "/records.html"}:

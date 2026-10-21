@@ -1,6 +1,8 @@
 import re
 import sys
+import zipfile
 from collections.abc import Callable
+from xml.etree import ElementTree
 from pathlib import Path
 from typing import Any
 
@@ -64,9 +66,36 @@ def open_workbook_for_manual_review(
         pythoncom.CoUninitialize()
 
 
-def scan_workbook_sheets(workbook_path: Path) -> tuple[list[str], list[str]]:
-    """扫描工作簿中的所有 Sheet 名与其中的备份 Sheet 名（支持 .xlsx/.xlsm/.xls）"""
+def _read_xlsx_sheet_names(workbook_path: Path) -> list[str]:
+    """直接读取压缩包内 xl/workbook.xml 的工作表列表（顺序即标签顺序），不解析共享字符串和样式"""
+    with zipfile.ZipFile(workbook_path) as archive:
+        root = ElementTree.fromstring(archive.read("xl/workbook.xml"))
+    ns = root.tag[: root.tag.index("}") + 1] if root.tag.startswith("{") else ""
+    sheets = root.find(f"{ns}sheets")
+    if sheets is None:
+        raise ValueError("workbook.xml 中没有工作表列表")
+    names = [el.get("name") for el in sheets.findall(f"{ns}sheet")]
+    if not names or any(not name for name in names):
+        raise ValueError("workbook.xml 中的工作表名称无效")
+    return names
+
+
+def scan_workbook_sheets(
+    workbook_path: Path, get_excel: Callable[[], Any] | None = None
+) -> tuple[list[str], list[str]]:
+    """扫描工作簿中的所有 Sheet 名与其中的备份 Sheet 名（支持 .xlsx/.xlsm/.xls）
+
+    .xls 需要用 Excel 打开；批量扫描时传入 get_excel 复用同一个 Excel 进程，避免每个文件都重启 Excel。
+    """
     if workbook_path.suffix.lower() == ".xls":
+        if get_excel is not None:
+            wb = get_excel().Workbooks.Open(str(workbook_path.resolve()), ReadOnly=True)
+            try:
+                all_sheets = [sh.Name for sh in wb.Sheets]
+            finally:
+                wb.Close(SaveChanges=False)
+            return all_sheets, find_backup_sheets(all_sheets)
+
         pythoncom.CoInitialize()
         excel = win32.DispatchEx("Excel.Application")
         excel.Visible = False
@@ -82,12 +111,16 @@ def scan_workbook_sheets(workbook_path: Path) -> tuple[list[str], list[str]]:
             excel.Quit()
             pythoncom.CoUninitialize()
 
-    workbook = load_workbook(workbook_path, read_only=True)
     try:
-        all_sheets = list(workbook.sheetnames)
-        return all_sheets, find_backup_sheets(all_sheets)
-    finally:
-        workbook.close()
+        all_sheets = _read_xlsx_sheet_names(workbook_path)
+    except Exception:
+        # 结构不标准时退回 openpyxl，由它给出可读的错误信息
+        workbook = load_workbook(workbook_path, read_only=True)
+        try:
+            all_sheets = list(workbook.sheetnames)
+        finally:
+            workbook.close()
+    return all_sheets, find_backup_sheets(all_sheets)
 
 
 def _is_sheet_already_height_adjusted(sheet: Any) -> bool:

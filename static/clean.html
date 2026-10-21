@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Excel 整理工具箱 - 精简 Sheet</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-brand">
+      <div class="header-logo-badge" aria-hidden="true">📐</div>
+      <div class="header-title">
+        <h1>Excel 整理与 PDF 切字工具箱</h1>
+        <span class="subtitle">常用功能一键直达 · 支持递归扫描子文件夹 · 自动生成执行记录</span>
+      </div>
+    </div>
+    <div class="header-nav">
+      <a href="/" class="nav-link">🏠 主页</a>
+      <a href="/clean" class="nav-link active">🧹 精简 Sheet</a>
+      <a href="/workbench" class="nav-link">📐 切字检查工作台</a>
+      <a href="/records" class="nav-link">
+        📊 执行记录与进度看板
+        <span id="navProgressBadge" class="nav-badge">0%</span>
+      </a>
+      <span id="statusText" class="status-pill">✅ 就绪</span>
+    </div>
+  </header>
+
+  <main class="container clean-container">
+    <section class="panel clean-setup">
+      <div class="task-dialog-head feature-violet clean-head">
+        <span class="task-dialog-icon" aria-hidden="true">🧹</span>
+        <div class="task-dialog-heading">
+          <h2>精简 Sheet</h2>
+          <p>扫描全部工作表（含子文件夹），单击标签即可在「保留 / 删除 / 待定」三种状态间切换</p>
+        </div>
+      </div>
+
+      <details class="clean-notes">
+        <summary>使用说明</summary>
+        <ul class="task-notes">
+          <li>自动递归扫描所选文件夹及其所有子文件夹下的 Excel 文件</li>
+          <li>自动初筛：名称含 YYYYMMDD 日期、bak / backup、old / 旧（「新旧」「復旧」除外）、バックアップ / 备份、コピー / copy / 副本，或复制产生的「(2)」「（３）」后缀（后面可再接日期，如「(2)_20221005」），且同工作簿存在原表的，默认标为「删除」，并用马克笔下划线标出原表与备份表的同名部分</li>
+          <li>自动生成：名称以「自動生成」开头的工作表（如 自動生成_引数、自動生成_JSON）无需原表，默认标为「删除」</li>
+          <li>单击切换：直接单击任意工作表标签，即可在「保留 → 删除 → 待定 → 保留」之间循环切换，仅靠颜色区分状态（每个工作簿至少保留 1 个工作表）</li>
+          <li>存疑待定：标为「待定」的工作表本次保留不删，并在执行后为该 Excel 文件名与该 Sheet 名前加上「❓」图标，按名称排序即可集中人工确认</li>
+        </ul>
+      </details>
+
+      <label class="task-field-label" for="cleanFolderInput">Excel 文件夹路径</label>
+      <div class="clean-folder-row">
+        <div class="input-groove-wrap">
+          <span class="input-groove-icon" aria-hidden="true">📂</span>
+          <input type="text" id="cleanFolderInput" placeholder="例如 C:\Users\...\Desktop\excel_files">
+        </div>
+        <button type="button" class="btn btn-primary" id="scanBtn" onclick="runPreview()">🔎 扫描备份表</button>
+      </div>
+    </section>
+
+    <!-- 扫描完成后吸顶显示：汇总、图例、恢复默认与执行按钮 -->
+    <section id="cleanActionBar" class="panel clean-actionbar hidden">
+      <div class="clean-actionbar-main">
+        <div id="cleanSummary" class="preview-summary"></div>
+        <div class="clean-actionbar-buttons">
+          <span id="cleanHint" class="task-hint"></span>
+          <button type="button" class="btn btn-outline btn-sm preview-reset-btn" onclick="resetSheetDecisions()" title="恢复为系统自动识别的初始标记状态">
+            ↺ 恢复默认
+          </button>
+          <button type="button" class="btn btn-primary" id="execBtn" onclick="startTask()">🧹 执行</button>
+        </div>
+      </div>
+      <div class="preview-legend">
+        <span class="preview-sheet-tag is-keep">保留</span>
+        <span>→</span>
+        <span class="preview-sheet-tag is-delete">删除</span>
+        <span>→</span>
+        <span class="preview-sheet-tag is-uncertain">待定</span>
+        <span class="preview-legend-sep">｜</span>
+        <span><span class="sheet-shared-mark mark-0">同名部分</span> 为原表与备份表共有的名称（单击标签循环切换状态）</span>
+      </div>
+    </section>
+
+    <section id="cleanEmpty" class="clean-placeholder">输入文件夹路径后点击「扫描备份表」，这里会列出每个 Excel 的全部工作表。</section>
+    <section id="cleanScanning" class="clean-placeholder is-scanning hidden" aria-live="polite">
+      <span class="clean-spinner" aria-hidden="true"></span>
+      <span id="cleanScanningText">正在递归读取所有 Excel 的工作表…</span>
+    </section>
+
+    <section id="previewBox" class="preview-box clean-preview hidden"></section>
+
+    <section id="cleanRunBox" class="panel task-run-box hidden">
+      <div class="mini-progress-box">
+        <div class="mini-progress-info">
+          <span id="cleanStepText">等待开始...</span>
+          <span id="cleanStatsText">0%</span>
+        </div>
+        <div class="progress-track progress-track-sm">
+          <div id="cleanProgressFill" class="progress-fill" style="width: 0%;"></div>
+        </div>
+      </div>
+      <div>
+        <button type="button" class="btn btn-success" id="runStateBtn" onclick="resumeTask()">⏳ 整理中…</button>
+      </div>
+      <div id="cleanResult" class="task-result hidden"></div>
+      <div class="console-frame">
+        <div class="console-frame-bar">
+          <span class="console-dots"><i></i><i></i><i></i></span>
+          <span>实时处理日志</span>
+        </div>
+        <div class="log-box" id="cleanLogBox">等待操作...</div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/clean.js"></script>
+</body>
+</html>

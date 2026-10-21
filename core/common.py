@@ -10,8 +10,11 @@ DATE_PATTERN = re.compile(r"(?<!\d)((?:19|20)\d{6})(?!\d)")
 BACKUP_WORD_PATTERN = re.compile(r"(?<![a-z])(?:bak|backup|old|copy)(?![a-z])", re.IGNORECASE)
 # 日文/中文备份标记；「旧」不含「新旧」「復旧」（如 新旧対照表、障害復旧手順 是正式资料）
 BACKUP_TEXT_PATTERN = re.compile(r"バックアップ|备份|コピー|副本|(?<![新復])旧")
-# Excel 复制工作表时自动追加的「 (2)」后缀；不带空格的「一覧(2)」多为续页，不算
-EXCEL_COPY_SUFFIX_PATTERN = re.compile(r"\s\(\d+\)$")
+# 复制工作表产生的「(2)」「(3)」后缀（全角括号统一为半角后判断，有无空格均可），
+# 后面还可以再接日期，如「様式１（基本情報）(2)_20221005」；仍要求同工作簿存在原表才算备份
+EXCEL_COPY_SUFFIX_PATTERN = re.compile(r"\s*\(\d+\)[\s_\-・.]*$")
+# 工具自动生成的工作表（如 自動生成_引数、自動生成_JSON），没有对应原表，精简 Sheet 时默认删除
+AUTO_GENERATED_PREFIXES = ("自動生成", "自动生成")
 # 去掉备份标记、找原表时额外去掉的写法（「Sheet1のコピー」的「の」、「Copy of 一覧」的「of」）
 COPY_PHRASE_PATTERN = re.compile(r"copy\s+of|の?コピー|的?副本", re.IGNORECASE)
 # 版本号（如 _v2.4、ver1.0），比对原表时忽略
@@ -55,14 +58,14 @@ def _is_valid_date(text: str) -> bool:
 
 def has_backup_marker(sheet_name: str) -> bool:
     """名称是否带备份标记：有效 YYYYMMDD 日期、bak/backup/old/copy、
-    バックアップ/备份/旧/コピー/副本，或 Excel 复制产生的「 (2)」后缀。
+    バックアップ/备份/旧/コピー/副本，或复制产生的「(2)」后缀。
 
     只是候选条件，是否真的是备份表见 find_backup_sheets。
     """
     return bool(
         BACKUP_WORD_PATTERN.search(sheet_name)
         or BACKUP_TEXT_PATTERN.search(sheet_name)
-        or EXCEL_COPY_SUFFIX_PATTERN.search(sheet_name)
+        or EXCEL_COPY_SUFFIX_PATTERN.search(unicodedata.normalize("NFKC", sheet_name))
         or any(_is_valid_date(m.group(1)) for m in DATE_PATTERN.finditer(sheet_name))
     )
 
@@ -97,6 +100,18 @@ def find_backup_sheets(sheet_names: list[str]) -> list[str]:
         name for name in candidates
         if (base := _original_name_of(name)) and base in originals
     ]
+
+
+def is_auto_generated_sheet(sheet_name: str) -> bool:
+    """名称以「自動生成」开头的工作表（忽略 ❓ 待定前缀与全角半角差异）"""
+    text = unicodedata.normalize("NFKC", sheet_name).lstrip(UNCERTAIN_EMOJI).lstrip()
+    return text.startswith(AUTO_GENERATED_PREFIXES)
+
+
+def find_clean_targets(sheet_names: list[str]) -> list[str]:
+    """精简 Sheet 默认删除的工作表：有原表的备份表，加上「自動生成」开头的工作表（保持原顺序）"""
+    targets = set(find_backup_sheets(sheet_names))
+    return [name for name in sheet_names if name in targets or is_auto_generated_sheet(name)]
 
 
 def is_uncertain_name(name: str) -> bool:

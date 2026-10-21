@@ -1,6 +1,6 @@
 import unittest
 
-from core.common import find_backup_sheets, has_backup_marker
+from core.common import find_backup_sheets, find_clean_targets, has_backup_marker
 
 
 class BackupMarkerTests(unittest.TestCase):
@@ -27,6 +27,10 @@ class BackupMarkerTests(unittest.TestCase):
             # Excel 复制工作表产生的后缀
             "一覧 (2)",
             "Sheet1 (12)",
+            # 不带空格、全角括号，或后面再接日期的复制后缀
+            "機能一覧(2)",
+            "一覧（３）",
+            "個別支援計画書_様式１（基本情報）(2)_20221005",
         ):
             with self.subTest(name=name):
                 self.assertTrue(has_backup_marker(name))
@@ -45,8 +49,6 @@ class BackupMarkerTests(unittest.TestCase):
             "Threshold設定",
             "Holder一覧",
             "Copyright",
-            # 不带空格的「(2)」多为续页
-            "機能一覧(2)",
             # 无效日期或更长的数字串
             "20251340設定",
             "画面ID_123456789",
@@ -84,6 +86,28 @@ class FindBackupSheetsTests(unittest.TestCase):
         self.assertEqual(find_backup_sheets(names), [
             "機能設計（バックアップ）", "旧機能設計", "Copy of 機能設計", "機能設計_old", "一覧 (2)",
         ])
+
+    def test_copy_suffix_variants_require_original(self):
+        names = [
+            "変更履歴", "個別支援計画書_様式１（基本情報）",
+            "個別支援計画書_様式１（基本情報）(2)_20221005", "個別支援計画書_様式１（基本情報）(2)",
+            "個別支援計画書_様式１（基本情報）（３）", "一覧(2)",
+        ]
+        # 「一覧(2)」没有原表「一覧」，保留
+        self.assertEqual(find_backup_sheets(names), names[2:5])
+
+
+class CleanTargetTests(unittest.TestCase):
+    def test_auto_generated_sheets_are_cleaned_without_original(self):
+        names = [
+            "変更履歴", "概要", "概要20220816", "自動生成_定数", "自動生成_OUTPUT_V_LIST_HEADER",
+            "❓自動生成_JSON", "自动生成_引数", "帳票_自動生成ルール",
+        ]
+        self.assertEqual(find_clean_targets(names), [
+            "概要20220816", "自動生成_定数", "自動生成_OUTPUT_V_LIST_HEADER", "❓自動生成_JSON", "自动生成_引数",
+        ])
+        # 只影响精简 Sheet，不算备份表（导出 PDF 时照常导出）
+        self.assertEqual(find_backup_sheets(names), ["概要20220816"])
 
 
 if __name__ == "__main__":

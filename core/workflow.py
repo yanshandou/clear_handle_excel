@@ -18,6 +18,7 @@ from core.common import (
     as_bbox,
     console_print,
     find_backup_sheets,
+    find_clean_targets,
     is_uncertain_name,
     sanitize_filename,
     strip_uncertain_prefix,
@@ -1327,32 +1328,63 @@ def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
     """只读递归列出每个工作簿的全部工作表、默认勾选删除的备份表及已带 ❓ 的待定表；不修改文件，也不占用后台任务。"""
     folder, workbooks = list_workbooks(folder_str)
     files: list[dict[str, Any]] = []
-    for wb_path in workbooks:
-        rel_name = workbook_rel_name(wb_path, folder)
-        entry: dict[str, Any] = {
-            "name": rel_name,
-            "sheet_count": 0,
-            "sheets": [],
-            "backups": [],
-            "uncertain": [],
-            "note": "",
-        }
-        try:
-            all_names, backups = scan_workbook_sheets(wb_path)
-        except Exception as err:
-            entry["note"] = f"无法读取: {err}"
-        else:
-            entry["sheet_count"] = len(all_names)
-            entry["sheets"] = all_names  # 保持工作簿中的原有顺序，便于对照保留、删除与待定
-            uncertain = [s for s in all_names if is_uncertain_name(s)]
-            entry["uncertain"] = uncertain
-            default_delete = [s for s in backups if s not in set(uncertain)]
-            if default_delete and len(default_delete) >= len(all_names):
-                entry["note"] = "全部工作表均被识别为备份表，将跳过删除"
-            else:
-                entry["backups"] = default_delete
-        files.append(entry)
+    excel = None
+
+    def get_excel() -> Any:
+        # .xls 只能用 Excel 读取：整次预览共用一个 Excel 进程，没有 .xls 时不启动
+        nonlocal excel
+        if excel is None:
+            pythoncom.CoInitialize()
+            try:
+                excel = win32.DispatchEx("Excel.Application")
+            except Exception:
+                pythoncom.CoUninitialize()
+                raise
+            excel.Visible = False
+            excel.DisplayAlerts = False
+        return excel
+
+    try:
+        for wb_path in workbooks:
+            files.append(_preview_workbook(wb_path, folder, get_excel))
+    finally:
+        if excel is not None:
+            try:
+                excel.Quit()
+            finally:
+                pythoncom.CoUninitialize()
     return {"folder": str(folder), "files": files}
+
+
+def _preview_workbook(wb_path: Path, folder: Path, get_excel: Callable[[], Any]) -> dict[str, Any]:
+    """读取单个工作簿的工作表，并给出默认标为删除的备份表与已带 ❓ 的待定表"""
+    rel_name = workbook_rel_name(wb_path, folder)
+    entry: dict[str, Any] = {
+        "name": rel_name,
+        "sheet_count": 0,
+        "sheets": [],
+        "backups": [],
+        "uncertain": [],
+        "note": "",
+    }
+    try:
+        if wb_path.suffix.lower() == ".xls":
+            all_names, _ = scan_workbook_sheets(wb_path, get_excel)
+        else:
+            all_names, _ = scan_workbook_sheets(wb_path)
+    except Exception as err:
+        entry["note"] = f"无法读取: {err}"
+    else:
+        entry["sheet_count"] = len(all_names)
+        entry["sheets"] = all_names  # 保持工作簿中的原有顺序，便于对照保留、删除与待定
+        uncertain = [s for s in all_names if is_uncertain_name(s)]
+        entry["uncertain"] = uncertain
+        default_delete = [s for s in find_clean_targets(all_names) if s not in set(uncertain)]
+        if default_delete and len(default_delete) >= len(all_names):
+            entry["note"] = "全部工作表均被识别为备份表，将跳过删除"
+        else:
+            entry["backups"] = default_delete
+    return entry
 
 
 def validate_clean_plan(plan: Any) -> dict[str, dict[str, list[str]]]:
@@ -1385,7 +1417,7 @@ def _resolve_clean_targets(
 ) -> tuple[list[str], list[str], list[tuple[str, str]], bool]:
     """根据工作表列表与用户选择，返回 (待删除表, 待定表, [(原表名, 新表名)], 是否试图删空整本工作簿)"""
     if file_plan is None:
-        candidates = find_backup_sheets(all_names)
+        candidates = find_clean_targets(all_names)
         delete_all = bool(all_names and len(candidates) >= len(all_names))
         to_delete = [] if delete_all else candidates
         uncertain_sel = [s for s in all_names if s not in set(to_delete) and is_uncertain_name(s)]
