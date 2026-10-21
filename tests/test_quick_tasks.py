@@ -61,17 +61,23 @@ class FakeWorkbook:
 
 
 class FakeExcel:
-    def __init__(self, books):
+    def __init__(self, books, root_folder):
         self.books = books
+        self.root_folder = root_folder
         self.opened = []
         self.Workbooks = Mock()
         self.Workbooks.Open.side_effect = self.open
         self.Quit = Mock()
 
     def open(self, path, ReadOnly=False):
-        name = Path(path).name
-        self.opened.append((name, ReadOnly))
-        return self.books[name]
+        p = Path(path)
+        try:
+            rel = p.resolve().relative_to(self.root_folder.resolve()).as_posix()
+        except ValueError:
+            rel = p.name
+        key = rel if rel in self.books else p.name
+        self.opened.append((key, ReadOnly))
+        return self.books[key]
 
 
 class QuickTaskTests(unittest.TestCase):
@@ -90,21 +96,13 @@ class QuickTaskTests(unittest.TestCase):
         self.patch_value(reporter, "REPORT_STATE_PATH", self.root / "legacy.json")
         self.events = []
         self.books = {}
-        self.excel = FakeExcel(self.books)
+        self.excel = FakeExcel(self.books, self.folder)
         self.dispatch = Mock(return_value=self.excel)
         self.normalize = Mock()
         self.patch_value(workflow, "pythoncom", Mock())
         self.patch_value(workflow, "win32", Mock(DispatchEx=self.dispatch))
         self.patch_value(workflow, "normalize_workbook_view", self.normalize)
         self.patch_value(workflow, "scan_workbook_sheets", self.read_sheet_names)
-
-        real_copy2 = shutil.copy2
-
-        def recording_copy2(src, dst):
-            self.events.append(("backup", Path(src).name))
-            return real_copy2(src, dst)
-
-        self.patch_value(workflow.shutil, "copy2", recording_copy2)
 
     def patch_value(self, target, name, value):
         patcher = patch.object(target, name, value)
@@ -113,13 +111,19 @@ class QuickTaskTests(unittest.TestCase):
 
     def add_book(self, name, sheets, hidden=()):
         path = self.folder / name
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(f"original {name}".encode())
         self.books[name] = FakeWorkbook(name, sheets, hidden, self.events)
         return path
 
     def read_sheet_names(self, path):
         """模拟 openpyxl 只读读取工作表名"""
-        book = self.books.get(Path(path).name)
+        p = Path(path)
+        try:
+            rel = p.resolve().relative_to(self.folder.resolve()).as_posix()
+        except ValueError:
+            rel = p.name
+        book = self.books.get(rel) or self.books.get(p.name)
         if book is None:
             raise ValueError("文件已损坏")
         names = [sheet.Name for sheet in book.sheets]
@@ -148,12 +152,10 @@ class QuickTaskTests(unittest.TestCase):
         # 没有 基本情報、Sheet1 原表，带标记的这两张是在用的表，保留
         self.assertEqual(self.books["a.xlsx"].saved, [["機能設計", "基本情報_20241003", "Sheet1 (2)"]])
         self.assertEqual(
-            self.events[:3],
-            [("backup", "a.xlsx"), ("delete", "機能設計_20250315_bak"), ("save", "a.xlsx")],
+            self.events[:2],
+            [("delete", "機能設計_20250315_bak"), ("save", "a.xlsx")],
         )
-        backup_folder = Path(job["options"]["backup_folder"])
-        self.assertEqual((backup_folder / "a.xlsx").read_bytes(), b"original a.xlsx")
-        self.assertFalse((backup_folder / "b.xlsx").exists())
+        self.assertNotIn("backup_folder", job["options"])
         # 预检没有备份表的文件不会用 Excel 打开
         self.assertEqual(self.excel.opened, [("a.xlsx", False)])
         files = self.report_files()
@@ -194,13 +196,15 @@ class QuickTaskTests(unittest.TestCase):
         self.assertEqual(self.excel.opened, [("spec.xlsx", True)])
         book = self.books["spec.xlsx"]
         self.assertEqual(book.saved, [])
-        # 表紙_20250101 有原表，是备份表；基本情報_20241003 没有原表，照常导出
+        # 表紙_20250101 有原表，是备份表；基本情報_20241003 没有原表，照常导出，且直接保存在 Excel 所在目录下
         self.assertEqual(
             [s.Name for s in book.sheets if s.ExportAsFixedFormat.called], ["表紙", "基本情報_20241003"],
         )
         pdf_folder = Path(job["options"]["pdf_folder"])
+        self.assertEqual(pdf_folder, self.folder.resolve())
         self.assertEqual(
-            sorted(p.name for p in pdf_folder.iterdir()), ["spec_基本情報_20241003.pdf", "spec_表紙.pdf"],
+            sorted(p.name for p in self.folder.glob("*.pdf")),
+            ["spec_基本情報_20241003.pdf", "spec_表紙.pdf"],
         )
         self.assertNotIn("backup_folder", job["options"])
         report = self.reporter.get_execution_report_snapshot()
@@ -228,9 +232,8 @@ class QuickTaskTests(unittest.TestCase):
         job = self.workflow.STATE["job"]
         self.assertEqual(job["status"], "completed")
         self.assertEqual(self.excel.opened, [("a.xlsx", True)])
-        pdf_folder = Path(job["options"]["pdf_folder"])
-        self.assertEqual((pdf_folder / "a_Sheet1.pdf").read_bytes(), b"pdf of a.xlsm")
-        self.assertEqual((pdf_folder / "a_Sheet1_2.pdf").read_bytes(), b"pdf of a.xlsx")
+        self.assertEqual((self.folder / "a_Sheet1.pdf").read_bytes(), b"pdf of a.xlsm")
+        self.assertEqual((self.folder / "a_Sheet1_2.pdf").read_bytes(), b"pdf of a.xlsx")
 
     def test_normalize_view_backs_up_then_saves_each_workbook(self):
         self.add_book("a.xlsx", ["Sheet1", "Sheet2"])
@@ -238,9 +241,9 @@ class QuickTaskTests(unittest.TestCase):
 
         self.assertEqual(job["status"], "completed")
         self.assertIs(self.normalize.call_args.args[1], self.books["a.xlsx"])
-        self.assertEqual(self.events[0], ("backup", "a.xlsx"))
+        self.assertEqual(self.events[0], ("save", "a.xlsx"))
         self.assertEqual(len(self.books["a.xlsx"].saved), 1)
-        self.assertTrue((Path(job["options"]["backup_folder"]) / "a.xlsx").exists())
+        self.assertNotIn("backup_folder", job["options"])
         self.assertTrue(self.report_files()["a.xlsx"]["normalized_a1"])
 
     def test_quick_task_keeps_workbench_scan_results_and_folders(self):
@@ -420,9 +423,8 @@ class QuickTaskTests(unittest.TestCase):
 
         # SubSheet 被删除，Main_20250101 被加上 ❓ 前缀保留
         self.assertEqual(self.books["spec.xlsx"].saved, [["Main", "❓Main_20250101"]])
-        # 原文件按原名备份，工作簿文件本身重命名为 ❓spec.xlsx
-        backup_folder = Path(job["options"]["backup_folder"])
-        self.assertEqual((backup_folder / "spec.xlsx").read_bytes(), b"original spec.xlsx")
+        # 工作簿文件本身重命名为 ❓spec.xlsx，不生成 _backup_ 目录
+        self.assertNotIn("backup_folder", job["options"])
         self.assertFalse((self.folder / "spec.xlsx").exists())
         self.assertTrue((self.folder / "❓spec.xlsx").exists())
         # plain.xlsx 无需修改，未用 Excel 打开
@@ -432,6 +434,36 @@ class QuickTaskTests(unittest.TestCase):
         self.assertEqual(files["spec.xlsx"]["deleted_backups"], ["SubSheet"])
         self.assertEqual(files["spec.xlsx"]["uncertain_sheets"], ["❓Main_20250101"])
         self.assertEqual(files["spec.xlsx"]["renamed_to"], "❓spec.xlsx")
+
+    def test_recursive_subfolders_scan_clean_and_export_pdf_in_place(self):
+        # 不同子文件夹下存在同名 Excel 文件，递归扫描、精简与同目录导出 PDF 互不冲突
+        self.add_book("01_画面/spec.xlsx", ["Main", "Main_20250101"])
+        self.add_book("02_帳票/spec.xlsx", ["Report", "Draft"])
+
+        preview = self.workflow.preview_backup_sheets(str(self.folder))
+        preview_map = {f["name"]: f for f in preview["files"]}
+        self.assertEqual(sorted(preview_map), ["01_画面/spec.xlsx", "02_帳票/spec.xlsx"])
+        self.assertEqual(preview_map["01_画面/spec.xlsx"]["backups"], ["Main_20250101"])
+
+        plan = {
+            "01_画面/spec.xlsx": {"delete": ["Main_20250101"], "uncertain": []},
+            "02_帳票/spec.xlsx": {"delete": [], "uncertain": ["Draft"]},
+        }
+        self.assertTrue(
+            self.workflow.queue_job("clean_sheets", {"folder": str(self.folder), "plan": plan})
+        )
+        self.workflow.run_pending_workflow()
+        self.assertEqual(self.books["01_画面/spec.xlsx"].saved, [["Main"]])
+        self.assertEqual(self.books["02_帳票/spec.xlsx"].saved, [["Report", "❓Draft"]])
+        self.assertTrue((self.folder / "02_帳票" / "❓spec.xlsx").exists())
+        self.assertEqual(self.report_files()["02_帳票/spec.xlsx"]["renamed_to"], "02_帳票/❓spec.xlsx")
+
+        # 导出 PDF 时，PDF 直接生成在各自的子文件夹中
+        self.books["02_帳票/❓spec.xlsx"] = self.books["02_帳票/spec.xlsx"]
+        self.run_task("export_pdf")
+        self.assertTrue((self.folder / "01_画面" / "spec_Main.pdf").exists())
+        self.assertTrue((self.folder / "02_帳票" / "❓spec_Report.pdf").exists())
+        self.assertTrue((self.folder / "02_帳票" / "❓spec_❓Draft.pdf").exists())
 
     def test_clean_sheets_unmarks_uncertain_and_restores_filename(self):
         # 第二次扫描处理已带 ❓ 的文件：将 ❓Draft 取消待定改为普通保留，文件与 Sheet 自动去掉 ❓

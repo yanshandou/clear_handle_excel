@@ -3,12 +3,12 @@ const TASKS = {
     title: '精简 Sheet',
     icon: '🧹',
     theme: 'feature-violet',
-    sub: '扫描全部工作表，单击标签即可在「保留 / 删除 / ❓待定」三种状态间切换',
+    sub: '扫描全部工作表（含子文件夹），单击标签即可在「保留 / 删除 / ❓待定」三种状态间切换',
     notes: [
+      '自动递归扫描所选文件夹及其所有子文件夹下的 Excel 文件',
       '自动初筛：名称含 YYYYMMDD 日期、bak / backup、old / 旧（「新旧」「復旧」除外）、バックアップ / 备份、コピー / copy / 副本或「 (2)」，且同工作簿存在原表的，默认标为「删除」',
       '单击切换：直接单击任意工作表标签，即可在「保留 → 删除 → ❓待定 → 保留」之间循环切换（每个工作簿至少保留 1 个工作表）',
       '存疑待定：标为「❓待定」的工作表本次保留不删，并在该 Excel 文件名与该 Sheet 名前加上「❓」图标，按名称排序即可集中人工确认',
-      '安全备份：修改或重命名前自动按原文件名备份到 _backup_时间戳 文件夹',
     ],
     preview: true,
   },
@@ -18,9 +18,9 @@ const TASKS = {
     theme: 'feature-sky',
     sub: '把每个工作簿的可见工作表分别导出为 PDF',
     notes: [
-      '以只读方式打开 Excel，不修改原文件',
+      '自动递归扫描所选文件夹及其所有子文件夹，以只读方式打开 Excel，不修改原文件',
       '跳过隐藏表、変更履歴和备份表',
-      'PDF 输出到所选文件夹下的 _exported_pdfs_时间戳 文件夹',
+      '导出的 PDF 直接保存在对应 Excel 文件所在的同一目录下',
     ],
     runLabel: '📄 开始导出',
   },
@@ -30,8 +30,8 @@ const TASKS = {
     theme: 'feature-mint',
     sub: '所有可见工作表定位到 A1、缩放设为 100% 后保存',
     notes: [
+      '自动递归处理所选文件夹及其所有子文件夹下的 Excel 文件',
       '保存时停留在第一个可见工作表',
-      '修改前自动备份原文件到 _backup_时间戳 文件夹',
     ],
     runLabel: '🎯 开始标准化',
   },
@@ -86,13 +86,26 @@ function canResumeActiveTask() {
   return Boolean(overview && overview.can_resume && overview.job && overview.job.kind === activeKind);
 }
 
+function splitDirAndBase(name) {
+  const str = String(name ?? '');
+  const idx = Math.max(str.lastIndexOf('/'), str.lastIndexOf('\\'));
+  return idx >= 0 ? [str.slice(0, idx + 1), str.slice(idx + 1)] : ['', str];
+}
+
+function hasUncertainEmoji(name) {
+  const [, base] = splitDirAndBase(name);
+  return base.startsWith('❓');
+}
+
 function stripUncertainEmoji(name) {
-  return String(name ?? '').replace(/^❓+\s*/, '');
+  const [dir, base] = splitDirAndBase(name);
+  return dir + base.replace(/^❓+\s*/, '');
 }
 
 function addUncertainEmoji(name) {
-  const base = stripUncertainEmoji(name);
-  return base ? `❓${base}` : '❓';
+  const [dir, base] = splitDirAndBase(name);
+  const clean = base.replace(/^❓+\s*/, '');
+  return dir + (clean ? `❓${clean}` : '❓');
 }
 
 function initSheetDecisions() {
@@ -165,7 +178,7 @@ function summarizeDecisions() {
     summary.deletedTotal += fileDel;
     summary.uncertainTotal += fileUnc;
     if (fileUnc > 0) summary.uncertainFiles += 1;
-    else if (String(file.name).startsWith('❓') && file.sheets.length > 0) summary.unmarkedCount += 1;
+    else if (hasUncertainEmoji(file.name) && file.sheets.length > 0) summary.unmarkedCount += 1;
     if (file.sheets.length > 0 && fileDel >= file.sheets.length) {
       summary.emptyFiles.push(file.name);
     }
@@ -353,7 +366,7 @@ function previewFileItem(file, fileIndex, extraClass = '') {
   if (uncCount > 0) {
     const targetFileName = addUncertainEmoji(file.name);
     renameBadge = `<span class="preview-rename-badge" title="含待定 Sheet，文件名将带 ❓ 前缀以便按名称排序集中查看">🏷️ ${escapeHtml(targetFileName)}</span>`;
-  } else if (file.name.startsWith('❓') && file.sheets.length > 0) {
+  } else if (hasUncertainEmoji(file.name) && file.sheets.length > 0) {
     renameBadge = `<span class="preview-rename-badge is-restore" title="已无待定 Sheet，执行后将恢复原文件名">🏷️ 恢复为 ${escapeHtml(stripUncertainEmoji(file.name))}</span>`;
   }
 
@@ -446,11 +459,11 @@ function renderRunBox() {
   const job = overview.job || {};
   const failed = canResumeActiveTask() || p.status === 'interrupted';
   const isExport = activeKind === 'export_pdf';
-  const outDir = isExport ? job.pdf_folder : job.backup_folder;
+  const outDir = job.pdf_folder || job.folder;
   const html = `
     <b>${failed ? '⚠️ 部分文件未处理成功' : '✅ 已完成'}</b>
     <span>${escapeHtml(failed ? '失败原因见下方日志，可点击「继续上次任务」只重试未完成的文件。' : p.current_step)}</span>
-    ${outDir ? `<span>${isExport ? 'PDF 输出目录' : '原文件备份目录（有修改时才会创建）'}：<code>${escapeHtml(outDir)}</code></span>` : ''}
+    ${isExport && outDir ? `<span>PDF 输出位置：与各 Excel 文件在同一目录下（<code>${escapeHtml(outDir)}</code>）</span>` : ''}
     <a href="/records">查看执行记录 ↗</a>
   `;
   // 轮询时内容不变就不重建，避免打断用户选中复制路径

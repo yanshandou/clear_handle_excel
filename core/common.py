@@ -131,6 +131,16 @@ def unique_sheet_name(desired: str, existing_names: set[str]) -> str:
         counter += 1
 
 
+def workbook_rel_name(wb_path: Path, root_folder: Path | str | None = None) -> str:
+    """返回工作簿相对于目标根目录的显示名称（顶层文件返回文件名，子文件夹文件返回 sub/file.xlsx）"""
+    if root_folder:
+        try:
+            return wb_path.resolve().relative_to(Path(root_folder).resolve()).as_posix()
+        except ValueError:
+            pass
+    return wb_path.name
+
+
 def sanitize_filename(name: str) -> str:
     """将工作簿或工作表名中的非法文件名字符替换为下划线"""
     return re.sub(r'[\\/:*?"<>|\r\n\t]', "_", name).strip()

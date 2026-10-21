@@ -23,6 +23,7 @@ from core.common import (
     strip_uncertain_prefix,
     unique_pdf_path,
     unique_sheet_name,
+    workbook_rel_name,
 )
 from core.excel_ops import (
     extract_sheet_snapshot,
@@ -283,6 +284,7 @@ def _detect_sheet_results(
     items: dict[str, Any] = {}
     sheet_snapshot = extract_sheet_snapshot(sheet)
     generation = uuid4().hex
+    wb_label = workbook_rel_name(wb_path, STATE.get("folder"))
     with fitz.open(pdf_path) as doc:
         if not len(doc):
             raise ValueError(f"导出的 PDF 没有页面: {pdf_path}")
@@ -295,7 +297,7 @@ def _detect_sheet_results(
             page_id = f"page_{generation}_{page_index}"
             image, width, height = render_page_overview(page)
             pages[page_id] = {
-                "id": page_id, "wb_path": str(wb_path), "wb_name": wb_path.name,
+                "id": page_id, "wb_path": str(wb_path), "wb_name": wb_label,
                 "sheet_name": sheet_name, "pdf_path": str(pdf_path),
                 "page_index": page_index, "total_pages": len(doc),
                 "page_width": width, "page_height": height, "image": image,
@@ -309,7 +311,7 @@ def _detect_sheet_results(
                 occurrence = locate_text_occurrence(text_spans, page_index, clip["text"], clip["bbox"])
                 items[item_id] = {
                     "id": item_id, "seq": start_seq + len(items), "page_id": page_id,
-                    "index_on_page": index, "wb_path": str(wb_path), "wb_name": wb_path.name,
+                    "index_on_page": index, "wb_path": str(wb_path), "wb_name": wb_label,
                     "sheet_name": sheet_name, "pdf_path": str(pdf_path),
                     "page_index": page_index, "text": clip["text"], "bbox": clip["bbox"],
                     "occurrence": list(occurrence) if occurrence else None,
@@ -331,7 +333,8 @@ def _sync_problem_counts(path: str, action: str) -> None:
     accepted = sum(item["status"] == "accepted" for item in items)
     pending = len(items) - fixed - accepted
     update_file_progress(
-        Path(path).name, status="needs_fix" if pending else "done",
+        workbook_rel_name(Path(path), STATE.get("folder")),
+        status="needs_fix" if pending else "done",
         clip_detected=len(items), clip_fixed=fixed, clip_accepted=accepted,
         clip_unfixed=pending, current_action=action, error="",
     )
@@ -523,14 +526,19 @@ def _select_changed_problem_items() -> list[str]:
 
 
 def list_workbooks(folder_str: str) -> tuple[Path, list[Path]]:
-    """解析文件夹路径并列出其中的 Excel 文件（跳过 ~$ 临时锁文件）"""
+    """解析文件夹路径并递归列出其中及所有子文件夹下的 Excel 文件（跳过 ~$ 临时锁文件）"""
     folder = Path(folder_str.strip().strip('"').strip("'")).expanduser().resolve()
     if not folder.is_dir():
         raise ValueError(f"文件夹不存在: {folder}")
     workbooks = sorted(
-        p
-        for p in folder.iterdir()
-        if p.is_file() and p.suffix.lower() in EXCEL_EXTENSIONS and not p.name.startswith("~$")
+        (
+            p
+            for p in folder.rglob("*")
+            if p.is_file()
+            and p.suffix.lower() in EXCEL_EXTENSIONS
+            and not p.name.startswith("~$")
+        ),
+        key=lambda p: workbook_rel_name(p, folder),
     )
     if not workbooks:
         raise ValueError("未找到 Excel 文件")
@@ -558,13 +566,6 @@ def _export_sheet_pdf(sheet: Any, pdf_path: Path) -> None:
         IgnorePrintAreas=False,
         OpenAfterPublish=False,
     )
-
-
-def _backup_original(wb_path: Path, backup_folder: Path) -> None:
-    """修改前备份原文件；续跑时已有备份不覆盖，保留最初版本。"""
-    backup_folder.mkdir(parents=True, exist_ok=True)
-    if not (backup_folder / wb_path.name).exists():
-        shutil.copy2(wb_path, backup_folder / wb_path.name)
 
 
 def _scan_plan(workbooks: list[Path], *, rescan_all: bool) -> dict[str, dict[str, Any]]:
@@ -598,55 +599,57 @@ def _scan_one_workbook(
     resumed: bool,
     rescan_all: bool,
     delete_backups: bool,
-    backup_folder: Path,
-    pdf_folder: Path,
     used_pdf_paths: set[Path],
 ) -> None:
     """检查一个工作簿；所有工作表检测完成后才一次性替换该文件的旧结果，中途失败不影响旧记录。"""
     path = str(wb_path)
+    wb_label = workbook_rel_name(wb_path, STATE.get("folder"))
     sheets_only = set(entry["sheets"]) if entry["mode"] == "sheets" else None
     log_msg(
-        f"正在检查: {wb_path.name}"
+        f"正在检查: {wb_label}"
         + (f"（只查有问题的工作表：{'、'.join(entry['sheets'])}）" if sheets_only else " ...")
     )
-    update_file_progress(wb_path.name, status="processing", current_action="正在打开工作簿...", error="")
+    update_file_progress(wb_label, status="processing", current_action="正在打开工作簿...", error="")
     wb = excel.Workbooks.Open(str(wb_path.resolve()))
     try:
         all_names = [s.Name for s in wb.Sheets]
         deleted_bkp_list: list[str] = []
         if resumed:
-            previous_report = get_execution_report_snapshot()["files"].get(wb_path.name, {})
+            previous_report = get_execution_report_snapshot()["files"].get(wb_label, {})
             deleted_bkp_list = list(previous_report.get("deleted_backups", []))
             all_names = list(dict.fromkeys(previous_report.get("all_sheets", []) + all_names))
         current_names = {s.Name for s in wb.Sheets}
         bkp_names = [n for n in find_backup_sheets(all_names) if n in current_names]
         if delete_backups and bkp_names:
             if len(bkp_names) >= len(all_names):
-                log_msg(f"  ⚠️ 跳过删除备份表（全部工作表均为备份表）: {wb_path.name}")
+                log_msg(f"  ⚠️ 跳过删除备份表（全部工作表均为备份表）: {wb_label}")
             else:
-                _backup_original(wb_path, backup_folder)
                 for bn in bkp_names:
                     wb.Sheets(bn).Delete()
                 deleted_bkp_list = list(dict.fromkeys(deleted_bkp_list + bkp_names))
                 log_msg(f"  已清理 {len(bkp_names)} 个备份 Sheet")
-                update_file_progress(wb_path.name, all_sheets=all_names, deleted_backups=deleted_bkp_list)
+                update_file_progress(wb_label, all_sheets=all_names, deleted_backups=deleted_bkp_list)
                 wb.Save()
         update_file_progress(
-            wb_path.name, all_sheets=all_names, deleted_backups=deleted_bkp_list,
+            wb_label, all_sheets=all_names, deleted_backups=deleted_bkp_list,
             current_action="正在导出 PDF 并检测切字...",
         )
 
         scan_version = _file_version(wb_path)
         file_stem = sanitize_filename(wb_path.stem)
         sheets = [s for s in _exportable_sheets(wb) if sheets_only is None or s.Name in sheets_only]
+        rescanning_names = {s.Name for s in sheets}
         with STATE_LOCK:
+            for p in STATE["pages"].values():
+                if p.get("wb_path") == path and (sheets_only is None or p.get("sheet_name") in rescanning_names):
+                    used_pdf_paths.discard(Path(p["pdf_path"]))
             next_seq = max((it["seq"] for it in STATE["items"].values()), default=0) + 1
         file_pages: dict[str, Any] = {}
         file_items: dict[str, Any] = {}
         for sheet in sheets:
             s_name = sheet.Name
-            update_file_progress(wb_path.name, current_action=f"正在导出并检测 [{s_name}]...")
-            pdf_path = unique_pdf_path(pdf_folder, file_stem, sanitize_filename(s_name), used_pdf_paths)
+            update_file_progress(wb_label, current_action=f"正在导出并检测 [{s_name}]...")
+            pdf_path = unique_pdf_path(wb_path.parent, file_stem, sanitize_filename(s_name), used_pdf_paths)
             try:
                 _export_sheet_pdf(sheet, pdf_path)
             except Exception as e:
@@ -657,7 +660,7 @@ def _scan_one_workbook(
             file_pages.update(pages)
             file_items.update(items)
         if _file_version(wb_path) != scan_version:
-            raise ValueError(f"扫描期间文件已修改，请重新检查: {wb_path.name}")
+            raise ValueError(f"扫描期间文件已修改，请重新检查: {wb_label}")
     finally:
         wb.Close(SaveChanges=False)
 
@@ -688,7 +691,7 @@ def _scan_one_workbook(
         if fixed_now:
             parts.append(f"本次确认已修复 {fixed_now} 处")
         _sync_problem_counts(path, "，".join(parts))
-    update_file_progress(wb_path.name, exported_pdfs=len(sheets))
+    update_file_progress(wb_label, exported_pdfs=len(sheets))
 
 
 def scan_folder_workflow(
@@ -711,13 +714,8 @@ def scan_folder_workflow(
             plan = job.get("plan") or {str(path): {"mode": "full", "scanned": False} for path in workbooks}
             rescan_all = job.get("rescan_all", "plan" not in job)
             stash = job.get("stash", job.get("confirmed", []))
-            pdf_folder = Path(STATE["pdf_folder"])
-            backup_folder = Path(STATE["backup_folder"])
         else:
             folder, workbooks = list_workbooks(folder_str)
-            timestamp = f"{datetime.now():%Y%m%d_%H%M%S}"
-            pdf_folder = folder / f"_exported_pdfs_{timestamp}"
-            backup_folder = folder / f"_backup_{timestamp}"
             with STATE_LOCK:
                 rescan_all = full or str(folder) != STATE["folder"]
                 stash = []
@@ -729,7 +727,7 @@ def scan_folder_workflow(
                     STATE["checked_files"].clear()
                 STATE["logs"].clear()
                 plan = _scan_plan(workbooks, rescan_all=rescan_all)
-                STATE.update(folder=str(folder), pdf_folder=str(pdf_folder), backup_folder=str(backup_folder))
+                STATE.update(folder=str(folder), pdf_folder=str(folder), backup_folder="")
                 if job is not None:
                     job.update(
                         workbooks=[str(path) for path in workbooks], plan=plan,
@@ -739,12 +737,11 @@ def scan_folder_workflow(
                 task_name="Web 切字扫描（完整）" if rescan_all else "Web 切字扫描（增量）",
                 folder=folder,
                 workbooks=workbooks,
-                pdf_folder=pdf_folder,
-                backup_folder=backup_folder,
+                pdf_folder=folder,
+                backup_folder=None,
             )
             with STATE_LOCK:
                 _persist_state()
-        pdf_folder.mkdir(parents=True, exist_ok=True)
         used_pdf_paths = {Path(p["pdf_path"]) for p in STATE["pages"].values()}
         skipped = [path for path, entry in plan.items() if entry["mode"] == "skip"]
         log_msg(
@@ -784,13 +781,13 @@ def scan_folder_workflow(
                     _scan_one_workbook(
                         excel, wb_path, entry, previous,
                         job=job, resumed=initialized, rescan_all=rescan_all,
-                        delete_backups=delete_backups, backup_folder=backup_folder,
-                        pdf_folder=pdf_folder, used_pdf_paths=used_pdf_paths,
+                        delete_backups=delete_backups, used_pdf_paths=used_pdf_paths,
                     )
                 except Exception as err:
-                    log_msg(f"❌ 处理文件出错 {wb_path.name}: {err}")
+                    wb_label = workbook_rel_name(wb_path, folder)
+                    log_msg(f"❌ 处理文件出错 {wb_label}: {err}")
                     update_file_progress(
-                        wb_path.name,
+                        wb_label,
                         status="error",
                         error=str(err),
                         current_action=f"处理出错: {err}",
@@ -1107,10 +1104,12 @@ def fix_selected_workflow(
                 log_msg("⚠️ 没有选中任何需要修复的项。")
             return
 
-        backup_folder = Path(backup_folder_str)
-        backup_folder.mkdir(parents=True, exist_ok=True)
         with STATE_LOCK:
-            folder_path = Path(STATE["folder"]) if STATE["folder"] else backup_folder.parent
+            folder_path = (
+                Path(STATE["folder"])
+                if STATE["folder"]
+                else Path(next(iter(by_wb.keys()))).parent
+            )
 
         init_execution_batch(
             task_name="Web 闭环行高微调",
@@ -1131,9 +1130,6 @@ def fix_selected_workflow(
                     pending_id = job["pending_adjustment"]["item_id"]
                     items.sort(key=lambda item: item["id"] != pending_id)
                 wb_path = Path(wb_path_str)
-                bkp_target = backup_folder / wb_path.name
-                if not bkp_target.exists():
-                    shutil.copy2(wb_path, bkp_target)
 
                 log_msg(f"🔧 开始微调工作簿: {wb_path.name} (共 {len(items)} 处)...")
                 update_file_progress(
@@ -1328,12 +1324,13 @@ def fix_selected_workflow(
 
 
 def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
-    """只读列出每个工作簿的全部工作表、默认勾选删除的备份表及已带 ❓ 的待定表；不修改文件，也不占用后台任务。"""
+    """只读递归列出每个工作簿的全部工作表、默认勾选删除的备份表及已带 ❓ 的待定表；不修改文件，也不占用后台任务。"""
     folder, workbooks = list_workbooks(folder_str)
     files: list[dict[str, Any]] = []
     for wb_path in workbooks:
+        rel_name = workbook_rel_name(wb_path, folder)
         entry: dict[str, Any] = {
-            "name": wb_path.name,
+            "name": rel_name,
             "sheet_count": 0,
             "sheets": [],
             "backups": [],
@@ -1438,7 +1435,7 @@ def _target_workbook_path(wb_path: Path, has_uncertain: bool, *, has_plan: bool)
 
 
 def _sync_renamed_workbook_in_state(
-    old_path: Path, new_path: Path, sheet_rename_map: dict[str, str]
+    old_path: Path, new_path: Path, sheet_rename_map: dict[str, str], root_folder: Path | None = None
 ) -> None:
     """文件或工作表因 ❓ 标记改名时，同步更新工作台已有的扫描记录"""
     old_str = str(old_path)
@@ -1446,11 +1443,13 @@ def _sync_renamed_workbook_in_state(
     if old_str == new_str and not sheet_rename_map:
         return
     with STATE_LOCK:
+        folder_ref = root_folder or STATE.get("folder")
+        new_label = workbook_rel_name(new_path, folder_ref)
         for collection in ("pages", "items"):
             for entry in STATE[collection].values():
                 if entry.get("wb_path") == old_str:
                     entry["wb_path"] = new_str
-                    entry["wb_name"] = new_path.name
+                    entry["wb_name"] = new_label
                     if entry.get("sheet_name") in sheet_rename_map:
                         entry["sheet_name"] = sheet_rename_map[entry["sheet_name"]]
         if old_str != new_str and old_str in STATE["checked_files"]:
@@ -1481,11 +1480,12 @@ def _format_clean_action(
 def _clean_backup_sheets(
     get_excel: Callable[[], Any],
     wb_path: Path,
-    backup_folder: Path,
+    root_folder: Path,
     file_plan: dict[str, list[str]] | None = None,
 ) -> None:
+    wb_label = workbook_rel_name(wb_path, root_folder)
     # 续跑时沿用本批次已记录的删除明细，避免保存后中断导致记录丢失
-    previous = get_execution_report_snapshot()["files"].get(wb_path.name, {})
+    previous = get_execution_report_snapshot()["files"].get(wb_label, {})
     deleted = list(previous.get("deleted_backups", []))
     uncertain_recorded = list(previous.get("uncertain_sheets", []))
 
@@ -1497,7 +1497,7 @@ def _clean_backup_sheets(
         renamed_to: str = "",
     ) -> None:
         update_file_progress(
-            wb_path.name,
+            wb_label,
             status="done",
             current_action=action,
             deleted_backups=deleted,
@@ -1519,9 +1519,8 @@ def _clean_backup_sheets(
             )
             if not del_all and not to_delete and not renames:
                 if target_path != wb_path:
-                    _backup_original(wb_path, backup_folder)
                     wb_path.rename(target_path)
-                    _sync_renamed_workbook_in_state(wb_path, target_path, {})
+                    _sync_renamed_workbook_in_state(wb_path, target_path, {}, root_folder)
                 action = _format_clean_action(
                     deleted,
                     uncertain_sel,
@@ -1535,7 +1534,7 @@ def _clean_backup_sheets(
                     pre_names,
                     action,
                     uncertain=uncertain_sel,
-                    renamed_to=target_path.name if target_path != wb_path else "",
+                    renamed_to=workbook_rel_name(target_path, root_folder) if target_path != wb_path else "",
                 )
                 return
 
@@ -1555,7 +1554,7 @@ def _clean_backup_sheets(
                 if file_plan is None
                 else "全部工作表均被勾选删除，已跳过删除"
             )
-            log_msg(f"  ⚠️ {action}: {wb_path.name}")
+            log_msg(f"  ⚠️ {action}: {wb_label}")
             final_names = all_names
         elif not to_delete and not renames:
             target_path = _target_workbook_path(
@@ -1572,7 +1571,6 @@ def _clean_backup_sheets(
                 is_uncertain_name(wb_path.name) and not is_uncertain_name(target_path.name),
             )
         else:
-            _backup_original(wb_path, backup_folder)
             for name in to_delete:
                 wb.Sheets(name).Delete()
             deleted = list(dict.fromkeys(deleted + to_delete))
@@ -1589,7 +1587,7 @@ def _clean_backup_sheets(
             need_file_rename = target_path != wb_path
             # 先记录删除与待定明细再保存，保存后中断也能在续跑时保留记录
             update_file_progress(
-                wb_path.name, deleted_backups=deleted, uncertain_sheets=final_uncertain,
+                wb_label, deleted_backups=deleted, uncertain_sheets=final_uncertain,
             )
             wb.Save()
             action = _format_clean_action(
@@ -1604,39 +1602,39 @@ def _clean_backup_sheets(
         wb.Close(SaveChanges=False)
 
     if need_file_rename:
-        _backup_original(wb_path, backup_folder)
         wb_path.rename(target_path)
     if need_file_rename or rename_map:
-        _sync_renamed_workbook_in_state(wb_path, target_path, rename_map)
+        _sync_renamed_workbook_in_state(wb_path, target_path, rename_map, root_folder)
     record(
         final_names,
         action,
         uncertain=final_uncertain,
-        renamed_to=target_path.name if need_file_rename else "",
+        renamed_to=workbook_rel_name(target_path, root_folder) if need_file_rename else "",
     )
 
 
 def _export_workbook_pdfs(
-    get_excel: Callable[[], Any], wb_path: Path, pdf_folder: Path, used_pdf_paths: set[Path],
+    get_excel: Callable[[], Any], wb_path: Path, root_folder: Path, used_pdf_paths: set[Path],
 ) -> list[Path]:
+    wb_label = workbook_rel_name(wb_path, root_folder)
     wb = get_excel().Workbooks.Open(str(wb_path.resolve()), ReadOnly=True)
     try:
         file_stem = sanitize_filename(wb_path.stem)
         exported: list[Path] = []
         for sheet in _exportable_sheets(wb):
             pdf_path = unique_pdf_path(
-                pdf_folder, file_stem, sanitize_filename(sheet.Name), used_pdf_paths
+                wb_path.parent, file_stem, sanitize_filename(sheet.Name), used_pdf_paths
             )
             _export_sheet_pdf(sheet, pdf_path)
             exported.append(pdf_path)
             update_file_progress(
-                wb_path.name, exported_pdfs=len(exported),
+                wb_label, exported_pdfs=len(exported),
                 current_action=f"正在导出 PDF（已导出 {len(exported)} 份）...",
             )
         action = f"已导出 {len(exported)} 份 PDF"
         log_msg(f"  {action}")
         update_file_progress(
-            wb_path.name, status="done", exported_pdfs=len(exported), current_action=action,
+            wb_label, status="done", exported_pdfs=len(exported), current_action=action,
             all_sheets=[sheet.Name for sheet in wb.Sheets],
         )
         return exported
@@ -1644,15 +1642,15 @@ def _export_workbook_pdfs(
         wb.Close(SaveChanges=False)
 
 
-def _normalize_workbook_file(get_excel: Callable[[], Any], wb_path: Path, backup_folder: Path) -> None:
-    _backup_original(wb_path, backup_folder)
+def _normalize_workbook_file(get_excel: Callable[[], Any], wb_path: Path, root_folder: Path) -> None:
+    wb_label = workbook_rel_name(wb_path, root_folder)
     excel = get_excel()
     wb = excel.Workbooks.Open(str(wb_path.resolve()))
     try:
         normalize_workbook_view(excel, wb, on_error=log_msg)
         wb.Save()
         update_file_progress(
-            wb_path.name, status="done", normalized_a1=True,
+            wb_label, status="done", normalized_a1=True,
             current_action="已定位 A1 并设为 100% 缩放",
             all_sheets=[sheet.Name for sheet in wb.Sheets],
         )
@@ -1672,14 +1670,11 @@ def quick_task_workflow(kind: str) -> None:
         workbooks = [Path(path) for path in job["workbooks"]]
     else:
         folder, workbooks = list_workbooks(options["folder"])
-        timestamp = f"{datetime.now():%Y%m%d_%H%M%S}"
         with STATE_LOCK:
             STATE["logs"].clear()
             options["folder"] = str(folder)
             if kind == "export_pdf":
-                options["pdf_folder"] = str(folder / f"_exported_pdfs_{timestamp}")
-            else:
-                options["backup_folder"] = str(folder / f"_backup_{timestamp}")
+                options["pdf_folder"] = str(folder)
             job["workbooks"] = [str(path) for path in workbooks]
             job["exported"] = []
             _persist_state()
@@ -1687,12 +1682,10 @@ def quick_task_workflow(kind: str) -> None:
             task_name=task_name,
             folder=folder,
             workbooks=workbooks,
-            pdf_folder=Path(options["pdf_folder"]) if kind == "export_pdf" else None,
-            backup_folder=None if kind == "export_pdf" else Path(options["backup_folder"]),
+            pdf_folder=folder if kind == "export_pdf" else None,
+            backup_folder=None,
         )
     log_msg(f"{'继续' if initialized else '开始'}{task_name}：{folder}（共 {len(workbooks)} 个文件）")
-    if kind == "export_pdf":
-        Path(options["pdf_folder"]).mkdir(parents=True, exist_ok=True)
 
     excel = None
 
@@ -1712,32 +1705,35 @@ def quick_task_workflow(kind: str) -> None:
         for wb_path in workbooks:
             if str(wb_path) in job["completed"]:
                 continue
-            log_msg(f"正在处理: {wb_path.name} ...")
+            wb_label = workbook_rel_name(wb_path, folder)
+            log_msg(f"正在处理: {wb_label} ...")
             update_file_progress(
-                wb_path.name, status="processing", current_action=f"正在执行{task_name}...", error="",
+                wb_label, status="processing", current_action=f"正在执行{task_name}...", error="",
             )
             exported: list[Path] = []
             try:
                 if kind == "clean_sheets":
                     clean_plan = options.get("plan")
-                    file_plan = (
-                        clean_plan.get(wb_path.name, {"delete": [], "uncertain": []})
-                        if isinstance(clean_plan, dict)
-                        else None
-                    )
+                    file_plan = None
+                    if isinstance(clean_plan, dict):
+                        file_plan = (
+                            clean_plan.get(wb_label)
+                            if wb_label in clean_plan
+                            else clean_plan.get(wb_path.name, {"delete": [], "uncertain": []})
+                        )
                     _clean_backup_sheets(
-                        get_excel, wb_path, Path(options["backup_folder"]), file_plan=file_plan,
+                        get_excel, wb_path, folder, file_plan=file_plan,
                     )
                 elif kind == "export_pdf":
                     exported = _export_workbook_pdfs(
-                        get_excel, wb_path, Path(options["pdf_folder"]), used_pdf_paths
+                        get_excel, wb_path, folder, used_pdf_paths
                     )
                 else:
-                    _normalize_workbook_file(get_excel, wb_path, Path(options["backup_folder"]))
+                    _normalize_workbook_file(get_excel, wb_path, folder)
             except Exception as err:
-                log_msg(f"❌ 处理文件出错 {wb_path.name}: {err}")
+                log_msg(f"❌ 处理文件出错 {wb_label}: {err}")
                 update_file_progress(
-                    wb_path.name, status="error", error=str(err), current_action=f"处理出错: {err}",
+                    wb_label, status="error", error=str(err), current_action=f"处理出错: {err}",
                 )
                 continue
             with STATE_LOCK:

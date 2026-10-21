@@ -15,6 +15,7 @@ from core.common import (
     find_backup_sheets,
     sanitize_filename,
     unique_pdf_path,
+    workbook_rel_name,
 )
 from core.excel_ops import (
     adjust_row_heights_against_clipping,
@@ -94,37 +95,34 @@ def process_workbooks(
     do_fix_clipping: bool,
     do_normalize_view: bool,
     do_export_pdf: bool,
-    backup_folder: Path,
-    pdf_folder: Path,
+    root_folder: Path | None = None,
 ) -> None:
     pythoncom.CoInitialize()
     excel = win32.DispatchEx("Excel.Application")
     excel.Visible = False
     excel.DisplayAlerts = False
 
-    backup_created = False
     used_pdf_paths: set[Path] = set()
-    if do_export_pdf:
-        pdf_folder.mkdir(parents=True, exist_ok=True)
+    base_folder = root_folder or (workbooks[0].parent if workbooks else Path.cwd())
 
     init_execution_batch(
         task_name="CLI 命令行批处理任务",
-        folder=backup_folder.parent,
+        folder=base_folder,
         workbooks=workbooks,
-        pdf_folder=pdf_folder if do_export_pdf else None,
-        backup_folder=backup_folder,
+        pdf_folder=base_folder if do_export_pdf else None,
+        backup_folder=None,
     )
 
     try:
         for workbook_path in progress_iter(workbooks, desc="处理工作簿", unit="文件"):
             wb = None
-            file_backed_up = False
             need_save = False
             exported_count = 0
             deleted_list: list[str] = []
+            wb_label = workbook_rel_name(workbook_path, base_folder)
 
             update_file_progress(
-                workbook_path.name,
+                wb_label,
                 status="processing",
                 current_action="正在打开并处理工作簿...",
             )
@@ -134,43 +132,31 @@ def process_workbooks(
                 original_sheets = [sh.Name for sh in wb.Sheets]
                 backup_sheets = find_backup_sheets(original_sheets)
 
-                def ensure_backup():
-                    nonlocal backup_created, file_backed_up
-                    if not backup_created:
-                        backup_folder.mkdir(parents=True, exist_ok=True)
-                        backup_created = True
-                    if not file_backed_up:
-                        shutil.copy2(workbook_path, backup_folder / workbook_path.name)
-                        file_backed_up = True
-
                 # 1. 删除备份 Sheet
                 if do_delete_backups and backup_sheets:
                     if len(backup_sheets) >= len(original_sheets):
-                        progress_write(f"跳过删除（删除后将无剩余工作表）: {workbook_path.name}")
+                        progress_write(f"跳过删除（删除后将无剩余工作表）: {wb_label}")
                     else:
-                        ensure_backup()
                         for sheet_name in backup_sheets:
                             wb.Sheets(sheet_name).Delete()
                         deleted_list = list(backup_sheets)
                         need_save = True
-                        progress_write(f"已清理: {workbook_path.name} (删除 {len(backup_sheets)} 个备份表)")
+                        progress_write(f"已清理: {wb_label} (删除 {len(backup_sheets)} 个备份表)")
 
                 # 2. 智能增加多行文本的行高（防 PDF 切字）
                 if do_fix_clipping:
-                    ensure_backup()
                     adjust_row_heights_against_clipping(wb, extra_points=6.0)
                     need_save = True
 
                 # 3. A1 定位 + 100% 缩放
                 if do_normalize_view:
-                    ensure_backup()
                     normalize_sheets_view(excel, wb)
                     need_save = True
 
                 if need_save:
                     wb.Save()
 
-                # 4. 导出 PDF
+                # 4. 导出 PDF（保存在各 Excel 文件所在同级目录下）
                 if do_export_pdf:
                     file_stem = sanitize_filename(workbook_path.stem)
                     remaining_backups = set(find_backup_sheets([sheet.Name for sheet in wb.Sheets]))
@@ -182,7 +168,7 @@ def process_workbooks(
                             continue
 
                         safe_sheet_name = sanitize_filename(sheet_name)
-                        pdf_path = unique_pdf_path(pdf_folder, file_stem, safe_sheet_name, used_pdf_paths)
+                        pdf_path = unique_pdf_path(workbook_path.parent, file_stem, safe_sheet_name, used_pdf_paths)
 
                         try:
                             sheet.ExportAsFixedFormat(
@@ -195,12 +181,12 @@ def process_workbooks(
                             )
                             exported_count += 1
                         except Exception as pdf_err:
-                            progress_write(f"  导出 PDF 失败 [{workbook_path.name} -> {sheet_name}]: {pdf_err}")
+                            progress_write(f"  导出 PDF 失败 [{wb_label} -> {sheet_name}]: {pdf_err}")
 
-                    progress_write(f"已导出 PDF: {workbook_path.name} (共 {exported_count} 个 Sheet)")
+                    progress_write(f"已导出 PDF: {wb_label} (共 {exported_count} 个 Sheet)")
 
                 update_file_progress(
-                    workbook_path.name,
+                    wb_label,
                     status="done",
                     all_sheets=original_sheets,
                     deleted_backups=deleted_list,
@@ -210,9 +196,9 @@ def process_workbooks(
                 )
 
             except Exception as error:
-                progress_write(f"处理失败 {workbook_path.name}: {error}")
+                progress_write(f"处理失败 {wb_label}: {error}")
                 update_file_progress(
-                    workbook_path.name,
+                    wb_label,
                     status="error",
                     error=str(error),
                     current_action=f"处理失败: {error}",
@@ -225,10 +211,8 @@ def process_workbooks(
         pythoncom.CoUninitialize()
         finish_execution_batch("CLI 批处理任务执行完毕")
 
-    if backup_created:
-        print(f"\n原始文件备份位置: {backup_folder}")
     if do_export_pdf:
-        print(f"PDF 导出文件夹位置: {pdf_folder}")
+        print(f"\nPDF 已导出至各 Excel 文件所在目录（根目录: {base_folder}）")
     print(f"Markdown 执行记录报告已保存至: {RECORD_PATH}")
 
 
@@ -242,27 +226,31 @@ def main() -> None:
         return
 
     workbooks = sorted(
-        path
-        for path in folder.iterdir()
-        if path.is_file()
-        and path.suffix.lower() in EXCEL_EXTENSIONS
-        and not path.name.startswith("~$")
+        (
+            path
+            for path in folder.rglob("*")
+            if path.is_file()
+            and path.suffix.lower() in EXCEL_EXTENSIONS
+            and not path.name.startswith("~$")
+        ),
+        key=lambda p: workbook_rel_name(p, folder),
     )
     if not workbooks:
-        print("该文件夹中没有找到 Excel 文件。")
+        print("该文件夹及其子文件夹中没有找到 Excel 文件。")
         return
 
     pending_delete: list[tuple[Path, list[str]]] = []
     for workbook_path in progress_iter(workbooks, desc="扫描文件", unit="文件"):
+        wb_label = workbook_rel_name(workbook_path, folder)
         try:
             all_sheets, backup_sheets = scan_workbook_sheets(workbook_path)
             if backup_sheets:
                 if len(backup_sheets) >= len(all_sheets):
-                    progress_write(f"警告: {workbook_path.name} 所有工作表均被识别为备份表，将跳过删除。")
+                    progress_write(f"警告: {wb_label} 所有工作表均被识别为备份表，将跳过删除。")
                 else:
                     pending_delete.append((workbook_path, backup_sheets))
         except Exception as error:
-            progress_write(f"无法读取 {workbook_path.name}: {error}")
+            progress_write(f"无法读取 {wb_label}: {error}")
 
     do_delete = False
     if pending_delete:
@@ -271,7 +259,7 @@ def main() -> None:
             "或 Excel 副本「 (2)」，且同一工作簿中存在对应的原表）:"
         )
         for workbook_path, sheet_names in pending_delete:
-            print(f"\n{workbook_path.name}")
+            print(f"\n{workbook_rel_name(workbook_path, folder)}")
             for sheet_name in sheet_names:
                 print(f"  - {sheet_name}")
         if input("\n[1/4] 是否删除这些备份工作表？(输入 y 确认): ").strip().lower() == "y":
@@ -304,10 +292,6 @@ def main() -> None:
         print("已取消，未执行任何操作。")
         return
 
-    timestamp = f"{datetime.now():%Y%m%d_%H%M%S}"
-    backup_folder = folder / f"_sheet_cleanup_backup_{timestamp}"
-    pdf_folder = folder / f"_exported_pdfs_{timestamp}"
-
     target_workbooks = (
         workbooks
         if (do_fix_clipping or do_normalize or do_pdf)
@@ -320,8 +304,7 @@ def main() -> None:
         do_fix_clipping=do_fix_clipping,
         do_normalize_view=do_normalize,
         do_export_pdf=do_pdf,
-        backup_folder=backup_folder,
-        pdf_folder=pdf_folder,
+        root_folder=folder,
     )
 
 

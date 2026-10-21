@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from core.common import PROJECT_ROOT, RECORD_PATH
+from core.common import PROJECT_ROOT, RECORD_PATH, workbook_rel_name
 from core.storage import load_snapshot, save_snapshot
 
 REPORT_LOCK = threading.RLock()
@@ -146,7 +146,7 @@ def init_execution_batch(
             EXECUTION_STATE["files"].clear()
 
         for idx, wb_path in enumerate(workbooks, start=1):
-            wb_name = wb_path.name
+            wb_name = workbook_rel_name(wb_path, folder)
             if preserve_existing_files and wb_name in EXECUTION_STATE["files"]:
                 existing = EXECUTION_STATE["files"][wb_name]
                 existing["status"] = "pending"
@@ -196,6 +196,19 @@ def update_file_progress(
     """实时更新单个 Excel 文件的处理进度与统计指标"""
     with REPORT_LOCK:
         entry = EXECUTION_STATE["files"].get(wb_name)
+        if entry is None and EXECUTION_STATE.get("folder"):
+            rel_key = workbook_rel_name(Path(wb_name), EXECUTION_STATE["folder"])
+            entry = EXECUTION_STATE["files"].get(rel_key)
+            if entry is not None:
+                wb_name = rel_key
+        if entry is None:
+            matches = [
+                (k, v)
+                for k, v in EXECUTION_STATE["files"].items()
+                if Path(v.get("path", k)).name == Path(wb_name).name
+            ]
+            if len(matches) == 1:
+                wb_name, entry = matches[0]
         if entry is None:
             entry = {
                 "index": len(EXECUTION_STATE["files"]) + 1,
