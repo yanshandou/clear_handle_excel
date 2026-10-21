@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Excel 整理工具箱 - 主页</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-brand">
+      <div class="header-logo-badge" aria-hidden="true">📐</div>
+      <div class="header-title">
+        <h1>Excel 整理与 PDF 切字工具箱</h1>
+        <span class="subtitle">常用功能一键直达 · 修改前自动备份 · 自动生成执行记录</span>
+      </div>
+    </div>
+    <div class="header-nav">
+      <a href="/" class="nav-link active">🏠 主页</a>
+      <a href="/workbench" class="nav-link">📐 切字微调工作台</a>
+      <a href="/records" class="nav-link">
+        📊 执行记录与进度看板
+        <span id="navProgressBadge" class="nav-badge">0%</span>
+      </a>
+      <span id="statusText" class="status-pill">✅ 就绪</span>
+    </div>
+  </header>
+
+  <main class="container home-container">
+    <section class="home-hero">
+      <div>
+        <h2>常用功能</h2>
+        <p>选择一项开始。会修改 Excel 的操作都会先备份原文件，处理进度可在「执行记录与进度看板」查看。</p>
+      </div>
+    </section>
+
+    <!-- 最近任务状态条：有任务记录时显示 -->
+    <section id="taskStrip" class="panel home-strip hidden" aria-live="polite">
+      <div class="home-strip-info">
+        <span id="stripBadge" class="badge badge-ignored">⚪ 空闲</span>
+        <b id="stripTitle" class="home-strip-title">尚未开始任务</b>
+        <span id="stripStep" class="home-strip-step"></span>
+      </div>
+      <div class="home-strip-progress">
+        <div class="progress-track progress-track-sm">
+          <div id="stripFill" class="progress-fill" style="width: 0%;"></div>
+        </div>
+        <span id="stripPct" class="home-strip-pct">0%</span>
+      </div>
+      <div class="home-strip-actions">
+        <button type="button" id="stripResumeBtn" class="btn btn-success btn-sm hidden" onclick="resumeTask()">
+          继续上次任务
+        </button>
+        <a href="/records" class="btn btn-outline btn-sm">查看执行记录 ↗</a>
+      </div>
+    </section>
+
+    <section class="feature-grid" aria-label="常用功能">
+      <button type="button" class="feature-card feature-violet" onclick="openTask('clean_sheets')">
+        <span class="feature-text">
+          <span class="feature-title">精简 Sheet</span>
+          <span class="feature-sub">删除 YYYYMMDD 备份表</span>
+          <span class="feature-meta" id="meta_clean_sheets">先预览，确认后删除</span>
+        </span>
+        <span class="feature-orb" aria-hidden="true"><span class="feature-icon">🧹</span></span>
+      </button>
+
+      <button type="button" class="feature-card feature-sky" onclick="openTask('export_pdf')">
+        <span class="feature-text">
+          <span class="feature-title">导出 PDF</span>
+          <span class="feature-sub">批量导出可见工作表</span>
+          <span class="feature-meta" id="meta_export_pdf">只读打开，不改原文件</span>
+        </span>
+        <span class="feature-orb" aria-hidden="true"><span class="feature-icon">📄</span></span>
+      </button>
+
+      <a href="/workbench" class="feature-card feature-rose">
+        <span class="feature-text">
+          <span class="feature-title">查看切字</span>
+          <span class="feature-sub">检测压线 · 闭环微调行高</span>
+          <span class="feature-meta" id="meta_clips">尚未扫描</span>
+        </span>
+        <span class="feature-orb" aria-hidden="true"><span class="feature-icon">🔍</span></span>
+      </a>
+
+      <button type="button" class="feature-card feature-mint" onclick="openTask('normalize_view')">
+        <span class="feature-text">
+          <span class="feature-title">视图标准化</span>
+          <span class="feature-sub">定位 A1 · 缩放 100%</span>
+          <span class="feature-meta" id="meta_normalize_view">修改前自动备份</span>
+        </span>
+        <span class="feature-orb" aria-hidden="true"><span class="feature-icon">🎯</span></span>
+      </button>
+    </section>
+  </main>
+
+  <!-- 单项功能对话框：填写文件夹 → (预览) → 执行 → 查看结果 -->
+  <dialog id="taskDialog" class="task-dialog" aria-labelledby="taskDialogTitle">
+    <div id="taskDialogHead" class="task-dialog-head feature-violet">
+      <span id="taskDialogIcon" class="task-dialog-icon" aria-hidden="true">🧹</span>
+      <div class="task-dialog-heading">
+        <h2 id="taskDialogTitle">精简 Sheet</h2>
+        <p id="taskDialogSub"></p>
+      </div>
+      <button type="button" class="task-dialog-close" onclick="closeTask()" aria-label="关闭">✕</button>
+    </div>
+
+    <div class="task-dialog-body">
+      <ul id="taskNotes" class="task-notes"></ul>
+
+      <label class="task-field-label" for="taskFolderInput">Excel 文件夹路径</label>
+      <div class="input-groove-wrap">
+        <span class="input-groove-icon" aria-hidden="true">📂</span>
+        <input type="text" id="taskFolderInput" placeholder="例如 C:\Users\...\Desktop\excel_files">
+      </div>
+
+      <div id="previewBox" class="preview-box hidden"></div>
+
+      <div id="taskRunBox" class="task-run-box hidden">
+        <div class="mini-progress-box">
+          <div class="mini-progress-info">
+            <span id="taskStepText">等待开始...</span>
+            <span id="taskStatsText">0%</span>
+          </div>
+          <div class="progress-track progress-track-sm">
+            <div id="taskProgressFill" class="progress-fill" style="width: 0%;"></div>
+          </div>
+        </div>
+        <div id="taskResult" class="task-result hidden"></div>
+        <div class="console-frame">
+          <div class="console-frame-bar">
+            <span class="console-dots"><i></i><i></i><i></i></span>
+            <span>实时处理日志</span>
+          </div>
+          <div class="log-box" id="taskLogBox">等待操作...</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="task-dialog-foot">
+      <span id="taskHint" class="task-hint"></span>
+      <button type="button" class="btn btn-outline" onclick="closeTask()">关闭</button>
+      <button type="button" class="btn btn-primary" id="taskPrimaryBtn" onclick="onPrimaryAction()">开始</button>
+    </div>
+  </dialog>
+
+  <script src="/static/home.js"></script>
+</body>
+</html>

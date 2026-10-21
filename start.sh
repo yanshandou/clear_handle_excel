@@ -50,7 +50,7 @@ MODE="${1:-web}"
 
 case "$MODE" in
   web|--web|-w)
-    echo "🚀 正在启动 Web 切字检测与微调工作台 (含 /records 执行记录看板)..."
+    echo "🚀 正在启动 Web 工具 (主页 / · 切字工作台 /workbench · 执行记录看板 /records)..."
     exec "$PYTHON_BIN" web_clip_fixer.py
     ;;
   cli|--cli|-c)
@@ -61,7 +61,7 @@ case "$MODE" in
     echo "================================================"
     echo "  📐 Excel 整理、PDF 导出与切字闭环微调工具"
     echo "================================================"
-    echo "  1) 启动 Web 可视化切字微调工作台 (默认，推荐)"
+    echo "  1) 启动 Web 可视化工具 (功能主页 + 切字微调工作台，默认，推荐)"
     echo "  2) 启动 CLI 命令行一键批处理工具"
     echo "================================================"
     read -r -p "请选择启动模式 [1/2，默认 1]: " choice
@@ -73,8 +73,8 @@ case "$MODE" in
     ;;
   help|--help|-h)
     echo "用法: ./start.sh [web|cli|menu]"
-    echo "  ./start.sh        默认启动 Web 可视化工作台 (http://127.0.0.1:8765)"
-    echo "  ./start.sh web    启动 Web 可视化工作台"
+    echo "  ./start.sh        默认启动 Web 可视化工具 (主页 http://127.0.0.1:8765)"
+    echo "  ./start.sh web    启动 Web 可视化工具"
     echo "  ./start.sh cli    启动 CLI 命令行批处理工具"
     echo "  ./start.sh menu   交互式选择启动模式"
     ;;

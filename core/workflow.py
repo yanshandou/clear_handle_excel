@@ -2,6 +2,7 @@ import copy
 import re
 import shutil
 import threading
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from core.common import (
     XL_SHEET_VISIBLE,
     XL_TYPE_PDF,
     as_bbox,
+    console_print,
     is_backup_sheet,
     sanitize_filename,
     unique_pdf_path,
@@ -23,6 +25,7 @@ from core.excel_ops import (
     normalize_workbook_view,
     open_workbook_for_manual_review,
     pythoncom,
+    scan_workbook_sheets,
     win32,
 )
 from core.pdf_detector import (
@@ -46,6 +49,13 @@ from core.reporter import (
 from core.storage import load_snapshot, save_snapshot
 
 STATE_LOCK = threading.RLock()
+
+# 主页上可单独执行的批处理功能（job kind -> 任务名）
+QUICK_TASK_NAMES = {
+    "clean_sheets": "精简 Sheet（删除 YYYYMMDD 备份表）",
+    "export_pdf": "批量导出 PDF",
+    "normalize_view": "视图标准化（A1 + 100% 缩放）",
+}
 
 # 全局状态存储（供前端网页读取和操作）
 STATE: dict[str, Any] = {
@@ -126,6 +136,9 @@ def run_pending_workflow() -> None:
         elif job["kind"] in {"manual_open", "recheck"}:
             manual_review_workflow(options["selected_ids"], open_excel=job["kind"] == "manual_open")
             expected = options["selected_ids"]
+        elif job["kind"] in QUICK_TASK_NAMES:
+            quick_task_workflow(job["kind"])
+            expected = job.get("workbooks", [])
         elif job["kind"] == "refresh":
             if "selected_ids" not in job["options"]:
                 ids = _select_changed_problem_items()
@@ -165,9 +178,9 @@ def run_pending_workflow() -> None:
 def log_msg(msg: str) -> None:
     timestamp = datetime.now().strftime("%H:%M:%S")
     line = f"[{timestamp}] {msg}"
-    print(line)
     with STATE_LOCK:
         STATE["logs"].append(line)
+    console_print(line)
 
 
 def try_acquire_busy() -> bool:
@@ -176,6 +189,14 @@ def try_acquire_busy() -> bool:
             return False
         STATE["busy"] = True
         return True
+
+
+def _progress_summary(report_snap: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "task_name", "status", "total_files", "completed_files", "processing_files",
+        "pending_files", "error_files", "progress_pct", "current_file", "current_step",
+    )
+    return {key: report_snap[key] for key in keys}
 
 
 def get_state_snapshot() -> dict[str, Any]:
@@ -194,18 +215,33 @@ def get_state_snapshot() -> dict[str, Any]:
             "settings": dict(STATE["settings"]),
             "can_resume": bool(STATE["job"] and STATE["job"]["status"] == "interrupted"),
             "job": copy.deepcopy(STATE["job"]),
-            "progress": {
-                "task_name": report_snap["task_name"],
-                "status": report_snap["status"],
-                "total_files": report_snap["total_files"],
-                "completed_files": report_snap["completed_files"],
-                "processing_files": report_snap["processing_files"],
-                "pending_files": report_snap["pending_files"],
-                "error_files": report_snap["error_files"],
-                "progress_pct": report_snap["progress_pct"],
-                "current_file": report_snap["current_file"],
-                "current_step": report_snap["current_step"],
-            },
+            "progress": _progress_summary(report_snap),
+        }
+
+
+def get_overview_snapshot() -> dict[str, Any]:
+    """主页轮询用的轻量快照：不含整页截图与问题项详情。"""
+    with STATE_LOCK:
+        if not STATE["busy"]:
+            _expire_manual_confirmations()
+    report_snap = get_execution_report_snapshot()
+    with STATE_LOCK:
+        job = STATE["job"]
+        unresolved = sum(
+            item["status"] not in {"fixed", "accepted"} for item in STATE["items"].values()
+        )
+        return {
+            "busy": STATE["busy"],
+            "folder": STATE["folder"],
+            "logs": list(STATE["logs"][-40:]),
+            "can_resume": bool(job and job["status"] == "interrupted"),
+            "job": {
+                "kind": job["kind"],
+                "status": job["status"],
+                **{key: job["options"].get(key, "") for key in ("folder", "pdf_folder", "backup_folder")},
+            } if job else None,
+            "clips": {"total": len(STATE["items"]), "unresolved": unresolved},
+            "progress": _progress_summary(report_snap),
         }
 
 
@@ -387,6 +423,49 @@ def _select_changed_problem_items() -> list[str]:
     return selected
 
 
+def list_workbooks(folder_str: str) -> tuple[Path, list[Path]]:
+    """解析文件夹路径并列出其中的 Excel 文件（跳过 ~$ 临时锁文件）"""
+    folder = Path(folder_str.strip().strip('"').strip("'")).expanduser().resolve()
+    if not folder.is_dir():
+        raise ValueError(f"文件夹不存在: {folder}")
+    workbooks = sorted(
+        p
+        for p in folder.iterdir()
+        if p.is_file() and p.suffix.lower() in EXCEL_EXTENSIONS and not p.name.startswith("~$")
+    )
+    if not workbooks:
+        raise ValueError("未找到 Excel 文件")
+    return folder, workbooks
+
+
+def _is_exportable_sheet(sheet: Any) -> bool:
+    """可见、且不是変更履歴或日期备份表的工作表才导出 PDF"""
+    name = sheet.Name
+    return (
+        name not in EXCLUDE_PDF_SHEETS
+        and not is_backup_sheet(name)
+        and sheet.Visible == XL_SHEET_VISIBLE
+    )
+
+
+def _export_sheet_pdf(sheet: Any, pdf_path: Path) -> None:
+    sheet.ExportAsFixedFormat(
+        Type=XL_TYPE_PDF,
+        Filename=str(pdf_path.resolve()),
+        Quality=0,
+        IncludeDocProperties=True,
+        IgnorePrintAreas=False,
+        OpenAfterPublish=False,
+    )
+
+
+def _backup_original(wb_path: Path, backup_folder: Path) -> None:
+    """修改前备份原文件；续跑时已有备份不覆盖，保留最初版本。"""
+    backup_folder.mkdir(parents=True, exist_ok=True)
+    if not (backup_folder / wb_path.name).exists():
+        shutil.copy2(wb_path, backup_folder / wb_path.name)
+
+
 def scan_folder_workflow(folder_str: str, delete_backups: bool, *, resume: bool = False) -> None:
     with STATE_LOCK:
         STATE["busy"] = True
@@ -399,17 +478,7 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool, *, resume: bool 
             STATE["checked_files"].clear()
 
     try:
-        folder = Path(folder_str.strip().strip('"').strip("'")).expanduser().resolve()
-        if not folder.is_dir():
-            raise ValueError(f"文件夹不存在: {folder}")
-
-        workbooks = sorted(
-            p
-            for p in folder.iterdir()
-            if p.is_file() and p.suffix.lower() in EXCEL_EXTENSIONS and not p.name.startswith("~$")
-        )
-        if not workbooks:
-            raise ValueError("未找到 Excel 文件")
+        folder, workbooks = list_workbooks(folder_str)
 
         timestamp = f"{datetime.now():%Y%m%d_%H%M%S}"
         pdf_folder = Path(STATE["pdf_folder"]) if initialized else folder / f"_exported_pdfs_{timestamp}"
@@ -479,9 +548,7 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool, *, resume: bool 
                         if len(bkp_names) >= len(all_names):
                             log_msg(f"  ⚠️ 跳过删除备份表（全部工作表均为日期名）: {wb_path.name}")
                         else:
-                            backup_folder.mkdir(parents=True, exist_ok=True)
-                            if not (backup_folder / wb_path.name).exists():
-                                shutil.copy2(wb_path, backup_folder / wb_path.name)
+                            _backup_original(wb_path, backup_folder)
                             for bn in bkp_names:
                                 wb.Sheets(bn).Delete()
                             deleted_bkp_list = list(dict.fromkeys(deleted_bkp_list + bkp_names))
@@ -502,24 +569,15 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool, *, resume: bool 
                     scan_version = _file_version(wb_path)
                     file_stem = sanitize_filename(wb_path.stem)
                     for sheet in wb.Sheets:
+                        if not _is_exportable_sheet(sheet):
+                            continue
                         s_name = sheet.Name
-                        if s_name in EXCLUDE_PDF_SHEETS or is_backup_sheet(s_name):
-                            continue
-                        if sheet.Visible != XL_SHEET_VISIBLE:
-                            continue
 
                         pdf_path = unique_pdf_path(
                             pdf_folder, file_stem, sanitize_filename(s_name), used_pdf_paths
                         )
                         try:
-                            sheet.ExportAsFixedFormat(
-                                Type=XL_TYPE_PDF,
-                                Filename=str(pdf_path.resolve()),
-                                Quality=0,
-                                IncludeDocProperties=True,
-                                IgnorePrintAreas=False,
-                                OpenAfterPublish=False,
-                            )
+                            _export_sheet_pdf(sheet, pdf_path)
                             wb_exported_pdfs += 1
                         except Exception as e:
                             log_msg(f"  导出 PDF 失败 [{s_name}]: {e}")
@@ -789,11 +847,7 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
                 for sheet_name, pdf_path_str in entry["sheets"].items():
                     sheet = workbook.Sheets(sheet_name)
                     pdf_path = Path(pdf_path_str)
-                    sheet.ExportAsFixedFormat(
-                        Type=XL_TYPE_PDF, Filename=str(pdf_path.resolve()),
-                        Quality=0, IncludeDocProperties=True, IgnorePrintAreas=False,
-                        OpenAfterPublish=False,
-                    )
+                    _export_sheet_pdf(sheet, pdf_path)
                     pages, items = _detect_sheet_results(
                         sheet, Path(path), sheet_name, pdf_path, next_seq,
                     )
@@ -994,14 +1048,7 @@ def fix_selected_workflow(
                             sheet.Rows(target_row).RowHeight = new_h
                             wb.Save()
 
-                            sheet.ExportAsFixedFormat(
-                                Type=XL_TYPE_PDF,
-                                Filename=str(pdf_path.resolve()),
-                                Quality=0,
-                                IncludeDocProperties=True,
-                                IgnorePrintAreas=False,
-                                OpenAfterPublish=False,
-                            )
+                            _export_sheet_pdf(sheet, pdf_path)
                             touched_pdfs.add(pdf_path)
 
                             # 定位失败也要提交本轮已写入的行高，并清除检查点，避免续跑时重复加高。
@@ -1118,3 +1165,213 @@ def fix_selected_workflow(
             if not resume:
                 STATE["busy"] = False
                 _persist_state()
+
+
+def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
+    """只读列出每个工作簿将被精简的日期备份表；不修改文件，也不占用后台任务。"""
+    folder, workbooks = list_workbooks(folder_str)
+    files: list[dict[str, Any]] = []
+    for wb_path in workbooks:
+        entry: dict[str, Any] = {"name": wb_path.name, "sheet_count": 0, "backups": [], "note": ""}
+        try:
+            all_names, backups = scan_workbook_sheets(wb_path)
+        except Exception as err:
+            entry["note"] = f"无法读取: {err}"
+        else:
+            entry["sheet_count"] = len(all_names)
+            if backups and len(backups) >= len(all_names):
+                entry["note"] = "全部工作表均为日期名，将跳过删除"
+            else:
+                entry["backups"] = backups
+        files.append(entry)
+    return {"folder": str(folder), "files": files}
+
+
+def _clean_backup_sheets(get_excel: Callable[[], Any], wb_path: Path, backup_folder: Path) -> None:
+    # 续跑时沿用本批次已记录的删除明细，避免保存后中断导致记录丢失
+    previous = get_execution_report_snapshot()["files"].get(wb_path.name, {})
+    deleted = list(previous.get("deleted_backups", []))
+
+    def record(all_names: list[str], action: str) -> None:
+        update_file_progress(
+            wb_path.name, status="done", current_action=action, deleted_backups=deleted,
+            all_sheets=list(dict.fromkeys(previous.get("all_sheets", []) + all_names)),
+        )
+
+    if wb_path.suffix.lower() != ".xls":
+        # 先用 openpyxl 只读预检，没有备份表的文件不必用 Excel 打开
+        try:
+            all_names, backups = scan_workbook_sheets(wb_path)
+        except Exception:
+            backups = None  # 预检失败时交给 Excel 判断
+        if backups == []:
+            record(all_names, f"已删除 {len(deleted)} 个日期备份 Sheet" if deleted else "没有日期备份表，无需精简")
+            return
+
+    wb = get_excel().Workbooks.Open(str(wb_path.resolve()))
+    try:
+        all_names = [sheet.Name for sheet in wb.Sheets]
+        backups = [name for name in all_names if is_backup_sheet(name)]
+        if not backups:
+            action = f"已删除 {len(deleted)} 个日期备份 Sheet" if deleted else "没有日期备份表，无需精简"
+        elif len(backups) >= len(all_names):
+            action = "全部工作表均为日期名，已跳过删除"
+            log_msg(f"  ⚠️ {action}: {wb_path.name}")
+        else:
+            _backup_original(wb_path, backup_folder)
+            for name in backups:
+                wb.Sheets(name).Delete()
+            deleted = list(dict.fromkeys(deleted + backups))
+            # 先记录删除明细再保存，保存后中断也能在续跑时保留记录
+            update_file_progress(wb_path.name, deleted_backups=deleted)
+            wb.Save()
+            action = f"已删除 {len(deleted)} 个日期备份 Sheet"
+            log_msg(f"  {action}")
+        record(all_names, action)
+    finally:
+        wb.Close(SaveChanges=False)
+
+
+def _export_workbook_pdfs(
+    get_excel: Callable[[], Any], wb_path: Path, pdf_folder: Path, used_pdf_paths: set[Path],
+) -> list[Path]:
+    wb = get_excel().Workbooks.Open(str(wb_path.resolve()), ReadOnly=True)
+    try:
+        file_stem = sanitize_filename(wb_path.stem)
+        exported: list[Path] = []
+        for sheet in wb.Sheets:
+            if not _is_exportable_sheet(sheet):
+                continue
+            pdf_path = unique_pdf_path(
+                pdf_folder, file_stem, sanitize_filename(sheet.Name), used_pdf_paths
+            )
+            _export_sheet_pdf(sheet, pdf_path)
+            exported.append(pdf_path)
+            update_file_progress(
+                wb_path.name, exported_pdfs=len(exported),
+                current_action=f"正在导出 PDF（已导出 {len(exported)} 份）...",
+            )
+        action = f"已导出 {len(exported)} 份 PDF"
+        log_msg(f"  {action}")
+        update_file_progress(
+            wb_path.name, status="done", exported_pdfs=len(exported), current_action=action,
+            all_sheets=[sheet.Name for sheet in wb.Sheets],
+        )
+        return exported
+    finally:
+        wb.Close(SaveChanges=False)
+
+
+def _normalize_workbook_file(get_excel: Callable[[], Any], wb_path: Path, backup_folder: Path) -> None:
+    _backup_original(wb_path, backup_folder)
+    excel = get_excel()
+    wb = excel.Workbooks.Open(str(wb_path.resolve()))
+    try:
+        normalize_workbook_view(excel, wb, on_error=log_msg)
+        wb.Save()
+        update_file_progress(
+            wb_path.name, status="done", normalized_a1=True,
+            current_action="已定位 A1 并设为 100% 缩放",
+            all_sheets=[sheet.Name for sheet in wb.Sheets],
+        )
+    finally:
+        wb.Close(SaveChanges=False)
+
+
+def quick_task_workflow(kind: str) -> None:
+    """主页单项批处理：以 Excel 文件为检查点，续跑时跳过已完成的文件。"""
+    task_name = QUICK_TASK_NAMES[kind]
+    with STATE_LOCK:
+        job = STATE["job"]
+        options = job["options"]
+        initialized = "workbooks" in job
+    if initialized:
+        folder = Path(options["folder"])
+        workbooks = [Path(path) for path in job["workbooks"]]
+    else:
+        folder, workbooks = list_workbooks(options["folder"])
+        timestamp = f"{datetime.now():%Y%m%d_%H%M%S}"
+        with STATE_LOCK:
+            STATE["logs"].clear()
+            options["folder"] = str(folder)
+            if kind == "export_pdf":
+                options["pdf_folder"] = str(folder / f"_exported_pdfs_{timestamp}")
+            else:
+                options["backup_folder"] = str(folder / f"_backup_{timestamp}")
+            job["workbooks"] = [str(path) for path in workbooks]
+            job["exported"] = []
+            _persist_state()
+        init_execution_batch(
+            task_name=task_name,
+            folder=folder,
+            workbooks=workbooks,
+            pdf_folder=Path(options["pdf_folder"]) if kind == "export_pdf" else None,
+            backup_folder=None if kind == "export_pdf" else Path(options["backup_folder"]),
+        )
+    log_msg(f"{'继续' if initialized else '开始'}{task_name}：{folder}（共 {len(workbooks)} 个文件）")
+    if kind == "export_pdf":
+        Path(options["pdf_folder"]).mkdir(parents=True, exist_ok=True)
+
+    excel = None
+
+    def get_excel() -> Any:
+        # 按需启动 Excel：精简 Sheet 时没有备份表的文件无需打开
+        nonlocal excel
+        if excel is None:
+            excel = win32.DispatchEx("Excel.Application")
+            excel.Visible = False
+            excel.DisplayAlerts = False
+        return excel
+
+    # 已完成文件的 PDF 名称保持占用，续跑时不会被同名工作簿覆盖
+    used_pdf_paths = {Path(path) for path in job["exported"]}
+    pythoncom.CoInitialize()
+    try:
+        for wb_path in workbooks:
+            if str(wb_path) in job["completed"]:
+                continue
+            log_msg(f"正在处理: {wb_path.name} ...")
+            update_file_progress(
+                wb_path.name, status="processing", current_action=f"正在执行{task_name}...", error="",
+            )
+            exported: list[Path] = []
+            try:
+                if kind == "clean_sheets":
+                    _clean_backup_sheets(get_excel, wb_path, Path(options["backup_folder"]))
+                elif kind == "export_pdf":
+                    exported = _export_workbook_pdfs(
+                        get_excel, wb_path, Path(options["pdf_folder"]), used_pdf_paths
+                    )
+                else:
+                    _normalize_workbook_file(get_excel, wb_path, Path(options["backup_folder"]))
+            except Exception as err:
+                log_msg(f"❌ 处理文件出错 {wb_path.name}: {err}")
+                update_file_progress(
+                    wb_path.name, status="error", error=str(err), current_action=f"处理出错: {err}",
+                )
+                continue
+            with STATE_LOCK:
+                job["completed"].append(str(wb_path))
+                job["exported"].extend(str(path) for path in exported)
+                _persist_state()
+    finally:
+        try:
+            if excel is not None:
+                excel.Quit()
+        finally:
+            pythoncom.CoUninitialize()
+
+    files = list(get_execution_report_snapshot()["files"].values())
+    if kind == "clean_sheets":
+        detail = f"共删除 {sum(len(f['deleted_backups']) for f in files)} 个日期备份 Sheet"
+    elif kind == "export_pdf":
+        detail = f"共导出 {sum(int(f['exported_pdfs']) for f in files)} 份 PDF"
+    else:
+        detail = f"{sum(bool(f['normalized_a1']) for f in files)} 个文件已完成 A1/100% 标准化"
+    failed = sum(f["status"] == "error" for f in files)
+    message = (
+        f"⚠️ {task_name}结束：{detail}，{failed} 个文件失败" if failed
+        else f"✅ {task_name}完成：{detail}"
+    )
+    log_msg(message)
+    finish_execution_batch(message)

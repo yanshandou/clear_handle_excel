@@ -51,7 +51,7 @@ def _restore_report() -> None:
         EXECUTION_STATE.update(loaded)
         if EXECUTION_STATE["status"] == "running":
             EXECUTION_STATE["status"] = "interrupted"
-            EXECUTION_STATE["current_step"] = "任务已中断，请在工作台继续上次任务"
+            EXECUTION_STATE["current_step"] = "任务已中断，可在主页或工作台继续上次任务"
             EXECUTION_STATE["current_file"] = ""
             for entry in EXECUTION_STATE["files"].values():
                 if entry["status"] == "processing":
@@ -102,10 +102,11 @@ def init_execution_batch(
         now = _now_str()
         EXECUTION_STATE["task_name"] = task_name
         EXECUTION_STATE["folder"] = str(folder)
-        if pdf_folder is not None:
-            EXECUTION_STATE["pdf_folder"] = str(pdf_folder)
-        if backup_folder is not None:
-            EXECUTION_STATE["backup_folder"] = str(backup_folder)
+        # 新批次不沿用上一批的输出目录，避免报告里出现与本次任务无关的路径
+        if pdf_folder is not None or not preserve_existing_files:
+            EXECUTION_STATE["pdf_folder"] = str(pdf_folder) if pdf_folder is not None else ""
+        if backup_folder is not None or not preserve_existing_files:
+            EXECUTION_STATE["backup_folder"] = str(backup_folder) if backup_folder is not None else ""
         EXECUTION_STATE["status"] = "running"
         if not preserve_existing_files or not EXECUTION_STATE["started_at"]:
             EXECUTION_STATE["started_at"] = now

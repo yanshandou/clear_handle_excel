@@ -7,7 +7,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
-from core.common import STATIC_DIR, is_backup_sheet, sanitize_filename
+from core.common import STATIC_DIR, console_print, is_backup_sheet, sanitize_filename
 from core.excel_ops import extract_sheet_snapshot, match_excel_row, normalize_workbook_view
 from core.pdf_detector import (
     extract_page_lines,
@@ -18,11 +18,15 @@ from core.pdf_detector import (
 )
 from core.reporter import get_execution_report_snapshot, render_execution_markdown
 from core.workflow import (
+    QUICK_TASK_NAMES,
     STATE,
     STATE_LOCK,
     fix_selected_workflow,
+    get_overview_snapshot,
     get_state_snapshot,
+    list_workbooks,
     log_msg,
+    preview_backup_sheets,
     scan_folder_workflow,
     queue_job,
     run_pending_workflow,
@@ -60,6 +64,13 @@ MIME_TYPES = {
 }
 
 
+def _require_folder(payload: dict) -> str:
+    folder = payload.get("folder")
+    if not isinstance(folder, str) or not folder.strip():
+        raise ValueError("请输入 Excel 文件夹路径")
+    return folder
+
+
 class WebHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         del format, args  # 保持终端清爽
@@ -91,7 +102,9 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path in {"/", "/index.html"}:
+        if parsed.path in {"/", "/home.html"}:
+            self._serve_static_file("home.html")
+        elif parsed.path in {"/workbench", "/index.html"}:
             self._serve_static_file("index.html")
         elif parsed.path in {"/records", "/records.html"}:
             self._serve_static_file("records.html")
@@ -100,6 +113,8 @@ class WebHandler(BaseHTTPRequestHandler):
             self._serve_static_file(rel)
         elif parsed.path == "/api/state":
             self._send_json(get_state_snapshot())
+        elif parsed.path == "/api/overview":
+            self._send_json(get_overview_snapshot())
         elif parsed.path == "/api/records":
             self._send_json(get_execution_report_snapshot())
         elif parsed.path == "/api/records/markdown":
@@ -128,9 +143,7 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def _handle_post(self, payload: dict) -> None:
         if self.path == "/api/scan":
-            folder = payload.get("folder")
-            if not isinstance(folder, str) or not folder.strip():
-                raise ValueError("请输入 Excel 文件夹路径")
+            folder = _require_folder(payload)
             self._start_job("scan", {
                 "folder": folder,
                 "delete_backups": bool(payload.get("delete_backups", True)),
@@ -155,6 +168,16 @@ class WebHandler(BaseHTTPRequestHandler):
                 "step_pt": step_pt,
                 "max_iter": max_iter,
             })
+
+        elif self.path == "/api/quick_task":
+            kind = payload.get("kind")
+            if not isinstance(kind, str) or kind not in QUICK_TASK_NAMES:
+                raise ValueError("未知的功能")
+            folder, _ = list_workbooks(_require_folder(payload))
+            self._start_job(kind, {"folder": str(folder)})
+
+        elif self.path == "/api/clean/preview":
+            self._send_json({"ok": True, **preview_backup_sheets(_require_folder(payload))})
 
         elif self.path == "/api/resume":
             self._start_job("resume")
@@ -209,13 +232,13 @@ def main() -> None:
     port = 8765
     server = ThreadingHTTPServer(("127.0.0.1", port), WebHandler)
     url = f"http://127.0.0.1:{port}"
-    print(f"🚀 Web 界面已启动: {url}")
-    print("正在自动打开浏览器... (按 Ctrl+C 可退出程序)")
+    console_print(f"🚀 Web 界面已启动: {url}")
+    console_print("正在自动打开浏览器... (按 Ctrl+C 可退出程序)")
     webbrowser.open(url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n已退出。")
+        console_print("\n已退出。")
 
 
 if __name__ == "__main__":

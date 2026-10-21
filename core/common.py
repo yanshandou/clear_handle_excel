@@ -1,4 +1,5 @@
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,19 @@ STATIC_DIR = PROJECT_ROOT / "static"
 XL_TYPE_PDF = 0
 XL_SHEET_VISIBLE = -1
 XL_WORKSHEET = -4167
+
+
+def console_print(text: str) -> None:
+    """打印到终端，不因编码失败抛出异常。
+
+    Python 3.15 之前输出到管道（如 Git Bash）时 stdout 使用系统 ANSI 代码页（cp932/GBK 等），
+    无法编码 emoji 和部分中文；此时转义成 \\uXXXX 输出，避免日志打印中断后台任务。
+    """
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(text.encode(encoding, errors="backslashreplace").decode(encoding))
 
 
 def is_backup_sheet(sheet_name: str) -> bool:

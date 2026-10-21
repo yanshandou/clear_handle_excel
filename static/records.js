@@ -122,7 +122,7 @@ async function pollRecords() {
 
     const isRunning = data.status === 'running';
     document.getElementById('statusText').innerText = isRunning ? '⏳ 任务执行中...'
-      : (data.status === 'interrupted' ? '任务已中断，请回工作台继续' : '✅ 就绪');
+      : (data.status === 'interrupted' ? '任务已中断，请回主页或工作台继续' : '✅ 就绪');
 
     const taskBadge = document.getElementById('taskBadge');
     if (data.status === 'running') {
