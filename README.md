@@ -190,4 +190,4 @@ python cli_all_in_one.py
   - 导出的 PDF：`_exported_pdfs_YYYYMMDD_HHMMSS/`
 - **Markdown 执行记录报告与状态持久化**：
   - `record.md`（项目根目录）与 `_执行记录报告.md`（所选 Excel 文件夹下）：自动记录任务总进度、各文件处理状态总表、导出 PDF 数、切字修复统计以及各工作簿 Sheet 清理明细（已删除备份表带删除线 `~~Sheet名~~`）。
-  - `record_state.json`（项目根目录）：持久化最近一次 Web 或 CLI 任务的执行状态，刷新或重启 Web 看板 `/records` 时可自动恢复历史进度。
+  - `execution.sqlite3`（项目根目录）：持久化最近一次 Web 或 CLI 任务的执行状态，刷新或重启 Web 看板 `/records` 时可自动恢复历史进度。旧版的 `record_state.json` 不再写入，仅在数据库尚无执行记录时于启动时导入一次。
