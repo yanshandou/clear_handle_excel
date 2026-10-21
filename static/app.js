@@ -9,6 +9,8 @@ let activeHoverItemId = null;
 let workspaceRestored = false;
 let canResume = false;
 
+const RECHECK_TITLE = '请先在 Excel 中保存手动修改。根据新 PDF 重新检测该文件的问题工作表并替换旧标记，不会自动增加行高';
+
 function isResolved(item) {
   return item.status === 'fixed' || item.status === 'accepted';
 }
@@ -16,7 +18,10 @@ function isResolved(item) {
 function confirmationButton(item) {
   const accepted = item.status === 'accepted';
   if (item.status === 'fixed') return '';
-  return `<button class="btn btn-outline btn-sm" onclick="confirmManual('${escapeHtml(item.id)}', ${!accepted})">${accepted ? '撤销人工确认' : '人工确认：无需修复'}</button>`;
+  const title = accepted
+    ? '撤销后重新纳入待处理'
+    : '人工判断仅对当前已保存的文件版本有效，请先保存 Excel；文件再次修改后需重新检查';
+  return `<button class="btn btn-outline btn-sm" title="${title}" onclick="confirmManual('${escapeHtml(item.id)}', ${!accepted})">${accepted ? '撤销人工确认' : '人工确认：无需修复'}</button>`;
 }
 
 function escapeHtml(str) {
@@ -408,7 +413,7 @@ function renderCanvasStages(pages, items) {
             </label>
             <span onclick="event.stopPropagation();">
               <button class="btn btn-outline btn-sm" onclick="manualOpen('${escapeHtml(item.id)}')">在 Excel 中定位</button>
-              <button class="btn btn-outline btn-sm" onclick="manualRecheck('${escapeHtml(item.id)}')">重新导出复检</button>
+              <button class="btn btn-outline btn-sm" title="${RECHECK_TITLE}" onclick="manualRecheck('${escapeHtml(item.id)}')">重新导出复检</button>
               ${confirmationButton(item)}
             </span>
           </div>
@@ -541,7 +546,7 @@ function renderCards(items) {
       </div>
       <div onclick="event.stopPropagation();">
         <button class="btn btn-outline btn-sm" onclick="manualOpen('${escapeHtml(id)}')">在 Excel 中定位</button>
-        <button class="btn btn-outline btn-sm" onclick="manualRecheck('${escapeHtml(id)}')">重新导出复检（不加高）</button>
+        <button class="btn btn-outline btn-sm" title="${RECHECK_TITLE}" onclick="manualRecheck('${escapeHtml(id)}')">重新导出复检（不加高）</button>
         ${confirmationButton(item)}
         <p>${escapeHtml(item.review_reason || '自动调整无效时，请转人工核对行号、合并单元格及边框。')}</p>
       </div>
@@ -715,9 +720,9 @@ async function manualOpen(id) {
 }
 
 async function manualRecheck(id) {
-  const message = '请先在 Excel 中保存手动修改。本次根据新 PDF 重新检测该文件的问题工作表并替换旧标记，不会自动增加行高。'
-    + (canResume ? '\n此操作会替换上次中断任务的续跑检查点。' : '');
-  if (!confirm(message)) return;
+  // 复检只读 Excel、不加高，平时不再弹窗；只有会替换中断任务续跑点（不可撤销）时才提示
+  const message = '此操作会替换上次中断任务的续跑检查点，确定吗？';
+  if (canResume && !confirm(message)) return;
   try {
     hideMagnifier();
     await postAction('/api/manual/recheck', { id });
@@ -735,9 +740,9 @@ async function refreshProblems() {
 }
 
 async function confirmManual(id, accepted) {
-  const message = '确认此处无需修复？请先保存 Excel。人工结论仅对当前已保存版本有效，文件再次修改后需重新检查。'
-    + (canResume ? '\n此操作会取消中断任务的续跑，避免旧检查点覆盖人工结论。其他未解决项仍可重新选择处理。' : '');
-  if (accepted && !confirm(message)) return;
+  // 人工确认可随时撤销，平时不再弹窗；只有会取消中断任务续跑点（不可撤销）时才提示
+  const message = '此操作会取消上次中断任务的续跑，避免旧检查点覆盖人工判断。其他未解决项仍可重新选择处理。确定吗？';
+  if (canResume && !confirm(message)) return;
   try {
     hideMagnifier();
     await postAction('/api/manual/confirm', { id, accepted });
