@@ -64,6 +64,14 @@ const MARK_PALETTE_SIZE = 5;
 // 20220929，或用同一种分隔符隔开的 2018-02-26 / 2018.02.26 / 2018/02/26
 const DATE_RE = /(?<!\d)((?:19|20)\d{2})([-/.]?)(\d{2})\2(\d{2})(?!\d)/g;
 
+// 名称末尾不带年份的 4 位月日（MMDD），如「請求書1)0513」
+const MMDD_SUFFIX_RE = /(?<!\d)(\d{2})(\d{2})[\s_\-・.]*$/;
+
+function hasMmddSuffix(text) {
+  const m = MMDD_SUFFIX_RE.exec(text);
+  return Boolean(m) && isValidYmdDate(`2000${m[1]}${m[2]}`);
+}
+
 function isValidYmdDate(yyyymmdd) {
   if (!/^(?:19|20)\d{6}$/.test(yyyymmdd)) return false;
   const y = Number(yyyymmdd.slice(0, 4));
@@ -79,6 +87,7 @@ function hasBackupMarker(sheetName) {
   if (/(?<![a-z])(?:bak|backup|old|copy)(?![a-z])/i.test(text)) return true;
   if (/バックアップ|备份|コピー|副本|(?<![新復])旧/.test(text)) return true;
   if (/\s*\(\d+\)[\s_\-・.]*$/.test(text)) return true;
+  if (hasMmddSuffix(text)) return true;
   const dateRe = new RegExp(DATE_RE.source, 'g');
   let m;
   while ((m = dateRe.exec(text)) !== null) {
@@ -149,6 +158,7 @@ function analyzeSheetName(displayName, { stripBackup = false, stripVersion = tru
     applyStrip(/copy\s+of|の?コピー|的?副本/gi, null, true);
     applyStrip(/(?<![a-z])(?:bak|backup|old|copy)(?![a-z])/gi, null, true);
     applyStrip(/バックアップ|备份|コピー|副本|(?<![新復])旧/g, null, true);
+    applyStrip(/(?<!\d)(\d{2})(\d{2})[\s_\-・.]*$/g, m => isValidYmdDate(`2000${m[1]}${m[2]}`), true);
   }
   if (stripVersion) {
     applyStrip(/(?<![a-z])v(?:er)?\.?\d+(?:\.\d+)*(?![a-z])/gi, null, true);
@@ -436,6 +446,7 @@ function renderPage() {
 
   document.getElementById('cleanFolderInput').disabled = working;
   document.getElementById('cleanActionBar').classList.toggle('hidden', phase !== 'preview');
+  document.getElementById('cleanLegend').classList.toggle('hidden', phase !== 'preview');
   document.getElementById('previewBox').classList.toggle('hidden', phase !== 'preview');
   document.getElementById('previewBox').classList.toggle('is-busy', pending !== null);
   document.getElementById('cleanRunBox').classList.toggle('hidden', phase !== 'running' && phase !== 'done');

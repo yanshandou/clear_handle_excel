@@ -19,6 +19,7 @@ from core.common import (
     console_print,
     find_backup_sheets,
     find_clean_targets,
+    find_contained_sheets,
     is_uncertain_name,
     sanitize_filename,
     strip_uncertain_prefix,
@@ -1378,8 +1379,9 @@ def _preview_workbook(wb_path: Path, folder: Path, get_excel: Callable[[], Any])
         entry["sheet_count"] = len(all_names)
         entry["sheets"] = all_names  # 保持工作簿中的原有顺序，便于对照保留、删除与待定
         uncertain = [s for s in all_names if is_uncertain_name(s)]
-        entry["uncertain"] = uncertain
         default_delete = [s for s in find_clean_targets(all_names) if s not in set(uncertain)]
+        contained = set(find_contained_sheets(all_names))
+        entry["uncertain"] = [s for s in all_names if s in contained or s in set(uncertain)]
         if default_delete and len(default_delete) >= len(all_names):
             entry["note"] = "全部工作表均被识别为备份表，将跳过删除"
         else:

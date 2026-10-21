@@ -14,6 +14,8 @@ BACKUP_TEXT_PATTERN = re.compile(r"バックアップ|备份|コピー|副本|(?
 # 复制工作表产生的「(2)」「(3)」后缀（全角括号统一为半角后判断，有无空格均可），
 # 后面还可以再接日期，如「様式１（基本情報）(2)_20221005」；仍要求同工作簿存在原表才算备份
 EXCEL_COPY_SUFFIX_PATTERN = re.compile(r"\s*\(\d+\)[\s_\-・.]*$")
+# 名称末尾不带年份的 4 位月日（MMDD），如「請求書1)0513」；只作备份标记，不参与「多个日期版本」的新旧比较
+MMDD_SUFFIX_PATTERN = re.compile(r"(?<!\d)(\d{2})(\d{2})[\s_\-・.]*$")
 # 工具自动生成的工作表（如 自動生成_引数、自動生成_JSON），没有对应原表，精简 Sheet 时默认删除
 AUTO_GENERATED_PREFIXES = ("自動生成", "自动生成")
 # 去掉备份标记、找原表时额外去掉的写法（「Sheet1のコピー」的「の」、「Copy of 一覧」的「of」）
@@ -68,8 +70,14 @@ def _latest_date_in(name: str) -> str | None:
     return max(dates) if dates else None
 
 
+def _has_mmdd_suffix(text: str) -> bool:
+    """名称末尾是否为有效的 4 位月日（按闰年判断，0229 也算）"""
+    m = MMDD_SUFFIX_PATTERN.search(text)
+    return bool(m) and _is_valid_date(f"2000{m.group(1)}{m.group(2)}")
+
+
 def has_backup_marker(sheet_name: str) -> bool:
-    """名称是否带备份标记：有效日期（YYYYMMDD 或 YYYY-MM-DD 等）、bak/backup/old/copy、
+    """名称是否带备份标记：有效日期（YYYYMMDD 或 YYYY-MM-DD 等，或末尾的 4 位月日 MMDD）、bak/backup/old/copy、
     バックアップ/备份/旧/コピー/副本，或复制产生的「(2)」后缀。
 
     只是候选条件，是否真的是备份表见 find_backup_sheets。
@@ -79,6 +87,7 @@ def has_backup_marker(sheet_name: str) -> bool:
         or BACKUP_TEXT_PATTERN.search(sheet_name)
         or EXCEL_COPY_SUFFIX_PATTERN.search(unicodedata.normalize("NFKC", sheet_name))
         or _latest_date_in(sheet_name) is not None
+        or _has_mmdd_suffix(unicodedata.normalize("NFKC", sheet_name))
     )
 
 
@@ -97,6 +106,8 @@ def _original_name_of(backup_name: str) -> str:
     text = COPY_PHRASE_PATTERN.sub("", text)
     text = BACKUP_WORD_PATTERN.sub("", text)
     text = BACKUP_TEXT_PATTERN.sub("", text)
+    if _has_mmdd_suffix(text):
+        text = MMDD_SUFFIX_PATTERN.sub("", text)
     return _comparable_name(text)
 
 
@@ -135,6 +146,41 @@ def find_clean_targets(sheet_names: list[str]) -> list[str]:
     """精简 Sheet 默认删除的工作表：有原表的备份表，加上「自動生成」开头的工作表（保持原顺序）"""
     targets = set(find_backup_sheets(sheet_names))
     return [name for name in sheet_names if name in targets or is_auto_generated_sheet(name)]
+
+
+def find_contained_sheets(sheet_names: list[str]) -> list[str]:
+    """名称完整包含另一个工作表名称、但多出的部分不是可识别备份标记的工作表（如 一覧 与 一覧詳細），
+    可能是备份也可能是正式的明细表，精简 Sheet 时默认标为待定，交给人工确认，不默认删除。
+
+    已默认删除、已带 ❓、「自動生成」开头的表不算；被包含的名称至少 2 个字符，
+    且不能把数字从中间切开（Sheet1 与 Sheet12 是不同的表）。
+    """
+    targets = set(find_clean_targets(sheet_names))
+    references = {
+        c for name in sheet_names
+        if name not in targets and len(c := _comparable_name(name)) >= 2
+    }
+    contained: list[str] = []
+    for name in sheet_names:
+        if name in targets or is_uncertain_name(name) or is_auto_generated_sheet(name):
+            continue
+        text = _comparable_name(name)
+        for ref in references:
+            if ref == text:
+                continue
+            start = text.find(ref)
+            while start != -1:
+                end = start + len(ref)
+                cuts_number = (start > 0 and text[start - 1].isdigit() and ref[0].isdigit()) or (
+                    end < len(text) and text[end].isdigit() and ref[-1].isdigit()
+                )
+                if not cuts_number:
+                    break
+                start = text.find(ref, start + 1)
+            if start != -1:
+                contained.append(name)
+                break
+    return contained
 
 
 def is_uncertain_name(name: str) -> bool:

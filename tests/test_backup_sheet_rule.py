@@ -1,6 +1,6 @@
 import unittest
 
-from core.common import find_backup_sheets, find_clean_targets, has_backup_marker
+from core.common import find_backup_sheets, find_clean_targets, find_contained_sheets, has_backup_marker
 
 
 class BackupMarkerTests(unittest.TestCase):
@@ -120,6 +120,22 @@ class FindBackupSheetsTests(unittest.TestCase):
         # 「一覧(2)」没有原表「一覧」，保留
         self.assertEqual(find_backup_sheets(names), names[2:5])
 
+    def test_mmdd_suffix_requires_valid_date_and_original(self):
+        names = [
+            "変更履歴",
+            "レイアウト(介護予防・日常生活支援総合事業費請求書1)", "レイアウト(介護予防・日常生活支援総合事業費請求書1)0513",
+            "レイアウト(介護予防・日常生活支援総合事業費請求書2)", "レイアウト(介護予防・日常生活支援総合事業費請求書2)0513",
+            "一覧", "一覧_0229", "一覧1340",
+            "Sheet1", "Sheet10513",
+            "帳票0513",
+        ]
+        # 1340 不是有效月日；Sheet10513 前面紧挨数字，分不清是不是月日；帳票0513 没有原表
+        self.assertEqual(find_backup_sheets(names), [names[2], names[4], names[6]])
+
+    def test_mmdd_does_not_join_dated_version_comparison(self):
+        # 没有年份无法比较新旧，没有原表时都保留
+        self.assertEqual(find_backup_sheets(["一覧0513", "一覧0601"]), [])
+
 
 class CleanTargetTests(unittest.TestCase):
     def test_auto_generated_sheets_are_cleaned_without_original(self):
@@ -132,6 +148,21 @@ class CleanTargetTests(unittest.TestCase):
         ])
         # 只影响精简 Sheet，不算备份表（导出 PDF 时照常导出）
         self.assertEqual(find_backup_sheets(names), ["概要20220816"])
+
+
+class ContainedSheetTests(unittest.TestCase):
+    def test_name_containing_another_defaults_to_uncertain(self):
+        names = [
+            "一覧", "一覧詳細", "請求書", "請求書明細", "請求書_20240101",
+            "Sheet1", "Sheet12", "表", "表紙", "❓概要", "概要メモ", "自動生成_一覧",
+        ]
+        # 已带 ❓ 的表也可作为被包含的名称（概要メモ）；已默认删除（請求書_20240101）、已带 ❓、自動生成、数字被切开（Sheet12）、单字被包含（表紙）都不算
+        self.assertEqual(find_contained_sheets(names), ["一覧詳細", "請求書明細", "概要メモ"])
+
+    def test_backup_targets_are_not_used_as_reference(self):
+        names = ["概要", "概要_bak", "概要_bak詳細"]
+        self.assertEqual(find_contained_sheets(names), ["概要_bak詳細"])
+        self.assertEqual(find_contained_sheets(["一覧1340", "一覧"]), ["一覧1340"])
 
 
 if __name__ == "__main__":
