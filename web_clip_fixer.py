@@ -160,11 +160,31 @@ class WebHandler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValueError("请求内容必须为 JSON 对象")
             self._handle_post(payload)
+        except ConnectionError:
+            # 浏览器已断开（刷新、关闭页面或离开），结果送不回去，也不必再回错误
+            self._log_client_disconnect()
         except (ValueError, TypeError, UnicodeError) as err:
             self._send_json({"ok": False, "error": str(err)}, status=400)
-        except (sqlite3.Error, OSError) as err:
+        except sqlite3.Error as err:
             log_msg(f"❌ 无法保存任务: {err}")
             self._send_json({"ok": False, "error": f"无法保存任务: {err}"}, status=500)
+        except OSError as err:
+            log_msg(f"❌ 操作失败: {err}")
+            self._send_json({"ok": False, "error": f"操作失败: {err}"}, status=500)
+
+    def handle_one_request(self) -> None:
+        try:
+            super().handle_one_request()
+        except ConnectionError:
+            self._log_client_disconnect()
+            self.close_connection = True
+
+    def _log_client_disconnect(self) -> None:
+        path = urlparse(self.path).path if getattr(self, "path", None) else "?"
+        if path == "/api/clean/preview":
+            console_print("ℹ️ 扫描结束前浏览器已断开（页面被刷新或关闭），本次扫描结果未送达，重新扫描即可")
+        elif path.startswith("/api/") and getattr(self, "command", "") == "POST":
+            console_print(f"ℹ️ 浏览器已断开，{path} 的结果未送达")
 
     def _handle_post(self, payload: dict) -> None:
         if self.path == "/api/scan":

@@ -50,7 +50,7 @@ MODE="${1:-web}"
 
 case "$MODE" in
   web|--web|-w)
-    echo "🚀 正在启动 Web 工具 (主页 / · 切字工作台 /workbench · 执行记录看板 /records)..."
+    echo "🚀 正在启动 Web 工具 (主页 / · 精简 Sheet /clean · 切字工作台 /workbench · 执行记录看板 /records)..."
     exec "$PYTHON_BIN" web_clip_fixer.py
     ;;
   cli|--cli|-c)

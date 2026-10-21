@@ -357,6 +357,34 @@ class QuickTaskTests(unittest.TestCase):
             self.assertFalse(overview["busy"])
             self.assertNotIn("items", overview)
 
+    def test_clean_page_route(self):
+        with self.serve_api() as port:
+            for path in ("/clean", "/clean.html"):
+                status, body = self.request(port, "GET", path)
+                self.assertEqual(status, 200)
+                self.assertIn("精简 Sheet", body)
+
+    def test_browser_disconnect_during_preview_is_logged_quietly(self):
+        import web_clip_fixer
+
+        self.add_book("a.xlsx", ["Main"])
+        writes = []
+
+        def broken_send(handler, body, content_type, status=200, filename=None):
+            writes.append(status)
+            raise ConnectionAbortedError(10053, "connection aborted by host")
+
+        with self.serve_api() as port, \
+                patch.object(web_clip_fixer.WebHandler, "_send_bytes", broken_send), \
+                patch.object(web_clip_fixer, "console_print") as console:
+            with self.assertRaises(http.client.RemoteDisconnected):
+                self.request(port, "POST", "/api/clean/preview", {"folder": str(self.folder)})
+        # 只尝试发送一次结果，不再追加 500 错误响应，也不写入任务日志
+        self.assertEqual(writes, [200])
+        self.assertFalse(any("❌" in line for line in self.workflow.STATE["logs"]))
+        console.assert_called_once()
+        self.assertIn("浏览器已断开", console.call_args.args[0])
+
     def test_api_quick_task_validates_kind_and_folder(self):
         self.add_book("a.xlsx", ["Sheet1"])
         empty = self.root / "empty"
