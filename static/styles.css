@@ -1373,6 +1373,24 @@ input[type="text"] {
   border-color: #f59e0b;
 }
 
+.card.skipped {
+  border-style: dashed;
+  border-color: #94a3b8;
+  opacity: 0.72;
+}
+
+/* 人工筛选：「只看待处理」时隐藏已跳过、已修复的项和已全部处理完的页面 */
+.only-pending .is-resolved,
+.only-pending .page-resolved {
+  display: none !important;
+}
+
+.all-done-hint {
+  text-align: center;
+  font-weight: 700;
+  color: #065f46;
+}
+
 .card.is-peer-row {
   box-shadow:
     0 0 0 3px rgba(14, 165, 233, 0.5),

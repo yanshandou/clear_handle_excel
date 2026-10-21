@@ -374,6 +374,41 @@ def _carry_over_confirmations(new_items: dict[str, Any], confirmed: list[dict[st
     return carried
 
 
+def _set_item_confirmation(item: dict[str, Any], accepted: bool) -> None:
+    if accepted:
+        # 不绑定文件版本：保存文件不会让确认失效，重新检测时按同一处文字保留
+        item["manual_confirmation"] = {
+            "confirmed_at": datetime.now().isoformat(timespec="seconds"),
+            "previous_status": item["status"],
+        }
+        item["status"] = "accepted"
+        item["review_reason"] = MANUAL_CONFIRMED_REASON
+    else:
+        item["status"] = item["manual_confirmation"]["previous_status"]
+        item["review_reason"] = "人工确认已撤销，重新纳入待处理"
+        del item["manual_confirmation"]
+
+
+def _commit_confirmations(previous_items: dict[str, dict[str, Any]], action: str) -> None:
+    """保存已修改的人工确认（一次写库）；会取消中断任务的续跑点，保存失败时整体回滚。"""
+    previous_job = copy.deepcopy(STATE["job"])
+    if STATE["job"] and STATE["job"]["status"] == "interrupted":
+        STATE["job"]["status"] = "cancelled"
+        STATE["job"]["pending_adjustment"] = None
+    try:
+        _persist_state()
+    except Exception:
+        for item_id, previous in previous_items.items():
+            STATE["items"][item_id].clear()
+            STATE["items"][item_id].update(previous)
+        STATE["job"] = previous_job
+        raise
+    for path in dict.fromkeys(STATE["items"][item_id]["wb_path"] for item_id in previous_items):
+        _sync_problem_counts(path, action)
+    if previous_job and previous_job["status"] == "interrupted":
+        finish_execution_batch("已取消中断任务的续跑，按人工判断更新问题状态")
+
+
 def set_manual_confirmation(item_id: str, accepted: bool) -> None:
     with STATE_LOCK:
         if STATE["busy"]:
@@ -381,41 +416,46 @@ def set_manual_confirmation(item_id: str, accepted: bool) -> None:
         item = STATE["items"].get(item_id)
         if item is None:
             raise ValueError("问题项已更新，请刷新页面后重试")
-        previous = copy.deepcopy(item)
-        previous_job = copy.deepcopy(STATE["job"])
-        if accepted:
-            if item["status"] == "fixed":
-                raise ValueError("此项已自动修复，无需人工确认")
-            if item["status"] == "accepted":
-                raise ValueError("此项已人工确认，如需重新判断请先撤销")
-            # 不绑定文件版本：保存文件不会让确认失效，重新检测时按同一处文字保留
-            item["manual_confirmation"] = {
-                "confirmed_at": datetime.now().isoformat(timespec="seconds"),
-                "previous_status": item["status"],
-            }
-            item["status"] = "accepted"
-            item["review_reason"] = MANUAL_CONFIRMED_REASON
-        else:
-            if item["status"] != "accepted":
-                raise ValueError("此项没有有效的人工确认")
-            item["status"] = item["manual_confirmation"]["previous_status"]
-            item["review_reason"] = "人工确认已撤销，重新纳入待处理"
-            del item["manual_confirmation"]
-        if STATE["job"] and STATE["job"]["status"] == "interrupted":
-            STATE["job"]["status"] = "cancelled"
-            STATE["job"]["pending_adjustment"] = None
-        try:
-            _persist_state()
-        except Exception:
-            item.clear()
-            item.update(previous)
-            STATE["job"] = previous_job
-            raise
-        _sync_problem_counts(item["wb_path"], item["review_reason"])
-        if previous_job and previous_job["status"] == "interrupted":
-            finish_execution_batch("已取消中断任务的续跑，按人工判断更新问题状态")
+        if accepted and item["status"] == "fixed":
+            raise ValueError("此项已自动修复，无需人工确认")
+        if accepted and item["status"] == "accepted":
+            raise ValueError("此项已人工确认，如需重新判断请先撤销")
+        if not accepted and item["status"] != "accepted":
+            raise ValueError("此项没有有效的人工确认")
+        previous = {item_id: copy.deepcopy(item)}
+        _set_item_confirmation(item, accepted)
+        _commit_confirmations(previous, item["review_reason"])
         log_msg(f"{item['review_reason']}: [{item['wb_name']} / {item['sheet_name']} / {item['cell_addr']}]")
-        _persist_state()
+
+
+def apply_skip_decisions(decisions: dict[str, bool]) -> dict[str, Any]:
+    """批量设置「跳过」（即人工确认无需修复），一次写库。
+
+    与当前状态相同的决定直接忽略，页面可以把连续快速点选的结果合并后一次提交。
+    """
+    with STATE_LOCK:
+        if STATE["busy"]:
+            raise ValueError("任务正在执行，请结束后再标记跳过")
+        previous: dict[str, dict[str, Any]] = {}
+        errors: list[str] = []
+        for item_id, skip in decisions.items():
+            item = STATE["items"].get(item_id)
+            if item is None:
+                errors.append("部分问题项已重新检测，请在最新结果上重新标记")
+                continue
+            if skip == (item["status"] == "accepted"):
+                continue
+            if skip and item["status"] == "fixed":
+                errors.append(f"{item['wb_name']} / {item['cell_addr']} 已自动修复，无需跳过")
+                continue
+            previous[item_id] = copy.deepcopy(item)
+            _set_item_confirmation(item, skip)
+        if previous:
+            skipped = sum(STATE["items"][item_id]["status"] == "accepted" for item_id in previous)
+            action = f"人工筛选：跳过 {skipped} 处，撤销跳过 {len(previous) - skipped} 处"
+            _commit_confirmations(previous, action)
+            log_msg(action)
+        return {"changed": len(previous), "errors": list(dict.fromkeys(errors))}
 
 
 def _select_changed_problem_items() -> list[str]:

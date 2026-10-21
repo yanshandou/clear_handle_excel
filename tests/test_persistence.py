@@ -263,6 +263,47 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(self.row.RowHeight, 15.0)
         self.wb.Save.assert_not_called()
 
+    def add_second_item(self, status="pending"):
+        item = copy.deepcopy(self.workflow.STATE["items"]["item_1"])
+        item.update(id="item_2", text="other", status=status)
+        self.workflow.STATE["items"]["item_2"] = item
+
+    def test_batch_skip_is_saved_once_and_ignores_unchanged_decisions(self):
+        self.add_second_item()
+        with patch.object(self.workflow, "save_snapshot", wraps=storage.save_snapshot) as save:
+            result = self.workflow.apply_skip_decisions({"item_1": True, "item_2": True})
+        self.assertEqual(result, {"changed": 2, "errors": []})
+        self.assertEqual([c.args[0] for c in save.call_args_list], ["workflow"])
+        saved = self.snapshot("workflow")["items"]
+        self.assertEqual((saved["item_1"]["status"], saved["item_2"]["status"]), ("accepted", "accepted"))
+        self.assertEqual(self.snapshot("report")["files"]["book.xlsx"]["clip_accepted"], 2)
+
+        # 快速连点后页面只提交最终结果：item_1 不变，item_2 撤销
+        result = self.workflow.apply_skip_decisions({"item_1": True, "item_2": False})
+        self.assertEqual(result["changed"], 1)
+        saved = self.snapshot("workflow")["items"]
+        self.assertEqual((saved["item_1"]["status"], saved["item_2"]["status"]), ("accepted", "pending"))
+        self.assertEqual(self.workflow.apply_skip_decisions({"item_1": True}), {"changed": 0, "errors": []})
+
+    def test_batch_skip_reports_stale_and_fixed_items_and_rejects_busy(self):
+        self.add_second_item(status="fixed")
+        result = self.workflow.apply_skip_decisions({"gone": True, "item_2": True, "item_1": True})
+        self.assertEqual(result["changed"], 1)
+        self.assertEqual(len(result["errors"]), 2)
+        self.assertEqual(self.workflow.STATE["items"]["item_2"]["status"], "fixed")
+        self.workflow.STATE["busy"] = True
+        with self.assertRaisesRegex(ValueError, "任务正在执行"):
+            self.workflow.apply_skip_decisions({"item_1": False})
+        self.assertEqual(self.workflow.STATE["items"]["item_1"]["status"], "accepted")
+
+    def test_batch_skip_rolls_back_on_database_error(self):
+        self.add_second_item()
+        with patch.object(self.workflow, "save_snapshot", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.workflow.apply_skip_decisions({"item_1": True, "item_2": True})
+        self.assertEqual(self.workflow.STATE["items"]["item_1"]["status"], "pending")
+        self.assertNotIn("manual_confirmation", self.workflow.STATE["items"]["item_2"])
+
     def test_saving_the_file_keeps_confirmation(self):
         # 定位到 Excel 修改其他行并保存、或自动微调保存同一文件，都不应让人工确认失效
         self.workflow.STATE["checked_files"][str(self.wb_path)] = self.workflow._file_version(self.wb_path)
@@ -827,6 +868,15 @@ class PersistenceTests(unittest.TestCase):
             status, data = self.post(port, "/api/manual/confirm", {"id": "item_1", "accepted": False})
             self.assertEqual((status, data["ok"]), (200, True))
             self.assertEqual(self.snapshot("workflow")["items"]["item_1"]["status"], "pending")
+
+    def test_api_batch_skip(self):
+        with self.serve_api() as port:
+            for invalid in ({"decisions": []}, {"decisions": {"item_1": "yes"}}, {}):
+                status, data = self.post(port, "/api/manual/skip", invalid)
+                self.assertEqual((status, data["ok"]), (400, False))
+            status, data = self.post(port, "/api/manual/skip", {"decisions": {"item_1": True}})
+            self.assertEqual((status, data["ok"], data["changed"]), (200, True, 1))
+            self.assertEqual(self.snapshot("workflow")["items"]["item_1"]["status"], "accepted")
 
     def test_api_rejects_invalid_loop_limits_and_steps(self):
         with self.serve_api() as port:

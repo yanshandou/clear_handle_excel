@@ -1,27 +1,32 @@
-let selectedIds = new Set();
-let seenItemIds = new Set();
 let currentViewMode = 'canvas'; // 'canvas' | 'cards'
 let latestPages = {};
-let latestItems = {};
+let serverItems = {}; // 服务器返回的问题项
+let latestItems = {}; // 叠加尚未保存的跳过决定后的问题项，页面以此渲染
 let pagesSignatureCache = {};
 let cardsSignatureCache = {};
 let activeHoverItemId = null;
 let workspaceRestored = false;
 let canResume = false;
+let isBusy = false;
+let pollSeq = 0;
+let minAcceptedSeq = 0; // 发起操作前已在途的轮询结果可能过期，直接丢弃
 
+// 点击即跳过：先在页面上生效，再把这期间的多次点选合并成一次提交（每次写库较慢）
+let pendingSkips = new Map(); // item id -> 是否跳过（尚未提交）
+let inFlightSkips = new Map(); // 正在提交的决定
+let skipRequest = null;
+let skipCancelsResumeConfirmed = false;
+
+const ONLY_PENDING_STORAGE_KEY = 'clear_handle_excel.onlyPending';
 const RECHECK_TITLE = '请先在 Excel 中保存手动修改。根据新 PDF 重新检测该文件的问题工作表并替换旧标记，不会自动增加行高';
 
 function isResolved(item) {
   return item.status === 'fixed' || item.status === 'accepted';
 }
 
-function confirmationButton(item) {
-  const accepted = item.status === 'accepted';
+function skipButton(item) {
   if (item.status === 'fixed') return '';
-  const title = accepted
-    ? '撤销后重新纳入待处理'
-    : '确认此处无需修复；之后保存文件或重新检测时，同一处文字仍保留此确认';
-  return `<button class="btn btn-outline btn-sm" title="${title}" onclick="confirmManual('${escapeHtml(item.id)}', ${!accepted})">${accepted ? '撤销人工确认' : '人工确认：无需修复'}</button>`;
+  return `<button class="btn btn-outline btn-sm skip-btn" data-item-id="${escapeHtml(item.id)}" onclick="toggleSkip('${escapeHtml(item.id)}')"></button>`;
 }
 
 function escapeHtml(str) {
@@ -42,11 +47,6 @@ function getPeerItemsInSameRow(targetItem) {
   return Object.values(latestItems).filter(it => getRowGroupKey(it) === key);
 }
 
-function isLinkRowEnabled() {
-  const chk = document.getElementById('linkRowChk');
-  return chk ? chk.checked : true;
-}
-
 function setViewMode(mode) {
   currentViewMode = mode === 'cards' ? 'cards' : 'canvas';
   document.getElementById('viewCanvasBtn').classList.toggle('active', currentViewMode === 'canvas');
@@ -56,102 +56,104 @@ function setViewMode(mode) {
   hideMagnifier();
 }
 
-function syncNewItemsDefaultSelection(items) {
-  for (const id of seenItemIds) {
-    if (!items[id]) {
-      seenItemIds.delete(id);
-      selectedIds.delete(id);
-    }
-  }
-  Object.keys(items).forEach(id => {
-    const item = items[id];
-    if (!seenItemIds.has(id)) {
-      seenItemIds.add(id);
-      if (item.status === 'pending') {
-        selectedIds.add(id);
-      }
-    }
-    if (isResolved(item)) {
-      selectedIds.delete(id);
-    }
-  });
+function setOnlyPending(onlyPending) {
+  document.body.classList.toggle('only-pending', onlyPending);
+  document.getElementById('onlyPendingChk').checked = onlyPending;
+  try {
+    localStorage.setItem(ONLY_PENDING_STORAGE_KEY, onlyPending ? '1' : '0');
+  } catch (e) {}
+  hideMagnifier();
+  refreshItemClasses();
 }
 
-function toggleItemSelection(id) {
+/* ==========================================
+   人工筛选：点击即跳过 / 撤销
+   ========================================== */
+function applyPendingSkips() {
+  latestItems = {};
+  for (const [id, item] of Object.entries(serverItems)) {
+    const decisions = pendingSkips.has(id) ? pendingSkips : inFlightSkips;
+    if (!decisions.has(id)) {
+      latestItems[id] = item;
+      continue;
+    }
+    const skip = decisions.get(id);
+    const unskipped = item.status === 'accepted'
+      ? (item.manual_confirmation?.previous_status || 'pending')
+      : item.status;
+    latestItems[id] = { ...item, status: skip ? 'accepted' : unskipped };
+  }
+}
+
+function toggleSkip(id) {
   const item = latestItems[id];
-  if (!item || isResolved(item)) return;
-
-  const shouldSelect = !selectedIds.has(id);
-  const targets = isLinkRowEnabled() ? getPeerItemsInSameRow(item) : [item];
-
-  targets.forEach(t => {
-    if (isResolved(t)) return;
-    if (shouldSelect) {
-      selectedIds.add(t.id);
-    } else {
-      selectedIds.delete(t.id);
-    }
-  });
-
-  refreshSelectionClasses();
-  if (activeHoverItemId === id) {
-    updateMagnifierContent(item);
+  if (!item || item.status === 'fixed') return;
+  if (isBusy) {
+    alert('任务执行中，请结束后再标记跳过。');
+    return;
   }
+  if (canResume && !skipCancelsResumeConfirmed) {
+    // 跳过本身可随时撤销，只有会取消中断任务续跑点（不可撤销）时才提示
+    if (!confirm('标记跳过会取消上次中断任务的续跑，避免旧检查点覆盖人工判断。确定吗？')) return;
+    skipCancelsResumeConfirmed = true;
+  }
+  const skip = item.status !== 'accepted';
+  const baseline = inFlightSkips.has(id) ? inFlightSkips.get(id) : serverItems[id]?.status === 'accepted';
+  if (skip === baseline) {
+    pendingSkips.delete(id);
+  } else {
+    pendingSkips.set(id, skip);
+  }
+  applyPendingSkips();
+  renderItems();
+  flushSkips();
 }
 
-function togglePageItems(pageId, select) {
-  Object.values(latestItems).forEach(item => {
-    if (item.page_id !== pageId || isResolved(item)) return;
-    if (select) {
-      selectedIds.add(item.id);
-    } else {
-      selectedIds.delete(item.id);
+function flushSkips() {
+  if (skipRequest || pendingSkips.size === 0) return skipRequest;
+  inFlightSkips = pendingSkips;
+  pendingSkips = new Map();
+  skipRequest = (async () => {
+    try {
+      const data = await postAction('/api/manual/skip', { decisions: Object.fromEntries(inFlightSkips) });
+      if (data.errors.length) alert(data.errors.join('\n'));
+    } catch (e) {
+      alert(`标记跳过失败：${e.message}`);
     }
-  });
-  refreshSelectionClasses();
+    // 取得服务器最新状态后再去掉叠加，避免界面闪回
+    minAcceptedSeq = pollSeq + 1;
+    await pollState();
+    inFlightSkips = new Map();
+    skipRequest = null;
+    applyPendingSkips();
+    renderItems();
+    flushSkips();
+  })();
+  return skipRequest;
 }
 
-function toggleAll(select) {
-  Object.values(latestItems).forEach(item => {
-    if (isResolved(item)) {
-      selectedIds.delete(item.id);
-      return;
-    }
-    if (select) {
-      selectedIds.add(item.id);
-    } else {
-      selectedIds.delete(item.id);
-    }
-  });
-  refreshSelectionClasses();
-}
-
-function updateCount() {
-  document.getElementById('selCount').innerText = selectedIds.size;
-  const rowKeys = new Set();
-  selectedIds.forEach(id => {
-    const item = latestItems[id];
-    if (item) {
-      rowKeys.add(getRowGroupKey(item));
-    }
-  });
-  document.getElementById('selRowCount').innerText = rowKeys.size;
+// 发起后台任务前先保存所有跳过决定，确保自动微调、复检和重新扫描看到的是最新筛选结果
+async function syncSkips() {
+  while (skipRequest || pendingSkips.size) {
+    await (skipRequest || flushSkips());
+  }
 }
 
 function getItemVisualState(item) {
+  const tagNo = item.index_on_page || item.seq;
   if (item.status === 'accepted') {
     return {
-      boxClass: 'is-fixed', cardClass: 'fixed', badgeClass: 'badge-fixed',
-      badgeText: '人工确认无需修复', shortTag: `人工✓#${item.index_on_page || item.seq}`,
+      boxClass: 'is-ignored is-resolved', cardClass: 'skipped is-resolved', badgeClass: 'badge-ignored',
+      badgeText: '已跳过（无需修复）', shortTag: `跳过#${tagNo}`,
     };
   }
   if (item.status === 'fixed') {
     return {
-      boxClass: 'is-fixed',
-      cardClass: 'fixed',
+      boxClass: 'is-fixed is-resolved',
+      cardClass: 'fixed is-resolved',
       badgeClass: 'badge-fixed',
       badgeText: `✓ 已修复 (+${item.iterations}次)`,
-      shortTag: `✓#${item.index_on_page || item.seq}`,
+      shortTag: `✓#${tagNo}`,
     };
   }
   if (item.status === 'needs_review' || item.status === 'manual_review') {
@@ -160,30 +162,39 @@ function getItemVisualState(item) {
       cardClass: 'max-reached',
       badgeClass: 'badge-warn',
       badgeText: item.status === 'manual_review' ? '等待人工调整并保存' : '需人工复检',
-      shortTag: `?#${item.index_on_page || item.seq}`,
+      shortTag: `?#${tagNo}`,
     };
   }
   if (item.status === 'max_reached') {
-    const isSel = selectedIds.has(item.id);
     return {
-      boxClass: isSel ? 'is-selected' : 'is-max-reached',
-      cardClass: (isSel ? 'selected ' : '') + 'max-reached',
+      boxClass: 'is-max-reached',
+      cardClass: 'max-reached',
       badgeClass: 'badge-warn',
       badgeText: `⚠️ 达到上限，建议人工复检 (${item.iterations}次)`,
-      shortTag: `⚠#${item.index_on_page || item.seq}`,
+      shortTag: `⚠#${tagNo}`,
     };
   }
-  const isSel = selectedIds.has(item.id);
   return {
-    boxClass: isSel ? 'is-selected' : 'is-ignored',
-    cardClass: isSel ? 'selected' : '',
-    badgeClass: isSel ? 'badge-selected' : 'badge-ignored',
-    badgeText: isSel ? '待修复 (已选中)' : '已忽略 (点击可选中)',
-    shortTag: `#${item.index_on_page || item.seq}`,
+    boxClass: 'is-selected',
+    cardClass: 'selected',
+    badgeClass: 'badge-selected',
+    badgeText: '待修复（点击可跳过）',
+    shortTag: `#${tagNo}`,
   };
 }
 
-function refreshSelectionClasses() {
+function countByState(items) {
+  const counts = { pending: 0, review: 0, skipped: 0, fixed: 0 };
+  items.forEach(item => {
+    if (item.status === 'pending') counts.pending += 1;
+    else if (item.status === 'accepted') counts.skipped += 1;
+    else if (item.status === 'fixed') counts.fixed += 1;
+    else counts.review += 1;
+  });
+  return counts;
+}
+
+function refreshItemClasses() {
   Object.values(latestItems).forEach(item => {
     const st = getItemVisualState(item);
 
@@ -208,16 +219,56 @@ function refreshSelectionClasses() {
         badge.textContent = st.badgeText;
       }
     }
+
+    const skipped = item.status === 'accepted';
+    document.querySelectorAll(`.skip-btn[data-item-id="${CSS.escape(item.id)}"]`).forEach(btn => {
+      btn.textContent = skipped ? '撤销跳过' : '跳过（无需修复）';
+      btn.title = skipped
+        ? '撤销跳过，重新纳入处理'
+        : '跳过此处（人工确认无需修复）；保存文件或重新检测时，同一处文字仍保持跳过';
+    });
   });
-  updateCount();
+
+  const itemsByPage = {};
+  Object.values(latestItems).forEach(item => {
+    (itemsByPage[item.page_id] = itemsByPage[item.page_id] || []).push(item);
+  });
+  Object.keys(latestPages).forEach(pageId => {
+    const counts = countByState(itemsByPage[pageId] || []);
+    const stage = document.getElementById('stage_' + pageId);
+    if (stage) stage.classList.toggle('page-resolved', counts.pending + counts.review === 0);
+    const label = document.getElementById('stagecounts_' + pageId);
+    if (label) {
+      label.innerHTML = `（待修复 <b>${counts.pending}</b> · 需人工 <b>${counts.review}</b> · `
+        + `已跳过 ${counts.skipped} · 已修复 <b style="color:#059669;">${counts.fixed}</b>）`;
+    }
+  });
+
+  const totals = countByState(Object.values(latestItems));
+  document.getElementById('cntPendingFix').innerText = totals.pending;
+  document.getElementById('cntReview').innerText = totals.review;
+  document.getElementById('cntSkipped').innerText = totals.skipped;
+  document.getElementById('cntFixed').innerText = totals.fixed;
+  const hasItems = Object.keys(latestItems).length > 0;
+  document.getElementById('allDoneHint').classList.toggle(
+    'hidden', !hasItems || totals.pending + totals.review > 0,
+  );
+}
+
+function renderItems() {
+  renderCanvasStages(latestPages, latestItems);
+  renderCards(latestItems);
+  refreshItemClasses();
+  if (activeHoverItemId && latestItems[activeHoverItemId]) {
+    updateMagnifierContent(latestItems[activeHoverItemId]);
+  }
 }
 
 /* ==========================================
    同行高亮联动 & 2.5x 悬停放大镜气泡
    ========================================== */
 function setRowPeerHighlight(item, active) {
-  const peers = isLinkRowEnabled() ? getPeerItemsInSameRow(item) : [item];
-  peers.forEach(peer => {
+  getPeerItemsInSameRow(item).forEach(peer => {
     const h = document.getElementById('hotspot_' + peer.id);
     if (h) {
       h.classList.toggle('is-peer-row', active && peer.id !== item.id);
@@ -247,10 +298,11 @@ function updateMagnifierContent(item) {
 
   document.getElementById('magImg').src = item.image;
   document.getElementById('magText').textContent = `文字内容: ${item.text}`;
-  document.getElementById('magHint').textContent =
-    isResolved(item)
-      ? (item.status === 'accepted' ? '人工确认无需修复（重新检测时同一处文字会保留此确认，可撤销）' : '✅ 该位置已完整显示，无需继续调整')
-      : '💡 点击热区即可切换「选中修复 / 忽略」；可在画布下方胶囊直接微调行号';
+  let hint = '💡 点击框即可跳过此处（无需修复），再点一次撤销；可在画布下方胶囊修正行号';
+  if (item.status === 'accepted') hint = '已跳过（人工确认无需修复），再点一次可撤销';
+  else if (item.status === 'fixed') hint = '✅ 该位置已完整显示，无需继续调整';
+  else if (item.status !== 'pending') hint = '需人工处理：可在 Excel 中定位或重新导出复检；确认无需修复时点击框跳过';
+  document.getElementById('magHint').textContent = hint;
 }
 
 function positionMagnifierNearRect(anchorRect) {
@@ -337,10 +389,11 @@ function renderCanvasStages(pages, items) {
     const page = pages[pageId];
     const pageItems = itemsByPage[pageId] || [];
 
+    // 状态变化（跳过 / 撤销）只更新样式，不重建整页，避免点选时整页图片闪烁
     const sigParts = [
       page.image,
       ...pageItems.map(
-        it => `${it.id}:${it.status}:${it.iterations}:${it.row_height}:${it.excel_row}:${it.cell_addr}:${it.bbox.join(',')}:${it.image}`
+        it => `${it.id}:${it.iterations}:${it.row_height}:${it.excel_row}:${it.cell_addr}:${it.bbox.join(',')}:${it.image}`
       ),
     ];
     const signature = sigParts.join('|');
@@ -357,10 +410,6 @@ function renderCanvasStages(pages, items) {
       stageCard.className = 'page-stage-card';
       container.appendChild(stageCard);
     }
-
-    const fixedCount = pageItems.filter(it => it.status === 'fixed').length;
-    const acceptedCount = pageItems.filter(it => it.status === 'accepted').length;
-    const pendingCount = pageItems.length - fixedCount - acceptedCount;
 
     const pw = Math.max(1, Number(page.page_width) || 595);
     const ph = Math.max(1, Number(page.page_height) || 842);
@@ -414,7 +463,7 @@ function renderCanvasStages(pages, items) {
             <span onclick="event.stopPropagation();">
               <button class="btn btn-outline btn-sm" onclick="manualOpen('${escapeHtml(item.id)}')">在 Excel 中定位</button>
               <button class="btn btn-outline btn-sm" title="${RECHECK_TITLE}" onclick="manualRecheck('${escapeHtml(item.id)}')">重新导出复检</button>
-              ${confirmationButton(item)}
+              ${skipButton(item)}
             </span>
           </div>
         `;
@@ -427,13 +476,7 @@ function renderCanvasStages(pages, items) {
           <b>📄 ${escapeHtml(page.wb_name)}</b>
           <span style="color:#64748b;">/ ${escapeHtml(page.sheet_name)}</span>
           <span class="page-tag">第 ${Number(page.page_index) + 1} / ${Number(page.total_pages)} 页</span>
-          <span style="font-size:12.5px; color:#475569;">
-            （待处理 <b>${pendingCount}</b> 处 · 已修复 <b style="color:#059669;">${fixedCount}</b> 处 · 人工确认 ${acceptedCount} 处）
-          </span>
-        </div>
-        <div class="page-stage-actions">
-          <button class="btn btn-outline btn-sm" onclick="togglePageItems('${escapeHtml(pageId)}', true)">本页全选</button>
-          <button class="btn btn-outline btn-sm" onclick="togglePageItems('${escapeHtml(pageId)}', false)">本页取消</button>
+          <span id="stagecounts_${escapeHtml(pageId)}" style="font-size:12.5px; color:#475569;"></span>
         </div>
       </div>
 
@@ -457,7 +500,7 @@ function renderCanvasStages(pages, items) {
       const itemId = el.getAttribute('data-item-id');
       el.addEventListener('click', e => {
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'LABEL') return;
-        toggleItemSelection(itemId);
+        toggleSkip(itemId);
       });
       el.addEventListener('mouseenter', () => {
         const currentItem = latestItems[itemId];
@@ -500,7 +543,7 @@ function renderCards(items) {
       card.className = 'card';
       card.onclick = e => {
         if (e.target.tagName === 'INPUT') return;
-        toggleItemSelection(id);
+        toggleSkip(id);
       };
       card.onmouseenter = () => setRowPeerHighlight(latestItems[id] || item, true);
       card.onmouseleave = () => setRowPeerHighlight(latestItems[id] || item, false);
@@ -512,8 +555,9 @@ function renderCards(items) {
       return;
     }
 
+    // 状态变化只更新样式（见 refreshItemClasses），不重建卡片
     const st = getItemVisualState(item);
-    const signature = `${item.status}|${item.iterations}|${item.row_height}|${item.excel_row}|${item.cell_addr}|${item.image}|${item.review_reason || ''}|${selectedIds.has(id)}`;
+    const signature = `${item.iterations}|${item.row_height}|${item.excel_row}|${item.cell_addr}|${item.image}|${item.review_reason || ''}|${item.status === 'fixed'}`;
     if (cardsSignatureCache[id] === signature) {
       return;
     }
@@ -547,7 +591,7 @@ function renderCards(items) {
       <div onclick="event.stopPropagation();">
         <button class="btn btn-outline btn-sm" onclick="manualOpen('${escapeHtml(id)}')">在 Excel 中定位</button>
         <button class="btn btn-outline btn-sm" title="${RECHECK_TITLE}" onclick="manualRecheck('${escapeHtml(id)}')">重新导出复检（不加高）</button>
-        ${confirmationButton(item)}
+        ${skipButton(item)}
         <p>${escapeHtml(item.review_reason || '自动调整无效时，请转人工核对行号、合并单元格及边框。')}</p>
       </div>
     `;
@@ -558,12 +602,16 @@ function renderCards(items) {
    后端状态轮询与接口调用
    ========================================== */
 async function pollState() {
+  const seq = ++pollSeq;
   try {
     const res = await fetch('/api/state');
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '读取任务失败');
+    if (seq < minAcceptedSeq) return;
 
     canResume = data.can_resume;
+    isBusy = data.busy;
+    if (!canResume) skipCancelsResumeConfirmed = false;
     document.getElementById('resumeBtn').classList.toggle('hidden', !canResume);
     document.getElementById('resumeBtn').disabled = data.busy;
     if (!workspaceRestored) {
@@ -606,7 +654,12 @@ async function pollState() {
     }
 
     latestPages = data.pages || {};
-    latestItems = data.items || {};
+    serverItems = data.items || {};
+    // 已被重新检测替换掉的问题项，不再保留未提交的决定
+    for (const id of [...pendingSkips.keys()]) {
+      if (!serverItems[id]) pendingSkips.delete(id);
+    }
+    applyPendingSkips();
     if (activeHoverItemId && !latestItems[activeHoverItemId]) {
       hideMagnifier();
     }
@@ -617,16 +670,8 @@ async function pollState() {
       emptyStage.classList.toggle('hidden', hasResults);
     }
 
-    syncNewItemsDefaultSelection(latestItems);
-    if (!workspaceRestored && data.job && data.job.kind === 'fix') {
-      selectedIds = new Set(data.job.options.selected_ids.filter(
-        id => latestItems[id] && !isResolved(latestItems[id])
-      ));
-    }
     workspaceRestored = true;
-    renderCanvasStages(latestPages, latestItems);
-    renderCards(latestItems);
-    refreshSelectionClasses();
+    renderItems();
   } catch (e) {
     document.getElementById('statusText').innerText = `连接或读取失败: ${e.message}`;
   }
@@ -658,6 +703,7 @@ async function startScan() {
     return;
   }
   if (canResume && !confirm('开始新扫描会替换上次任务及其扫描结果，确定不继续上次任务吗？')) return;
+  await syncSkips();
   try {
     await postAction('/api/scan', {
       folder,
@@ -667,21 +713,20 @@ async function startScan() {
     alert(e.message);
     return;
   }
-  selectedIds.clear();
-  seenItemIds.clear();
   pagesSignatureCache = {};
   cardsSignatureCache = {};
   hideMagnifier();
   document.getElementById('canvasView').innerHTML = '';
   document.getElementById('cardGrid').innerHTML = '';
-  updateCount();
 
   await pollState();
 }
 
 async function startFix() {
-  if (selectedIds.size === 0) {
-    alert('请先在画布或卡片上选中要修复的位置！');
+  await syncSkips();
+  const ids = Object.values(latestItems).filter(item => item.status === 'pending').map(item => item.id);
+  if (ids.length === 0) {
+    alert('没有待修复的项。需人工复检的项可先「重新导出复检」，确认无需修复的直接点击跳过。');
     return;
   }
   const step = Number(document.getElementById('stepInput').value);
@@ -695,7 +740,7 @@ async function startFix() {
   hideMagnifier();
   try {
     await postAction('/api/fix', {
-      selected_ids: Array.from(selectedIds),
+      selected_ids: ids,
       step_pt: step,
       max_iter: maxIter,
     });
@@ -704,6 +749,7 @@ async function startFix() {
 }
 
 async function resumeTask() {
+  await syncSkips();
   try {
     await postAction('/api/resume', {});
     await pollState();
@@ -711,7 +757,8 @@ async function resumeTask() {
 }
 
 async function manualOpen(id) {
-  if (canResume && !confirm('转人工将替换中断任务，旧检查点不再自动续跑。剩余项可重新选中处理。确定吗？')) return;
+  if (canResume && !confirm('转人工将替换中断任务，旧检查点不再自动续跑。剩余项可之后重新处理。确定吗？')) return;
+  await syncSkips();
   try {
     hideMagnifier();
     await postAction('/api/manual/open', { id });
@@ -723,6 +770,7 @@ async function manualRecheck(id) {
   // 复检只读 Excel、不加高，平时不再弹窗；只有会替换中断任务续跑点（不可撤销）时才提示
   const message = '此操作会替换上次中断任务的续跑检查点，确定吗？';
   if (canResume && !confirm(message)) return;
+  await syncSkips();
   try {
     hideMagnifier();
     await postAction('/api/manual/recheck', { id });
@@ -732,6 +780,7 @@ async function manualRecheck(id) {
 
 async function refreshProblems() {
   if (canResume && !confirm('刷新复检会替换上次中断任务的续跑检查点。请确认已保存人工调整，是否继续？')) return;
+  await syncSkips();
   try {
     hideMagnifier();
     await postAction('/api/manual/refresh', {});
@@ -739,17 +788,19 @@ async function refreshProblems() {
   } catch (e) { alert(e.message); }
 }
 
-async function confirmManual(id, accepted) {
-  // 人工确认可随时撤销，平时不再弹窗；只有会取消中断任务续跑点（不可撤销）时才提示
-  const message = '此操作会取消上次中断任务的续跑，避免旧检查点覆盖人工判断。其他未解决项仍可重新选择处理。确定吗？';
-  if (canResume && !confirm(message)) return;
-  try {
-    hideMagnifier();
-    await postAction('/api/manual/confirm', { id, accepted });
-    if (!accepted) selectedIds.add(id);
-    await pollState();
-  } catch (e) { alert(e.message); }
-}
+// 离开页面前若还有未保存的跳过决定，提示一下
+window.addEventListener('beforeunload', e => {
+  if (pendingSkips.size || skipRequest) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
+
+let savedOnlyPending = false;
+try {
+  savedOnlyPending = localStorage.getItem(ONLY_PENDING_STORAGE_KEY) === '1';
+} catch (e) {}
+setOnlyPending(savedOnlyPending);
 
 setInterval(pollState, 1200);
 pollState();

@@ -22,6 +22,7 @@ from core.workflow import (
     QUICK_TASK_NAMES,
     STATE,
     STATE_LOCK,
+    apply_skip_decisions,
     export_progress,
     fix_selected_workflow,
     get_overview_snapshot,
@@ -216,6 +217,12 @@ class WebHandler(BaseHTTPRequestHandler):
                 raise ValueError("需要有效的问题项及人工确认状态")
             set_manual_confirmation(iid, accepted)
             self._send_json({"ok": True})
+
+        elif self.path == "/api/manual/skip":
+            decisions = payload.get("decisions")
+            if not isinstance(decisions, dict) or any(not isinstance(v, bool) for v in decisions.values()):
+                raise ValueError("需要有效的跳过决定")
+            self._send_json({"ok": True, **apply_skip_decisions(decisions)})
 
         elif self.path in {"/api/manual/open", "/api/manual/recheck"}:
             iid = payload.get("id")
