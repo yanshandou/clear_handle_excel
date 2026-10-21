@@ -51,6 +51,8 @@ from core.storage import load_snapshot, save_snapshot
 
 STATE_LOCK = threading.RLock()
 
+MANUAL_CONFIRMED_REASON = "人工确认无需修复"
+
 # 主页上可单独执行的批处理功能（job kind -> 任务名）
 QUICK_TASK_NAMES = {
     "clean_sheets": "精简 Sheet（删除备份表）",
@@ -89,7 +91,6 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
     with STATE_LOCK:
         if STATE["busy"]:
             return False
-        _expire_manual_confirmations()
         if kind in {"fix", "manual_open", "recheck"}:
             ids = (options or {}).get("selected_ids")
             if (
@@ -201,9 +202,6 @@ def _progress_summary(report_snap: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_state_snapshot() -> dict[str, Any]:
-    with STATE_LOCK:
-        if not STATE["busy"]:
-            _expire_manual_confirmations()
     report_snap = get_execution_report_snapshot()
     with STATE_LOCK:
         return {
@@ -222,9 +220,6 @@ def get_state_snapshot() -> dict[str, Any]:
 
 def get_overview_snapshot() -> dict[str, Any]:
     """主页轮询用的轻量快照：不含整页截图与问题项详情。"""
-    with STATE_LOCK:
-        if not STATE["busy"]:
-            _expire_manual_confirmations()
     report_snap = get_execution_report_snapshot()
     with STATE_LOCK:
         job = STATE["job"]
@@ -333,27 +328,50 @@ def _sync_problem_counts(path: str, action: str) -> None:
     )
 
 
-def _expire_manual_confirmations() -> None:
-    changed: set[str] = set()
-    versions: dict[str, dict[str, int] | None] = {}
-    for item in STATE["items"].values():
-        if item["status"] != "accepted":
+def _same_text_problem(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    return (a["wb_path"], a["sheet_name"], a["text"]) == (b["wb_path"], b["sheet_name"], b["text"])
+
+
+def _confirmation_record(item: dict[str, Any]) -> dict[str, Any]:
+    """重新检测时用来对应同一处问题的人工确认记录（不含截图等大字段）"""
+    return {
+        key: copy.deepcopy(item.get(key))
+        for key in ("wb_path", "sheet_name", "text", "occurrence", "manual_confirmation")
+    }
+
+
+def _carry_over_confirmations(new_items: dict[str, Any], confirmed: list[dict[str, Any]]) -> int:
+    """把人工确认带到重新检测出的同一处问题上，返回带过去的数量。
+
+    同一处 = 同一工作簿、工作表、文字，且在同列相同文字中的出现顺序与总数都一致；
+    不要求页码和坐标相同（加高行、重新分页后位置会变）。相同文字数量变化等
+    无法可靠对应的情况按新问题处理，不猜测。
+    """
+    remaining = list(confirmed)
+    carried = 0
+    for result in new_items.values():
+        same_text = [old for old in remaining if _same_text_problem(old, result)]
+        if not same_text:
             continue
-        path = item["wb_path"]
-        if path not in versions:
-            try:
-                versions[path] = _file_version(Path(path))
-            except FileNotFoundError:
-                versions[path] = None
-        if versions[path] != item["manual_confirmation"]["file_version"]:
-            item["status"] = "needs_review"
-            item["review_reason"] = "文件版本已变化，之前的人工确认已失效，请重新检查"
-            changed.add(path)
-    if changed:
-        _persist_state()
-        for path in changed:
-            _sync_problem_counts(path, "文件已变化，人工确认失效，等待重新检查")
-            log_msg(f"人工确认已失效: {Path(path).name}，请重新检查")
+        occurrence = result.get("occurrence")
+        matches = [
+            old for old in same_text
+            if occurrence is not None and old.get("occurrence") is not None
+            and list(old["occurrence"]) == list(occurrence)
+        ]
+        if not matches and (occurrence is None or all(old.get("occurrence") is None for old in same_text)):
+            # 旧版扫描结果或无法确定出现序号时，只有该文字在工作表里仅此一处才对应
+            peers = [other for other in new_items.values() if _same_text_problem(other, result)]
+            if len(same_text) == 1 and len(peers) == 1:
+                matches = same_text
+        if len(matches) != 1:
+            continue
+        remaining.remove(matches[0])
+        result["status"] = "accepted"
+        result["manual_confirmation"] = copy.deepcopy(matches[0]["manual_confirmation"])
+        result["review_reason"] = MANUAL_CONFIRMED_REASON
+        carried += 1
+    return carried
 
 
 def set_manual_confirmation(item_id: str, accepted: bool) -> None:
@@ -368,16 +386,15 @@ def set_manual_confirmation(item_id: str, accepted: bool) -> None:
         if accepted:
             if item["status"] == "fixed":
                 raise ValueError("此项已自动修复，无需人工确认")
-            version = _file_version(Path(item["wb_path"]))
             if item["status"] == "accepted":
                 raise ValueError("此项已人工确认，如需重新判断请先撤销")
+            # 不绑定文件版本：保存文件不会让确认失效，重新检测时按同一处文字保留
             item["manual_confirmation"] = {
-                "file_version": version,
                 "confirmed_at": datetime.now().isoformat(timespec="seconds"),
                 "previous_status": item["status"],
             }
             item["status"] = "accepted"
-            item["review_reason"] = "人工确认无需修复（仅当前已保存文件版本有效）"
+            item["review_reason"] = MANUAL_CONFIRMED_REASON
         else:
             if item["status"] != "accepted":
                 raise ValueError("此项没有有效的人工确认")
@@ -403,7 +420,6 @@ def set_manual_confirmation(item_id: str, accepted: bool) -> None:
 
 def _select_changed_problem_items() -> list[str]:
     with STATE_LOCK:
-        _expire_manual_confirmations()
         by_file: dict[str, list[str]] = {}
         for item in STATE["items"].values():
             if item["status"] not in {"fixed", "accepted"}:
@@ -474,6 +490,15 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool, *, resume: bool 
         STATE["busy"] = True
         job = STATE["job"] if resume else None
         initialized = bool(job and "workbooks" in job)
+        if job is not None and "confirmed" in job:
+            confirmed = job["confirmed"]
+        else:
+            # 重新扫描会清空旧结果；先记下人工确认（存入任务以便续跑），检测到同一处问题时沿用
+            confirmed = [
+                _confirmation_record(item) for item in STATE["items"].values() if item["status"] == "accepted"
+            ]
+            if job is not None:
+                job["confirmed"] = confirmed
         if not initialized:
             STATE["pages"].clear()
             STATE["items"].clear()
@@ -535,6 +560,7 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool, *, resume: bool 
                 wb = None
                 wb_exported_pdfs = 0
                 wb_detected_clips = 0
+                wb_accepted_clips = 0
                 deleted_bkp_list: list[str] = []
                 try:
                     wb = excel.Workbooks.Open(str(wb_path.resolve()))
@@ -585,6 +611,7 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool, *, resume: bool 
                             raise
 
                         pages, items = _detect_sheet_results(sheet, wb_path, s_name, pdf_path, item_seq)
+                        wb_accepted_clips += _carry_over_confirmations(items, confirmed)
                         wb_detected_clips += len(items)
                         item_seq += len(items)
                         with STATE_LOCK:
@@ -595,29 +622,27 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool, *, resume: bool 
                             wb_path.name,
                             exported_pdfs=wb_exported_pdfs,
                             clip_detected=wb_detected_clips,
-                            clip_unfixed=wb_detected_clips,
+                            clip_accepted=wb_accepted_clips,
+                            clip_unfixed=wb_detected_clips - wb_accepted_clips,
                         )
 
                     if _file_version(wb_path) != scan_version:
                         raise ValueError(f"扫描期间文件已修改，请重新检查: {wb_path.name}")
-                    if wb_detected_clips > 0:
-                        update_file_progress(
-                            wb_path.name,
-                            status="needs_fix",
-                            exported_pdfs=wb_exported_pdfs,
-                            clip_detected=wb_detected_clips,
-                            clip_unfixed=wb_detected_clips,
-                            current_action=f"已导出 {wb_exported_pdfs} 份 PDF，检出 {wb_detected_clips} 处切字待微调",
-                        )
-                    else:
-                        update_file_progress(
-                            wb_path.name,
-                            status="done",
-                            exported_pdfs=wb_exported_pdfs,
-                            clip_detected=0,
-                            clip_unfixed=0,
-                            current_action=f"已导出 {wb_exported_pdfs} 份 PDF，无切字异常",
-                        )
+                    wb_unfixed_clips = wb_detected_clips - wb_accepted_clips
+                    accepted_note = f"，{wb_accepted_clips} 处沿用人工确认" if wb_accepted_clips else ""
+                    update_file_progress(
+                        wb_path.name,
+                        status="needs_fix" if wb_unfixed_clips else "done",
+                        exported_pdfs=wb_exported_pdfs,
+                        clip_detected=wb_detected_clips,
+                        clip_accepted=wb_accepted_clips,
+                        clip_unfixed=wb_unfixed_clips,
+                        current_action=(
+                            f"已导出 {wb_exported_pdfs} 份 PDF，检出 {wb_unfixed_clips} 处切字待微调{accepted_note}"
+                            if wb_unfixed_clips
+                            else f"已导出 {wb_exported_pdfs} 份 PDF，无待处理切字{accepted_note}"
+                        ),
+                    )
                     with STATE_LOCK:
                         STATE["checked_files"][str(wb_path)] = scan_version
                         if job is not None:
@@ -641,7 +666,10 @@ def scan_folder_workflow(folder_str: str, delete_backups: bool, *, resume: bool 
         with STATE_LOCK:
             total_detected = len(STATE["items"])
             total_pages_with_clips = len(STATE["pages"])
+            total_accepted = sum(item["status"] == "accepted" for item in STATE["items"].values())
         summary_msg = f"✅ 扫描完成！在 {total_pages_with_clips} 页 PDF 中共检测到 {total_detected} 处疑似切字位置。"
+        if total_accepted:
+            summary_msg += f"其中 {total_accepted} 处沿用之前的人工确认。"
         log_msg(summary_msg)
         finish_execution_batch(summary_msg)
     finally:
@@ -860,23 +888,11 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
                     raise ValueError(f"复检期间文件又被修改，本轮不提交，请保存完成后再次刷新: {Path(path).name}")
                 with STATE_LOCK:
                     previous = copy.deepcopy(STATE)
-                    protected = [
+                    _carry_over_confirmations(new_items, [
                         item for item in STATE["items"].values()
-                        if item["wb_path"] == path and item["status"] == "accepted"
-                        and item["manual_confirmation"]["file_version"] == version
-                    ]
-                    for result in new_items.values():
-                        matches = [
-                            item for item in protected
-                            if item["sheet_name"] == result["sheet_name"]
-                            and item["text"] == result["text"]
-                            and item["page_index"] == result["page_index"]
-                            and all(abs(a - b) < 0.1 for a, b in zip(item["bbox"], result["bbox"]))
-                        ]
-                        if len(matches) == 1:
-                            result["status"] = "accepted"
-                            result["manual_confirmation"] = copy.deepcopy(matches[0]["manual_confirmation"])
-                            result["review_reason"] = matches[0]["review_reason"]
+                        if item["wb_path"] == path and item["sheet_name"] in entry["sheets"]
+                        and item["status"] == "accepted"
+                    ])
                     for collection in ("pages", "items"):
                         for key, value in list(STATE[collection].items()):
                             if value["wb_path"] == path and value["sheet_name"] in entry["sheets"]:
@@ -1426,7 +1442,7 @@ def import_progress(data: Any) -> dict[str, Any]:
     """用导出的进度整体替换当前进度。
 
     导出后若相关 Excel 已被修改或缺失，取消中断任务的续跑点，避免把旧检查点（如目标行高）
-    重放到新版本文件上；扫描结果与人工判断保留，人工确认按文件版本规则自动失效。
+    重放到新版本文件上；扫描结果与人工确认保留。
     """
     if not isinstance(data, dict) or data.get("format") != PROGRESS_FORMAT:
         raise ValueError("不是本工具导出的进度文件")
@@ -1483,7 +1499,6 @@ def import_progress(data: Any) -> dict[str, Any]:
         log_msg(f"📥 已导入进度备份（导出于 {data.get('exported_at') or '未知时间'}）")
         for warning in warnings:
             log_msg(f"  ⚠️ {warning}")
-        _expire_manual_confirmations()
         _persist_state()
         return {
             "exported_at": data.get("exported_at", ""),

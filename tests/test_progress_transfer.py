@@ -99,7 +99,7 @@ class ProgressTransferTests(unittest.TestCase):
         self.assertEqual(job["pending_adjustment"]["target_height"], 21.0)
         self.assertTrue(self.workflow.get_overview_snapshot()["can_resume"])
 
-    def test_file_changed_after_export_cancels_resume_and_expires_confirmation(self):
+    def test_file_changed_after_export_cancels_resume_but_keeps_confirmation(self):
         data = self.exported()
         self.wb_path.write_bytes(b"workbook v2 edited later")
         self.lose_progress()
@@ -110,9 +110,9 @@ class ProgressTransferTests(unittest.TestCase):
         saved = storage.load_snapshot("workflow")
         self.assertEqual(saved["job"]["status"], "cancelled")
         self.assertIsNone(saved["job"]["pending_adjustment"])
-        # 扫描结果保留，旧版本上的人工确认失效
+        # 扫描结果和人工确认都保留；保存文件不会让人工确认失效
         self.assertEqual(set(saved["items"]), {"item_1", "item_2"})
-        self.assertEqual(saved["items"]["item_1"]["status"], "needs_review")
+        self.assertEqual(saved["items"]["item_1"]["status"], "accepted")
         self.assertEqual(self.reporter.get_execution_report_snapshot()["status"], "completed")
 
     def test_missing_file_also_cancels_resume(self):

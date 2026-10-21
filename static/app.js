@@ -20,7 +20,7 @@ function confirmationButton(item) {
   if (item.status === 'fixed') return '';
   const title = accepted
     ? '撤销后重新纳入待处理'
-    : '人工判断仅对当前已保存的文件版本有效，请先保存 Excel；文件再次修改后需重新检查';
+    : '确认此处无需修复；之后保存文件或重新检测时，同一处文字仍保留此确认';
   return `<button class="btn btn-outline btn-sm" title="${title}" onclick="confirmManual('${escapeHtml(item.id)}', ${!accepted})">${accepted ? '撤销人工确认' : '人工确认：无需修复'}</button>`;
 }
 
@@ -249,7 +249,7 @@ function updateMagnifierContent(item) {
   document.getElementById('magText').textContent = `文字内容: ${item.text}`;
   document.getElementById('magHint').textContent =
     isResolved(item)
-      ? (item.status === 'accepted' ? '人工确认无需修复（当前已保存版本有效，可撤销）' : '✅ 该位置已完整显示，无需继续调整')
+      ? (item.status === 'accepted' ? '人工确认无需修复（重新检测时同一处文字会保留此确认，可撤销）' : '✅ 该位置已完整显示，无需继续调整')
       : '💡 点击热区即可切换「选中修复 / 忽略」；可在画布下方胶囊直接微调行号';
 }
 

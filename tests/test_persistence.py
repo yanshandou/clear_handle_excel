@@ -3,6 +3,7 @@ import http.client
 import importlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -246,7 +247,7 @@ class PersistenceTests(unittest.TestCase):
         self.workflow.set_manual_confirmation("item_1", True)
         saved = self.snapshot("workflow")["items"]["item_1"]
         self.assertEqual(saved["status"], "accepted")
-        self.assertEqual(saved["manual_confirmation"]["file_version"], self.workflow._file_version(self.wb_path))
+        self.assertEqual(saved["review_reason"], "人工确认无需修复")
         report = self.snapshot("report")["files"]["book.xlsx"]
         self.assertEqual((report["clip_fixed"], report["clip_accepted"], report["clip_unfixed"]), (0, 1, 0))
         self.assertEqual(report["status"], "done")
@@ -262,14 +263,60 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(self.row.RowHeight, 15.0)
         self.wb.Save.assert_not_called()
 
-    def test_modified_file_expires_confirmation_and_reenters_incremental_refresh(self):
+    def test_saving_the_file_keeps_confirmation(self):
+        # 定位到 Excel 修改其他行并保存、或自动微调保存同一文件，都不应让人工确认失效
         self.workflow.STATE["checked_files"][str(self.wb_path)] = self.workflow._file_version(self.wb_path)
         self.workflow.set_manual_confirmation("item_1", True)
         self.touch_modified(self.wb_path)
         state = self.workflow.get_state_snapshot()
-        self.assertEqual(state["items"]["item_1"]["status"], "needs_review")
-        self.assertEqual(self.workflow._select_changed_problem_items(), ["item_1"])
-        self.assertEqual(self.snapshot("report")["files"]["book.xlsx"]["clip_accepted"], 0)
+        self.workflow.get_overview_snapshot()
+        self.assertTrue(self.workflow.queue_job("refresh"))
+        self.assertEqual(state["items"]["item_1"]["status"], "accepted")
+        self.assertEqual(self.snapshot("workflow")["items"]["item_1"]["status"], "accepted")
+        self.assertEqual(self.workflow._select_changed_problem_items(), [])
+        self.assertEqual(self.snapshot("report")["files"]["book.xlsx"]["clip_accepted"], 1)
+
+    def test_recheck_after_edit_keeps_confirmation_for_same_text_at_new_position(self):
+        self.workflow.set_manual_confirmation("item_1", True)
+        self.workflow.STATE["items"]["item_2"] = dict(
+            copy.deepcopy(self.workflow.STATE["items"]["item_1"]), id="item_2", text="other", status="pending",
+        )
+        del self.workflow.STATE["items"]["item_2"]["manual_confirmation"]
+        self.touch_modified(self.wb_path)
+        # 行高调整后文字下移到新位置
+        self.rescan.return_value = [
+            {"text": "sample", "bbox": (60, 300, 100, 315), "line_y": 310},
+            {"text": "other", "bbox": (60, 400, 100, 415), "line_y": 410},
+        ]
+        self.workflow.queue_job("recheck", {"selected_ids": ["item_2"]})
+        self.workflow.run_pending_workflow()
+
+        items = {item["text"]: item for item in self.snapshot("workflow")["items"].values()}
+        self.assertEqual(items["sample"]["status"], "accepted")
+        self.assertEqual(items["sample"]["bbox"], [60, 300, 100, 315])
+        self.assertEqual(items["other"]["status"], "pending")
+        report = self.snapshot("report")["files"]["book.xlsx"]
+        self.assertEqual((report["clip_accepted"], report["clip_unfixed"]), (1, 1))
+
+    def test_full_rescan_keeps_confirmation_for_same_text(self):
+        self.workflow.set_manual_confirmation("item_1", True)
+        self.sheet.Name = "Sheet1"
+        self.sheet.Visible = -1
+        self.sheet.ExportAsFixedFormat.side_effect = (
+            lambda **kwargs: shutil.copyfile(self.pdf_path, kwargs["Filename"])
+        )
+        self.wb.Sheets = [self.sheet]
+        self.rescan.return_value = [{"text": "sample", "bbox": (60, 300, 100, 315), "line_y": 310}]
+        self.workflow.queue_job("scan", {"folder": str(self.folder), "delete_backups": False})
+        self.workflow.run_pending_workflow()
+
+        saved = self.snapshot("workflow")
+        self.assertEqual(saved["job"]["status"], "completed")
+        self.assertNotIn("item_1", saved["items"])
+        [item] = saved["items"].values()
+        self.assertEqual(item["status"], "accepted")
+        report = self.snapshot("report")["files"]["book.xlsx"]
+        self.assertEqual((report["status"], report["clip_accepted"], report["clip_unfixed"]), ("done", 1, 0))
 
     def test_confirmed_item_cannot_be_automatically_adjusted_even_with_direct_request(self):
         self.workflow.set_manual_confirmation("item_1", True)
@@ -299,7 +346,7 @@ class PersistenceTests(unittest.TestCase):
         self.assertIsNone(saved["job"]["pending_adjustment"])
         self.assertFalse(self.workflow.get_state_snapshot()["can_resume"])
 
-    def test_forced_rescan_preserves_current_version_manual_confirmation_at_same_location(self):
+    def test_forced_rescan_preserves_manual_confirmation_at_same_location(self):
         self.workflow.STATE["items"]["item_1"]["bbox"] = [60, 90, 100, 105]
         self.rescan.return_value = [{"text": "sample", "bbox": (60, 90, 100, 105), "line_y": 100}]
         self.workflow.set_manual_confirmation("item_1", True)
