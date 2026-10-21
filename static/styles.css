@@ -2459,12 +2459,12 @@ input[type="text"] {
 
 .preview-sheet-tag {
   display: inline-block;
-  padding: 3px 9px;
+  padding: 4px 10px;
   border-radius: 6px;
   font-family: inherit;
   font-size: 12px;
   font-weight: 600;
-  line-height: 1.4;
+  line-height: 1.5;
   border: 1px solid transparent;
   user-select: none;
   transition: transform 0.08s ease, filter 0.12s ease, background 0.12s ease, border-color 0.12s ease;
@@ -2494,13 +2494,54 @@ button.preview-sheet-tag:active {
   background: #fee2e2;
   color: #991b1b;
   border-color: rgba(239, 68, 68, 0.35);
-  text-decoration: line-through;
 }
 
 .preview-sheet-tag.is-uncertain {
   background: #fef3c7;
   color: #92400e;
   border-color: rgba(245, 158, 11, 0.5);
+}
+
+.preview-legend-sep {
+  color: rgba(100, 116, 139, 0.45);
+  margin: 0 2px;
+}
+
+.sheet-shared-mark {
+  --mark-line: #7c3aed;
+  --mark-band: rgba(124, 58, 237, 0.22);
+  display: inline;
+  padding-bottom: 1px;
+  border-bottom: 2.5px solid var(--mark-line);
+  background-image: linear-gradient(transparent 68%, var(--mark-band) 68%);
+  border-radius: 1px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.sheet-shared-mark.mark-0 {
+  --mark-line: #7c3aed;
+  --mark-band: rgba(124, 58, 237, 0.22);
+}
+
+.sheet-shared-mark.mark-1 {
+  --mark-line: #059669;
+  --mark-band: rgba(5, 150, 105, 0.22);
+}
+
+.sheet-shared-mark.mark-2 {
+  --mark-line: #d97706;
+  --mark-band: rgba(217, 119, 6, 0.24);
+}
+
+.sheet-shared-mark.mark-3 {
+  --mark-line: #0284c7;
+  --mark-band: rgba(2, 132, 199, 0.22);
+}
+
+.sheet-shared-mark.mark-4 {
+  --mark-line: #db2777;
+  --mark-band: rgba(219, 39, 119, 0.22);
 }
 
 .uncertain-sheet-tag {

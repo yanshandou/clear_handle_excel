@@ -3,12 +3,12 @@ const TASKS = {
     title: '精简 Sheet',
     icon: '🧹',
     theme: 'feature-violet',
-    sub: '扫描全部工作表（含子文件夹），单击标签即可在「保留 / 删除 / ❓待定」三种状态间切换',
+    sub: '扫描全部工作表（含子文件夹），单击标签即可在「保留 / 删除 / 待定」三种状态间切换',
     notes: [
       '自动递归扫描所选文件夹及其所有子文件夹下的 Excel 文件',
-      '自动初筛：名称含 YYYYMMDD 日期、bak / backup、old / 旧（「新旧」「復旧」除外）、バックアップ / 备份、コピー / copy / 副本或「 (2)」，且同工作簿存在原表的，默认标为「删除」',
-      '单击切换：直接单击任意工作表标签，即可在「保留 → 删除 → ❓待定 → 保留」之间循环切换（每个工作簿至少保留 1 个工作表）',
-      '存疑待定：标为「❓待定」的工作表本次保留不删，并在该 Excel 文件名与该 Sheet 名前加上「❓」图标，按名称排序即可集中人工确认',
+      '自动初筛：名称含 YYYYMMDD 日期、bak / backup、old / 旧（「新旧」「復旧」除外）、バックアップ / 备份、コピー / copy / 副本或「 (2)」，且同工作簿存在原表的，默认标为「删除」，并用马克笔下划线标出原表与备份表的同名部分',
+      '单击切换：直接单击任意工作表标签，即可在「保留 → 删除 → 待定 → 保留」之间循环切换，仅靠颜色区分状态（每个工作簿至少保留 1 个工作表）',
+      '存疑待定：标为「待定」的工作表本次保留不删，并在执行后为该 Excel 文件名与该 Sheet 名前加上「❓」图标，按名称排序即可集中人工确认',
     ],
     preview: true,
   },
@@ -106,6 +106,247 @@ function addUncertainEmoji(name) {
   const [dir, base] = splitDirAndBase(name);
   const clean = base.replace(/^❓+\s*/, '');
   return dir + (clean ? `❓${clean}` : '❓');
+}
+
+/* ==========================================
+   同名原表与备份表的马克笔下划线定位
+   ========================================== */
+const MARK_PALETTE_SIZE = 5;
+
+function isValidYmdDate(yyyymmdd) {
+  if (!/^(?:19|20)\d{6}$/.test(yyyymmdd)) return false;
+  const y = Number(yyyymmdd.slice(0, 4));
+  const m = Number(yyyymmdd.slice(4, 6));
+  const d = Number(yyyymmdd.slice(6, 8));
+  if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+  const dt = new Date(y, m - 1, d);
+  return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d;
+}
+
+function hasBackupMarker(sheetName) {
+  const text = String(sheetName ?? '').normalize('NFKC');
+  if (/(?<![a-z])(?:bak|backup|old|copy)(?![a-z])/i.test(text)) return true;
+  if (/バックアップ|备份|コピー|副本|(?<![新復])旧/.test(text)) return true;
+  if (/\s\(\d+\)$/.test(text)) return true;
+  const dateRe = /(?<!\d)((?:19|20)\d{6})(?!\d)/g;
+  let m;
+  while ((m = dateRe.exec(text)) !== null) {
+    if (isValidYmdDate(m[1])) return true;
+  }
+  return false;
+}
+
+function buildMaskFromCoreIndices(len, coreIndices, markerRemovedOrig) {
+  const mask = new Array(len).fill(false);
+  if (!coreIndices.length) return mask;
+  const sorted = Array.from(new Set(coreIndices)).sort((a, b) => a - b);
+  sorted.forEach(idx => {
+    if (idx >= 0 && idx < len) mask[idx] = true;
+  });
+  // 若两个核心字符之间只有普通空白或连接符（不含被剔除的日期/备份词/版本号），连成一整段下划线
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const a = sorted[i];
+    const b = sorted[i + 1];
+    if (b > a + 1) {
+      let hasRemovedMarker = false;
+      for (let p = a + 1; p < b; p++) {
+        if (markerRemovedOrig.has(p)) {
+          hasRemovedMarker = true;
+          break;
+        }
+      }
+      if (!hasRemovedMarker) {
+        for (let p = a + 1; p < b; p++) mask[p] = true;
+      }
+    }
+  }
+  return mask;
+}
+
+function analyzeSheetName(displayName, { stripBackup = false, stripVersion = true } = {}) {
+  const str = String(displayName ?? '');
+  let items = [];
+  for (let i = 0; i < str.length; i++) {
+    const normPiece = str[i].normalize('NFKC');
+    for (let j = 0; j < normPiece.length; j++) {
+      items.push({ ch: normPiece[j], origIdx: i });
+    }
+  }
+  const markerRemovedOrig = new Set();
+
+  const applyStrip = (regex, predicate = null, isMarker = true) => {
+    const currentStr = items.map(x => x.ch).join('');
+    const removePos = new Set();
+    const re = new RegExp(regex.source, regex.flags.includes('g') ? regex.flags : regex.flags + 'g');
+    let m;
+    while ((m = re.exec(currentStr)) !== null) {
+      if (!predicate || predicate(m)) {
+        for (let k = m.index; k < m.index + m[0].length; k++) {
+          removePos.add(k);
+          if (isMarker) markerRemovedOrig.add(items[k].origIdx);
+        }
+      }
+    }
+    if (removePos.size > 0) {
+      items = items.filter((_, idx) => !removePos.has(idx));
+    }
+  };
+
+  if (stripBackup) {
+    applyStrip(/(?<!\d)((?:19|20)\d{6})(?!\d)/g, m => isValidYmdDate(m[1]), true);
+    applyStrip(/\s\(\d+\)$/g, null, true);
+    applyStrip(/copy\s+of|の?コピー|的?副本/gi, null, true);
+    applyStrip(/(?<![a-z])(?:bak|backup|old|copy)(?![a-z])/gi, null, true);
+    applyStrip(/バックアップ|备份|コピー|副本|(?<![新復])旧/g, null, true);
+  }
+  if (stripVersion) {
+    applyStrip(/(?<![a-z])v(?:er)?\.?\d+(?:\.\d+)*(?![a-z])/gi, null, true);
+  }
+  applyStrip(/[\s_\-・.,、。()\[\]【】「」『』❓]+/g, null, false);
+
+  const key = items.map(x => x.ch.toLowerCase()).join('');
+  const coreOrigIndices = items.map(x => x.origIdx);
+  const mask = buildMaskFromCoreIndices(str.length, coreOrigIndices, markerRemovedOrig);
+  return { key, items, markerRemovedOrig, mask };
+}
+
+function computeFileSheetHighlights(file) {
+  const sheets = file.sheets || [];
+  const entries = sheets.map((rawName, idx) => {
+    const cleanName = stripUncertainEmoji(rawName);
+    const state = getSheetState(file.name, rawName);
+    const isCandidate = hasBackupMarker(cleanName);
+    return {
+      idx,
+      rawName,
+      cleanName,
+      state,
+      isCandidate,
+      strict: analyzeSheetName(cleanName, { stripBackup: isCandidate, stripVersion: false }),
+      loose: analyzeSheetName(cleanName, { stripBackup: isCandidate, stripVersion: true }),
+      baseLoose: analyzeSheetName(cleanName, { stripBackup: true, stripVersion: true }),
+    };
+  });
+
+  const highlights = new Array(sheets.length).fill(null);
+  let nextColorIdx = 0;
+
+  // 1. 按原表与备份表规则配对：共享同一个去掉备份标记后的基础名称
+  const byBaseKey = new Map();
+  entries.forEach(entry => {
+    const key = entry.baseLoose.key;
+    if (!key) return;
+    if (!byBaseKey.has(key)) byBaseKey.set(key, []);
+    byBaseKey.get(key).push(entry);
+  });
+
+  byBaseKey.forEach(group => {
+    if (group.length < 2) return;
+    const hasOrigAndCandidate = group.some(e => !e.isCandidate && e.loose.key === e.baseLoose.key) &&
+      group.some(e => e.isCandidate);
+    const hasKeepAndAction = group.some(e => e.state === 'keep') &&
+      group.some(e => e.state !== 'keep');
+    if (!hasOrigAndCandidate && !hasKeepAndAction) return;
+
+    const colorIdx = nextColorIdx % MARK_PALETTE_SIZE;
+    nextColorIdx += 1;
+    const firstStrictKey = group[0].strict.key;
+    const allSameStrict = Boolean(firstStrictKey) && group.every(e => e.strict.key === firstStrictKey);
+
+    group.forEach(entry => {
+      const chosen = allSameStrict
+        ? entry.strict
+        : (entry.loose.key === entry.baseLoose.key ? entry.loose : entry.baseLoose);
+      if (chosen.mask.some(Boolean)) {
+        highlights[entry.idx] = { mask: chosen.mask, colorIdx };
+      }
+    });
+  });
+
+  // 2. 用户手动切换为删除/待定的工作表：若与某张保留表存在包含关系的共有名称（>=2 字），也标出共有部分
+  entries.forEach(entry => {
+    if (highlights[entry.idx] || entry.state === 'keep') return;
+    const targetKey = entry.baseLoose.key;
+    if (targetKey.length < 2) return;
+
+    let bestKeep = null;
+    let bestLen = 0;
+    let keepInTargetIdx = -1;
+    let targetInKeepIdx = -1;
+
+    entries.forEach(other => {
+      if (other.idx === entry.idx || other.state !== 'keep') return;
+      const otherKey = other.baseLoose.key;
+      if (otherKey.length < 2) return;
+      if (targetKey.includes(otherKey) && otherKey.length > bestLen) {
+        bestKeep = other;
+        bestLen = otherKey.length;
+        keepInTargetIdx = targetKey.indexOf(otherKey);
+        targetInKeepIdx = 0;
+      } else if (otherKey.includes(targetKey) && targetKey.length > bestLen) {
+        bestKeep = other;
+        bestLen = targetKey.length;
+        keepInTargetIdx = 0;
+        targetInKeepIdx = otherKey.indexOf(targetKey);
+      }
+    });
+
+    if (bestKeep && bestLen >= 2) {
+      const colorIdx = highlights[bestKeep.idx]
+        ? highlights[bestKeep.idx].colorIdx
+        : (nextColorIdx++ % MARK_PALETTE_SIZE);
+      const entrySlice = entry.baseLoose.items
+        .slice(keepInTargetIdx, keepInTargetIdx + bestLen)
+        .map(x => x.origIdx);
+      const entryMask = buildMaskFromCoreIndices(
+        entry.cleanName.length,
+        entrySlice,
+        entry.baseLoose.markerRemovedOrig,
+      );
+      if (entryMask.some(Boolean)) {
+        highlights[entry.idx] = { mask: entryMask, colorIdx };
+      }
+      if (!highlights[bestKeep.idx]) {
+        const keepSlice = bestKeep.baseLoose.items
+          .slice(targetInKeepIdx, targetInKeepIdx + bestLen)
+          .map(x => x.origIdx);
+        const keepMask = buildMaskFromCoreIndices(
+          bestKeep.cleanName.length,
+          keepSlice,
+          bestKeep.baseLoose.markerRemovedOrig,
+        );
+        if (keepMask.some(Boolean)) {
+          highlights[bestKeep.idx] = { mask: keepMask, colorIdx };
+        }
+      }
+    }
+  });
+
+  return highlights;
+}
+
+function renderSheetLabelHtml(displayName, highlight) {
+  if (!highlight || !highlight.mask || !highlight.mask.some(Boolean)) {
+    return escapeHtml(displayName);
+  }
+  const { mask, colorIdx } = highlight;
+  let html = '';
+  let i = 0;
+  while (i < displayName.length) {
+    const marked = Boolean(mask[i]);
+    let j = i + 1;
+    while (j < displayName.length && Boolean(mask[j]) === marked) {
+      j += 1;
+    }
+    const textChunk = escapeHtml(displayName.slice(i, j));
+    if (marked) {
+      html += `<span class="sheet-shared-mark mark-${colorIdx}">${textChunk}</span>`;
+    } else {
+      html += textChunk;
+    }
+    i = j;
+  }
+  return html;
 }
 
 function initSheetDecisions() {
@@ -335,7 +576,7 @@ function renderDialog() {
   if (phase === 'running' || phase === 'done') renderRunBox();
 }
 
-// 按工作簿中的原有顺序列出全部工作表，单击标签循环切换「保留 / 删除 / ❓待定」
+// 按工作簿中的原有顺序列出全部工作表，单击标签循环切换「保留 / 删除 / 待定」
 function previewFileItem(file, fileIndex, extraClass = '') {
   let delCount = 0;
   let uncCount = 0;
@@ -346,20 +587,20 @@ function previewFileItem(file, fileIndex, extraClass = '') {
   });
   const kept = file.sheets.length - delCount - uncCount;
   const allDeleted = file.sheets.length > 0 && delCount >= file.sheets.length;
+  const highlights = computeFileSheetHighlights(file);
 
   const tags = file.sheets.map((name, sheetIndex) => {
     const st = getSheetState(file.name, name);
     const isDeleted = st === 'delete';
     const isUncertain = st === 'uncertain';
-    const displayName = isUncertain
-      ? addUncertainEmoji(name)
-      : (name.startsWith('❓') ? stripUncertainEmoji(name) : name);
+    const displayName = stripUncertainEmoji(name);
+    const labelHtml = renderSheetLabelHtml(displayName, highlights[sheetIndex]);
     const tip = isDeleted
-      ? '当前：删除（单击切换为「❓待定」，再点切换为「保留」）'
+      ? '当前：删除（单击切换为「待定」，再点切换为「保留」）'
       : (isUncertain
-        ? '当前：❓待定，本次不删并给文件名与 Sheet 加 ❓（单击切换为「保留」）'
+        ? '当前：待定，本次不删并在执行后给文件名与 Sheet 加 ❓（单击切换为「保留」）'
         : '当前：保留（单击切换为「删除」）');
-    return `<button type="button" class="preview-sheet-tag is-${st}" onclick="cycleSheetState(${fileIndex}, ${sheetIndex})" title="${tip}">${escapeHtml(displayName)}</button>`;
+    return `<button type="button" class="preview-sheet-tag is-${st}" onclick="cycleSheetState(${fileIndex}, ${sheetIndex})" title="${tip}">${labelHtml}</button>`;
   }).join('');
 
   let renameBadge = '';
@@ -372,7 +613,7 @@ function previewFileItem(file, fileIndex, extraClass = '') {
 
   const countParts = [`保留 ${kept}`];
   if (delCount) countParts.push(`<em>删除 ${delCount}</em>`);
-  if (uncCount) countParts.push(`<strong class="is-uncertain-count">❓待定 ${uncCount}</strong>`);
+  if (uncCount) countParts.push(`<strong class="is-uncertain-count">待定 ${uncCount}</strong>`);
 
   return `
     <li class="${extraClass} ${allDeleted ? 'is-warn' : ''}">
@@ -384,7 +625,7 @@ function previewFileItem(file, fileIndex, extraClass = '') {
         ${file.sheets.length ? `<span class="preview-counts">${countParts.join(' · ')}</span>` : ''}
       </div>
       ${file.note ? `<span class="preview-note">⚠️ ${escapeHtml(file.note)}</span>` : ''}
-      ${allDeleted ? `<span class="preview-note">⚠️ 不能删除全部工作表，请单击标签至少将 1 个改为「保留」或「❓待定」</span>` : ''}
+      ${allDeleted ? `<span class="preview-note">⚠️ 不能删除全部工作表，请单击标签至少将 1 个改为「保留」或「待定」</span>` : ''}
       ${tags ? `<span class="preview-tags">${tags}</span>` : ''}
     </li>`;
 }
@@ -420,15 +661,16 @@ function renderPreview() {
       <span>→</span>
       <span class="preview-sheet-tag is-delete">删除</span>
       <span>→</span>
-      <span class="preview-sheet-tag is-uncertain">❓待定</span>
-      <span>（直接单击工作表标签即可循环切换状态）</span>
+      <span class="preview-sheet-tag is-uncertain">待定</span>
+      <span class="preview-legend-sep">｜</span>
+      <span><span class="sheet-shared-mark mark-0">同名部分</span> 为原表与备份表共有的名称（单击标签循环切换状态）</span>
     </div>
     <ul class="preview-list">
       ${primary.map(({ file, idx }) => previewFileItem(file, idx, file.note ? 'is-warn' : '')).join('')}
     </ul>
     ${plain.length ? `
       <details class="preview-plain" ${plainDetailsOpen ? 'open' : ''} ontoggle="plainDetailsOpen = this.open">
-        <summary>其余 ${plain.length} 个文件未检出备份表（点击展开，单击标签可改为删除或 ❓待定）</summary>
+        <summary>其余 ${plain.length} 个文件未检出备份表（点击展开，单击标签可改为删除或待定）</summary>
         <ul class="preview-list">${plain.map(({ file, idx }) => previewFileItem(file, idx)).join('')}</ul>
       </details>` : ''}
   `;
