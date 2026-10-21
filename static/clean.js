@@ -8,7 +8,6 @@ let pending = null; // scan | start：请求已发出、后台尚未确认完成
 let pendingSince = 0;
 let previewData = null;
 let sheetDecisions = {}; // { [fileName]: { [sheetName]: 'keep' | 'delete' | 'uncertain' } }
-let plainDetailsOpen = false;
 let pollSeq = 0;
 let minAcceptedSeq = 0; // 发起操作前已在途的轮询结果可能过期，直接丢弃
 
@@ -303,7 +302,6 @@ function renderSheetLabelHtml(displayName, highlight) {
 
 function initSheetDecisions() {
   sheetDecisions = {};
-  plainDetailsOpen = false;
   if (!previewData || !Array.isArray(previewData.files)) return;
   previewData.files.forEach(file => {
     const delSet = new Set(file.backups || []);
@@ -584,29 +582,11 @@ function layoutMasonry() {
   });
 }
 
+// 全部文件按文件夹放在一起，按扫描顺序排列；没有检出备份表的文件所有标签默认为保留，单击标签不会改变卡片位置
 function renderPreview() {
-  const detailsEl = document.querySelector('#previewBox details.preview-plain');
-  if (detailsEl) plainDetailsOpen = detailsEl.open;
-
-  const files = previewData.files;
-  const indexed = files.map((file, idx) => ({ file, idx }));
-  const primary = indexed.filter(({ file }) =>
-    file.backups.length || (file.uncertain && file.uncertain.length) || file.note ||
-    file.sheets.some(s => getSheetState(file.name, s) !== 'keep')
-  );
-  const primarySet = new Set(primary.map(x => x.idx));
-  const plain = indexed.filter(({ idx }) => !primarySet.has(idx));
-
-  document.getElementById('previewBox').innerHTML = `
-    ${primary.length ? `
-      <h3 class="clean-section-title">检出备份表或待定表的文件（${primary.length}）</h3>
-      ${renderFolderGroups(primary, file => (file.note ? 'is-warn' : ''))}` : '<p class="clean-empty-note">没有检出备份表，可在下方其余文件中单击标签手动标记。</p>'}
-    ${plain.length ? `
-      <details class="preview-plain" ${plainDetailsOpen ? 'open' : ''} ontoggle="plainDetailsOpen = this.open; layoutMasonry()">
-        <summary>其余 ${plain.length} 个文件未检出备份表（点击展开，单击标签可改为删除或待定）</summary>
-        ${renderFolderGroups(plain)}
-      </details>` : ''}
-  `;
+  const indexed = previewData.files.map((file, idx) => ({ file, idx }));
+  document.getElementById('previewBox').innerHTML =
+    renderFolderGroups(indexed, file => (file.note ? 'is-warn' : ''));
   layoutMasonry();
 }
 
@@ -770,11 +750,14 @@ cleanFolderInput.addEventListener('keydown', e => {
   if (e.key === 'Enter') runPreview();
 });
 
-let masonryTimer = null;
-window.addEventListener('resize', () => {
-  clearTimeout(masonryTimer);
-  masonryTimer = setTimeout(layoutMasonry, 120);
-});
+// 预览区宽度变化时重新排列：包括窗口缩放，以及首次渲染后出现滚动条导致的变窄
+let masonryWidth = 0;
+new ResizeObserver(entries => {
+  const width = Math.round(entries[0].contentRect.width);
+  if (width === masonryWidth) return;
+  masonryWidth = width;
+  layoutMasonry();
+}).observe(document.getElementById('previewBox'));
 
 setInterval(pollState, 1200);
 // 扫描或提交期间每秒刷新已用时间，让用户看到仍在处理中
