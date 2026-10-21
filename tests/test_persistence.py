@@ -131,9 +131,86 @@ class PersistenceTests(unittest.TestCase):
         self.start_fix()
         self.wb.Save.assert_not_called()
         self.sheet.ExportAsFixedFormat.assert_not_called()
-        item = self.snapshot("workflow")["items"]["item_1"]
+        state = self.snapshot("workflow")
+        item = state["items"]["item_1"]
         self.assertEqual(item["status"], "needs_review")
         self.assertEqual(item["review_reason"], "ambiguous target")
+        self.assertEqual(state["job"]["status"], "completed")
+
+    def test_untrackable_item_is_skipped_and_remaining_items_continue(self):
+        second = copy.deepcopy(self.workflow.STATE["items"]["item_1"])
+        second.update(id="item_2", excel_row=3, cell_addr="A3", text="other text")
+        self.workflow.STATE["items"]["item_2"] = second
+        self.detect.side_effect = [
+            self.workflow.RegionTrackingError("ambiguous target"),
+            (True, "clipped", [0, 0, 10, 10], 0),
+            (False, "fixed", [0, 0, 10, 10], 0),
+        ]
+        self.workflow.queue_job("fix", {
+            "selected_ids": ["item_1", "item_2"], "step_pt": 3.0, "max_iter": 6,
+        })
+        self.workflow.run_pending_workflow()
+        state = self.snapshot("workflow")
+        self.assertEqual(state["items"]["item_1"]["status"], "needs_review")
+        self.assertEqual(state["items"]["item_2"]["status"], "fixed")
+        self.assertEqual(state["job"]["status"], "completed")
+        self.assertEqual(self.sheet.ExportAsFixedFormat.call_count, 1)
+        self.wb.Save.assert_called()
+
+    def test_tracking_failure_after_export_commits_height_without_interrupting(self):
+        self.detect.side_effect = [
+            (True, "clipped", [0, 0, 10, 10], 0),
+            self.workflow.RegionTrackingError("count changed"),
+        ]
+        self.start_fix(max_iter=6)
+        state = self.snapshot("workflow")
+        item = state["items"]["item_1"]
+        self.assertEqual(item["status"], "needs_review")
+        self.assertEqual(item["review_reason"], "count changed")
+        self.assertEqual(item["row_height"], 18.0)
+        self.assertEqual(item["iterations"], 1)
+        self.assertEqual(state["job"]["status"], "completed")
+        self.assertIsNone(state["job"]["pending_adjustment"])
+        self.assertEqual(self.sheet.ExportAsFixedFormat.call_count, 1)
+
+    def test_real_pdf_repeated_text_is_fixed_by_occurrence_order(self):
+        from core.pdf_detector import is_region_still_clipped
+
+        self.patch_value(self.workflow, "is_region_still_clipped", is_region_still_clipped)
+        fitz = self.workflow.fitz
+
+        def write_pdf(positions, clipped_index):
+            with fitz.open() as doc:
+                page = doc.new_page()
+                for y in positions:
+                    page.insert_text((60, y), "er")
+                spans = sorted(
+                    (tuple(span["bbox"]) for block in page.get_text("dict")["blocks"]
+                     for line in block.get("lines", []) for span in line["spans"]),
+                    key=lambda b: b[1],
+                )
+                if clipped_index is not None:
+                    bbox = spans[clipped_index]
+                    line_y = (bbox[1] + bbox[3]) / 2
+                    page.draw_line((55, line_y), (150, line_y), width=0.5)
+                doc.save(self.pdf_path)
+            return spans
+
+        old_spans = write_pdf((100, 200), clipped_index=1)
+        item = self.workflow.STATE["items"]["item_1"]
+        item.update(text="er", bbox=list(old_spans[1]))
+        new_spans = []
+        # 加高后第一处 "er" 正好移到目标原位置，目标下移且已完整显示。
+        self.sheet.ExportAsFixedFormat.side_effect = (
+            lambda **_: new_spans.extend(write_pdf((200, 300), clipped_index=None))
+        )
+        self.start_fix(max_iter=6)
+        state = self.snapshot("workflow")
+        item = state["items"]["item_1"]
+        self.assertEqual(item["status"], "fixed")
+        self.assertEqual(item["occurrence"], [1, 2])
+        self.assertEqual(tuple(item["bbox"]), new_spans[1])
+        self.assertEqual(self.sheet.ExportAsFixedFormat.call_count, 1)
 
     def test_workflow_updates_item_page_and_canvas_after_pagination_changes(self):
         with self.workflow.fitz.open() as doc:
@@ -316,6 +393,7 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(len(state["items"]), 1)
         current = next(iter(state["items"].values()))
         self.assertEqual(tuple(current["bbox"]), bbox)
+        self.assertEqual(current["occurrence"], [1, 2])
         self.assertEqual(current["status"], "pending")
         self.assertNotIn("review_reason", current)
         self.assertEqual(current["cell_addr"], "A2")

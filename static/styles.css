@@ -1171,23 +1171,29 @@ input[type="text"] {
   background: linear-gradient(180deg, #e5eefb 0%, #f3f7fe 100%);
   border-top: 1px solid rgba(176, 196, 226, 0.6);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
+  /* 标签占第 1 列，所有胶囊通过 subgrid 共享后 5 列，保证每行宽度与各字段位置一致 */
+  display: grid;
+  grid-template-columns: repeat(6, max-content);
+  justify-content: start;
+  gap: 10px 14px;
   align-items: center;
+  overflow-x: auto;
 }
 
 .capsule-bar-label {
+  grid-column: 1;
+  grid-row: 1;
   font-size: 12.5px;
   font-weight: 800;
   color: var(--text-strong);
-  margin-right: 4px;
 }
 
 .item-capsule {
-  display: inline-flex;
+  grid-column: 2 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  column-gap: 8px;
   align-items: center;
-  gap: 8px;
   padding: 6px 12px;
   border-radius: 11px;
   border: 1px solid rgba(255, 255, 255, 0.92);

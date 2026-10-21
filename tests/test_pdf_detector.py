@@ -4,9 +4,11 @@ from pathlib import Path
 
 from core.pdf_detector import (
     RegionTrackingError,
+    collect_text_spans,
     find_clipped_spans_on_page,
     fitz,
     is_region_still_clipped,
+    locate_text_occurrence,
     texts_match,
 )
 
@@ -66,6 +68,37 @@ class PdfTrackingTests(unittest.TestCase):
             doc.save(self.pdf_path)
         with self.assertRaisesRegex(RegionTrackingError, "无法唯一定位"):
             is_region_still_clipped(self.pdf_path, 0, "Repeated", bbox)
+
+    def test_repeated_text_is_tracked_by_occurrence_order_after_rows_move(self):
+        with fitz.open() as doc:
+            page = doc.new_page()
+            self.add_text(page, "Repeated", 100)
+            old_bbox = self.add_text(page, "Repeated", 160, clipped=True)
+            self.assertEqual(
+                locate_text_occurrence(collect_text_spans(doc), 0, "Repeated", old_bbox), (1, 2)
+            )
+        # 加高后第一处正好移到目标原位置，目标被挤到下一页；按最近位置猜测会选错。
+        with fitz.open() as doc:
+            page = doc.new_page()
+            self.add_text(page, "Repeated", 160)
+            target_bbox = self.add_text(doc.new_page(), "Repeated", 60, clipped=True)
+            doc.save(self.pdf_path)
+        clipped, _, actual_bbox, resolved_page = is_region_still_clipped(
+            self.pdf_path, 0, "Repeated", old_bbox, occurrence=(1, 2)
+        )
+        self.assertTrue(clipped)
+        self.assertEqual(actual_bbox, target_bbox)
+        self.assertEqual(resolved_page, 1)
+
+    def test_repeated_text_count_change_is_not_guessed(self):
+        with fitz.open() as doc:
+            page = doc.new_page()
+            bbox = self.add_text(page, "Repeated", 100, clipped=True)
+            self.add_text(page, "Repeated", 160)
+            self.add_text(page, "Repeated", 220)
+            doc.save(self.pdf_path)
+        with self.assertRaisesRegex(RegionTrackingError, "由 2 个变为 3 个"):
+            is_region_still_clipped(self.pdf_path, 0, "Repeated", bbox, occurrence=(0, 2))
 
     def test_target_moved_multiple_pages_is_rechecked_on_new_page(self):
         with fitz.open() as doc:

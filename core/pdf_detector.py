@@ -130,48 +130,93 @@ class RegionTrackingError(ValueError):
     """无法可靠定位原文字时中止调整，不能据此判定修复成功或继续加高。"""
 
 
+BBox = tuple[float, float, float, float]
+TextSpan = tuple[int, BBox, str]
+
+
+def collect_text_spans(doc: fitz.Document) -> list[TextSpan]:
+    """提取整个 PDF 的文字片段: [(page_index, bbox, text)]"""
+    spans: list[TextSpan] = []
+    for page_index in range(len(doc)):
+        text_dict = doc[page_index].get_text("dict")
+        blocks = text_dict.get("blocks", []) if isinstance(text_dict, dict) else []
+        for block in blocks:
+            if not isinstance(block, dict) or block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    b = fitz.Rect(span["bbox"])
+                    spans.append((page_index, (b.x0, b.y0, b.x1, b.y1), span.get("text", "")))
+    return spans
+
+
+def find_text_occurrences(
+    spans: list[TextSpan], text: str, bbox: BBox,
+) -> list[tuple[int, BBox]]:
+    """
+    找出与原文字相同、且位于同一列附近的全部候选位置，按文档顺序（页、纵向、横向）排列。
+    加高行不会改变同一列中各行的先后顺序，因此出现序号可用于区分重复文字。
+    """
+    x0, _, x1, _ = bbox
+    matches = [
+        (page_index, span_bbox) for page_index, span_bbox, span_text in spans
+        if texts_match(span_text, text) and span_bbox[2] >= x0 - 15 and span_bbox[0] <= x1 + 15
+    ]
+    matches.sort(key=lambda m: (m[0], round(m[1][1], 1), m[1][0]))
+    return matches
+
+
+def locate_text_occurrence(
+    spans: list[TextSpan], page_index: int, text: str, bbox: BBox,
+) -> tuple[int, int] | None:
+    """返回目标在同文字候选中的 (出现序号, 候选总数)；坐标不能精确对应时返回 None。"""
+    matches = find_text_occurrences(spans, text, bbox)
+    exact = [
+        index for index, (candidate_page, candidate_bbox) in enumerate(matches)
+        if candidate_page == page_index
+        and all(abs(a - b) < 0.1 for a, b in zip(candidate_bbox, bbox))
+    ]
+    return (exact[0], len(matches)) if len(exact) == 1 else None
+
+
 def is_region_still_clipped(
     pdf_path: Path,
     page_index: int,
     orig_text: str,
-    orig_bbox: tuple[float, float, float, float],
-) -> tuple[bool, str, tuple[float, float, float, float], int]:
+    orig_bbox: BBox,
+    occurrence: tuple[int, int] | list[int] | None = None,
+) -> tuple[bool, str, BBox, int]:
     """
-    重新导出 PDF 后，检查原来那个单元格区域内的对应文字是否还压线，
+    重新导出 PDF 后，检查原来那个单元格区域内的对应文字是否还压线。
+    occurrence 为扫描时记录的 (出现序号, 候选总数)，用于在重复文字中逐一定位目标；
+    候选总数变化时无法保证顺序对应，仍会停止。
     返回: (still_clipped, new_crop_base64, updated_bbox, resolved_page_index)
     """
-    orig_x0, _, orig_x1, _ = orig_bbox
     doc = fitz.open(pdf_path)
     try:
-        matches: list[tuple[int, tuple[float, float, float, float]]] = []
         # 行高调整可能改变缩放和分页；不能先找任意压线文字，再猜它是原目标。
-        for candidate_index in range(len(doc)):
-            page = doc[candidate_index]
-            text_dict = page.get_text("dict")
-            blocks = text_dict.get("blocks", []) if isinstance(text_dict, dict) else []
-            for block in blocks:
-                if block.get("type") != 0:
-                    continue
-                for line in block.get("lines", []):
-                    for span in line.get("spans", []):
-                        b = fitz.Rect(span["bbox"])
-                        if (
-                            texts_match(span.get("text", ""), orig_text)
-                            and b.x1 >= orig_x0 - 15 and b.x0 <= orig_x1 + 15
-                        ):
-                            matches.append((candidate_index, (b.x0, b.y0, b.x1, b.y1)))
+        matches = find_text_occurrences(collect_text_spans(doc), orig_text, orig_bbox)
 
         if not matches:
             raise RegionTrackingError(
                 f"无法定位原文字「{orig_text}」（原第 {page_index + 1} 页），"
                 "已停止自动加高，请检查 PDF、Excel 行号或重新扫描"
             )
-        if len(matches) != 1:
+        if occurrence is not None and int(occurrence[1]) > 1:
+            index, total = int(occurrence[0]), int(occurrence[1])
+            if len(matches) != total:
+                raise RegionTrackingError(
+                    f"原文字「{orig_text}」的候选位置由 {total} 个变为 {len(matches)} 个，"
+                    "无法按出现顺序可靠定位，已停止自动加高此处，请人工核对"
+                )
+            resolved_page_index, target_bbox = matches[index]
+        elif len(matches) != 1:
             raise RegionTrackingError(
                 f"原文字「{orig_text}」有 {len(matches)} 个候选位置，"
-                "无法唯一定位，已停止自动加高，请人工核对"
+                "无法唯一定位，已停止自动加高此处，请人工核对"
             )
-        resolved_page_index, target_bbox = matches[0]
+        else:
+            resolved_page_index, target_bbox = matches[0]
         render_page = doc[resolved_page_index]
         still_clipped = any(
             texts_match(clip["text"], orig_text)

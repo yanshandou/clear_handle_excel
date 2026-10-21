@@ -26,9 +26,11 @@ from core.excel_ops import (
     win32,
 )
 from core.pdf_detector import (
+    collect_text_spans,
     find_clipped_spans_on_page,
     fitz,
     is_region_still_clipped,
+    locate_text_occurrence,
     refresh_pdf_pages_overview,
     render_crop_base64,
     render_page_overview,
@@ -243,6 +245,7 @@ def _detect_sheet_results(
     with fitz.open(pdf_path) as doc:
         if not len(doc):
             raise ValueError(f"导出的 PDF 没有页面: {pdf_path}")
+        text_spans = collect_text_spans(doc)
         for page_index in range(len(doc)):
             page = doc[page_index]
             clips = find_clipped_spans_on_page(page)
@@ -262,11 +265,13 @@ def _detect_sheet_results(
                     clip["bbox"][1] / max(1.0, page.rect.height),
                 )
                 item_id = f"item_{generation}_{len(items)}"
+                occurrence = locate_text_occurrence(text_spans, page_index, clip["text"], clip["bbox"])
                 items[item_id] = {
                     "id": item_id, "seq": start_seq + len(items), "page_id": page_id,
                     "index_on_page": index, "wb_path": str(wb_path), "wb_name": wb_path.name,
                     "sheet_name": sheet_name, "pdf_path": str(pdf_path),
                     "page_index": page_index, "text": clip["text"], "bbox": clip["bbox"],
+                    "occurrence": list(occurrence) if occurrence else None,
                     "excel_row": row, "cell_addr": address, "row_height": height,
                     "image": render_crop_base64(page, clip["bbox"], highlight=True),
                     "status": "pending", "iterations": 0,
@@ -652,6 +657,38 @@ def _update_item_pdf_location(
         item["bbox"] = bbox
 
 
+def _locate_item_for_fix(
+    item: dict[str, Any], pdf_path: Path, pdf_unchanged: bool,
+) -> tuple[bool, str, tuple[float, float, float, float], int] | None:
+    """定位目标文字；无法可靠定位时只将当前项标记为人工核对并返回 None，其余选中项继续处理。"""
+    if item.get("occurrence") is None and pdf_unchanged:
+        # 旧版扫描结果没有出现序号；本轮尚未重新导出该 PDF 时，可按原坐标精确补录。
+        with fitz.open(pdf_path) as doc:
+            occurrence = locate_text_occurrence(
+                collect_text_spans(doc), item["page_index"], item["text"], as_bbox(item["bbox"])
+            )
+        if occurrence is not None:
+            with STATE_LOCK:
+                item["occurrence"] = list(occurrence)
+    try:
+        located = is_region_still_clipped(
+            pdf_path, item["page_index"], item["text"], as_bbox(item["bbox"]),
+            occurrence=item.get("occurrence"),
+        )
+    except RegionTrackingError as err:
+        with STATE_LOCK:
+            item["status"] = "needs_review"
+            item["review_reason"] = str(err)
+            _persist_state()
+        log_msg(
+            f"  ⚠️ [{item['sheet_name']} 行{item['excel_row']}] {err}；已跳过此处，继续处理其余选中项"
+        )
+        return None
+    with STATE_LOCK:
+        item.pop("review_reason", None)
+    return located
+
+
 def manual_review_workflow(selected_ids: list[str], *, open_excel: bool) -> None:
     with STATE_LOCK:
         job = STATE["job"]
@@ -873,6 +910,7 @@ def fix_selected_workflow(
         excel.Visible = False
         excel.DisplayAlerts = False
 
+        total_skipped = 0
         try:
             for wb_path_str, items in by_wb.items():
                 if job is not None and job["pending_adjustment"]:
@@ -892,14 +930,15 @@ def fix_selected_workflow(
                 )
                 wb = None
                 touched_pdfs: set[Path] = set()
-                current_item: dict[str, Any] | None = None
+                attempted_ids: list[str] = []
+                skipped_ids: list[str] = []
                 try:
                     wb = excel.Workbooks.Open(str(wb_path.resolve()))
 
                     for item in items:
-                        current_item = item
                         if item["status"] in {"fixed", "accepted"}:
                             continue
+                        attempted_ids.append(item["id"])
                         sheet_name = item["sheet_name"]
                         sheet = wb.Sheets(sheet_name)
                         target_row = max(1, int(item["excel_row"]))
@@ -913,9 +952,11 @@ def fix_selected_workflow(
                         pending = job["pending_adjustment"] if job else None
 
                         if not pending:
-                            still_clip, new_img, new_bbox, resolved_page = is_region_still_clipped(
-                                pdf_path, item["page_index"], item["text"], as_bbox(item["bbox"])
-                            )
+                            located = _locate_item_for_fix(item, pdf_path, pdf_path not in touched_pdfs)
+                            if located is None:
+                                skipped_ids.append(item["id"])
+                                continue
+                            still_clip, new_img, new_bbox, resolved_page = located
                             _update_item_pdf_location(item, new_img, new_bbox, resolved_page)
                             curr_h = round(float(sheet.Rows(target_row).RowHeight or 15.0), 1)
                             if not still_clip:
@@ -963,11 +1004,13 @@ def fix_selected_workflow(
                             )
                             touched_pdfs.add(pdf_path)
 
-                            still_clip, new_img, new_bbox, resolved_page = is_region_still_clipped(
-                                pdf_path, item["page_index"], item["text"], as_bbox(item["bbox"])
-                            )
+                            # 定位失败也要提交本轮已写入的行高，并清除检查点，避免续跑时重复加高。
+                            located = _locate_item_for_fix(item, pdf_path, False)
                             with STATE_LOCK:
-                                _update_item_pdf_location(item, new_img, new_bbox, resolved_page)
+                                if located is not None:
+                                    still_clip, new_img, new_bbox, resolved_page = located
+                                    _update_item_pdf_location(item, new_img, new_bbox, resolved_page)
+                                    item["status"] = "fixed" if not still_clip else "pending"
                                 item["row_height"] = new_h
                                 peer_iterations = pending.get("peer_iterations", {
                                     peer["id"]: int(peer["iterations"]) + 1 for peer in row_peers
@@ -976,13 +1019,15 @@ def fix_selected_workflow(
                                 for peer in row_peers:
                                     peer["iterations"] = peer_iterations[peer["id"]]
                                     peer["job_iterations"] = it
-                                item["status"] = "fixed" if not still_clip else "pending"
                                 _sync_row_height_in_state(wb_path_str, sheet_name, target_row, new_h)
                                 if job is not None:
                                     job["pending_adjustment"] = None
                                 _persist_state()
                             pending = None
 
+                            if located is None:
+                                skipped_ids.append(item["id"])
+                                break
                             if not still_clip:
                                 log_msg(
                                     f"  ✅ [{sheet_name} 行{target_row}] 第 {it} 次微调后已完整显示！(高度 -> {new_h}pt)"
@@ -1008,10 +1053,15 @@ def fix_selected_workflow(
                     for pdf_path in {Path(item["pdf_path"]) for item in items} - touched_pdfs:
                         _refresh_sheet_pages_in_state(pdf_path)
 
-                    # 完成 A1 定位与 100% 缩放保存
-                    normalize_workbook_view(excel, wb)
-                    wb.Save()
-                    log_msg(f"💾 已保存并完成 A1/100% 标准化: {wb_path.name}")
+                    # 完成 A1 定位与 100% 缩放保存；若所有处理项都因无法定位而跳过，则不改动 Excel 文件
+                    untouched = bool(skipped_ids) and len(skipped_ids) == len(attempted_ids) and not touched_pdfs
+                    if untouched:
+                        log_msg(f"⏭️ {wb_path.name}: 选中项均无法可靠定位，未修改也未保存 Excel")
+                    else:
+                        normalize_workbook_view(excel, wb)
+                        wb.Save()
+                        log_msg(f"💾 已保存并完成 A1/100% 标准化: {wb_path.name}")
+                    total_skipped += len(skipped_ids)
 
                     with STATE_LOCK:
                         wb_all_items = [
@@ -1022,6 +1072,12 @@ def fix_selected_workflow(
                         wb_accepted_clips = sum(it["status"] == "accepted" for it in wb_all_items)
                         wb_unfixed_clips = wb_total_clips - wb_fixed_clips - wb_accepted_clips
 
+                    action = (
+                        "未修改 Excel" if untouched
+                        else f"已微调保存 (修复 {wb_fixed_clips}/{wb_total_clips} 处，A1/100% 已标准化)"
+                    )
+                    if skipped_ids:
+                        action += f"；{len(skipped_ids)} 处无法可靠定位，已跳过并标记人工核对"
                     update_file_progress(
                         wb_path.name,
                         status="done" if wb_unfixed_clips == 0 else "needs_fix",
@@ -1029,19 +1085,14 @@ def fix_selected_workflow(
                         clip_fixed=wb_fixed_clips,
                         clip_accepted=wb_accepted_clips,
                         clip_unfixed=wb_unfixed_clips,
-                        normalized_a1=True,
-                        current_action=f"已微调保存 (修复 {wb_fixed_clips}/{wb_total_clips} 处，A1/100% 已标准化)",
+                        normalized_a1=not untouched,
+                        current_action=action,
                     )
                     with STATE_LOCK:
                         if job is not None:
                             job["completed"].extend(item["id"] for item in items)
                         _persist_state()
                 except Exception as err:
-                    if isinstance(err, RegionTrackingError) and current_item is not None:
-                        with STATE_LOCK:
-                            current_item["status"] = "needs_review"
-                            current_item["review_reason"] = str(err)
-                            _persist_state()
                     log_msg(f"❌ 修复失败 {wb_path.name}: {err}")
                     update_file_progress(
                         wb_path.name,
@@ -1058,6 +1109,8 @@ def fix_selected_workflow(
             pythoncom.CoUninitialize()
 
         done_msg = "🎉 所有选中项微调完毕！画布、放大镜截图与执行记录报告已更新。"
+        if total_skipped:
+            done_msg += f"其中 {total_skipped} 处无法可靠定位，已跳过并标记为人工核对。"
         log_msg(done_msg)
         finish_execution_batch(done_msg)
     finally:
