@@ -50,8 +50,8 @@ class ReportMarkdownTests(unittest.TestCase):
         }
         with patch.dict(reporter.EXECUTION_STATE, state):
             md = reporter.render_execution_markdown()
-        self.assertIn("- ~~基本情報20210308~~ *(", md)
-        self.assertIn("- **一覧** *(", md)
+        self.assertIn("- ~~基本情報20210308~~\n", md)
+        self.assertNotIn("**\u3000一覧", md)  # 待定的表没删，报告里照常列出
         self.assertNotIn("~~基本情報20210308 ~~", md)
         self.assertNotIn("**\u3000一覧 **", md)
 

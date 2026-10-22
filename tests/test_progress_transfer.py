@@ -86,7 +86,7 @@ class ProgressTransferTests(unittest.TestCase):
         report = self.reporter.get_execution_report_snapshot()
         self.assertEqual(report["task_name"], "Web 闭环行高微调")
         self.assertEqual(report["files"]["book.xlsx"]["clip_detected"], 2)
-        self.assertIn("Web 闭环行高微调", self.record_path.read_text(encoding="utf-8"))
+        self.assertIn("已中断", self.record_path.read_text(encoding="utf-8"))
 
     def test_unchanged_files_keep_interrupted_job_resumable(self):
         data = self.exported()

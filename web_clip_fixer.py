@@ -1,4 +1,5 @@
 import json
+import logging
 import mimetypes
 import math
 import sqlite3
@@ -43,6 +44,7 @@ from core.workflow import (
     preview_backup_sheets,
     scan_folder_workflow,
     queue_job,
+    resync_report_from_state,
     run_pending_workflow,
     set_manual_confirmation,
     update_item_row,
@@ -453,6 +455,10 @@ class WebHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     port = 8765
+    try:
+        resync_report_from_state()
+    except Exception:
+        logging.exception("启动时刷新执行记录失败")
     server = ThreadingHTTPServer(("127.0.0.1", port), WebHandler)
     url = f"http://127.0.0.1:{port}"
     console_print(f"🚀 Web 界面已启动: {url}")

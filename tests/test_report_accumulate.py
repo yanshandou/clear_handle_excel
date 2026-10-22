@@ -38,8 +38,7 @@ class ReportAccumulateTests(unittest.TestCase):
         self.assertEqual(state["files"]["a.xlsx"]["exported_pdfs"], 1)
         self.assertIn("b.xlsx", state["files"])
         self.assertEqual((state["completed_files"], state["total_files"]), (1, 1))  # 进度只算这一步的文件
-        self.assertIn("精简 Sheet（删除备份表） → 批量导出 PDF", state["markdown"])
-        self.assertIn("已作为备份表清理", (self.folder / "_执行记录报告.md").read_text(encoding="utf-8"))
+        self.assertIn("- ~~S1 (2)~~", (self.folder / "_执行记录报告.md").read_text(encoding="utf-8"))
 
         other = self.root / "other"
         other.mkdir()
@@ -58,6 +57,74 @@ class ReportAccumulateTests(unittest.TestCase):
             reporter.finish_execution_batch()
             self.assertGreaterEqual(save.call_count, 1)
             self.assertIsNone(reporter._write_timer)
+
+    def test_scan_after_clean_keeps_deleted_sheets(self):
+        a = self.folder / "sub" / "a.xlsx"
+        reporter.init_execution_batch("精简 Sheet（删除备份表）", self.folder, [a])
+        reporter.update_file_progress("sub/a.xlsx", status="done", all_sheets=["履歴", "設定", "設定20220518", "情報"],
+                                      deleted_backups=["設定20220518"])
+        reporter.finish_execution_batch()
+        # 切字扫描读到的工作表里已经没有删掉的表，也不知道前面删过什么
+        reporter.init_execution_batch("Web 切字扫描（增量）", self.folder, [a])
+        reporter.update_file_progress("sub/a.xlsx", all_sheets=["履歴", "設定", "情報"], deleted_backups=[])
+        entry = reporter.get_execution_report_snapshot()["files"]["sub/a.xlsx"]
+        self.assertEqual(entry["deleted_backups"], ["設定20220518"])
+        self.assertEqual(entry["all_sheets"], ["履歴", "設定", "設定20220518", "情報"])
+
+    def test_review_marked_name_updates_original_entry(self):
+        a = self.folder / "sub" / "画面 .xlsx"
+        reporter.init_execution_batch("Web 切字扫描（增量）", self.folder, [a])
+        reporter.update_file_progress("sub/画面 .xlsx", status="needs_fix", clip_detected=4, clip_unfixed=4)
+        reporter.finish_execution_batch()
+        marked = self.folder / "sub" / "🟡画面 .xlsx"
+        reporter.init_execution_batch("人工调整后导出复检（不自动加高）", self.folder, [marked], preserve_existing_files=True)
+        reporter.update_file_progress("🟡画面 .xlsx", status="done", clip_detected=4, clip_fixed=4, clip_unfixed=0)
+        reporter.finish_execution_batch()
+        state = reporter.get_execution_report_snapshot()
+        self.assertEqual(list(state["files"]), ["sub/画面 .xlsx"])
+        self.assertEqual(state["files"]["sub/画面 .xlsx"]["status"], "done")
+        self.assertEqual((state["completed_files"], state["total_files"]), (1, 1))
+        self.assertIn("✅ 已全部处理完成", state["markdown"])
+
+    def test_restore_merges_old_review_marked_duplicates(self):
+        reporter.EXECUTION_STATE.update(folder=str(self.folder), batch=["sub/a.xlsx", "🟡a.xlsx"], files={
+            "sub/a.xlsx": {"index": 1, "name": "sub/a.xlsx", "path": str(self.folder / "sub" / "a.xlsx"), "status": "pending"},
+            "🟡a.xlsx": {"index": 2, "name": "🟡a.xlsx", "path": "🟡a.xlsx", "status": "needs_fix"},
+            "🟡b.xlsx": {"index": 3, "name": "🟡b.xlsx", "path": "🟡b.xlsx", "status": "done"},
+        })
+        self.assertTrue(reporter._merge_review_duplicates_unlocked())
+        self.assertEqual(sorted(reporter.EXECUTION_STATE["files"]), ["b.xlsx", "sub/a.xlsx"])
+        self.assertEqual(reporter.EXECUTION_STATE["batch"], ["sub/a.xlsx"])
+
+    def test_fixes_listed_with_place_and_reason_only(self):
+        a = self.folder / "a.xlsx"
+        reporter.init_execution_batch("Web 切字扫描（增量）", self.folder, [a])
+        reporter.update_file_progress("a.xlsx", status="done", all_sheets=["基本情報"], clip_detected=3,
+                                      clip_fixed=2, clip_accepted=1, clip_unfixed=0, fixes={
+            "i2": {"sheet": "基本情報", "cell": "C12", "row": 12, "reason": "文字压线"},
+            "i1": {"sheet": "基本情報", "cell": "B5", "row": 5, "reason": "列宽不够，数字显示成 ###"},
+            "i3": None,
+        })
+        # 以后的扫描不再提到 i1（旧问题项不在工作台了），修复记录仍保留；i2 改回未修复则去掉
+        reporter.update_file_progress("a.xlsx", fixes={"i2": None})
+        reporter.update_file_progress("a.xlsx", fixes={"i2": {"sheet": "基本情報", "cell": "C12", "row": 12, "reason": "文字压线"}})
+        reporter.finish_execution_batch()
+        md = reporter.render_execution_markdown()
+        self.assertIn("**② 修复切字：2 处**", md)
+        self.assertLess(md.index("| 1 | 基本情報 | B5（第 5 行） | 列宽不够，数字显示成 ### |"),
+                        md.index("| 2 | 基本情報 | C12（第 12 行） | 文字压线 |"))
+        for word in ("人工", "自动", "跳过", "复检", "确认"):
+            self.assertNotIn(word, md)
+
+    def test_status_reflects_unfixed_problems(self):
+        a, b = self.folder / "a.xlsx", self.folder / "b.xlsx"
+        reporter.init_execution_batch("Web 切字扫描（增量）", self.folder, [a, b])
+        reporter.update_file_progress("a.xlsx", status="needs_fix", clip_detected=2, clip_unfixed=1)
+        reporter.update_file_progress("b.xlsx", status="done")
+        reporter.finish_execution_batch()
+        md = reporter.render_execution_markdown()
+        self.assertIn("⚠️ 还有 1 个文件没处理完", md)
+        self.assertIn("## 1. a.xlsx（还没处理完）", md)
 
 
 if __name__ == "__main__":
