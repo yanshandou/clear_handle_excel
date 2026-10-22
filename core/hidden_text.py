@@ -7,6 +7,7 @@
 2. 内容都在 PDF 里，但有字落在裁剪区域外：打印出来看不到（列宽 / 行高不够被裁掉）
 3. 数字显示成 ###：列宽不够
 4. PDF 里完全找不到：只要这格会被打印（不在隐藏行列、在打印区域内），也算没显示；
+   #REF! 等公式错误不检测（不是行高问题）；
    只有「-」「○」这类符号的格子除外（PDF 里常读不出来，几乎都是误报）
 
 对不上的一律报告（宁可多报不漏报）。
@@ -386,16 +387,33 @@ def find_hidden_cells(
     pending: list[dict[str, Any]] = []
     hash_cells: list[tuple[dict[str, Any], str]] = []
     displayed: dict[tuple[int, int], str | None] = {}
+
+    def shown_text(row: int, col: int) -> str | None:
+        # Range.Text 每格一次跨进程调用，大表上很慢：只在需要时读，读过的记住
+        if (row, col) not in displayed:
+            displayed[(row, col)] = display_text(row, col)
+        return displayed[(row, col)]
+
+    # 同样文字出现在多个格子时才可能互相抢 PDF 片段，这些格子要先读显示文字排除 ;;; 之类不显示的；
+    # 只出现一次的文字先直接匹配，对不上时再读（和以前一样），避免整张表逐格读 Range.Text
+    text_count: dict[str, int] = {}
+    for _, _, value in cells:
+        if isinstance(value, str):
+            key = normalize_text(value)
+            text_count[key] = text_count.get(key, 0) + 1
     for row, col, value in cells:
         if value is None or (isinstance(value, str) and not normalize_text(value)):
             continue
+        if is_excel_error(value):
+            continue  # #REF! 等公式错误不是行高问题；打印设置还可能把它印成空白，加高也修不好
         # 在占用任何 PDF 文字片段前过滤，避免隐藏格子抢走可见格子的同名文字。
         # None 表示读取失败：仍保留疑似问题，但自动修复会要求打印属性明确可读。
         if is_printed(row, col) is False:
             continue
-        shown = displayed[(row, col)] = display_text(row, col)
-        if shown is not None and not normalize_text(shown):
-            continue  # 如 ;;; 格式明确不显示文字
+        if not isinstance(value, str) or text_count[normalize_text(value)] > 1:
+            shown = shown_text(row, col)
+            if shown is not None and not normalize_text(shown):
+                continue  # 如 ;;; 格式明确不显示文字
         cell = {"row": row, "col": col, "value": value, "text": value}
         if not isinstance(value, str):
             # 数字、日期的显示文字取决于格式，必须读 Excel；猜的话「1」这类常见文字会被别处的「1」顶替
@@ -440,7 +458,7 @@ def find_hidden_cells(
     # 文字对不上的再读一次 Excel 实际显示的文字（如「"No."@」这类带格式的文字）
     unchanged, refetched = [], []
     for cell in left:
-        shown = displayed[(cell["row"], cell["col"])] if isinstance(cell["value"], str) else None
+        shown = shown_text(cell["row"], cell["col"]) if isinstance(cell["value"], str) else None
         shown_key = normalize_text(shown) if shown is not None else ""
         original_key = normalize_text(cell["text"])
         if shown is None or shown == cell["text"] or (shown_key and shown_key in original_key):
@@ -479,6 +497,16 @@ def find_hidden_cells(
             results.append(_result(cell, "".join(c for c, _, shown in chars if shown), REASON_CLIPPED, page, bbox))
     results.sort(key=lambda r: (r["row"], r["col"]))
     return results
+
+
+# Excel 公式错误（#NULL! #DIV/0! #VALUE! #REF! #NAME? #NUM! #N/A #SPILL! #CALC! 等）经 COM 读成整数，
+# 即 CVErr(2000～2050) = 0x800A07D0 起的 HRESULT，例如 #REF! = -2146826265
+_EXCEL_ERROR_MIN, _EXCEL_ERROR_MAX = -2146826288, -2146826288 + 63
+
+
+def is_excel_error(value: Any) -> bool:
+    return (isinstance(value, int) and not isinstance(value, bool)
+            and _EXCEL_ERROR_MIN <= value <= _EXCEL_ERROR_MAX)
 
 
 def _symbols_only(text: str) -> bool:

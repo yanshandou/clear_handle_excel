@@ -66,5 +66,14 @@ class PrintabilityTests(unittest.TestCase):
         validate_print_targets(self.sheet(), [{"cell_addr": "AC108"}])
 
 
+class CellProbeTextTests(unittest.TestCase):
+    def test_display_text_is_read_once_per_cell(self):
+        sheet = Mock()
+        sheet.Cells.return_value = SimpleNamespace(Text="#REF!")
+        probe = CellProbe(sheet)
+        self.assertEqual([probe.text(2, 3) for _ in range(3)], ["#REF!"] * 3)
+        self.assertEqual(sheet.Cells.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

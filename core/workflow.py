@@ -512,7 +512,7 @@ def _detect_sheet_results(
 
 
 # 检测规则变化时加一：之前按旧规则查过的文件即使没改过，下次扫描也要整份重新检查
-DETECTOR_VERSION = 10
+DETECTOR_VERSION = 11
 
 
 def _confirm_clip_cells(

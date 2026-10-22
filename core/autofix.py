@@ -759,14 +759,6 @@ def _preview(session: _ExcelSession, gid: str) -> None:
         raise ValueError("工作表已隐藏")
     validate_print_targets(sheet, items)
     cells = snapshot_cells(extract_sheet_snapshot(sheet))
-    probe = CellProbe(sheet)
-    texts: dict[tuple[int, int], str | None] = {}
-
-    def display_text(r: int, c: int) -> str | None:
-        if (r, c) not in texts:
-            texts[(r, c)] = probe.text(r, c)
-        return texts[(r, c)]
-
     base = round(float(sheet.Rows(row).RowHeight or 15.0), 1)
     with _LOCK:
         group["base_height"] = base
@@ -781,9 +773,9 @@ def _preview(session: _ExcelSession, gid: str) -> None:
                 if k and height == group["attempts"][-1]["height"]:
                     break
             sheet.Rows(row).RowHeight = height
-            texts.clear()  # 行高变化后 Range.Text 也可能变化，不能沿用上一张候选图的显示值
+            probe = CellProbe(sheet)  # 行高变化后 Range.Text 也可能变化，不能沿用上一张候选图的显示值
             _export_sheet_pdf(sheet, pdf_path)
-            ok, image, need = _evaluate(pdf_path, items, cells, display_text, probe.printed)
+            ok, image, need = _evaluate(pdf_path, items, cells, probe.text, probe.printed)
             with _LOCK:
                 group["attempts"].append(_attempt(height, ok, image))
             if not k and ok:

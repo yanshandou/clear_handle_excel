@@ -470,12 +470,16 @@ class CellProbe:
         self._areas: list[tuple[int, int, int, int]] | None = None
         self._areas_unknown = False
         self._heights: dict[int, float] = {}
+        self._texts: dict[tuple[int, int], str | None] = {}
 
     def text(self, row: int, col: int) -> str | None:
-        try:
-            return str(self.sheet.Cells(row, col).Text)
-        except Exception:
-            return None
+        """显示文字；同一格只跨进程读一次。行高、列宽改变后显示可能不同，要换新的 CellProbe"""
+        if (row, col) not in self._texts:
+            try:
+                self._texts[(row, col)] = str(self.sheet.Cells(row, col).Text)
+            except Exception:
+                self._texts[(row, col)] = None
+        return self._texts[(row, col)]
 
     def row_height(self, row: int) -> float:
         """行高（隐藏行为 0）；同一行只跨进程读一次"""
