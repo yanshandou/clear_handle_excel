@@ -118,6 +118,18 @@ code {
   display: flex;
   align-items: center;
   gap: 14px;
+  color: inherit;
+  text-decoration: none;
+  border-radius: 14px;
+  transition: opacity 0.15s ease;
+}
+
+.header-brand:hover {
+  opacity: 0.85;
+}
+
+.header-brand:hover .header-logo-badge {
+  border-color: rgba(191, 219, 254, 0.8);
 }
 
 .header-logo-badge {
