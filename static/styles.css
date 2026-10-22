@@ -1684,6 +1684,18 @@ input[type="text"] {
   background: #fff;
 }
 
+.fix-tile-missing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 64px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
 .fix-tile-caption {
   font-size: 12.5px;
 }
