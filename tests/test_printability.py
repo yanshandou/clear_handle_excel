@@ -46,6 +46,27 @@ class PrintabilityTests(unittest.TestCase):
         self.assertIsNone(probe.printed(5, 2))
         self.assertIsNone(probe.printed(6, 2))
 
+    def test_r1c1_print_area_is_converted_instead_of_unknown(self):
+        sheet = self.sheet()
+        sheet.PageSetup.PrintArea = "R2C2:R10C4"
+        areas = SimpleNamespace(Areas=[SimpleNamespace(Row=2, Column=2,
+            Rows=SimpleNamespace(Count=9), Columns=SimpleNamespace(Count=3))])
+        sheet.Range.side_effect = lambda ref: areas if ref == "$B$2:$D$10" else (_ for _ in ()).throw(RuntimeError(ref))
+        sheet.Application.ConvertFormula.return_value = "=$B$2:$D$10"
+        probe = CellProbe(sheet)
+        self.assertIs(probe.printed(5, 2), True)
+        self.assertIs(probe.printed(5, 1), False)
+
+    def test_merged_cell_with_hidden_anchor_column_still_prints(self):
+        sheet = self.sheet()
+        sheet.Columns.side_effect = lambda col: SimpleNamespace(Hidden=col == 2, ColumnWidth=10)
+        sheet.Cells.return_value.MergeArea = SimpleNamespace(Row=5, Column=2,
+            Rows=SimpleNamespace(Count=1), Columns=SimpleNamespace(Count=3))
+        self.assertIs(CellProbe(sheet).printed(5, 2), True)
+        sheet.Cells.return_value.MergeArea = SimpleNamespace(Row=5, Column=2,
+            Rows=SimpleNamespace(Count=1), Columns=SimpleNamespace(Count=1))
+        self.assertIs(CellProbe(sheet).printed(5, 2), False)
+
     def test_explicit_hidden_row_is_excluded_even_when_column_cannot_be_read(self):
         sheet = self.sheet()
         sheet.Rows.return_value.Hidden = True

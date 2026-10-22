@@ -24,6 +24,7 @@ from core.reporter import finish_execution_batch, init_execution_batch, update_f
 COLORS = ("blue", "green", "yellow")
 KIND_LABELS = {"hidden": "隐藏截断", "clip": "压线"}
 CLIP_REASON = "文字被边框横线切穿，打印出来被切掉一部分（行高不够）"
+WAITING_MESSAGE = "等待自动处理"
 
 
 def _data() -> dict[str, Any]:
@@ -97,7 +98,14 @@ def _latest_shot(card: dict, items: list[dict]) -> str:
 
 
 def _save_shot(card: dict, which: str, image: str) -> None:
-    fix_images.save(card, which, image, key=f"batch:{card['id']}")
+    # 卡片 id 按单元格固定：同一格以后再出问题会新建同 id 的卡，带上代次才不会覆盖旧修复留在报告里的截图
+    gen = card.get("gen")
+    fix_images.save(card, which, image, key=f"batch:{card['id']}" + (f":{gen}" if gen else ""))
+
+
+def _waiting(card: dict) -> bool:
+    """还没轮到自动处理的卡（旧数据没有 waiting 字段，按说明文字判断）"""
+    return bool(card.get("waiting", card.get("message") == WAITING_MESSAGE))
 
 
 def _items_at(card: dict) -> list[dict]:
@@ -146,8 +154,8 @@ def _card_for(items: list[dict]) -> dict:
             "sheet_name": first["sheet_name"], "cell_addr": first.get("cell_addr", ""),
             "excel_row": int(first["excel_row"]), "seq": first["seq"],
             "text": first["text"], "color": "yellow", "dismissed": False,
-            "finalized": False, "verified": False, "manual": False, "message": "等待自动处理",
-            "signatures": signatures,
+            "finalized": False, "verified": False, "manual": False, "message": WAITING_MESSAGE,
+            "waiting": True, "gen": uuid4().hex[:8], "signatures": signatures,
         }
         _save_shot(card, "before", first.get("image", ""))
     card["item_ids"] = [it["id"] for it in items]
@@ -200,7 +208,7 @@ def mark(cid: str, color: str) -> None:
         if color == "blue" and not card.get("verified"):
             raise ValueError("此处尚未通过检查，请修改 Excel 后复检，或标为绿色忽略")
         previous = copy.deepcopy(card)
-        card.update(color=color, finalized=False, marked=True)
+        card.update(color=color, finalized=False, marked=True, waiting=False)
         try:
             wf._persist_state()
         except Exception:
@@ -227,7 +235,7 @@ def mark_many(ids: Any, color: str) -> dict:
         changed = [c for c in targets if c not in skipped]
         previous = [copy.deepcopy(c) for c in changed]
         for card in changed:
-            card.update(color=color, finalized=False, marked=True)
+            card.update(color=color, finalized=False, marked=True, waiting=False)
         try:
             wf._persist_state()
         except Exception:
@@ -318,7 +326,7 @@ def abandon_pending() -> None:
             card = data["cards"].get(cid)
             if card is None:
                 continue
-            card.update(color="yellow", verified=False, manual=True, finalized=True, dismissed=False,
+            card.update(color="yellow", verified=False, manual=True, finalized=True, dismissed=False, waiting=False,
                         message="已放弃未完成的自动写入，请在 Excel 中核对这一行的行高，保存后复检")
             for item in _items_at(card):
                 item.update(status="manual_review", batch_managed=True, triage_keep=False,
@@ -374,12 +382,15 @@ def _refresh(excel: Any, path: str, sheets: list[str] | None = None) -> None:
             if unresolved:
                 card = _card_for(group)
                 if card.get("color") == "blue" or card.get("verified"):
-                    # 后面的行加高、还原改变了分页，之前通过的格子又出问题：不能再当作已修好
-                    card.update(color="yellow", verified=False, message="最新导出仍有问题，需重新处理")
+                    # 后面的行加高、还原改变了分页，之前通过的格子又出问题：不能再当作已修好。
+                    # 用户手动标的绿/黄保留；蓝色要求通过检查，只能改黄
+                    keep = card.get("marked") and card.get("color") != "blue"
+                    card.update(color=card["color"] if keep else "yellow", verified=False,
+                                message="最新导出仍有问题" + ("，已保留你的标记" if keep else "，需重新处理"))
             elif existing and not existing.get("dismissed") and not existing.get("manual") and not existing.get("marked"):
                 row = _row_record(existing)
                 if row and row["saved"] and abs(row["applied"] - row["base"]) >= .05:
-                    existing.update(color="blue", verified=True, after_kind="fixed",
+                    existing.update(color="blue", verified=True, after_kind="fixed", waiting=False,
                                     message="已加高并保存，最新导出已通过检查，等待审核")
                     after = next(((it.get("fix_images") or {}).get("after") for it in group
                                   if (it.get("fix_images") or {}).get("after")), None)
@@ -389,7 +400,7 @@ def _refresh(excel: Any, path: str, sheets: list[str] | None = None) -> None:
                     # 这一行没写过：之前留下的「修改后」可能是试算第一张（和修改前一模一样），必须换成最新导出的图
                     fix_images.forget(existing, "after")
                     _save_shot(existing, "after", _latest_shot(existing, group))
-                    existing.update(color="blue", verified=True, after_kind="rechecked",
+                    existing.update(color="blue", verified=True, after_kind="rechecked", waiting=False,
                                     message="本行行高未修改：其他行调整后重新导出，这一格已完整显示，等待审核")
         wf._persist_state()
 
@@ -448,6 +459,10 @@ def _prepare_row(
     return base, chosen, before
 
 
+class _RowDone(Exception):
+    """这一行没有需要自动加高的格子了（如只有 ### 列宽问题），直接算处理过"""
+
+
 def _restart_excel(session: Any) -> Any:
     """后台 Excel 可能已经崩溃或卡住：关掉整个会话（含副本），重新开一个"""
     session.close()
@@ -477,7 +492,7 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                 for group in _group_cells(pending):
                     card = _card_for(group)
                     if not card.get("dismissed") and not card.get("marked") and not card.get("manual"):
-                        card.update(color="yellow", verified=False, message="当前导出仍有问题，需人工处理")
+                        card.update(color="yellow", verified=False, waiting=False, message="当前导出仍有问题，需人工处理")
                 wf._persist_state()
                 return
             first = min(candidates, key=lambda it: (it["sheet_name"], int(it["excel_row"]), it["seq"]))
@@ -503,6 +518,22 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                 wf._persist_state()
 
         try:
+            column_only = [it for it in items if autofix.column_width_only(it)]
+            if column_only:
+                # ### 交给人工改列宽；同行其他格子照常自动加高
+                with wf.STATE_LOCK:
+                    for group in _group_cells(column_only):
+                        card = _card_for(group)
+                        card.update(color="yellow", verified=False, manual=True, waiting=False,
+                                    message=autofix.COLUMN_ONLY_REASON)
+                    wf.log_msg(f"⚠️ {first['wb_name']} / {first['sheet_name']} 行{first['excel_row']}："
+                               f"{autofix.COLUMN_ONLY_REASON}")
+                    done = {_cell(it) for it in column_only}
+                    items = [it for it in items if _cell(it) not in done]
+                    cards = [c for c in cards if _cell(c) not in done]
+                    wf._persist_state()
+            if not items:
+                raise _RowDone
             reason = autofix.review_only_reason(items)
             if reason:
                 for card in cards:
@@ -539,6 +570,8 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                 wf._persist_state()
             if not unchanged:
                 _finish_pending(excel)
+        except _RowDone:
+            pass
         except Exception as err:
             # 有写入日志时不能吞掉异常：可能原文件已经保存，必须按日志续跑。
             if job.get("pending_adjustment"):
@@ -557,11 +590,13 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                     continue
             with wf.STATE_LOCK:
                 for card in cards:
-                    card.update(color="yellow", verified=False, manual=True, message=str(err))
+                    card.update(color="yellow", verified=False, manual=True, waiting=False, message=str(err))
                 wf.log_msg(f"⚠️ {first['wb_name']} / {first['sheet_name']} 行{first['excel_row']}：{err}")
         with wf.STATE_LOCK:
             if rid not in attempted:
                 attempted.append(rid)
+            for card in cards:
+                card["waiting"] = False
             wf._persist_state()
         session.drop_copy(path)
         # 包括成功写入后原来没被检出的新问题，始终以最新整表 PDF 为准。
@@ -572,10 +607,12 @@ def _commit_review(excel: Any) -> None:
     job = wf.STATE["job"]
     data = _data()
     if "commit_card_ids" not in job["options"]:
-        cards = [data["cards"][cid] for cid in job["options"]["card_ids"]]
+        # 还没轮到自动处理的卡不提交：提交会把它们转成人工项，之后再跑全自动也不会修了
+        cards = [data["cards"][cid] for cid in job["options"]["card_ids"] if not _waiting(data["cards"][cid])]
         selected_rows = {_key(c["wb_path"], c["sheet_name"], c["excel_row"]) for c in cards}
         job["options"]["commit_card_ids"] = [c["id"] for c in data["cards"].values()
-            if not c.get("dismissed") and _key(c["wb_path"], c["sheet_name"], c["excel_row"]) in selected_rows]
+            if not c.get("dismissed") and not _waiting(c)
+            and _key(c["wb_path"], c["sheet_name"], c["excel_row"]) in selected_rows]
     # 提交计划固定下来；即使保存还原后、复检前退出，已收起的绿/蓝卡也仍会完成该文件的复检。
     job["options"]["card_ids"] = list(job["options"]["commit_card_ids"])
     cards = [data["cards"][cid] for cid in job["options"]["commit_card_ids"]]
@@ -639,7 +676,7 @@ def _commit_review(excel: Any) -> None:
                 for group in _group_cells(unresolved):
                     card = _card_for(group)
                     if card["color"] == "blue" or not card.get("finalized"):
-                        card.update(color="yellow", verified=False, dismissed=False, manual=True,
+                        card.update(color="yellow", verified=False, dismissed=False, manual=True, waiting=False,
                                     finalized=False, message="还原后重新检测仍有问题，请提交黄色标记后人工处理")
                 wf._persist_state()
         with wf.STATE_LOCK:
@@ -666,18 +703,23 @@ def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:
             card.update(color="yellow" if still or uncertain else "blue", verified=not (still or uncertain),
                         finalized=False, message="复检仍有问题" if still or uncertain else "人工修改复检通过，等待确认")
             if not still and not uncertain:
+                # 用刚导出的 PDF 按文字重新截图；旧坐标在人工修改、重新分页后可能指到别处，截不到就不放图
                 prior = _items_at(card)
-                after = next(((it.get("fix_images") or {}).get("after") for it in prior
-                              if (it.get("fix_images") or {}).get("after")), None)
-                if after:
-                    card.setdefault("fix_images", {})["after"] = after
-                else:
-                    fix_images.forget(card, "after")
+                sources = [p for p in wf.STATE["pages"].values()
+                           if p.get("wb_path") == path and p.get("sheet_name") == card["sheet_name"]] + prior
+                fix_images.forget(card, "after")
+                _save_shot(card, "after", _latest_shot(card, sources))
+                after = card.get("fix_images", {}).get("after")
+                for item in prior:  # 报告里的修复后截图也用这一张
+                    if after:
+                        item.setdefault("fix_images", {})["after"] = after
+                    else:
+                        fix_images.forget(item, "after")
                 card["after_kind"] = "fixed"
         for group in _group_cells(unresolved):
             card = _card_for(group)
             if not card.get("dismissed"):
-                card.update(color="yellow", verified=False, manual=True, finalized=False,
+                card.update(color="yellow", verified=False, manual=True, finalized=False, waiting=False,
                             message="复检仍有问题或发现新问题，请人工处理")
         wf._persist_state()
         wf._sync_problem_counts(path, "人工复检完成")

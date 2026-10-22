@@ -54,7 +54,7 @@ class BatchTests(unittest.TestCase):
         item.update(page_index=0, bbox=[10, 10, 100, 25])
         self.wf.STATE["items"][iid] = item
         card = batch._card_for([item])
-        card.update(color=color, verified=True)
+        card.update(color=color, verified=True, waiting=False)
         rid = batch._key(self.path, "S1", row)
         batch._data()["rows"][rid] = {"id": rid, "path": self.path, "sheet": "S1", "row": row,
                                        "base": 15.0, "applied": self.heights[row], "saved": True}
@@ -63,6 +63,104 @@ class BatchTests(unittest.TestCase):
     def commit(self, cards):
         self.wf.STATE["job"].update(kind="batch_commit", options={"card_ids": [c["id"] for c in cards]})
         batch._commit_review(self.excel)
+
+    def test_commit_skips_cards_not_yet_processed(self):
+        """暂停后提交：还没轮到的卡不能被转成人工项，否则以后全自动不会再修它们"""
+        done, _ = self.add_card("A5", color="blue")
+        _, waiting_item = self.add_card("A6", row=6)
+        batch._data()["rows"].pop(batch._key(self.path, "S1", 6))
+        waiting_item["status"] = "pending"
+        waiting = batch._data()["cards"][batch._key(self.path, "S1", "A6")]
+        waiting.update(color="yellow", verified=False, waiting=True, message=batch.WAITING_MESSAGE)
+        self.commit([done, waiting])
+        self.assertTrue(done["dismissed"])
+        self.assertEqual((waiting["color"], waiting["finalized"], waiting["manual"]), ("yellow", False, False))
+        self.assertEqual(waiting_item["status"], "pending")
+        self.wf.STATE["job"].update(kind="batch_scan", attempted_rows=[])
+        prepared = []
+        def prepare(_session, _path, items, **_):
+            prepared.append(items[0]["cell_addr"])
+            return 27, None, {}
+        with patch.object(batch, "_prepare_row", side_effect=prepare):
+            batch._repair_file(self.excel, Mock(), self.path)
+        self.assertEqual(prepared, ["A6"])
+        self.assertFalse(waiting["waiting"])
+
+    def test_old_waiting_cards_without_flag_are_recognised(self):
+        card, _ = self.add_card()
+        card.pop("waiting")
+        card["message"] = batch.WAITING_MESSAGE
+        self.assertTrue(batch._waiting(card))
+
+    def test_paused_scan_survives_review_jobs(self):
+        scan = {"kind": "batch_scan", "options": {"folder": str(self.root)}, "completed": ["x"],
+                "pending_adjustment": None, "status": "interrupted", "pause_requested": True}
+        self.wf.STATE.update(busy=False, job=scan)
+        card, _ = self.add_card(color="blue")
+        self.assertTrue(self.wf.queue_job("batch_commit", {"card_ids": [card["id"]]}))
+        self.assertEqual(self.wf.STATE["job"]["paused_scan"]["completed"], ["x"])
+        with patch.object(batch, "run", side_effect=lambda: []):
+            self.wf.run_pending_workflow()
+        job = self.wf.STATE["job"]
+        self.assertEqual((job["kind"], job["status"], job["completed"]), ("batch_scan", "interrupted", ["x"]))
+        self.assertTrue(self.wf.queue_job("resume"))
+        self.assertNotIn("pause_requested", self.wf.STATE["job"])
+
+    def test_column_width_problem_goes_manual_without_trial_exports(self):
+        from core import autofix
+        from core.hidden_text import REASON_HASH
+        hashed, hash_item = self.add_card("A5")
+        other, other_item = self.add_card("B5")
+        batch._data()["rows"].clear()
+        hash_item.update(status="pending", hidden_reason=REASON_HASH)
+        other_item["status"] = "pending"
+        prepared = []
+        def prepare(_session, _path, items, **_):
+            prepared.append([it["cell_addr"] for it in items])
+            return 15, None, {}
+        with patch.object(batch, "_prepare_row", side_effect=prepare):
+            batch._repair_file(self.excel, Mock(), self.path)
+        self.assertEqual(prepared, [["B5"]])  # 同行其他格照常试
+        self.assertEqual((hashed["color"], hashed["manual"]), ("yellow", True))
+        self.assertEqual(hashed["message"], autofix.COLUMN_ONLY_REASON)
+
+    def test_only_column_width_problem_in_row_skips_copy(self):
+        from core.hidden_text import REASON_HASH
+        card, item = self.add_card("A5")
+        batch._data()["rows"].clear()
+        item.update(status="pending", hidden_reason=REASON_HASH)
+        session = Mock()
+        with patch.object(batch, "_prepare_row") as prepare:
+            batch._repair_file(self.excel, session, self.path)
+        prepare.assert_not_called()
+        session.copy_of.assert_not_called()
+        self.assertTrue(card["manual"])
+
+    def test_refresh_keeps_users_green_mark_when_cell_breaks_again(self):
+        card, item = self.add_card()
+        batch.mark(card["id"], "green")
+        item["status"] = "pending"
+        with patch.object(self.wf, "_scan_one_workbook"):
+            self.real_refresh(self.excel, self.path, ["S1"])
+        self.assertEqual((card["color"], card["verified"]), ("green", False))
+        self.assertIn("保留你的标记", card["message"])
+
+    def test_recreated_card_does_not_overwrite_earlier_fix_images(self):
+        card, item = self.add_card()
+        batch._save_shot(card, "before", "data:image/png;base64,b2xk")
+        item["fix_images"] = dict(card["fix_images"])
+        card["dismissed"] = True
+        again = batch._card_for([{**item, "id": "new", "image": "data:image/png;base64,bmV3"}])
+        self.assertIsNot(again, card)
+        self.assertNotEqual(again["fix_images"]["before"], item["fix_images"]["before"])
+        self.assertEqual(fix_images.image_path(item["fix_images"]["before"]).read_bytes(), b"old")
+
+    def test_report_reason_does_not_mention_manual_process(self):
+        from core.hidden_text import REASON_MISSING
+        reason = self.wf._fix_record({"kind": "hidden", "hidden_reason": REASON_MISSING, "sheet_name": "S1",
+                                      "cell_addr": "A5", "excel_row": 5})["reason"]
+        for word in ("人工", "核对", "复检", "PDF"):
+            self.assertNotIn(word, reason)
 
     def test_mark_only_persists_color_and_never_opens_excel(self):
         card, _ = self.add_card()
@@ -496,12 +594,26 @@ class BatchTests(unittest.TestCase):
         card, item = self.add_card(color="yellow")
         card.update(manual=True, after_kind="attempt")
         batch._save_shot(card, "after", "data:image/png;base64,dHJpYWw=")
-        actual = {"id": "actual", "wb_path": self.path}
-        fix_images.save(actual, "after", "data:image/png;base64,YWN0dWFs")
-        item.update(status="fixed", fix_images=actual["fix_images"])
-        batch._recheck_file(self.excel, self.path, [card])
+        item.update(status="fixed")
+        with patch.object(batch, "_latest_shot", return_value="data:image/png;base64,YWN0dWFs"):
+            batch._recheck_file(self.excel, self.path, [card])
         self.assertEqual((card["color"], card["after_kind"]), ("blue", "fixed"))
         self.assertEqual(fix_images.image_path(card["fix_images"]["after"]).read_bytes(), b"actual")
+        self.assertEqual(item["fix_images"]["after"], card["fix_images"]["after"])  # 报告用同一张
+
+    def test_manual_recheck_does_not_reuse_crop_from_old_coordinates(self):
+        """复检通过时按旧坐标裁的图可能是别处：最新 PDF 找不到这格文字就不放图"""
+        card, item = self.add_card(color="yellow")
+        card.update(manual=True, after_kind="attempt")
+        batch._save_shot(card, "after", "data:image/png;base64,dHJpYWw=")
+        stale = {"id": "stale", "wb_path": self.path}
+        fix_images.save(stale, "after", "data:image/png;base64,c3RhbGU=")
+        item.update(status="fixed", fix_images=stale["fix_images"])
+        with patch.object(batch, "_latest_shot", return_value=""):
+            batch._recheck_file(self.excel, self.path, [card])
+        self.assertEqual(card["color"], "blue")
+        self.assertNotIn("after", card["fix_images"])
+        self.assertNotIn("after", item["fix_images"])
 
     def test_abandon_unblocks_tool_after_user_changed_height(self):
         card, item = self.add_card(color="yellow")
