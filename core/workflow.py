@@ -1414,6 +1414,13 @@ def validate_clean_plan(plan: Any) -> dict[str, dict[str, list[str]]]:
     return normalized
 
 
+def validate_clean_files(files: Any) -> list[str]:
+    """校验「只处理这些文件」的列表（预览窗口只处理当前文件；主页面跳过已在预览窗口处理过的文件）"""
+    if not isinstance(files, list) or not files or any(not isinstance(f, str) or not f for f in files):
+        raise ValueError("要处理的文件列表格式无效")
+    return list(dict.fromkeys(files))
+
+
 def _resolve_clean_targets(
     all_names: list[str], file_plan: dict[str, list[str]] | None
 ) -> tuple[list[str], list[str], list[tuple[str, str]], bool]:
@@ -1704,6 +1711,10 @@ def quick_task_workflow(kind: str) -> None:
         workbooks = [Path(path) for path in job["workbooks"]]
     else:
         folder, workbooks = list_workbooks(options["folder"])
+        only_files = options.get("files")
+        if kind == "clean_sheets" and isinstance(only_files, list):
+            wanted = set(only_files)
+            workbooks = [wb for wb in workbooks if workbook_rel_name(wb, folder) in wanted]
         with STATE_LOCK:
             STATE["logs"].clear()
             options["folder"] = str(folder)

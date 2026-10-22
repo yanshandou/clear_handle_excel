@@ -482,6 +482,29 @@ class QuickTaskTests(unittest.TestCase):
         self.assertEqual(files["spec.xlsx"]["uncertain_sheets"], ["❓Main_20250101"])
         self.assertEqual(files["spec.xlsx"]["renamed_to"], "❓spec.xlsx")
 
+    def test_clean_sheets_only_listed_files_leaves_other_files_untouched(self):
+        # 预览窗口只处理当前文件：其他文件即使带 ❓ 也不会被恢复原名
+        self.add_book("spec.xlsx", ["Main", "Main_20250101"])
+        self.add_book("❓other.xlsx", ["Sheet1", "❓Draft"])
+
+        plan = {"spec.xlsx": {"delete": ["Main_20250101"], "uncertain": []}}
+        self.assertTrue(self.workflow.queue_job(
+            "clean_sheets", {"folder": str(self.folder), "plan": plan, "files": ["spec.xlsx"]},
+        ))
+        self.workflow.run_pending_workflow()
+
+        self.assertEqual(self.workflow.STATE["job"]["status"], "completed")
+        self.assertEqual(self.books["spec.xlsx"].saved, [["Main"]])
+        self.assertTrue((self.folder / "❓other.xlsx").exists())
+        self.assertEqual(self.books["❓other.xlsx"].saved, [])
+        self.assertEqual(sorted(self.report_files()), ["spec.xlsx"])
+
+    def test_validate_clean_files_rejects_invalid_lists(self):
+        self.assertEqual(self.workflow.validate_clean_files(["a.xlsx", "a.xlsx", "b.xlsx"]), ["a.xlsx", "b.xlsx"])
+        for bad in ([], "a.xlsx", [""], [1]):
+            with self.assertRaises(ValueError):
+                self.workflow.validate_clean_files(bad)
+
     def test_recursive_subfolders_scan_clean_and_export_pdf_in_place(self):
         # 不同子文件夹下存在同名 Excel 文件，递归扫描、精简与同目录导出 PDF 互不冲突
         self.add_book("01_画面/spec.xlsx", ["Main", "Main_20250101"])

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Excel 整理工具箱 - Sheet 预览确认</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-brand">
+      <div class="header-logo-badge" aria-hidden="true">🖼️</div>
+      <div class="header-title">
+        <h1 id="pvFileName">Sheet 预览确认</h1>
+        <span class="subtitle" id="pvFolder">单击预览图在「保留 / 删除 / 待定」之间切换，与精简 Sheet 页面同步</span>
+      </div>
+    </div>
+    <div class="header-nav">
+      <a href="/clean" class="nav-link" target="_blank">🧹 精简 Sheet</a>
+      <span id="statusText" class="status-pill">✅ 就绪</span>
+    </div>
+  </header>
+
+  <main class="container clean-container">
+    <section class="clean-legend pv-toolbar">
+      <div class="preview-legend">
+        <span class="preview-sheet-tag is-keep">保留</span>
+        <span>→</span>
+        <span class="preview-sheet-tag is-delete">删除</span>
+        <span>→</span>
+        <span class="preview-sheet-tag is-uncertain">待定</span>
+        <span class="preview-legend-sep">｜</span>
+        <span>单击预览图循环切换；预览图就是导出 PDF 的第 1 页（裁掉四周空白），点 🔍 PDF 查看完整 PDF</span>
+      </div>
+      <div class="pv-size-switch" role="group" aria-label="预览图大小">
+        <button type="button" class="btn btn-outline btn-sm" data-size="s" onclick="setCardSize('s')">小</button>
+        <button type="button" class="btn btn-outline btn-sm" data-size="m" onclick="setCardSize('m')">中</button>
+        <button type="button" class="btn btn-outline btn-sm" data-size="l" onclick="setCardSize('l')">大</button>
+      </div>
+    </section>
+
+    <section id="pvMessage" class="clean-placeholder is-scanning" aria-live="polite">
+      <span class="clean-spinner" aria-hidden="true"></span>
+      <span id="pvMessageText">正在读取工作表…</span>
+    </section>
+
+    <section id="pvGrid" class="pv-grid pv-size-m hidden"></section>
+
+    <section id="pvActionBar" class="panel clean-actionbar hidden">
+      <div class="clean-actionbar-main">
+        <div id="pvSummary" class="preview-summary"></div>
+        <div class="clean-actionbar-buttons">
+          <span id="pvHint" class="task-hint"></span>
+          <button type="button" class="btn btn-outline btn-sm preview-reset-btn" id="pvResetBtn" onclick="resetStates()" title="恢复为系统自动识别的初始标记状态">
+            ↺ 恢复默认
+          </button>
+          <button type="button" class="btn btn-primary" id="pvExecBtn" onclick="executeFile()">🧹 确认执行</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/clean_preview.js"></script>
+</body>
+</html>

@@ -2826,3 +2826,193 @@ button.preview-sheet-tag:active {
     font-size: 50px;
   }
 }
+
+/* ==========================================
+   Sheet 预览确认窗口（/clean/preview）
+   卡片尺寸固定：预览图加载前后、切换状态时都不改变布局
+   ========================================== */
+.pv-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  flex-wrap: wrap;
+}
+
+.pv-toolbar .preview-legend {
+  margin-top: 0;
+}
+
+.pv-size-switch {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.pv-size-switch .btn.is-active {
+  background: #e0ecff;
+  border-color: rgba(59, 130, 246, 0.55);
+  color: #1e3a8a;
+}
+
+.pv-grid {
+  --pv-card-width: 260px;
+  --pv-thumb-height: 330px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--pv-card-width)), 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.pv-grid.pv-size-s {
+  --pv-card-width: 190px;
+  --pv-thumb-height: 240px;
+}
+
+.pv-grid.pv-size-l {
+  --pv-card-width: 380px;
+  --pv-thumb-height: 490px;
+}
+
+.pv-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 12px;
+  border: 3px solid transparent;
+  background: rgba(255, 255, 255, 0.85);
+  font-family: inherit;
+  text-align: left;
+  color: var(--text-main);
+  cursor: pointer;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.pv-card.is-keep {
+  border-color: #3b82f6;
+}
+
+.pv-card.is-delete {
+  border-color: #ef4444;
+}
+
+.pv-card.is-delete .pv-thumb img {
+  opacity: 0.55;
+}
+
+.pv-card.is-uncertain {
+  border-color: #f59e0b;
+}
+
+.pv-card:hover {
+  box-shadow: 0 4px 14px rgba(15, 29, 70, 0.14);
+}
+
+.pv-grid.is-locked .pv-card {
+  cursor: default;
+}
+
+.pv-thumb {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  height: var(--pv-thumb-height);
+  overflow: hidden;
+  border-radius: 6px;
+  background: #fff;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+}
+
+.pv-thumb img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+}
+
+.pv-thumb-note {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.pv-zoom {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.pv-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pv-card-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.pv-card-meta {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.pv-card-similar {
+  min-height: 1.5em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  color: #6d28d9;
+}
+
+.pv-card-similar.is-identical {
+  color: #b91c1c;
+}
+
+.clean-placeholder.is-error {
+  color: #b91c1c;
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.preview-file-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.preview-open-btn {
+  padding: 2px 8px;
+  font-size: 11.5px;
+}
+
+.preview-counts.is-processed {
+  color: #166534;
+}
+
+.preview-sheet-tag.is-processed {
+  opacity: 0.6;
+}

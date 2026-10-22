@@ -8,6 +8,7 @@ let pending = null; // scan | start：请求已发出、后台尚未确认完成
 let pendingSince = 0;
 let previewData = null;
 let sheetDecisions = {}; // { [fileName]: { [sheetName]: 'keep' | 'delete' | 'uncertain' } }
+let processedFiles = new Set(); // 已在预览窗口单独执行过的文件：卡片原地锁定，执行时跳过，重新扫描后才更新
 let pollSeq = 0;
 let minAcceptedSeq = 0; // 发起操作前已在途的轮询结果可能过期，直接丢弃
 
@@ -312,6 +313,7 @@ function renderSheetLabelHtml(displayName, highlight) {
 
 function initSheetDecisions() {
   sheetDecisions = {};
+  processedFiles = new Set();
   if (!previewData || !Array.isArray(previewData.files)) return;
   previewData.files.forEach(file => {
     const delSet = new Set(file.backups || []);
@@ -344,14 +346,60 @@ function cycleSheetState(fileIndex, sheetIndex) {
   const current = getSheetState(file.name, sheetName);
   sheetDecisions[file.name] = sheetDecisions[file.name] || {};
   sheetDecisions[file.name][sheetName] = NEXT_SHEET_STATE[current] || 'keep';
+  broadcastStates(file.name);
   renderPreview();
   renderPage();
 }
 
 function resetSheetDecisions() {
+  const processed = processedFiles;
   initSheetDecisions();
+  processedFiles = processed;
+  syncChannel?.postMessage({ type: 'rescanned', folder: previewData?.folder });
   renderPreview();
   renderPage();
+}
+
+/* ==========================================
+   与 Sheet 预览确认窗口同步（同一浏览器内的其他标签页）
+   ========================================== */
+const syncChannel = 'BroadcastChannel' in window ? new BroadcastChannel('clear_handle_excel.clean') : null;
+
+function broadcastStates(fileName) {
+  if (!syncChannel || !previewData) return;
+  syncChannel.postMessage({
+    type: 'states', folder: previewData.folder, file: fileName, states: sheetDecisions[fileName] || {},
+  });
+}
+
+function openSheetPreview(fileIndex) {
+  const file = previewData?.files?.[fileIndex];
+  if (!file) return;
+  const query = new URLSearchParams({ folder: previewData.folder, file: file.name });
+  window.open(`/clean/preview?${query}`, '_blank');
+}
+
+if (syncChannel) {
+  syncChannel.onmessage = event => {
+    const msg = event.data || {};
+    if (phase !== 'preview' || !previewData || msg.folder !== previewData.folder) return;
+    const file = previewData.files.find(f => f.name === msg.file);
+    if (!file || processedFiles.has(file.name)) return;
+    if (msg.type === 'hello') {
+      broadcastStates(file.name);
+    } else if (msg.type === 'states' && msg.states) {
+      const map = sheetDecisions[file.name] = sheetDecisions[file.name] || {};
+      file.sheets.forEach(name => {
+        if (['keep', 'delete', 'uncertain'].includes(msg.states[name])) map[name] = msg.states[name];
+      });
+      renderPreview();
+      renderPage();
+    } else if (msg.type === 'done') {
+      processedFiles.add(file.name);
+      renderPreview();
+      renderPage();
+    }
+  };
 }
 
 function summarizeDecisions() {
@@ -365,6 +413,7 @@ function summarizeDecisions() {
   };
   if (!previewData || !Array.isArray(previewData.files)) return summary;
   previewData.files.forEach(file => {
+    if (processedFiles.has(file.name)) return;
     let fileDel = 0;
     let fileUnc = 0;
     (file.sheets || []).forEach(name => {
@@ -391,6 +440,7 @@ function buildCleanPlan() {
   const plan = {};
   if (!previewData || !Array.isArray(previewData.files)) return plan;
   previewData.files.forEach(file => {
+    if (processedFiles.has(file.name)) return;
     const del = [];
     const unc = [];
     (file.sheets || []).forEach(name => {
@@ -470,7 +520,7 @@ function renderPage() {
     renderSummary(stats);
     const hasAction = stats.deletedTotal > 0 || stats.uncertainTotal > 0 || stats.unmarkedCount > 0;
     const hasError = stats.emptyFiles.length > 0;
-    execBtn.disabled = working || !hasAction || hasError || isBusyOther();
+    execBtn.disabled = working || !hasAction || hasError || isBusyOther() || isCleanRunning();
     if (pending === 'start') {
       execBtn.textContent = `⏳ 整理中…${elapsedText()}`;
     } else if (hasError) {
@@ -489,6 +539,8 @@ function renderPage() {
     }
     if (isBusyOther()) {
       hint.textContent = `后台正在执行「${overview.progress.task_name}」，完成后才能开始`;
+    } else if (isCleanRunning()) {
+      hint.textContent = '预览窗口正在处理文件，完成后才能开始';
     }
   }
   if (phase === 'running' || phase === 'done') renderRunBox();
@@ -514,7 +566,8 @@ function previewFileItem(file, fileIndex, extraClass = '') {
     else if (st === 'uncertain') uncCount += 1;
   });
   const kept = file.sheets.length - delCount - uncCount;
-  const allDeleted = file.sheets.length > 0 && delCount >= file.sheets.length;
+  const processed = processedFiles.has(file.name);
+  const allDeleted = !processed && file.sheets.length > 0 && delCount >= file.sheets.length;
   const highlights = computeFileSheetHighlights(file);
 
   const tags = file.sheets.map((name, sheetIndex) => {
@@ -528,6 +581,9 @@ function previewFileItem(file, fileIndex, extraClass = '') {
       : (isUncertain
         ? '当前：待定，本次不删并在执行后给文件名与 Sheet 加 ❓（单击切换为「保留」）'
         : '当前：保留（单击切换为「删除」）');
+    if (processed) {
+      return `<span class="preview-sheet-tag is-${st} is-processed" title="已在预览窗口处理，重新扫描后更新">${labelHtml}</span>`;
+    }
     return `<button type="button" class="preview-sheet-tag is-${st}" onclick="cycleSheetState(${fileIndex}, ${sheetIndex})" title="${tip}">${labelHtml}</button>`;
   }).join('');
 
@@ -550,7 +606,12 @@ function previewFileItem(file, fileIndex, extraClass = '') {
           <b title="${escapeHtml(file.name)}">📄 ${escapeHtml(splitDirAndBase(file.name)[1])}</b>
           ${renameBadge}
         </div>
-        ${file.sheets.length ? `<span class="preview-counts">${countParts.join(' · ')}</span>` : ''}
+        ${file.sheets.length ? `<span class="preview-file-actions">
+          ${processed
+            ? '<span class="preview-counts is-processed">✅ 已在预览窗口处理</span>'
+            : `<span class="preview-counts">${countParts.join(' · ')}</span>
+               <button type="button" class="btn btn-outline btn-sm preview-open-btn" onclick="openSheetPreview(${fileIndex})" title="在新窗口里看每个工作表的预览图，并直接标记、执行">🖼 预览</button>`}
+        </span>` : ''}
       </div>
       ${file.note ? `<span class="preview-note">⚠️ ${escapeHtml(file.note)}</span>` : ''}
       ${allDeleted ? `<span class="preview-note">⚠️ 不能删除全部工作表，请单击标签至少将 1 个改为「保留」或「待定」</span>` : ''}
@@ -669,6 +730,7 @@ async function runPreview() {
     initSheetDecisions();
     phase = 'preview';
     renderPreview();
+    syncChannel?.postMessage({ type: 'rescanned', folder: previewData.folder });
   } catch (e) {
     alert(e.message);
   } finally {
@@ -684,7 +746,9 @@ async function startTask() {
   if (overview && overview.can_resume && !confirm('开始新任务会替换上次中断任务的续跑进度，确定吗？')) return;
   setPending('start');
   try {
-    await postAction('/api/quick_task', { kind: CLEAN_KIND, folder, plan: buildCleanPlan() });
+    const payload = { kind: CLEAN_KIND, folder, plan: buildCleanPlan() };
+    if (processedFiles.size) payload.files = Object.keys(payload.plan); // 跳过已在预览窗口处理过的文件
+    await postAction('/api/quick_task', payload);
     saveLastFolder(folder);
     phase = 'running';
     minAcceptedSeq = pollSeq + 1;

@@ -14,3 +14,4 @@ execution.sqlite3-journal
 execution.sqlite3-wal
 execution.sqlite3-shm
 _执行记录报告.md
+_sheet_preview_cache/
