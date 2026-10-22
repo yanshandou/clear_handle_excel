@@ -584,6 +584,41 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(card["color"], "yellow")
         self.assertFalse(card["verified"])
 
+    def test_cell_passing_without_its_row_written_replaces_stale_trial_picture(self):
+        # 试算第一张（原样）同时存成了「修改后」；之后别的行调整让这格不再检出，不能沿用那张一样的图
+        card, item = self.add_card()
+        batch._data()["rows"].clear()
+        batch._save_shot(card, "before", "data:image/png;base64,YmVmb3Jl")
+        batch._save_shot(card, "after", "data:image/png;base64,YmVmb3Jl")
+        card.update(color="yellow", verified=False, after_kind="attempt")
+        with patch.object(self.wf, "_scan_one_workbook"), \
+                patch.object(batch, "_latest_shot", return_value="data:image/png;base64,bGF0ZXN0"):
+            self.real_refresh(self.excel, self.path, ["S1"])
+        self.assertEqual((card["color"], card["after_kind"]), ("blue", "rechecked"))
+        self.assertIn("本行行高未修改", card["message"])
+        self.assertEqual(fix_images.image_path(card["fix_images"]["after"]).read_bytes(), b"latest")
+
+    def test_cell_passing_without_picture_shows_none_instead_of_old_one(self):
+        card, item = self.add_card()
+        batch._data()["rows"].clear()
+        batch._save_shot(card, "after", "data:image/png;base64,YmVmb3Jl")
+        with patch.object(self.wf, "_scan_one_workbook"), patch.object(batch, "_latest_shot", return_value=""):
+            self.real_refresh(self.excel, self.path, ["S1"])
+        self.assertNotIn("after", card["fix_images"])
+
+    def test_snapshot_explains_problem_and_row_height_change(self):
+        card, item = self.add_card()
+        self.assertEqual(card["problems"][0]["label"], "隐藏截断")
+        item.update(text="上記以外、\n空", visible_text="上記以外、", hidden_reason="后面的文字没显示")
+        card.pop("problems")
+        result = batch.snapshot()["cards"][0]
+        self.assertEqual(result["problems"], [{"kind": "hidden", "label": "隐藏截断",
+                                               "reason": "后面的文字没显示", "missing": "空"}])
+        self.assertEqual(result["row_height"], {"base": 15.0, "applied": 24.0, "saved": True})
+        clip = {**item, "id": "clip", "kind": "clip", "cell_addr": "B5"}
+        self.assertEqual(batch._problem(clip)["label"], "压线")
+        self.assertEqual(batch._problem(clip)["missing"], "")
+
     def test_snapshot_image_urls_change_with_content(self):
         card, _ = self.add_card()
         batch._save_shot(card, "before", "data:image/png;base64,YQ==")

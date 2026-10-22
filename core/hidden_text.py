@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from functools import cache
 from typing import Any
 
-from core.pdf_detector import BBox, fitz
+from core.pdf_detector import BBox, extract_page_lines, fitz
 
 # 不插入 MuPDF 推测的空格：同一行相邻两格的文字靠下面的间距判断分开
 _BASE_FLAGS = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES | fitz.TEXT_INHIBIT_SPACES
@@ -72,6 +72,7 @@ class Piece:
     owner: list[tuple[int, ...]] = field(default_factory=list)  # 合成字可能对应多个原始字符
     used: list[bool] = field(default_factory=list)
     solo: Any = None  # 被某个格子单独整段占用时记下是哪一格，必要时可换给它另一段同样的文字
+    rules: list[tuple[float, float, float]] = field(default_factory=list)  # 本页横线 (y, x0, x1)，各片段共用
 
     def __post_init__(self) -> None:
         cluster = ""
@@ -135,6 +136,8 @@ def collect_text_pieces(doc: fitz.Document) -> list[Piece]:
     pieces: list[Piece] = []
     for page_index in range(len(doc)):
         page = doc[page_index]
+        rules = extract_page_lines(page)[0]
+        first = len(pieces)
         visible: dict[tuple[str, int, int], int] = {}
         for block in page.get_text("rawdict", flags=_BASE_FLAGS | _CLIP_FLAG)["blocks"]:
             for line in block.get("lines", []):
@@ -161,6 +164,8 @@ def collect_text_pieces(doc: fitz.Document) -> list[Piece]:
                         prev_x1 = bbox[2]
                 if current:
                     pieces.append(Piece(page_index, current))
+        for piece in pieces[first:]:
+            piece.rules = rules
     return [p for p in pieces if p.key]
 
 
@@ -232,6 +237,7 @@ class _Matcher:
             p for p in self.by_page[prev.page]
             if y0 + prev.height * 0.3 < p.bbox[1] < max_y
             and p.bbox[0] < x1 + 2 and p.bbox[2] > x0 - 2
+            and not _border_between(prev, p)
         ]
 
     def _chunks(
@@ -304,6 +310,14 @@ class _Matcher:
         if text:
             search(0, None, [])
         return best or None
+
+
+def _border_between(upper: Piece, lower: Piece) -> bool:
+    """两行之间隔着一条横跨两行的边框线：下一行属于下面的格子，不是这格换行接下来的部分。
+    否则这格最后一行没打印出来时，会拿下一格开头一样的字（如「空」）当作已显示，漏报隐藏截断。"""
+    left, right = max(upper.bbox[0], lower.bbox[0]), min(upper.bbox[2], lower.bbox[2])
+    top, bottom = upper.bbox[3] - 0.3, (lower.bbox[1] + lower.bbox[3]) / 2
+    return any(top < y < bottom and x0 <= left + 1 and x1 >= right - 1 for y, x0, x1 in upper.rules)
 
 
 def _chain_chars(chain: list[Chunk]) -> list[tuple[str, BBox, bool]]:

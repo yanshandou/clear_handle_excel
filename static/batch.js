@@ -90,9 +90,32 @@ function contextHtml(card) {
     </div></aside>`;
 }
 
+const pt = value => `${Number(value).toFixed(1).replace(/\.0$/, '')}pt`;
+
+// 检测到什么、怎么处理的：让人不用对比两张图也知道为什么要修、改了多少
+function problemHtml(card) {
+  const problems = (card.problems || []).map(p => `<b>${esc(p.label)}</b>：${esc(p.reason)}${p.missing ? `（没显示出来的：「${esc(p.missing)}」）` : ''}`);
+  return problems.length ? `<p class="batch-problem">检测到 ${problems.join('；')}</p>` : '';
+}
+
+function handlingText(card) {
+  const row = card.row_height;
+  if (card.after_kind === 'attempt') {
+    const base = Number.isFinite(card.base_height) ? `${pt(card.base_height)} → ` : '';
+    const added = Number.isFinite(card.base_height) && Number.isFinite(card.attempt_height) ? `（+${pt(card.attempt_height - card.base_height)}）` : '';
+    return Number.isFinite(card.attempt_height) ? `处理：第 ${card.excel_row} 行行高试到 ${base}${pt(card.attempt_height)}${added}仍未通过，原文件未修改` : '处理：原文件未修改';
+  }
+  if (card.after_kind === 'unchanged') return '处理：原样导出已完整显示，未修改行高';
+  if (row?.saved && Math.abs(row.applied - row.base) >= 0.05) return `处理：第 ${card.excel_row} 行行高 ${pt(row.base)} → ${pt(row.applied)}（+${pt(row.applied - row.base)}），已保存`;
+  if (row && !row.saved && Math.abs(row.applied - row.base) < 0.05 && card.finalized) return `处理：已还原为原行高 ${pt(row.base)}`;
+  if (card.after_kind === 'rechecked') return '处理：本行行高未修改（其他行调整后重新导出已完整显示）';
+  return '';
+}
+
 function cardHtml(card, large = false) {
   const link = excelLinkHtml(esc(card.wb_name), { file: card.wb_name, folder: batchState.folder, sheet: card.sheet_name, cell: card.cell_addr });
-  const labels = { before: '修改前', after: card.after_kind === 'attempt' ? '最后一次尝试（未采用）' : card.after_kind === 'unchanged' ? '原样导出（未修改）' : '修改后' };
+  const labels = { before: '修改前', after: card.after_kind === 'attempt' ? '最后一次尝试（未采用）' : card.after_kind === 'unchanged' ? '原样导出（未修改）' : card.after_kind === 'rechecked' ? '最新导出（本行未修改）' : '修改后' };
+  const handling = handlingText(card);
   const images = ['before', 'after'].map(which => `<figure><figcaption>${labels[which]}</figcaption>${card.images?.[which]
     ? `<img ${large ? '' : 'loading="lazy"'} src="${esc(card.images[which])}" alt="${labels[which]}截图" data-preview="1" onerror="${missingHandler('截图暂不可用')}">`
     : '<span class="batch-missing">暂无截图</span>'}</figure>`).join('');
@@ -100,7 +123,7 @@ function cardHtml(card, large = false) {
   const visuals = large ? `<div class="batch-large-layout">${comparison}${contextHtml(card)}</div>` : comparison;
   return `<article class="batch-card" tabindex="0" role="button" aria-label="${esc(`${card.wb_name} ${card.sheet_name}!${card.cell_addr} ${REVIEW_LABELS[card.color]}，单击切换状态`)}" data-id="${esc(card.id)}" data-color="${card.color}">
     <div class="batch-card-head"><div>${link}<p><b>${esc(card.sheet_name)}!${esc(card.cell_addr || '定位待确认')}</b></p></div><span class="batch-color-label">${REVIEW_LABELS[card.color]}</span></div>
-    ${visuals}<p>${esc(card.text)}</p><p>${esc(card.message)}</p>
+    ${visuals}${problemHtml(card)}${handling ? `<p class="batch-handling">${esc(handling)}</p>` : ''}<p>${esc(card.text)}</p><p>${esc(card.message)}</p>
     <p>${card.finalized ? '已提交 · 可人工处理' : '颜色标记待提交'}${batchState.busy ? ' · 后台任务结束后可标记' : ''}</p>
     <div class="batch-card-footer"><button class="btn btn-outline" data-action="large">▣ 大图审核</button>${card.color === 'yellow' && card.finalized ? '<button class="btn btn-outline" data-action="recheck">🔁 单项复检</button>' : ''}</div></article>`;
 }
