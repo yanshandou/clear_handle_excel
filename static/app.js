@@ -553,7 +553,9 @@ function renderFix() {
 
 async function pollAutofix() {
   try {
-    const res = await fetch('/api/autofix');
+    // 只有开着「② 自动处理」时才让后台预先做图，筛选时不在后台导出 PDF
+    const active = stepTab === 'fix' && !document.hidden ? '?active=1' : '';
+    const res = await fetch(`/api/autofix${active}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '读取自动处理进度失败');
     fixData = data;

@@ -6,6 +6,7 @@
 - 显示全之后再多加一次就停，推荐多加的那张（留一点余量）
 - 「全自动」打开后，后面准备好的组直接按推荐写入
 - 后台有扫描、复检、人工定位等任务时暂停，任务结束后继续
+- 只在用户开着「② 自动处理」页时才预先做图（或开了全自动），筛选时不在后台导出 PDF 打扰用户
 """
 import base64
 import hashlib
@@ -20,6 +21,7 @@ from core.common import XL_SHEET_VISIBLE, as_bbox
 from core.excel_ops import CellProbe, extract_sheet_snapshot, normalize_workbook_view, snapshot_cells
 from core.hidden_text import collect_text_pieces, find_hidden_cells, locate_text
 from core.pdf_detector import RegionTrackingError, fitz, is_region_still_clipped, render_crop_base64
+from core.quiet_dialogs import hide_progress_dialogs
 from core.workflow import (
     RESOLVED_STATUSES,
     STATE,
@@ -38,12 +40,13 @@ MAX_ATTEMPTS = 8  # 加上原样共 9 张，正好九宫格
 MAX_ROW_HEIGHT = 409.0  # Excel 行高上限
 MANUAL_STATUSES = {"manual_review"}
 LOCKED_RETRY_SECONDS = 5.0
+ACTIVE_GRACE_SECONDS = 8.0  # 页面每 1.5 秒报一次「正开着 ② 自动处理」，超过这么久没报就停下
 
 _LOCK = threading.RLock()
 _WAKE = threading.Event()
 _IDLE = threading.Event()  # 后台没有开着的 Excel
 _IDLE.set()
-AUTOFIX: dict[str, Any] = {"auto": False, "groups": {}, "hold": 0}
+AUTOFIX: dict[str, Any] = {"auto": False, "groups": {}, "hold": 0, "active_until": 0.0}
 _worker: threading.Thread | None = None
 
 
@@ -61,6 +64,20 @@ def _busy() -> bool:
             return True
     with STATE_LOCK:
         return bool(STATE["busy"])
+
+
+def mark_active() -> None:
+    """页面正开着「② 自动处理」：可以在后台预先做图"""
+    with _LOCK:
+        was_active = _preview_allowed()
+        AUTOFIX["active_until"] = time.monotonic() + ACTIVE_GRACE_SECONDS
+    if not was_active:
+        _WAKE.set()
+
+
+def _preview_allowed() -> bool:
+    with _LOCK:
+        return AUTOFIX["auto"] or time.monotonic() < AUTOFIX["active_until"]
 
 
 def release_excel(timeout: float = 120.0) -> None:
@@ -192,6 +209,7 @@ class _ExcelSession:
         self.excel: Any = None
         self.temp_dir: Path | None = None
         self.copies: dict[str, tuple[dict[str, int], Any]] = {}
+        self.quiet: Any = None
 
     def app(self) -> Any:
         if self.excel is None:
@@ -199,6 +217,7 @@ class _ExcelSession:
             self.excel = win32.DispatchEx("Excel.Application")
             self.excel.Visible = False
             self.excel.DisplayAlerts = False
+            self.quiet = hide_progress_dialogs(self.excel)
             self.temp_dir = Path(tempfile.mkdtemp(prefix="clip_autofix_"))
         return self.excel
 
@@ -236,6 +255,9 @@ class _ExcelSession:
             except Exception:
                 pass
             self.excel = None
+        if self.quiet is not None:
+            self.quiet.stop()
+            self.quiet = None
         if self.temp_dir is not None:
             shutil.rmtree(self.temp_dir, ignore_errors=True)
             self.temp_dir = None
@@ -294,7 +316,7 @@ def _next_task(blocked: dict[str, float]) -> tuple[str, Any] | None:
                 ]
                 return "apply", (group["wb_path"], same_file)
         for group in groups:
-            if group["status"] == "queued" and not group["manual"]:
+            if group["status"] == "queued" and not group["manual"] and _preview_allowed():
                 return "preview", group["id"]
     return None
 
@@ -309,7 +331,7 @@ def _check_still_wanted(gid: str) -> None:
         group = AUTOFIX["groups"].get(gid)
         if group is None or group["status"] != "running" or group["manual"]:
             raise _Paused
-    if _busy():
+    if _busy() or not _preview_allowed():
         raise _Paused
 
 
