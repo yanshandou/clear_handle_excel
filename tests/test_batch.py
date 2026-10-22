@@ -336,7 +336,7 @@ class BatchTests(unittest.TestCase):
         # 两处都已还原，不再有自动行高冲突。
         next(iter(batch._data()["rows"].values()))["saved"] = False
         self.commit([a, b])
-        def refresh(*_):
+        def refresh(*_, **__):
             item_a["status"] = "fixed"
             item_b["status"] = "pending"
             batch.carry_item_policies(self.wf.STATE["items"])
@@ -361,13 +361,18 @@ class BatchTests(unittest.TestCase):
             events.append("save")
             item["status"] = "fixed"
             self.wf.STATE["job"]["pending_adjustment"] = None
-        def refresh(*_):
-            events.append("fresh-sheet")
+        def refresh(_excel, _path, sheets, **kwargs):
+            source = "copy" if kwargs.get("workbook") is not None else "original"
+            events.append(f"fresh-{source}-{'reuse' if kwargs.get('reuse', True) else 'export'}-{','.join(sheets)}")
+        session = Mock()
         with patch.object(batch, "_prepare_row", side_effect=prepare), \
                 patch.object(batch, "_finish_pending", side_effect=finish), \
                 patch.object(batch, "_refresh", side_effect=refresh):
-            batch._repair_file(self.excel, Mock(), self.path)
-        self.assertEqual(events, ["prepare", "save", "fresh-sheet"])
+            batch._repair_file(self.excel, session, self.path)
+        # 写入后用改好的副本重新检测（不重开原文件）；文件处理完再用原文件重新导出复查一遍
+        self.assertEqual(events, ["prepare", "save", "fresh-copy-reuse-S1", "fresh-original-export-S1"])
+        session.written.assert_called_once()
+        self.assertEqual(session.written.call_args.args[2:6], ("S1", 5, 24, []))
 
     def test_new_finding_after_repagination_is_processed_from_new_snapshot(self):
         a, item = self.add_card()
@@ -381,7 +386,7 @@ class BatchTests(unittest.TestCase):
             for iid in list(self.wf.STATE["items"]):
                 self.wf.STATE["items"][iid]["status"] = "fixed"
             self.wf.STATE["job"]["pending_adjustment"] = None
-        def refresh(*_):
+        def refresh(*_, **__):
             if len(prepared) == 1:
                 _, new_item = self.add_card("A6", row=6)
                 batch._data()["rows"].pop(batch._key(self.path, "S1", 6))
@@ -486,6 +491,88 @@ class BatchTests(unittest.TestCase):
             _, chosen, _ = batch._prepare_row(fixture.session, str(fixture.wb_path), items)
         self.assertEqual(chosen["height"], 21)
 
+    def test_preparation_reuses_checked_pdf_and_keeps_the_written_state(self):
+        """原样那张用刚检测导出的 PDF；最后一次导出就是写入的状态时留下给重新检测用"""
+        from test_autofix import AutofixTests
+        fixture = AutofixTests("runTest")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        items = list(workflow.STATE["items"].values())
+        session, path = fixture.session, str(fixture.wb_path)
+        book = session.copy_of(path)
+        self.assertEqual(book.path.name, fixture.wb_path.name)  # 副本和原文件同名，页眉里的文件名一样
+        version = workflow._file_version(fixture.wb_path)
+        checked = fixture.root / "checked.pdf"
+        book.Sheets("S1").ExportAsFixedFormat(Filename=str(checked))
+        session.remember_pdf(path, "S1", version, checked)
+        other = fixture.root / "other.pdf"
+        other.write_bytes(b"%PDF other sheet")
+        session.remember_pdf(path, "S2", version, other)
+        timing = {}
+        with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot):
+            base, chosen, before = batch._prepare_row(session, path, items, timing=timing)
+        self.assertEqual((base, chosen["height"]), (15, 24))
+        self.assertTrue(all(before.values()))
+        self.assertEqual(timing["exports"], 3)  # 18、21、24 三次；原样 15 那次没有再导出
+        self.assertEqual(chosen["pdf"], session.chosen_pdf())
+        self.assertTrue(chosen["pdf"].is_file())
+        # 原文件写入保存后：副本做同样修改继续用，这张表用通过那次的 PDF，别的表沿用
+        fixture.wb_path.write_bytes(b"workbook saved")
+        copy = session.written(path, version, "S1", 5, 24, [], chosen["pdf"])
+        self.assertIs(copy, book)
+        self.assertEqual(book.heights[5], 24)
+        self.assertIs(session.copy_of(path), book)
+        self.assertEqual(session.pdf_for(path, "S1"), chosen["pdf"])
+        self.assertEqual(session.pdf_for(path, "S2"), other)
+        other.write_bytes(b"%PDF overwritten by another export")
+        self.assertIsNone(session.pdf_for(path, "S2"))  # 被别的导出覆盖了就不能再用
+        # 通过那次不是最后一次（多加的那次没过）：不留 PDF，重新检测时照常导出
+        original_evaluate = fixture.autofix._evaluate
+        def evaluate(*args, **kwargs):
+            result = original_evaluate(*args, **kwargs)
+            return (False, result[1], 0) if session.copy_of(path).heights[5] == 27 else result
+        with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot), \
+                patch.object(fixture.autofix, "_evaluate", side_effect=evaluate):
+            _, chosen, _ = batch._prepare_row(session, path, items)
+        self.assertNotIn("pdf", chosen)
+
+    def test_recheck_on_copy_uses_exported_pdf_and_leaves_copy_open(self):
+        from core import autofix
+        sheet = Mock(Name="S1")
+        copy = Mock()
+        copy.Sheets = [sheet]
+        original = Mock(Sheets=[sheet])
+        self.excel.Workbooks.Open.return_value = original
+        session = autofix._ExcelSession()
+        exported = []
+        def export(_sheet, pdf):
+            exported.append(pdf)
+            pdf.write_bytes(b"%PDF fresh")
+        def scan(**kwargs):
+            self.wf._scan_one_workbook(
+                self.excel, Path(self.path), {"mode": "sheets", "sheets": ["S1"], "scanned": True}, [],
+                job=None, resumed=False, rescan_all=False, delete_backups=False, used_pdf_paths=set(),
+                read_only=True, pdfs=session, **kwargs)
+        with patch.object(self.wf, "_exportable_sheets", return_value=[sheet]), \
+                patch.object(self.wf, "_export_sheet_pdf", side_effect=export), \
+                patch.object(self.wf, "_detect_sheet_results", return_value=({}, {})), \
+                patch.object(self.wf, "update_file_progress"), patch.object(self.wf, "_sync_problem_counts"):
+            chosen = self.root / "chosen.pdf"
+            chosen.write_bytes(b"%PDF chosen")
+            session.remember_pdf(self.path, "S1", self.wf._file_version(Path(self.path)), chosen)
+            timing = {}
+            scan(workbook=copy, timing=timing)
+            self.assertEqual(exported, [])  # 同一状态已导出过：复制那份，不再导出
+            self.excel.Workbooks.Open.assert_not_called()
+            copy.Close.assert_not_called()
+            target = session.pdf_for(self.path, "S1", self.wf._file_version(Path(self.path)))
+            self.assertEqual(target.read_bytes(), b"%PDF chosen")
+            self.assertEqual(timing.get("exports", 0), 0)
+            scan(reuse_pdfs=False)  # 用原文件复查：一律重新导出
+            self.assertEqual(len(exported), 1)
+            self.excel.Workbooks.Open.assert_called_once()
+            original.Close.assert_called_once()
+
     def wrap_sheet(self, *, wrap=False, merged=True, neighbor="", align=1):
         cells = {}
         def cell(row, col):
@@ -540,7 +627,7 @@ class BatchTests(unittest.TestCase):
         batch._data()["rows"].clear()
         area = self.book.Sheets.return_value.Range.return_value.MergeArea
         area.WrapText = False
-        def prepare(*_, on_attempt):
+        def prepare(*_, on_attempt, **__):
             on_attempt(0, 24, {card["id"]: "data:image/png;base64,YmVmb3Jl"}, [])
             on_attempt(1, 33, {card["id"]: "data:image/png;base64,bGFzdA=="}, ["A5"])
             return 24, {"height": 36, "shots": {}, "wrap": ["A5"]}, {}
@@ -642,7 +729,7 @@ class BatchTests(unittest.TestCase):
         original = Path(self.path).read_bytes()
         before = "data:image/png;base64,YmVmb3Jl"
         last = "data:image/png;base64,bGFzdA=="
-        def prepare(*_, on_attempt):
+        def prepare(*_, on_attempt, **__):
             on_attempt(0, 24, {card["id"]: before})
             on_attempt(1, 27, {card["id"]: "data:image/png;base64,Zmlyc3Q="})
             on_attempt(8, 48, {card["id"]: last})
@@ -671,7 +758,7 @@ class BatchTests(unittest.TestCase):
         card, item = self.add_card()
         item["status"] = "pending"
         batch._data()["rows"].clear()
-        def prepare(*_, on_attempt):
+        def prepare(*_, on_attempt, **__):
             on_attempt(0, 24, {card["id"]: "data:image/png;base64,YmVmb3Jl"})
             on_attempt(1, 27, {card["id"]: "data:image/png;base64,bGFzdA=="})
             raise RuntimeError("下一张 PDF 导出失败")
@@ -686,7 +773,7 @@ class BatchTests(unittest.TestCase):
         card, item = self.add_card()
         item["status"] = "pending"
         batch._data()["rows"].clear()
-        def prepare(*_, on_attempt):
+        def prepare(*_, on_attempt, **__):
             on_attempt(0, 24, {card["id"]: "data:image/png;base64,YmVmb3Jl"})
             raise RuntimeError("第一张调整图未能导出")
         with patch.object(batch, "_prepare_row", side_effect=prepare):
@@ -719,7 +806,7 @@ class BatchTests(unittest.TestCase):
         card, item = self.add_card()
         item["status"] = "pending"
         batch._data()["rows"].clear()
-        def prepare(*_, on_attempt):
+        def prepare(*_, on_attempt, **__):
             on_attempt(0, 24, {card["id"]: "data:image/png;base64,YmVmb3Jl"})
             on_attempt(1, 27, {card["id"]: "data:image/png;base64,bGFzdA=="})
             return 24, {"height": 27, "shots": {card["id"]: "data:image/png;base64,c2VsZWN0ZWQ="}}, {}

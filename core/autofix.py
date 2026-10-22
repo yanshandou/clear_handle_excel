@@ -531,7 +531,10 @@ class _ExcelSession:
         self.excel: Any = None
         self.temp_dir: Path | None = None
         self.copies: dict[str, tuple[dict[str, int], Any]] = {}
-        self.copy_count = 0  # 副本文件名编号只增不减，不同子文件夹里的同名文件也不会撞名
+        self.copy_count = 0  # 副本文件夹编号只增不减，不同子文件夹里的同名文件也不会撞名
+        # 最近一次整表导出：(原文件, 表名) -> (原文件版本, PDF, PDF 的修改时间和大小)。
+        # 同一状态不再重复导出；PDF 被别的导出覆盖（时间/大小变了）就不用。
+        self.pdfs: dict[tuple[str, str], tuple[dict[str, int], Path, tuple[int, int]]] = {}
 
     def app(self) -> Any:
         if self.excel is None:
@@ -551,7 +554,9 @@ class _ExcelSession:
         app = self.app()
         assert self.temp_dir is not None
         self.copy_count += 1
-        target = self.temp_dir / f"{self.copy_count}_{Path(wb_path).name}"
+        # 副本和原文件同名（各放一个编号文件夹）：页眉页脚里的 &[文件名] 打印出来和原文件一样
+        target = self.temp_dir / str(self.copy_count) / Path(wb_path).name
+        target.parent.mkdir()
         shutil.copy2(wb_path, target)
         workbook = app.Workbooks.Open(str(target), UpdateLinks=0)
         self.copies[wb_path] = (version, workbook)
@@ -565,6 +570,60 @@ class _ExcelSession:
             except Exception:
                 pass
 
+    def remember_pdf(self, wb_path: str, sheet_name: str, version: dict[str, int], pdf: Path) -> None:
+        stat = pdf.stat()
+        self.pdfs[(wb_path, sheet_name)] = (version, pdf, (stat.st_mtime_ns, stat.st_size))
+
+    def pdf_for(self, wb_path: str, sheet_name: str, version: dict[str, int] | None = None) -> Path | None:
+        """这张表在给定版本（默认：当前副本的版本）下已导出过的 PDF；没有就返回 None"""
+        if version is None:
+            copy = self.copies.get(wb_path)
+            if copy is None:
+                return None
+            version = copy[0]
+        cached = self.pdfs.get((wb_path, sheet_name))
+        if cached is None or cached[0] != version:
+            return None
+        try:
+            stat = cached[1].stat()
+        except OSError:
+            return None
+        return cached[1] if (stat.st_mtime_ns, stat.st_size) == cached[2] else None
+
+    def written(self, wb_path: str, old_version: dict[str, int], sheet_name: str, row: int, height: float,
+                wrap: list[str], pdf: Path | None) -> Any:
+        """原文件这一行刚写入保存：副本做同样的修改，继续当作和原文件一致的工作簿用，不用重新打开原文件。
+        别的表没变，之前导出的 PDF 仍可用；这张表只有「通过的那次试算就是写入的高度」时可用那次的 PDF。
+        副本状态对不上时返回 None（之后按原来的方式重新打开原文件）。"""
+        new_version = _file_version(Path(wb_path))
+        for key, (version, cached, stat) in list(self.pdfs.items()):
+            if key[0] == wb_path:
+                if version == old_version and key[1] != sheet_name:
+                    self.pdfs[key] = (new_version, cached, stat)
+                else:
+                    del self.pdfs[key]
+        if pdf is not None:
+            self.remember_pdf(wb_path, sheet_name, new_version, pdf)
+        cached = self.copies.get(wb_path)
+        if cached is None or cached[0] != old_version:
+            self.drop_copy(wb_path)
+            return None
+        try:
+            sheet = cached[1].Sheets(sheet_name)
+            for addr in wrap:
+                sheet.Range(addr).MergeArea.WrapText = True
+            sheet.Rows(row).RowHeight = height
+        except Exception:
+            self.drop_copy(wb_path)
+            return None
+        self.copies[wb_path] = (new_version, cached[1])
+        return cached[1]
+
+    def chosen_pdf(self) -> Path:
+        self.app()
+        assert self.temp_dir is not None
+        return self.temp_dir / "chosen.pdf"
+
     def temp_pdf(self) -> Path:
         self.app()
         assert self.temp_dir is not None
@@ -577,6 +636,7 @@ class _ExcelSession:
             except Exception:
                 pass
         self.copies = {}
+        self.pdfs = {}
         if self.excel is not None:
             try:
                 quit_background_excel(self.excel)
