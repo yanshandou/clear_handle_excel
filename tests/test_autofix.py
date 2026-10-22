@@ -199,7 +199,7 @@ class AutofixTests(unittest.TestCase):
         self.assertIn("复检", group["message"])
 
 
-    def test_previews_only_while_fix_page_open_or_full_auto(self):
+    def test_previews_only_while_fix_page_open(self):
         gid = self.group()["id"]
         self.autofix.AUTOFIX["active_until"] = 0.0  # 用户还在筛选
         self.assertIsNone(self.autofix._next_task({}))
@@ -207,8 +207,8 @@ class AutofixTests(unittest.TestCase):
         self.autofix.mark_active()
         self.assertEqual(self.autofix._next_task({}), ("preview", gid))
         self.autofix.AUTOFIX["active_until"] = 0.0
-        self.autofix.set_auto(True)
-        self.assertEqual(self.autofix._next_task({}), ("preview", gid))
+        self.autofix.set_auto(True)  # 全自动也要开着 ② 页面才做图
+        self.assertIsNone(self.autofix._next_task({}))
 
     def test_chosen_picture_is_still_written_after_leaving_fix_page(self):
         gid = self.group()["id"]

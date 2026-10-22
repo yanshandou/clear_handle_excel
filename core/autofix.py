@@ -6,7 +6,7 @@
 - 显示全之后再多加一次就停，推荐多加的那张（留一点余量）
 - 「全自动」打开后，后面准备好的组直接按推荐写入
 - 后台有扫描、复检、人工定位等任务时暂停，任务结束后继续
-- 只在用户开着「② 自动处理」页时才预先做图（或开了全自动），筛选时不在后台导出 PDF 打扰用户
+- 只在用户开着「② 自动处理」页时才做图（页面要等 ① 全部筛完才让进），筛选时不在后台导出 PDF 打扰用户
 """
 import base64
 import hashlib
@@ -77,7 +77,7 @@ def mark_active() -> None:
 
 def _preview_allowed() -> bool:
     with _LOCK:
-        return AUTOFIX["auto"] or time.monotonic() < AUTOFIX["active_until"]
+        return time.monotonic() < AUTOFIX["active_until"]
 
 
 def release_excel(timeout: float = 120.0) -> None:
