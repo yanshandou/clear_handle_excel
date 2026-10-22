@@ -324,15 +324,15 @@ class BatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "先提交"):
             batch.validate_cards([card["id"]], yellow=True)
 
-    def test_mark_many_persists_once_and_skips_unverified_blue(self):
+    def test_mark_many_persists_once_and_allows_unverified_blue(self):
         a, _ = self.add_card("A5", "yellow")
         b, _ = self.add_card("B5", "green")
         a["verified"] = False
         with patch.object(self.wf, "_persist_state", wraps=self.wf._persist_state) as persist:
             result = batch.mark_many([a["id"], b["id"]], "blue")
         persist.assert_called_once()
-        self.assertEqual(result, {"changed": 1, "skipped": 1})
-        self.assertEqual((a["color"], b["color"]), ("yellow", "blue"))
+        self.assertEqual(result, {"changed": 2, "skipped": 0})
+        self.assertEqual((a["color"], b["color"]), ("blue", "blue"))
         self.assertTrue(b["marked"])
         batch.mark_many([a["id"], b["id"]], "green")
         self.assertEqual((a["color"], b["color"]), ("green", "green"))
@@ -344,11 +344,28 @@ class BatchTests(unittest.TestCase):
             batch.mark_many([a["id"], "missing"], "green")
         self.assertEqual(a["color"], "yellow")
 
-    def test_no_automatic_blue_for_unverified_manual_item(self):
+    def test_user_can_cycle_all_colors_without_verification_or_images(self):
         card, _ = self.add_card(color="yellow")
         card["verified"] = False
-        with self.assertRaisesRegex(ValueError, "还没有可保留的修复"):
-            batch.mark(card["id"], "blue")
+        for color in ["blue", "green", "yellow", "blue", "yellow", "green"]:
+            batch.mark(card["id"], color)
+            self.assertEqual(card["color"], color)
+            self.assertFalse(card["verified"])
+        self.excel.Workbooks.Open.assert_not_called()
+
+    def test_unverified_blue_without_trial_passes_without_writing_or_reappearing(self):
+        card, item = self.add_card(color="yellow")
+        batch._data()["rows"].clear()
+        card["verified"] = False
+        item["status"] = "pending"
+        batch.mark(card["id"], "blue")
+        self.commit([card])
+        self.assertTrue(card["dismissed"])
+        self.assertEqual(item["status"], "accepted")
+        redetected = dict(item, status="pending")
+        batch.carry_item_policies({"new": redetected})
+        self.assertEqual(redetected["status"], "accepted")
+        self.excel.Workbooks.Open.assert_not_called()
 
     def attempt_card(self, address="A5", color="yellow"):
         """自动加高没通过检查、留下「最后一次尝试」截图、原文件没改的卡"""
@@ -383,10 +400,10 @@ class BatchTests(unittest.TestCase):
         self.assertEqual((card["color"], peer["color"]), ("yellow", "yellow"))
         self.excel.Workbooks.Open.assert_not_called()
 
-    def test_waiting_card_still_cannot_be_blue(self):
+    def test_waiting_card_can_be_marked_blue(self):
         card, _ = self.attempt_card()
         card.update(waiting=True, message=batch.WAITING_MESSAGE)
-        self.assertEqual(batch.mark_many([card["id"]], "blue"), {"changed": 0, "skipped": 1})
+        self.assertEqual(batch.mark_many([card["id"]], "blue"), {"changed": 1, "skipped": 0})
 
     def test_recheck_passes_one_cell_and_keeps_ignored_cell_out(self):
         a, item_a = self.add_card("A5", "yellow")

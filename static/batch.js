@@ -161,10 +161,6 @@ function handlingText(card) {
   return '';
 }
 
-// 蓝色 = 保留修复。自动检查没通过、但有「最后一次尝试」图的卡，看图确认没问题也可以标蓝，提交时按那次的行高写入；
-// 一点修改都没有的卡（还没轮到处理等）没有可保留的东西，单击只在黄、绿之间切换
-const canBlue = card => card.verified || card.adoptable;
-
 function blueNote(card) {
   if (card.adoptable) {
     const height = Number.isFinite(card.attempt_height) ? ` ${pt(card.attempt_height)}` : '';
@@ -173,8 +169,7 @@ function blueNote(card) {
       ? `已按你的判断标蓝：提交时${wrap}把第 ${card.excel_row} 行行高改为${height}（最后一次尝试）并保存，记为已修复。`
       : `自动检查没通过，但如果「最后一次尝试」的图已经显示完整，可以标蓝：提交时${wrap}按${height}写入原文件。`;
   }
-  const why = card.waiting ?? card.message === '等待自动处理' ? '还没轮到自动处理' : '还没有可保留的修复';
-  return `${why}，暂时不能标蓝（单击只在黄、绿之间切换）。改好后复检通过会自动变蓝。`;
+  return '三种颜色均可自由选择。标蓝表示你认可当前结果；没有可采用的试修方案时，提交只按人工确认放行，不额外修改 Excel。';
 }
 
 function cardHtml(card, large = false) {
@@ -230,8 +225,8 @@ async function changeSelectedColor(color) {
   if (batchState.busy || requestBusy || !selectedIds.size) return;
   const ids = batchState.cards.filter(c => selectedIds.has(c.id)).map(c => c.id);
   await action(async () => {
-    const result = await post('/api/batch/mark_many', { card_ids: ids, color });
-    selectNotice = result.skipped ? `${result.skipped} 张尚未通过检查，不能标蓝，保持原色` : '';
+    await post('/api/batch/mark_many', { card_ids: ids, color });
+    selectNotice = '';
   });
 }
 
@@ -330,9 +325,7 @@ async function changeColor(id, direction = 1) {
   if (batchState.busy || requestBusy) return;
   const card = batchState.cards.find(c => c.id === id);
   if (!card) return;
-  let color = nextColor(card.color, direction);
-  // 自动失败的黄色项也能用鼠标标绿；复检通过前跳过不可用的蓝色状态。
-  if (color === 'blue' && !canBlue(card)) color = nextColor(color, direction);
+  const color = nextColor(card.color, direction);
   await action(() => post('/api/batch/mark', { id, color }));
 }
 

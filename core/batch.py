@@ -132,10 +132,6 @@ def _adoptable(card: dict) -> bool:
             and bool(card.get("fix_images", {}).get("after")))
 
 
-def _can_be_blue(card: dict) -> bool:
-    return bool(card.get("verified")) or _adoptable(card)
-
-
 def _adopting(card: dict) -> bool:
     return card["color"] == "blue" and _adoptable(card)
 
@@ -239,8 +235,6 @@ def mark(cid: str, color: str) -> None:
         card = _data()["cards"].get(cid) if isinstance(cid, str) else None
         if color not in COLORS or card is None or card.get("dismissed") or not wf.in_current_folder(card["wb_path"]):
             raise ValueError("请选择当前文件夹的有效卡片及颜色")
-        if color == "blue" and not _can_be_blue(card):
-            raise ValueError("此处还没有可保留的修复，请修改 Excel 后复检，或标为绿色忽略")
         previous = copy.deepcopy(card)
         card.update(color=color, finalized=False, marked=True, waiting=False)
         try:
@@ -252,7 +246,7 @@ def mark(cid: str, color: str) -> None:
 
 
 def mark_many(ids: Any, color: str) -> dict:
-    """批量改色，只写一次数据库；尚未通过检查的卡片不能标蓝，跳过并计数。"""
+    """批量改色，只写一次数据库；三色均由用户自由选择。"""
     with wf.STATE_LOCK:
         if wf.STATE["busy"]:
             raise ValueError("任务执行中，请结束或暂停后再审核")
@@ -265,8 +259,7 @@ def mark_many(ids: Any, color: str) -> dict:
             if card is None or card.get("dismissed") or not wf.in_current_folder(card["wb_path"]):
                 raise ValueError("选中的卡片已失效，请刷新页面后重新选择")
             targets.append(card)
-        skipped = [c for c in targets if color == "blue" and not _can_be_blue(c)]
-        changed = [c for c in targets if c not in skipped]
+        changed = targets
         previous = [copy.deepcopy(c) for c in changed]
         for card in changed:
             card.update(color=color, finalized=False, marked=True, waiting=False)
@@ -277,7 +270,7 @@ def mark_many(ids: Any, color: str) -> dict:
                 card.clear()
                 card.update(old)
             raise
-        return {"changed": len(changed), "skipped": len(skipped)}
+        return {"changed": len(changed), "skipped": 0}
 
 
 def _check_file(path: str) -> None:
@@ -475,8 +468,8 @@ def _refresh(
                 card = _card_for(group)
                 if card.get("color") == "blue" or card.get("verified"):
                     # 后面的行加高、还原改变了分页，之前通过的格子又出问题：不能再当作已修好。
-                    # 用户手动标的绿/黄保留；蓝色要求通过检查，只能改黄
-                    keep = card.get("marked") and card.get("color") != "blue"
+                    # 用户手动选择的三色均保留；只有程序自动标蓝的结果才自动转黄。
+                    keep = bool(card.get("marked"))
                     card.update(color=card["color"] if keep else "yellow", verified=False,
                                 message="最新导出仍有问题" + ("，已保留你的标记" if keep else "，需重新处理"))
             elif existing and not existing.get("dismissed") and not existing.get("manual") and not existing.get("marked"):
@@ -844,7 +837,7 @@ def _commit_review(excel: Any) -> None:
             for card in [c for c in cards if c["wb_path"] == path]:
                 card["finalized"] = True
                 # 标蓝但检测器仍报的格子（人工认可）也要记规则，否则重新检测又出卡
-                accepted_by_eye = card["color"] == "blue" and (card.get("adopted") or _adoptable(card))
+                accepted_by_eye = card["color"] == "blue" and (card.get("adopted") or not card.get("verified"))
                 if card["color"] == "green" or accepted_by_eye:
                     rule = {"cell": list(_cell(card)), "signatures": card["signatures"]}
                     if card.get("adopted"):

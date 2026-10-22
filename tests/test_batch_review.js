@@ -19,6 +19,7 @@ function page() {
       addEventListener(name, fn) { listeners[name] = fn; }, querySelectorAll() { return []; } },
     localStorage: { getItem() { return ''; } }, window: { confirm() { return true; }, addEventListener() {} },
     setInterval() {}, fetch() { return new Promise(() => {}); },
+    MutationObserver: class { observe() {} },
     excelLinkHtml(label) { return `<a>${label}</a>`; }, Date, requests,
   });
   vm.runInContext(source, context);
@@ -46,10 +47,21 @@ test('color changes submit only a marker; no restore request is sent', async () 
   assert.equal(p.requests[0].payload.color, 'green');
 });
 
-test('an automatically failed yellow card can be ignored with a single click', async () => {
+test('an unverified yellow card can become blue with a single click', async () => {
   const p = page();
   await p.run(`changeColor('b')`);
-  assert.equal(p.requests[0].payload.color, 'green');
+  assert.equal(p.requests[0].payload.color, 'blue');
+});
+
+test('unverified cards without images cycle freely in both directions', async () => {
+  const p = page();
+  for (const direction of [1, -1]) {
+    for (const color of ['blue', 'green', 'yellow']) {
+      p.run(`batchState.cards[1].color = '${color}'; batchState.cards[1].verified = false;`);
+      await p.run(`changeColor('b', ${direction})`);
+      assert.equal(p.requests.at(-1).payload.color, p.run(`nextColor('${color}', ${direction})`));
+    }
+  }
 });
 
 test('small and large cards contain only the before and after images', () => {
@@ -194,7 +206,7 @@ test('batch color change sends one request and keeps the selection', async () =>
   assert.deepEqual(Array.from(p.requests[0].payload.card_ids).sort(), ['a', 'b']);
   assert.equal(p.requests[0].payload.color, 'blue');
   assert.equal(p.run('selectedIds.size'), 2);
-  assert.match(p.run('selectNotice'), /1 张尚未通过检查/);
+  assert.equal(p.run('selectNotice'), '');
   p.run('batchState.busy = true');
   await p.run(`changeSelectedColor('green')`);
   assert.equal(p.requests.length, 1);

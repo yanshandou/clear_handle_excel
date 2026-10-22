@@ -21,7 +21,7 @@
     <section class="panel batch-tools">
       <div class="panel-section-head"><div class="panel-section-title"><span class="step-chip step-chip-teal">结果审核</span><span>每个单元格一张卡片</span></div><button id="largeBtn" class="btn btn-outline btn-sm"><span class="batch-icon-enlarge" aria-hidden="true"></span>单卡大图审核</button></div>
       <div id="filters" class="batch-filters" aria-label="按颜色筛选"></div>
-      <p class="toolbar-hint">单击卡片：蓝 → 绿 → 黄 → 蓝，卡片位置不变。自动加高没通过检查、但你看「最后一次尝试」的图已显示完整的，也可以标蓝，提交时按那次的行高写入原文件；还没轮到自动处理的卡不能标蓝，只在黄、绿之间切换。筛选后改了颜色的卡片暂时留在原位，重新点筛选按钮才按新颜色过滤。点卡片左上角圆圈可多选，用底部悬浮条全选、反选或批量改色。蓝色保留修复，绿色还原并忽略，黄色还原后人工处理。颜色先保存为标记，提交后统一执行。</p>
+      <p class="toolbar-hint">单击卡片：蓝 → 绿 → 黄 → 蓝，三种颜色均可自由切换，卡片位置不变。蓝色表示你认可结果：有可采用的「最后一次尝试」时，提交按那次的行高写入原文件；没有试修方案时按人工确认放行，不额外修改 Excel。筛选后改了颜色的卡片暂时留在原位，重新点筛选按钮才按新颜色过滤。点卡片左上角圆圈可多选，用底部悬浮条全选、反选或批量改色。绿色还原并忽略，黄色还原后人工处理。颜色先保存为标记，提交后统一执行。</p>
       <div class="batch-actions"><button id="commitBtn" class="btn btn-primary">✓ 确认并处理标记</button><button id="openAllBtn" class="btn btn-outline">📂 打开全部人工待处理文件</button><button id="recheckAllBtn" class="btn btn-outline">🔁 统一复检黄色项</button></div>
       <p class="toolbar-hint">同行颜色冲突时整行转黄。请先提交标记、完成还原，再修改 Excel；保存后可单项或统一复检，通过的变蓝，可再次确认移出列表。</p>
     </section>
