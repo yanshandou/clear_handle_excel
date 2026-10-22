@@ -90,11 +90,36 @@ class ReportAccumulateTests(unittest.TestCase):
         reporter.EXECUTION_STATE.update(folder=str(self.folder), batch=["sub/a.xlsx", "🟡a.xlsx"], files={
             "sub/a.xlsx": {"index": 1, "name": "sub/a.xlsx", "path": str(self.folder / "sub" / "a.xlsx"), "status": "pending"},
             "🟡a.xlsx": {"index": 2, "name": "🟡a.xlsx", "path": "🟡a.xlsx", "status": "needs_fix"},
-            "🟡b.xlsx": {"index": 3, "name": "🟡b.xlsx", "path": "🟡b.xlsx", "status": "done"},
+            "🟡b.xlsx": {"index": 3, "name": "🟡b.xlsx", "path": "🟡b.xlsx", "status": "done", "all_sheets": ["S"]},
+            "🟡c.xlsx": {"index": 4, "name": "🟡c.xlsx", "path": "🟡c.xlsx", "status": "needs_fix", "all_sheets": []},
+            "sub/Ｗeb会議.xlsx": {"index": 5, "name": "sub/Ｗeb会議.xlsx", "status": "pending",
+                                 "current_action": "排队等待处理..."},
+            "🟡Web会議.xlsx": {"index": 6, "name": "🟡Web会議.xlsx", "status": "done", "current_action": "已微调保存",
+                              "normalized_a1": True, "fixes": {"i1": {"sheet": "S", "cell": "A1", "row": 1, "reason": "r"}}},
         })
         self.assertTrue(reporter._merge_review_duplicates_unlocked())
-        self.assertEqual(sorted(reporter.EXECUTION_STATE["files"]), ["b.xlsx", "sub/a.xlsx"])
+        files = reporter.EXECUTION_STATE["files"]
+        # 有内容的改回原名；没内容的空壳去掉；全角半角不同也能并回原文件，且不丢后面步骤的结果
+        self.assertEqual(sorted(files), ["b.xlsx", "sub/a.xlsx", "sub/Ｗeb会議.xlsx"])
         self.assertEqual(reporter.EXECUTION_STATE["batch"], ["sub/a.xlsx"])
+        web = files["sub/Ｗeb会議.xlsx"]
+        self.assertEqual((web["status"], web["current_action"], web["normalized_a1"]), ("done", "已微调保存", True))
+        self.assertIn("i1", web["fixes"])
+
+    def test_folder_change_clears_rows_even_when_preserving(self):
+        other = self.root / "other"
+        other.mkdir()
+        reporter.init_execution_batch("批量导出 PDF", other, [other / "y.xlsx"])
+        reporter.init_execution_batch("Web 闭环行高微调", self.folder, [self.folder / "a.xlsx"], preserve_existing_files=True)
+        self.assertEqual(list(reporter.get_execution_report_snapshot()["files"]), ["a.xlsx"])
+
+    def test_done_with_unfixed_clips_stays_needs_fix(self):
+        a = self.folder / "a.xlsx"
+        reporter.init_execution_batch("Web 切字扫描（增量）", self.folder, [a])
+        reporter.update_file_progress("a.xlsx", status="needs_fix", clip_detected=2, clip_unfixed=2)
+        reporter.init_execution_batch("视图标准化（A1 + 100% 缩放）", self.folder, [a])
+        reporter.update_file_progress("a.xlsx", status="done", normalized_a1=True)
+        self.assertEqual(reporter.get_execution_report_snapshot()["files"]["a.xlsx"]["status"], "needs_fix")
 
     def test_fixes_listed_with_place_and_reason_only(self):
         a = self.folder / "a.xlsx"
