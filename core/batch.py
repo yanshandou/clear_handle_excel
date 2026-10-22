@@ -60,8 +60,12 @@ def carry_item_policies(items: dict[str, dict]) -> None:
         item["triage_keep"] = False
         for ignored in data.get("ignored", []):
             if _cell(item) == tuple(ignored["cell"]) and _signature(item) in ignored["signatures"]:
-                item.update(status="accepted", manual_confirmation={"accepted": True},
-                            review_reason=wf.MANUAL_CONFIRMED_REASON)
+                if ignored.get("fixed"):
+                    # 人工认可的加高：检测仍会报（误报），按已修复记账，报告里照常列出
+                    item.update(status="fixed", **copy.deepcopy(ignored["fixed"]))
+                else:
+                    item.update(status="accepted", manual_confirmation={"accepted": True},
+                                review_reason=wf.MANUAL_CONFIRMED_REASON)
                 break
 
 
@@ -109,6 +113,23 @@ def _save_shot(card: dict, which: str, image: str) -> None:
 def _waiting(card: dict) -> bool:
     """还没轮到自动处理的卡（旧数据没有 waiting 字段，按说明文字判断）"""
     return bool(card.get("waiting", card.get("message") == WAITING_MESSAGE))
+
+
+def _adoptable(card: dict) -> bool:
+    """自动检查没通过、但留下了「最后一次尝试」截图的卡：用户看图确认已显示完整时可以标蓝，
+    提交时按那次尝试的行高写入原文件（检测器可能误报，人眼判断为准）。"""
+    heights = (card.get("base_height"), card.get("attempt_height"))
+    return (not card.get("verified") and card.get("after_kind") == "attempt" and not _waiting(card)
+            and all(isinstance(h, (int, float)) and math.isfinite(h) for h in heights)
+            and bool(card.get("fix_images", {}).get("after")))
+
+
+def _can_be_blue(card: dict) -> bool:
+    return bool(card.get("verified")) or _adoptable(card)
+
+
+def _adopting(card: dict) -> bool:
+    return card["color"] == "blue" and _adoptable(card)
 
 
 def _items_at(card: dict) -> list[dict]:
@@ -187,6 +208,7 @@ def snapshot() -> dict:
             row = _row_record(card)
             if row is not None:
                 result["row_height"] = {"base": row["base"], "applied": row["applied"], "saved": row["saved"]}
+            result["adoptable"] = _adoptable(card)
             result["images"] = {
                 which: _image_url(name) for which, name in card.get("fix_images", {}).items()
                 if fix_images.image_path(name)
@@ -208,8 +230,8 @@ def mark(cid: str, color: str) -> None:
         card = _data()["cards"].get(cid) if isinstance(cid, str) else None
         if color not in COLORS or card is None or card.get("dismissed") or not wf.in_current_folder(card["wb_path"]):
             raise ValueError("请选择当前文件夹的有效卡片及颜色")
-        if color == "blue" and not card.get("verified"):
-            raise ValueError("此处尚未通过检查，请修改 Excel 后复检，或标为绿色忽略")
+        if color == "blue" and not _can_be_blue(card):
+            raise ValueError("此处还没有可保留的修复，请修改 Excel 后复检，或标为绿色忽略")
         previous = copy.deepcopy(card)
         card.update(color=color, finalized=False, marked=True, waiting=False)
         try:
@@ -234,7 +256,7 @@ def mark_many(ids: Any, color: str) -> dict:
             if card is None or card.get("dismissed") or not wf.in_current_folder(card["wb_path"]):
                 raise ValueError("选中的卡片已失效，请刷新页面后重新选择")
             targets.append(card)
-        skipped = [c for c in targets if color == "blue" and not c.get("verified")]
+        skipped = [c for c in targets if color == "blue" and not _can_be_blue(c)]
         changed = [c for c in targets if c not in skipped]
         previous = [copy.deepcopy(c) for c in changed]
         for card in changed:
@@ -291,6 +313,7 @@ def _finish_pending(excel: Any) -> None:
         data = _data()
         for row in pending["rows"]:
             record = data["rows"][row["id"]]
+            # 人工认可的加高等同正式接受，不再属于可还原的待审核修改
             record["saved"] = pending["action"] == "fix"
             record["applied"] = row["target"]
             if pending["action"] == "fix" and row["id"] not in job.setdefault("attempted_rows", []):
@@ -305,11 +328,16 @@ def _finish_pending(excel: Any) -> None:
                                                 and r["sheet"] == card["sheet_name"]),
                                 fix_images=copy.deepcopy(card.get("fix_images", {})),
                                 review_reason="全自动批处理：已修复并保存")
+            elif pending["action"] == "adopt":
+                card.update(verified=True, adopted=True, after_kind="fixed", message="已按最后一次尝试加高并保存",
+                            adopted_height=next(r["target"] for r in pending["rows"] if r["row"] == card["excel_row"]
+                                                and r["sheet"] == card["sheet_name"]))
             else:
                 card["message"] = "已还原自动修改，等待人工处理" if card["color"] == "yellow" else "已还原，待提交忽略"
         job["pending_adjustment"] = None
         wf._persist_state()
-        wf._sync_problem_counts(pending["path"], "自动处理已保存" if pending["action"] == "fix" else "审核还原已保存")
+        wf._sync_problem_counts(pending["path"], {"fix": "自动处理已保存", "adopt": "审核加高已保存"}.get(
+            pending["action"], "审核还原已保存"))
 
 
 def abandon_pending() -> None:
@@ -623,9 +651,10 @@ def _commit_review(excel: Any) -> None:
     for card in cards:
         by_row.setdefault(_key(card["wb_path"], card["sheet_name"], card["excel_row"]), []).append(card)
     # 只在仍有自动修改需要还原时检查同行冲突；已经忽略的格子不因后来复检重新入队。
+    # 人工认可的加高也改整行行高：同行颜色不一致同样整行转黄
     for rid, peers in by_row.items():
         row = data["rows"].get(rid)
-        if row and row["saved"] and len({c["color"] for c in peers}) > 1:
+        if ((row and row["saved"]) or any(_adopting(c) for c in peers)) and len({c["color"] for c in peers}) > 1:
             for card in peers:
                 card.update(color="yellow", conflict=True, message="同行存在不同处理意见，整行还原后交给人工")
     wf._persist_state()
@@ -647,11 +676,18 @@ def _commit_review(excel: Any) -> None:
                                          "version": wf._file_version(Path(path)), "rows": rows, "cards": reverting}
             wf._persist_state()
             _finish_pending(excel)
+        _adopt_rows(excel, path, by_row)
         with wf.STATE_LOCK:
             for card in [c for c in cards if c["wb_path"] == path]:
                 card["finalized"] = True
-                if card["color"] == "green":
+                # 标蓝但检测器仍报的格子（人工认可）也要记规则，否则重新检测又出卡
+                accepted_by_eye = card["color"] == "blue" and (card.get("adopted") or _adoptable(card))
+                if card["color"] == "green" or accepted_by_eye:
                     rule = {"cell": list(_cell(card)), "signatures": card["signatures"]}
+                    if card.get("adopted"):
+                        rule["fixed"] = {"row_height": card["adopted_height"], "batch_managed": True,
+                                         "fix_images": copy.deepcopy(card.get("fix_images", {})),
+                                         "review_reason": "全自动批处理：已修复并保存"}
                     if rule not in data["ignored"]:
                         data["ignored"].append(rule)
                 card["dismissed"] = card["color"] != "yellow"
@@ -661,7 +697,15 @@ def _commit_review(excel: Any) -> None:
                                 + "自动修改已还原，请在 Excel 中修改并保存后复检")
                 for item in _items_at(card):
                     item.update(batch_managed=True, triage_keep=False)
-                    if card["color"] == "green":
+                    if accepted_by_eye:
+                        fixed = next((r["fixed"] for r in data["ignored"] if r["cell"] == list(_cell(card))
+                                      and r.get("fixed")), None) if card.get("adopted") else None
+                        if fixed:
+                            item.update(status="fixed", **copy.deepcopy(fixed))
+                        else:
+                            item.update(status="accepted", manual_confirmation={"accepted": True},
+                                        review_reason=wf.MANUAL_CONFIRMED_REASON)
+                    elif card["color"] == "green":
                         item.update(status="accepted", manual_confirmation={"accepted": True},
                                     review_reason=wf.MANUAL_CONFIRMED_REASON)
                     elif card["color"] == "yellow":
@@ -689,6 +733,35 @@ def _commit_review(excel: Any) -> None:
                     row["saved"] = False  # 已正式接受的历史修改不再属于可还原的待审核修改。
             job["completed"].append(path)
             wf._persist_state()
+
+
+def _adopt_rows(excel: Any, path: str, by_row: dict[str, list[dict]]) -> None:
+    """标蓝的「最后一次尝试」：按那次尝试的行高写入原文件（同行都标蓝才写）。走写入日志，可续跑。"""
+    job = wf.STATE["job"]
+    data = _data()
+    rows, adopting = [], []
+    for rid, peers in by_row.items():
+        mine = [c for c in peers if c["wb_path"] == path and _adopting(c)]
+        if not mine or any(c["color"] != "blue" for c in peers):
+            continue
+        first = mine[0]
+        target = max(c["attempt_height"] for c in mine)
+        if abs(target - first["base_height"]) < ROW_HEIGHT_TOLERANCE:
+            continue  # 原样就是这样：不用写，提交时按忽略处理
+        data["rows"].setdefault(rid, {"id": rid, "path": path, "sheet": first["sheet_name"],
+                                      "row": int(first["excel_row"]), "base": first["base_height"],
+                                      "applied": first["base_height"], "saved": False})
+        rows.append({"id": rid, "sheet": first["sheet_name"], "row": int(first["excel_row"]),
+                     "expected": first["base_height"], "target": target})
+        adopting.extend(c["id"] for c in mine)
+    if not rows:
+        return
+    refresh = job["options"].setdefault("refresh_sheets", {})
+    refresh[path] = sorted(set(refresh.get(path, [])) | {r["sheet"] for r in rows})
+    job["pending_adjustment"] = {"action": "adopt", "path": path, "version": wf._file_version(Path(path)),
+                                 "rows": rows, "cards": adopting}
+    wf._persist_state()
+    _finish_pending(excel)
 
 
 def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:

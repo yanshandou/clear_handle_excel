@@ -160,10 +160,18 @@ function handlingText(card) {
   return '';
 }
 
-// 蓝色 = 保留已通过检查的修复；没有通过的修复就没有可保留的东西，单击只在黄、绿之间切换
-function noBlueReason(card) {
-  const why = card.waiting ?? card.message === '等待自动处理' ? '还没轮到自动处理'
-    : card.after_kind === 'attempt' ? '自动加高没有通过检查' : '当前修复还没有通过检查';
+// 蓝色 = 保留修复。自动检查没通过、但有「最后一次尝试」图的卡，看图确认没问题也可以标蓝，提交时按那次的行高写入；
+// 一点修改都没有的卡（还没轮到处理等）没有可保留的东西，单击只在黄、绿之间切换
+const canBlue = card => card.verified || card.adoptable;
+
+function blueNote(card) {
+  if (card.adoptable) {
+    const height = Number.isFinite(card.attempt_height) ? ` ${pt(card.attempt_height)}` : '';
+    return card.color === 'blue'
+      ? `已按你的判断标蓝：提交时把第 ${card.excel_row} 行行高改为${height}（最后一次尝试）并保存，记为已修复。`
+      : `自动检查没通过，但如果「最后一次尝试」的图已经显示完整，可以标蓝：提交时按${height}写入原文件。`;
+  }
+  const why = card.waiting ?? card.message === '等待自动处理' ? '还没轮到自动处理' : '还没有可保留的修复';
   return `${why}，暂时不能标蓝（单击只在黄、绿之间切换）。改好后复检通过会自动变蓝。`;
 }
 
@@ -180,7 +188,7 @@ function cardHtml(card, large = false) {
     <div class="batch-card-head"><button type="button" class="batch-select" data-action="select" aria-pressed="false" title="选中 / 取消选中">✓</button><div class="batch-card-title">${link}<p class="batch-cell">${esc(card.sheet_name)}!${esc(card.cell_addr || '定位待确认')}</p></div><span class="batch-color-label">${REVIEW_LABELS[card.color]}</span></div>
     ${visuals}${problemHtml(card)}${handling ? `<p class="batch-handling">${esc(handling)}</p>` : ''}${card.text ? `<p class="batch-text">${esc(card.text)}</p>` : ''}${card.message ? `<p class="batch-message">${esc(card.message)}</p>` : ''}
     <p class="batch-state">${card.finalized ? '已提交 · 可人工处理' : '颜色标记待提交'}${batchState.busy ? ' · 后台任务结束后可标记' : ''}</p>
-    ${card.verified ? '' : `<p class="batch-no-blue">${noBlueReason(card)}</p>`}
+    ${card.verified ? '' : `<p class="batch-no-blue">${blueNote(card)}</p>`}
     <div class="batch-card-footer"><button class="btn btn-outline" data-action="large"><span class="batch-icon-enlarge" aria-hidden="true"></span>大图审核</button>${card.color === 'yellow' && card.finalized ? '<button class="btn btn-outline" data-action="recheck">🔁 单项复检</button>' : ''}</div></article>`;
 }
 
@@ -322,7 +330,7 @@ async function changeColor(id, direction = 1) {
   if (!card) return;
   let color = nextColor(card.color, direction);
   // 自动失败的黄色项也能用鼠标标绿；复检通过前跳过不可用的蓝色状态。
-  if (color === 'blue' && !card.verified) color = nextColor(color, direction);
+  if (color === 'blue' && !canBlue(card)) color = nextColor(color, direction);
   await action(() => post('/api/batch/mark', { id, color }));
 }
 
@@ -356,6 +364,7 @@ $('commitBtn').addEventListener('click', () => {
   const count = color => cards.filter(c => c.color === color).length;
   const unmarked = cards.filter(c => !c.marked && !c.finalized).length;
   const message = `将提交 ${cards.length} 张卡片：\n蓝（保留修复）${count('blue')}　绿（还原并忽略）${count('green')}　黄（还原后人工）${count('yellow')}`
+    + (cards.some(c => c.color === 'blue' && c.adoptable) ? `\n\n其中 ${cards.filter(c => c.color === 'blue' && c.adoptable).length} 张蓝色是自动检查没通过、由你看图认可的：会按最后一次尝试的行高写入原文件。` : '')
     + (unmarked ? `\n\n其中 ${unmarked} 张没有手动改过颜色，将按当前颜色处理。` : '')
     + (waiting ? `\n\n另有 ${waiting} 张还没轮到自动处理，这次不提交，继续全自动处理后再审核。` : '') + '\n\n确定提交吗？';
   if (window.confirm(message)) startJob('/api/batch/commit', { card_ids: cards.map(c => c.id) });

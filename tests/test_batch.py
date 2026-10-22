@@ -289,8 +289,46 @@ class BatchTests(unittest.TestCase):
     def test_no_automatic_blue_for_unverified_manual_item(self):
         card, _ = self.add_card(color="yellow")
         card["verified"] = False
-        with self.assertRaisesRegex(ValueError, "尚未通过"):
+        with self.assertRaisesRegex(ValueError, "还没有可保留的修复"):
             batch.mark(card["id"], "blue")
+
+    def attempt_card(self, address="A5", color="yellow"):
+        """自动加高没通过检查、留下「最后一次尝试」截图、原文件没改的卡"""
+        card, item = self.add_card(address, color)
+        batch._data()["rows"].pop(batch._key(self.path, "S1", 5), None)
+        item["status"] = "pending"
+        card.update(verified=False, after_kind="attempt", base_height=24.0, attempt_height=33.0,
+                    fix_images={"before": "b.png", "after": "a.png"})
+        return card, item
+
+    def test_blue_on_failed_attempt_writes_attempt_height_and_counts_as_fixed(self):
+        """检测器没通过但人看图已修好：可以标蓝，提交时按最后一次尝试的行高写入，报告里算修复"""
+        card, item = self.attempt_card()
+        self.assertTrue(batch.snapshot()["cards"][0]["adoptable"])
+        batch.mark(card["id"], "blue")
+        self.commit([card])
+        self.assertEqual(self.heights[5], 33.0)
+        self.assertTrue(card["dismissed"])
+        self.assertEqual((item["status"], item["row_height"]), ("fixed", 33.0))
+        self.assertFalse(batch._data()["rows"][batch._key(self.path, "S1", 5)]["saved"])
+        # 重新检测仍会报这一格（误报）：按规则记为已修复，不再出卡
+        redetected = dict(item, id="new", status="pending", fix_images={})
+        batch.carry_item_policies({"new": redetected})
+        self.assertEqual((redetected["status"], redetected["row_height"]), ("fixed", 33.0))
+        self.assertEqual(redetected["fix_images"]["after"], "a.png")
+
+    def test_blue_attempt_with_disagreeing_row_peer_writes_nothing(self):
+        card, _ = self.attempt_card("A5", "blue")
+        peer, _ = self.attempt_card("B5", "green")
+        self.commit([card, peer])
+        self.assertEqual(self.heights[5], 24.0)
+        self.assertEqual((card["color"], peer["color"]), ("yellow", "yellow"))
+        self.excel.Workbooks.Open.assert_not_called()
+
+    def test_waiting_card_still_cannot_be_blue(self):
+        card, _ = self.attempt_card()
+        card.update(waiting=True, message=batch.WAITING_MESSAGE)
+        self.assertEqual(batch.mark_many([card["id"]], "blue"), {"changed": 0, "skipped": 1})
 
     def test_recheck_passes_one_cell_and_keeps_ignored_cell_out(self):
         a, item_a = self.add_card("A5", "yellow")
