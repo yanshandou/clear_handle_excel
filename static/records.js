@@ -1,7 +1,6 @@
 let currentFilter = 'all';
 let latestReportData = null;
 let lastRenderKey = '';
-const openingFiles = new Set();  // 正在打开的文件：表格每次刷新都会重建，不能靠元素上的 class 防连点
 
 // 看板按记录的键（相对目标文件夹的路径）排序显示；打开文件也用这个键
 function filesOf(data) {
@@ -104,7 +103,7 @@ function renderFilesTable(filesList) {
       const fileDisplayName = f.renamed_to && f.renamed_to !== f.name
         ? `${escapeHtml(f.name)} <span style="color:#b45309; font-size:12px;">→ ${escapeHtml(f.renamed_to)}</span>`
         : escapeHtml(f.name);
-      const fileLink = `<a href="#" class="file-open-link" data-file="${escapeHtml(f.key)}" title="点击在 Excel 中打开">📄 ${fileDisplayName}</a>`;
+      const fileLink = excelLinkHtml(`📄 ${fileDisplayName}`, { file: f.key, record: true });
 
       const det = Number(f.clip_detected || 0);
       const fix = Number(f.clip_fixed || 0);
@@ -201,32 +200,6 @@ async function pollRecords() {
     document.getElementById('statusText').innerText = '⚠️ 连不上工具（命令行窗口是否关了？），下面是之前的数据';
   }
 }
-
-async function openRecordFile(link) {
-  const file = link.dataset.file;
-  if (openingFiles.has(file)) return;
-  openingFiles.add(file);
-  try {
-    const res = await fetch('/api/records/open', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file }),
-    });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error || '打开失败');
-  } catch (e) {
-    alert(`无法打开文件：${e.message}`);
-  } finally {
-    setTimeout(() => openingFiles.delete(file), 1500);
-  }
-}
-
-document.getElementById('recordsTableBody').addEventListener('click', e => {
-  const link = e.target.closest('.file-open-link');
-  if (!link) return;
-  e.preventDefault();
-  openRecordFile(link);
-});
 
 async function copyMarkdownReport() {
   const md = latestReportData?.markdown || '';

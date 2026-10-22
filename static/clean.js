@@ -594,7 +594,7 @@ function previewFileItem(file, fileIndex, extraClass = '') {
     <li class="${extraClass} ${allDeleted ? 'is-warn' : ''}">
       <div class="preview-file-head">
         <div class="preview-file-title">
-          <b title="${escapeHtml(file.name)}">📄 ${escapeHtml(splitDirAndBase(file.name)[1])}</b>
+          <b title="${escapeHtml(file.name)}">${excelLinkHtml(`📄 ${escapeHtml(splitDirAndBase(file.name)[1])}`, { file: file.name, folder: previewData.folder })}</b>
         </div>
         ${file.sheets.length ? `<span class="preview-file-actions">
           ${processed
