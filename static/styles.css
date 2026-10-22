@@ -3357,3 +3357,13 @@ button.preview-sheet-tag:active {
   font-size: 13px;
   color: var(--text-main);
 }
+
+.fix-zoom-empty {
+  padding: 18px 28px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.fix-zoom [hidden] {
+  display: none;
+}

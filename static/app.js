@@ -1028,7 +1028,9 @@ function renderReview() {
         const state = resolved ? escapeHtml('✓ 已解决，复检时去掉黄色')
           : mark.state === 'marked' ? '<span class="review-swatch" aria-hidden="true"></span>已标黄'
           : escapeHtml(mark.state === 'skipped' ? `⚠️ 没标黄：${mark.error || ''}` : '⏳ 等待标黄');
-        return `<div class="review-mark ${resolved ? 'is-resolved' : ''}">
+        const preview = mark.item_ids.map(id => serverItems[id]?.image).find(Boolean) || '';
+        const zoomCaption = `${mark.sheet}!${mark.addr} ${text}`;
+        return `<div class="review-mark ${resolved ? 'is-resolved' : ''}" data-zoom="${escapeHtml(preview)}" data-zoom-caption="${escapeHtml(zoomCaption)}">
           <span class="review-mark-cell">${escapeHtml(mark.sheet)}!${escapeHtml(mark.addr)}</span>
           <span class="review-mark-text" title="${escapeHtml(text)}">${escapeHtml(text)}</span>
           <span class="review-mark-state">${state}</span>
@@ -1341,13 +1343,14 @@ setInterval(whenIdle(pollAutofix), 1500);
 pollAutofix();
 pollState();
 
-// 候选图悬停放大：固定定位的浮层挂在 body 上，跟着鼠标走并限制在窗口内，不改变页面布局
+// 悬停放大（② 的候选图、稍后人工复检的每一处）：固定定位的浮层挂在 body 上，跟着鼠标走并限制在窗口内，不改变页面布局
 const fixZoom = (() => {
   const box = document.createElement('div');
   box.className = 'fix-zoom';
-  box.innerHTML = '<img alt=""><span class="fix-zoom-caption"></span>';
+  box.innerHTML = '<img alt=""><span class="fix-zoom-empty">暂无截图预览</span><span class="fix-zoom-caption"></span>';
   document.body.appendChild(box);
   const img = box.querySelector('img');
+  const empty = box.querySelector('.fix-zoom-empty');
   const caption = box.querySelector('.fix-zoom-caption');
   const GAP = 18;
   const MARGIN = 12;
@@ -1356,15 +1359,17 @@ const fixZoom = (() => {
   let lastY = 0;
 
   function place() {
-    if (!current || !img.naturalWidth) return;
+    if (!current || (!img.hidden && !img.naturalWidth)) return;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    // 原图按 4 倍渲染，最多显示原图的 3/4（约 PDF 的 3 倍），且不超出窗口
-    const maxW = Math.min(img.naturalWidth * 0.75, vw * 0.7);
-    const maxH = vh - MARGIN * 2 - 40;
-    const scale = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight, 1);
-    img.style.width = `${Math.round(img.naturalWidth * scale)}px`;
-    img.style.height = `${Math.round(img.naturalHeight * scale)}px`;
+    if (!img.hidden) {
+      // 候选图按 4 倍渲染（扫描时的特写是 2.5 倍），最多显示原图的 3/4，且不超出窗口
+      const maxW = Math.min(img.naturalWidth * 0.75, vw * 0.7);
+      const maxH = vh - MARGIN * 2 - 40;
+      const scale = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight, 1);
+      img.style.width = `${Math.round(img.naturalWidth * scale)}px`;
+      img.style.height = `${Math.round(img.naturalHeight * scale)}px`;
+    }
     const w = box.offsetWidth;
     const h = box.offsetHeight;
     let left = lastX + GAP;
@@ -1386,16 +1391,30 @@ const fixZoom = (() => {
   document.addEventListener('mousemove', event => {
     lastX = event.clientX;
     lastY = event.clientY;
-    const tile = event.target.closest && event.target.closest('.fix-tile');
-    const thumb = tile && tile.querySelector('img');
-    if (!thumb || !thumb.src) {
+    const target = event.target.closest && event.target.closest('.fix-tile, [data-zoom]');
+    let src = '';
+    let text = '';
+    if (target && target.classList.contains('fix-tile')) {
+      src = target.querySelector('img')?.src || '';
+      text = target.querySelector('.fix-tile-caption')?.textContent || '';
+      if (!src) {
+        hide();
+        return;
+      }
+    } else if (target) {
+      src = target.dataset.zoom ? new URL(target.dataset.zoom, location.href).href : '';
+      text = target.dataset.zoomCaption || '';
+    } else {
       hide();
       return;
     }
-    if (thumb !== current) {
-      current = thumb;
-      caption.textContent = tile.querySelector('.fix-tile-caption')?.textContent || '';
-      if (img.src !== thumb.src) img.src = thumb.src;
+    const key = `${src}|${text}`;
+    if (key !== current) {
+      current = key;
+      caption.textContent = text;
+      img.hidden = !src;
+      empty.hidden = !!src;
+      if (src && img.src !== src) img.src = src;
       box.classList.add('is-visible');
     }
     place();
