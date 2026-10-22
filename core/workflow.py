@@ -127,6 +127,7 @@ STATE: dict[str, Any] = {
     # 稍后人工复检：wb_path -> {"marks": [{sheet, addr, row, item_ids, state, fill, range, error}], "error"}
     # state: pending 等后台标黄 / marked 已标黄 / skipped 没能标黄（仍在队列里）
     "review_queue": {},
+    "batch_review": {"cards": {}, "rows": {}, "ignored": []},
 }
 
 _saved_state = load_snapshot("workflow")
@@ -166,6 +167,9 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
     with STATE_LOCK:
         if STATE["busy"]:
             return False
+        if (kind != "resume" and STATE.get("job") and STATE["job"]["kind"].startswith("batch_")
+                and STATE["job"].get("pending_adjustment")):
+            raise ValueError("上次文件写入尚未结算，请先继续上次任务，不能替换其写入日志")
         if kind in {"review_recheck", "review_open"} and not current_review_queue():
             raise ValueError("当前文件夹没有挂起的稍后人工复检")
         if kind in {"fix", "manual_open", "recheck"}:
@@ -179,6 +183,7 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
         if kind == "resume":
             if not STATE["job"] or STATE["job"]["status"] != "interrupted":
                 raise ValueError("没有可继续的中断任务")
+            STATE["job"].pop("pause_requested", None)
         else:
             STATE["job"] = {
                 "kind": kind, "options": options or {}, "completed": [],
@@ -209,7 +214,10 @@ def run_pending_workflow() -> None:
         with STATE_LOCK:
             job = STATE["job"]
             options = dict(job["options"])
-        if job["kind"] == "scan":
+        if job["kind"].startswith("batch_"):
+            from core import batch
+            expected = batch.run()
+        elif job["kind"] == "scan":
             scan_folder_workflow(
                 options["folder"], options["delete_backups"], full=options.get("full", False), resume=True,
             )
@@ -261,7 +269,7 @@ def run_pending_workflow() -> None:
     finally:
         with STATE_LOCK:
             STATE["busy"] = False
-            if STATE["job"] and STATE["job"]["kind"] == "scan":
+            if STATE["job"] and STATE["job"]["kind"] in {"scan", "batch_scan"}:
                 STATE["scan_progress"].update(
                     total=len(STATE["job"].get("workbooks", [])),
                     completed=len(STATE["job"]["completed"]), status=STATE["job"]["status"],
@@ -703,7 +711,7 @@ def _merge_redetected(
             item["triage_keep"] = bool(old.get("triage_keep"))
             if old.get("fix_images"):
                 item["fix_images"] = {k: v for k, v in old["fix_images"].items() if k == "before"}
-            if old["status"] == "accepted":
+            if old["status"] == "accepted" and not old.get("batch_managed"):
                 item["status"] = "accepted"
                 item["manual_confirmation"] = copy.deepcopy(old["manual_confirmation"])
                 item["review_reason"] = MANUAL_CONFIRMED_REASON
@@ -725,6 +733,8 @@ def _merge_redetected(
                 record["review_reason"] = MANUALLY_FIXED_REASON
                 _capture_fixed_image(record)
             merged[record["id"]] = record
+    from core import batch
+    batch.carry_item_policies(merged)
     return merged
 
 
@@ -955,6 +965,7 @@ def _scan_one_workbook(
     rescan_all: bool,
     delete_backups: bool,
     used_pdf_paths: set[Path],
+    read_only: bool = False,
 ) -> None:
     """检查一个工作簿；所有工作表检测完成后才一次性替换该文件的旧结果，中途失败不影响旧记录。"""
     path = str(wb_path)
@@ -965,7 +976,10 @@ def _scan_one_workbook(
         + (f"（只查有问题的工作表：{'、'.join(entry['sheets'])}）" if sheets_only else " ...")
     )
     update_file_progress(wb_label, status="processing", current_action="正在打开工作簿...", error="")
-    wb = excel.Workbooks.Open(str(wb_path.resolve()), UpdateLinks=0)
+    open_options = {"UpdateLinks": 0}
+    if read_only:
+        open_options["ReadOnly"] = True
+    wb = excel.Workbooks.Open(str(wb_path.resolve()), **open_options)
     try:
         all_names = [s.Name for s in wb.Sheets]
         deleted_bkp_list: list[str] = []
@@ -2602,6 +2616,7 @@ def import_progress(data: Any) -> dict[str, Any]:
     imported = copy.deepcopy(workflow_state)
     imported.setdefault("scan_progress", {})
     imported.setdefault("review_queue", {})
+    imported.setdefault("batch_review", {"cards": {}, "rows": {}, "ignored": []})
     if not isinstance(imported["scan_progress"], dict):
         raise ValueError("进度文件损坏：扫描进度格式无效")
     imported["busy"] = False

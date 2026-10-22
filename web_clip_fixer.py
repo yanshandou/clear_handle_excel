@@ -9,7 +9,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from core import autofix
+from core import autofix, batch, fix_images
 from core.common import (
     STATIC_DIR,
     console_print,
@@ -148,7 +148,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             self._send_bytes(image.read_bytes(), MIME_TYPES[image.suffix])
         elif parsed.path in {"/workbench", "/index.html"}:
-            self._serve_static_file("index.html")
+            self._serve_static_file("batch.html")
         elif parsed.path in {"/records", "/records.html"}:
             self._serve_static_file("records.html")
         elif parsed.path == "/favicon.ico":
@@ -156,6 +156,15 @@ class WebHandler(BaseHTTPRequestHandler):
         elif parsed.path.startswith("/static/"):
             rel = parsed.path.removeprefix("/static/")
             self._serve_static_file(rel)
+        elif parsed.path == "/api/batch":
+            self._send_json(batch.snapshot())
+        elif parsed.path.startswith("/api/batch/image/"):
+            name = unquote(parsed.path.removeprefix("/api/batch/image/"))
+            path = fix_images.image_path(name)
+            if path is None:
+                self.send_error(404)
+                return
+            self._send_bytes(path.read_bytes(), "image/png")
         elif parsed.path == "/api/state":
             self._send_json(get_state_snapshot())
         elif parsed.path.startswith("/api/image/"):
@@ -242,7 +251,24 @@ class WebHandler(BaseHTTPRequestHandler):
             console_print(f"ℹ️ 浏览器已断开，{path} 的结果未送达")
 
     def _handle_post(self, payload: dict) -> None:
-        if self.path == "/api/scan":
+        if self.path == "/api/batch/start":
+            self._start_job("batch_scan", {"folder": _require_folder(payload)})
+        elif self.path == "/api/batch/mark":
+            batch.mark(payload.get("id"), payload.get("color"))
+            self._send_json({"ok": True})
+        elif self.path == "/api/batch/pause":
+            with STATE_LOCK:
+                if not STATE["busy"] or (STATE["job"] or {}).get("kind") != "batch_scan":
+                    raise ValueError("没有正在运行的全自动批处理")
+                STATE["job"]["pause_requested"] = True
+                from core.workflow import _persist_state
+                _persist_state()
+            self._send_json({"ok": True})
+        elif self.path in {"/api/batch/commit", "/api/batch/recheck", "/api/batch/open"}:
+            action = self.path.rsplit("/", 1)[1]
+            ids = batch.validate_cards(payload.get("card_ids"), yellow=action != "commit")
+            self._start_job(f"batch_{action}", {"card_ids": ids})
+        elif self.path == "/api/scan":
             folder = _require_folder(payload)
             self._start_job("scan", {
                 "folder": folder,
@@ -314,8 +340,8 @@ class WebHandler(BaseHTTPRequestHandler):
                 raise ValueError("需要有效的文件名")
             with STATE_LOCK:
                 job = STATE["job"] or {}
-                if STATE["busy"] and job.get("kind") in QUICK_TASK_NAMES:
-                    raise ValueError(f"「{QUICK_TASK_NAMES[job['kind']]}」正在修改文件，请等它结束后再打开")
+                if STATE["busy"] and (job.get("kind") in QUICK_TASK_NAMES or job.get("kind", "").startswith("batch_")):
+                    raise ValueError("后台任务正在处理文件，请等它结束或暂停后再打开")
                 workbench_folder = STATE.get("folder", "")
             if payload.get("record") is True:
                 wb_path = find_recorded_workbook(file_name)

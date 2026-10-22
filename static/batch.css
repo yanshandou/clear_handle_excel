@@ -1,0 +1,29 @@
+.batch-error { color: #b42318; min-height: 1.4em; white-space: pre-wrap; }
+.batch-filters, .batch-actions, .batch-large-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.batch-actions { margin-top: 16px; }
+.batch-filters button[aria-pressed="true"] { outline: 2px solid #2563eb; outline-offset: 3px; }
+.batch-group-title { margin: 24px 0 14px; font-size: 17px; }
+.batch-waterfall { display: flex; align-items: flex-start; gap: 18px; }
+.batch-column { flex: 1; min-width: 0; }
+.batch-card { --review-color: #3b82f6; --review-bg: #eff6ff; break-inside: avoid; display: block; width: 100%; box-sizing: border-box; margin-bottom: 18px; padding: 16px; border: 3px solid var(--review-color); border-radius: 16px; background: var(--review-bg); box-shadow: 0 5px 14px #0f172a0c; cursor: pointer; text-align: left; }
+.batch-card[data-color="green"] { --review-color: #22a06b; --review-bg: #edfdf4; }
+.batch-card[data-color="yellow"] { --review-color: #e5ac16; --review-bg: #fffbea; }
+.batch-card:focus-visible { outline: 3px solid #1e293b; outline-offset: 3px; }
+.batch-card-head { display: flex; gap: 10px; justify-content: space-between; align-items: start; margin-bottom: 10px; overflow-wrap: anywhere; }
+.batch-color-label { color: var(--review-color); font-weight: 700; white-space: nowrap; }
+.batch-card p { margin: 8px 0; overflow-wrap: anywhere; font-size: 13px; line-height: 1.6; }
+.batch-shots { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.batch-shots figure { min-width: 0; margin: 0; padding: 8px; border-radius: 9px; background: #fff; }
+.batch-shots figcaption { color: #64748b; font-size: 12px; margin-bottom: 8px; }
+.batch-shots img { display: block; width: 100%; max-height: 230px; object-fit: contain; }
+.batch-missing { display: grid; min-height: 90px; place-items: center; color: #94a3b8; font-size: 12px; }
+.batch-card-footer { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.batch-card-footer button { font-size: 12px; padding: 7px 10px; }
+.batch-empty { text-align: center; padding: 56px 20px; color: #64748b; }
+.batch-large-nav { justify-content: center; margin-bottom: 16px; }
+#largeView { scroll-margin-top: 110px; }
+#largeView .batch-card { margin: 8px 0; padding: 24px; }
+#largeView .batch-shots img { max-height: 65vh; }
+.batch-image-preview { position: fixed; z-index: 1000; pointer-events: none; padding: 12px; border: 1px solid #cbd5e1; border-radius: 12px; background: #fff; box-shadow: 0 12px 45px #0f172a30; }
+.batch-image-preview img { display: block; max-width: min(74vw, 1000px); max-height: 72vh; object-fit: contain; }
+@media (max-width: 700px) { .batch-shots { grid-template-columns: 1fr; } .batch-tools .panel-section-head { flex-wrap: wrap; gap: 14px; } }

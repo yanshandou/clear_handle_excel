@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>全自动切字修复与审核</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/batch.css">
+</head>
+<body>
+  <header class="app-header">
+    <a href="/" class="header-brand" title="返回主页"><div class="header-logo-badge">📐</div><div class="header-title"><h1>全自动切字修复与审核</h1><span class="subtitle">夜间自动处理 · 修改前后对比 · 三色审核</span></div></a>
+    <nav class="header-nav" aria-label="导航"><a href="/" class="nav-link">🏠 主页</a><a href="/clean" class="nav-link">🧹 精简 Sheet</a><a href="/workbench" class="nav-link active">📐 切字检查工作台</a><a href="/records" class="nav-link">📊 执行记录</a><span id="statusText" class="status-pill">就绪</span></nav>
+  </header>
+  <main class="container clean-container">
+    <section class="panel">
+      <div class="panel-section-head"><div class="panel-section-title"><span class="step-chip">自动处理</span><span>扫描、修复、保存，一次完成</span></div><a href="/clean" class="nav-link">先精简 Sheet ↗</a></div>
+      <div class="controls"><div class="input-groove-wrap"><span class="input-groove-icon">📂</span><input type="text" id="folderInput" aria-label="Excel 文件夹路径" placeholder="粘贴 Excel 文件夹路径（含子文件夹）"></div><button class="btn btn-primary" id="startBtn">🚀 开始全自动处理</button><button class="btn btn-outline hidden" id="pauseBtn">完成当前行后暂停</button><button class="btn btn-success hidden" id="resumeBtn">继续上次任务</button></div>
+      <p class="toolbar-hint">无需预先逐项确认；自动修复会直接保存原 Excel，请先保留原件。关闭网页后任务继续，电脑和服务需保持运行。</p>
+      <p id="progressText" role="status">等待开始任务</p><div class="progress-track progress-track-sm"><div id="progressFill" class="progress-fill" style="width:0%"></div></div><p id="errorText" class="batch-error" role="alert"></p>
+    </section>
+    <section class="panel batch-tools">
+      <div class="panel-section-head"><div class="panel-section-title"><span class="step-chip step-chip-teal">结果审核</span><span>每个单元格一张卡片</span></div><button id="largeBtn" class="btn btn-outline">▣ 单卡大图审核</button></div>
+      <div id="filters" class="batch-filters" aria-label="按颜色筛选"></div>
+      <p class="toolbar-hint">单击卡片：蓝 → 绿 → 黄 → 蓝。蓝色保留修复，绿色还原并忽略，黄色还原后人工处理。颜色先保存为标记，提交后统一执行。</p>
+      <div class="batch-actions"><button id="commitBtn" class="btn btn-primary">✓ 确认并处理标记</button><button id="openAllBtn" class="btn btn-outline">📂 打开全部人工待处理文件</button><button id="recheckAllBtn" class="btn btn-outline">🔁 统一复检黄色项</button></div>
+      <p class="toolbar-hint">同行颜色冲突时整行转黄。请先提交标记、完成还原，再修改 Excel；保存后可单项或统一复检，通过的变蓝，可再次确认移出列表。</p>
+    </section>
+    <div id="cardList" aria-live="polite"></div>
+    <section class="panel hidden" id="largeView" aria-label="单卡大图审核"><div class="batch-large-nav"><button id="prevBtn" class="btn btn-outline">↑ 上一处</button><span id="largeIndex"></span><button id="nextBtn" class="btn btn-outline">↓ 下一处</button><button id="closeLargeBtn" class="btn btn-outline">返回瀑布流</button></div><p class="toolbar-hint">↑ ↓ 或滚轮切换卡片；← → 循环切换颜色，单击卡片也可切换。Esc 返回列表。</p><div id="largeCard"></div></section>
+    <section class="panel info-panel"><details><summary>实时处理日志</summary><pre id="logBox" class="log-box">等待操作…</pre></details></section>
+  </main>
+  <div id="imagePreview" class="batch-image-preview hidden" aria-hidden="true"><img alt="截图放大预览"></div>
+  <script src="/static/open_excel.js"></script><script src="/static/batch.js"></script>
+</body>
+</html>

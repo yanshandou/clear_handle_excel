@@ -111,6 +111,8 @@ class AutofixTests(unittest.TestCase):
         }})
         self.session = self.autofix._ExcelSession()
         self.addCleanup(self.session.close)
+        # 报告有延迟写入线程；先落盘再撤销数据库路径替身，避免 Windows 清理临时库时仍被占用。
+        self.addCleanup(reporter.flush_execution_report)
 
     def group(self):
         self.autofix.sync_groups()

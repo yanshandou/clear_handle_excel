@@ -25,7 +25,7 @@ const TASKS = {
 };
 
 // 切字工作台发起的任务类型
-const CLIP_JOB_KINDS = new Set(['scan', 'fix', 'refresh', 'recheck', 'manual_open']);
+const CLIP_JOB_KINDS = new Set(['scan', 'fix', 'refresh', 'recheck', 'manual_open', 'batch_scan', 'batch_commit', 'batch_recheck', 'batch_open']);
 const FOLDER_STORAGE_KEY = 'clear_handle_excel.lastFolder';
 const STATUS_BADGES = {
   running: ['badge-selected', '🔄 正在执行'],

@@ -3,6 +3,7 @@ import importlib
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,7 +20,7 @@ class StateImageTests(unittest.TestCase):
         self.addCleanup(p.stop)
 
     def blob_rows(self):
-        with sqlite3.connect(storage.DATABASE_PATH) as conn:
+        with closing(sqlite3.connect(storage.DATABASE_PATH)) as conn, conn:
             return dict(conn.execute("SELECT key, data FROM blobs WHERE name = 'w'").fetchall())
 
     def test_images_are_stored_once_and_merged_back_on_load(self):
@@ -27,12 +28,12 @@ class StateImageTests(unittest.TestCase):
         state = {"pages": {"p1": {"id": "p1", "image": big}}, "items": {"i1": {"id": "i1", "image": ""}}}
         kwargs = {"blob_field": "image", "blob_collections": ("pages", "items")}
         storage.save_snapshot("w", state, **kwargs)
-        with sqlite3.connect(storage.DATABASE_PATH) as conn:
+        with closing(sqlite3.connect(storage.DATABASE_PATH)) as conn, conn:
             payload = conn.execute("SELECT payload FROM snapshots WHERE name = 'w'").fetchone()[0]
         self.assertNotIn("AAAA", payload)
         self.assertEqual(storage.load_snapshot("w"), state)
 
-        with sqlite3.connect(storage.DATABASE_PATH) as conn:
+        with closing(sqlite3.connect(storage.DATABASE_PATH)) as conn, conn:
             conn.execute("UPDATE blobs SET data = 'marker'")
         storage.save_snapshot("w", state, **kwargs)  # 截图没变：不再写
         self.assertEqual(list(self.blob_rows().values()), ["marker"])

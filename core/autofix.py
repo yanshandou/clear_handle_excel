@@ -167,7 +167,8 @@ def sync_groups() -> None:
 def _sync_groups_locked() -> None:
     rows: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
     for item in STATE["items"].values():
-        if item["status"] not in RESOLVED_STATUSES and file_available(item["wb_path"]):
+        if (not item.get("batch_managed") and item["status"] not in RESOLVED_STATUSES
+                and file_available(item["wb_path"])):
             rows.setdefault((item["wb_path"], item["sheet_name"], int(item["excel_row"])), []).append(item)
     eligible = {item["id"] for peers in rows.values() if all(it.get("triage_keep") for it in peers) for item in peers}
     items = [

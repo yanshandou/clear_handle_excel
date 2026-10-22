@@ -352,7 +352,8 @@ class QuickTaskTests(unittest.TestCase):
             for path in ("/workbench", "/index.html"):
                 status, body = self.request(port, "GET", path)
                 self.assertEqual(status, 200)
-                self.assertIn("STEP 01", body)
+                self.assertIn("开始全自动处理", body)
+                self.assertIn("确认并处理标记", body)
             status, body = self.request(port, "GET", "/api/overview")
             self.assertEqual(status, 200)
             overview = json.loads(body)
