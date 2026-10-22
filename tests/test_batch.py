@@ -42,6 +42,7 @@ class BatchTests(unittest.TestCase):
         self.excel = Mock()
         self.excel.Workbooks.Open.return_value = self.book
         self.normalize = patch.object(batch, "normalize_workbook_view").start()
+        self.real_refresh = batch._refresh
         self.refresh = patch.object(batch, "_refresh").start()
         self.addCleanup(patch.stopall)
 
@@ -481,6 +482,139 @@ class BatchTests(unittest.TestCase):
         batch._recheck_file(self.excel, self.path, [card])
         self.assertEqual((card["color"], card["after_kind"]), ("blue", "fixed"))
         self.assertEqual(fix_images.image_path(card["fix_images"]["after"]).read_bytes(), b"actual")
+
+    def test_abandon_unblocks_tool_after_user_changed_height(self):
+        card, item = self.add_card(color="yellow")
+        self.heights[5] = 36
+        with self.assertRaisesRegex(ValueError, "放弃这次写入"):
+            self.commit([card])
+        self.wf.STATE.update(busy=False)
+        self.wf.STATE["job"]["status"] = "interrupted"
+        batch.abandon_pending()
+        self.assertIsNone(self.wf.STATE["job"]["pending_adjustment"])
+        self.assertEqual(self.heights[5], 36)
+        self.assertEqual((card["color"], card["manual"], card["finalized"]), ("yellow", True, True))
+        self.assertEqual(item["status"], "manual_review")
+        self.assertFalse(next(iter(batch._data()["rows"].values()))["saved"])
+        self.assertTrue(self.wf.queue_job("batch_scan", {"folder": str(self.root)}))
+
+    def test_abandon_requires_a_pending_write(self):
+        self.wf.STATE["busy"] = False
+        with self.assertRaisesRegex(ValueError, "没有需要放弃"):
+            batch.abandon_pending()
+
+    def test_starting_another_folder_keeps_review_data(self):
+        card, _ = self.add_card(color="green")
+        batch._data()["ignored"].append({"cell": [self.path, "S1", "Z1"], "signatures": [["clip", "x"]]})
+        other = self.root / "other"
+        other.mkdir()
+        self.wf.STATE["job"] = {"kind": "batch_scan", "options": {"folder": str(other)}, "completed": [],
+                                "pending_adjustment": None, "status": "running"}
+        session = Mock()
+        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch, "init_execution_batch"), patch.object(batch, "finish_execution_batch"), \
+                patch.object(self.wf, "list_workbooks", return_value=(other, [])):
+            batch.run()
+        self.assertEqual(self.wf.STATE["folder"], str(other))
+        self.assertIn(card["id"], batch._data()["cards"])
+        self.assertEqual(len(batch._data()["ignored"]), 1)
+        self.assertEqual(self.wf.STATE["items"], {})
+
+    def test_excel_error_restarts_excel_and_retries_row_before_manual(self):
+        card, item = self.add_card()
+        item["status"] = "pending"
+        batch._data()["rows"].clear()
+        calls = []
+        def prepare(*_, **__):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("RPC 服务器不可用")
+            return 15, {"height": 24, "shots": {}}, {}
+        session = Mock()
+        session.app.return_value = self.excel
+        with patch.object(batch, "_prepare_row", side_effect=prepare):
+            batch._repair_file(self.excel, session, self.path)
+        self.assertEqual(len(calls), 2)
+        session.close.assert_called_once()
+        self.assertEqual(card["color"], "blue")
+        self.assertFalse(card.get("manual"))
+
+    def test_repeated_excel_errors_end_as_manual(self):
+        card, item = self.add_card()
+        item["status"] = "pending"
+        batch._data()["rows"].clear()
+        session = Mock()
+        with patch.object(batch, "_prepare_row", side_effect=RuntimeError("导出失败")) as prepare:
+            batch._repair_file(self.excel, session, self.path)
+        self.assertEqual(prepare.call_count, 3)
+        self.assertEqual(session.close.call_count, 2)
+        self.assertTrue(card["manual"])
+        self.assertEqual(card["color"], "yellow")
+
+    def test_detection_reason_is_not_retried(self):
+        card, item = self.add_card()
+        item["status"] = "pending"
+        batch._data()["rows"].clear()
+        session = Mock()
+        with patch.object(batch, "_prepare_row", side_effect=ValueError("单元格已隐藏")) as prepare:
+            batch._repair_file(self.excel, session, self.path)
+        self.assertEqual(prepare.call_count, 1)
+        session.close.assert_not_called()
+        self.assertTrue(card["manual"])
+
+    def test_original_already_passing_writes_nothing_and_is_not_a_fix(self):
+        card, item = self.add_card(color="yellow")
+        item["status"] = "pending"
+        batch._data()["rows"].clear()
+        with patch.object(batch, "_prepare_row", return_value=(24.0, {"height": 24.0, "shots": {}}, {})):
+            batch._repair_file(self.excel, Mock(), self.path)
+        self.excel.Workbooks.Open.assert_not_called()
+        self.assertEqual((card["color"], card["after_kind"]), ("blue", "unchanged"))
+        self.assertEqual(item["status"], "accepted")
+        self.assertEqual(batch._data()["rows"], {})
+        self.assertIsNone(self.wf._problem_counts(self.path)["fixes"][item["id"]])
+
+    def test_refresh_downgrades_blue_card_whose_problem_came_back(self):
+        card, item = self.add_card()
+        item["status"] = "pending"
+        def scan(*_args, **_kwargs):
+            pass
+        with patch.object(self.wf, "_scan_one_workbook", side_effect=scan):
+            self.real_refresh(self.excel, self.path, ["S1"])
+        self.assertEqual(card["color"], "yellow")
+        self.assertFalse(card["verified"])
+
+    def test_snapshot_image_urls_change_with_content(self):
+        card, _ = self.add_card()
+        batch._save_shot(card, "before", "data:image/png;base64,YQ==")
+        first = batch.snapshot()["cards"][0]["images"]["before"]
+        batch._save_shot(card, "before", "data:image/png;base64,YWJj")
+        second = batch.snapshot()["cards"][0]["images"]["before"]
+        self.assertNotEqual(first, second)
+        self.assertEqual(first.split("?")[0], second.split("?")[0])
+
+    def test_folder_switch_keeps_pictures_still_used_by_cards(self):
+        card, _ = self.add_card()
+        batch._save_shot(card, "before", "data:image/png;base64,YQ==")
+        orphan = fix_images.IMAGES_DIR / "orphan_after.png"
+        orphan.write_bytes(b"x")
+        fix_images.clear()
+        self.assertIsNotNone(fix_images.image_path(card["fix_images"]["before"]))
+        self.assertFalse(orphan.exists())
+
+    def test_review_tasks_do_not_write_another_folders_report(self):
+        reporter.EXECUTION_STATE.update(folder=str(self.root / "elsewhere"), files={})
+        self.wf.STATE.update(busy=True)
+        self.wf.STATE["job"].update(kind="batch_recheck", options={"card_ids": []}, status="running")
+        def run():
+            reporter.update_file_progress("book.xlsx", status="done")
+            reporter.finish_execution_batch("x")
+            return []
+        with patch.object(batch, "run", side_effect=run):
+            self.wf.run_pending_workflow()
+        self.assertEqual(reporter.EXECUTION_STATE["files"], {})
+        reporter.update_file_progress("book.xlsx", status="done")  # 任务结束后恢复写入
+        self.assertIn("book.xlsx", reporter.EXECUTION_STATE["files"])
 
 
 if __name__ == "__main__":

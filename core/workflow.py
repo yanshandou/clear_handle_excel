@@ -91,6 +91,7 @@ from core.reporter import (
     same_folder,
     interrupt_execution_batch,
     replace_execution_report,
+    suspend_updates as suspend_report_updates,
     update_file_progress,
 )
 from core.storage import load_snapshot, save_snapshot
@@ -136,6 +137,24 @@ if _saved_state is not None:
     STATE["busy"] = False
     if STATE["job"] and STATE["job"]["status"] == "running":
         STATE["job"]["status"] = "interrupted"
+
+
+def _referenced_images() -> set[str]:
+    """工作台还在用的截图文件名（问题项、审核卡片、整页定位图）"""
+    with STATE_LOCK:
+        names: set[str] = set()
+        for item in STATE["items"].values():
+            names.update((item.get("fix_images") or {}).values())
+        for card in STATE.get("batch_review", {}).get("cards", {}).values():
+            names.update((card.get("fix_images") or {}).values())
+            names.add((card.get("context") or {}).get("image_file", ""))
+        for page in STATE["pages"].values():
+            names.add(page.get("batch_context_image", ""))
+        names.discard("")
+        return names
+
+
+fix_images.register_references(_referenced_images)
 
 
 def _persist_state() -> None:
@@ -214,6 +233,9 @@ def run_pending_workflow() -> None:
         with STATE_LOCK:
             job = STATE["job"]
             options = dict(job["options"])
+            # 审核提交 / 复检 / 打开不重建执行记录：记录属于别的文件夹时不往里写
+            suspend_report_updates(job["kind"] in {"batch_commit", "batch_recheck", "batch_open"}
+                                   and not _report_is_for_workbench())
         if job["kind"].startswith("batch_"):
             from core import batch
             expected = batch.run()
@@ -267,6 +289,7 @@ def run_pending_workflow() -> None:
         log_msg(f"❌ 任务中断，可继续上次任务: {err}")
         interrupt_execution_batch(f"任务中断: {err}")
     finally:
+        suspend_report_updates(False)
         with STATE_LOCK:
             STATE["busy"] = False
             if STATE["job"] and STATE["job"]["kind"] in {"scan", "batch_scan"}:
@@ -2589,6 +2612,7 @@ def export_progress() -> dict[str, Any]:
         },
         "workflow": workflow_state,
         "report": report_state,
+        "images": fix_images.export_all(_referenced_images()),
     }
 
 
@@ -2653,6 +2677,7 @@ def import_progress(data: Any) -> dict[str, Any]:
             STATE.update(previous)
             replace_execution_report(previous_report)
             raise
+        fix_images.import_all(data.get("images"))
         if cancelled:
             finish_execution_batch("已导入进度备份；导出后 Excel 有变化，已取消中断任务的续跑")
         log_msg(f"📥 已导入进度备份（导出于 {data.get('exported_at') or '未知时间'}）")

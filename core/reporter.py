@@ -196,6 +196,18 @@ def _same_folder(a: str, b: Path) -> bool:
         return Path(a) == b
 
 
+_SUSPENDED = threading.local()
+
+
+def suspend_updates(suspended: bool) -> None:
+    """当前线程暂不写执行记录：工作台审核任务运行时，执行记录属于别的文件夹（主页对别的文件夹跑过任务）"""
+    _SUSPENDED.on = suspended
+
+
+def _updates_suspended() -> bool:
+    return getattr(_SUSPENDED, "on", False)
+
+
 def init_execution_batch(
     task_name: str,
     folder: Path,
@@ -297,6 +309,8 @@ def update_file_progress(
 
     fixes：{问题 id: 修复记录}，值为 None 表示这处现在不算已修复；没提到的问题沿用以前的记录
     （重新扫描后旧问题项可能不在工作台了，但文件里确实修过）。"""
+    if _updates_suspended():
+        return
     with REPORT_LOCK:
         entry = EXECUTION_STATE["files"].get(wb_name)
         if entry is None and EXECUTION_STATE.get("folder"):
@@ -400,6 +414,8 @@ def _merge_sheet_list(old: list[str], new: list[str], deleted: list[str]) -> lis
 
 def finish_execution_batch(summary_step: str = "全部任务处理完毕") -> None:
     """标记当前批次任务完成，并持久化最新 Markdown 与 JSON 状态"""
+    if _updates_suspended():
+        return
     with REPORT_LOCK:
         EXECUTION_STATE["status"] = "completed"
         EXECUTION_STATE["current_file"] = ""
@@ -409,6 +425,8 @@ def finish_execution_batch(summary_step: str = "全部任务处理完毕") -> No
 
 
 def interrupt_execution_batch(message: str) -> None:
+    if _updates_suspended():
+        return
     with REPORT_LOCK:
         EXECUTION_STATE["status"] = "interrupted"
         EXECUTION_STATE["current_file"] = ""
