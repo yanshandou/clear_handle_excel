@@ -1742,6 +1742,24 @@ input[type="text"] {
   max-width: none;
 }
 
+/* 「全部确认」悬浮在窗口底部（顶部导航栏已吸顶，所以不吸顶）；只在待确认区域内悬浮，不推开其他内容 */
+.confirm-bar {
+  position: sticky;
+  bottom: 12px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 10px 16px;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 -4px 18px rgba(15, 29, 70, 0.12), var(--shadow-panel);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
 .fix-confirm-card.is-reverted {
   opacity: 0.6;
   border-color: #fcd34d;
