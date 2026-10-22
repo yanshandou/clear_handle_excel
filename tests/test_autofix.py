@@ -71,6 +71,7 @@ class AutofixTests(unittest.TestCase):
         self.autofix = importlib.reload(autofix)
         self.autofix._worker = Mock(is_alive=Mock(return_value=True))  # 测试里不启动后台线程
         self.autofix.AUTOFIX["active_until"] = float("inf")  # 相当于页面一直开着「② 自动处理」
+        self.autofix.AUTOFIX["auto"] = False  # 下面多数用例测逐张点选；默认全自动的流程见 test_default_auto_*
 
         self.wb_path = self.root / "book.xlsx"
         self.wb_path.write_bytes(b"workbook")
@@ -258,6 +259,82 @@ class AutofixTests(unittest.TestCase):
         self.assertEqual((group["status"], group["chosen"]), ("applying", 3))
         self.assertTrue(self.autofix._apply(self.session, str(self.wb_path), [gid]))
         self.assertEqual(self.real_heights, {5: 24.0})
+
+    def written(self, gid):
+        self.assertTrue(self.autofix._apply(self.session, str(self.wb_path), [gid]))
+        return self.autofix.AUTOFIX["groups"][gid]
+
+    def test_default_auto_writes_then_waits_for_confirmation(self):
+        self.autofix.AUTOFIX["auto"] = True
+        gid = self.group()["id"]
+        self.autofix._preview(self.session, gid)
+        group = self.written(gid)
+        self.assertEqual((group["status"], group["confirmed"], self.real_heights), ("applied", False, {5: 24.0}))
+        item = self.workflow.STATE["items"]["i1"]
+        self.assertEqual((item["status"], item["autofix_unconfirmed"], item["autofix_base_height"]), ("fixed", True, 15.0))
+        self.assertEqual(self.autofix.confirm_groups([gid]), 1)
+        self.assertTrue(group["confirmed"])
+        self.assertNotIn("autofix_unconfirmed", self.workflow.STATE["items"]["i1"])
+        self.assertNotIn("autofix_unconfirmed", str(storage.load_snapshot("workflow")["items"]["i1"]))
+
+    def test_switch_to_other_candidate_rewrites_height_before_confirming(self):
+        self.autofix.AUTOFIX["auto"] = True
+        gid = self.group()["id"]
+        self.autofix._preview(self.session, gid)
+        self.written(gid)
+        with self.assertRaisesRegex(ValueError, "已显示全"):
+            self.autofix.switch_group(gid, 1)
+        self.autofix.switch_group(gid, 2)
+        self.autofix.sync_groups()  # 问题项已解决，改图期间分组不能被清掉
+        self.assertEqual(self.autofix.AUTOFIX["groups"][gid]["status"], "applying")
+        self.assertEqual(self.autofix._next_task({}), ("apply", (str(self.wb_path), [gid])))
+        group = self.written(gid)
+        self.assertEqual((group["status"], group["chosen"], group["confirmed"]), ("applied", 2, False))
+        self.assertEqual(self.real_heights, {5: 21.0})
+        self.assertEqual(self.workflow.STATE["items"]["i1"]["row_height"], 21.0)
+
+    def test_reject_restores_original_height_and_queues_later_review(self):
+        self.autofix.AUTOFIX["auto"] = True
+        gid = self.group()["id"]
+        self.autofix._preview(self.session, gid)
+        self.written(gid)
+        self.autofix.reject_group(gid)
+        with self.assertRaisesRegex(ValueError, "正在写入"):
+            self.autofix.reject_group(gid)
+        group = self.written(gid)
+        self.assertEqual(self.real_heights, {5: 15.0})
+        item = self.workflow.STATE["items"]["i1"]
+        self.assertEqual((item["status"], item["later_review"], item["row_height"]), ("manual_review", True, 15.0))
+        self.assertNotIn("autofix_unconfirmed", item)
+        self.assertIn(str(self.wb_path), self.workflow.STATE["review_queue"])
+        self.autofix.sync_groups()
+        self.assertEqual(group["status"], "reverted")
+        self.assertTrue(group["manual"])  # 不再做图
+        self.autofix.confirm_groups([gid])  # 批量确认时把已退回的收起来
+        self.assertTrue(group["dismissed"])
+
+    def test_default_auto_sends_rows_it_cannot_fix_to_later_review(self):
+        self.autofix.AUTOFIX["auto"] = True
+        self.needed = 999.0
+        gid = self.group()["id"]
+        self.autofix._preview(self.session, gid)
+        self.autofix._auto_defer(gid)
+        item = self.workflow.STATE["items"]["i1"]
+        self.assertEqual((item["status"], item.get("later_review")), ("manual_review", True))
+        self.assertEqual(self.real_heights, {5: 15.0})
+
+    def test_unconfirmed_rows_survive_restart_without_pictures(self):
+        self.autofix.AUTOFIX["auto"] = True
+        gid = self.group()["id"]
+        self.autofix._preview(self.session, gid)
+        self.written(gid)
+        self.autofix.AUTOFIX["groups"].clear()  # 相当于重启：内存里的图片没了
+        group = self.group()
+        self.assertEqual((group["status"], group["confirmed"], group["base_height"], group["attempts"]),
+                         ("applied", False, 15.0, []))
+        self.autofix.reject_group(gid)
+        self.written(gid)
+        self.assertEqual(self.real_heights, {5: 15.0})
 
     def test_hidden_preview_waits_until_border_no_longer_crosses_text(self):
         self.workflow.STATE["items"]["i1"]["kind"] = "hidden"

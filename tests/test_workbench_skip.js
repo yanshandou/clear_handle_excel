@@ -6,15 +6,24 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
 
+function fakeElement() {
+  const el = { dataset: {}, style: {setProperty() {}}, children: [],
+    classList: { toggle() {}, add() {}, remove() {} }, addEventListener() {}, innerHTML: '' };
+  el.prepend = child => { child.parent = el; el.children.unshift(child); };
+  el.after = sibling => { const list = el.parent.children; sibling.parent = el.parent; list.splice(list.indexOf(el) + 1, 0, sibling); };
+  el.remove = () => { const list = el.parent.children; list.splice(list.indexOf(el), 1); };
+  return el;
+}
+
 function workbench() {
   const elements = new Map();
   const context = vm.createContext({
     document: {
       hidden: false,
       addEventListener() {},
+      createElement() { return fakeElement(); },
       getElementById(id) {
-        if (!elements.has(id)) elements.set(id, { dataset: {}, style: {setProperty() {}},
-          classList: { toggle() {}, add() {}, remove() {} }, addEventListener() {}, innerHTML: '' });
+        if (!elements.has(id)) elements.set(id, fakeElement());
         return elements.get(id);
       },
     },
@@ -287,4 +296,70 @@ test('review panel lists queued files and offers open-all and batch recheck', ()
   assert.match(html, /统一复检/);
   assert.match(html, /已全部标黄/);
   assert.match(html, /已解决，复检时去掉黄色/);
+});
+
+function autoWorkbench() {
+  const w = workbench();
+  w.run(`
+    latestItems.i1.status = 'fixed'; latestItems.i2.status = 'fixed';
+    latestItems.i3.status = 'fixed';
+    latestItems.i4 = {id: 'i4', status: 'pending', cell_addr: 'A7', text: 'later'};
+    triageKept.add('i4');
+    const tried = [{height: 15, ok: false}, {height: 18, ok: true}, {height: 21, ok: true}];
+    fixData = {auto: true, groups: [
+      {id: 'g1', wb_path: 'C:\\\\x\\\\book.xlsx', wb_name: 'book.xlsx', sheet_name: 'S1', row: 5, item_ids: ['i1', 'i2'],
+       status: 'applied', confirmed: false, attempts: tried, recommended: 2, chosen: 2, base_height: 15, manual: false, seq: 1},
+      {id: 'g2', wb_path: 'C:\\\\x\\\\book.xlsx', wb_name: 'book.xlsx', sheet_name: 'S1', row: 6, item_ids: ['i3'],
+       status: 'applying', confirmed: false, attempts: tried, recommended: 2, chosen: 2, base_height: 15, manual: false, seq: 2},
+      {id: 'g4', wb_path: 'C:\\\\x\\\\book.xlsx', wb_name: 'book.xlsx', sheet_name: 'S1', row: 7, item_ids: ['i4'],
+       status: 'running', confirmed: false, attempts: [{height: 15, ok: false}], manual: false, seq: 4},
+    ]};
+    fixCurrentId = null;
+    pollAutofix = async () => {};
+    renderFix();
+  `);
+  return w;
+}
+
+test('full auto lists written rows for confirmation and keeps rows in progress off the single card', () => {
+  const w = autoWorkbench();
+  assert.deepEqual(Array.from(w.run('fixQueue().map(g => g.id)')), []);
+  assert.match(w.elements.get('fixStage').innerHTML, /后台正在全自动处理 1 行/);
+  assert.match(w.elements.get('fixProgressText').textContent, /正在处理 book\.xlsx \/ S1 第 7 行（第 2 张）/);
+  const cards = w.elements.get('confirmList').children;
+  assert.equal(cards.length, 2);
+  assert.match(cards[0].innerHTML, /行高 15pt → 21pt，已保存/);
+  assert.match(cards[0].innerHTML, /已写入/);
+  assert.match(cards[0].innerHTML, /switchAttempt\('g1', 1\)/);
+  assert.doesNotMatch(cards[0].innerHTML, /switchAttempt\('g1', 0\)/); // 原样不能选
+  assert.match(cards[1].innerHTML, /正在写入 Excel/);
+  assert.doesNotMatch(cards[1].innerHTML, /switchAttempt/);
+  assert.match(w.elements.get('confirmHead').innerHTML, /全部确认（1 行）/);
+});
+
+test('switch, reject and confirm-all post the right requests', async () => {
+  const w = autoWorkbench();
+  await w.run(`switchAttempt('g1', 1)`);
+  await w.run(`rejectConfirm('g1')`);
+  w.run(`fixData.groups[1].status = 'reverted';`);
+  await w.run(`confirmAll()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(w.context.requests)), [
+    {url: '/api/autofix/switch', payload: {id: 'g1', index: 1}},
+    {url: '/api/autofix/reject', payload: {id: 'g1'}},
+    {url: '/api/autofix/confirm', payload: {ids: ['g1', 'g2']}},
+  ]);
+});
+
+test('confirmation cards never move: renamed files keep their place, new rows go to the end', () => {
+  const w = autoWorkbench();
+  const first = w.elements.get('confirmList').children[0];
+  w.run(`
+    fixData.groups[0] = {...fixData.groups[0], id: 'g1b', wb_path: 'C:\\\\x\\\\🟡book.xlsx'};
+    fixData.groups.push({...fixData.groups[0], id: 'g0', row: 3, item_ids: ['i1'], seq: 0});
+    renderFix();
+  `);
+  const cards = w.elements.get('confirmList').children;
+  assert.equal(cards[0], first);
+  assert.equal(cards.length, 3);
+  assert.equal(cards[2].dataset.key.endsWith('\0S1\x003'), true);
 });

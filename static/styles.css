@@ -1726,6 +1726,36 @@ input[type="text"] {
   font-weight: 700;
 }
 
+.confirm-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.confirm-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.fix-confirm-card {
+  max-width: none;
+}
+
+.fix-confirm-card.is-reverted {
+  opacity: 0.6;
+  border-color: #fcd34d;
+}
+
+.fix-grid-compact {
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.fix-grid-compact .fix-tile-caption {
+  font-size: 12px;
+}
+
 .fix-tile.is-pending {
   align-items: center;
   justify-content: center;
