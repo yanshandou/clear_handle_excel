@@ -25,6 +25,9 @@ COLORS = ("blue", "green", "yellow")
 KIND_LABELS = {"hidden": "隐藏截断", "clip": "压线"}
 CLIP_REASON = "文字被边框横线切穿，打印出来被切掉一部分（行高不够）"
 WAITING_MESSAGE = "等待自动处理"
+# Excel 行高按屏幕像素取整（100% 缩放 0.75pt、125% 0.6pt），写入后读回会差一点；
+# 比这个差得少就算同一个行高（日文 Excel 默认 18.75pt，按 0.1 取整成 18.8 会被误判成「已被修改」）
+ROW_HEIGHT_TOLERANCE = .4
 
 
 def _data() -> dict[str, Any]:
@@ -264,11 +267,11 @@ def _write_rows(excel: Any, journal: dict) -> None:
         if book.ReadOnly:
             raise ValueError(f"{where} 文件以只读方式打开，未写入")
         actual = [float(book.Sheets(r["sheet"]).Rows(r["row"]).RowHeight) for r in journal["rows"]]
-        at_target = all(abs(h - r["target"]) < .05 for h, r in zip(actual, journal["rows"]))
+        at_target = all(abs(h - r["target"]) < ROW_HEIGHT_TOLERANCE for h, r in zip(actual, journal["rows"]))
         if wf._file_version(Path(path)) != journal["version"] and not at_target:
             raise ValueError(f"{where} 文件在准备后被修改，已停止写入；核对后可继续任务，或点「放弃这次写入」")
         if not at_target:
-            if any(abs(h - r["expected"]) >= .05 for h, r in zip(actual, journal["rows"])):
+            if any(abs(h - r["expected"]) >= ROW_HEIGHT_TOLERANCE for h, r in zip(actual, journal["rows"])):
                 raise ValueError(f"{where} 行高已被其他操作修改，未覆盖人工修改；可点「放弃这次写入」转人工处理")
             for row in journal["rows"]:
                 book.Sheets(row["sheet"]).Rows(row["row"]).RowHeight = row["target"]
@@ -389,7 +392,7 @@ def _refresh(excel: Any, path: str, sheets: list[str] | None = None) -> None:
                                 message="最新导出仍有问题" + ("，已保留你的标记" if keep else "，需重新处理"))
             elif existing and not existing.get("dismissed") and not existing.get("manual") and not existing.get("marked"):
                 row = _row_record(existing)
-                if row and row["saved"] and abs(row["applied"] - row["base"]) >= .05:
+                if row and row["saved"] and abs(row["applied"] - row["base"]) >= ROW_HEIGHT_TOLERANCE:
                     existing.update(color="blue", verified=True, after_kind="fixed", waiting=False,
                                     message="已加高并保存，最新导出已通过检查，等待审核")
                     after = next(((it.get("fix_images") or {}).get("after") for it in group
@@ -420,7 +423,7 @@ def _prepare_row(
     sheet = session.copy_of(path).Sheets(items[0]["sheet_name"])
     autofix.validate_print_targets(sheet, items)
     row = int(items[0]["excel_row"])
-    base = round(float(sheet.Rows(row).RowHeight), 1)
+    base = round(float(sheet.Rows(row).RowHeight), 2)
     cells = snapshot_cells(extract_sheet_snapshot(sheet))
     probe = CellProbe(sheet)
     groups = _group_cells(items)
@@ -431,7 +434,7 @@ def _prepare_row(
     pdf = session.temp_pdf()
     try:
         for attempt in range(autofix.MAX_ATTEMPTS + 1):
-            height = min(autofix.MAX_ROW_HEIGHT, round(base + extra, 1))
+            height = min(autofix.MAX_ROW_HEIGHT, round(base + extra, 2))
             if attempt and height <= last_height:
                 break
             sheet.Rows(row).RowHeight = height
@@ -549,7 +552,7 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                     raise ValueError("自动试修未通过，原文件行高未修改；最后一次尝试未采用，请人工处理或标绿忽略")
                 for card in cards:
                     _save_shot(card, "after", chosen["shots"].get(card["id"], ""))
-                unchanged = abs(chosen["height"] - base) < .05
+                unchanged = abs(chosen["height"] - base) < ROW_HEIGHT_TOLERANCE
                 if unchanged:
                     # 原样导出就通过：不写文件，也不算一处修复（报告里不列）
                     for card in cards:

@@ -56,3 +56,12 @@
 .batch-set-color[data-set-color="green"] { background: #22a06b; }
 .batch-set-color[data-set-color="yellow"] { background: #e5ac16; }
 .batch-set-color:disabled { opacity: .45; cursor: not-allowed; }
+/* 日志放在浅色面板里：用深色字，不用控制台那套浅字+黑影 */
+.info-panel summary { cursor: pointer; font-weight: 700; color: var(--text-strong); }
+.info-panel .log-box { margin: 12px 0 0; padding: 12px 14px; max-height: 260px; border: 1px solid #d5deeb; border-radius: 10px; background: #f8fafc; color: #1e293b; text-shadow: none; font-family: Consolas, "MS Gothic", "Yu Gothic UI", monospace; font-size: 12.5px; line-height: 1.7; }
+/* 放大图标用 CSS 画（▣ 在日文 Windows 字体里显示不全） */
+.batch-icon-enlarge { flex: none; position: relative; display: inline-block; width: 12px; height: 12px; box-sizing: border-box; border: 2px solid currentColor; border-radius: 2px; }
+.batch-icon-enlarge::after { content: ""; position: absolute; inset: 2px; background: currentColor; border-radius: 1px; }
+.batch-pending { margin: 10px 0 0; padding: 10px 14px; border: 1px solid #f3c969; border-radius: 10px; background: #fff8e6; color: #7a4a00; font-size: 13px; line-height: 1.7; }
+/* 不可用的按钮也要看得清字，只是变淡一些 */
+.batch-tools .btn:disabled { opacity: .7; }

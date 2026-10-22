@@ -58,6 +58,7 @@ function renderControls() {
   for (const id of ['startBtn', 'commitBtn', 'folderInput']) $(id).disabled = busy;
   $('commitBtn').disabled = busy || !batchState.cards.length;
   $('largeBtn').disabled = !batchState.cards.length;
+  $('largeBtn').title = batchState.cards.length ? '逐张放大查看卡片' : '有待审核卡片后可用';
   $('openAllBtn').disabled = busy || !manualCards().length;
   $('recheckAllBtn').disabled = busy || !manualCards().length;
   $('pauseBtn').classList.toggle('hidden', !batchState.busy || batchState.job?.kind !== 'batch_scan');
@@ -66,8 +67,20 @@ function renderControls() {
   $('resumeBtn').disabled = requestBusy;
   $('abandonBtn').classList.toggle('hidden', batchState.busy || !batchState.job?.pending_adjustment);
   $('abandonBtn').disabled = requestBusy;
+  renderPendingNotice();
   renderSelectBar();
   $('statusText').textContent = batchState.busy ? '⏳ 后台处理中' : batchState.job?.status === 'interrupted' ? '⏸ 可继续任务' : '就绪';
+}
+
+// 写入核对没通过时任务停住、什么都不能开始：写清楚卡在哪、两个按钮分别做什么
+function renderPendingNotice() {
+  const pending = !batchState.busy && batchState.job?.pending_adjustment;
+  $('pendingNotice').classList.toggle('hidden', !pending);
+  if (!pending) return;
+  const name = String(pending.path || '').split(/[\\/]/).pop();
+  const rows = (pending.rows || []).map(r => `${r.sheet} 第 ${r.row} 行`).join('、');
+  const resume = batchState.job.status === 'interrupted' ? '点「继续上次任务」重新核对并写入；' : '';
+  $('pendingNotice').textContent = `上次写入没有完成：${name}（${rows}）。${resume}如果你在 Excel 里改过这一行，或不想再自动改它，点「放弃这次写入」：文件不再改动，这几格转为黄色人工处理，之后可以继续处理其他文件。`;
 }
 
 // 图片取不到时换成文字占位（整页图连同红框一起换掉）
@@ -128,7 +141,7 @@ function cardHtml(card, large = false) {
     <div class="batch-card-head"><button type="button" class="batch-select" data-action="select" aria-pressed="false" title="选中 / 取消选中">✓</button><div>${link}<p><b>${esc(card.sheet_name)}!${esc(card.cell_addr || '定位待确认')}</b></p></div><span class="batch-color-label">${REVIEW_LABELS[card.color]}</span></div>
     ${visuals}${problemHtml(card)}${handling ? `<p class="batch-handling">${esc(handling)}</p>` : ''}<p>${esc(card.text)}</p><p>${esc(card.message)}</p>
     <p>${card.finalized ? '已提交 · 可人工处理' : '颜色标记待提交'}${batchState.busy ? ' · 后台任务结束后可标记' : ''}</p>
-    <div class="batch-card-footer"><button class="btn btn-outline" data-action="large">▣ 大图审核</button>${card.color === 'yellow' && card.finalized ? '<button class="btn btn-outline" data-action="recheck">🔁 单项复检</button>' : ''}</div></article>`;
+    <div class="batch-card-footer"><button class="btn btn-outline" data-action="large"><span class="batch-icon-enlarge" aria-hidden="true"></span>大图审核</button>${card.color === 'yellow' && card.finalized ? '<button class="btn btn-outline" data-action="recheck">🔁 单项复检</button>' : ''}</div></article>`;
 }
 
 // 选中状态不进卡片 HTML：勾选只改类名，不重画卡片、不重新加载图片
