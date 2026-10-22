@@ -111,6 +111,29 @@ class HiddenTextTests(unittest.TestCase):
         self.assertLess(location[1][1], 105)
         self.assertGreater(location[1][3], 105)
 
+    def test_hidden_last_line_is_not_taken_from_the_cell_below(self):
+        # 最后一行「空」没打印出来，下一格正好也是「空」：隔着边框线，不能当作这格的换行
+        def build(page):
+            for y in (70, 114, 150):
+                page.draw_line((50, y), (300, y))
+            page.insert_text((52, 82), "変換方法は以下の通り", fontsize=10, fontname="japan")
+            page.insert_text((52, 94), "06:事業対象者", fontsize=10, fontname="japan")
+            page.insert_text((52, 106), "上記以外、", fontsize=10, fontname="japan")
+            page.insert_text((52, 126), "空", fontsize=10, fontname="japan")
+
+        result = detect([(41, 17, "変換方法は以下の通り\n06:事業対象者\n上記以外、\n空"), (42, 17, "空")], build)
+        self.assertEqual([(r["row"], r["reason"]) for r in result], [(41, REASON_TRUNCATED)])
+        self.assertEqual(result[0]["visible"], "変換方法は以下の通り06:事業対象者上記以外、")
+
+    def test_wrapped_lines_inside_one_bordered_cell_still_match(self):
+        def build(page):
+            page.draw_rect(fitz.Rect(50, 70, 300, 114))
+            page.insert_text((52, 82), "変換方法は以下の通り", fontsize=10, fontname="japan")
+            page.insert_text((52, 94), "上記以外、", fontsize=10, fontname="japan")
+            page.insert_text((52, 106), "空", fontsize=10, fontname="japan")
+
+        self.assertEqual(detect([(41, 17, "変換方法は以下の通り\n上記以外、\n空")], build), [])
+
     def test_fully_printed_cells_are_not_reported(self):
         def build(page):
             add_text(page, 50, 100, "hihokensha_no")

@@ -146,3 +146,16 @@ test('background work blocks markers, and failed marker writes show an error', a
   assert.equal(p.elements.get('errorText').textContent, '保存失败');
   assert.equal(p.run('requestBusy'), false);
 });
+
+test('cards say what was detected and how much the row height changed', () => {
+  const p = page();
+  const html = p.run(`problemHtml({problems: [{label: '隐藏截断', reason: '后面的文字没显示', missing: '空'}]})`);
+  assert.match(html, /隐藏截断/);
+  assert.match(html, /「空」/);
+  assert.equal(p.run(`handlingText({excel_row: 41, after_kind: 'fixed', row_height: {base: 15, applied: 21, saved: true}})`),
+    '处理：第 41 行行高 15pt → 21pt（+6pt），已保存');
+  assert.equal(p.run(`handlingText({excel_row: 41, after_kind: 'rechecked'})`),
+    '处理：本行行高未修改（其他行调整后重新导出已完整显示）');
+  assert.equal(p.run(`handlingText({excel_row: 41, after_kind: 'attempt', base_height: 15, attempt_height: 39})`),
+    '处理：第 41 行行高试到 15pt → 39pt（+24pt）仍未通过，原文件未修改');
+});

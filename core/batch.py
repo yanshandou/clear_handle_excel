@@ -17,9 +17,13 @@ from core.excel_ops import (
     CellProbe, close_saved_workbooks, extract_sheet_snapshot, normalize_workbook_view,
     open_workbooks_for_review, snapshot_cells,
 )
+from core.hidden_text import collect_text_pieces, locate_text, normalize_text
+from core.pdf_detector import fitz, render_crop_base64
 from core.reporter import finish_execution_batch, init_execution_batch, update_file_progress
 
 COLORS = ("blue", "green", "yellow")
+KIND_LABELS = {"hidden": "隐藏截断", "clip": "压线"}
+CLIP_REASON = "文字被边框横线切穿，打印出来被切掉一部分（行高不够）"
 
 
 def _data() -> dict[str, Any]:
@@ -55,6 +59,41 @@ def carry_item_policies(items: dict[str, dict]) -> None:
                 item.update(status="accepted", manual_confirmation={"accepted": True},
                             review_reason=wf.MANUAL_CONFIRMED_REASON)
                 break
+
+
+def _problem(item: dict) -> dict:
+    """卡片上说明检测到了什么：问题类型、原因，只打印出开头一段时还有没显示的部分"""
+    kind = item.get("kind") or "clip"
+    text, visible = normalize_text(item.get("text", "")), normalize_text(item.get("visible_text") or "")
+    missing = text[len(visible):] if kind == "hidden" and visible and text.startswith(visible) else ""
+    return {"kind": kind, "label": KIND_LABELS.get(kind, kind),
+            "reason": (item.get("hidden_reason") if kind == "hidden" else "") or CLIP_REASON, "missing": missing}
+
+
+def _remember_problems(card: dict, items: list[dict]) -> None:
+    problems = {p["kind"]: p for p in card.get("problems", [])}
+    problems.update((p["kind"], p) for p in map(_problem, items))  # 同一类型以最新一次检测为准
+    card["problems"] = list(problems.values())
+
+
+def _row_record(card: dict) -> dict | None:
+    return _data()["rows"].get(_key(card["wb_path"], card["sheet_name"], card["excel_row"]))
+
+
+def _latest_shot(card: dict, items: list[dict]) -> str:
+    """本行没改、因别处调整而通过的格子：从刚导出的 PDF 重新截图，不沿用之前尝试或检测时的旧图。
+    文字太短（容易对到别的格子）或找不到时不截图，宁可显示「暂无截图」也不放错的图。"""
+    if len(normalize_text(card.get("text", ""))) < 4:
+        return ""
+    for pdf_path in dict.fromkeys(it.get("pdf_path") for it in items if it.get("pdf_path")):
+        try:
+            with fitz.open(pdf_path) as doc:
+                found = locate_text(collect_text_pieces(doc), card["text"])
+                if found is not None:
+                    return render_crop_base64(doc[found[0]], found[1], highlight=False, zoom=4.0)
+        except Exception:
+            continue
+    return ""
 
 
 def _save_shot(card: dict, which: str, image: str) -> None:
@@ -112,6 +151,7 @@ def _card_for(items: list[dict]) -> dict:
         }
         _save_shot(card, "before", first.get("image", ""))
     card["item_ids"] = [it["id"] for it in items]
+    _remember_problems(card, items)
     for signature in signatures:
         if signature not in card["signatures"]:
             card["signatures"].append(signature)
@@ -131,6 +171,11 @@ def snapshot() -> dict:
             if card.get("dismissed") or not wf.in_current_folder(card["wb_path"]):
                 continue
             result = copy.deepcopy(card)
+            if not result.get("problems"):  # 旧版本留下的卡片没存问题说明，按单元格现有的问题项补上
+                result["problems"] = list({p["kind"]: p for p in map(_problem, _items_at(card))}.values())
+            row = _row_record(card)
+            if row is not None:
+                result["row_height"] = {"base": row["base"], "applied": row["applied"], "saved": row["saved"]}
             result["images"] = {
                 which: _image_url(name) for which, name in card.get("fix_images", {}).items()
                 if fix_images.image_path(name)
@@ -290,11 +335,20 @@ def _refresh(excel: Any, path: str, sheets: list[str] | None = None) -> None:
                     # 后面的行加高、还原改变了分页，之前通过的格子又出问题：不能再当作已修好
                     card.update(color="yellow", verified=False, message="最新导出仍有问题，需重新处理")
             elif existing and not existing.get("dismissed") and not existing.get("manual") and not existing.get("marked"):
-                existing.update(color="blue", verified=True, after_kind="fixed", message="最新导出已通过检查，等待审核")
-                after = next(((it.get("fix_images") or {}).get("after") for it in group
-                              if (it.get("fix_images") or {}).get("after")), None)
-                if after:
-                    existing.setdefault("fix_images", {})["after"] = after
+                row = _row_record(existing)
+                if row and row["saved"] and abs(row["applied"] - row["base"]) >= .05:
+                    existing.update(color="blue", verified=True, after_kind="fixed",
+                                    message="已加高并保存，最新导出已通过检查，等待审核")
+                    after = next(((it.get("fix_images") or {}).get("after") for it in group
+                                  if (it.get("fix_images") or {}).get("after")), None)
+                    if after:
+                        existing.setdefault("fix_images", {})["after"] = after
+                else:
+                    # 这一行没写过：之前留下的「修改后」可能是试算第一张（和修改前一模一样），必须换成最新导出的图
+                    fix_images.forget(existing, "after")
+                    _save_shot(existing, "after", _latest_shot(existing, group))
+                    existing.update(color="blue", verified=True, after_kind="rechecked",
+                                    message="本行行高未修改：其他行调整后重新导出，这一格已完整显示，等待审核")
         wf._persist_state()
 
 
@@ -398,6 +452,7 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                 for card in cards:
                     if index == 0:
                         _save_shot(card, "before", shots.get(card["id"], ""))
+                        card["base_height"] = height
                     # 尚未产生调整图就出错时，原样也是最后一次实际生成的预览。
                     # 只给卡片留参考图，不写入问题项的修复报告，也不写原 Excel。
                     fix_images.forget(card, "after")
