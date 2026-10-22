@@ -8,6 +8,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
+from core import autofix
 from core.common import (
     STATIC_DIR,
     console_print,
@@ -144,6 +145,18 @@ class WebHandler(BaseHTTPRequestHandler):
             self._serve_static_file(rel)
         elif parsed.path == "/api/state":
             self._send_json(get_state_snapshot())
+        elif parsed.path == "/api/autofix":
+            self._send_json(autofix.snapshot())
+        elif parsed.path.startswith("/api/autofix/image/"):
+            parts = parsed.path.removeprefix("/api/autofix/image/").split("/")
+            image = (
+                autofix.attempt_image(parts[0], int(parts[1]))
+                if len(parts) == 2 and parts[1].isdigit() else None
+            )
+            if image is None:
+                self.send_error(404)
+                return
+            self._send_bytes(image, "image/png")
         elif parsed.path == "/api/overview":
             self._send_json(get_overview_snapshot())
         elif parsed.path == "/api/progress/export":
@@ -276,7 +289,25 @@ class WebHandler(BaseHTTPRequestHandler):
             file_name = payload.get("file")
             if not isinstance(file_name, str) or not file_name:
                 raise ValueError("需要有效的文件名")
-            open_recorded_workbook(file_name)
+            autofix.release_excel()  # 别让系统把文件开到自动处理后台的隐藏 Excel 里
+            try:
+                open_recorded_workbook(file_name)
+            finally:
+                autofix.resume_after_release()
+            self._send_json({"ok": True})
+
+        elif self.path == "/api/autofix/choose":
+            gid, index = payload.get("id"), payload.get("index")
+            if not isinstance(gid, str) or isinstance(index, bool) or not isinstance(index, int):
+                raise ValueError("需要有效的分组和图片序号")
+            autofix.choose(gid, index)
+            self._send_json({"ok": True})
+
+        elif self.path == "/api/autofix/auto":
+            on = payload.get("on")
+            if not isinstance(on, bool):
+                raise ValueError("需要有效的开关状态")
+            autofix.set_auto(on)
             self._send_json({"ok": True})
 
         elif self.path == "/api/progress/import":
@@ -330,7 +361,13 @@ class WebHandler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def _start_job(self, kind: str, options: dict | None = None) -> None:
-        if not queue_job(kind, options):
+        # 先让自动处理的后台关掉它的 Excel，任务排上队后它会一直等到任务结束
+        autofix.release_excel()
+        try:
+            queued = queue_job(kind, options)
+        finally:
+            autofix.resume_after_release()
+        if not queued:
             self._send_json({"ok": False, "error": "已有任务正在执行"}, status=409)
             return
         threading.Thread(target=run_pending_workflow, daemon=True).start()

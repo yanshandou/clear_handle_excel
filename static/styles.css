@@ -1601,6 +1601,131 @@ input[type="text"] {
   color: var(--text-strong);
 }
 
+/* 第 2 步：自动处理九宫格 */
+.fix-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.fix-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.fix-card {
+  width: 100%;
+  max-width: 980px;
+  margin: 0 auto;
+  border: 1px solid rgba(37, 99, 235, 0.35);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: var(--shadow-card);
+}
+
+.fix-items {
+  padding: 0 16px 10px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-main);
+}
+
+.fix-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding: 0 16px 14px;
+}
+
+.fix-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 2px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  font: inherit;
+  text-align: left;
+  color: var(--text-main);
+}
+
+.fix-tile img {
+  width: 100%;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.fix-tile-caption {
+  font-size: 12.5px;
+}
+
+.fix-tile.is-bad .fix-tile-caption {
+  color: #b91c1c;
+}
+
+.fix-tile.is-ok .fix-tile-caption {
+  color: #047857;
+}
+
+.fix-tile.is-original {
+  opacity: 0.75;
+}
+
+.fix-tile.is-pickable {
+  cursor: pointer;
+}
+
+.fix-tile.is-pickable:hover {
+  border-color: var(--primary-mid);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+}
+
+.fix-tile.is-recommended {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.35);
+}
+
+.fix-tile-badge {
+  position: absolute;
+  top: -10px;
+  right: 10px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #f59e0b;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.fix-tile.is-pending {
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  border-style: dashed;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.fix-note {
+  padding: 0 16px 10px;
+  font-size: 13px;
+  color: #b45309;
+}
+
+@media (max-width: 760px) {
+  .fix-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 760px) {
   .triage-card-body {
     grid-template-columns: 1fr;

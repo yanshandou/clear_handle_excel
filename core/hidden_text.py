@@ -324,3 +324,11 @@ def _result(
         "row": cell["row"], "col": cell["col"], "text": text if text is not None else cell["text"],
         "visible": visible, "reason": reason, "page": page, "bbox": bbox,
     }
+
+
+def locate_text(pieces: list[Piece], text: str) -> tuple[int, BBox] | None:
+    """PDF 里这段文字（完整或开头一段）所在的页码和范围，找不到返回 None；只读，不占用片段"""
+    matcher = _Matcher(pieces)
+    key = normalize_text(text)
+    chain = matcher.find(key, True) or matcher.find_prefix(key)
+    return _chain_location(chain) if chain else None

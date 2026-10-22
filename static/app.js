@@ -21,6 +21,13 @@ let triageDrag = null;
 let triageAnimationTimer = null;
 const TRIAGE_SWIPE_THRESHOLD = 110;
 
+// 第 2 步自动处理：后台为每一行准备的加高截图（分组），以及当前显示的那一组
+let stepTab = 'triage'; // 'triage' | 'fix'
+let fixData = { auto: false, groups: [] };
+let fixCurrentId = null;
+let fixDeferred = new Set(); // 点了「下一个」暂时跳过的组
+let fixChosen = new Set(); // 已点选、等待写入的组
+
 const TRIAGE_KEPT_STORAGE_KEY = 'clear_handle_excel.triageKept';
 const RECHECK_TITLE = '请先在 Excel 中保存手动修改。根据新 PDF 重新检测该文件的问题工作表并替换旧标记，不会自动增加行高';
 
@@ -205,6 +212,7 @@ function refreshCounts() {
 function renderItems() {
   refreshCounts();
   renderTriage();
+  renderFix();
 }
 
 /* ==========================================
@@ -255,7 +263,8 @@ function renderTriage() {
     stage.innerHTML = reviewable.length ? `
       <div class="triage-done">
         <b>🎉 已全部筛选完</b>
-        <span>保留 ${kept} 处、跳过 ${skipped} 处。保留的请在 Excel 中修改并保存，再点「扫描切字」复检。</span>
+        <span>保留 ${kept} 处、跳过 ${skipped} 处。保留的到第 ② 步自动处理。</span>
+        ${kept ? '<button type="button" class="btn btn-primary btn-sm" onclick="setStepTab(\'fix\')">进入 ② 自动处理 →</button>' : ''}
         ${kept ? '<button type="button" class="btn btn-outline btn-sm" onclick="triageRestartKept()">重新筛选已保留的项</button>' : ''}
       </div>` : '<div class="triage-done"><span>暂无切字问题，请先扫描。</span></div>';
     return;
@@ -416,7 +425,7 @@ function attachTriageSwipe(card) {
 }
 
 document.addEventListener('keydown', e => {
-  if (e.repeat || e.altKey) return;
+  if (stepTab !== 'triage' || e.repeat || e.altKey) return;
   if (e.target.closest && e.target.closest('input, textarea, select')) return;
   if (e.key === 'ArrowLeft') {
     e.preventDefault();
@@ -429,6 +438,163 @@ document.addEventListener('keydown', e => {
     triageUndo();
   }
 });
+
+/* ==========================================
+   第 2 步：自动处理（九宫格选图）
+   ========================================== */
+function setStepTab(tab) {
+  stepTab = tab === 'fix' ? 'fix' : 'triage';
+  document.getElementById('tabTriageBtn').classList.toggle('active', stepTab === 'triage');
+  document.getElementById('tabFixBtn').classList.toggle('active', stepTab === 'fix');
+  document.getElementById('triageView').classList.toggle('hidden', stepTab !== 'triage');
+  document.getElementById('fixView').classList.toggle('hidden', stepTab !== 'fix');
+  if (stepTab === 'fix') pollAutofix();
+}
+
+const FIX_OPEN_STATUSES = new Set(['queued', 'running', 'ready', 'failed', 'error']);
+
+// 还需要用户处理的组：没写入、没点选；跳过（无需修改）的问题项已不在分组里
+function fixQueue() {
+  return fixData.groups.filter(g => FIX_OPEN_STATUSES.has(g.status) && !fixChosen.has(g.id));
+}
+
+function pickFixGroup() {
+  const queue = fixQueue();
+  if (queue.some(g => g.id === fixCurrentId)) return queue.find(g => g.id === fixCurrentId);
+  const next = queue.find(g => !fixDeferred.has(g.id)) || queue[0];
+  if (next && fixDeferred.size && queue.every(g => fixDeferred.has(g.id))) fixDeferred.clear();
+  fixCurrentId = next ? next.id : null;
+  return next || null;
+}
+
+function attemptLabel(group, index) {
+  const attempt = group.attempts[index];
+  if (index === 0) return `原样 ${attempt.height}pt`;
+  return `+${(attempt.height - group.attempts[0].height).toFixed(1).replace(/\.0$/, '')}pt → ${attempt.height}pt`;
+}
+
+function renderFix() {
+  const groups = fixData.groups;
+  const queue = fixQueue();
+  const applied = groups.filter(g => g.status === 'applied').length;
+  const writing = groups.filter(g => g.status === 'applying' || fixChosen.has(g.id) && g.status !== 'applied').length;
+  const manual = queue.filter(g => g.manual).length;
+  const prepared = queue.filter(g => ['ready', 'failed', 'error'].includes(g.status)).length;
+  document.getElementById('fixProgressText').textContent =
+    `待处理 ${queue.length} 行（后台已准备好 ${prepared} 行${manual ? ` · 人工处理中 ${manual}` : ''}）`
+    + ` · 写入中 ${writing} · 已写入 ${applied}`;
+  const autoBtn = document.getElementById('fixAutoBtn');
+  autoBtn.textContent = fixData.auto ? '⏸ 全自动处理中（点击停止）' : '⚡ 全自动处理剩下的';
+  autoBtn.classList.toggle('btn-primary', fixData.auto);
+  autoBtn.classList.toggle('btn-outline', !fixData.auto);
+
+  const stage = document.getElementById('fixStage');
+  const group = pickFixGroup();
+  if (!group) {
+    const signature = `done|${applied}|${groups.length}`;
+    if (stage.dataset.signature === signature) return;
+    stage.dataset.signature = signature;
+    stage.innerHTML = `<div class="triage-done">${groups.length
+      ? `<b>🎉 都处理完了</b><span>已写入 ${applied} 行。可以再点「扫描切字」整体复检一遍。</span>`
+      : '<span>没有需要处理的切字。先在第 ① 步筛选，保留的会出现在这里。</span>'}</div>`;
+    return;
+  }
+
+  const items = group.item_ids.map(id => latestItems[id]).filter(Boolean);
+  const signature = JSON.stringify([
+    group.id, group.status, group.attempts, group.recommended, group.manual, group.message,
+    items.map(item => [item.id, item.status, item.cell_addr]),
+  ]);
+  if (stage.dataset.signature === signature) return;
+  stage.dataset.signature = signature;
+
+  const choosable = ['ready', 'failed'].includes(group.status) && !group.manual;
+  const tiles = group.attempts.map((attempt, index) => {
+    const canPick = choosable && index > 0 && attempt.ok;
+    const classes = ['fix-tile', attempt.ok ? 'is-ok' : 'is-bad'];
+    if (index === group.recommended) classes.push('is-recommended');
+    if (canPick) classes.push('is-pickable');
+    if (index === 0) classes.push('is-original');
+    return `
+      <button type="button" class="${classes.join(' ')}" ${canPick ? `onclick="chooseAttempt('${escapeHtml(group.id)}', ${index})"` : 'disabled'}>
+        ${index === group.recommended ? '<span class="fix-tile-badge">推荐</span>' : ''}
+        <img src="/api/autofix/image/${escapeHtml(group.id)}/${index}?h=${attempt.height}" alt="${escapeHtml(attemptLabel(group, index))}">
+        <span class="fix-tile-caption">${escapeHtml(attemptLabel(group, index))} · ${index === 0 ? (attempt.ok ? '已显示全' : '被截断') : (attempt.ok ? '✓ 显示全' : '✗ 仍被截断')}</span>
+      </button>`;
+  });
+  if (!group.manual && ['queued', 'running'].includes(group.status) && tiles.length < 9) {
+    const ahead = fixQueue().filter(g => g.status === 'queued' && g.id !== group.id && g.seq < group.seq).length;
+    tiles.push(`<div class="fix-tile is-pending"><span>${group.status === 'running'
+      ? `后台正在生成第 ${tiles.length + 1} 张...` : `排队中${ahead ? `，前面还有 ${ahead} 行` : ''}...`}</span></div>`);
+  }
+  let note = '';
+  if (group.manual) note = '已转人工：在 Excel 里改好并保存后，点「复检」。';
+  else if (group.message) note = group.message;
+  const first = items[0];
+  stage.innerHTML = `
+    <div class="fix-card">
+      <div class="triage-card-head">
+        <div>
+          <b>${escapeHtml(group.wb_name)}</b>
+          <span style="color:#64748b;">/ ${escapeHtml(group.sheet_name)} · 第 ${Number(group.row)} 行${group.base_height ? `（当前行高 ${group.base_height}pt）` : ''}</span>
+        </div>
+        <span class="badge ${group.manual ? 'badge-warn' : 'badge-selected'}">${group.manual ? '人工处理中' : `本行 ${items.length} 处`}</span>
+      </div>
+      <div class="fix-items">${items.map(item => `<div>${escapeHtml(item.cell_addr)}：${escapeHtml(itemTextLabel(item))}</div>`).join('')}</div>
+      <div class="fix-grid">${tiles.join('')}</div>
+      ${note ? `<div class="fix-note">${escapeHtml(note)}</div>` : ''}
+      <div class="triage-card-tools">
+        ${first ? `<button type="button" class="btn btn-outline btn-sm" onclick="manualOpen('${escapeHtml(first.id)}')">人工处理（在 Excel 中打开）</button>` : ''}
+        ${group.manual && first ? `<button type="button" class="btn btn-primary btn-sm" title="${RECHECK_TITLE}" onclick="manualRecheck('${escapeHtml(first.id)}')">复检</button>` : ''}
+        <button type="button" class="btn btn-outline btn-sm" onclick="deferFixGroup('${escapeHtml(group.id)}')">先看下一个 →</button>
+      </div>
+    </div>`;
+}
+
+async function pollAutofix() {
+  try {
+    const res = await fetch('/api/autofix');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '读取自动处理进度失败');
+    fixData = data;
+    const ids = new Set(data.groups.map(g => g.id));
+    fixChosen = new Set([...fixChosen].filter(id => ids.has(id) && data.groups.find(g => g.id === id).status !== 'queued'));
+    fixDeferred = new Set([...fixDeferred].filter(id => ids.has(id)));
+    renderFix();
+  } catch (e) {
+    document.getElementById('fixProgressText').textContent = `读取自动处理进度失败: ${e.message}`;
+  }
+}
+
+async function chooseAttempt(groupId, index) {
+  fixChosen.add(groupId);
+  fixCurrentId = null;
+  renderFix(); // 点完立刻换下一行，写入在后台进行
+  try {
+    await postAction('/api/autofix/choose', { id: groupId, index });
+  } catch (e) {
+    fixChosen.delete(groupId);
+    alert(e.message);
+  }
+  pollAutofix();
+}
+
+function deferFixGroup(groupId) {
+  fixDeferred.add(groupId);
+  fixCurrentId = null;
+  renderFix();
+}
+
+async function toggleFullAuto() {
+  const on = !fixData.auto;
+  if (on && !confirm('剩下的行都按推荐的那张自动写入 Excel 并保存，不再一张张确认。确定吗？')) return;
+  try {
+    await postAction('/api/autofix/auto', { on });
+  } catch (e) {
+    alert(e.message);
+  }
+  pollAutofix();
+}
 
 /* ==========================================
    后端状态轮询与接口调用
@@ -579,4 +745,6 @@ window.addEventListener('beforeunload', e => {
 triageKept = loadTriageKept();
 
 setInterval(pollState, 1200);
+setInterval(pollAutofix, 1500);
+pollAutofix();
 pollState();
