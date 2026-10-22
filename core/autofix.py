@@ -105,11 +105,15 @@ def sync_groups() -> None:
                 del groups[gid]
         for gid, entry in wanted.items():
             group = groups.get(gid)
-            # 写入过的行又检出了问题（重新扫描）也重新准备
-            if group is None or group["status"] == "applied" or sorted(group["item_ids"]) != sorted(entry["item_ids"]):
+            # 写入过的行又检出了问题（重新扫描）也重新准备；
+            # 转人工后复检仍没显示全的，按用户改过的行高重新准备，旧图片已经不对了
+            rechecked = group is not None and group["manual"] and not entry["manual"]
+            if (group is None or group["status"] == "applied" or rechecked
+                    or sorted(group["item_ids"]) != sorted(entry["item_ids"])):
                 group = groups[gid] = {
                     "id": gid, **entry, "status": "queued", "attempts": [], "recommended": None,
-                    "chosen": None, "base_height": None, "message": "",
+                    "chosen": None, "base_height": None,
+                    "message": "复检后仍未显示全，已按你改过的行高重新准备" if rechecked else "",
                 }
             group["manual"] = entry["manual"]
             group["seq"] = entry["seq"]

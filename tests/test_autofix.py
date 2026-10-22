@@ -186,5 +186,17 @@ class AutofixTests(unittest.TestCase):
         self.assertEqual((group["status"], group["attempts"], sorted(group["item_ids"])), ("queued", [], ["i1", "i2"]))
 
 
+    def test_recheck_still_clipped_after_manual_prepares_again(self):
+        gid = self.group()["id"]
+        self.autofix._preview(self.session, gid)
+        self.workflow.STATE["items"]["i1"]["status"] = "manual_review"
+        self.assertTrue(self.group()["manual"])
+        self.assertEqual(len(self.group()["attempts"]), 4)  # 转人工本身不丢图片
+        self.workflow.STATE["items"]["i1"]["status"] = "pending"  # 复检后仍检出
+        group = self.group()
+        self.assertEqual((group["manual"], group["status"], group["attempts"]), (False, "queued", []))
+        self.assertIn("复检", group["message"])
+
+
 if __name__ == "__main__":
     unittest.main()
