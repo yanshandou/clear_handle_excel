@@ -72,6 +72,25 @@ test('single-card navigation preserves card identity when changing colors', () =
   assert.equal(p.run('activeCardId'), 'a');
 });
 
+test('large mode adds page context while small cards keep only the comparison', () => {
+  const p = page();
+  p.run(`batchState.cards[0].context = {image:'/page.png', page_width:600, page_height:800, page_index:1, bbox:[60,160,180,200]}`);
+  const large = p.run(`cardHtml(batchState.cards[0], true)`);
+  assert.match(large, /batch-large-layout/);
+  assert.match(large, /问题所在页面 · 第 2 页/);
+  assert.match(large, /left:10%;top:20%;width:20%;height:5%/);
+  assert.ok(large.indexOf('batch-shots') < large.indexOf('batch-context'));
+  const small = p.run(`cardHtml(batchState.cards[0], false)`);
+  assert.doesNotMatch(small, /batch-context|page\.png/);
+});
+
+test('large mode shows an honest placeholder when no page context exists', () => {
+  const p = page();
+  const large = p.run(`cardHtml(batchState.cards[0], true)`);
+  assert.match(large, /暂无整页定位图/);
+  assert.doesNotMatch(large, /batch-context-marker/);
+});
+
 test('failed trials are clearly labelled as unapplied in both review modes', () => {
   const p = page();
   p.run(`batchState.cards[0].after_kind = 'attempt'; batchState.cards[0].color = 'yellow';`);

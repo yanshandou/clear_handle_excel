@@ -65,6 +65,36 @@ def _items_at(card: dict) -> list[dict]:
     return [it for it in wf.STATE["items"].values() if _cell(it) == _cell(card)]
 
 
+def _remember_context(card: dict, items: list[dict]) -> None:
+    """整页图和框的位置一起固定，后续加高、重新分页后不套用到新页面。"""
+    if card.get("context"):
+        return
+    for item in items:
+        page_id = item.get("page_id")
+        page = wf.STATE["pages"].get(page_id)
+        bbox = item.get("bbox")
+        if (not page or page.get("wb_path") != item["wb_path"] or page.get("sheet_name") != item["sheet_name"]
+                or not isinstance(bbox, (list, tuple)) or len(bbox) != 4):
+            continue
+        width, height = page.get("page_width"), page.get("page_height")
+        if not all(isinstance(n, (int, float)) and math.isfinite(n) for n in [width, height, *bbox]):
+            continue
+        if width <= 0 or height <= 0 or bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+            continue
+        name = page.get("batch_context_image", "")
+        if not fix_images.image_path(name):
+            # 同一页的多个单元格共用一张图，不给每张卡片重复保存整页 PNG。
+            holder = {"id": page_id}
+            fix_images.save(holder, "context", page.get("image", ""), key=f"batch-page:{page_id}")
+            name = holder.get("fix_images", {}).get("context", "")
+            if not name:
+                continue
+            page["batch_context_image"] = name
+        card["context"] = {"image_file": name, "page_index": page.get("page_index"),
+                           "page_width": width, "page_height": height, "bbox": list(bbox)}
+        return
+
+
 def _card_for(items: list[dict]) -> dict:
     first = items[0]
     data = _data()
@@ -85,6 +115,7 @@ def _card_for(items: list[dict]) -> dict:
     for signature in signatures:
         if signature not in card["signatures"]:
             card["signatures"].append(signature)
+    _remember_context(card, items)
     return card
 
 
@@ -99,6 +130,10 @@ def snapshot() -> dict:
                 which: f"/api/batch/image/{name}" for which, name in card.get("fix_images", {}).items()
                 if fix_images.image_path(name)
             }
+            if result.get("context"):
+                context = result["context"]
+                name = context["image_file"]
+                context["image"] = f"/api/batch/image/{name}" if fix_images.image_path(name) else ""
             cards.append(result)
         return {"cards": cards, "busy": wf.STATE["busy"], "folder": wf.STATE["folder"],
                 "job": copy.deepcopy(wf.STATE["job"]), "progress": dict(wf.STATE["scan_progress"]),
@@ -340,7 +375,7 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                 for card in cards:
                     _save_shot(card, "before", before.get(card["id"], ""))
                 if chosen is None:
-                    raise ValueError("自动试修未通过，原文件行高未修改；右图为最后一次尝试（未采用），请人工处理或标绿忽略")
+                    raise ValueError("自动试修未通过，原文件行高未修改；最后一次尝试未采用，请人工处理或标绿忽略")
                 for card in cards:
                     _save_shot(card, "after", chosen["shots"].get(card["id"], ""))
                 _data()["rows"][rid] = {"id": rid, "path": path, "sheet": first["sheet_name"],

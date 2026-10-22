@@ -62,15 +62,37 @@ function renderControls() {
   $('statusText').textContent = batchState.busy ? '⏳ 后台处理中' : batchState.job?.status === 'interrupted' ? '⏸ 可继续任务' : '就绪';
 }
 
+function contextHtml(card) {
+  const context = card.context;
+  if (!context?.image) return '<aside class="batch-context"><h3>问题所在页面</h3><div class="batch-context-missing">暂无整页定位图<br>未保存整页截图或未匹配到文字位置，可点击文件名在 Excel 中核对。</div></aside>';
+  const width = Number(context.page_width), height = Number(context.page_height);
+  const box = context.bbox;
+  if (!(Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0)
+      || !Array.isArray(box) || box.length !== 4 || !box.every(Number.isFinite)) {
+    return '<aside class="batch-context"><h3>问题所在页面</h3><div class="batch-context-missing">暂无可靠的页面定位</div></aside>';
+  }
+  const clamp = value => Math.max(0, Math.min(100, value));
+  const left = clamp(box[0] / width * 100), top = clamp(box[1] / height * 100);
+  const right = clamp(box[2] / width * 100), bottom = clamp(box[3] / height * 100);
+  const page = Number.isInteger(context.page_index) ? ` · 第 ${context.page_index + 1} 页` : '';
+  return `<aside class="batch-context"><h3>问题所在页面${page}</h3><p class="batch-context-note">检测时的整页截图 · 红框为问题位置</p>
+    <div class="batch-context-page" style="--page-ratio:${width / height}">
+      <img src="${esc(context.image)}" alt="问题所在整页，红框标出原检测位置" onerror="this.parentElement.innerHTML='<span class=\'batch-missing\'>整页截图暂不可用</span>'">
+      <span class="batch-context-marker" aria-label="问题位置" style="left:${left}%;top:${top}%;width:${Math.max(0, right - left)}%;height:${Math.max(0, bottom - top)}%"></span>
+    </div></aside>`;
+}
+
 function cardHtml(card, large = false) {
   const link = excelLinkHtml(esc(card.wb_name), { file: card.wb_name, folder: batchState.folder, sheet: card.sheet_name, cell: card.cell_addr });
   const labels = { before: '修改前', after: card.after_kind === 'attempt' ? '最后一次尝试（未采用）' : '修改后' };
   const images = ['before', 'after'].map(which => `<figure><figcaption>${labels[which]}</figcaption>${card.images?.[which]
     ? `<img ${large ? '' : 'loading="lazy"'} src="${esc(card.images[which])}" alt="${labels[which]}截图" data-preview="1" onerror="this.outerHTML='<span class=\'batch-missing\'>截图暂不可用</span>'">`
     : '<span class="batch-missing">暂无截图</span>'}</figure>`).join('');
+  const comparison = `<div class="batch-shots">${images}</div>`;
+  const visuals = large ? `<div class="batch-large-layout">${comparison}${contextHtml(card)}</div>` : comparison;
   return `<article class="batch-card" tabindex="0" role="button" aria-label="${esc(`${card.wb_name} ${card.sheet_name}!${card.cell_addr} ${REVIEW_LABELS[card.color]}，单击切换状态`)}" data-id="${esc(card.id)}" data-color="${card.color}">
     <div class="batch-card-head"><div>${link}<p><b>${esc(card.sheet_name)}!${esc(card.cell_addr || '定位待确认')}</b></p></div><span class="batch-color-label">${REVIEW_LABELS[card.color]}</span></div>
-    <div class="batch-shots">${images}</div><p>${esc(card.text)}</p><p>${esc(card.message)}</p>
+    ${visuals}<p>${esc(card.text)}</p><p>${esc(card.message)}</p>
     <p>${card.finalized ? '已提交 · 可人工处理' : '颜色标记待提交'}${batchState.busy ? ' · 后台任务结束后可标记' : ''}</p>
     <div class="batch-card-footer"><button class="btn btn-outline" data-action="large">▣ 大图审核</button>${card.color === 'yellow' && card.finalized ? '<button class="btn btn-outline" data-action="recheck">🔁 单项复检</button>' : ''}</div></article>`;
 }

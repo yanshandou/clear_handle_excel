@@ -23,7 +23,18 @@
 .batch-large-nav { justify-content: center; margin-bottom: 16px; }
 #largeView { scroll-margin-top: 110px; }
 #largeView .batch-card { margin: 8px 0; padding: 24px; }
-#largeView .batch-shots img { max-height: 65vh; }
+.batch-large-layout { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); align-items: start; gap: 20px; }
+#largeView .batch-shots { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+#largeView .batch-shots img { max-height: 29vh; }
+#largeView .batch-shots figure { min-height: 130px; }
+.batch-context { min-width: 0; padding: 12px; border-radius: 9px; background: white; }
+.batch-context h3 { margin: 0 0 6px; font-size: 14px; color: #334155; }
+.batch-card .batch-context-note { color: #64748b; font-size: 12px; margin: 0 0 10px; }
+.batch-context-page { position: relative; width: 100%; max-width: calc(max(180px, 100vh - 400px) * var(--page-ratio)); margin: 0 auto; }
+.batch-context-page img { display: block; width: 100%; height: auto; }
+.batch-context-marker { position: absolute; box-sizing: border-box; border: 2px solid #ef2222; background: #ef222210; min-width: 4px; min-height: 4px; pointer-events: none; }
+.batch-context-missing { min-height: 220px; display: grid; align-content: center; text-align: center; color: #94a3b8; font-size: 13px; line-height: 1.8; }
 .batch-image-preview { position: fixed; z-index: 1000; pointer-events: none; padding: 12px; border: 1px solid #cbd5e1; border-radius: 12px; background: #fff; box-shadow: 0 12px 45px #0f172a30; }
 .batch-image-preview img { display: block; max-width: min(74vw, 1000px); max-height: 72vh; object-fit: contain; }
 @media (max-width: 700px) { .batch-shots { grid-template-columns: 1fr; } .batch-tools .panel-section-head { flex-wrap: wrap; gap: 14px; } }
+@media (max-width: 800px) { .batch-large-layout { grid-template-columns: minmax(0, 1fr); } }

@@ -325,6 +325,57 @@ class BatchTests(unittest.TestCase):
         self.assertTrue(snap["cards"][0]["images"]["before"].startswith("/api/batch/image/"))
         self.assertNotIn("base64", str(snap))
 
+    def context_page(self, item, page_id="page_original"):
+        item["page_id"] = page_id
+        self.wf.STATE["pages"][page_id] = {"id": page_id, "wb_path": self.path, "sheet_name": "S1",
+            "page_index": 1, "page_width": 600, "page_height": 800, "image": "data:image/png;base64,cGFnZQ=="}
+
+    def test_page_context_and_box_remain_paired_after_repagination_and_restart(self):
+        card, item = self.add_card()
+        self.context_page(item)
+        batch._card_for([item])
+        original = copy.deepcopy(card["context"])
+        self.wf.STATE["pages"].clear()
+        self.context_page(item, "page_repaginated")
+        item["bbox"] = [200, 300, 300, 350]
+        batch._card_for([item])
+        self.assertEqual(card["context"], original)
+        self.wf._persist_state()
+        self.wf.STATE.update(storage.load_snapshot("workflow"))
+        snap = batch.snapshot()["cards"][0]["context"]
+        self.assertEqual(snap["bbox"], [10, 10, 100, 25])
+        self.assertEqual(snap["page_index"], 1)
+        self.assertEqual(fix_images.image_path(snap["image_file"]).read_bytes(), b"page")
+        self.assertTrue(snap["image"].startswith("/api/batch/image/"))
+        self.assertNotIn("base64", str(snap))
+
+    def test_cells_on_same_page_share_one_saved_context_image(self):
+        a, first = self.add_card("A5")
+        b, second = self.add_card("B5")
+        self.context_page(first)
+        second["page_id"] = first["page_id"]
+        second["bbox"] = [200, 10, 300, 25]
+        with patch.object(fix_images, "save", wraps=fix_images.save) as save:
+            batch._card_for([first])
+            batch._card_for([second])
+        self.assertEqual(save.call_count, 1)
+        self.assertEqual(a["context"]["image_file"], b["context"]["image_file"])
+        self.assertNotEqual(a["context"]["bbox"], b["context"]["bbox"])
+
+    def test_context_is_not_guessed_without_page_or_box(self):
+        card, item = self.add_card()
+        self.context_page(item)
+        item["bbox"] = None
+        batch._card_for([item])
+        self.assertNotIn("context", card)
+
+    def test_missing_context_image_is_reported_without_using_new_pdf_coordinates(self):
+        card, item = self.add_card()
+        self.context_page(item)
+        batch._card_for([item])
+        fix_images.image_path(card["context"]["image_file"]).unlink()
+        self.assertEqual(batch.snapshot()["cards"][0]["context"]["image"], "")
+
     def test_failed_trials_persist_last_unapplied_picture_without_saving_original(self):
         card, item = self.add_card()
         item["status"] = "pending"
