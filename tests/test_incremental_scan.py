@@ -202,6 +202,27 @@ class IncrementalScanTests(unittest.TestCase):
         report = self.reporter.get_execution_report_snapshot()["files"][path.name]
         self.assertEqual((report["status"], report["clip_unfixed"]), ("done", 0))
 
+    def test_halfwidth_merged_table_headers_are_not_missing(self):
+        path = self.add_book("book", ["S1"])
+        with self.workflow.fitz.open() as doc:
+            page = doc.new_page()
+            for y in (100, 150):
+                page.draw_rect(self.workflow.fitz.Rect(50, y - 20, 150, y + 20))
+                page.insert_text((70, y + 5), "ﾃｰﾌﾞﾙ", fontsize=10, fontname="japan")
+            doc.save(self.root / "headers.pdf")
+        self.blank_pdf = self.root / "headers.pdf"
+        # 两个两行合并表头，各自仅在左上角单元格有值。
+        rows = [("ﾃｰﾌﾞﾙ",)] + [(None,)] * 9 + [("ﾃｰﾌﾞﾙ",), (None,)]
+        self.patch_value(self.workflow, "extract_sheet_snapshot", Mock(return_value={
+            "start_r": 46, "start_c": 26, "rows_vals": rows,
+        }))
+
+        job = self.scan()
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(self.workflow.STATE["items"], {})
+        report = self.reporter.get_execution_report_snapshot()["files"][path.name]
+        self.assertEqual((report["status"], report["clip_unfixed"]), ("done", 0))
+
     def test_hidden_wrapped_text_is_reported_with_cell(self):
         path = self.add_book("book", ["S1"])
         with self.workflow.fitz.open() as doc:

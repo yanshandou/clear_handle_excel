@@ -28,6 +28,7 @@ let fixData = { auto: false, groups: [] };
 let fixCurrentId = null;
 let fixDeferred = new Set(); // 点了「下一个」暂时跳过的组
 let fixChosen = new Set(); // 已点选、等待写入的组
+let fixSkipping = new Set(); // 正在保存“本行无需修改”判断的组
 
 const TRIAGE_KEPT_STORAGE_KEY = 'clear_handle_excel.triageKept';
 const RECHECK_TITLE = '请先在 Excel 中保存手动修改。根据新 PDF 重新检测该文件的问题工作表并替换旧标记，不会自动增加行高';
@@ -472,7 +473,8 @@ const FIX_OPEN_STATUSES = new Set(['queued', 'running', 'ready', 'failed', 'erro
 
 // 还需要用户处理的组：没写入、没点选；跳过（无需修改）的问题项已不在分组里
 function fixQueue() {
-  return fixData.groups.filter(g => FIX_OPEN_STATUSES.has(g.status) && !fixChosen.has(g.id));
+  return fixData.groups.filter(g => FIX_OPEN_STATUSES.has(g.status) && !fixChosen.has(g.id)
+    && g.item_ids.some(id => latestItems[id] && !isResolved(latestItems[id])));
 }
 
 function pickFixGroup() {
@@ -530,14 +532,16 @@ function renderFix() {
   }
 
   const items = group.item_ids.map(id => latestItems[id]).filter(Boolean);
+  const skipping = fixSkipping.has(group.id);
   const signature = JSON.stringify([
     group.id, group.status, group.attempts, group.recommended, group.manual, group.message,
+    skipping, isBusy,
     items.map(item => [item.id, item.status, item.cell_addr]),
   ]);
   if (stage.dataset.signature === signature) return;
   stage.dataset.signature = signature;
 
-  const choosable = ['ready', 'failed'].includes(group.status) && !group.manual;
+  const choosable = ['ready', 'failed'].includes(group.status) && !group.manual && !skipping;
   const tiles = group.attempts.map((attempt, index) => {
     const canPick = choosable && index > 0 && attempt.ok;
     const classes = ['fix-tile', attempt.ok ? 'is-ok' : 'is-bad'];
@@ -573,9 +577,12 @@ function renderFix() {
       <div class="fix-grid">${tiles.join('')}</div>
       ${note ? `<div class="fix-note">${escapeHtml(note)}</div>` : ''}
       <div class="triage-card-tools">
-        ${first ? `<button type="button" class="btn btn-outline btn-sm" onclick="manualOpen('${escapeHtml(first.id)}')">人工处理（在 Excel 中打开）</button>` : ''}
-        ${group.manual && first ? `<button type="button" class="btn btn-primary btn-sm" title="${RECHECK_TITLE}" onclick="manualRecheck('${escapeHtml(first.id)}')">复检</button>` : ''}
-        <button type="button" class="btn btn-outline btn-sm" onclick="deferFixGroup('${escapeHtml(group.id)}')">先看下一个 →</button>
+        <button type="button" class="btn btn-primary btn-sm" ${skipping || isBusy ? 'disabled' : ''}
+          title="将本行所有问题保存为人工确认无需修改，不修改 Excel"
+          onclick="skipFixGroup('${escapeHtml(group.id)}')">${skipping ? '正在保存跳过...' : '跳过本行（无需修改）→'}</button>
+        ${first ? `<button type="button" class="btn btn-outline btn-sm" ${skipping ? 'disabled' : ''} onclick="manualOpen('${escapeHtml(first.id)}')">人工处理（在 Excel 中打开）</button>` : ''}
+        ${group.manual && first ? `<button type="button" class="btn btn-primary btn-sm" ${skipping ? 'disabled' : ''} title="${RECHECK_TITLE}" onclick="manualRecheck('${escapeHtml(first.id)}')">复检</button>` : ''}
+        <button type="button" class="btn btn-outline btn-sm" ${skipping ? 'disabled' : ''} title="暂时换到下一行，不保存跳过判断，稍后还会显示本行" onclick="deferFixGroup('${escapeHtml(group.id)}')">先看下一个 →</button>
       </div>
     </div>`;
 }
@@ -614,6 +621,32 @@ function deferFixGroup(groupId) {
   fixDeferred.add(groupId);
   fixCurrentId = null;
   renderFix();
+}
+
+async function skipFixGroup(groupId) {
+  const group = fixData.groups.find(g => g.id === groupId);
+  if (!group || !FIX_OPEN_STATUSES.has(group.status) || fixChosen.has(groupId) || fixSkipping.has(groupId)) return;
+  if (isBusy) {
+    alert('任务执行中，请结束后再标记跳过。');
+    return;
+  }
+  if (canResume && !confirm('跳过本行会取消上次中断任务的续跑，避免旧检查点覆盖人工判断。确定吗？')) return;
+  fixSkipping.add(groupId);
+  renderFix();
+  try {
+    await syncSkips();
+    await postAction('/api/autofix/skip', { id: groupId, item_ids: group.item_ids });
+    fixData.groups = fixData.groups.filter(g => g.id !== groupId);
+    fixDeferred.delete(groupId);
+    fixCurrentId = null;
+    await pollState();
+    await pollAutofix();
+  } catch (e) {
+    alert(`跳过本行失败：${e.message}`);
+  } finally {
+    fixSkipping.delete(groupId);
+    renderFix();
+  }
 }
 
 async function toggleFullAuto() {

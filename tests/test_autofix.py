@@ -1,5 +1,6 @@
 import importlib
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -146,6 +147,108 @@ class AutofixTests(unittest.TestCase):
         self.assertEqual(len(group["attempts"]), 9)
         self.assertEqual((group["status"], group["recommended"]), ("failed", None))
         self.assertIn("人工处理", group["message"])
+
+    def test_skip_failed_row_saves_all_problems_without_changing_excel(self):
+        self.needed = 999.0
+        self.workflow.STATE["items"]["i2"] = dict(self.workflow.STATE["items"]["i1"], id="i2", seq=2)
+        group = self.group()
+        gid = group["id"]
+        self.autofix._preview(self.session, gid)
+
+        result = self.autofix.skip_group(gid, ["i1", "i2"])
+        self.assertEqual(result, {"changed": 2, "errors": []})
+        saved = storage.load_snapshot("workflow")
+        self.assertEqual([saved["items"][iid]["status"] for iid in ("i1", "i2")], ["accepted", "accepted"])
+        self.assertNotIn(gid, self.autofix.AUTOFIX["groups"])
+        self.assertIsNone(self.autofix._next_task({}))
+        self.assertEqual(self.real_heights, {5: 15.0})
+        self.assertTrue(all(not book.saved for book in self.books))
+
+    def test_skip_during_preview_stops_it_without_writing(self):
+        gid = self.group()["id"]
+        evaluate = self.autofix._evaluate
+
+        def skip_after_export(*args):
+            result = evaluate(*args)
+            self.autofix.skip_group(gid, ["i1"])
+            return result
+
+        with patch.object(self.autofix, "_evaluate", side_effect=skip_after_export):
+            with self.assertRaises(self.autofix._Paused):
+                self.autofix._preview(self.session, gid)
+        self.assertNotIn(gid, self.autofix.AUTOFIX["groups"])
+        self.assertEqual(self.real_heights, {5: 15.0})
+        self.assertTrue(all(not book.saved for book in self.books))
+        with self.assertRaises(self.autofix._Paused):
+            self.autofix._preview(self.session, gid)  # 已取出的旧预览任务也安静停止
+
+    def test_skip_rejects_row_already_queued_for_writing(self):
+        gid = self.group()["id"]
+        self.autofix._preview(self.session, gid)
+        self.autofix.choose(gid, 3)
+        with self.assertRaisesRegex(ValueError, "开始写入"):
+            self.autofix.skip_group(gid, ["i1"])
+        self.assertEqual(self.workflow.STATE["items"]["i1"]["status"], "pending")
+        self.assertEqual(self.autofix.AUTOFIX["groups"][gid]["status"], "applying")
+
+    def test_skip_rejects_stale_items_and_busy_tasks(self):
+        gid = self.group()["id"]
+        with self.assertRaisesRegex(ValueError, "已更新"):
+            self.autofix.skip_group(gid, ["old"])
+        self.workflow.STATE["busy"] = True
+        with self.assertRaisesRegex(ValueError, "任务正在执行"):
+            self.autofix.skip_group(gid, ["i1"])
+        self.assertEqual(self.workflow.STATE["items"]["i1"]["status"], "pending")
+
+    def test_skip_database_failure_keeps_row_in_queue(self):
+        gid = self.group()["id"]
+        with patch.object(self.workflow, "_persist_state", side_effect=RuntimeError("database unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "database unavailable"):
+                self.autofix.skip_group(gid, ["i1"])
+        self.assertEqual(self.workflow.STATE["items"]["i1"]["status"], "pending")
+        self.assertIn(gid, self.autofix.AUTOFIX["groups"])
+
+    def test_group_sync_cannot_reintroduce_a_skipped_row_from_old_state(self):
+        gid = self.group()["id"]
+        reading_done = threading.Event()
+        continue_sync = threading.Event()
+        original_lock = self.autofix._LOCK
+        errors = []
+
+        class PausedGroupLock:
+            def __enter__(self):
+                if threading.current_thread().name == "test-group-sync":
+                    reading_done.set()
+                    if not continue_sync.wait(5):
+                        raise AssertionError("sync did not resume")
+                return original_lock.__enter__()
+
+            def __exit__(self, *args):
+                return original_lock.__exit__(*args)
+
+        def sync():
+            try:
+                self.autofix.sync_groups()
+            except Exception as error:
+                errors.append(error)
+
+        with patch.object(self.autofix, "_LOCK", PausedGroupLock()):
+            thread = threading.Thread(target=sync, name="test-group-sync")
+            thread.start()
+            try:
+                self.assertTrue(reading_done.wait(5))
+                acquired = self.workflow.STATE_LOCK.acquire(blocking=False)
+                if acquired:
+                    self.workflow.STATE_LOCK.release()
+                self.assertFalse(acquired, "同步分组期间必须锁住问题状态，防止跳过判断被旧快照覆盖")
+            finally:
+                continue_sync.set()
+                thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.autofix.skip_group(gid, ["i1"])
+        self.autofix.sync_groups()
+        self.assertNotIn(gid, self.autofix.AUTOFIX["groups"])
 
     def test_full_auto_applies_recommendation(self):
         gid = self.group()["id"]

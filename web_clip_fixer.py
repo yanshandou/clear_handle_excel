@@ -305,6 +305,16 @@ class WebHandler(BaseHTTPRequestHandler):
             autofix.choose(gid, index)
             self._send_json({"ok": True})
 
+        elif self.path == "/api/autofix/skip":
+            gid, item_ids = payload.get("id"), payload.get("item_ids")
+            if (
+                not isinstance(gid, str) or not gid
+                or not isinstance(item_ids, list) or not item_ids
+                or any(not isinstance(iid, str) or not iid for iid in item_ids)
+            ):
+                raise ValueError("需要有效的分组和问题项")
+            self._send_json({"ok": True, **autofix.skip_group(gid, item_ids)})
+
         elif self.path == "/api/autofix/auto":
             on = payload.get("on")
             if not isinstance(on, bool):

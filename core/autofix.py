@@ -26,6 +26,7 @@ from core.workflow import (
     RESOLVED_STATUSES,
     STATE,
     STATE_LOCK,
+    apply_skip_decisions,
     _export_sheet_pdf,
     _file_version,
     _persist_state,
@@ -99,11 +100,17 @@ def resume_after_release() -> None:
 def sync_groups() -> None:
     """按当前未解决的问题项整理分组；组内问题项变了（重新扫描等）就重新准备"""
     with STATE_LOCK:
-        items = [
-            (item["id"], item["wb_path"], item["wb_name"], item["sheet_name"], int(item["excel_row"]),
-             int(item.get("seq") or 0), item["status"])
-            for item in STATE["items"].values() if item["status"] not in RESOLVED_STATUSES
-        ]
+        # 读取问题状态和更新分组必须处于同一把状态锁内，
+        # 避免较早的同步在跳过保存后又按旧快照把该行加回队列。
+        _sync_groups_locked()
+
+
+def _sync_groups_locked() -> None:
+    items = [
+        (item["id"], item["wb_path"], item["wb_name"], item["sheet_name"], int(item["excel_row"]),
+         int(item.get("seq") or 0), item["status"])
+        for item in STATE["items"].values() if item["status"] not in RESOLVED_STATUSES
+    ]
     wanted: dict[str, dict[str, Any]] = {}
     for item_id, wb_path, wb_name, sheet_name, row, seq, status in items:
         gid = _group_id(wb_path, sheet_name, row)
@@ -179,6 +186,24 @@ def choose(gid: str, index: int) -> None:
         group["status"] = "applying"
         group["message"] = "正在写入 Excel..."
     _WAKE.set()
+
+
+def skip_group(gid: str, item_ids: list[str]) -> dict[str, Any]:
+    """把当前行全部问题持久化为无需修改；与选图／全自动排入写入队列互斥。"""
+    with STATE_LOCK:
+        if STATE["busy"]:
+            raise ValueError("任务正在执行，请结束后再标记跳过")
+        sync_groups()
+        with _LOCK:
+            group = AUTOFIX["groups"].get(gid)
+            if group is None or sorted(group["item_ids"]) != sorted(item_ids):
+                raise ValueError("这一行的问题已更新，请刷新后重新判断")
+            if group["status"] in {"applying", "applied"}:
+                raise ValueError("这一行已开始写入或已保存，不能再跳过")
+            result = apply_skip_decisions({iid: True for iid in group["item_ids"]})
+            sync_groups()
+    _WAKE.set()
+    return result
 
 
 def set_auto(on: bool) -> None:
@@ -337,7 +362,9 @@ def _check_still_wanted(gid: str) -> None:
 
 def _preview(session: _ExcelSession, gid: str) -> None:
     with _LOCK:
-        group = AUTOFIX["groups"][gid]
+        group = AUTOFIX["groups"].get(gid)
+        if group is None:
+            raise _Paused
         group.update(status="running", attempts=[], recommended=None, chosen=None, message="")
         wb_path, sheet_name, row = group["wb_path"], group["sheet_name"], group["row"]
         item_ids = list(group["item_ids"])

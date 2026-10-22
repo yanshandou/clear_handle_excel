@@ -895,6 +895,19 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual((status, data["ok"], data["changed"]), (200, True, 1))
             self.assertEqual(self.snapshot("workflow")["items"]["item_1"]["status"], "accepted")
 
+    def test_api_autofix_skip_validates_group_and_items(self):
+        with self.serve_api() as port:
+            import web_clip_fixer
+
+            with patch.object(web_clip_fixer.autofix, "skip_group", return_value={"changed": 2, "errors": []}) as skip:
+                for payload in ({}, {"id": "g", "item_ids": []}, {"id": "g", "item_ids": [None]}):
+                    status, data = self.post(port, "/api/autofix/skip", payload)
+                    self.assertEqual((status, data["ok"]), (400, False))
+                skip.assert_not_called()
+                status, data = self.post(port, "/api/autofix/skip", {"id": "g", "item_ids": ["i1", "i2"]})
+                self.assertEqual((status, data["ok"], data["changed"]), (200, True, 2))
+                skip.assert_called_once_with("g", ["i1", "i2"])
+
     def test_api_rejects_invalid_loop_limits_and_steps(self):
         with self.serve_api() as port:
             for value in (0, -1, 1.5, True, "6", None):

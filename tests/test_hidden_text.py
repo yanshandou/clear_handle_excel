@@ -1,6 +1,7 @@
 import unittest
 
 from core.hidden_text import (
+    Piece,
     REASON_CLIPPED,
     REASON_HASH,
     REASON_MISSING,
@@ -44,6 +45,63 @@ def detect(cells, build, displayed=None, printed=lambda r, c: True):
 
 
 class HiddenTextTests(unittest.TestCase):
+    def test_halfwidth_voiced_table_header_is_visible(self):
+        variants = ("ﾃｰﾌﾞﾙ", "テーブル", "テーフ\u3099ル")
+        for source in variants:
+            for pdf_text in ("ﾃｰﾌﾞﾙ", "テーブル"):
+                with self.subTest(source=source, pdf_text=pdf_text):
+                    def build(page):
+                        # 两行合并后的表头，文字居中，边框没有切到文字。
+                        page.draw_rect(fitz.Rect(50, 80, 150, 120))
+                        page.insert_text((70, 105), pdf_text, fontsize=10, fontname="japan")
+
+                    self.assertEqual(detect([(46, 26, source)], build), [])
+
+    def test_combining_marks_and_compatibility_glyphs_match_complete_text(self):
+        for text in ("ﾊﾟﾋﾟﾌﾟﾍﾟﾎﾟ", "カ\u3099", "e\u0301", "A\u0301\u0327", "\u1100\u1161", "㍿"):
+            with self.subTest(text=text):
+                pieces = [Piece(0, [(c, (i * 10, 0, i * 10 + 10, 10), True)
+                                    for i, c in enumerate(text)])]
+                self.assertEqual(find_hidden_cells(
+                    [(1, 1, text)], pieces, lambda r, c: text, lambda r, c: True,
+                ), [])
+
+    def test_hidden_dakuten_is_still_reported_with_its_location(self):
+        pieces = [Piece(0, [("ﾌ", (50, 90, 60, 100), True),
+                            ("ﾞ", (60, 90, 65, 100), False)])]
+        result = find_hidden_cells([(46, 26, "ﾌﾞ")], pieces, lambda r, c: "ﾌﾞ", lambda r, c: True)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["reason"], REASON_CLIPPED)
+        self.assertEqual(result[0]["visible"], "ﾌ")
+        self.assertEqual(result[0]["bbox"], (50, 90, 65, 100))
+
+    def test_halfwidth_duplicate_headers_still_need_separate_printed_copies(self):
+        def build(page):
+            page.insert_text((50, 100), "ﾃｰﾌﾞﾙ", fontsize=10, fontname="japan")
+
+        result = detect([(46, 26, "ﾃｰﾌﾞﾙ"), (56, 26, "ﾃｰﾌﾞﾙ")], build)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["reason"], REASON_MISSING)
+
+    def test_halfwidth_header_with_missing_suffix_is_still_truncated(self):
+        def build(page):
+            page.insert_text((50, 100), "ﾃｰﾌﾞ", fontsize=10, fontname="japan")
+
+        result = detect([(46, 26, "ﾃｰﾌﾞﾙ")], build)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["reason"], REASON_TRUNCATED)
+        self.assertEqual(result[0]["visible"], "ﾃｰﾌﾞ")
+
+    def test_halfwidth_header_can_be_located_in_pdf(self):
+        with fitz.open() as doc:
+            page = doc.new_page()
+            page.insert_text((70, 105), "ﾃｰﾌﾞﾙ", fontsize=10, fontname="japan")
+            location = locate_text(collect_text_pieces(doc), "ﾃｰﾌﾞﾙ")
+        self.assertIsNotNone(location)
+        self.assertEqual(location[0], 0)
+        self.assertLess(location[1][1], 105)
+        self.assertGreater(location[1][3], 105)
+
     def test_fully_printed_cells_are_not_reported(self):
         def build(page):
             add_text(page, 50, 100, "hihokensha_no")

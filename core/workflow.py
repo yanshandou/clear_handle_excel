@@ -381,8 +381,8 @@ def _detect_sheet_results(
     return pages, items
 
 
-# 检测规则有新增时加一：之前按旧规则查过的文件即使没改过，下次扫描也要整份重新检查
-DETECTOR_VERSION = 4
+# 检测规则变化时加一：之前按旧规则查过的文件即使没改过，下次扫描也要整份重新检查
+DETECTOR_VERSION = 5
 
 
 def _confirm_clip_cells(

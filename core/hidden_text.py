@@ -61,14 +61,32 @@ class Piece:
     page: int
     chars: list[tuple[str, BBox, bool]]  # (字, 坐标, 是否在裁剪区域内可见)
     key: str = ""
-    owner: list[int] = field(default_factory=list)  # key 中每个字对应 chars 的下标
+    owner: list[tuple[int, ...]] = field(default_factory=list)  # 合成字可能对应多个原始字符
     used: list[bool] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        for index, (c, _, _) in enumerate(self.chars):
-            for n in normalize_text(c):
-                self.key += n
-                self.owner.append(index)
+        cluster = ""
+        indices: set[int] = set()
+
+        def flush() -> None:
+            nonlocal cluster
+            key = normalize_text(cluster)
+            self.key += key
+            self.owner.extend([tuple(sorted(indices))] * len(key))
+            cluster = ""
+            indices.clear()
+
+        for index, (char, _, _) in enumerate(self.chars):
+            # 先兼容分解，再把基字与组合符一起合成；不能逐字 NFKC，
+            # 否则半角「ﾌ」「ﾞ」会留下「フ + 组合浊点」，对不上原文的「ブ」。
+            for c in unicodedata.normalize("NFKD", char):
+                if cluster and not unicodedata.combining(c):
+                    before = unicodedata.normalize("NFC", cluster)
+                    if unicodedata.normalize("NFC", cluster + c) == before + c:
+                        flush()
+                cluster += c
+                indices.add(index)
+        flush()
         self.used = [False] * len(self.key)
         xs0, ys0, xs1, ys1 = zip(*(b for _, b, _ in self.chars))
         self.bbox: BBox = (min(xs0), min(ys0), max(xs1), max(ys1))
@@ -239,7 +257,7 @@ def _consume(chain: list[Chunk]) -> None:
 def _chain_chars(chain: list[Chunk]) -> list[tuple[str, BBox, bool]]:
     chars: list[tuple[str, BBox, bool]] = []
     for piece, start, end in chain:
-        indices = sorted(set(piece.owner[start:end]))
+        indices = sorted({index for source_indices in piece.owner[start:end] for index in source_indices})
         chars.extend(piece.chars[i] for i in indices)
     return chars
 
