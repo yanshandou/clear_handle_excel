@@ -293,10 +293,15 @@ code {
   justify-content: center;
   padding: 3px 10px;
   border-radius: 8px;
-  font-size: 11px;
+  flex: none;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.5;
   font-weight: 800;
   letter-spacing: 0.6px;
   color: #fff;
+  /* 标题栏的白色 text-shadow 会继承到白字上，在 Windows 上显成重影 */
+  text-shadow: none;
   background: linear-gradient(180deg, #3b82f6 0%, #1d4ed8 100%);
   box-shadow:
     0 2px 5px rgba(37, 99, 235, 0.35),

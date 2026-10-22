@@ -238,6 +238,20 @@ class BatchTests(unittest.TestCase):
         self.assertIsNone(self.wf.STATE["job"]["pending_adjustment"])
         self.assertFalse(next(iter(batch._data()["rows"].values()))["saved"])
 
+    def test_excel_pixel_rounding_is_not_treated_as_manual_change(self):
+        """日文 Excel 默认 18.75pt：旧版按 0.1 取整记成 18.8，写入核对时误报「行高已被其他操作修改」"""
+        card, _ = self.add_card(color="blue")
+        self.heights[5] = 18.75
+        self.wf.STATE["job"]["pending_adjustment"] = {
+            "path": self.path, "action": "fix", "version": self.wf._file_version(Path(self.path)),
+            "cards": [card["id"]], "rows": [{"id": batch._key(self.path, "S1", 5), "sheet": "S1",
+                                            "row": 5, "expected": 18.8, "target": 21.75}],
+        }
+        batch._finish_pending(self.excel)
+        self.assertEqual(self.heights[5], 21.75)
+        self.book.Save.assert_called_once()
+        self.assertIsNone(self.wf.STATE["job"]["pending_adjustment"])
+
     def test_all_heights_validated_before_any_change(self):
         a, _ = self.add_card("A5", "yellow")
         b, _ = self.add_card("A6", "yellow", row=6)
