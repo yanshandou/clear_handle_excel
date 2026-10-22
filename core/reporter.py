@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from core.common import EXCEL_EXTENSIONS, PROJECT_ROOT, RECORD_PATH, workbook_rel_name
+from core.common import EXCEL_EXTENSIONS, PROJECT_ROOT, RECORD_PATH, review_marked_name, workbook_rel_name
 from core.storage import load_snapshot, save_snapshot
 
 REPORT_LOCK = threading.RLock()
@@ -438,6 +438,8 @@ def open_recorded_workbook(file_name: str) -> Path:
         raise ValueError("看板里没有这个文件，请刷新页面")
     folder = Path(folder_str).resolve()
     candidates = [entry.get("renamed_to"), file_name]
+    # 等待稍后人工复检的文件名前临时加了「🟡」
+    candidates += [str(Path(name).with_name(review_marked_name(Path(name).name))) for name in filter(None, candidates)]
     for name in filter(None, candidates):
         wb_path = (folder / name).resolve()
         try:

@@ -3175,3 +3175,105 @@ button.preview-sheet-tag:active {
   text-decoration-color: #dc2626;
   opacity: 0.6;
 }
+
+/* 第 2 步：稍后人工复检队列（固定在自动处理卡片下方，增减不影响上面的卡片） */
+.review-panel {
+  width: 100%;
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 14px 16px;
+  border: 1px solid rgba(234, 179, 8, 0.55);
+  border-radius: 14px;
+  background: #fffbeb;
+}
+
+.review-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.review-head > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.review-head b {
+  font-size: 15px;
+  color: var(--text-strong);
+}
+
+.review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.review-file {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid #fde68a;
+}
+
+.review-file-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-main);
+}
+
+.review-file-error {
+  font-size: 12.5px;
+  color: #b45309;
+}
+
+.review-mark {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12.5px;
+  color: var(--text-main);
+  border-top: 1px dashed #fde68a;
+}
+
+.review-mark.is-resolved {
+  color: var(--text-light);
+}
+
+.review-mark-cell {
+  font-weight: 700;
+}
+
+.review-mark-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.review-mark-state {
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .review-mark {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+}
