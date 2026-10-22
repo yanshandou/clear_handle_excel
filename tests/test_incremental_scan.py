@@ -203,6 +203,61 @@ class IncrementalScanTests(unittest.TestCase):
         (item,) = self.workflow.STATE["items"].values()
         self.assertEqual(item["status"], "fixed")
 
+    def test_clip_among_same_texts_is_confirmed_by_font_color(self):
+        self.add_book("book", ["S1"])
+        sheet = self.books["book"].Sheets[0]
+        colors = {}  # (行, 列) -> Excel 字体颜色（BGR）
+        rows = {2: "非表示", 3: "非表示", 4: "非表示"}
+
+        class Font:
+            def __init__(self, rc):
+                self.rc = rc
+
+            @property
+            def Color(self):
+                return colors.get(self.rc, 0)
+
+            @Color.setter
+            def Color(self, value):
+                colors[self.rc] = value
+
+        sheet.Cells = lambda r, c: Mock(Font=Font((r, c)))
+        sheet.Rows = Mock(return_value=Mock(RowHeight=15.0, Hidden=False))
+        workflow = self.workflow
+
+        def export(**kwargs):
+            # 按格子当前的字体颜色画出三行同样的文字
+            with workflow.fitz.open() as doc:
+                page = doc.new_page()
+                for row, text in rows.items():
+                    bgr = colors.get((row, 1), 0)
+                    rgb = (bgr & 0xFF, bgr >> 8 & 0xFF, bgr >> 16 & 0xFF)
+                    page.insert_text((60, 40 * row), text, fontsize=10, fontname="japan",
+                                     color=tuple(v / 255 for v in rgb))
+                doc.save(kwargs["Filename"])
+        sheet.ExportAsFixedFormat = export
+        self.patch_value(workflow, "extract_sheet_snapshot", Mock(return_value={
+            "start_r": 2, "start_c": 1, "rows_vals": [(t,) for t in rows.values()],
+        }))
+        # 推算的行号故意给错，确认以颜色为准
+        self.patch_value(workflow, "locate_cell", Mock(return_value=(2, 1)))
+
+        def clips(page):
+            spans = [
+                span for block in page.get_text("dict")["blocks"]
+                for line in block.get("lines", []) for span in line["spans"]
+            ]
+            span = next(sp for sp in spans if abs(sp["origin"][1] - 120) < 1)  # 第 3 行
+            return [{"text": span["text"], "bbox": tuple(span["bbox"]), "line_y": 0}]
+        self.patch_value(workflow, "find_clipped_spans_on_page", clips)
+        self.scan()
+
+        clip_items = [it for it in workflow.STATE["items"].values() if it["kind"] == "clip"]
+        self.assertEqual(len(clip_items), 1)
+        self.assertEqual((clip_items[0]["cell_addr"], clip_items[0]["location_confirmed"]), ("A3", True))
+        self.assertEqual(colors, {(2, 1): 0, (3, 1): 0, (4, 1): 0})  # 颜色已还原
+        self.assertFalse(any(p.name.startswith("~定位_") for p in self.folder.iterdir()))
+
     def test_new_file_is_fully_scanned_and_not_marked_new(self):
         self.add_book("book", ["S1"])
         self.scan()

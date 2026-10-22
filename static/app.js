@@ -302,7 +302,7 @@ function renderTriage() {
         ${pageHtml}
       </div>
       <div class="triage-card-foot">
-        定位 <b>${escapeHtml(next.cell_addr)}</b>（Excel 第 ${Number(next.excel_row) || 1} 行 · 行高 ${escapeHtml(next.row_height)}pt${peers > 1 ? ` · 同行共 ${peers} 处切字` : ''}）<br>
+        定位 <b>${escapeHtml(next.cell_addr)}</b>${next.location_confirmed === false ? '<span style="color:#b45309;">（定位未确认，请核对行号）</span>' : ''}（Excel 第 ${Number(next.excel_row) || 1} 行 · 行高 ${escapeHtml(next.row_height)}pt${peers > 1 ? ` · 同行共 ${peers} 处切字` : ''}）<br>
         ${escapeHtml(itemTextLabel(next))}
         ${isHidden(next) ? `<br><span style="color:#b45309;">${escapeHtml(next.hidden_reason || '')}</span>` : ''}
         ${next.status !== 'pending' && next.review_reason ? `<br><span style="color:#b45309;">${escapeHtml(next.review_reason)}</span>` : ''}

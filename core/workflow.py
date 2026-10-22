@@ -29,6 +29,8 @@ from core.common import (
 from core.excel_ops import (
     CellProbe,
     extract_sheet_snapshot,
+    restore_font_colors,
+    set_font_colors,
     match_excel_row,
     normalize_workbook_view,
     open_workbook_for_manual_review,
@@ -38,7 +40,15 @@ from core.excel_ops import (
     win32,
 )
 from core.hidden_text import clip_check_supported, collect_text_pieces, find_hidden_cells
-from core.row_locator import build_anchors, locate_cell
+from core.row_locator import (
+    MAX_TAGGED_CELLS,
+    build_anchors,
+    candidate_cells,
+    colored_span_cells,
+    excel_color,
+    locate_cell,
+    tag_color,
+)
 from core.pdf_detector import (
     collect_text_spans,
     find_clipped_spans_on_page,
@@ -311,6 +321,7 @@ def _detect_sheet_results(
                 }
             return page_id
 
+        candidates: dict[str, list[tuple[int, int]]] = {}
         for page_index in range(len(doc)):
             page = doc[page_index]
             clips = find_clipped_spans_on_page(page)
@@ -330,6 +341,7 @@ def _detect_sheet_results(
                     )
                 item_id = f"item_{generation}_{len(items)}"
                 occurrence = locate_text_occurrence(text_spans, page_index, clip["text"], clip["bbox"])
+                candidates[item_id] = candidate_cells(cells, clip["text"], row)
                 items[item_id] = {
                     "id": item_id, "seq": start_seq + len(items), "kind": "clip", "page_id": page_id,
                     "index_on_page": index, "wb_path": str(wb_path), "wb_name": wb_label,
@@ -340,6 +352,8 @@ def _detect_sheet_results(
                     "image": render_crop_base64(page, clip["bbox"], highlight=True),
                     "status": "pending", "iterations": 0,
                 }
+
+        _confirm_clip_cells(sheet, pdf_path, items, candidates, probe)
 
         # 隐藏截断：单元格完整内容在 PDF 里没显示全（外观上看不出来）
         hidden = find_hidden_cells(cells, pieces, probe.text, probe.printed)
@@ -368,7 +382,54 @@ def _detect_sheet_results(
 
 
 # 检测规则有新增时加一：之前按旧规则查过的文件即使没改过，下次扫描也要整份重新检查
-DETECTOR_VERSION = 2
+DETECTOR_VERSION = 3
+
+
+def _confirm_clip_cells(
+    sheet: Any, pdf_path: Path, items: dict[str, Any],
+    candidates: dict[str, list[tuple[int, int]]], probe: CellProbe,
+) -> None:
+    """切字项逐一确认是哪一格：只有一个候选格子时直接确定；有多个时把候选格子的字体
+    改成各不相同的颜色（不保存工作簿）再导出一次 PDF，读切字的颜色就知道是哪一格。
+    认不出时（条件格式改了颜色等）保留按位置推算的结果，并标为定位未确认。"""
+    pending: list[str] = []
+    for item_id, cands in candidates.items():
+        item = items[item_id]
+        if len(cands) == 1:
+            _set_item_cell(item, *cands[0], probe)
+            item["location_confirmed"] = True
+        else:
+            item["location_confirmed"] = False
+            pending.append(item_id)
+    tagged = list(dict.fromkeys(rc for item_id in pending for rc in candidates[item_id]))[:MAX_TAGGED_CELLS]
+    if not tagged:
+        return
+    temp_pdf = pdf_path.with_name(f"~定位_{uuid4().hex}.pdf")
+    originals = set_font_colors(sheet, {rc: excel_color(tag_color(i)) for i, rc in enumerate(tagged, start=1)})
+    try:
+        _export_sheet_pdf(sheet, temp_pdf)
+        with fitz.open(temp_pdf) as doc:
+            found = colored_span_cells(
+                doc,
+                [(items[i]["page_index"], as_bbox(items[i]["bbox"]), items[i]["text"]) for i in pending],
+                tagged,
+            )
+    except Exception as err:
+        log_msg(f"  ⚠️ [{sheet.Name}] 上色确认切字位置失败，沿用按位置推算的行号: {err}")
+        return
+    finally:
+        restore_font_colors(sheet, originals)
+        temp_pdf.unlink(missing_ok=True)
+    for item_id, cell in zip(pending, found):
+        if cell is not None:
+            _set_item_cell(items[item_id], *cell, probe)
+            items[item_id]["location_confirmed"] = True
+
+
+def _set_item_cell(item: dict[str, Any], row: int, col: int, probe: CellProbe) -> None:
+    item["excel_row"] = row
+    item["cell_addr"] = f"{col_index_to_letters(col)}{row}"
+    item["row_height"] = probe.row_height(row)
 
 
 def _file_version(path: Path) -> dict[str, int]:

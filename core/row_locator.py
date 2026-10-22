@@ -109,3 +109,64 @@ def locate_cell(
         return min(pool, key=lambda rc: (abs(rc[0] - estimate), x_distance(rc[1])))
     nearest_col = min(col_x, key=x_distance) if col_x else None
     return estimate, nearest_col if nearest_col is not None else min((c for _, c, _ in cells), default=1)
+
+
+# ---- 上色确认：把候选格子的字体改成各不相同的颜色再导出一次，按切字的颜色认出是哪一格 ----
+# 每个通道取 8 的倍数，PDF 里颜色经小数换算后也能可靠还原；0 号（黑色）不用
+_PALETTE_STEP = 8
+MAX_TAGGED_CELLS = 32767
+
+
+def tag_color(index: int) -> int:
+    """第 index 个候选格子的颜色（0xRRGGBB），index 从 1 开始"""
+    r, g, b = index & 31, (index >> 5) & 31, (index >> 10) & 31
+    return (r * _PALETTE_STEP << 16) | (g * _PALETTE_STEP << 8) | (b * _PALETTE_STEP)
+
+
+def excel_color(rgb: int) -> int:
+    """0xRRGGBB → Excel Font.Color 用的 BGR 整数"""
+    return ((rgb & 0xFF) << 16) | (rgb & 0xFF00) | (rgb >> 16 & 0xFF)
+
+
+def tag_index(rgb: int) -> int | None:
+    """从 PDF 读到的颜色还原候选序号；不是调色板里的颜色（如条件格式改了颜色）返回 None"""
+    channels = (rgb >> 16 & 0xFF, rgb >> 8 & 0xFF, rgb & 0xFF)
+    levels = [round(c / _PALETTE_STEP) for c in channels]
+    if any(abs(c - lv * _PALETTE_STEP) > 3 or lv > 31 for c, lv in zip(channels, levels)):
+        return None
+    index = levels[0] | levels[1] << 5 | levels[2] << 10
+    return index or None
+
+
+def candidate_cells(
+    cells: list[tuple[int, int, Any]], text: str, near_row: int | None,
+) -> list[tuple[int, int]]:
+    """可能是这处切字的格子：内容包含这段文字的；一个都没有时，取估算行附近几行的非空格子"""
+    key = normalize_text(text)
+    found = [(r, c) for r, c, v in cells if v is not None and key and key in normalize_text(str(v))]
+    if found or near_row is None:
+        return found
+    return [(r, c) for r, c, v in cells if v is not None and abs(r - near_row) <= 3]
+
+
+def colored_span_cells(
+    doc: Any, targets: list[tuple[int, BBox, str]], tagged: list[tuple[int, int]],
+) -> list[tuple[int, int] | None]:
+    """在上色后的 PDF 里读每处切字（页码、坐标、文字）的颜色，对应回格子；认不出的为 None"""
+    results: list[tuple[int, int] | None] = []
+    for page_index, bbox, text in targets:
+        found = None
+        if page_index < len(doc):
+            key = normalize_text(text)
+            for block in doc[page_index].get_text("dict")["blocks"]:
+                for line in block.get("lines", []):
+                    for span in line["spans"]:
+                        if normalize_text(span["text"]) != key:
+                            continue
+                        if any(abs(a - b) > 1.0 for a, b in zip(span["bbox"], bbox)):
+                            continue
+                        index = tag_index(int(span["color"]))
+                        if index is not None and index <= len(tagged):
+                            found = tagged[index - 1]
+        results.append(found)
+    return results

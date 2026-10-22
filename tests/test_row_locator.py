@@ -2,7 +2,15 @@ import unittest
 
 from core.hidden_text import collect_text_pieces
 from core.pdf_detector import fitz
-from core.row_locator import build_anchors, locate_cell
+from core.row_locator import (
+    build_anchors,
+    candidate_cells,
+    colored_span_cells,
+    excel_color,
+    locate_cell,
+    tag_color,
+    tag_index,
+)
 
 
 class RowLocatorTests(unittest.TestCase):
@@ -62,6 +70,43 @@ class RowLocatorTests(unittest.TestCase):
 
     def test_page_without_anchors_falls_back(self):
         self.assertIsNone(locate_cell([(1, 1, "x")], {}, "x", 0, (0, 0, 10, 10), lambda r: 15.0))
+
+
+class ColorTagTests(unittest.TestCase):
+    def test_palette_round_trips_through_pdf_colors(self):
+        for index in (1, 2, 31, 32, 1000, 32767):
+            rgb = tag_color(index)
+            self.assertEqual(tag_index(rgb), index)
+            # PDF 里颜色是 0~1 的小数，读回来会有舍入
+            channels = [round(round((rgb >> shift & 0xFF) / 255, 3) * 255) for shift in (16, 8, 0)]
+            self.assertEqual(tag_index(channels[0] << 16 | channels[1] << 8 | channels[2]), index)
+        self.assertIsNone(tag_index(0x000000))  # 普通黑字
+        self.assertIsNone(tag_index(0xFF0000))
+        self.assertEqual(excel_color(0x112233), 0x332211)
+
+    def test_colored_span_identifies_cell_among_same_texts(self):
+        tagged = [(3, 2), (7, 2), (9, 4)]
+        with fitz.open() as doc:
+            page = doc.new_page()
+            for i, (y, _) in enumerate(zip((100, 140, 180), tagged), start=1):
+                rgb = tag_color(i)
+                page.insert_text((60, y), "非表示", fontsize=10, fontname="japan",
+                                 color=tuple((rgb >> s & 0xFF) / 255 for s in (16, 8, 0)))
+            data = doc.tobytes()
+        with fitz.open("pdf", data) as doc:
+            spans = [
+                span for block in doc[0].get_text("dict")["blocks"]
+                for line in block.get("lines", []) for span in line["spans"]
+            ]
+            targets = [(0, tuple(span["bbox"]), "非表示") for span in spans]
+            self.assertEqual(colored_span_cells(doc, targets, tagged), tagged)
+            # 坐标对不上（版面变了）时认不出，不乱猜
+            self.assertEqual(colored_span_cells(doc, [(0, (0, 0, 10, 10), "非表示")], tagged), [None])
+
+    def test_candidates_fall_back_to_rows_near_estimate(self):
+        cells = [(1, 1, "abc"), (5, 1, "xyz"), (6, 2, 12.0), (20, 1, "far")]
+        self.assertEqual(candidate_cells(cells, "ab", 10), [(1, 1)])
+        self.assertEqual(candidate_cells(cells, "???", 6), [(5, 1), (6, 2)])
 
 
 if __name__ == "__main__":

@@ -304,6 +304,30 @@ class CellProbe:
         return not areas or any(r0 <= row <= r1 and c0 <= col <= c1 for r0, c0, r1, c1 in areas)
 
 
+def set_font_colors(sheet: Any, colors: dict[tuple[int, int], int]) -> dict[tuple[int, int], Any]:
+    """把格子的字体改成指定颜色（Excel 的 BGR 整数），返回原来的颜色用于还原；改不了的格子跳过"""
+    originals: dict[tuple[int, int], Any] = {}
+    for (row, col), color in colors.items():
+        try:
+            font = sheet.Cells(row, col).Font
+            originals[(row, col)] = font.Color
+            font.Color = color
+        except Exception:
+            continue
+    return originals
+
+
+def restore_font_colors(sheet: Any, originals: dict[tuple[int, int], Any]) -> None:
+    """还原 set_font_colors 改过的颜色（一格多种颜色的富文本读不到原色，工作簿不保存，不影响原文件）"""
+    for (row, col), color in originals.items():
+        if color is None:
+            continue
+        try:
+            sheet.Cells(row, col).Font.Color = color
+        except Exception:
+            pass
+
+
 def match_excel_row(
     sheet_snapshot: dict[str, Any],
     text_snippet: str,
