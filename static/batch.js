@@ -72,6 +72,32 @@ function renderControls() {
   $('statusText').textContent = batchState.busy ? '⏳ 后台处理中' : batchState.job?.status === 'interrupted' ? '⏸ 可继续任务' : '就绪';
 }
 
+// 复制报错 / 日志：页面跑在 localhost，一般能用 clipboard；不行就退回 execCommand
+const errorLogLines = () => batchState.logs.filter(line => /❌|⚠️/.test(line));
+
+async function copyText(text, button) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const area = Object.assign(document.createElement('textarea'), { value: text });
+    area.style.cssText = 'position:fixed;left:-9999px;top:0';
+    document.body.append(area);
+    area.select();
+    const ok = document.execCommand('copy');
+    area.remove();
+    if (!ok) { $('errorText').textContent = '复制失败，请手动选中文字复制'; return; }
+  }
+  const label = button.dataset.label || (button.dataset.label = button.textContent);
+  button.textContent = '已复制 ✓';
+  clearTimeout(button.copyTimer);
+  button.copyTimer = setTimeout(() => { button.textContent = label; }, 1500);
+}
+
+function renderCopyErrorBtn() {
+  const hasError = $('errorText').textContent.trim() || !$('pendingNotice').classList.contains('hidden');
+  $('copyErrorBtn').classList.toggle('hidden', !hasError);
+}
+
 // 写入核对没通过时任务停住、什么都不能开始：写清楚卡在哪、两个按钮分别做什么
 function renderPendingNotice() {
   const pending = !batchState.busy && batchState.job?.pending_adjustment;
@@ -325,6 +351,18 @@ $('commitBtn').addEventListener('click', () => {
 $('abandonBtn').addEventListener('click', () => {
   if (window.confirm('放弃上次未完成的写入？\n不会再改动这个文件，相关单元格转为黄色人工处理，请在 Excel 中核对这一行的行高。')) action(() => post('/api/batch/abandon'));
 });
+$('copyErrorBtn').addEventListener('click', event => {
+  const parts = [$('pendingNotice').classList.contains('hidden') ? '' : $('pendingNotice').textContent,
+                 $('errorText').textContent.trim()].filter(Boolean);
+  const recent = errorLogLines().slice(-10);
+  if (recent.length) parts.push('最近的报错日志：\n' + recent.join('\n'));
+  copyText(parts.join('\n\n'), event.currentTarget);
+});
+$('copyLogBtn').addEventListener('click', event => copyText(batchState.logs.join('\n') || '（暂无日志）', event.currentTarget));
+$('copyLogErrorsBtn').addEventListener('click', event => copyText(errorLogLines().join('\n') || '（日志里没有报错）', event.currentTarget));
+// 报错文字在很多地方被设置/清空，统一盯着它显示或隐藏复制按钮
+new MutationObserver(renderCopyErrorBtn).observe($('errorText'), { childList: true, characterData: true, subtree: true });
+new MutationObserver(renderCopyErrorBtn).observe($('pendingNotice'), { attributes: true, attributeFilter: ['class'] });
 $('openAllBtn').addEventListener('click', () => startJob('/api/batch/open', { card_ids: manualCards().map(c => c.id) }));
 $('recheckAllBtn').addEventListener('click', () => startJob('/api/batch/recheck', { card_ids: manualCards().map(c => c.id) }));
 $('largeBtn').addEventListener('click', () => openLarge());

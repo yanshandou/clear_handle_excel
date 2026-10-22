@@ -65,3 +65,6 @@
 .batch-pending { margin: 10px 0 0; padding: 10px 14px; border: 1px solid #f3c969; border-radius: 10px; background: #fff8e6; color: #7a4a00; font-size: 13px; line-height: 1.7; }
 /* 不可用的按钮也要看得清字，只是变淡一些 */
 .batch-tools .btn:disabled { opacity: .7; }
+/* 复制报错 / 日志 */
+#copyErrorBtn { margin-top: 2px; }
+.batch-log-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
