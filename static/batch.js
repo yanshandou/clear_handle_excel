@@ -14,10 +14,16 @@ let lastActiveIndex = 0;
 let lastWheelAt = 0;
 let selectedIds = new Set();
 let selectNotice = '';
+// 筛选后改了颜色的卡片继续留在当前筛选里，不立刻消失；重新点筛选按钮才按新颜色过滤
+let filterKeep = new Set();
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const nextColor = (color, direction = 1) => REVIEW_COLORS[(REVIEW_COLORS.indexOf(color) + direction + 3) % 3];
-const shownCards = () => batchState.cards.filter(c => selectedFilter === 'all' || c.color === selectedFilter);
+const shownCards = () => batchState.cards.filter(c => {
+  if (selectedFilter === 'all') return true;
+  if (c.color === selectedFilter) filterKeep.add(c.id);
+  return filterKeep.has(c.id);
+});
 const manualCards = () => batchState.cards.filter(c => c.color === 'yellow' && c.finalized);
 
 async function post(url, payload = {}) {
@@ -154,6 +160,13 @@ function handlingText(card) {
   return '';
 }
 
+// 蓝色 = 保留已通过检查的修复；没有通过的修复就没有可保留的东西，单击只在黄、绿之间切换
+function noBlueReason(card) {
+  const why = card.waiting ?? card.message === '等待自动处理' ? '还没轮到自动处理'
+    : card.after_kind === 'attempt' ? '自动加高没有通过检查' : '当前修复还没有通过检查';
+  return `${why}，暂时不能标蓝（单击只在黄、绿之间切换）。改好后复检通过会自动变蓝。`;
+}
+
 function cardHtml(card, large = false) {
   const link = excelLinkHtml(esc(card.wb_name), { file: card.wb_name, folder: batchState.folder, sheet: card.sheet_name, cell: card.cell_addr });
   const labels = { before: '修改前', after: card.after_kind === 'attempt' ? '最后一次尝试（未采用）' : card.after_kind === 'unchanged' ? '原样导出（未修改）' : card.after_kind === 'rechecked' ? '最新导出（本行未修改）' : '修改后' };
@@ -167,6 +180,7 @@ function cardHtml(card, large = false) {
     <div class="batch-card-head"><button type="button" class="batch-select" data-action="select" aria-pressed="false" title="选中 / 取消选中">✓</button><div class="batch-card-title">${link}<p class="batch-cell">${esc(card.sheet_name)}!${esc(card.cell_addr || '定位待确认')}</p></div><span class="batch-color-label">${REVIEW_LABELS[card.color]}</span></div>
     ${visuals}${problemHtml(card)}${handling ? `<p class="batch-handling">${esc(handling)}</p>` : ''}${card.text ? `<p class="batch-text">${esc(card.text)}</p>` : ''}${card.message ? `<p class="batch-message">${esc(card.message)}</p>` : ''}
     <p class="batch-state">${card.finalized ? '已提交 · 可人工处理' : '颜色标记待提交'}${batchState.busy ? ' · 后台任务结束后可标记' : ''}</p>
+    ${card.verified ? '' : `<p class="batch-no-blue">${noBlueReason(card)}</p>`}
     <div class="batch-card-footer"><button class="btn btn-outline" data-action="large"><span class="batch-icon-enlarge" aria-hidden="true"></span>大图审核</button>${card.color === 'yellow' && card.finalized ? '<button class="btn btn-outline" data-action="recheck">🔁 单项复检</button>' : ''}</div></article>`;
 }
 
@@ -253,7 +267,7 @@ function render() {
   $('largeView').classList.toggle('hidden', !largeMode);
   const shown = shownCards();
   if (largeMode) {
-    // 改色后卡片离开当前筛选：停在原位置（即下一张），不跳回第一张
+    // 当前卡片被提交移出列表：停在原位置（即下一张），不跳回第一张
     if (!shown.some(c => c.id === activeCardId)) activeCardId = shown[Math.min(lastActiveIndex, shown.length - 1)]?.id;
     const index = shown.findIndex(c => c.id === activeCardId);
     if (index >= 0) lastActiveIndex = index;
@@ -263,14 +277,11 @@ function render() {
     $('nextBtn').disabled = index >= shown.length - 1;
   } else {
     const columnCount = Math.max(1, Math.min(3, Math.floor((($('cardList').clientWidth || 1200) + 18) / 328)));
-    const sections = ['yellow', 'green', 'blue'].map(color => {
-      const cards = shown.filter(c => c.color === color);
-      const columns = Array.from({ length: columnCount }, () => []);
-      cards.forEach((card, index) => columns[index % columnCount].push(card));
-      return { color, cards, columns };
-    });
+    // 不按颜色分组：卡片按处理顺序固定排列，改色只换颜色，位置不变
+    const columns = Array.from({ length: columnCount }, () => []);
+    shown.forEach((card, index) => columns[index % columnCount].push(card));
     const html = new Map(shown.map(c => [c.id, cardHtml(c)]));
-    const layout = JSON.stringify([sections.map(s => s.columns.map(column => column.map(c => c.id))), batchState.busy]);
+    const layout = JSON.stringify([columns.map(column => column.map(c => c.id)), batchState.busy]);
     if (layout === layoutKey && shown.length) {
       // 卡片位置没变：只换内容有变化的卡片，不整页重画（图片不重新加载、页面不跳）
       for (const [id, value] of html) {
@@ -280,8 +291,8 @@ function render() {
       }
     } else {
       const anchor = scrollAnchor();
-      $('cardList').innerHTML = shown.length ? sections.map(({ color, cards, columns }) => cards.length
-        ? `<section class="batch-group" data-color="${color}"><h2 class="batch-group-title"><span class="batch-dot" aria-hidden="true"></span>${REVIEW_LABELS[color]}<span class="batch-count">${cards.length}</span></h2><div class="batch-waterfall">${columns.map(column => `<div class="batch-column">${column.map(c => html.get(c.id)).join('')}</div>`).join('')}</div></section>` : '').join('')
+      $('cardList').innerHTML = shown.length
+        ? `<div class="batch-waterfall">${columns.map(column => `<div class="batch-column">${column.map(c => html.get(c.id)).join('')}</div>`).join('')}</div>`
         : `<section class="panel batch-empty"><h2>${batchState.busy ? '正在自动扫描与修复…' : '当前没有待审核卡片'}</h2><p>${batchState.busy ? '文件处理后会在这里出现修改前后对比，无需逐项放行。' : '开始全自动处理，或切换颜色筛选查看结果。'}</p></section>`;
       restoreAnchor(anchor);
     }
@@ -377,7 +388,7 @@ $('selectBar').addEventListener('click', event => {
 });
 $('filters').addEventListener('click', event => {
   const button = event.target.closest('[data-filter]');
-  if (button) { selectedFilter = button.dataset.filter; render(); }
+  if (button) { selectedFilter = button.dataset.filter; filterKeep = new Set(); renderKey = ''; render(); }
 });
 
 for (const id of ['cardList', 'largeCard']) $(id).addEventListener('click', event => {
