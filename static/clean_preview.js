@@ -1,5 +1,5 @@
 // Sheet 预览确认窗口：从精简 Sheet 页面的卡片打开，每个工作表显示第 1 页预览图，
-// 单击切换「保留 / 删除 / 待定」并与精简 Sheet 页面同步，「确认执行」只处理当前这一个文件
+// 单击切换「保留 / 删除 / 待定」并与精简 Sheet 页面同步；标记完成后返回精简 Sheet 页面统一执行
 const CLEAN_KIND = 'clean_sheets';
 const SYNC_CHANNEL = 'clear_handle_excel.clean';
 const SIZE_STORAGE_KEY = 'clear_handle_excel.previewSize';
@@ -13,9 +13,7 @@ let defaults = {};
 let states = {}; // { [sheetName]: 'keep' | 'delete' | 'uncertain' }
 let renders = null; // { key, sheets: [{ name, image, pages, hidden, note }] }
 let renderError = '';
-let phase = 'loading'; // loading | ready | running | done
-let runResult = null;
-let pollTimer = null;
+let phase = 'loading'; // loading | ready
 
 const channel = 'BroadcastChannel' in window ? new BroadcastChannel(SYNC_CHANNEL) : null;
 
@@ -182,7 +180,6 @@ function renderActionBar() {
   bar.classList.toggle('hidden', !fileInfo || !fileInfo.sheets.length);
   if (!fileInfo) return;
   const c = counts();
-  const execBtn = document.getElementById('pvExecBtn');
   const hint = document.getElementById('pvHint');
   document.getElementById('pvResetBtn').disabled = locked();
   document.getElementById('pvGrid').classList.toggle('is-locked', locked());
@@ -193,31 +190,9 @@ function renderActionBar() {
     待定 <b class="is-uncertain">${c.uncertain}</b> 个 ·
     保留 <b>${c.keep}</b> 个`;
 
-  hint.textContent = '';
-  if (phase === 'running') {
-    execBtn.disabled = true;
-    execBtn.textContent = '⏳ 整理中…';
-    return;
-  }
-  if (phase === 'done') {
-    execBtn.disabled = true;
-    execBtn.textContent = runResult && runResult.ok ? '✅ 已处理完成' : '⚠️ 处理失败';
-    hint.innerHTML = runResult && runResult.ok
-      ? '这个文件已处理完成，可以关闭此窗口'
-      : `${escapeHtml(runResult ? runResult.message : '')} <a href="/records" target="_blank">查看执行记录 ↗</a>`;
-    return;
-  }
   const allDeleted = c.delete >= fileInfo.sheets.length;
-  const hasAction = c.delete > 0; // 待定只是本次不删，不改文件
-  execBtn.disabled = phase !== 'ready' || allDeleted || !hasAction;
-  if (allDeleted) {
-    execBtn.textContent = '⚠️ 请至少保留 1 个工作表';
-    hint.textContent = '不能将所有工作表全部标为删除';
-  } else if (!hasAction) {
-    execBtn.textContent = '没有标记删除的工作表';
-  } else {
-    execBtn.textContent = `🧹 确认执行（删除 ${c.delete} 个工作表）`;
-  }
+  // 全部标为删除时也可以返回，精简 Sheet 页面同样会提示并禁止执行
+  hint.textContent = allDeleted ? '⚠️ 不能将所有工作表全部标为删除，请至少保留 1 个' : '';
 }
 
 function showMessage(text, { spinning = false, error = false } = {}) {
@@ -262,7 +237,7 @@ if (channel) {
 }
 
 /* ==========================================
-   执行：只处理当前文件
+   标记完成后返回精简 Sheet 页面：这里不执行，最后在精简 Sheet 页面统一「确认执行」
    ========================================== */
 async function postAction(path, payload) {
   const res = await fetch(path, {
@@ -275,64 +250,17 @@ async function postAction(path, payload) {
   return data;
 }
 
-async function fetchOverview() {
-  const res = await fetch('/api/overview');
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || '读取状态失败');
-  return data;
-}
-
-async function executeFile() {
-  if (phase !== 'ready' || document.getElementById('pvExecBtn').disabled) return;
-  let overview;
+function returnToClean() {
+  if (fileInfo && phase === 'ready') broadcast({ type: 'states', states });
+  broadcast({ type: 'return' }); // 精简 Sheet 页面滚到来源卡片并让边框发亮
   try {
-    overview = await fetchOverview();
-  } catch (e) {
-    alert(e.message);
-    return;
-  }
-  if (overview.busy) {
-    alert(`后台正在执行「${overview.progress.task_name}」，完成后才能开始`);
-    return;
-  }
-  if (overview.can_resume && !confirm('开始新任务会替换上次中断任务的续跑进度，确定吗？')) return;
-
-  const del = fileInfo.sheets.filter(name => states[name] === 'delete');
-  const unc = fileInfo.sheets.filter(name => states[name] === 'uncertain');
-  phase = 'running';
-  renderActionBar();
-  try {
-    await postAction('/api/quick_task', {
-      kind: CLEAN_KIND,
-      folder,
-      plan: { [fileName]: { delete: del, uncertain: unc } },
-      files: [fileName],
-    });
-  } catch (e) {
-    phase = 'ready';
-    renderActionBar();
-    alert(e.message);
-    return;
-  }
-  pollTimer = setInterval(pollRun, 1000);
-}
-
-async function pollRun() {
-  let overview;
-  try {
-    overview = await fetchOverview();
-  } catch (e) {
-    return;
-  }
-  document.getElementById('statusText').innerText = overview.busy ? '⏳ 后台处理中...' : '✅ 就绪';
-  if (overview.busy) return;
-  clearInterval(pollTimer);
-  const p = overview.progress;
-  const ok = !p.error_files && overview.job && overview.job.kind === CLEAN_KIND && !overview.can_resume;
-  runResult = { ok, message: ok ? p.current_step : '处理失败，原因见执行记录' };
-  phase = 'done';
-  if (ok) broadcast({ type: 'done' });
-  renderActionBar();
+    if (window.opener && !window.opener.closed) window.opener.focus();
+  } catch (e) {}
+  window.close();
+  // 不是从精简 Sheet 页面打开的窗口关不掉，直接跳过去
+  setTimeout(() => {
+    location.href = '/clean';
+  }, 300);
 }
 
 /* ==========================================

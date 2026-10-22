@@ -17,7 +17,7 @@
       </div>
     </a>
     <div class="header-nav">
-      <a href="/clean" class="nav-link" target="_blank">🧹 精简 Sheet</a>
+      <a href="/clean" class="nav-link" onclick="event.preventDefault(); returnToClean()" title="标记已自动同步到精简 Sheet 页面">← 返回精简 Sheet</a>
       <span id="statusText" class="status-pill">✅ 就绪</span>
     </div>
   </header>
@@ -55,7 +55,7 @@
           <button type="button" class="btn btn-outline btn-sm preview-reset-btn" id="pvResetBtn" onclick="resetStates()" title="恢复为系统自动识别的初始标记状态">
             ↺ 恢复默认
           </button>
-          <button type="button" class="btn btn-primary" id="pvExecBtn" onclick="executeFile()">🧹 确认执行</button>
+          <button type="button" class="btn btn-primary" id="pvExecBtn" onclick="returnToClean()" title="标记会同步到精简 Sheet 页面，这里不删除；最后在精简 Sheet 页面统一「确认执行」">✓ 标记完成，返回精简 Sheet</button>
         </div>
       </div>
     </section>
