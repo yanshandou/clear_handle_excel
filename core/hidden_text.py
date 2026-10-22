@@ -11,6 +11,7 @@
 对不上的一律报告（宁可多报不漏报）。
 拼接多行时保留原文空行的信息，避免把空行后仍完整显示的下一段误报为截断。
 """
+import math
 import re
 import unicodedata
 from collections.abc import Callable
@@ -63,6 +64,7 @@ class Piece:
     key: str = ""
     owner: list[tuple[int, ...]] = field(default_factory=list)  # 合成字可能对应多个原始字符
     used: list[bool] = field(default_factory=list)
+    solo: Any = None  # 被某个格子单独整段占用时记下是哪一格，必要时可换给它另一段同样的文字
 
     def __post_init__(self) -> None:
         cluster = ""
@@ -163,8 +165,55 @@ class _Matcher:
             for c in set(piece.key):
                 self.by_char.setdefault(c, []).append(piece)
         self.by_page: dict[int, list[Piece]] = {}
+        self.by_key: dict[str, list[Piece]] = {}
         for piece in pieces:
             self.by_page.setdefault(piece.page, []).append(piece)
+            self.by_key.setdefault(piece.key, []).append(piece)
+
+    def _usable(self, piece: Piece, start: int, end: int, continued: bool) -> bool:
+        if piece.free(start, end):
+            return True
+        # 换行接下来的一段紧挨在上一行下面，这个位置证据比单独一格「4」「1」随便挑中的片段可靠：
+        # 被别的格子整段占用、而且还有一样的空闲片段能换给它时，允许接过来
+        return continued and piece.solo is not None and self._spare(piece, set()) is not None
+
+    def _spare(self, piece: Piece, taken: set[int]) -> Piece | None:
+        return next((
+            p for p in self.by_key[piece.key]
+            if p is not piece and id(p) not in taken and not any(p.used)
+        ), None)
+
+    def _reassign(self, chain: list[Chunk]) -> list[tuple[Piece, Piece]] | None:
+        """chain 用到的被占片段各换一段一样的空闲片段给原来的格子；换不过来返回 None"""
+        taken = {id(piece) for piece, _, _ in chain}
+        moves: list[tuple[Piece, Piece]] = []
+        for piece, start, end in chain:
+            if piece.free(start, end):
+                continue
+            spare = self._spare(piece, taken) if piece.solo is not None else None
+            if spare is None:
+                return None
+            taken.add(id(spare))
+            moves.append((piece, spare))
+        return moves
+
+    def claim(self, chain: list[Chunk], owner: Any = None) -> list[tuple[Any, list[Chunk]]]:
+        """占用 chain；返回被挪走的格子及其新片段。owner 不为 None 且整段独占一个片段时，以后可被换走"""
+        moves = self._reassign(chain)
+        assert moves is not None
+        displaced = []
+        for old, spare in moves:
+            spare.used = [True] * len(spare.key)
+            spare.solo, old.solo = old.solo, None
+            displaced.append((spare.solo, [(spare, 0, len(spare.key))]))
+        for piece, start, end in chain:
+            for i in range(start, end):
+                piece.used[i] = True
+        if owner is not None and len(chain) == 1:
+            piece, start, end = chain[0]
+            if start == 0 and end == len(piece.key):
+                piece.solo = owner
+        return displaced
 
     def _below(self, prev: Piece, blank_lines: int = 0) -> list[Piece]:
         """同页、横向重叠的下一行；仅在原文确有空行处扩大纵向间距。"""
@@ -195,7 +244,7 @@ class _Matcher:
                     and piece.key[start + length] == text[pos + length]
                 ):
                     length += 1
-                if not length or not piece.free(start, start + length):
+                if not length or not self._usable(piece, start, start + length, prev is not None):
                     continue
                 end = start + length
                 done = pos + length == len(text)
@@ -217,7 +266,9 @@ class _Matcher:
                 piece, start, end = chunk
                 nxt = pos + end - start
                 if nxt == len(text):
-                    return chain + [chunk]
+                    if self._reassign(chain + [chunk]) is not None:
+                        return chain + [chunk]
+                    continue
                 result = search(nxt, piece, chain + [chunk])
                 if result:
                     return result
@@ -240,18 +291,12 @@ class _Matcher:
                 nxt = pos + end - start
                 if nxt >= len(text):
                     continue
-                if nxt > best_len:
+                if nxt > best_len and self._reassign(chain + [chunk]) is not None:
                     best, best_len = chain + [chunk], nxt
                 search(nxt, piece, chain + [chunk])
         if text:
             search(0, None, [])
         return best or None
-
-
-def _consume(chain: list[Chunk]) -> None:
-    for piece, start, end in chain:
-        for i in range(start, end):
-            piece.used[i] = True
 
 
 def _chain_chars(chain: list[Chunk]) -> list[tuple[str, BBox, bool]]:
@@ -268,6 +313,28 @@ def _chain_location(chain: list[Chunk]) -> tuple[int, BBox]:
         min(b[0] for b in boxes), min(b[1] for b in boxes),
         max(b[2] for b in boxes), max(b[3] for b in boxes),
     )
+
+
+def _missing_lines(text: str, chain: list[Chunk]) -> tuple[int, float]:
+    """只打印出开头一段时，后面大约还缺几行、每行多高（PDF 坐标），供自动处理一次补够高度"""
+    shown = sum(end - start for _, start, end in chain)
+    per_line = max(end - start for _, start, end in chain)
+    gaps = sorted(
+        b.bbox[1] - a.bbox[1] for (a, _, _), (b, _, _) in zip(chain, chain[1:])
+        if a.page == b.page and b.bbox[1] > a.bbox[1]
+    )
+    pitch = gaps[len(gaps) // 2] if gaps else chain[0][0].height
+    missing = 0
+    pos = 0
+    for line in text.splitlines():
+        length = len(normalize_text(line))
+        if (length and pos + length <= shown) or (not length and pos < shown):
+            pos += length
+            continue
+        # 空行也占一行；只显示出一部分的行，剩下的按已打印出的最长一行估算换几行
+        missing += math.ceil((length - max(0, shown - pos)) / per_line) if length else 1
+        pos += length
+    return missing, pitch
 
 
 def _guess_display(value: Any) -> str:
@@ -289,7 +356,8 @@ def find_hidden_cells(
     """
     cells: [(行, 列, 单元格值)]；display_text 读取 Excel 显示的文字（Range.Text）；
     is_printed 判断这格会不会被打印（隐藏行列、打印区域外的不算）。
-    返回: [{"row", "col", "text", "visible", "reason", "page", "bbox"}]，page/bbox 在 PDF 里完全找不到时为 None
+    返回: [{"row", "col", "text", "visible", "reason", "page", "bbox"}]，page/bbox 在 PDF 里完全找不到时为 None；
+    只打印出开头一段的另有 missing_lines（大约还缺几行）、line_pitch（每行高度，PDF 坐标）
     matches 可选接收完整匹配的单元格证据（含所有原始字符的坐标及可见性），供自动处理核验。
     """
     matcher = _Matcher(pieces)
@@ -313,6 +381,16 @@ def find_hidden_cells(
             cell["text"] = shown
         pending.append(cell)
 
+    records: dict[tuple[int, int], dict[str, Any]] = {}
+
+    def record(cell: dict[str, Any], kind: str, chain: list[Chunk] | None, **extra: Any) -> None:
+        key = (cell["row"], cell["col"])
+        records[key] = {"cell": cell, "kind": kind, "chain": chain, **extra}
+        if chain is None:
+            return
+        for owner, moved in matcher.claim(chain, key if kind == "full" else None):
+            records[owner]["chain"] = moved
+
     def match_full(group: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """先整段严格匹配、再放宽，长的先配，避免短文字占掉长文字的位置"""
         for loose in (False, True):
@@ -321,28 +399,13 @@ def find_hidden_cells(
                 chain = matcher.find(cell["text"], loose)
                 if chain is None:
                     left.append(cell)
-                    continue
-                _consume(chain)
-                chars = _chain_chars(chain)
-                hidden = [c for c, _, shown in chars if not shown]
-                if matches is not None:
-                    page, bbox = _chain_location(chain)
-                    matches[(cell["row"], cell["col"])] = {
-                        "text": cell["text"], "page": page, "bbox": bbox, "chars": chars,
-                    }
-                if hidden:
-                    page, bbox = _chain_location(chain)
-                    shown_text = "".join(c for c, _, shown in _chain_chars(chain) if shown)
-                    results.append(_result(cell, shown_text, REASON_CLIPPED, page, bbox))
+                else:
+                    record(cell, "full", chain)
             group = left
         return group
 
     for cell, shown in hash_cells:
-        chain = matcher.find(normalize_text(shown), True)
-        page, bbox = _chain_location(chain) if chain else (None, None)
-        if chain:
-            _consume(chain)
-        results.append(_result(cell, shown, REASON_HASH, page, bbox, text=_guess_display(cell["value"])))
+        record(cell, "hash", matcher.find(normalize_text(shown), True), shown=shown)
 
     left = match_full(pending)
 
@@ -364,12 +427,28 @@ def find_hidden_cells(
     for cell in sorted(left, key=lambda c: -len(normalize_text(c["text"]))):
         chain = matcher.find_prefix(cell["text"])
         if chain is not None:
-            _consume(chain)
-            page, bbox = _chain_location(chain)
-            shown_text = "".join(c for c, _, _ in _chain_chars(chain))
-            results.append(_result(cell, shown_text, REASON_TRUNCATED, page, bbox))
+            record(cell, "prefix", chain)
         elif is_printed(cell["row"], cell["col"]):
             results.append(_result(cell, "", REASON_MISSING, None, None))
+
+    # 片段可能在后面被换给别的格子，全部配完后再按最终占用的片段出结果
+    for rec in records.values():
+        cell, chain = rec["cell"], rec["chain"]
+        if rec["kind"] == "hash":
+            page, bbox = _chain_location(chain) if chain else (None, None)
+            results.append(_result(cell, rec["shown"], REASON_HASH, page, bbox, text=_guess_display(cell["value"])))
+            continue
+        page, bbox = _chain_location(chain)
+        chars = _chain_chars(chain)
+        if rec["kind"] == "prefix":
+            result = _result(cell, "".join(c for c, _, _ in chars), REASON_TRUNCATED, page, bbox)
+            result["missing_lines"], result["line_pitch"] = _missing_lines(cell["text"], chain)
+            results.append(result)
+            continue
+        if matches is not None:
+            matches[(cell["row"], cell["col"])] = {"text": cell["text"], "page": page, "bbox": bbox, "chars": chars}
+        if any(not shown for _, _, shown in chars):
+            results.append(_result(cell, "".join(c for c, _, shown in chars if shown), REASON_CLIPPED, page, bbox))
     results.sort(key=lambda r: (r["row"], r["col"]))
     return results
 

@@ -270,6 +270,22 @@ class AutofixTests(unittest.TestCase):
                           (27.0, True), (30.0, True)])
         self.assertEqual(group["recommended"], 5)
 
+    def test_missing_whole_lines_are_added_at_once(self):
+        # 9 行的格子缺 2 行：3pt 一次加不完 8 次，先按缺的行数补上，剩下再按 3pt 加
+        self.workflow.STATE["items"]["i1"]["kind"] = "hidden"
+
+        def evaluate(*args):
+            height = self.books[-1].heights[5]
+            return height >= 42.0, "data:image/png;base64,", 24.0 if height == 15.0 else 0.0
+
+        gid = self.group()["id"]
+        with patch.object(self.autofix, "_evaluate", side_effect=evaluate):
+            self.autofix._preview(self.session, gid)
+        group = self.group()
+        self.assertEqual([(a["height"], a["ok"]) for a in group["attempts"]],
+                         [(15.0, False), (39.0, False), (42.0, True), (45.0, True)])
+        self.assertEqual(group["recommended"], 3)
+
     def test_full_auto_does_not_queue_hidden_text_that_is_still_crossed(self):
         self.workflow.STATE["items"]["i1"]["kind"] = "hidden"
         self.needed = 999.0
@@ -477,7 +493,7 @@ class AutofixEvaluationTests(unittest.TestCase):
             self.pdf, [item], cells if cells is not None else [(67, 18, text)],
             lambda r, c: display if display is not None else text,
             lambda r, c: True,
-        )
+        )[:2]
 
     def test_complete_hidden_text_crossed_by_border_is_not_success(self):
         ok, image = self.evaluate("ryouyouhi_houmon_name", [
@@ -510,6 +526,21 @@ class AutofixEvaluationTests(unittest.TestCase):
         ok, image = self.evaluate("文字列(100)", [(60, 100, "文字列(100)")])
         self.assertTrue(ok)
         self.assertTrue(image)
+
+    def test_truncated_target_reports_how_much_height_is_missing(self):
+        from core.pdf_detector import fitz
+        with fitz.open() as doc:
+            page = doc.new_page()
+            page.insert_text((60, 100), "桁数④が1以上の場合、", fontsize=10, fontname="japan")
+            page.insert_text((60, 112), "4", fontsize=10, fontname="japan")
+            doc.save(self.pdf)
+        text = "桁数④が1以上の場合、4\n桁数③が1以上の場合、3\n上記以外の場合、0"
+        item = {"kind": "hidden", "text": text, "excel_row": 67, "cell_addr": "R67"}
+        ok, _, need = self.autofix._evaluate(
+            self.pdf, [item], [(67, 18, text)], lambda r, c: text, lambda r, c: True,
+        )
+        self.assertFalse(ok)
+        self.assertAlmostEqual(need, 3 * 12.0, places=1)
 
     def test_border_crossing_other_column_does_not_fail_target(self):
         ok, _ = self.evaluate("Target", [(60, 100, "Target"), (250, 100, "Other")],
