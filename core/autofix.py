@@ -808,7 +808,8 @@ def _evaluate(
                 min(b[0] for b in same_page), min(b[1] for b in same_page),
                 max(b[2] for b in same_page), max(b[3] for b in same_page),
             )
-            image = render_crop_base64(doc[page], union, highlight=not all_ok)
+            # 4 倍渲染：缩略图看个大概，鼠标移上去的大图要能看清字
+            image = render_crop_base64(doc[page], union, highlight=not all_ok, zoom=4.0)
     return all_ok, image, need
 
 

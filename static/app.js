@@ -1340,3 +1340,68 @@ setInterval(whenIdle(pollState), 1200);
 setInterval(whenIdle(pollAutofix), 1500);
 pollAutofix();
 pollState();
+
+// 候选图悬停放大：固定定位的浮层挂在 body 上，跟着鼠标走并限制在窗口内，不改变页面布局
+const fixZoom = (() => {
+  const box = document.createElement('div');
+  box.className = 'fix-zoom';
+  box.innerHTML = '<img alt=""><span class="fix-zoom-caption"></span>';
+  document.body.appendChild(box);
+  const img = box.querySelector('img');
+  const caption = box.querySelector('.fix-zoom-caption');
+  const GAP = 18;
+  const MARGIN = 12;
+  let current = null;
+  let lastX = 0;
+  let lastY = 0;
+
+  function place() {
+    if (!current || !img.naturalWidth) return;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    // 原图按 4 倍渲染，最多显示原图的 3/4（约 PDF 的 3 倍），且不超出窗口
+    const maxW = Math.min(img.naturalWidth * 0.75, vw * 0.7);
+    const maxH = vh - MARGIN * 2 - 40;
+    const scale = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight, 1);
+    img.style.width = `${Math.round(img.naturalWidth * scale)}px`;
+    img.style.height = `${Math.round(img.naturalHeight * scale)}px`;
+    const w = box.offsetWidth;
+    const h = box.offsetHeight;
+    let left = lastX + GAP;
+    if (left + w > vw - MARGIN) left = lastX - GAP - w;
+    left = Math.max(MARGIN, Math.min(left, vw - MARGIN - w));
+    let top = lastY - h / 2;
+    top = Math.max(MARGIN, Math.min(top, vh - MARGIN - h));
+    box.style.left = `${Math.round(left)}px`;
+    box.style.top = `${Math.round(top)}px`;
+  }
+
+  function hide() {
+    current = null;
+    box.classList.remove('is-visible');
+  }
+
+  img.addEventListener('load', place);
+
+  document.addEventListener('mousemove', event => {
+    lastX = event.clientX;
+    lastY = event.clientY;
+    const tile = event.target.closest && event.target.closest('.fix-tile');
+    const thumb = tile && tile.querySelector('img');
+    if (!thumb || !thumb.src) {
+      hide();
+      return;
+    }
+    if (thumb !== current) {
+      current = thumb;
+      caption.textContent = tile.querySelector('.fix-tile-caption')?.textContent || '';
+      if (img.src !== thumb.src) img.src = thumb.src;
+      box.classList.add('is-visible');
+    }
+    place();
+  });
+  document.addEventListener('mouseleave', hide);
+  window.addEventListener('scroll', hide, true);
+  window.addEventListener('blur', hide);
+  return { hide };
+})();
