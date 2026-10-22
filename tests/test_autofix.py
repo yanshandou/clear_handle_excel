@@ -103,7 +103,7 @@ class AutofixTests(unittest.TestCase):
         self.workflow.STATE.update(busy=False, folder=str(self.root), items={"i1": {
             "id": "i1", "seq": 1, "kind": "clip", "wb_path": str(self.wb_path), "wb_name": "book.xlsx",
             "sheet_name": "S1", "excel_row": 5, "cell_addr": "B5", "row_height": 15.0, "page_index": 0,
-            "text": "Target", "bbox": bbox, "occurrence": None, "status": "pending", "iterations": 0,
+            "text": "Target", "bbox": bbox, "occurrence": None, "status": "pending", "iterations": 0, "triage_keep": True,
         }})
         self.session = self.autofix._ExcelSession()
         self.addCleanup(self.session.close)
@@ -329,12 +329,45 @@ class AutofixTests(unittest.TestCase):
         gid = self.group()["id"]
         self.autofix.AUTOFIX["active_until"] = 0.0  # 用户还在筛选
         self.assertIsNone(self.autofix._next_task({}))
-
         self.autofix.mark_active()
         self.assertEqual(self.autofix._next_task({}), ("preview", gid))
         self.autofix.AUTOFIX["active_until"] = 0.0
         self.autofix.set_auto(True)  # 全自动也要开着 ② 页面才做图
         self.assertIsNone(self.autofix._next_task({}))
+
+    def test_failed_manual_recheck_reuses_one_fresh_image_without_preparing_again(self):
+        gid = self.group()["id"]
+        self.autofix._preview(self.session, gid)
+        item = self.workflow.STATE["items"]["i1"]
+        item.update(status="manual_review", manual_waiting=False,
+                    manual_recheck_token="check1", image="data:image/png;base64,YQ==", row_height=33.0)
+        group = self.group()
+        self.assertEqual((group["status"], group["recommended"]), ("failed", None))
+        self.assertEqual(self.autofix.snapshot()["groups"][0]["attempts"], [{"height": 33.0, "ok": False}])
+        self.assertEqual(self.autofix.attempt_image(gid, 0), b"a")
+        self.assertNotIn("recheck_image", group)
+        self.assertIsNone(self.autofix._next_task({}))
+        self.autofix.sync_groups()
+        self.assertEqual(len(self.group()["attempts"]), 1)
+        # 重启后没有旧分组，也必须直接显示复检结果。
+        self.autofix.AUTOFIX["groups"].clear()
+        self.assertEqual((self.group()["status"], len(self.group()["attempts"])), ("failed", 1))
+
+    def test_manual_open_waits_only_for_original_file_writes(self):
+        self.autofix._IDLE.clear()  # 副本 Excel 尚未关闭
+        self.autofix.wait_for_writes(timeout=0)
+        self.autofix._WRITES_IDLE.clear()
+        with self.assertRaisesRegex(ValueError, "保存"):
+            self.autofix.wait_for_writes(timeout=0)
+
+    def test_new_sheet_detection_invalidates_old_recommendation_and_queued_write(self):
+        gid = self.group()["id"]
+        self.autofix._preview(self.session, gid)
+        self.autofix.choose(gid, 3)
+        self.workflow.STATE["items"]["i1"]["autofix_revision"] = "new-sheet-pdf"
+        group = self.group()
+        self.assertEqual((group["status"], group["attempts"], group["chosen"]), ("queued", [], None))
+        self.assertEqual(self.autofix._next_task({}), ("preview", gid))
 
     def test_chosen_picture_is_still_written_after_leaving_fix_page(self):
         gid = self.group()["id"]
@@ -342,6 +375,83 @@ class AutofixTests(unittest.TestCase):
         self.autofix.choose(gid, 3)
         self.autofix.AUTOFIX["active_until"] = 0.0
         self.assertEqual(self.autofix._next_task({}), ("apply", (str(self.wb_path), [gid])))
+
+    def test_row_waits_for_every_unresolved_cell_to_be_screened(self):
+        self.workflow.STATE["items"]["i2"] = dict(self.workflow.STATE["items"]["i1"], id="i2", triage_keep=False)
+        self.autofix.sync_groups()
+        self.assertEqual(self.autofix.AUTOFIX["groups"], {})
+        self.workflow.apply_keep_decisions({"i2": True})
+        self.assertEqual(self.group()["item_ids"], ["i1", "i2"])
+        self.workflow.apply_keep_decisions({"i2": False})
+        self.assertEqual(self.autofix.AUTOFIX["groups"], {})
+        self.workflow.apply_skip_decisions({"i2": True})
+        self.assertEqual(self.group()["item_ids"], ["i1"])
+
+    def test_scan_and_autofix_overlap_only_for_completed_files(self):
+        future = self.root / "future.xlsx"
+        future.write_bytes(b"future workbook")
+        self.workflow.STATE["items"]["future"] = dict(
+            self.workflow.STATE["items"]["i1"], id="future", wb_path=str(future), wb_name=future.name,
+        )
+        self.workflow.STATE.update(busy=True, job={
+            "kind": "scan", "status": "running", "completed": [str(self.wb_path)],
+            "workbooks": [str(self.wb_path), str(future)], "options": {}, "pending_adjustment": None,
+        })
+        self.workflow.STATE["scan_progress"] = {"total": 2, "completed": 1, "status": "running"}
+        gid = self.group()["id"]
+        self.assertFalse(self.autofix._busy())
+        self.autofix._preview(self.session, gid)
+        self.autofix.choose(gid, 3)
+        self.assertTrue(self.autofix._apply(self.session, str(self.wb_path), [gid]))
+        snapshot = self.workflow.get_state_snapshot()
+        self.assertEqual(list(snapshot["items"]), ["i1"])
+        self.assertEqual(snapshot["scan_progress"]["completed"], 1)
+        self.assertEqual(snapshot["items"]["i1"]["status"], "fixed")
+        self.assertTrue(snapshot["busy"])
+        self.assertEqual(self.workflow.STATE["items"]["future"]["status"], "pending")
+
+    def test_uncompleted_file_cannot_be_written_or_decided_even_with_stale_group(self):
+        gid = self.group()["id"]
+        self.autofix._preview(self.session, gid)
+        self.autofix.choose(gid, 3)
+        self.workflow.STATE.update(busy=True, job={"kind": "scan", "status": "running", "completed": []})
+        self.assertFalse(self.autofix._apply(self.session, str(self.wb_path), [gid]))
+        self.assertTrue(all(not book.saved for book in self.books))
+        with self.assertRaisesRegex(ValueError, "尚未扫描完成"):
+            self.workflow.apply_keep_decisions({"i1": False})
+        with self.assertRaisesRegex(ValueError, "尚未扫描完成"):
+            self.workflow.apply_skip_decisions({"i1": True})
+        with self.assertRaises(ValueError):
+            self.autofix.choose(gid, 3)
+
+    def test_keep_decision_persists_and_rolls_back_if_database_write_fails(self):
+        self.workflow.STATE["items"]["i1"]["triage_keep"] = False
+        self.workflow.apply_keep_decisions({"i1": True})
+        self.assertTrue(storage.load_snapshot("workflow")["items"]["i1"]["triage_keep"])
+        with patch.object(self.workflow, "_persist_state", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.workflow.apply_keep_decisions({"i1": False})
+        self.assertTrue(self.workflow.STATE["items"]["i1"]["triage_keep"])
+
+    def test_undo_keep_stops_preview_but_rejects_a_row_already_writing(self):
+        gid = self.group()["id"]
+        evaluate = self.autofix._evaluate
+
+        def undo_after_export(*args):
+            result = evaluate(*args)
+            self.workflow.apply_keep_decisions({"i1": False})
+            return result
+
+        with patch.object(self.autofix, "_evaluate", side_effect=undo_after_export):
+            with self.assertRaises(self.autofix._Paused):
+                self.autofix._preview(self.session, gid)
+        self.assertEqual(self.autofix.AUTOFIX["groups"], {})
+        self.workflow.apply_keep_decisions({"i1": True})
+        self.autofix._preview(self.session, gid)
+        self.autofix.choose(gid, 3)
+        with self.assertRaisesRegex(ValueError, "开始写入"):
+            self.workflow.apply_keep_decisions({"i1": False})
+        self.assertTrue(self.workflow.STATE["items"]["i1"]["triage_keep"])
 
 
 class AutofixEvaluationTests(unittest.TestCase):

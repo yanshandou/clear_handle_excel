@@ -5,8 +5,8 @@
 - 预览只在副本上做，不锁、不改原文件；用户挑选时后台继续准备后面的组
 - 显示全之后再多加一次就停，推荐多加的那张（留一点余量）
 - 「全自动」打开后，后面准备好的组直接按推荐写入
-- 后台有扫描、复检、人工定位等任务时暂停，任务结束后继续
-- 只在用户开着「② 自动处理」页时才做图（页面要等 ① 全部筛完才让进），筛选时不在后台导出 PDF 打扰用户
+- 扫描期间处理已经提交的文件；复检、人工定位等任务时暂停
+- 工作台打开时可为已筛完的行做图；尚未筛完的行不入队
 """
 import base64
 import hashlib
@@ -30,6 +30,7 @@ from core.workflow import (
     STATE,
     STATE_LOCK,
     apply_skip_decisions,
+    file_available,
     _export_sheet_pdf,
     _file_version,
     _persist_state,
@@ -50,6 +51,8 @@ _LOCK = threading.RLock()
 _WAKE = threading.Event()
 _IDLE = threading.Event()  # 后台没有开着的 Excel
 _IDLE.set()
+_WRITES_IDLE = threading.Event()  # 人工打开只需等正在进行的原文件写入，不等副本 Excel 退出
+_WRITES_IDLE.set()
 AUTOFIX: dict[str, Any] = {"auto": False, "groups": {}, "hold": 0, "active_until": 0.0}
 _worker: threading.Thread | None = None
 
@@ -67,11 +70,19 @@ def _busy() -> bool:
         if AUTOFIX["hold"]:
             return True
     with STATE_LOCK:
-        return bool(STATE["busy"])
+        return bool(STATE["busy"] and (STATE["job"] or {}).get("kind") != "scan")
+
+
+def check_row_not_writing(item: dict[str, Any]) -> None:
+    """调用方已持有 STATE_LOCK，与 choose 的 STATE → 分组锁顺序一致。"""
+    with _LOCK:
+        group = AUTOFIX["groups"].get(_group_id(item["wb_path"], item["sheet_name"], int(item["excel_row"])))
+        if group and group["status"] == "applying":
+            raise ValueError("这一行已开始写入，不能撤销或重新筛选")
 
 
 def mark_active() -> None:
-    """页面正开着「② 自动处理」：可以在后台预先做图"""
+    """工作台处于前台：可以为已筛选的行预先做图。"""
     with _LOCK:
         was_active = _preview_allowed()
         AUTOFIX["active_until"] = time.monotonic() + ACTIVE_GRACE_SECONDS
@@ -84,9 +95,20 @@ def _preview_allowed() -> bool:
         return time.monotonic() < AUTOFIX["active_until"]
 
 
+def pause_previews() -> None:
+    with _LOCK:
+        AUTOFIX["active_until"] = 0.0
+    _WAKE.set()
+
+
+def wait_for_writes(timeout: float = 120.0) -> None:
+    if not _WRITES_IDLE.wait(timeout):
+        raise ValueError("后台仍在保存 Excel，请保存结束后再打开人工处理")
+
+
 def release_excel(timeout: float = 120.0) -> None:
-    """开始扫描、人工定位等任务前调用：让后台关掉自己的 Excel 并暂停，
-    免得人工定位时连到后台那个隐藏的 Excel。任务排上队后调用 resume_after_release。"""
+    """扫描、复检等任务前让后台关闭 Excel；人工定位只需 wait_for_writes。
+    任务排上队后调用 resume_after_release。"""
     with _LOCK:
         AUTOFIX["hold"] += 1
     _WAKE.set()
@@ -109,21 +131,34 @@ def sync_groups() -> None:
 
 
 def _sync_groups_locked() -> None:
+    rows: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+    for item in STATE["items"].values():
+        if item["status"] not in RESOLVED_STATUSES and file_available(item["wb_path"]):
+            rows.setdefault((item["wb_path"], item["sheet_name"], int(item["excel_row"])), []).append(item)
+    eligible = {item["id"] for peers in rows.values() if all(it.get("triage_keep") for it in peers) for item in peers}
     items = [
         (item["id"], item["wb_path"], item["wb_name"], item["sheet_name"], int(item["excel_row"]),
-         int(item.get("seq") or 0), item["status"])
-        for item in STATE["items"].values() if item["status"] not in RESOLVED_STATUSES
+         int(item.get("seq") or 0), item["status"],
+         item.get("manual_waiting", item["status"] == "manual_review"),
+         item.get("manual_recheck_token"), item.get("image", ""), item.get("row_height"),
+         item.get("autofix_revision"))
+        for item in STATE["items"].values() if item["id"] in eligible
     ]
     wanted: dict[str, dict[str, Any]] = {}
-    for item_id, wb_path, wb_name, sheet_name, row, seq, status in items:
+    for item_id, wb_path, wb_name, sheet_name, row, seq, status, waiting, token, image, height, revision in items:
         gid = _group_id(wb_path, sheet_name, row)
         entry = wanted.setdefault(gid, {
             "wb_path": wb_path, "wb_name": wb_name, "sheet_name": sheet_name, "row": row,
-            "item_ids": [], "seq": seq, "manual": False,
+            "item_ids": [], "seq": seq, "manual": False, "manual_waiting": False,
+            "recheck_token": None, "recheck_image": "", "recheck_height": None,
+            "revision": revision,
         })
         entry["item_ids"].append(item_id)
         entry["seq"] = min(entry["seq"], seq)
         entry["manual"] = entry["manual"] or status in MANUAL_STATUSES
+        entry["manual_waiting"] = entry["manual_waiting"] or waiting
+        if token and not entry["recheck_token"]:
+            entry.update(recheck_token=token, recheck_image=image, recheck_height=height)
     with _LOCK:
         groups = AUTOFIX["groups"]
         for gid in list(groups):
@@ -136,14 +171,26 @@ def _sync_groups_locked() -> None:
             # 转人工后复检仍没显示全的，按用户改过的行高重新准备，旧图片已经不对了
             rechecked = group is not None and group["manual"] and not entry["manual"]
             if (group is None or group["status"] == "applied" or rechecked
+                    or group.get("revision") != entry["revision"]
                     or sorted(group["item_ids"]) != sorted(entry["item_ids"])):
                 group = groups[gid] = {
-                    "id": gid, **entry, "status": "queued", "attempts": [], "recommended": None,
+                    "id": gid, **{k: v for k, v in entry.items() if not k.startswith("recheck_")},
+                    "status": "queued", "attempts": [], "recommended": None,
                     "chosen": None, "base_height": None,
                     "message": "复检后仍未显示全，已按你改过的行高重新准备" if rechecked else "",
                 }
             group["manual"] = entry["manual"]
+            group["manual_waiting"] = entry["manual_waiting"]
             group["seq"] = entry["seq"]
+            if entry["manual_waiting"]:
+                group.pop("recheck_token", None)
+            if entry["recheck_token"] and group.get("recheck_token") != entry["recheck_token"]:
+                group.update(
+                    status="failed", recheck_token=entry["recheck_token"],
+                    base_height=entry["recheck_height"], recommended=None, chosen=None,
+                    attempts=[{"height": entry["recheck_height"], "ok": False, "image": entry["recheck_image"]}],
+                    message="本次复检仍有问题，请继续修改、跳过本行或先看下一行",
+                )
 
 
 def snapshot() -> dict[str, Any]:
@@ -177,6 +224,15 @@ def attempt_image(gid: str, index: int) -> bytes | None:
 
 
 def choose(gid: str, index: int) -> None:
+    with STATE_LOCK:
+        if STATE["busy"] and (STATE["job"] or {}).get("kind") != "scan":
+            raise ValueError("任务正在执行，请结束后再选图")
+        _sync_groups_locked()
+        _choose_locked(gid, index)
+    _WAKE.set()
+
+
+def _choose_locked(gid: str, index: int) -> None:
     with _LOCK:
         group = AUTOFIX["groups"].get(gid)
         if group is None:
@@ -188,13 +244,12 @@ def choose(gid: str, index: int) -> None:
         group["chosen"] = index
         group["status"] = "applying"
         group["message"] = "正在写入 Excel..."
-    _WAKE.set()
 
 
 def skip_group(gid: str, item_ids: list[str]) -> dict[str, Any]:
     """把当前行全部问题持久化为无需修改；与选图／全自动排入写入队列互斥。"""
     with STATE_LOCK:
-        if STATE["busy"]:
+        if STATE["busy"] and (STATE["job"] or {}).get("kind") != "scan":
             raise ValueError("任务正在执行，请结束后再标记跳过")
         sync_groups()
         with _LOCK:
@@ -210,7 +265,8 @@ def skip_group(gid: str, item_ids: list[str]) -> dict[str, Any]:
 
 
 def set_auto(on: bool) -> None:
-    with _LOCK:
+    with STATE_LOCK, _LOCK:
+        _sync_groups_locked()
         AUTOFIX["auto"] = on
         if on:
             for group in AUTOFIX["groups"].values():
@@ -313,8 +369,15 @@ def _run() -> None:
             kind, payload = task
             try:
                 if kind == "apply":
-                    if not _apply(session, *payload):
-                        blocked[payload[0]] = time.monotonic() + LOCKED_RETRY_SECONDS
+                    with STATE_LOCK:
+                        if (STATE["busy"] and (STATE["job"] or {}).get("kind") != "scan") or not file_available(payload[0]):
+                            continue
+                        _WRITES_IDLE.clear()
+                    try:
+                        if not _apply(session, *payload):
+                            blocked[payload[0]] = time.monotonic() + LOCKED_RETRY_SECONDS
+                    finally:
+                        _WRITES_IDLE.set()
                 else:
                     _preview(session, payload)
             except _Paused:
@@ -355,6 +418,11 @@ def _items(item_ids: list[str]) -> list[dict[str, Any]]:
 
 
 def _check_still_wanted(gid: str) -> None:
+    with STATE_LOCK:
+        with _LOCK:
+            group = AUTOFIX["groups"].get(gid)
+            if group is None or not file_available(group["wb_path"]):
+                raise _Paused
     with _LOCK:
         group = AUTOFIX["groups"].get(gid)
         if group is None or group["status"] != "running" or group["manual"]:
@@ -490,6 +558,9 @@ def _evaluate(pdf_path: Path, items: list[dict[str, Any]], cells, display_text, 
 
 def _apply(session: _ExcelSession, wb_path: str, gids: list[str]) -> bool:
     """把用户选中的行高写进原文件并保存；原文件正被 Excel 打开时返回 False，稍后再试"""
+    with STATE_LOCK:
+        if not file_available(wb_path):
+            return False
     path = Path(wb_path)
     if path.with_name("~$" + path.name).exists():
         with _LOCK:

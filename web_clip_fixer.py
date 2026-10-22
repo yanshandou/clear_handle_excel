@@ -31,6 +31,7 @@ from core.workflow import (
     STATE,
     STATE_LOCK,
     apply_skip_decisions,
+    apply_keep_decisions,
     export_progress,
     fix_selected_workflow,
     get_overview_snapshot,
@@ -345,6 +346,14 @@ class WebHandler(BaseHTTPRequestHandler):
                 raise ValueError("需要有效的跳过决定")
             self._send_json({"ok": True, **apply_skip_decisions(decisions)})
 
+        elif self.path == "/api/manual/keep":
+            decisions = payload.get("decisions")
+            if (not isinstance(decisions, dict) or not decisions
+                    or any(not isinstance(iid, str) or not iid or not isinstance(v, bool)
+                           for iid, v in decisions.items())):
+                raise ValueError("需要有效的保留决定")
+            self._send_json({"ok": True, **apply_keep_decisions(decisions)})
+
         elif self.path in {"/api/manual/open", "/api/manual/recheck"}:
             iid = payload.get("id")
             with STATE_LOCK:
@@ -373,6 +382,15 @@ class WebHandler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def _start_job(self, kind: str, options: dict | None = None) -> None:
+        if kind == "manual_open":
+            # 立即排队并反馈；可见 Excel 使用独立实例，不等待副本导出及 Quit。
+            queued = queue_job(kind, options)
+            if not queued:
+                self._send_json({"ok": False, "error": "已有任务正在执行"}, status=409)
+                return
+            threading.Thread(target=run_pending_workflow, daemon=True).start()
+            self._send_json({"ok": True})
+            return
         # 先让自动处理的后台关掉它的 Excel，任务排上队后它会一直等到任务结束
         autofix.release_excel()
         try:

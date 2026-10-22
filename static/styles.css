@@ -1423,6 +1423,22 @@ input[type="text"] {
   gap: 14px;
 }
 
+.pipeline-progress {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.pipeline-progress-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  font-size: 14px;
+  color: var(--text-main, #17325c);
+}
+
 .triage-progress {
   display: flex;
   flex-direction: column;

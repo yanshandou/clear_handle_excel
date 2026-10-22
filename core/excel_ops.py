@@ -38,6 +38,9 @@ def open_workbook_for_manual_review(
     try:
         try:
             excel = win32.GetActiveObject("Excel.Application")
+            if not excel.Visible:
+                # 后台副本可能仍在结束一次导出，不等其退出，也不把它变成用户窗口。
+                excel = win32.DispatchEx("Excel.Application")
         except pythoncom.com_error as err:
             if err.args[0] != -2147221021:  # MK_E_UNAVAILABLE: 没有正在运行的 Excel
                 raise
@@ -48,7 +51,8 @@ def open_workbook_for_manual_review(
             None,
         )
         if workbook is None:
-            workbook = excel.Workbooks.Open(str(workbook_path))
+            excel.Visible = True
+            workbook = excel.Workbooks.Open(str(workbook_path), UpdateLinks=0, IgnoreReadOnlyRecommended=True)
         sheet = workbook.Sheets(sheet_name)
         excel.Visible = True
         excel.WindowState = -4143  # xlNormal

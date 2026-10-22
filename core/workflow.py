@@ -95,6 +95,7 @@ STATE: dict[str, Any] = {
     "settings": {"step_pt": 3.0, "max_iter": 6},
     "job": None,
     "checked_files": {},  # wb_path -> 最近一次完整检查未解决项时的文件版本
+    "scan_progress": {},  # 独立于执行报告，避免并行写入覆盖扫描的总进度
 }
 
 _saved_state = load_snapshot("workflow")
@@ -108,6 +109,25 @@ if _saved_state is not None:
 def _persist_state() -> None:
     with STATE_LOCK:
         save_snapshot("workflow", STATE)
+
+
+def scan_job_active() -> bool:
+    job = STATE["job"] or {}
+    return job.get("kind") == "scan" and job.get("status") in {"running", "interrupted"}
+
+
+def file_available(path: str) -> bool:
+    """调用方持有 STATE_LOCK；扫描尚未提交的文件不能筛选、截图或写回。"""
+    return not scan_job_active() or path in STATE["job"]["completed"]
+
+
+def _check_decision_item(item: dict[str, Any]) -> None:
+    if STATE["busy"] and (STATE["job"] or {}).get("kind") != "scan":
+        raise ValueError("任务正在执行，请结束后再进行人工判断")
+    if not file_available(item["wb_path"]):
+        raise ValueError("此文件尚未扫描完成，请等待扫描提交结果")
+    from core import autofix
+    autofix.check_row_not_writing(item)
 
 
 def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
@@ -130,6 +150,8 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
                 "kind": kind, "options": options or {}, "completed": [],
                 "pending_adjustment": None, "status": "running",
             }
+            if kind == "scan":
+                STATE["scan_progress"] = {"total": 0, "completed": 0, "status": "running"}
             if kind == "fix":
                 for iid in STATE["job"]["options"]["selected_ids"]:
                     STATE["items"][iid]["job_iterations"] = 0
@@ -199,6 +221,11 @@ def run_pending_workflow() -> None:
     finally:
         with STATE_LOCK:
             STATE["busy"] = False
+            if STATE["job"] and STATE["job"]["kind"] == "scan":
+                STATE["scan_progress"].update(
+                    total=len(STATE["job"].get("workbooks", [])),
+                    completed=len(STATE["job"]["completed"]), status=STATE["job"]["status"],
+                )
             _persist_state()
 
 
@@ -229,13 +256,15 @@ def _progress_summary(report_snap: dict[str, Any]) -> dict[str, Any]:
 def get_state_snapshot() -> dict[str, Any]:
     report_snap = get_execution_report_snapshot()
     with STATE_LOCK:
+        available = {path for path in {it["wb_path"] for it in STATE["items"].values()} if file_available(path)}
         return {
             "busy": STATE["busy"],
             "folder": STATE["folder"],
             "pdf_folder": STATE["pdf_folder"],
             "logs": list(STATE["logs"][-40:]),
-            "pages": copy.deepcopy(STATE["pages"]),
-            "items": copy.deepcopy(STATE["items"]),
+            "pages": {key: copy.deepcopy(p) for key, p in STATE["pages"].items() if p["wb_path"] in available},
+            "items": {key: copy.deepcopy(it) for key, it in STATE["items"].items() if it["wb_path"] in available},
+            "scan_progress": copy.deepcopy(STATE["scan_progress"]),
             "settings": dict(STATE["settings"]),
             "can_resume": bool(STATE["job"] and STATE["job"]["status"] == "interrupted"),
             "job": copy.deepcopy(STATE["job"]),
@@ -293,6 +322,7 @@ def update_item_row(item_id: str, new_row: int) -> bool:
 
 def _detect_sheet_results(
     sheet: Any, wb_path: Path, sheet_name: str, pdf_path: Path, start_seq: int,
+    *, confirm_locations: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """从当前 PDF 构建新快照；不沿用旧文字、坐标或问题状态。"""
     pages: dict[str, Any] = {}
@@ -353,7 +383,7 @@ def _detect_sheet_results(
                     "status": "pending", "iterations": 0,
                 }
 
-        _confirm_clip_cells(sheet, pdf_path, items, candidates, probe)
+        _confirm_clip_cells(sheet, pdf_path, items, candidates, probe, allow_export=confirm_locations)
 
         # 隐藏截断：单元格完整内容在 PDF 里没显示全（外观上看不出来）
         hidden = find_hidden_cells(cells, pieces, probe.text, probe.printed)
@@ -388,6 +418,7 @@ DETECTOR_VERSION = 6
 def _confirm_clip_cells(
     sheet: Any, pdf_path: Path, items: dict[str, Any],
     candidates: dict[str, list[tuple[int, int]]], probe: CellProbe,
+    *, allow_export: bool = True,
 ) -> None:
     """切字项逐一确认是哪一格：只有一个候选格子时直接确定；有多个时把候选格子的字体
     改成各不相同的颜色（不保存工作簿）再导出一次 PDF，读切字的颜色就知道是哪一格。
@@ -401,6 +432,8 @@ def _confirm_clip_cells(
         else:
             item["location_confirmed"] = False
             pending.append(item_id)
+    if not allow_export:
+        return  # 单项复检只分析已经导出的 PDF，歧义位置保持“定位未确认”
     tagged = list(dict.fromkeys(rc for item_id in pending for rc in candidates[item_id]))[:MAX_TAGGED_CELLS]
     if not tagged:
         return
@@ -461,7 +494,7 @@ def _problem_record(item: dict[str, Any]) -> dict[str, Any]:
     """完整重新扫描前记下旧问题项（不含截图等大字段），用于对应同一处问题"""
     return {
         key: copy.deepcopy(item.get(key))
-        for key in ("id", "seq", "kind", "wb_path", "sheet_name", "text", "occurrence", "status", "manual_confirmation")
+        for key in ("id", "seq", "kind", "wb_path", "sheet_name", "text", "occurrence", "status", "manual_confirmation", "triage_keep")
     }
 
 
@@ -512,6 +545,7 @@ def _merge_redetected(
         item["is_new"] = mark_new and old is None
         if old is not None:
             item["id"], item["seq"] = old["id"], old["seq"]
+            item["triage_keep"] = bool(old.get("triage_keep"))
             if old["status"] == "accepted":
                 item["status"] = "accepted"
                 item["manual_confirmation"] = copy.deepcopy(old["manual_confirmation"])
@@ -550,7 +584,7 @@ def _set_item_confirmation(item: dict[str, Any], accepted: bool) -> None:
 def _commit_confirmations(previous_items: dict[str, dict[str, Any]], action: str) -> None:
     """保存已修改的人工确认（一次写库）；会取消中断任务的续跑点，保存失败时整体回滚。"""
     previous_job = copy.deepcopy(STATE["job"])
-    if STATE["job"] and STATE["job"]["status"] == "interrupted":
+    if STATE["job"] and STATE["job"]["status"] == "interrupted" and not scan_job_active():
         STATE["job"]["status"] = "cancelled"
         STATE["job"]["pending_adjustment"] = None
     try:
@@ -563,17 +597,16 @@ def _commit_confirmations(previous_items: dict[str, dict[str, Any]], action: str
         raise
     for path in dict.fromkeys(STATE["items"][item_id]["wb_path"] for item_id in previous_items):
         _sync_problem_counts(path, action)
-    if previous_job and previous_job["status"] == "interrupted":
+    if previous_job and previous_job["status"] == "interrupted" and previous_job.get("kind") != "scan":
         finish_execution_batch("已取消中断任务的续跑，按人工判断更新问题状态")
 
 
 def set_manual_confirmation(item_id: str, accepted: bool) -> None:
     with STATE_LOCK:
-        if STATE["busy"]:
-            raise ValueError("任务正在执行，请结束后再进行人工确认")
         item = STATE["items"].get(item_id)
         if item is None:
             raise ValueError("问题项已更新，请刷新页面后重试")
+        _check_decision_item(item)
         if accepted and item["status"] == "fixed":
             raise ValueError("此项已自动修复，无需人工确认")
         if accepted and item["status"] == "accepted":
@@ -592,10 +625,13 @@ def apply_skip_decisions(decisions: dict[str, bool]) -> dict[str, Any]:
     与当前状态相同的决定直接忽略，页面可以把连续快速点选的结果合并后一次提交。
     """
     with STATE_LOCK:
-        if STATE["busy"]:
+        if STATE["busy"] and (STATE["job"] or {}).get("kind") != "scan":
             raise ValueError("任务正在执行，请结束后再标记跳过")
         previous: dict[str, dict[str, Any]] = {}
         errors: list[str] = []
+        for iid in decisions:
+            if iid in STATE["items"]:
+                _check_decision_item(STATE["items"][iid])
         for item_id, skip in decisions.items():
             item = STATE["items"].get(item_id)
             if item is None:
@@ -614,6 +650,30 @@ def apply_skip_decisions(decisions: dict[str, bool]) -> dict[str, Any]:
             _commit_confirmations(previous, action)
             log_msg(action)
         return {"changed": len(previous), "errors": list(dict.fromkeys(errors))}
+
+
+def apply_keep_decisions(decisions: dict[str, bool]) -> dict[str, Any]:
+    """持久化保留／撤销保留；后台只处理同一行所有未解决项都已保留的行。"""
+    with STATE_LOCK:
+        previous: dict[str, dict[str, Any]] = {}
+        for iid in decisions:
+            item = STATE["items"].get(iid)
+            if item is None:
+                raise ValueError("问题项已更新，请刷新页面后重新筛选")
+            _check_decision_item(item)
+            if item["status"] in RESOLVED_STATUSES:
+                raise ValueError("此项已处理，不能更改保留判断")
+        for iid, keep in decisions.items():
+            item = STATE["items"][iid]
+            if bool(item.get("triage_keep")) != keep:
+                previous[iid] = copy.deepcopy(item)
+                item["triage_keep"] = keep
+        if previous:
+            _commit_confirmations(previous, "已保存人工筛选，保留的完整行交给后台准备截图")
+    from core import autofix
+    autofix.sync_groups()
+    autofix._WAKE.set()
+    return {"changed": len(previous), "errors": []}
 
 
 def _select_changed_problem_items() -> list[str]:
@@ -785,6 +845,9 @@ def _scan_one_workbook(
         for old in previous
     )
     with STATE_LOCK:
+        revision = uuid4().hex
+        for item in merged.values():
+            item["autofix_revision"] = revision
         for collection in ("pages", "items"):
             for key, value in list(STATE[collection].items()):
                 if value["wb_path"] == path and (sheets_only is None or value["sheet_name"] in sheets_only):
@@ -794,6 +857,9 @@ def _scan_one_workbook(
         STATE["checked_files"][path] = scan_version
         if job is not None:
             job["completed"].append(path)
+            STATE["scan_progress"].update(completed=len(job["completed"]))
+        else:
+            STATE["scan_progress"]["completed"] = STATE["scan_progress"].get("completed", 0) + 1
         _persist_state()
         wb_items = [item for item in STATE["items"].values() if item["wb_path"] == path]
         unresolved = sum(item["status"] not in RESOLVED_STATUSES for item in wb_items)
@@ -848,6 +914,9 @@ def scan_folder_workflow(
                         workbooks=[str(path) for path in workbooks], plan=plan,
                         rescan_all=rescan_all, stash=stash,
                     )
+                STATE["scan_progress"] = {
+                    "total": len(workbooks), "completed": 0, "status": "running",
+                }
             init_execution_batch(
                 task_name="Web 切字扫描（完整）" if rescan_all else "Web 切字扫描（增量）",
                 folder=folder,
@@ -879,6 +948,10 @@ def scan_folder_workflow(
                         _sync_problem_counts(path, "文件未修改，沿用上次检查结果")
                         if job is not None:
                             job["completed"].append(path)
+                            STATE["scan_progress"]["completed"] = len(job["completed"])
+                        else:
+                            STATE["scan_progress"]["completed"] += 1
+                        _persist_state()
                     continue
                 if excel is None:
                     # 按需启动 Excel：全部文件都未修改时不必打开
@@ -934,6 +1007,8 @@ def scan_folder_workflow(
         with STATE_LOCK:
             if not resume:
                 STATE["busy"] = False
+                progress = STATE["scan_progress"]
+                progress["status"] = "completed" if progress.get("completed") == progress.get("total") else "interrupted"
                 _persist_state()
 
 
@@ -1045,15 +1120,25 @@ def manual_review_workflow(selected_ids: list[str], *, open_excel: bool) -> None
         recheck_items_workflow(selected_ids)
         return
     if open_excel:
+        from core import autofix
+        autofix.pause_previews()
+        autofix.wait_for_writes()
         item = items[0]
         height = open_workbook_for_manual_review(
             Path(item["wb_path"]), item["sheet_name"], item["cell_addr"], int(item["excel_row"])
         )
+        autofix.pause_previews()
         with STATE_LOCK:
             _sync_row_height_in_state(item["wb_path"], item["sheet_name"], int(item["excel_row"]), height)
-            if item["status"] != "accepted":
-                item["status"] = "manual_review"
-                item["review_reason"] = "请人工核对自动推测的行号；调整并保存后重新导出复检"
+            for peer in STATE["items"].values():
+                if (peer["wb_path"], peer["sheet_name"], int(peer["excel_row"])) != (
+                    item["wb_path"], item["sheet_name"], int(item["excel_row"])
+                ) or peer["status"] in RESOLVED_STATUSES:
+                    continue
+                peer["status"] = "manual_review"
+                peer["manual_waiting"] = True
+                peer.pop("manual_recheck_token", None)
+                peer["review_reason"] = "请人工核对自动推测的行号；调整并保存后重新导出复检"
             wb_items = [it for it in STATE["items"].values() if it["wb_path"] == item["wb_path"]]
             fixed = sum(it["status"] == "fixed" for it in wb_items)
             job["completed"].append(item["id"])
@@ -1070,13 +1155,19 @@ def manual_review_workflow(selected_ids: list[str], *, open_excel: bool) -> None
         finish_execution_batch("等待人工调整并保存 Excel")
         return
 
-    # 单项强制复检也覆盖同文件的未解决项，避免只检查一项就推进整个文件的时间戳。
+    # 单项复检只覆盖当前工作表；文件基线仅在所有问题表都检查过时推进。
     with STATE_LOCK:
-        paths = {item["wb_path"] for item in items}
+        sheets = {(item["wb_path"], item["sheet_name"]) for item in items}
+        job["options"].setdefault("manual_item_ids", [item["id"] for item in items])
+        job["options"].setdefault("manual_rows", [
+            [item["wb_path"], item["sheet_name"], int(item["excel_row"])] for item in items
+        ])
         selected = set(selected_ids)
         ids = [
             item["id"] for item in STATE["items"].values()
-            if item["id"] in selected or (item["wb_path"] in paths and item["status"] not in {"fixed", "accepted"})
+            if item["id"] in selected or (
+                (item["wb_path"], item["sheet_name"]) in sheets and item["status"] not in {"fixed", "accepted"}
+            )
         ]
         job["options"]["selected_ids"] = ids
         _persist_state()
@@ -1137,6 +1228,7 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
                     _export_sheet_pdf(sheet, pdf_path)
                     pages, items = _detect_sheet_results(
                         sheet, Path(path), sheet_name, pdf_path, next_seq,
+                        confirm_locations=False,
                     )
                     next_seq += len(items)
                     new_pages.update(pages)
@@ -1146,10 +1238,28 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
                     raise ValueError(f"复检期间文件又被修改，本轮不提交，请保存完成后再次刷新: {Path(path).name}")
                 with STATE_LOCK:
                     previous = copy.deepcopy(STATE)
-                    merged = _merge_redetected(new_items, [
+                    previous_items = [
                         item for item in STATE["items"].values()
                         if item["wb_path"] == path and item["sheet_name"] in entry["sheets"]
-                    ], mark_new=True, keep_unmatched=True)
+                    ]
+                    merged = _merge_redetected(new_items, previous_items, mark_new=True, keep_unmatched=True)
+                    if job["kind"] == "recheck":
+                        token = uuid4().hex
+                        manual_rows = {tuple(row) for row in job["options"].get("manual_rows", [])}
+                        manual_ids = set(job["options"].get("manual_item_ids", []))
+                        old_by_id = {item["id"]: item for item in previous_items}
+                        for item in merged.values():
+                            if item["status"] in RESOLVED_STATUSES:
+                                continue
+                            item["autofix_revision"] = token
+                            if (item.get("is_new") or item["id"] in manual_ids
+                                    or old_by_id.get(item["id"], {}).get("status") == "manual_review"
+                                    or (path, item["sheet_name"], int(item["excel_row"])) in manual_rows):
+                                item.update(
+                                    status="manual_review", manual_waiting=False,
+                                    manual_recheck_token=token,
+                                    review_reason="本次复检仍有问题，请继续修改、跳过本行或先看下一行",
+                                )
                     for collection in ("pages", "items"):
                         for key, value in list(STATE[collection].items()):
                             if value["wb_path"] == path and value["sheet_name"] in entry["sheets"]:
@@ -1931,6 +2041,9 @@ def import_progress(data: Any) -> dict[str, Any]:
         raise ValueError("进度文件损坏：缺少文件版本信息")
 
     imported = copy.deepcopy(workflow_state)
+    imported.setdefault("scan_progress", {})
+    if not isinstance(imported["scan_progress"], dict):
+        raise ValueError("进度文件损坏：扫描进度格式无效")
     imported["busy"] = False
     job = imported["job"]
     changed = sorted(

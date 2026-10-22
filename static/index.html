@@ -63,10 +63,17 @@
       <div id="miniProgressBox" class="mini-progress-box">
         <div class="mini-progress-info">
           <span id="miniStepText">等待开始任务...</span>
-          <span id="miniStatsText">已完成 0 · 处理中 0 · 待处理 0（总进度 0%）</span>
         </div>
-        <div class="progress-track progress-track-sm">
-          <div id="miniProgressFill" class="progress-fill" style="width: 0%;"></div>
+        <div class="pipeline-progress" aria-live="polite">
+          <div class="pipeline-progress-row">
+            <b id="scanPipelineText">扫描：等待开始</b>
+            <div class="progress-track progress-track-sm" aria-label="已扫描文件比例"><div id="scanPipelineFill" class="progress-fill" style="width:0%"></div></div>
+          </div>
+          <div class="pipeline-progress-row">
+            <b id="supplyProgressText">当前已产出 0 处 · 已筛选 0 处 · 可筛选 0 处</b>
+            <div class="progress-track progress-track-sm" aria-label="当前产出中已筛选比例"><div id="supplyProgressFill" class="progress-fill" style="width:0%"></div></div>
+            <span id="supplyProgressHint" class="toolbar-hint">扫描继续时，可操作范围会自动增长。</span>
+          </div>
         </div>
       </div>
     </section>
@@ -76,7 +83,7 @@
       <div class="panel-section-head" style="margin-bottom: 2px;">
         <div class="panel-section-title">
           <span class="step-chip step-chip-teal">STEP 02</span>
-          <span>处理切字：先筛选，再自动处理</span>
+          <span>流水线处理：边扫描、边筛选、边准备截图</span>
         </div>
         <div class="view-switcher" role="tablist" aria-label="处理步骤">
           <button type="button" id="tabTriageBtn" class="view-tab active" onclick="setStepTab('triage')">
@@ -97,7 +104,7 @@
         </div>
 
         <div class="toolbar-right">
-          <span class="toolbar-hint">① 把不用改的跳过；② 后台逐次加高行并截图，点一张合适的就写进 Excel。</span>
+          <span class="toolbar-hint">已完成文件立即可筛选；同一行筛完后自动交接，无需等待整批结束。</span>
         </div>
       </div>
     </section>
@@ -145,7 +152,7 @@
       <div id="triageStage" class="triage-stage"></div>
       <div class="triage-actions">
         <button type="button" class="btn btn-outline triage-keep-btn" onclick="triageDecide('keep')">
-          ← 保留（需人工修改）
+          ← 保留（交给自动处理）
         </button>
         <button type="button" class="btn btn-outline" id="triageUndoBtn" onclick="triageUndo()">
           ↶ 撤销上一步
@@ -154,7 +161,7 @@
           跳过（无需修改）→
         </button>
       </div>
-      <p class="triage-hint">键盘 ← 保留、→ 跳过、Backspace 撤销；也可以按住卡片向左 / 向右拖动。跳过会立即保存，保留只记录在本浏览器里，用来标记已看过。</p>
+      <p class="triage-hint">键盘 ← 保留、→ 跳过、Backspace 撤销；也可以拖动卡片。保留与跳过都保存到服务器；同一行全部筛完后，保留的问题立即交给后台截图。已开始写入的行不能撤销筛选。</p>
     </section>
     <!-- 第 2 步：自动处理（九宫格选图） -->
     <section id="fixView" class="panel fix-panel hidden" aria-label="自动处理">
@@ -164,6 +171,10 @@
           title="按推荐的那张自动写入剩下所有行，不用再一张张点">
           ⚡ 全自动处理剩下的
         </button>
+      </div>
+      <div class="triage-progress">
+        <span id="fixSupplyText">已交接 0 行 · 当前可操作 0 行 · 已完成 0 行</span>
+        <div class="progress-track progress-track-sm"><div id="fixSupplyFill" class="progress-fill" style="width:0%"></div></div>
       </div>
       <div id="fixStage" class="fix-stage"></div>
       <p class="triage-hint">每张图是同一行加高后的样子：第一张是原样。打勾要求本行目标单元格内容完整、字符可见且无边框压线，未取得完整匹配时不会推荐。点一张就按它的行高写进 Excel 并保存，自动跳到下一行；带「推荐」边框的是通过后再多加一次、且仍通过检查的那张，留一点余量。确认本行是误判时，可点「跳过本行（无需修改）」保存判断并进入下一行，不修改 Excel。「先看下一个」仅暂时切换，本行稍后仍会显示。加高 8 次还不行的，请点「人工处理」在 Excel 里改，保存后点「复检」。</p>

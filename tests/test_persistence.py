@@ -232,10 +232,18 @@ class PersistenceTests(unittest.TestCase):
     def test_manual_open_locates_item_and_persists_review_status(self):
         opener = Mock(return_value=33.0)
         self.patch_value(self.workflow, "open_workbook_for_manual_review", opener)
+        self.workflow.STATE["items"]["peer"] = dict(
+            self.workflow.STATE["items"]["item_1"], id="peer", cell_addr="B2",
+            status="manual_review", manual_recheck_token="previous-check", manual_waiting=False,
+        )
         self.workflow.queue_job("manual_open", {"selected_ids": ["item_1"]})
         self.workflow.run_pending_workflow()
         opener.assert_called_once_with(self.wb_path, "Sheet1", "A2", 2)
         self.assertEqual(self.snapshot("workflow")["items"]["item_1"]["status"], "manual_review")
+        peer = self.snapshot("workflow")["items"]["peer"]
+        self.assertTrue(peer["manual_waiting"])
+        self.assertNotIn("manual_recheck_token", peer)
+        self.assertEqual(peer["row_height"], 33.0)
         self.assertEqual(self.row.RowHeight, 15.0)
         self.wb.Save.assert_not_called()
 
@@ -335,7 +343,7 @@ class PersistenceTests(unittest.TestCase):
         items = {item["text"]: item for item in self.snapshot("workflow")["items"].values()}
         self.assertEqual(items["sample"]["status"], "accepted")
         self.assertEqual(items["sample"]["bbox"], [60, 300, 100, 315])
-        self.assertEqual(items["other"]["status"], "pending")
+        self.assertEqual(items["other"]["status"], "manual_review")
         report = self.snapshot("report")["files"]["book.xlsx"]
         self.assertEqual((report["clip_accepted"], report["clip_unfixed"]), (1, 1))
 
@@ -436,6 +444,67 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(self.row.RowHeight, 15.0)
         self.wb.Save.assert_not_called()
 
+    def test_single_recheck_does_not_export_other_sheets_or_advance_their_baseline(self):
+        other = dict(self.workflow.STATE["items"]["item_1"], id="other", sheet_name="Sheet2")
+        self.workflow.STATE["items"]["other"] = other
+        baseline = {"mtime_ns": 0, "size": 0, "detector": 0}
+        self.workflow.STATE["checked_files"][str(self.wb_path)] = baseline
+        self.workflow.queue_job("recheck", {"selected_ids": ["item_1"]})
+        self.workflow.run_pending_workflow()
+        saved = self.snapshot("workflow")
+        self.assertEqual(saved["job"]["status"], "completed")
+        self.sheet.ExportAsFixedFormat.assert_called_once()
+        self.wb.Sheets.assert_called_once_with("Sheet1")
+        self.assertEqual(saved["items"]["other"], other)
+        self.assertEqual(saved["items"]["item_1"]["status"], "fixed")
+        self.assertEqual(saved["checked_files"][str(self.wb_path)], baseline)
+
+    def test_recheck_keeps_failed_target_and_new_findings_manual_but_other_known_rows_pending(self):
+        old = self.workflow.STATE["items"]["item_1"]
+        old.update(status="manual_review", manual_waiting=True)
+        known = dict(old, id="known", excel_row=3, cell_addr="A3", text="known", status="pending")
+        self.workflow.STATE["items"]["known"] = known
+        found = {
+            "a": dict(old, id="a", status="pending", row_height=27.0, image="fresh"),
+            "b": dict(known, id="b", status="pending"),
+            "c": dict(old, id="c", excel_row=4, cell_addr="A4", text="new", status="pending"),
+        }
+        with patch.object(self.workflow, "_detect_sheet_results", return_value=({}, found)) as detect:
+            self.workflow.queue_job("recheck", {"selected_ids": ["item_1"]})
+            self.workflow.run_pending_workflow()
+        saved = self.snapshot("workflow")
+        self.assertEqual(saved["job"]["status"], "completed")
+        self.sheet.ExportAsFixedFormat.assert_called_once()
+        self.assertFalse(detect.call_args.kwargs["confirm_locations"])
+        target = saved["items"]["item_1"]
+        self.assertEqual((target["status"], target["manual_waiting"], target["image"]), ("manual_review", False, "fresh"))
+        self.assertTrue(target["manual_recheck_token"])
+        self.assertEqual(saved["items"]["known"]["status"], "pending")
+        self.assertNotIn("manual_recheck_token", saved["items"]["known"])
+        new = saved["items"]["c"]
+        self.assertEqual((new["status"], new["manual_waiting"], new["is_new"]), ("manual_review", False, True))
+
+    def test_recheck_ambiguous_clip_exports_only_once_without_color_tagging(self):
+        from core.pdf_detector import find_clipped_spans_on_page
+
+        with self.workflow.fitz.open() as doc:
+            page = doc.new_page()
+            page.insert_text((60, 100), "sample")
+            page.insert_text((60, 200), "sample")
+            page.draw_line((55, 96), (150, 96), width=0.5)
+            doc.save(self.pdf_path)
+        self.rescan.side_effect = find_clipped_spans_on_page
+        with patch.object(self.workflow, "candidate_cells", return_value=[(2, 1), (3, 1)]), \
+                patch.object(self.workflow, "set_font_colors") as colors:
+            self.workflow.queue_job("recheck", {"selected_ids": ["item_1"]})
+            self.workflow.run_pending_workflow()
+        self.assertEqual(self.workflow.STATE["job"]["status"], "completed")
+        self.sheet.ExportAsFixedFormat.assert_called_once()
+        colors.assert_not_called()
+        unresolved = [it for it in self.workflow.STATE["items"].values() if it["status"] != "fixed"]
+        self.assertEqual(len(unresolved), 1)
+        self.assertFalse(unresolved[0]["location_confirmed"])
+
     def install_old_page(self):
         item = self.workflow.STATE["items"]["item_1"]
         item.update(
@@ -499,8 +568,8 @@ class PersistenceTests(unittest.TestCase):
         current = state["items"]["item_1"]
         self.assertEqual(tuple(current["bbox"]), bbox)
         self.assertEqual(current["occurrence"], [1, 2])
-        self.assertEqual(current["status"], "pending")
-        self.assertNotIn("review_reason", current)
+        self.assertEqual(current["status"], "manual_review")
+        self.assertIn("本次复检仍有问题", current["review_reason"])
         self.assertEqual(current["cell_addr"], "A2")
         self.assertIn(current["page_id"], state["pages"])
         self.workflow.match_excel_row.assert_called_once()
@@ -874,6 +943,13 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual((status, data["ok"]), (200, True))
             self.assertEqual(self.snapshot("workflow")["job"]["kind"], "refresh")
 
+    def test_api_manual_open_does_not_wait_for_background_excel_to_quit(self):
+        from core import autofix
+        with self.serve_api() as port, patch.object(autofix, "release_excel") as release:
+            status, data = self.post(port, "/api/manual/open", {"id": "item_1"})
+            self.assertEqual((status, data["ok"]), (200, True))
+            release.assert_not_called()
+
     def test_api_manual_confirmation_and_revoke(self):
         with self.serve_api() as port:
             for invalid in ({"id": "unknown", "accepted": True}, {"id": "item_1", "accepted": "true"}):
@@ -894,6 +970,16 @@ class PersistenceTests(unittest.TestCase):
             status, data = self.post(port, "/api/manual/skip", {"decisions": {"item_1": True}})
             self.assertEqual((status, data["ok"], data["changed"]), (200, True, 1))
             self.assertEqual(self.snapshot("workflow")["items"]["item_1"]["status"], "accepted")
+
+    def test_api_keep_validates_and_persists_both_keep_and_undo(self):
+        with self.serve_api() as port:
+            for payload in ({}, {"decisions": []}, {"decisions": {"item_1": "yes"}}, {"decisions": {"gone": True}}):
+                status, data = self.post(port, "/api/manual/keep", payload)
+                self.assertEqual((status, data["ok"]), (400, False))
+            for keep in (True, False):
+                status, data = self.post(port, "/api/manual/keep", {"decisions": {"item_1": keep}})
+                self.assertEqual((status, data["ok"], data["changed"]), (200, True, 1))
+                self.assertEqual(self.snapshot("workflow")["items"]["item_1"]["triage_keep"], keep)
 
     def test_api_autofix_skip_validates_group_and_items(self):
         with self.serve_api() as port:

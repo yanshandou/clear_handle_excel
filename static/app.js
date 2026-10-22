@@ -4,9 +4,13 @@ let stateLoaded = false; // 至少拿到过一次服务器状态
 let latestItems = {}; // 叠加尚未保存的跳过决定后的问题项，页面以此渲染
 let workspaceRestored = false;
 let canResume = false;
+let resumeScan = false;
 let isBusy = false;
+let scanRunning = false;
+let scanProgress = {};
 let pollSeq = 0;
 let minAcceptedSeq = 0; // 发起操作前已在途的轮询结果可能过期，直接丢弃
+let lastAppliedPollSeq = 0;
 
 // 点击即跳过：先在页面上生效，再把这期间的多次点选合并成一次提交（每次写库较慢）
 let pendingSkips = new Map(); // item id -> 是否跳过（尚未提交）
@@ -14,8 +18,12 @@ let inFlightSkips = new Map(); // 正在提交的决定
 let skipRequest = null;
 let skipCancelsResumeConfirmed = false;
 
-// 逐个筛选：「保留」只表示已看过、需人工修改（问题项状态不变），记在本浏览器里用于定位下一处
+// 保留判断存入服务器；尚未保存的决定在本地叠加，完整的一行才能交给自动处理。
 let triageKept = new Set();
+let pendingKeeps = new Map();
+let inFlightKeeps = new Map();
+let keepRequest = null;
+let legacyKeeps = new Set();
 let triageHistory = []; // [{ id, action: 'keep' | 'skip' }]，用于撤销
 let triageCurrentId = null;
 let triageDrag = null;
@@ -29,12 +37,17 @@ let fixCurrentId = null;
 let fixDeferred = new Set(); // 点了「下一个」暂时跳过的组
 let fixChosen = new Set(); // 已点选、等待写入的组
 let fixSkipping = new Set(); // 正在保存“本行无需修改”判断的组
+let manualAction = null; // 打开或复检的任务，等待后端完成后才解除按钮锁定
 
 const TRIAGE_KEPT_STORAGE_KEY = 'clear_handle_excel.triageKept';
-const RECHECK_TITLE = '请先在 Excel 中保存手动修改。根据新 PDF 重新检测该文件的问题工作表并替换旧标记，不会自动增加行高';
+const RECHECK_TITLE = '请先在 Excel 中保存手动修改。当前工作表只导出一次 PDF 复检，不会自动增加行高';
 
 function isResolved(item) {
   return item.status === 'fixed' || item.status === 'accepted';
+}
+
+function processingBusy() {
+  return isBusy && !scanRunning;
 }
 
 // 隐藏截断：PDF 外观看不出来、实际没显示全的文字
@@ -87,17 +100,21 @@ function applyPendingSkips() {
       : item.status;
     latestItems[id] = { ...item, status: skip ? 'accepted' : unskipped };
   }
+  triageKept = new Set(Object.values(latestItems).filter(item => {
+    const keeps = pendingKeeps.has(item.id) ? pendingKeeps : inFlightKeeps;
+    return keeps.has(item.id) ? keeps.get(item.id) : item.triage_keep;
+  }).map(item => item.id));
 }
 
 // 返回是否已生效（任务执行中或用户取消时返回 false）
 function setSkip(id, skip) {
   const item = latestItems[id];
   if (!item || item.status === 'fixed') return false;
-  if (isBusy) {
+  if (processingBusy()) {
     alert('任务执行中，请结束后再标记跳过。');
     return false;
   }
-  if (canResume && !skipCancelsResumeConfirmed) {
+  if (canResume && !resumeScan && !skipCancelsResumeConfirmed) {
     // 跳过本身可随时撤销，只有会取消中断任务续跑点（不可撤销）时才提示
     if (!confirm('标记跳过会取消上次中断任务的续跑，避免旧检查点覆盖人工判断。确定吗？')) return false;
     skipCancelsResumeConfirmed = true;
@@ -142,6 +159,49 @@ async function syncSkips() {
   while (skipRequest || pendingSkips.size) {
     await (skipRequest || flushSkips());
   }
+  while (keepRequest || pendingKeeps.size) await (keepRequest || flushKeeps());
+}
+
+function setKeep(id, keep) {
+  const item = latestItems[id];
+  if (!item || isResolved(item) || processingBusy() || manualAction) return false;
+  if (canResume && !resumeScan && !skipCancelsResumeConfirmed) {
+    if (!confirm('保留判断会取消上次中断任务的续跑，确定吗？')) return false;
+    skipCancelsResumeConfirmed = true;
+  }
+  const group = fixData.groups.find(g => g.item_ids.includes(id));
+  if (group?.status === 'applying' || fixChosen.has(group?.id)) {
+    alert('这一行已开始写入，不能撤销筛选。');
+    return false;
+  }
+  pendingKeeps.set(id, keep);
+  if (keep) triageKept.add(id); else triageKept.delete(id);
+  saveTriageKept();
+  flushKeeps();
+  return true;
+}
+
+function flushKeeps() {
+  if (keepRequest || !pendingKeeps.size) return keepRequest;
+  inFlightKeeps = pendingKeeps;
+  pendingKeeps = new Map();
+  keepRequest = (async () => {
+    try {
+      await postAction('/api/manual/keep', {decisions: Object.fromEntries(inFlightKeeps)});
+    } catch (e) {
+      alert(`保存保留判断失败：${e.message}`);
+    }
+    minAcceptedSeq = pollSeq + 1;
+    await pollState();
+    inFlightKeeps = new Map();
+    keepRequest = null;
+    applyPendingSkips();
+    saveTriageKept();
+    renderItems();
+    pollAutofix();
+    flushKeeps();
+  })();
+  return keepRequest;
 }
 
 function getItemVisualState(item) {
@@ -216,6 +276,42 @@ function renderItems() {
   renderTriage();
   renderStepTabs();
   renderFix();
+  renderPipelineProgress();
+}
+
+function pipelineMetrics() {
+  const items = Object.values(latestItems);
+  const screened = items.filter(it => isResolved(it) || triageKept.has(it.id)).length;
+  const rows = new Map();
+  for (const item of items) {
+    const key = getRowGroupKey(item);
+    if (!rows.has(key)) rows.set(key, []);
+    rows.get(key).push(item);
+  }
+  const handed = [...rows.values()].filter(peers => peers.some(it => triageKept.has(it.id))
+    && peers.every(it => isResolved(it) || triageKept.has(it.id)));
+  const done = handed.filter(peers => peers.every(isResolved)).length;
+  const ready = fixQueue().filter(g => ['ready', 'failed', 'error'].includes(g.status)).length;
+  return {total: items.length, screened, available: items.length - screened, handed: handed.length, done, ready};
+}
+
+function renderPipelineProgress() {
+  const m = pipelineMetrics();
+  const total = Number(scanProgress.total || 0);
+  const completed = Number(scanProgress.completed || 0);
+  document.getElementById('scanPipelineText').textContent = total
+    ? `扫描：已完成 ${completed} / ${total} 个文件 · 剩余 ${Math.max(0, total - completed)} 个${scanProgress.status === 'interrupted' ? '（有文件失败，可继续上次任务）' : ''}`
+    : (scanRunning ? '扫描正在准备文件列表…' : '扫描：等待开始');
+  document.getElementById('scanPipelineFill').style.width = `${total ? Math.min(100, completed / total * 100) : 0}%`;
+  document.getElementById('supplyProgressText').textContent =
+    `当前已产出 ${m.total} 处 · 已筛选 ${m.screened} 处 · 可筛选 ${m.available} 处`;
+  document.getElementById('supplyProgressFill').style.width = `${m.total ? m.screened / m.total * 100 : 0}%`;
+  document.getElementById('supplyProgressHint').textContent = scanRunning
+    ? '扫描还在继续；这里只统计已完成文件，后续产出会自动加入。'
+    : (scanProgress.status === 'interrupted' ? '已完成文件可继续处理；其余文件等待重试扫描。' : '当前结果可随时筛选，已筛完的行会在后台准备截图。');
+  document.getElementById('fixSupplyText').textContent =
+    `已交接 ${m.handed} 行 · 当前可操作 ${m.ready} 行 · 已完成 ${m.done} 行`;
+  document.getElementById('fixSupplyFill').style.width = `${m.handed ? m.done / m.handed * 100 : 0}%`;
 }
 
 /* ==========================================
@@ -243,13 +339,13 @@ function triageQueue() {
 }
 
 function renderTriage() {
-  const reviewable = Object.values(latestItems).filter(item => item.status !== 'fixed');
+  const reviewable = Object.values(latestItems);
   const skipped = reviewable.filter(item => item.status === 'accepted').length;
   const kept = reviewable.filter(item => !isResolved(item) && triageKept.has(item.id)).length;
   const queue = triageQueue();
-  const decided = skipped + kept;
+  const decided = reviewable.length - queue.length;
   document.getElementById('triageProgressText').textContent =
-    `已筛选 ${decided} / ${reviewable.length}（保留 ${kept} · 跳过 ${skipped} · 剩余 ${queue.length}）`;
+    `当前已产出 ${reviewable.length} 处 · 已筛选 ${decided} 处 · 可筛选 ${queue.length} 处（保留 ${kept} · 跳过 ${skipped}）`;
   document.getElementById('triageProgressFill').style.width =
     `${reviewable.length ? Math.round((decided / reviewable.length) * 100) : 0}%`;
   document.getElementById('triageUndoBtn').disabled = triageHistory.length === 0;
@@ -260,21 +356,21 @@ function renderTriage() {
   const next = queue[0];
   if (!next) {
     triageCurrentId = null;
-    const signature = `done|${kept}|${skipped}|${reviewable.length}`;
+    const signature = `done|${kept}|${skipped}|${reviewable.length}|${scanRunning}|${scanProgress.status}`;
     if (stage.dataset.signature === signature) return;
     stage.dataset.signature = signature;
     stage.innerHTML = reviewable.length ? `
       <div class="triage-done">
-        <b>🎉 已全部筛选完</b>
+        <b>${scanRunning ? '当前结果已筛选完，等待扫描产生新结果…' : '当前结果已筛选完'}</b>
         <span>保留 ${kept} 处、跳过 ${skipped} 处。保留的到第 ② 步自动处理。</span>
         ${kept ? '<button type="button" class="btn btn-primary btn-sm" onclick="setStepTab(\'fix\')">进入 ② 自动处理 →</button>' : ''}
         ${kept ? '<button type="button" class="btn btn-outline btn-sm" onclick="triageRestartKept()">重新筛选已保留的项</button>' : ''}
-      </div>` : '<div class="triage-done"><span>暂无切字问题，请先扫描。</span></div>';
+      </div>` : `<div class="triage-done"><span>${scanRunning ? '扫描进行中，等待第一个文件的检测结果…' : '暂无可筛选的问题。'}</span></div>`;
     return;
   }
 
   const page = latestPages[next.page_id];
-  const signature = `${next.id}|${next.status}|${next.image}|${page ? page.image.length : 0}`;
+  const signature = `${next.id}|${next.status}|${next.image}|${page ? page.image.length : 0}|${isBusy}|${!!manualAction}`;
   if (stage.dataset.signature === signature) return;
   stage.dataset.signature = signature;
   triageCurrentId = next.id;
@@ -322,10 +418,10 @@ function renderTriage() {
       <div class="triage-card-tools" onpointerdown="event.stopPropagation();">
         <label title="如果行号有偏差可手动修正">
           行号
-          <input type="number" min="1" value="${Number(next.excel_row) || 1}" onchange="updateRow('${escapeHtml(next.id)}', this.value)">
+          <input type="number" min="1" ${isBusy ? 'disabled' : ''} value="${Number(next.excel_row) || 1}" onchange="updateRow('${escapeHtml(next.id)}', this.value)">
         </label>
-        <button type="button" class="btn btn-outline btn-sm" onclick="manualOpen('${escapeHtml(next.id)}')">在 Excel 中定位</button>
-        <button type="button" class="btn btn-outline btn-sm" title="${RECHECK_TITLE}" onclick="manualRecheck('${escapeHtml(next.id)}')">重新导出复检</button>
+        <button type="button" class="btn btn-outline btn-sm" ${isBusy || manualAction ? 'disabled' : ''} title="${scanRunning ? '人工打开需等待扫描结束；筛选和选图可继续' : ''}" onclick="manualOpen('${escapeHtml(next.id)}')">在 Excel 中定位</button>
+        <button type="button" class="btn btn-outline btn-sm" ${isBusy || manualAction ? 'disabled' : ''} title="${RECHECK_TITLE}" onclick="manualRecheck('${escapeHtml(next.id)}')">重新导出复检</button>
       </div>
     </div>
   `;
@@ -361,8 +457,12 @@ function triageDecide(action) {
       return;
     }
   } else {
-    triageKept.add(item.id);
-    saveTriageKept();
+    if (!setKeep(item.id, true)) {
+      clearTimeout(triageAnimationTimer);
+      triageAnimationTimer = null;
+      resetTriageCard(card);
+      return;
+    }
   }
   triageHistory.push({ id: item.id, action });
   if (card) {
@@ -371,6 +471,8 @@ function triageDecide(action) {
     card.classList.add(action === 'skip' ? 'fly-right' : 'fly-left');
   }
   renderTriage();
+  renderStepTabs();
+  renderPipelineProgress();
 }
 
 function triageUndo() {
@@ -383,14 +485,16 @@ function triageUndo() {
       return;
     }
   } else {
-    triageKept.delete(last.id);
-    saveTriageKept();
+    if (!setKeep(last.id, false)) {
+      triageHistory.push(last);
+      return;
+    }
   }
   renderTriage();
 }
 
 function triageRestartKept() {
-  triageKept.clear();
+  for (const id of [...triageKept]) if (latestItems[id] && !isResolved(latestItems[id])) setKeep(id, false);
   saveTriageKept();
   triageHistory = [];
   renderTriage();
@@ -445,22 +549,26 @@ document.addEventListener('keydown', e => {
 /* ==========================================
    第 2 步：自动处理（九宫格选图）
    ========================================== */
-// ① 全部筛完才能进 ②：还有没筛的就不让后台做图
+// 三阶段流水线：任意时候都能查看已交接的行。
 function triageComplete() {
   return stateLoaded && triageQueue().length === 0;
 }
 
+function fixAvailable() {
+  return stateLoaded;
+}
+
 function renderStepTabs() {
   const btn = document.getElementById('tabFixBtn');
-  const left = stateLoaded ? triageQueue().length : 0;
-  const locked = !triageComplete();
+  const left = stateLoaded ? pipelineMetrics().ready : 0;
+  const locked = !fixAvailable();
   btn.classList.toggle('is-locked', locked);
-  btn.textContent = locked && left ? `🔒 ② 自动处理（先筛完 ①，还剩 ${left} 处）` : '② 自动处理';
-  btn.title = locked ? '第 ① 步全部筛完后才能进入' : '';
+  btn.textContent = `② 自动处理${left ? `（可操作 ${left} 行）` : ''}`;
+  btn.title = '已筛完的行可立即处理，无需等待整批扫描或筛选完成';
 }
 
 function setStepTab(tab) {
-  if (tab === 'fix' && !triageComplete()) return;
+  if (tab === 'fix' && !fixAvailable()) return;
   stepTab = tab === 'fix' ? 'fix' : 'triage';
   document.getElementById('tabTriageBtn').classList.toggle('active', stepTab === 'triage');
   document.getElementById('tabFixBtn').classList.toggle('active', stepTab === 'fix');
@@ -474,7 +582,8 @@ const FIX_OPEN_STATUSES = new Set(['queued', 'running', 'ready', 'failed', 'erro
 // 还需要用户处理的组：没写入、没点选；跳过（无需修改）的问题项已不在分组里
 function fixQueue() {
   return fixData.groups.filter(g => FIX_OPEN_STATUSES.has(g.status) && !fixChosen.has(g.id)
-    && g.item_ids.some(id => latestItems[id] && !isResolved(latestItems[id])));
+    && g.item_ids.some(id => latestItems[id] && !isResolved(latestItems[id]))
+    && g.item_ids.every(id => latestItems[id] && (isResolved(latestItems[id]) || triageKept.has(id))));
 }
 
 function pickFixGroup() {
@@ -488,11 +597,12 @@ function pickFixGroup() {
 
 function attemptLabel(group, index) {
   const attempt = group.attempts[index];
-  if (index === 0) return `原样 ${attempt.height}pt`;
+  if (index === 0) return `${group.recheck_token ? '本次复检' : '原样'} ${attempt.height}pt`;
   return `+${(attempt.height - group.attempts[0].height).toFixed(1).replace(/\.0$/, '')}pt → ${attempt.height}pt`;
 }
 
 function renderFix() {
+  renderPipelineProgress();
   const groups = fixData.groups;
   const queue = fixQueue();
   const applied = groups.filter(g => g.status === 'applied').length;
@@ -508,40 +618,45 @@ function renderFix() {
   autoBtn.classList.toggle('btn-outline', !fixData.auto);
 
   const stage = document.getElementById('fixStage');
-  if (!triageComplete()) {
-    const left = triageQueue().length;
-    const signature = `locked|${left}`;
+  if (!fixAvailable()) {
+    const signature = 'loading';
     if (stage.dataset.signature === signature) return;
     stage.dataset.signature = signature;
     stage.innerHTML = `<div class="triage-done">
-      <b>还有 ${left} 处没筛选</b>
-      <span>（重新扫描或复检发现了新问题）第 ① 步全部筛完后，后台才会继续做图。</span>
-      <button type="button" class="btn btn-primary btn-sm" onclick="setStepTab('triage')">← 回到 ① 筛选</button>
+      <span>正在读取已交接的处理队列…</span>
     </div>`;
     return;
   }
+  const untriaged = triageQueue().length;
+  const notice = untriaged ? `<div class="fix-note">当前还有 ${untriaged} 处可筛选，已交接的行可继续处理。
+    <button type="button" class="btn btn-outline btn-sm" onclick="setStepTab('triage')">到 ① 筛选确认</button></div>` : '';
   const group = pickFixGroup();
   if (!group) {
-    const signature = `done|${applied}|${groups.length}`;
+    const metrics = pipelineMetrics();
+    const syncing = metrics.handed > metrics.done;
+    const waiting = scanRunning || untriaged > 0 || writing > 0 || pendingKeeps.size > 0 || !!keepRequest || syncing;
+    const signature = `done|${applied}|${groups.length}|${untriaged}|${waiting}|${syncing}`;
     if (stage.dataset.signature === signature) return;
     stage.dataset.signature = signature;
-    stage.innerHTML = `<div class="triage-done">${groups.length
-      ? `<b>🎉 都处理完了</b><span>已写入 ${applied} 行。可以再点「扫描切字」整体复检一遍。</span>`
+    stage.innerHTML = `${notice}<div class="triage-done">${waiting
+      ? `<b>${writing ? '正在保存已选结果…' : syncing ? '已交接的行正在同步处理队列…' : '当前队列已处理完，等待扫描或筛选交接新行…'}</b>`
+      : groups.length ? `<b>当前队列已处理完</b><span>已写入 ${applied} 行。</span>`
       : '<span>没有需要处理的切字。先在第 ① 步筛选，保留的会出现在这里。</span>'}</div>`;
     return;
   }
 
   const items = group.item_ids.map(id => latestItems[id]).filter(Boolean);
   const skipping = fixSkipping.has(group.id);
+  const blocked = skipping || processingBusy() || !!manualAction;
   const signature = JSON.stringify([
     group.id, group.status, group.attempts, group.recommended, group.manual, group.message,
-    skipping, isBusy,
+    skipping, isBusy, manualAction, untriaged, group.recheck_token,
     items.map(item => [item.id, item.status, item.cell_addr]),
   ]);
   if (stage.dataset.signature === signature) return;
   stage.dataset.signature = signature;
 
-  const choosable = ['ready', 'failed'].includes(group.status) && !group.manual && !skipping;
+  const choosable = ['ready', 'failed'].includes(group.status) && !group.manual && !blocked;
   const tiles = group.attempts.map((attempt, index) => {
     const canPick = choosable && index > 0 && attempt.ok;
     const classes = ['fix-tile', attempt.ok ? 'is-ok' : 'is-bad'];
@@ -551,7 +666,7 @@ function renderFix() {
     return `
       <button type="button" class="${classes.join(' ')}" ${canPick ? `onclick="chooseAttempt('${escapeHtml(group.id)}', ${index})"` : 'disabled'}>
         ${index === group.recommended ? '<span class="fix-tile-badge">推荐</span>' : ''}
-        <img src="/api/autofix/image/${escapeHtml(group.id)}/${index}?h=${attempt.height}" alt="${escapeHtml(attemptLabel(group, index))}">
+        <img src="/api/autofix/image/${escapeHtml(group.id)}/${index}?h=${attempt.height}&v=${escapeHtml(group.recheck_token || '')}" alt="${escapeHtml(attemptLabel(group, index))}">
         <span class="fix-tile-caption">${escapeHtml(attemptLabel(group, index))} · ${index === 0 ? (attempt.ok ? '完整且无压线' : '未通过检查') : (attempt.ok ? '✓ 完整且无压线' : '✗ 未通过完整显示/压线检查')}</span>
       </button>`;
   });
@@ -561,10 +676,13 @@ function renderFix() {
       ? `后台正在生成第 ${tiles.length + 1} 张...` : `排队中${ahead ? `，前面还有 ${ahead} 行` : ''}...`}</span></div>`);
   }
   let note = '';
-  if (group.manual) note = '已转人工：在 Excel 里改好并保存后，点「复检」。';
+  if (manualAction) note = manualAction.kind === 'manual_open' ? '正在打开 Excel 并定位，请稍候…' : '正在复检当前工作表，完成后自动更新结果…';
+  else if (group.recheck_token) note = group.message;
+  else if (group.manual) note = '已转人工：在 Excel 里改好并保存后，点「复检」。';
   else if (group.message) note = group.message;
   const first = items[0];
   stage.innerHTML = `
+    ${notice}
     <div class="fix-card">
       <div class="triage-card-head">
         <div>
@@ -577,20 +695,22 @@ function renderFix() {
       <div class="fix-grid">${tiles.join('')}</div>
       ${note ? `<div class="fix-note">${escapeHtml(note)}</div>` : ''}
       <div class="triage-card-tools">
-        <button type="button" class="btn btn-primary btn-sm" ${skipping || isBusy ? 'disabled' : ''}
+        <button type="button" class="btn btn-primary btn-sm" ${blocked ? 'disabled' : ''}
           title="将本行所有问题保存为人工确认无需修改，不修改 Excel"
           onclick="skipFixGroup('${escapeHtml(group.id)}')">${skipping ? '正在保存跳过...' : '跳过本行（无需修改）→'}</button>
-        ${first ? `<button type="button" class="btn btn-outline btn-sm" ${skipping ? 'disabled' : ''} onclick="manualOpen('${escapeHtml(first.id)}')">人工处理（在 Excel 中打开）</button>` : ''}
-        ${group.manual && first ? `<button type="button" class="btn btn-primary btn-sm" ${skipping ? 'disabled' : ''} title="${RECHECK_TITLE}" onclick="manualRecheck('${escapeHtml(first.id)}')">复检</button>` : ''}
-        <button type="button" class="btn btn-outline btn-sm" ${skipping ? 'disabled' : ''} title="暂时换到下一行，不保存跳过判断，稍后还会显示本行" onclick="deferFixGroup('${escapeHtml(group.id)}')">先看下一个 →</button>
+        ${first ? `<button type="button" class="btn btn-outline btn-sm" ${blocked || isBusy ? 'disabled' : ''} title="${scanRunning ? '扫描期间可选图或跳过；人工打开需等待扫描结束' : ''}" onclick="manualOpen('${escapeHtml(first.id)}')">${manualAction?.kind === 'manual_open' ? '正在打开 Excel…' : '人工处理（在 Excel 中打开）'}</button>` : ''}
+        ${group.manual && first ? `<button type="button" class="btn btn-primary btn-sm" ${blocked || isBusy ? 'disabled' : ''} title="${RECHECK_TITLE}" onclick="manualRecheck('${escapeHtml(first.id)}')">${manualAction?.kind === 'recheck' ? '正在复检…' : '复检'}</button>` : ''}
+        <button type="button" class="btn btn-outline btn-sm" ${blocked ? 'disabled' : ''} title="暂时换到下一行，不保存跳过判断，稍后还会显示本行" onclick="deferFixGroup('${escapeHtml(group.id)}')">先看下一个 →</button>
       </div>
     </div>`;
 }
 
 async function pollAutofix() {
   try {
-    // 只有开着「② 自动处理」时才让后台预先做图，筛选时不在后台导出 PDF
-    const active = stepTab === 'fix' && triageComplete() && !document.hidden ? '?active=1' : '';
+    // 筛选时也为已交接的行准备截图；当前人工编辑卡片保持暂停。
+    const current = pickFixGroup();
+    const active = stateLoaded && !processingBusy() && !(stepTab === 'fix' && current?.manual)
+      && !manualAction && !document.hidden ? '?active=1' : '';
     const res = await fetch(`/api/autofix${active}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '读取自动处理进度失败');
@@ -599,12 +719,15 @@ async function pollAutofix() {
     fixChosen = new Set([...fixChosen].filter(id => ids.has(id) && data.groups.find(g => g.id === id).status !== 'queued'));
     fixDeferred = new Set([...fixDeferred].filter(id => ids.has(id)));
     renderFix();
+    renderStepTabs();
+    renderPipelineProgress();
   } catch (e) {
     document.getElementById('fixProgressText').textContent = `读取自动处理进度失败: ${e.message}`;
   }
 }
 
 async function chooseAttempt(groupId, index) {
+  if (processingBusy() || manualAction) return;
   fixChosen.add(groupId);
   fixCurrentId = null;
   renderFix(); // 点完立刻换下一行，写入在后台进行
@@ -626,11 +749,11 @@ function deferFixGroup(groupId) {
 async function skipFixGroup(groupId) {
   const group = fixData.groups.find(g => g.id === groupId);
   if (!group || !FIX_OPEN_STATUSES.has(group.status) || fixChosen.has(groupId) || fixSkipping.has(groupId)) return;
-  if (isBusy) {
+  if (processingBusy() || manualAction) {
     alert('任务执行中，请结束后再标记跳过。');
     return;
   }
-  if (canResume && !confirm('跳过本行会取消上次中断任务的续跑，避免旧检查点覆盖人工判断。确定吗？')) return;
+  if (canResume && !resumeScan && !confirm('跳过本行会取消上次中断任务的续跑，避免旧检查点覆盖人工判断。确定吗？')) return;
   fixSkipping.add(groupId);
   renderFix();
   try {
@@ -669,10 +792,14 @@ async function pollState() {
     const res = await fetch('/api/state');
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '读取任务失败');
-    if (seq < minAcceptedSeq) return;
+    if (seq < minAcceptedSeq || seq < lastAppliedPollSeq) return;
+    lastAppliedPollSeq = seq;
 
     canResume = data.can_resume;
+    resumeScan = !!(canResume && data.job?.kind === 'scan');
     isBusy = data.busy;
+    scanRunning = !!(data.busy && data.job?.kind === 'scan');
+    scanProgress = data.scan_progress || {};
     if (!canResume) skipCancelsResumeConfirmed = false;
     document.getElementById('resumeBtn').classList.toggle('hidden', !canResume);
     document.getElementById('resumeBtn').disabled = data.busy;
@@ -697,7 +824,7 @@ async function pollState() {
       }
       const miniStep = document.getElementById('miniStepText');
       if (miniStep) {
-        miniStep.textContent = p.current_step || '等待开始任务...';
+        miniStep.textContent = scanRunning ? '扫描进行中：已完成文件可以先筛选，已筛完的行在后台准备截图。' : (p.current_step || '等待开始任务...');
       }
       const miniStats = document.getElementById('miniStatsText');
       if (miniStats) {
@@ -713,14 +840,19 @@ async function pollState() {
     latestPages = data.pages || {};
     serverItems = data.items || {};
     stateLoaded = true;
+    for (const id of [...legacyKeeps]) {
+      if (!serverItems[id]) continue;
+      if (canResume && !resumeScan) continue;
+      if (!isResolved(serverItems[id]) && !serverItems[id].triage_keep && !processingBusy()) pendingKeeps.set(id, true);
+      legacyKeeps.delete(id);
+    }
     // 已被重新检测替换掉的问题项，不再保留未提交的决定
     for (const id of [...pendingSkips.keys()]) {
       if (!serverItems[id]) pendingSkips.delete(id);
     }
-    const keptBefore = triageKept.size;
-    triageKept = new Set([...triageKept].filter(id => serverItems[id]));
-    if (triageKept.size !== keptBefore) saveTriageKept();
     applyPendingSkips();
+    flushKeeps();
+    const manualCompleted = finishManualAction(data);
 
     const hasResults = Object.keys(latestPages).length > 0 || Object.keys(latestItems).length > 0;
     const emptyStage = document.getElementById('emptyStagePlaceholder');
@@ -730,6 +862,7 @@ async function pollState() {
 
     workspaceRestored = true;
     renderItems();
+    if (manualCompleted) pollAutofix();
   } catch (e) {
     document.getElementById('statusText').innerText = `连接或读取失败: ${e.message}`;
   }
@@ -780,34 +913,57 @@ async function resumeTask() {
 }
 
 async function manualOpen(id) {
+  if (isBusy || manualAction) return;
   if (canResume && !confirm('转人工将替换中断任务，旧检查点不再自动续跑。剩余项可之后重新处理。确定吗？')) return;
-  await syncSkips();
-  try {
-    await postAction('/api/manual/open', { id });
-    await pollState();
-  } catch (e) { alert(e.message); }
+  await submitManualAction(id, 'manual_open', '/api/manual/open');
 }
 
 async function manualRecheck(id) {
+  if (isBusy || manualAction) return;
   // 复检只读 Excel、不加高，平时不再弹窗；只有会替换中断任务续跑点（不可撤销）时才提示
   const message = '此操作会替换上次中断任务的续跑检查点，确定吗？';
   if (canResume && !confirm(message)) return;
-  await syncSkips();
+  await submitManualAction(id, 'recheck', '/api/manual/recheck');
+}
+
+async function submitManualAction(id, kind, path) {
+  manualAction = {id, kind, submitted: false};
+  renderFix();
   try {
-    await postAction('/api/manual/recheck', { id });
+    await syncSkips();
+    await postAction(path, { id });
+    minAcceptedSeq = pollSeq + 1;
+    manualAction.submitted = true;
     await pollState();
-  } catch (e) { alert(e.message); }
+  } catch (e) {
+    manualAction = null;
+    renderFix();
+    alert(e.message);
+  }
+}
+
+function finishManualAction(data) {
+  if (!manualAction?.submitted || data.busy || data.job?.kind !== manualAction.kind
+      || !data.job.options?.selected_ids?.includes(manualAction.id)
+      || !['completed', 'interrupted'].includes(data.job.status)) return false;
+  if (data.job.status === 'completed' && manualAction.kind === 'recheck'
+      && latestItems[manualAction.id] && isResolved(latestItems[manualAction.id])) {
+    fixCurrentId = null;
+  }
+  manualAction = null;
+  return true;
 }
 
 // 离开页面前若还有未保存的跳过决定，提示一下
 window.addEventListener('beforeunload', e => {
-  if (pendingSkips.size || skipRequest) {
+  if (pendingSkips.size || skipRequest || pendingKeeps.size || keepRequest) {
     e.preventDefault();
     e.returnValue = '';
   }
 });
 
 triageKept = loadTriageKept();
+legacyKeeps = new Set(triageKept);
 
 setInterval(pollState, 1200);
 setInterval(pollAutofix, 1500);

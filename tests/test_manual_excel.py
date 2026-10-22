@@ -56,10 +56,32 @@ class ManualExcelTests(unittest.TestCase):
             )
             with patch.object(excel_ops, "pythoncom", com), patch.object(excel_ops, "win32", client):
                 excel_ops.open_workbook_for_manual_review(path, "Sheet1", "Row 61", 61)
-            books.Open.assert_called_once_with(str(path))
+            books.Open.assert_called_once_with(str(path), UpdateLinks=0, IgnoreReadOnlyRecommended=True)
             sheet.Range.assert_called_once_with("A61")
             client.DispatchEx.assert_called_once_with("Excel.Application")
             excel.Quit.assert_not_called()
+
+    def test_hidden_background_excel_is_not_shown_or_reused(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "book.xlsx"
+            path.touch()
+            hidden = Mock(Visible=False)
+            visible = Mock(Visible=True)
+            visible.Workbooks = MagicMock()
+            visible.Workbooks.__iter__.return_value = iter([])
+            workbook = visible.Workbooks.Open.return_value
+            workbook.Windows.Count = 1
+            workbook.Sheets.return_value.Visible = -1
+            workbook.Sheets.return_value.Rows.return_value.RowHeight = 25.5
+            client = Mock(GetActiveObject=Mock(return_value=hidden), DispatchEx=Mock(return_value=visible))
+            with patch.object(excel_ops, "pythoncom", Mock()), patch.object(excel_ops, "win32", client):
+                excel_ops.open_workbook_for_manual_review(path, "Sheet1", "C61", 61)
+            self.assertFalse(hidden.Visible)
+            hidden.Workbooks.Open.assert_not_called()
+            hidden.Quit.assert_not_called()
+            client.DispatchEx.assert_called_once_with("Excel.Application")
+            visible.Workbooks.Open.assert_called_once_with(str(path), UpdateLinks=0, IgnoreReadOnlyRecommended=True)
+            visible.Goto.assert_called_once()
 
     def test_other_com_errors_are_not_silently_replaced_by_new_excel(self):
         with tempfile.TemporaryDirectory() as temp:

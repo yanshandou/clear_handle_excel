@@ -102,6 +102,59 @@ class IncrementalScanTests(unittest.TestCase):
     def items_by_text(self):
         return {item["text"]: item for item in self.workflow.STATE["items"].values()}
 
+    def test_first_file_is_reviewable_and_queues_work_before_second_file_opens(self):
+        from core import autofix
+        autofix = importlib.reload(autofix)
+        autofix._worker = Mock(is_alive=Mock(return_value=True))
+        autofix.AUTOFIX["active_until"] = float("inf")
+        first = self.add_book("first", ["S1"])
+        self.add_book("second", ["S1"])
+        self.clips[("first", "S1")] = ["one", "two"]
+        self.books["first"].Close = Mock()
+        observed = []
+
+        def open_book(path):
+            if Path(path).stem == "second":
+                self.books["first"].Close.assert_called_once_with(SaveChanges=False)
+                state = self.workflow.get_state_snapshot()
+                self.assertTrue(state["busy"])
+                self.assertEqual(state["scan_progress"], {"total": 2, "completed": 1, "status": "running"})
+                one, two = sorted(state["items"].values(), key=lambda it: it["text"])
+                self.workflow.apply_keep_decisions({one["id"]: True})
+                self.assertEqual(autofix.snapshot()["groups"], [])  # 同行还有一处没筛
+                self.workflow.apply_skip_decisions({two["id"]: True})
+                group = autofix.snapshot()["groups"][0]
+                self.assertEqual(autofix._next_task({}), ("preview", group["id"]))
+                self.assertEqual(group["wb_path"], str(first))
+                observed.append(True)
+            return self.books[Path(path).stem]
+
+        self.excel.Workbooks.Open.side_effect = open_book
+        job = self.scan()
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(observed, [True])
+        self.assertTrue(self.items_by_text()["one"]["triage_keep"])
+        self.assertEqual(self.items_by_text()["two"]["status"], "accepted")
+
+    def test_failed_incremental_file_is_not_exposed_as_newly_scanned(self):
+        first = self.add_book("first", ["S1"])
+        second = self.add_book("second", ["S1"])
+        self.clips[("first", "S1")] = ["one"]
+        self.clips[("second", "S1")] = ["two"]
+        self.scan()
+        self.modify(second)
+        self.fail_export["second"] = "S1"
+        self.assertEqual(self.scan()["status"], "interrupted")
+        state = self.workflow.get_state_snapshot()
+        self.assertEqual({it["wb_path"] for it in state["items"].values()}, {str(first)})
+        old = self.items_by_text()["two"]
+        with self.assertRaisesRegex(ValueError, "尚未扫描完成"):
+            self.workflow.apply_skip_decisions({old["id"]: True})
+        current = self.items_by_text()["one"]
+        self.workflow.apply_skip_decisions({current["id"]: True})
+        self.assertEqual(self.workflow.STATE["job"]["status"], "interrupted")
+        self.assertEqual(self.workflow.STATE["scan_progress"]["completed"], 1)
+
     def test_unchanged_files_are_not_opened_again(self):
         self.add_book("book", ["S1"])
         self.clips[("book", "S1")] = ["k"]
