@@ -189,19 +189,22 @@ def find_contained_sheets(sheet_names: list[str]) -> list[str]:
     可能是备份也可能是正式的明细表，精简 Sheet 时默认标为待定，交给人工确认，不默认删除。
 
     已默认删除、已带 ❓、「自動生成」开头的表不算；被包含的名称至少 2 个字符，
-    且不能把数字从中间切开（Sheet1 与 Sheet12 是不同的表）；多出的部分整段在括号里的也不算。
+    且不能把数字从中间切开（Sheet1 与 Sheet12 是不同的表）；多出的部分整段在括号里的也不算；
+    自己有备份表的原表也不算（它就是当前在用的版本）。
     """
     targets = set(find_clean_targets(sheet_names))
     targets.update(find_new_old_pairs(sheet_names))  # 新旧成对的「新」表默认保留（删旧表后去掉「新」字）
+    # 有备份表的原表就是当前在用的版本（如 精神科基本療養費 与 精神科基本療養費20260402），默认保留
+    has_backup = {_original_name_of(name) for name in find_backup_sheets(sheet_names)}
     references = {
         c for name in sheet_names
         if name not in targets and len(c := _comparable_name(name)) >= 2
     }
     contained: list[str] = []
     for name in sheet_names:
-        if name in targets or is_uncertain_name(name) or is_auto_generated_sheet(name):
-            continue
         text = _comparable_name(name)
+        if name in targets or is_uncertain_name(name) or is_auto_generated_sheet(name) or text in has_backup:
+            continue
         # 多出的部分整段在括号里（如 レイアウト 与 レイアウト(介護給付費請求書1)）是用途或页的补充说明，不算
         bare = _comparable_name(BRACKET_GROUP_PATTERN.sub("", unicodedata.normalize("NFKC", name)))
         for ref in references:

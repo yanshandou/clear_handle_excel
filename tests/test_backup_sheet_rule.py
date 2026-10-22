@@ -166,6 +166,12 @@ class ContainedSheetTests(unittest.TestCase):
         # 已带 ❓ 的表也可作为被包含的名称（概要メモ）；已默认删除（請求書_20240101）、已带 ❓、自動生成、数字被切开（Sheet12）、单字被包含（表紙）都不算
         self.assertEqual(find_contained_sheets(names), ["一覧詳細", "請求書明細", "概要メモ"])
 
+    def test_original_with_backup_is_not_uncertain(self):
+        # 精神科基本療養費 有备份表 精神科基本療養費20260402，是当前在用的版本，即使包含 基本療養費 也默认保留
+        names = ["基本療養費", "精神科基本療養費", "精神科基本療養費20260402", "精神科訪問看護"]
+        self.assertEqual(find_clean_targets(names), ["精神科基本療養費20260402"])
+        self.assertEqual(find_contained_sheets(names), [])
+
     def test_backup_targets_are_not_used_as_reference(self):
         names = ["概要", "概要_bak", "概要_bak詳細"]
         self.assertEqual(find_contained_sheets(names), ["概要_bak詳細"])
