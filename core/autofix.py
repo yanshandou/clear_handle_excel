@@ -6,7 +6,9 @@
 - 同一行的几处问题合成一组处理（加的是整行高度）
 - 预览只在副本上做，不锁、不改原文件；用户挑选时后台继续准备后面的组
 - 显示全之后再多加一次就停，推荐多加的那张（留一点余量）
-- 「全自动」打开后，后面准备好的组直接按推荐写入
+- 默认全自动：准备好就按推荐写进原文件并保存，再列出来等用户批量确认；
+  确认前可以改用别的候选图（重新写入），或点「不对」改回原行高、转稍后人工复检
+- 全自动时加高 8 次仍不行（或出错）的行，直接转稍后人工复检
 - 扫描期间处理已经提交的文件；复检、人工定位等任务时暂停
 - 工作台打开时可为已筛完的行做图；尚未筛完的行不入队
 - 「稍后人工复检」的行不再做图；后台在没有任务时给这些单元格标黄、给文件名加 🟡
@@ -52,6 +54,7 @@ STEP_PT = 3.0
 MAX_ATTEMPTS = 8  # 加上原样共 9 张，正好九宫格
 MAX_ROW_HEIGHT = 409.0  # Excel 行高上限
 MANUAL_STATUSES = {"manual_review"}
+WRITE_STATUSES = {"applying", "reverting"}  # 等后台写进原文件：按选中的图 / 改回原行高
 LOCKED_RETRY_SECONDS = 5.0
 ACTIVE_GRACE_SECONDS = 8.0  # 页面每 1.5 秒报一次「正开着 ② 自动处理」，超过这么久没报就停下
 
@@ -61,7 +64,7 @@ _IDLE = threading.Event()  # 后台没有开着的 Excel
 _IDLE.set()
 _WRITES_IDLE = threading.Event()  # 人工打开只需等正在进行的原文件写入，不等副本 Excel 退出
 _WRITES_IDLE.set()
-AUTOFIX: dict[str, Any] = {"auto": False, "groups": {}, "hold": 0, "active_until": 0.0}
+AUTOFIX: dict[str, Any] = {"auto": True, "groups": {}, "hold": 0, "active_until": 0.0}
 _worker: threading.Thread | None = None
 
 
@@ -85,7 +88,7 @@ def check_row_not_writing(item: dict[str, Any]) -> None:
     """调用方已持有 STATE_LOCK，与 choose 的 STATE → 分组锁顺序一致。"""
     with _LOCK:
         group = AUTOFIX["groups"].get(_group_id(item["wb_path"], item["sheet_name"], int(item["excel_row"])))
-        if group and group["status"] == "applying":
+        if group and group["status"] in {"applying", "reverting"}:
             raise ValueError("这一行已开始写入，不能撤销或重新筛选")
 
 
@@ -170,9 +173,10 @@ def _sync_groups_locked() -> None:
     with _LOCK:
         groups = AUTOFIX["groups"]
         for gid in list(groups):
-            # 已写入的组问题项都已解决，保留记录供页面显示
-            if gid not in wanted and groups[gid]["status"] != "applied":
+            # 已写入的组问题项都已解决，保留记录供页面显示；确认前改图、退回时问题项也已解决
+            if gid not in wanted and not _kept_after_apply(groups[gid]):
                 del groups[gid]
+        _restore_unconfirmed_locked(groups, wanted)
         for gid, entry in wanted.items():
             group = groups.get(gid)
             # 写入过的行又检出了问题（重新扫描）也重新准备；
@@ -184,7 +188,7 @@ def _sync_groups_locked() -> None:
                 group = groups[gid] = {
                     "id": gid, **{k: v for k, v in entry.items() if not k.startswith("recheck_")},
                     "status": "queued", "attempts": [], "recommended": None,
-                    "chosen": None, "base_height": None,
+                    "chosen": None, "base_height": None, "confirmed": False,
                     "message": "复检后仍未显示全，已按你改过的行高重新准备" if rechecked else "",
                 }
             group["manual"] = entry["manual"]
@@ -199,6 +203,34 @@ def _sync_groups_locked() -> None:
                     attempts=[{"height": entry["recheck_height"], "ok": False, "image": entry["recheck_image"]}],
                     message="本次复检仍有问题，请继续修改、跳过本行或先看下一行",
                 )
+
+
+def _kept_after_apply(group: dict[str, Any]) -> bool:
+    status = group["status"]
+    return (status == "applied" or status == "reverting" or (status == "applying" and group.get("reapply"))
+            or (status == "reverted" and not group.get("dismissed")))
+
+
+def _restore_unconfirmed_locked(groups: dict[str, Any], wanted: dict[str, Any]) -> None:
+    """重启后图片没了：已自动写入、还没确认的行仍列出来，可以确认或退回（改回原行高）"""
+    rows: dict[str, list[dict[str, Any]]] = {}
+    for item in STATE["items"].values():
+        if item["status"] == "fixed" and item.get("autofix_unconfirmed"):
+            gid = _group_id(item["wb_path"], item["sheet_name"], int(item["excel_row"]))
+            if gid not in groups and gid not in wanted:
+                rows.setdefault(gid, []).append(item)
+    for gid, items in rows.items():
+        first = items[0]
+        groups[gid] = {
+            "id": gid, "wb_path": first["wb_path"], "wb_name": first["wb_name"],
+            "sheet_name": first["sheet_name"], "row": int(first["excel_row"]),
+            "item_ids": [it["id"] for it in items], "seq": min(int(it.get("seq") or 0) for it in items),
+            "manual": False, "manual_waiting": False, "revision": first.get("autofix_revision"),
+            "status": "applied", "attempts": [], "recommended": None, "chosen": None,
+            "base_height": first.get("autofix_base_height"), "applied_height": first.get("row_height"),
+            "confirmed": False, "restored": True,
+            "message": "程序重启过，候选图已清除；行高已写入，可直接确认或点「不对」改回原行高",
+        }
 
 
 def snapshot() -> dict[str, Any]:
@@ -251,6 +283,7 @@ def _choose_locked(gid: str, index: int) -> None:
             raise ValueError("只能选择已显示全且无压线的调整结果")
         group["chosen"] = index
         group["status"] = "applying"
+        group["confirmed"] = True  # 用户亲手选的，不用再确认
         group["message"] = "正在写入 Excel..."
 
 
@@ -291,6 +324,96 @@ def defer_group(gid: str, item_ids: list[str]) -> None:
     _WAKE.set()
 
 
+def _check_not_busy() -> None:
+    if STATE["busy"] and (STATE["job"] or {}).get("kind") != "scan":
+        raise ValueError("任务正在执行，请结束后再操作")
+
+
+def _unconfirmed(gid: str) -> dict[str, Any]:
+    group = AUTOFIX["groups"].get(gid)
+    if group is None or group["confirmed"]:
+        raise ValueError("这一行已确认或已重新扫描，请刷新页面")
+    if group["status"] != "applied":
+        raise ValueError("这一行正在写入，请稍候再操作")
+    return group
+
+
+def confirm_groups(gids: list[str]) -> int:
+    """批量确认已自动写入的行；已退回的行从确认列表里收起"""
+    with STATE_LOCK:
+        _check_not_busy()
+        _sync_groups_locked()
+        confirmed: list[str] = []
+        with _LOCK:
+            for gid in gids:
+                group = AUTOFIX["groups"].get(gid)
+                if group is None or group["confirmed"]:
+                    continue
+                if group["status"] == "applied":
+                    group["confirmed"] = True
+                    confirmed.extend(group["item_ids"])
+                elif group["status"] == "reverted":
+                    group["dismissed"] = True
+        for iid in confirmed:
+            if iid in STATE["items"]:
+                STATE["items"][iid].pop("autofix_unconfirmed", None)
+        if confirmed:
+            _persist_state()
+            log_msg(f"✅ 已确认自动处理结果 {len(confirmed)} 处")
+    return len(confirmed)
+
+
+def switch_group(gid: str, index: int) -> None:
+    """确认前改用另一张候选图：按它的行高重新写入原文件"""
+    with STATE_LOCK:
+        _check_not_busy()
+        _sync_groups_locked()
+        with _LOCK:
+            group = _unconfirmed(gid)
+            if not 1 <= index < len(group["attempts"]) or not group["attempts"][index]["ok"]:
+                raise ValueError("只能选择已显示全且无压线的调整结果")
+            if index == group["chosen"]:
+                return
+            group.update(chosen=index, status="applying", reapply=True, message="正在改用这张，写入 Excel...")
+    _WAKE.set()
+
+
+def reject_group(gid: str) -> None:
+    """自动处理的结果不对：改回原行高，然后转稍后人工复检"""
+    with STATE_LOCK:
+        _check_not_busy()
+        _sync_groups_locked()
+        with _LOCK:
+            group = _unconfirmed(gid)
+            if group["base_height"] is None:
+                raise ValueError("不知道原来的行高，无法自动改回，请在 Excel 里手动修改")
+            group.update(status="reverting", message="正在改回原行高...")
+    _WAKE.set()
+
+
+def _auto_defer(gid: str) -> None:
+    """全自动时处理不了的行直接转稍后人工复检；任务进行中等情况先留在页面上"""
+    with STATE_LOCK:
+        _sync_groups_locked()
+        with _LOCK:
+            group = AUTOFIX["groups"].get(gid)
+            if (group is None or not AUTOFIX["auto"] or group["status"] not in {"failed", "error"}
+                    or group["manual"] or group.get("recheck_token")):
+                return
+            item_ids = list(group["item_ids"])
+            label = f"{group['wb_name']} / {group['sheet_name']} 行{group['row']}"
+            message = group["message"]
+        try:
+            for iid in item_ids:
+                _check_decision_item(STATE["items"][iid])
+            queue_later_review(item_ids)
+        except Exception:
+            return
+        _sync_groups_locked()
+        log_msg(f"🟡 [{label}] 自动处理不了，已转稍后人工复检：{message}")
+    _WAKE.set()
+
+
 def rename_groups(old_path: str, new_path: str) -> None:
     """文件改名（加 / 去 🟡）后分组跟着改，已点选等待写入的行不丢。调用方持有 STATE_LOCK。"""
     with _LOCK:
@@ -311,6 +434,7 @@ def set_auto(on: bool) -> None:
                 if group["status"] == "ready" and not group["manual"] and group["recommended"] is not None:
                     group["chosen"] = group["recommended"]
                     group["status"] = "applying"
+                    group["confirmed"] = False
                     group["message"] = "全自动：正在写入 Excel..."
     _WAKE.set()
 
@@ -406,6 +530,10 @@ def _run() -> None:
                 _WAKE.clear()
                 continue
             sync_groups()
+            with _LOCK:
+                failed = [gid for gid, g in AUTOFIX["groups"].items() if g["status"] in {"failed", "error"}]
+            for gid in failed:
+                _auto_defer(gid)  # 任务进行中转不了的，下一轮再试
             task = _next_task(blocked)
             if task is None:
                 session.close()
@@ -472,9 +600,9 @@ def _next_task(blocked: dict[str, float]) -> tuple[str, Any] | None:
     with _LOCK:
         groups = sorted(AUTOFIX["groups"].values(), key=lambda g: g["seq"])
         for group in groups:
-            if group["status"] == "applying" and blocked.get(group["wb_path"], 0) <= now:
+            if group["status"] in WRITE_STATUSES and blocked.get(group["wb_path"], 0) <= now:
                 same_file = [
-                    g["id"] for g in groups if g["status"] == "applying" and g["wb_path"] == group["wb_path"]
+                    g["id"] for g in groups if g["status"] in WRITE_STATUSES and g["wb_path"] == group["wb_path"]
                 ]
                 return "apply", (group["wb_path"], same_file)
     if to_mark:
@@ -568,7 +696,8 @@ def _preview(session: _ExcelSession, gid: str) -> None:
             group["status"] = "failed"
             group["message"] = f"加高 {MAX_ATTEMPTS} 次仍未通过完整显示与压线检查，可能定位不对或是列宽不够，请人工处理"
         elif AUTOFIX["auto"]:
-            group.update(status="applying", chosen=group["recommended"], message="全自动：正在写入 Excel...")
+            group.update(status="applying", chosen=group["recommended"], confirmed=False,
+                         message="全自动：正在写入 Excel...")
             _WAKE.set()
         else:
             group["status"] = "ready"
@@ -641,7 +770,7 @@ def _evaluate(
 
 
 def _apply(session: _ExcelSession, wb_path: str, gids: list[str]) -> bool:
-    """把用户选中的行高写进原文件并保存；原文件正被 Excel 打开时返回 False，稍后再试"""
+    """把选中的行高（退回的改回原行高）写进原文件并保存；原文件正被 Excel 打开时返回 False，稍后再试"""
     with STATE_LOCK:
         if not file_available(wb_path):
             return False
@@ -653,16 +782,17 @@ def _apply(session: _ExcelSession, wb_path: str, gids: list[str]) -> bool:
         return False
     with _LOCK:
         plan = [
-            (gid, g["sheet_name"], g["row"], g["base_height"], g["attempts"][g["chosen"]]["height"],
-             g["chosen"], list(g["item_ids"]))
-            for gid in gids if (g := AUTOFIX["groups"].get(gid)) and g["status"] == "applying"
+            (gid, g["sheet_name"], g["row"], g["base_height"],
+             g["base_height"] if g["status"] == "reverting" else g["attempts"][g["chosen"]]["height"],
+             g["chosen"], list(g["item_ids"]), g["status"] == "reverting", g["confirmed"])
+            for gid in gids if (g := AUTOFIX["groups"].get(gid)) and g["status"] in WRITE_STATUSES
         ]
     if not plan:
         return True
     excel = session.app()
     workbook = excel.Workbooks.Open(str(path.resolve()))
     try:
-        for _, sheet_name, row, _, height, _, _ in plan:
+        for _, sheet_name, row, _, height, *_ in plan:
             workbook.Sheets(sheet_name).Rows(row).RowHeight = height
         normalize_workbook_view(excel, workbook)
         workbook.Save()
@@ -670,20 +800,39 @@ def _apply(session: _ExcelSession, wb_path: str, gids: list[str]) -> bool:
         workbook.Close(SaveChanges=False)
 
     with STATE_LOCK:
-        for _, sheet_name, row, base, height, chosen, item_ids in plan:
+        reverted: list[str] = []
+        for _, sheet_name, row, base, height, chosen, item_ids, revert, confirmed in plan:
             for item_id in item_ids:
                 item = STATE["items"].get(item_id)
                 if item is None:
                     continue
-                item["status"] = "fixed"
                 item["row_height"] = height
+                if revert:
+                    item.pop("autofix_unconfirmed", None)
+                    item.pop("autofix_base_height", None)
+                    reverted.append(item_id)
+                    continue
+                item["status"] = "fixed"
                 item["iterations"] = chosen
                 item["review_reason"] = f"自动处理：行高 {base}pt → {height}pt"
-            log_msg(f"✅ 自动处理 [{path.name} / {sheet_name} 行{row}] 行高 {base}pt → {height}pt，已保存")
-        _persist_state()
+                item["autofix_base_height"] = base
+                if confirmed:
+                    item.pop("autofix_unconfirmed", None)
+                else:
+                    item["autofix_unconfirmed"] = True
+            if revert:
+                log_msg(f"↩️ 自动处理退回 [{path.name} / {sheet_name} 行{row}] 行高已改回 {base}pt，转稍后人工复检")
+            else:
+                log_msg(f"✅ 自动处理 [{path.name} / {sheet_name} 行{row}] 行高 {base}pt → {height}pt，已保存")
+        with _LOCK:
+            for gid, *_, revert, _ in plan:
+                if gid in AUTOFIX["groups"]:
+                    AUTOFIX["groups"][gid].update(
+                        status="reverted" if revert else "applied", reapply=False,
+                        message="已改回原行高，转稍后人工复检" if revert else "已写入")
+        if reverted:
+            queue_later_review(reverted)  # 一并保存状态
+        else:
+            _persist_state()
         _sync_problem_counts(wb_path, f"自动处理写入 {len(plan)} 行")
-    with _LOCK:
-        for gid, *_ in plan:
-            if gid in AUTOFIX["groups"]:
-                AUTOFIX["groups"][gid].update(status="applied", message="已写入")
     return True

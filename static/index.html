@@ -167,23 +167,23 @@
     <section id="fixView" class="panel fix-panel hidden" aria-label="自动处理">
       <div class="fix-toolbar">
         <span id="fixProgressText">后台准备中...</span>
-        <button type="button" class="btn btn-outline btn-sm" id="fixAutoBtn" onclick="toggleFullAuto()"
-          title="按推荐的那张自动写入剩下所有行，不用再一张张点">
-          ⚡ 全自动处理剩下的
-        </button>
       </div>
       <div class="triage-progress">
         <span id="fixSupplyText">已交接 0 行 · 当前可操作 0 行 · 已完成 0 行</span>
         <div class="progress-track progress-track-sm"><div id="fixSupplyFill" class="progress-fill" style="width:0%"></div></div>
       </div>
       <div id="fixStage" class="fix-stage"></div>
-      <p class="triage-hint">每张图是同一行加高后的样子：第一张是原样。打勾要求本行目标单元格内容完整、字符可见且无边框压线，未取得完整匹配时不会推荐。点一张就按它的行高写进 Excel 并保存，自动跳到下一行；带「推荐」边框的是通过后再多加一次、且仍通过检查的那张，留一点余量。确认本行是误判时，可点「跳过本行（无需修改）」保存判断并进入下一行，不修改 Excel。「先看下一个」仅暂时切换，本行稍后仍会显示。加高 8 次还不行、或要改列宽的，点「🟡 稍后人工复检」先记下来：程序把要改的单元格标黄、文件名前加 🟡，最后在下方一次打开全部文件统一修改，再统一复检。</p>
+      <div id="confirmPanel" class="confirm-panel hidden" aria-label="待确认">
+        <div id="confirmHead" class="review-head"></div>
+        <div id="confirmList" class="confirm-list"></div>
+      </div>
+      <p class="triage-hint">程序先全自动过一遍：每行一次加一点行高并截图（第一张是原样），要求目标单元格内容完整、字符可见且无边框压线；通过后再多加一次留点余量，就按这张写进 Excel 并保存。处理好的行列在上面等你确认：带框的是已写入的那张，想换就点另一张通过的图（马上按它重新写入）；不对就点「改回原样转人工」。加高 8 次还不行的，程序直接转到下方「🟡 稍后人工复检」：单元格标黄、文件名前加 🟡，最后一次打开全部文件统一修改，再统一复检。</p>
       <div id="reviewPanel" class="review-panel hidden" aria-label="稍后人工复检"></div>
     </section>
 
     <!-- 使用说明 + 实时处理日志 -->
     <section class="panel info-panel">
-      <p>① 筛选：逐个查看每一处，无需修改的跳过（→），需要修改的保留（←）。② 自动处理：后台在文件副本上一次加 3pt 行高并截图，你点选合适的那张后才写进原文件；也可以「全自动处理剩下的」。自动处理不了的点「🟡 稍后人工复检」：单元格标黄、文件名加 🟡，最后一次打开全部文件修改，保存后点「统一复检」，没问题的自动去掉黄色和 🟡。</p>
+      <p>① 筛选：逐个查看每一处，无需修改的跳过（→），需要修改的保留（←）。② 自动处理：后台在文件副本上一次加 3pt 行高并截图，按推荐的那张自动写进原文件，处理好的列出来等你批量确认（可改用别的图，或退回改回原样）。自动处理不了的直接转「🟡 稍后人工复检」：单元格标黄、文件名加 🟡，最后一次打开全部文件修改，保存后点「统一复检」，没问题的自动去掉黄色和 🟡。</p>
       <p>标【隐藏截断】的：PDF 外观正常，但单元格内容没显示全（行高或列宽不够），卡片上会写出完整内容和 PDF 里实际显示的部分。跳过的位置以后不再检查；未修改的文件直接沿用上次结果。</p>
       <div class="console-frame">
         <div class="console-frame-bar">

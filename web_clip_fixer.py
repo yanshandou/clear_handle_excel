@@ -306,6 +306,26 @@ class WebHandler(BaseHTTPRequestHandler):
             autofix.choose(gid, index)
             self._send_json({"ok": True})
 
+        elif self.path == "/api/autofix/switch":
+            gid, index = payload.get("id"), payload.get("index")
+            if not isinstance(gid, str) or isinstance(index, bool) or not isinstance(index, int):
+                raise ValueError("需要有效的分组和图片序号")
+            autofix.switch_group(gid, index)
+            self._send_json({"ok": True})
+
+        elif self.path == "/api/autofix/reject":
+            gid = payload.get("id")
+            if not isinstance(gid, str) or not gid:
+                raise ValueError("需要有效的分组")
+            autofix.reject_group(gid)
+            self._send_json({"ok": True})
+
+        elif self.path == "/api/autofix/confirm":
+            gids = payload.get("ids")
+            if not isinstance(gids, list) or any(not isinstance(gid, str) or not gid for gid in gids):
+                raise ValueError("需要有效的分组")
+            self._send_json({"ok": True, "confirmed": autofix.confirm_groups(gids)})
+
         elif self.path == "/api/autofix/skip":
             gid, item_ids = payload.get("id"), payload.get("item_ids")
             if (

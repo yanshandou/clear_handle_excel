@@ -42,6 +42,10 @@ let manualAction = null; // 打开或复检的任务，等待后端完成后才�
 let reviewQueue = {};
 let reviewAction = null; // { kind: 'review_open' | 'review_recheck', submitted }
 let fixDeferring = new Set(); // 正在挂起到稍后人工复检的组
+// 默认全自动：已写入、等你确认的行。卡片按第一次出现的顺序排，之后不再挪动
+let confirmOrder = [];
+let confirmBusy = new Set(); // 正在提交改图 / 退回的组
+let confirmSubmitting = false;
 
 const TRIAGE_KEPT_STORAGE_KEY = 'clear_handle_excel.triageKept';
 const RECHECK_TITLE = '请先在 Excel 中保存手动修改。当前工作表只导出一次 PDF 复检，不会自动增加行高';
@@ -296,7 +300,8 @@ function pipelineMetrics() {
     && peers.every(it => isResolved(it) || triageKept.has(it.id)));
   // 挂到稍后人工复检的行，② 这一步已经处理完
   const done = handed.filter(peers => peers.every(it => isResolved(it) || it.later_review)).length;
-  const ready = fixQueue().filter(g => ['ready', 'failed', 'error'].includes(g.status)).length;
+  const ready = fixQueue().filter(g => ['ready', 'failed', 'error'].includes(g.status)).length
+    + confirmGroups().filter(g => g.status !== 'reverted').length;
   return {total: items.length, screened, available: items.length - screened, handed: handed.length, done, ready};
 }
 
@@ -315,7 +320,7 @@ function renderPipelineProgress() {
     ? '扫描还在继续；这里只统计已完成文件，后续产出会自动加入。'
     : (scanProgress.status === 'interrupted' ? '已完成文件可继续处理；其余文件等待重试扫描。' : '当前结果可随时筛选，已筛完的行会在后台准备截图。');
   document.getElementById('fixSupplyText').textContent =
-    `已交接 ${m.handed} 行 · 当前可操作 ${m.ready} 行 · 已完成 ${m.done} 行`;
+    `已交接 ${m.handed} 行 · 待你确认 ${m.ready} 行 · 已完成 ${m.done} 行`;
   document.getElementById('fixSupplyFill').style.width = `${m.handed ? m.done / m.handed * 100 : 0}%`;
 }
 
@@ -568,7 +573,7 @@ function renderStepTabs() {
   const left = stateLoaded ? pipelineMetrics().ready : 0;
   const locked = !fixAvailable();
   btn.classList.toggle('is-locked', locked);
-  btn.textContent = `② 自动处理${left ? `（可操作 ${left} 行）` : ''}`;
+  btn.textContent = `② 自动处理${left ? `（待确认 ${left} 行）` : ''}`;
   btn.title = '已筛完的行可立即处理，无需等待整批扫描或筛选完成';
 }
 
@@ -584,9 +589,15 @@ function setStepTab(tab) {
 
 const FIX_OPEN_STATUSES = new Set(['queued', 'running', 'ready', 'failed', 'error']);
 
-// 还需要用户处理的组：没写入、没点选；跳过（无需修改）的问题项已不在分组里
+// 还需要用户逐行处理的组：没写入、没点选；跳过（无需修改）的问题项已不在分组里。
+// 全自动时排队、做图中的行不单独显示；处理不了的由后台直接转稍后人工复检
+function needsUser(g) {
+  if (!fixData.auto || g.manual || g.recheck_token) return true;
+  return g.status === 'ready';
+}
+
 function fixQueue() {
-  return fixData.groups.filter(g => FIX_OPEN_STATUSES.has(g.status) && !fixChosen.has(g.id)
+  return fixData.groups.filter(g => FIX_OPEN_STATUSES.has(g.status) && needsUser(g) && !fixChosen.has(g.id)
     && !fixDeferring.has(g.id) && !g.item_ids.some(id => latestItems[id]?.later_review)
     && g.item_ids.some(id => latestItems[id] && !isResolved(latestItems[id]))
     && g.item_ids.every(id => latestItems[id] && (isResolved(latestItems[id]) || triageKept.has(id))));
@@ -613,15 +624,8 @@ function renderFix() {
   const queue = fixQueue();
   const applied = groups.filter(g => g.status === 'applied').length;
   const writing = groups.filter(g => g.status === 'applying' || fixChosen.has(g.id) && g.status !== 'applied').length;
-  const manual = queue.filter(g => g.manual).length;
-  const prepared = queue.filter(g => ['ready', 'failed', 'error'].includes(g.status)).length;
-  document.getElementById('fixProgressText').textContent =
-    `待处理 ${queue.length} 行（后台已准备好 ${prepared} 行${manual ? ` · 人工处理中 ${manual}` : ''}）`
-    + ` · 写入中 ${writing} · 已写入 ${applied}`;
-  const autoBtn = document.getElementById('fixAutoBtn');
-  autoBtn.textContent = fixData.auto ? '⏸ 全自动处理中（点击停止）' : '⚡ 全自动处理剩下的';
-  autoBtn.classList.toggle('btn-primary', fixData.auto);
-  autoBtn.classList.toggle('btn-outline', !fixData.auto);
+  document.getElementById('fixProgressText').textContent = autoProgressText(groups);
+  renderConfirm();
 
   const stage = document.getElementById('fixStage');
   if (!fixAvailable()) {
@@ -642,13 +646,19 @@ function renderFix() {
     const syncing = metrics.handed > metrics.done;
     const waiting = scanRunning || untriaged > 0 || writing > 0 || pendingKeeps.size > 0 || !!keepRequest || syncing;
     const reviewFiles = Object.keys(reviewQueue).length;
-    const signature = `done|${applied}|${groups.length}|${untriaged}|${waiting}|${syncing}|${reviewFiles}`;
+    const working = fixData.auto ? groups.filter(g => ['queued', 'running'].includes(g.status) && !g.manual
+      && g.item_ids.every(id => latestItems[id])).length : 0;
+    const toConfirm = confirmGroups().length;
+    const signature = `done|${applied}|${groups.length}|${untriaged}|${waiting}|${syncing}|${reviewFiles}|${working}|${toConfirm > 0}`;
     if (stage.dataset.signature === signature) return;
     stage.dataset.signature = signature;
     const reviewHint = reviewFiles ? `<span>还有 ${reviewFiles} 个文件挂在下方「稍后人工复检」，最后一次打开统一修改。</span>` : '';
-    stage.innerHTML = `${notice}<div class="triage-done">${waiting
-      ? `<b>${writing ? '正在保存已选结果…' : syncing ? '已交接的行正在同步处理队列…' : '当前队列已处理完，等待扫描或筛选交接新行…'}</b>${reviewHint}`
-      : groups.length || reviewFiles ? `<b>当前队列已处理完</b><span>已写入 ${applied} 行。</span>${reviewHint}`
+    const confirmHint = toConfirm ? '<span>处理好的行在下方等你确认。</span>' : '';
+    stage.innerHTML = `${notice}<div class="triage-done">${working
+      ? `<b>后台正在全自动处理 ${working} 行…</b>${confirmHint}${reviewHint}`
+      : waiting
+      ? `<b>${writing ? '正在保存…' : syncing ? '已交接的行正在同步处理队列…' : '当前队列已处理完，等待扫描或筛选交接新行…'}</b>${confirmHint}${reviewHint}`
+      : groups.length || reviewFiles ? `<b>${toConfirm ? '全自动处理完了，请在下方确认' : '当前队列已处理完'}</b>${toConfirm ? '' : `<span>已写入 ${applied} 行。</span>`}${reviewHint}`
       : '<span>没有需要处理的切字。先在第 ① 步筛选，保留的会出现在这里。</span>'}</div>`;
     return;
   }
@@ -713,6 +723,170 @@ function renderFix() {
         <button type="button" class="btn btn-outline btn-sm" ${blocked ? 'disabled' : ''} title="暂时换到下一行，不保存跳过判断，稍后还会显示本行" onclick="deferFixGroup('${escapeHtml(group.id)}')">先看下一个 →</button>
       </div>
     </div>`;
+}
+
+/* ==========================================
+   全自动处理结果：批量确认 · 改用别的图 · 不对就退回
+   ========================================== */
+function autoProgressText(groups) {
+  const live = groups.filter(g => g.item_ids.every(id => latestItems[id]));
+  const queued = live.filter(g => g.status === 'queued' && !g.manual).length;
+  const running = live.find(g => g.status === 'running');
+  const writing = live.filter(g => g.status === 'applying' || fixChosen.has(g.id) && g.status !== 'applied').length;
+  const waiting = confirmGroups().filter(g => g.status === 'applied').length;
+  const parts = [];
+  if (running) parts.push(`正在处理 ${running.wb_name} / ${running.sheet_name} 第 ${running.row} 行（第 ${running.attempts.length + 1} 张）`);
+  if (queued) parts.push(`排队 ${queued} 行`);
+  if (writing) parts.push(`写入中 ${writing} 行`);
+  parts.push(`已写入待确认 ${waiting} 行`);
+  return `${fixData.auto ? '全自动处理：' : ''}${parts.join(' · ')}`;
+}
+
+// 全自动写进 Excel、还没确认的行（含正在改图、正在退回、刚退回的）
+function confirmGroups() {
+  const listed = fixData.groups.filter(g => !g.confirmed && (
+    g.status === 'applied' || g.status === 'applying' || g.status === 'reverting'
+    || (g.status === 'reverted' && !g.dismissed)));
+  const key = confirmKey;
+  for (const g of listed) if (!confirmOrder.includes(key(g))) confirmOrder.push(key(g));
+  const rank = new Map(confirmOrder.map((k, i) => [k, i]));
+  return listed.sort((a, b) => rank.get(key(a)) - rank.get(key(b)));
+}
+
+// 文件名前加 / 去 🟡 时分组 id 会变，排序用去掉 🟡 的路径
+function confirmKey(g) {
+  return `${g.wb_path.replace(/(^|[\\/])🟡/, '$1')}\0${g.sheet_name}\0${g.row}`;
+}
+
+function confirmCardHtml(group) {
+  const items = group.item_ids.map(id => latestItems[id] || serverItems[id]).filter(Boolean);
+  const reverted = group.status === 'reverted';
+  const busy = confirmBusy.has(group.id) || confirmSubmitting || processingBusy() || !!manualAction || !!reviewAction;
+  const writing = group.status === 'applying' || group.status === 'reverting';
+  const canAct = group.status === 'applied' && !busy;
+  const chosen = group.chosen;
+  const tiles = group.attempts.map((attempt, index) => {
+    const isChosen = index === chosen;
+    const canPick = canAct && index > 0 && attempt.ok && !isChosen;
+    const classes = ['fix-tile', attempt.ok ? 'is-ok' : 'is-bad'];
+    if (isChosen && !reverted) classes.push('is-recommended');
+    if (canPick) classes.push('is-pickable');
+    if (index === 0) classes.push('is-original');
+    const badge = isChosen && !reverted ? (group.status === 'applying' ? '写入中' : '已写入')
+      : index === group.recommended ? '推荐' : '';
+    return `
+      <button type="button" class="${classes.join(' ')}" ${canPick ? `title="改用这张：按它的行高重新写入" onclick="switchAttempt('${escapeHtml(group.id)}', ${index})"` : 'disabled'}>
+        ${badge ? `<span class="fix-tile-badge">${badge}</span>` : ''}
+        <img loading="lazy" src="/api/autofix/image/${escapeHtml(group.id)}/${index}?h=${attempt.height}&v=${escapeHtml(group.recheck_token || '')}" alt="${escapeHtml(attemptLabel(group, index))}">
+        <span class="fix-tile-caption">${escapeHtml(attemptLabel(group, index))} · ${index === 0 ? (attempt.ok ? '完整且无压线' : '未通过检查') : (attempt.ok ? '✓ 完整且无压线' : '✗ 未通过')}</span>
+      </button>`;
+  });
+  const height = group.chosen != null && group.attempts[group.chosen] ? group.attempts[group.chosen].height
+    : items[0]?.row_height;
+  const state = reverted ? `已改回原行高 ${group.base_height}pt，转到下方「稍后人工复检」`
+    : group.status === 'reverting' ? '正在改回原行高…'
+    : group.status === 'applying' ? '正在写入 Excel…'
+    : `行高 ${group.base_height}pt → ${height}pt，已保存`;
+  return `
+    <div class="triage-card-head">
+      <div>
+        <b>${escapeHtml(group.wb_name)}</b>
+        <span style="color:#64748b;">/ ${escapeHtml(group.sheet_name)} · 第 ${Number(group.row)} 行</span>
+      </div>
+      <span class="badge ${reverted ? 'badge-warn' : 'badge-selected'}">${escapeHtml(state)}</span>
+    </div>
+    <div class="fix-items">${items.map(item => `<div>${escapeHtml(item.cell_addr)}：${escapeHtml(itemTextLabel(item))}</div>`).join('')}</div>
+    ${reverted ? '' : `<div class="fix-grid fix-grid-compact">${tiles.join('')}</div>`}
+    ${group.restored && !reverted ? `<div class="fix-note">${escapeHtml(group.message)}</div>` : ''}
+    ${reverted ? '' : `<div class="triage-card-tools">
+      <button type="button" class="btn btn-outline btn-sm" ${canAct && group.base_height != null ? '' : 'disabled'}
+        title="改回原来的行高，并转到稍后人工复检（单元格标黄、文件名加 🟡）"
+        onclick="rejectConfirm('${escapeHtml(group.id)}')">${group.status === 'reverting' || confirmBusy.has(group.id) && !writing ? '正在提交…' : '✗ 不对，改回原样转人工'}</button>
+    </div>`}`;
+}
+
+function renderConfirm() {
+  const panel = document.getElementById('confirmPanel');
+  if (!panel) return;
+  const groups = confirmGroups();
+  panel.classList.toggle('hidden', groups.length === 0);
+  const confirmable = groups.filter(g => g.status === 'applied');
+  const head = document.getElementById('confirmHead');
+  const busy = confirmSubmitting || processingBusy() || !!manualAction || !!reviewAction;
+  const headSig = JSON.stringify([confirmable.length, groups.length, busy, confirmSubmitting]);
+  if (head.dataset.signature !== headSig) {
+    head.dataset.signature = headSig;
+    const reverted = groups.filter(g => g.status === 'reverted').length;
+    head.innerHTML = `
+      <div>
+        <b>✅ 已自动处理，待你确认：${confirmable.length} 行</b>
+        <span>每行已按带框的那张写进 Excel 并保存。要换就点另一张通过的图；不对就点「改回原样转人工」。${reverted ? `已退回 ${reverted} 行。` : ''}</span>
+      </div>
+      <button type="button" class="btn btn-primary btn-sm" ${busy || !(confirmable.length || reverted) ? 'disabled' : ''}
+        onclick="confirmAll()">${confirmSubmitting ? '正在确认…' : `✓ 全部确认（${confirmable.length} 行）`}</button>`;
+  }
+  const list = document.getElementById('confirmList');
+  const wanted = new Set(groups.map(confirmKey));
+  for (const el of [...list.children]) if (!wanted.has(el.dataset.key)) el.remove();
+  let previous = null;
+  for (const group of groups) {
+    const key = confirmKey(group);
+    let el = [...list.children].find(c => c.dataset.key === key);
+    if (!el) {
+      el = document.createElement('div');
+      el.dataset.key = key;
+      if (previous) previous.after(el); else list.prepend(el);
+    }
+    const sig = JSON.stringify([group.id, group.status, group.chosen, group.attempts, group.base_height,
+      confirmBusy.has(group.id), confirmSubmitting, processingBusy(), !!manualAction, !!reviewAction,
+      group.item_ids.map(id => latestItems[id]?.cell_addr)]);
+    if (el.dataset.signature !== sig) {
+      el.dataset.signature = sig;
+      el.className = `fix-card fix-confirm-card${group.status === 'reverted' ? ' is-reverted' : ''}`;
+      el.innerHTML = confirmCardHtml(group);
+    }
+    previous = el;
+  }
+}
+
+async function confirmAction(groupId, path, payload) {
+  if (confirmBusy.has(groupId) || processingBusy() || manualAction || reviewAction) return;
+  confirmBusy.add(groupId);
+  renderConfirm();
+  try {
+    await postAction(path, payload);
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    await pollAutofix();
+    confirmBusy.delete(groupId);
+    renderConfirm();
+  }
+}
+
+function switchAttempt(groupId, index) {
+  return confirmAction(groupId, '/api/autofix/switch', { id: groupId, index });
+}
+
+function rejectConfirm(groupId) {
+  return confirmAction(groupId, '/api/autofix/reject', { id: groupId });
+}
+
+async function confirmAll() {
+  const groups = confirmGroups().filter(g => g.status === 'applied' || g.status === 'reverted');
+  if (!groups.length || confirmSubmitting || processingBusy() || manualAction || reviewAction) return;
+  confirmSubmitting = true;
+  renderConfirm();
+  try {
+    await postAction('/api/autofix/confirm', { ids: groups.map(g => g.id) });
+    const done = new Set(groups.map(confirmKey));
+    confirmOrder = confirmOrder.filter(k => !done.has(k));
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    confirmSubmitting = false;
+    await pollAutofix();
+  }
 }
 
 async function pollAutofix() {
@@ -922,17 +1096,6 @@ async function skipFixGroup(groupId) {
     fixSkipping.delete(groupId);
     renderFix();
   }
-}
-
-async function toggleFullAuto() {
-  const on = !fixData.auto;
-  if (on && !confirm('剩下的行都按推荐的那张自动写入 Excel 并保存，不再一张张确认。确定吗？')) return;
-  try {
-    await postAction('/api/autofix/auto', { on });
-  } catch (e) {
-    alert(e.message);
-  }
-  pollAutofix();
 }
 
 /* ==========================================
