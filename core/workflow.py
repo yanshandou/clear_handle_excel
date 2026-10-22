@@ -149,10 +149,8 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
     with STATE_LOCK:
         if STATE["busy"]:
             return False
-        if kind == "review_recheck" and not STATE["review_queue"]:
-            raise ValueError("没有挂起的稍后人工复检")
-        if kind == "review_open" and not STATE["review_queue"]:
-            raise ValueError("没有挂起的稍后人工复检")
+        if kind in {"review_recheck", "review_open"} and not current_review_queue():
+            raise ValueError("当前文件夹没有挂起的稍后人工复检")
         if kind in {"fix", "manual_open", "recheck"}:
             ids = (options or {}).get("selected_ids")
             if (
@@ -292,7 +290,7 @@ def get_state_snapshot() -> dict[str, Any]:
             "pages": {key: copy.deepcopy(p) for key, p in STATE["pages"].items() if p["wb_path"] in available},
             "items": {key: copy.deepcopy(it) for key, it in STATE["items"].items() if it["wb_path"] in available},
             "scan_progress": copy.deepcopy(STATE["scan_progress"]),
-            "review_queue": copy.deepcopy(STATE["review_queue"]),
+            "review_queue": copy.deepcopy(current_review_queue()),
             "settings": dict(STATE["settings"]),
             "can_resume": bool(STATE["job"] and STATE["job"]["status"] == "interrupted"),
             "job": copy.deepcopy(STATE["job"]),
@@ -888,6 +886,7 @@ def _scan_one_workbook(
         STATE["pages"].update(file_pages)
         STATE["items"].update(merged)
         STATE["checked_files"][path] = scan_version
+        _relink_review_marks(path)
         if job is not None:
             job["completed"].append(path)
             STATE["scan_progress"].update(completed=len(job["completed"]))
@@ -959,6 +958,14 @@ def scan_folder_workflow(
             )
             with STATE_LOCK:
                 _persist_state()
+        with STATE_LOCK:
+            elsewhere = [path for path, entry in STATE["review_queue"].items()
+                         if entry["marks"] and not in_current_folder(path)]
+        if elsewhere and not initialized:
+            log_msg(
+                f"⚠️ 别的文件夹还有 {len(elsewhere)} 个文件挂着稍后人工复检（单元格标着黄色、文件名带 🟡），"
+                f"例如 {Path(elsewhere[0]).name}；换回那个文件夹扫描后可以继续复检"
+            )
         used_pdf_paths = {Path(p["pdf_path"]) for p in STATE["pages"].values()}
         skipped = [path for path, entry in plan.items() if entry["mode"] == "skip"]
         if not clip_check_supported():
@@ -1361,14 +1368,62 @@ def queue_later_review(item_ids: list[str]) -> None:
         raise
 
 
+def in_current_folder(path: str) -> bool:
+    """调用方持有 STATE_LOCK：文件在当前工作台的文件夹里（换文件夹扫描后，旧文件夹的复检先放着不动）"""
+    folder = STATE.get("folder")
+    if not folder:
+        return False
+    try:
+        Path(path).resolve().relative_to(Path(folder).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def current_review_queue() -> dict[str, Any]:
+    """调用方持有 STATE_LOCK：当前文件夹里挂起的稍后人工复检"""
+    return {path: entry for path, entry in STATE["review_queue"].items() if in_current_folder(path)}
+
+
 def review_entry_needs_mark(path: str, entry: dict[str, Any]) -> bool:
     """还有没标黄的单元格，或文件名还没加 🟡（后台标黄失败过的不再自动重试）"""
-    if entry.get("mark_failed"):
+    if entry.get("mark_failed") or not in_current_folder(path):
         return False
-    return any(m["state"] == "pending" for m in entry["marks"]) or (
-        bool(entry["marks"]) and not Path(path).name.startswith(REVIEW_EMOJI)
+    waiting = [m for m in entry["marks"] if not _mark_resolved(m, path)]
+    return any(m["state"] == "pending" for m in waiting) or (
+        bool(waiting) and not Path(path).name.startswith(REVIEW_EMOJI)
         and not entry.get("rename_error")
     )
+
+
+def review_entry_needs_restore(path: str, entry: dict[str, Any]) -> bool:
+    """有些格子已经不用复检了（重新扫描后没再检出、标了无需修改等），可以去掉黄色；全没了就去掉 🟡"""
+    if entry.get("restore_failed") or not in_current_folder(path) or not file_available(path):
+        return False
+    return any(_mark_resolved(m, path) for m in entry["marks"]) or (
+        not entry["marks"] and Path(path).name.startswith(REVIEW_EMOJI) and not entry.get("rename_error")
+    )
+
+
+def _relink_review_marks(path: str) -> None:
+    """调用方持有 STATE_LOCK：重新扫描后问题项换了编号（例如换回这个文件夹完整扫描），
+    同一格子仍检出问题的接回黄色标记，继续留在稍后人工复检里；没再检出的之后自动去黄。"""
+    entry = STATE["review_queue"].get(path)
+    if entry is None:
+        return
+    for mark in entry["marks"]:
+        if any(iid in STATE["items"] for iid in mark["item_ids"]):
+            continue
+        peers = [
+            item for item in STATE["items"].values()
+            if item["wb_path"] == path and item["sheet_name"] == mark["sheet"]
+            and str(item.get("cell_addr", "")) == mark["addr"] and item["status"] not in RESOLVED_STATUSES
+        ]
+        if peers:
+            mark["item_ids"] = [item["id"] for item in peers]
+            for item in peers:
+                item.update(status="manual_review", manual_waiting=True, later_review=True,
+                            review_reason=LATER_REVIEW_REASON)
 
 
 def _rebase_checked_file(path: str, before: dict[str, int]) -> None:
@@ -1418,9 +1473,8 @@ def _rename_review_file(path: str, new_name: str) -> str:
     from core import autofix
     with STATE_LOCK:
         previous = copy.deepcopy(STATE)
-        _sync_renamed_workbook_in_state(old, new, {})
-        if path in STATE["review_queue"]:
-            STATE["review_queue"][str(new)] = STATE["review_queue"].pop(path)
+        _sync_renamed_workbook_in_state(old, new, {})  # 复检队列也跟着改路径
+        if str(new) in STATE["review_queue"]:
             STATE["review_queue"][str(new)].pop("rename_error", None)
         _replace_job_path(path, str(new))
         try:
@@ -1450,7 +1504,7 @@ def mark_review_file(excel: Any, path: str) -> bool:
         entry = STATE["review_queue"].get(path)
         if entry is None:
             return True
-        pending = [copy.deepcopy(m) for m in entry["marks"] if m["state"] == "pending"]
+        pending = [copy.deepcopy(m) for m in entry["marks"] if m["state"] == "pending" and not _mark_resolved(m, path)]
     if pending:
         before = _file_version(wb_path)
         workbook = excel.Workbooks.Open(str(wb_path.resolve()), UpdateLinks=0)
@@ -1478,14 +1532,19 @@ def mark_review_file(excel: Any, path: str) -> bool:
         )
     with STATE_LOCK:
         entry = STATE["review_queue"].get(path)
-        rename = entry is not None and bool(entry["marks"])
+        rename = entry is not None and any(not _mark_resolved(m, path) for m in entry["marks"])
     if rename:
         _rename_review_file(path, review_marked_name(wb_path.name))
     return True
 
 
-def _mark_resolved(mark: dict[str, Any]) -> bool:
-    # 问题项不在了（例如完整重新扫描后对应不上）也算这处已经没问题
+def _mark_resolved(mark: dict[str, Any], path: str) -> bool:
+    """调用方持有 STATE_LOCK。问题项不在了：只有这个文件在当前文件夹里重新扫描过才算没问题了；
+    换文件夹扫描后旧记录被清掉的不算（还没检查过，不能去黄）。"""
+    if any(iid not in STATE["items"] for iid in mark["item_ids"]) and not (
+        in_current_folder(path) and path in STATE["checked_files"]
+    ):
+        return False
     return all(
         STATE["items"].get(iid, {"status": "fixed"})["status"] in RESOLVED_STATUSES for iid in mark["item_ids"]
     )
@@ -1501,7 +1560,7 @@ def restore_review_file(excel: Any, path: str) -> str:
         entry = STATE["review_queue"].get(path)
         if entry is None:
             return "clean"
-        done = [copy.deepcopy(m) for m in entry["marks"] if _mark_resolved(m)]
+        done = [copy.deepcopy(m) for m in entry["marks"] if _mark_resolved(m, path)]
     to_restore = [m for m in done if m["state"] == "marked"]
     before = None
     if to_restore:
@@ -1542,10 +1601,12 @@ def restore_review_file(excel: Any, path: str) -> str:
 def review_open_workflow() -> None:
     """一次打开全部待复检文件：还没标黄的先标完，再在同一个可见 Excel 里逐个打开并定位。"""
     with STATE_LOCK:
-        for entry in STATE["review_queue"].values():
+        queue = current_review_queue()
+        for entry in queue.values():
             entry.pop("rename_error", None)  # 打开前再试一次标黄和改名
             entry.pop("mark_failed", None)
-        paths = [path for path, entry in STATE["review_queue"].items() if review_entry_needs_mark(path, entry)]
+            entry.pop("restore_failed", None)
+        paths = [path for path, entry in queue.items() if review_entry_needs_mark(path, entry)]
     if paths:
         pythoncom.CoInitialize()
         excel = None
@@ -1565,8 +1626,9 @@ def review_open_workflow() -> None:
                 pythoncom.CoUninitialize()
     with STATE_LOCK:
         targets = [
-            (Path(path), entry["marks"][0]["sheet"], entry["marks"][0]["addr"], int(entry["marks"][0]["row"]))
-            for path, entry in STATE["review_queue"].items() if entry["marks"]
+            (Path(path), marks[0]["sheet"], marks[0]["addr"], int(marks[0]["row"]))
+            for path, entry in current_review_queue().items()
+            if (marks := [m for m in entry["marks"] if not _mark_resolved(m, path)])
         ]
     errors = open_workbooks_for_review(targets)
     for path, reason in errors.items():
@@ -1585,7 +1647,7 @@ def review_recheck_workflow() -> None:
         options = job["options"]
         first_run = "review_files" not in options
         if first_run:
-            options["review_files"] = list(STATE["review_queue"])
+            options["review_files"] = list(current_review_queue())
             _persist_state()
         files = list(options["review_files"])
     if first_run:
@@ -1633,7 +1695,7 @@ def review_recheck_workflow() -> None:
         finally:
             pythoncom.CoUninitialize()
     with STATE_LOCK:
-        left = sum(len(m["item_ids"]) for entry in STATE["review_queue"].values() for m in entry["marks"])
+        left = sum(len(m["item_ids"]) for entry in current_review_queue().values() for m in entry["marks"])
     clean = sum(result == "clean" for result in results.values())
     partial = len(results) - clean
     message = f"统一复检完成：{clean} 个文件已没问题（去掉了黄色和 🟡）"
@@ -2063,6 +2125,12 @@ def _sync_renamed_workbook_in_state(
                         entry["sheet_name"] = sheet_rename_map[entry["sheet_name"]]
         if old_str != new_str and old_str in STATE["checked_files"]:
             STATE["checked_files"][new_str] = STATE["checked_files"].pop(old_str)
+        review = STATE["review_queue"].get(old_str)
+        if review is not None:
+            for mark in review["marks"]:
+                mark["sheet"] = sheet_rename_map.get(mark["sheet"], mark["sheet"])
+            if old_str != new_str:
+                STATE["review_queue"][new_str] = STATE["review_queue"].pop(old_str)
 
 
 def _format_clean_action(
@@ -2222,7 +2290,7 @@ def quick_task_workflow(kind: str) -> None:
             workbooks = [wb for wb in workbooks if workbook_rel_name(wb, folder) in wanted]
         with STATE_LOCK:
             STATE["logs"].clear()
-            waiting_review = len(STATE["review_queue"])
+            waiting_review = len(current_review_queue())
             options["folder"] = str(folder)
             if kind == "export_pdf":
                 options["pdf_folder"] = str(folder)

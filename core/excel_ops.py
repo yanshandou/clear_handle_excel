@@ -195,7 +195,11 @@ def restore_review_cells(workbook: Any, marks: list[dict[str, Any]]) -> None:
     for mark in marks:
         if mark.get("state") != "marked":
             continue
-        area = workbook.Sheets(mark["sheet"]).Range(mark["range"])
+        try:
+            sheet = workbook.Sheets(mark["sheet"])
+        except Exception:
+            continue  # 工作表已被删掉（例如精简 Sheet），没有要还原的
+        area = sheet.Range(mark["range"])
         current = area.Cells(1, 1).Interior
         if current.Pattern != XL_SOLID or int(current.Color or 0) != REVIEW_FILL_COLOR:
             continue

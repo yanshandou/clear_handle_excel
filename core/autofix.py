@@ -47,7 +47,9 @@ from core.workflow import (
     log_msg,
     mark_review_file,
     queue_later_review,
+    restore_review_file,
     review_entry_needs_mark,
+    review_entry_needs_restore,
     pythoncom,
 )
 
@@ -567,12 +569,31 @@ def _run() -> None:
                         raise
                     finally:
                         _WRITES_IDLE.set()
+                elif kind == "restore":
+                    with STATE_LOCK:
+                        if STATE["busy"]:
+                            continue
+                        _WRITES_IDLE.clear()
+                    try:
+                        session.drop_copy(payload)
+                        if restore_review_file(session.app(), payload) == "locked":
+                            blocked[payload] = time.monotonic() + LOCKED_RETRY_SECONDS
+                    except Exception as err:
+                        with STATE_LOCK:
+                            entry = STATE["review_queue"].get(payload)
+                            if entry is not None:
+                                # 不再自动重试；点「一次打开全部」或「统一复检」时会再处理
+                                entry["restore_failed"] = True
+                                entry["error"] = f"去掉黄色失败: {err}"
+                        raise
+                    finally:
+                        _WRITES_IDLE.set()
                 else:
                     _preview(session, payload)
             except _Paused:
                 continue
             except Exception as err:
-                gids = payload[1] if kind == "apply" else [payload]
+                gids = payload[1] if kind == "apply" else [payload] if kind == "preview" else []
                 with _LOCK:
                     for gid in gids:
                         if gid in AUTOFIX["groups"]:
@@ -593,6 +614,10 @@ def _next_task(blocked: dict[str, float]) -> tuple[str, Any] | None:
             path for path, entry in STATE["review_queue"].items()
             if review_entry_needs_mark(path, entry) and blocked.get(path, 0) <= now
         ]
+        to_restore = [] if STATE["busy"] else [
+            path for path, entry in STATE["review_queue"].items()
+            if review_entry_needs_restore(path, entry) and blocked.get(path, 0) <= now
+        ]
     with _LOCK:
         groups = sorted(AUTOFIX["groups"].values(), key=lambda g: g["seq"])
         for group in groups:
@@ -603,6 +628,8 @@ def _next_task(blocked: dict[str, float]) -> tuple[str, Any] | None:
                 return "apply", (group["wb_path"], same_file)
     if to_mark:
         return "mark", to_mark[0]
+    if to_restore:
+        return "restore", to_restore[0]
     with _LOCK:
         groups = sorted(AUTOFIX["groups"].values(), key=lambda g: g["seq"])
         for group in groups:
