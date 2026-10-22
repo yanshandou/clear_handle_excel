@@ -468,6 +468,7 @@ class CellProbe:
         self._hidden_rows: dict[int, bool] = {}
         self._hidden_cols: dict[int, bool] = {}
         self._areas: list[tuple[int, int, int, int]] | None = None
+        self._areas_unknown = False
         self._heights: dict[int, float] = {}
 
     def text(self, row: int, col: int) -> str | None:
@@ -495,24 +496,30 @@ class CellProbe:
                     for area in self.sheet.Range(print_area).Areas:
                         r0, c0 = int(area.Row), int(area.Column)
                         self._areas.append((r0, c0, r0 + int(area.Rows.Count) - 1, c0 + int(area.Columns.Count) - 1))
+                    self._areas_unknown = not bool(self._areas)
             except Exception:
                 self._areas = []
+                self._areas_unknown = True
         return self._areas
 
-    def printed(self, row: int, col: int) -> bool:
-        """这格会不会被打印：不在隐藏行列、在打印区域内（没设打印区域时整张表都打印）。读不到时按会打印处理。"""
+    def printed(self, row: int, col: int) -> bool | None:
+        """明确隐藏/区域外为 False，可打印为 True；属性读取失败为 None，不能据此自动修改。"""
         try:
             if row not in self._hidden_rows:
                 r = self.sheet.Rows(row)
                 self._hidden_rows[row] = bool(r.Hidden) or float(r.RowHeight or 0) == 0
+            if self._hidden_rows[row]:
+                return False
             if col not in self._hidden_cols:
                 c = self.sheet.Columns(col)
                 self._hidden_cols[col] = bool(c.Hidden) or float(c.ColumnWidth or 0) == 0
         except Exception:
-            return True
+            return None
         if self._hidden_rows[row] or self._hidden_cols[col]:
             return False
         areas = self._print_areas()
+        if self._areas_unknown:
+            return None
         return not areas or any(r0 <= row <= r1 and c0 <= col <= c1 for r0, c0, r1, c1 in areas)
 
 

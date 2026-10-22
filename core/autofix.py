@@ -16,6 +16,7 @@
 import base64
 import hashlib
 import math
+import re
 import shutil
 import tempfile
 import threading
@@ -31,7 +32,7 @@ from core.excel_ops import (
     CellProbe, extract_sheet_snapshot, normalize_workbook_view, quit_background_excel, snapshot_cells,
     start_background_excel,
 )
-from core.hidden_text import collect_text_pieces, find_hidden_cells, locate_text, normalize_text
+from core.hidden_text import REASON_MISSING, collect_text_pieces, find_hidden_cells, locate_text, normalize_text
 from core.pdf_detector import (
     RegionTrackingError, crossing_horizontal_line, extract_page_lines, fitz,
     is_region_still_clipped, render_crop_base64,
@@ -81,6 +82,30 @@ _worker: threading.Thread | None = None
 
 class _Paused(Exception):
     """后台有别的任务、或这组已不需要处理，中止当前预览，稍后重来"""
+
+
+def review_only_reason(items: list[dict[str, Any]]) -> str:
+    """缺少 PDF 定位证据时不试加高；截图缓存缺失本身不影响判定。"""
+    if any(it.get("page_index") is None or not it.get("bbox")
+           or it.get("hidden_reason") == REASON_MISSING for it in items):
+        return "PDF 未匹配到文字或无法定位，不能确认作者是否有意不显示；未调整行高，请人工核对或标绿忽略"
+    return ""
+
+
+def validate_print_targets(sheet: Any, items: list[dict[str, Any]]) -> None:
+    """在副本上改行高之前重新核对隐藏属性，不能用加高让隐藏内容重新出现。"""
+    probe = CellProbe(sheet)
+    for item in items:
+        match = re.fullmatch(r"([A-Za-z]+)([1-9]\d*)", item.get("cell_addr") or "")
+        if match is None:
+            raise ValueError("单元格地址无法确认，未调整行高，请人工核对")
+        col = 0
+        for char in match[1].upper():
+            col = col * 26 + ord(char) - ord('A') + 1
+        printable = probe.printed(int(match[2]), col)
+        if printable is not True:
+            reason = "单元格已隐藏或不在打印区域内" if printable is False else "无法读取单元格的隐藏属性或打印区域"
+            raise ValueError(f"{reason}，未调整行高，请人工核对")
 
 
 def _attempt(height: float, ok: bool, image: str) -> dict[str, Any]:
@@ -724,9 +749,15 @@ def _preview(session: _ExcelSession, gid: str) -> None:
         wb_path, sheet_name, row = group["wb_path"], group["sheet_name"], group["row"]
         item_ids = list(group["item_ids"])
     items = _items(item_ids)
+    reason = review_only_reason(items)
+    if reason:
+        with _LOCK:
+            group.update(status="failed", message=reason)
+        return
     sheet = session.copy_of(wb_path).Sheets(sheet_name)
     if sheet.Visible != XL_SHEET_VISIBLE:
         raise ValueError("工作表已隐藏")
+    validate_print_targets(sheet, items)
     cells = snapshot_cells(extract_sheet_snapshot(sheet))
     probe = CellProbe(sheet)
     texts: dict[tuple[int, int], str | None] = {}

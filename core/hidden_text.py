@@ -37,7 +37,7 @@ _EQUIVALENT_CHARS = str.maketrans({
 REASON_TRUNCATED = "PDF 里只打印出开头一部分，后面的文字没显示（行高或列宽不够）"
 REASON_CLIPPED = "有文字超出单元格被裁掉，打印出来看不到（列宽或行高不够）"
 REASON_HASH = "列宽不够，数字显示成了 ###"
-REASON_MISSING = "PDF 里找不到这格的文字，打印时没有显示（行高或列宽太小）"
+REASON_MISSING = "PDF 中未匹配到这格文字，无法确认是否需要显示；请人工核对，不自动调整行高"
 
 
 def normalize_text(text: str) -> str:
@@ -357,7 +357,7 @@ def find_hidden_cells(
     cells: list[tuple[int, int, Any]],
     pieces: list[Piece],
     display_text: Callable[[int, int], str | None],
-    is_printed: Callable[[int, int], bool],
+    is_printed: Callable[[int, int], bool | None],
     *, matches: dict[tuple[int, int], dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """
@@ -371,13 +371,20 @@ def find_hidden_cells(
     results: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
     hash_cells: list[tuple[dict[str, Any], str]] = []
+    displayed: dict[tuple[int, int], str | None] = {}
     for row, col, value in cells:
         if value is None or (isinstance(value, str) and not normalize_text(value)):
             continue
+        # 在占用任何 PDF 文字片段前过滤，避免隐藏格子抢走可见格子的同名文字。
+        # None 表示读取失败：仍保留疑似问题，但自动修复会要求打印属性明确可读。
+        if is_printed(row, col) is False:
+            continue
+        shown = displayed[(row, col)] = display_text(row, col)
+        if shown is not None and not normalize_text(shown):
+            continue  # 如 ;;; 格式明确不显示文字
         cell = {"row": row, "col": col, "value": value, "text": value}
         if not isinstance(value, str):
             # 数字、日期的显示文字取决于格式，必须读 Excel；猜的话「1」这类常见文字会被别处的「1」顶替
-            shown = display_text(row, col)
             if shown is None:
                 shown = _guess_display(value)
             if not normalize_text(shown):
@@ -419,7 +426,7 @@ def find_hidden_cells(
     # 文字对不上的再读一次 Excel 实际显示的文字（如「"No."@」这类带格式的文字）
     unchanged, refetched = [], []
     for cell in left:
-        shown = display_text(cell["row"], cell["col"]) if isinstance(cell["value"], str) else None
+        shown = displayed[(cell["row"], cell["col"])] if isinstance(cell["value"], str) else None
         shown_key = normalize_text(shown) if shown is not None else ""
         original_key = normalize_text(cell["text"])
         if shown is None or shown == cell["text"] or (shown_key and shown_key in original_key):
@@ -435,7 +442,7 @@ def find_hidden_cells(
         chain = matcher.find_prefix(cell["text"])
         if chain is not None:
             record(cell, "prefix", chain)
-        elif is_printed(cell["row"], cell["col"]) and not _symbols_only(cell["text"]):
+        elif not _symbols_only(cell["text"]):
             results.append(_result(cell, "", REASON_MISSING, None, None))
 
     # 片段可能在后面被换给别的格子，全部配完后再按最终占用的片段出结果

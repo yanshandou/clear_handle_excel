@@ -9,6 +9,7 @@ from core import fix_images, storage
 
 
 class FakeRow:
+    Hidden = False
     def __init__(self, heights, row):
         self.heights, self.row = heights, row
 
@@ -26,6 +27,10 @@ class FakeSheet:
         self.book, self.needed = book, needed
         self.Name = "S1"
         self.Visible = -1
+        self.PageSetup = Mock(PrintArea="")
+
+    def Columns(self, col):
+        return Mock(Hidden=False, ColumnWidth=10)
 
     def Rows(self, row):
         return FakeRow(self.book.heights, row)
@@ -118,6 +123,17 @@ class AutofixTests(unittest.TestCase):
         self.autofix.sync_groups()
         (group,) = self.autofix.AUTOFIX["groups"].values()
         return group
+
+    def test_unlocated_result_is_deferred_before_a_copy_is_opened(self):
+        item = self.workflow.STATE["items"]["i1"]
+        item.update(kind="hidden", page_index=None, bbox=None)
+        gid = self.group()["id"]
+        with patch.object(self.session, "copy_of") as copy_of:
+            self.autofix._preview(self.session, gid)
+        copy_of.assert_not_called()
+        self.assertEqual(self.group()["status"], "failed")
+        self.assertIn("未调整行高", self.group()["message"])
+        self.assertEqual(self.real_heights[5], 15)
 
     def test_preview_stops_one_step_after_success_and_recommends_it(self):
         gid = self.group()["id"]

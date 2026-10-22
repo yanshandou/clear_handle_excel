@@ -232,6 +232,31 @@ class HiddenTextTests(unittest.TestCase):
         self.assertEqual(result[0]["text"], "123456")
         self.assertIsNone(result[1]["bbox"])
 
+    def test_nonprinted_cells_never_claim_duplicate_pdf_text(self):
+        cells = [(1, 1, "Same"), (2, 1, "Same")]
+        result = detect(cells, lambda page: add_text(page, 50, 100, "Same"),
+                        printed=lambda row, col: row == 2)
+        self.assertEqual(result, [])
+
+    def test_nonprinted_cells_do_not_report_prefix_clipping_or_hashes(self):
+        def build(page):
+            add_text(page, 50, 100, "Only")
+            add_text(page, 50, 120, "Cut text", clip=(50, 110, 66, 124))
+            add_text(page, 50, 140, "###")
+        result = detect([(1, 1, "Only prefix"), (2, 1, "Cut text"), (3, 1, 12345)], build,
+                        displayed={(3, 1): "###"}, printed=lambda r, c: False)
+        self.assertEqual(result, [])
+
+    def test_empty_display_format_does_not_claim_other_cells_text(self):
+        result = detect([(1, 1, "Same"), (2, 1, "Same")],
+                        lambda page: add_text(page, 50, 100, "Same"), displayed={(1, 1): ""})
+        self.assertEqual(result, [])
+
+    def test_unknown_print_attributes_preserve_a_suspect_without_claiming_cause(self):
+        result = detect([(1, 1, "Gone")], lambda page: None, printed=lambda r, c: None)
+        self.assertEqual(result[0]["reason"], REASON_MISSING)
+        self.assertNotIn("行高或列宽太小", result[0]["reason"])
+
     def test_symbol_only_cells_missing_from_pdf_are_not_reported(self):
         # 「-」「○」这类符号 PDF 里常读不出来；有文字或数字的照样报
         def build(page):

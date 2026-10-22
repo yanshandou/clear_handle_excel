@@ -50,6 +50,7 @@ class BatchTests(unittest.TestCase):
         item = {"id": iid, "seq": len(self.wf.STATE["items"]) + 1, "kind": "hidden", "text": address,
                 "wb_path": self.path, "wb_name": "book.xlsx", "sheet_name": "S1", "cell_addr": address,
                 "excel_row": row, "row_height": self.heights[row], "status": "fixed", "image": ""}
+        item.update(page_index=0, bbox=[10, 10, 100, 25])
         self.wf.STATE["items"][iid] = item
         card = batch._card_for([item])
         card.update(color=color, verified=True)
@@ -233,6 +234,38 @@ class BatchTests(unittest.TestCase):
         with patch.object(batch, "_prepare_row") as prepare:
             batch._repair_file(self.excel, Mock(), self.path)
         prepare.assert_not_called()
+
+    def test_unlocated_text_is_manual_without_creating_copy_or_saving(self):
+        card, item = self.add_card()
+        batch._data()["rows"].clear()
+        item.update(status="pending", page_index=None, bbox=None)
+        session = Mock()
+        with patch.object(batch, "_prepare_row") as prepare:
+            batch._repair_file(self.excel, session, self.path)
+        prepare.assert_not_called()
+        session.copy_of.assert_not_called()
+        self.book.Save.assert_not_called()
+        self.assertEqual(card["color"], "yellow")
+        self.assertTrue(card["manual"])
+        self.assertFalse(card["verified"])
+        self.assertIn("不能确认作者", card["message"])
+        self.assertIsNone(self.wf.STATE["job"]["pending_adjustment"])
+
+    def test_unlocated_cell_blocks_automatic_row_height_changes_for_its_peers(self):
+        a, first = self.add_card("A5")
+        b, other = self.add_card("B5")
+        first["status"] = other["status"] = "pending"
+        other.update(page_index=None, bbox=None)
+        batch._data()["rows"].clear()
+        with patch.object(batch, "_prepare_row") as prepare:
+            batch._repair_file(self.excel, Mock(), self.path)
+        prepare.assert_not_called()
+        self.assertTrue(a["manual"] and b["manual"])
+
+    def test_missing_cached_image_does_not_make_located_text_low_confidence(self):
+        from core import autofix
+        _, item = self.add_card()
+        self.assertEqual(autofix.review_only_reason([item]), "")
 
     def test_commit_resume_finishes_refresh_even_when_all_green_cards_are_hidden(self):
         card, _ = self.add_card(color="green")

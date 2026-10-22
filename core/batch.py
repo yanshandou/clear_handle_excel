@@ -235,6 +235,7 @@ def _group_cells(items: list[dict]) -> list[list[dict]]:
 def _prepare_row(session: Any, path: str, items: list[dict]) -> tuple[float, dict | None, dict]:
     """只在最新原文件副本上做图；返回原高、最后通过且含余量的方案、原样截图。"""
     sheet = session.copy_of(path).Sheets(items[0]["sheet_name"])
+    autofix.validate_print_targets(sheet, items)
     row = int(items[0]["excel_row"])
     base = round(float(sheet.Rows(row).RowHeight), 1)
     cells = snapshot_cells(extract_sheet_snapshot(sheet))
@@ -295,7 +296,7 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                 # 之前修过的格子因后续分页变化又出现问题，也交给人工，不能循环自动加高。
                 for group in _group_cells(pending):
                     card = _card_for(group)
-                    if not card.get("dismissed") and not card.get("marked"):
+                    if not card.get("dismissed") and not card.get("marked") and not card.get("manual"):
                         card.update(color="yellow", verified=False, message="当前导出仍有问题，需人工处理")
                 wf._persist_state()
                 return
@@ -308,6 +309,11 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
         _check_file(path)
         version = wf._file_version(Path(path))
         try:
+            reason = autofix.review_only_reason(items)
+            if reason:
+                for card in cards:
+                    card["manual"] = True  # 同行共用行高；该行也不能因另一格而自动加高。
+                raise ValueError(reason)
             if any(it.get("location_confirmed") is False or not it.get("cell_addr") for it in items):
                 raise ValueError("单元格定位未确认，请人工核对")
             base, chosen, before = _prepare_row(session, path, items)

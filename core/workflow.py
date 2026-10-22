@@ -412,7 +412,7 @@ def _detect_sheet_results(
             raise ValueError(f"导出的 PDF 没有页面: {pdf_path}")
         text_spans = collect_text_spans(doc)
         probe = CellProbe(sheet)
-        cells = snapshot_cells(sheet_snapshot)
+        cells = [cell for cell in snapshot_cells(sheet_snapshot) if probe.printed(cell[0], cell[1]) is not False]
         pieces = collect_text_pieces(doc)
         anchors = build_anchors(cells, pieces)
 
@@ -489,7 +489,7 @@ def _detect_sheet_results(
 
 
 # 检测规则变化时加一：之前按旧规则查过的文件即使没改过，下次扫描也要整份重新检查
-DETECTOR_VERSION = 8
+DETECTOR_VERSION = 9
 
 
 def _confirm_clip_cells(
@@ -553,7 +553,7 @@ HIDDEN_FIX_REASONS = {
     REASON_TRUNCATED: "文字没显示全，后半段被截掉（行高或列宽不够）",
     REASON_CLIPPED: "文字超出单元格被裁掉（列宽或行高不够）",
     REASON_HASH: "列宽不够，数字显示成 ###",
-    REASON_MISSING: "文字打印不出来（行高或列宽太小）",
+    REASON_MISSING: "PDF 未匹配到文字，无法确认显示意图，需人工核对",
 }
 
 
