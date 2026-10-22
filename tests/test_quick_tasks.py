@@ -446,7 +446,7 @@ class QuickTaskTests(unittest.TestCase):
         self.assertIsNone(self.workflow.STATE["job"])
         self.assertEqual(self.books["a.xlsx"].saved, [])
 
-    def test_clean_sheets_with_custom_plan_deletes_checked_and_marks_uncertain_with_emoji(self):
+    def test_clean_sheets_with_custom_plan_deletes_checked_and_keeps_uncertain(self):
         # 用户自定义勾选：取消默认勾选的 Main_20250101（改为待定），手动勾选 SubSheet 删除
         self.add_book("spec.xlsx", ["Main", "Main_20250101", "SubSheet"])
         self.add_book("plain.xlsx", ["OnlySheet"])
@@ -468,19 +468,18 @@ class QuickTaskTests(unittest.TestCase):
         job = self.workflow.STATE["job"]
         self.assertEqual(job["status"], "completed")
 
-        # SubSheet 被删除，Main_20250101 被加上 ❓ 前缀保留
-        self.assertEqual(self.books["spec.xlsx"].saved, [["Main", "❓Main_20250101"]])
-        # 工作簿文件本身重命名为 ❓spec.xlsx，不生成 _backup_ 目录
+        # SubSheet 被删除，Main_20250101 标为待定只是不删，表名不加 ❓
+        self.assertEqual(self.books["spec.xlsx"].saved, [["Main", "Main_20250101"]])
+        # 工作簿文件名不变，不生成 _backup_ 目录
         self.assertNotIn("backup_folder", job["options"])
-        self.assertFalse((self.folder / "spec.xlsx").exists())
-        self.assertTrue((self.folder / "❓spec.xlsx").exists())
+        self.assertTrue((self.folder / "spec.xlsx").exists())
         # plain.xlsx 无需修改，未用 Excel 打开
         self.assertEqual(self.excel.opened, [("spec.xlsx", False)])
 
         files = self.report_files()
         self.assertEqual(files["spec.xlsx"]["deleted_backups"], ["SubSheet"])
-        self.assertEqual(files["spec.xlsx"]["uncertain_sheets"], ["❓Main_20250101"])
-        self.assertEqual(files["spec.xlsx"]["renamed_to"], "❓spec.xlsx")
+        self.assertEqual(files["spec.xlsx"]["uncertain_sheets"], ["Main_20250101"])
+        self.assertEqual(files["spec.xlsx"]["renamed_to"], "")
 
     def test_clean_sheets_deletes_old_versions_and_strips_new_prefix(self):
         self.add_book("layout.xlsx", [
@@ -550,35 +549,29 @@ class QuickTaskTests(unittest.TestCase):
         )
         self.workflow.run_pending_workflow()
         self.assertEqual(self.books["01_画面/spec.xlsx"].saved, [["Main"]])
-        self.assertEqual(self.books["02_帳票/spec.xlsx"].saved, [["Report", "❓Draft"]])
-        self.assertTrue((self.folder / "02_帳票" / "❓spec.xlsx").exists())
-        self.assertEqual(self.report_files()["02_帳票/spec.xlsx"]["renamed_to"], "02_帳票/❓spec.xlsx")
+        # 待定的 Draft 只是不删，文件与表名都不改，也不用 Excel 打开
+        self.assertEqual(self.books["02_帳票/spec.xlsx"].saved, [])
+        self.assertTrue((self.folder / "02_帳票" / "spec.xlsx").exists())
+        self.assertEqual(self.report_files()["02_帳票/spec.xlsx"]["uncertain_sheets"], ["Draft"])
 
         # 导出 PDF 时，PDF 直接生成在各自的子文件夹中
-        self.books["02_帳票/❓spec.xlsx"] = self.books["02_帳票/spec.xlsx"]
         self.run_task("export_pdf")
         self.assertTrue((self.folder / "01_画面" / "spec_Main.pdf").exists())
-        self.assertTrue((self.folder / "02_帳票" / "❓spec_Report.pdf").exists())
-        self.assertTrue((self.folder / "02_帳票" / "❓spec_❓Draft.pdf").exists())
+        self.assertTrue((self.folder / "02_帳票" / "spec_Report.pdf").exists())
+        self.assertTrue((self.folder / "02_帳票" / "spec_Draft.pdf").exists())
 
-    def test_clean_sheets_unmarks_uncertain_and_restores_filename(self):
-        # 第二次扫描处理已带 ❓ 的文件：将 ❓Draft 取消待定改为普通保留，文件与 Sheet 自动去掉 ❓
+    def test_clean_sheets_leaves_existing_question_marks_untouched(self):
+        # 以前加过 ❓ 的文件与表：不再自动去掉，也不再改名
         self.add_book("❓spec.xlsx", ["Main", "❓Draft"])
-        plan = {
-            "❓spec.xlsx": {
-                "delete": [],
-                "uncertain": [],
-            },
-        }
+        plan = {"❓spec.xlsx": {"delete": [], "uncertain": []}}
         self.assertTrue(
             self.workflow.queue_job("clean_sheets", {"folder": str(self.folder), "plan": plan})
         )
         self.workflow.run_pending_workflow()
 
-        self.assertEqual(self.books["❓spec.xlsx"].saved, [["Main", "Draft"]])
-        self.assertFalse((self.folder / "❓spec.xlsx").exists())
-        self.assertTrue((self.folder / "spec.xlsx").exists())
-        self.assertEqual(self.report_files()["❓spec.xlsx"]["renamed_to"], "spec.xlsx")
+        self.assertEqual(self.books["❓spec.xlsx"].saved, [])
+        self.assertTrue((self.folder / "❓spec.xlsx").exists())
+        self.assertEqual(self.excel.opened, [])
 
     def test_api_quick_task_validates_clean_plan(self):
         self.add_book("a.xlsx", ["Main", "Sub"])

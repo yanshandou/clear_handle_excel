@@ -2413,24 +2413,6 @@ input[type="text"] {
   gap: 6px;
 }
 
-.preview-rename-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-size: 11.5px;
-  font-weight: 700;
-  background: #fef3c7;
-  color: #92400e;
-  border: 1px solid rgba(245, 158, 11, 0.45);
-}
-
-.preview-rename-badge.is-restore {
-  background: #dcfce7;
-  color: #166534;
-  border-color: rgba(34, 197, 94, 0.4);
-}
-
 .preview-counts {
   font-size: 12px;
   font-weight: 700;

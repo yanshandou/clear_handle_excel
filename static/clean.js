@@ -41,20 +41,9 @@ function splitDirAndBase(name) {
   return idx >= 0 ? [str.slice(0, idx + 1), str.slice(idx + 1)] : ['', str];
 }
 
-function hasUncertainEmoji(name) {
-  const [, base] = splitDirAndBase(name);
-  return base.startsWith('❓');
-}
-
 function stripUncertainEmoji(name) {
   const [dir, base] = splitDirAndBase(name);
   return dir + base.replace(/^❓+\s*/, '');
-}
-
-function addUncertainEmoji(name) {
-  const [dir, base] = splitDirAndBase(name);
-  const clean = base.replace(/^❓+\s*/, '');
-  return dir + (clean ? `❓${clean}` : '❓');
 }
 
 /* ==========================================
@@ -422,8 +411,6 @@ function summarizeDecisions() {
     deletedTotal: 0,
     uncertainTotal: 0,
     keptTotal: 0,
-    uncertainFiles: 0,
-    unmarkedCount: 0,
     emptyFiles: [],
   };
   if (!previewData || !Array.isArray(previewData.files)) return summary;
@@ -435,15 +422,10 @@ function summarizeDecisions() {
       const st = getSheetState(file.name, name);
       if (st === 'delete') fileDel += 1;
       else if (st === 'uncertain') fileUnc += 1;
-      else {
-        summary.keptTotal += 1;
-        if (String(name).startsWith('❓')) summary.unmarkedCount += 1;
-      }
+      else summary.keptTotal += 1;
     });
     summary.deletedTotal += fileDel;
     summary.uncertainTotal += fileUnc;
-    if (fileUnc > 0) summary.uncertainFiles += 1;
-    else if (hasUncertainEmoji(file.name) && file.sheets.length > 0) summary.unmarkedCount += 1;
     if (file.sheets.length > 0 && fileDel >= file.sheets.length) {
       summary.emptyFiles.push(file.name);
     }
@@ -533,7 +515,7 @@ function renderPage() {
   if (phase === 'preview') {
     const stats = summarizeDecisions();
     renderSummary(stats);
-    const hasAction = stats.deletedTotal > 0 || stats.uncertainTotal > 0 || stats.unmarkedCount > 0;
+    const hasAction = stats.deletedTotal > 0; // 待定只是本次不删，不改文件
     const hasError = stats.emptyFiles.length > 0;
     execBtn.disabled = working || !hasAction || hasError || isBusyOther() || isCleanRunning();
     if (pending === 'start') {
@@ -541,16 +523,10 @@ function renderPage() {
     } else if (hasError) {
       execBtn.textContent = '⚠️ 请至少保留 1 个工作表';
       hint.textContent = `「${stats.emptyFiles[0]}」不能将所有工作表全部标为删除`;
-    } else if (stats.deletedTotal > 0 && stats.uncertainTotal > 0) {
-      execBtn.textContent = `🧹 确认执行（删 ${stats.deletedTotal} 表 · 待定 ${stats.uncertainTotal} 表）`;
     } else if (stats.deletedTotal > 0) {
       execBtn.textContent = `🧹 删除 ${stats.deletedTotal} 个工作表`;
-    } else if (stats.uncertainTotal > 0) {
-      execBtn.textContent = `❓ 标记 ${stats.uncertainTotal} 个待定工作表`;
-    } else if (stats.unmarkedCount > 0) {
-      execBtn.textContent = `✨ 清除 ${stats.unmarkedCount} 处 ❓ 待定标记`;
     } else {
-      execBtn.textContent = '没有标记删除或待定的工作表';
+      execBtn.textContent = '没有标记删除的工作表';
     }
     if (isBusyOther()) {
       hint.textContent = `后台正在执行「${overview.progress.task_name}」，完成后才能开始`;
@@ -566,7 +542,7 @@ function renderSummary(stats) {
   document.getElementById('cleanSummary').innerHTML = `
     共 <b>${files.length}</b> 个文件：
     删除 <b class="is-deleted">${stats.deletedTotal}</b> 个 ·
-    待定 <b class="is-uncertain">${stats.uncertainTotal}</b> 个${stats.uncertainFiles ? `（<b>${stats.uncertainFiles}</b> 个文件加 ❓）` : ''} ·
+    待定 <b class="is-uncertain">${stats.uncertainTotal}</b> 个（不删） ·
     保留 <b>${stats.keptTotal}</b> 个
   `;
 }
@@ -602,21 +578,13 @@ function previewFileItem(file, fileIndex, extraClass = '') {
     const tip = (isDeleted
       ? '当前：删除（单击切换为「待定」，再点切换为「保留」）'
       : (isUncertain
-        ? '当前：待定，本次不删并在执行后给文件名与 Sheet 加 ❓（单击切换为「保留」）'
+        ? '当前：待定，本次不删，等确认后再处理（单击切换为「保留」）'
         : '当前：保留（单击切换为「删除」）')) + renameTip;
     if (processed) {
       return `<span class="preview-sheet-tag is-${st} is-processed" title="已在预览窗口处理，重新扫描后更新">${labelHtml}</span>`;
     }
     return `<button type="button" class="preview-sheet-tag is-${st}" onclick="cycleSheetState(${fileIndex}, ${sheetIndex})" title="${tip}">${labelHtml}</button>`;
   }).join('');
-
-  let renameBadge = '';
-  if (uncCount > 0) {
-    const targetFileName = splitDirAndBase(addUncertainEmoji(file.name))[1];
-    renameBadge = `<span class="preview-rename-badge" title="含待定 Sheet，文件名将带 ❓ 前缀以便按名称排序集中查看">🏷️ ${escapeHtml(targetFileName)}</span>`;
-  } else if (hasUncertainEmoji(file.name) && file.sheets.length > 0) {
-    renameBadge = `<span class="preview-rename-badge is-restore" title="已无待定 Sheet，执行后将恢复原文件名">🏷️ 恢复为 ${escapeHtml(splitDirAndBase(stripUncertainEmoji(file.name))[1])}</span>`;
-  }
 
   const countParts = [`保留 ${kept}`];
   if (delCount) countParts.push(`<em>删除 ${delCount}</em>`);
@@ -627,7 +595,6 @@ function previewFileItem(file, fileIndex, extraClass = '') {
       <div class="preview-file-head">
         <div class="preview-file-title">
           <b title="${escapeHtml(file.name)}">📄 ${escapeHtml(splitDirAndBase(file.name)[1])}</b>
-          ${renameBadge}
         </div>
         ${file.sheets.length ? `<span class="preview-file-actions">
           ${processed
