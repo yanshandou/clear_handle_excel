@@ -323,6 +323,28 @@ class AutofixTests(unittest.TestCase):
         self.assertEqual((item["status"], item.get("later_review")), ("manual_review", True))
         self.assertEqual(self.real_heights, {5: 15.0})
 
+    def test_occasional_error_is_retried_before_going_to_later_review(self):
+        self.autofix.AUTOFIX["auto"] = True
+        gid = self.group()["id"]
+        for attempt in range(self.autofix.MAX_ERROR_RETRIES):
+            self.group()["status"] = "running"
+            self.autofix._task_failed("preview", gid, RuntimeError("呼び出し先が呼び出しを拒否しました"), {})
+            self.assertEqual(self.group()["status"], "queued")
+            self.autofix._auto_defer(gid)
+            self.assertFalse(self.workflow.STATE["items"]["i1"].get("later_review"))
+        self.autofix._task_failed("preview", gid, RuntimeError("还是不行"), {})
+        self.assertEqual(self.group()["status"], "error")
+        self.autofix._auto_defer(gid)
+        self.assertTrue(self.workflow.STATE["items"]["i1"]["later_review"])
+
+    def test_write_error_waits_then_retries_the_same_write(self):
+        gid = self.group()["id"]
+        self.group()["status"] = "applying"
+        blocked = {}
+        self.autofix._task_failed("apply", (str(self.wb_path), [gid]), OSError("busy"), blocked)
+        self.assertEqual(self.group()["status"], "applying")
+        self.assertIn(str(self.wb_path), blocked)
+
     def test_unconfirmed_rows_survive_restart_without_pictures(self):
         self.autofix.AUTOFIX["auto"] = True
         gid = self.group()["id"]

@@ -12,6 +12,7 @@ from core.common import (
     EXCEL_EXTENSIONS,
     EXCLUDE_PDF_SHEETS,
     REVIEW_EMOJI,
+    STALE_LOCK_HINT,
     XL_SHEET_VISIBLE,
     XL_TYPE_PDF,
     as_bbox,
@@ -1498,7 +1499,7 @@ def mark_review_file(excel: Any, path: str) -> bool:
     if wb_path.with_name("~$" + wb_path.name).exists():
         with STATE_LOCK:
             if path in STATE["review_queue"]:
-                STATE["review_queue"][path]["error"] = "文件正在 Excel 中打开，关闭后自动标黄"
+                STATE["review_queue"][path]["error"] = "文件正在 Excel 中打开，关闭后自动标黄" + STALE_LOCK_HINT
         return False
     with STATE_LOCK:
         entry = STATE["review_queue"].get(path)
@@ -1660,7 +1661,7 @@ def review_recheck_workflow() -> None:
             elif not wb_path.exists():
                 skipped[path] = "找不到文件，可能被移动或改名"
             elif wb_path.with_name("~$" + wb_path.name).exists():
-                skipped[path] = "文件仍在 Excel 中打开，请关闭后再复检"
+                skipped[path] = "文件仍在 Excel 中打开，请关闭后再复检" + STALE_LOCK_HINT
         with STATE_LOCK:
             ids = [
                 iid
