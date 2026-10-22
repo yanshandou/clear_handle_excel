@@ -73,7 +73,7 @@ def _visible_excel() -> Any:
     return excel
 
 
-def _show_in_excel(excel: Any, workbook_path: Path, sheet_name: str, cell_address: str, row: int) -> float:
+def _find_or_open(excel: Any, workbook_path: Path) -> Any:
     workbook = next(
         (book for book in excel.Workbooks
          if Path(book.FullName).resolve() == workbook_path),
@@ -82,6 +82,30 @@ def _show_in_excel(excel: Any, workbook_path: Path, sheet_name: str, cell_addres
     if workbook is None:
         excel.Visible = True
         workbook = excel.Workbooks.Open(str(workbook_path), UpdateLinks=0, IgnoreReadOnlyRecommended=True)
+    return workbook
+
+
+def _bring_to_front(excel: Any) -> None:
+    """把 Excel 窗口提到浏览器前面；系统不让抢前台时只在任务栏闪一下，不影响打开。"""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        user32 = ctypes.WinDLL("user32")
+        hwnd = int(excel.Hwnd)
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        # 先按一下 Alt，系统才允许后台进程把别的窗口切到前台
+        user32.keybd_event(0x12, 0, 0, 0)
+        user32.keybd_event(0x12, 0, 2, 0)  # KEYEVENTF_KEYUP
+        user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
+
+def _show_in_excel(excel: Any, workbook_path: Path, sheet_name: str, cell_address: str, row: int) -> float:
+    workbook = _find_or_open(excel, workbook_path)
     sheet = workbook.Sheets(sheet_name)
     excel.Visible = True
     excel.WindowState = -4143  # xlNormal
@@ -94,7 +118,42 @@ def _show_in_excel(excel: Any, workbook_path: Path, sheet_name: str, cell_addres
         workbook.Windows(1).WindowState = -4143  # xlNormal
     address = cell_address if re.fullmatch(r"[A-Za-z]+[1-9]\d*", cell_address) else f"A{row}"
     excel.Goto(sheet.Range(address), Scroll=True)
+    _bring_to_front(excel)
     return round(float(sheet.Rows(row).RowHeight or 15.0), 1)
+
+
+def open_workbook_in_excel(workbook_path: Path, sheet_name: str = "", cell_address: str = "") -> str:
+    """网页上点文件名时用：在可见 Excel（不是后台那个隐藏的）打开文件，知道工作表/单元格就跳过去。
+
+    只打开、不保存。工作表不存在或被隐藏时照样打开文件，返回提示文字；一切正常返回空字符串。
+    """
+    workbook_path = workbook_path.resolve(strict=True)
+    pythoncom.CoInitialize()
+    try:
+        excel = _visible_excel()
+        workbook = _find_or_open(excel, workbook_path)
+        excel.Visible = True
+        excel.WindowState = -4143  # xlNormal
+        workbook.Activate()
+        if workbook.Windows.Count > 0:
+            workbook.Windows(1).Visible = True
+            workbook.Windows(1).WindowState = -4143  # xlNormal
+        note = ""
+        if sheet_name:
+            try:
+                sheet = workbook.Sheets(sheet_name)
+            except Exception:
+                sheet, note = None, f"找不到工作表「{sheet_name}」，可能已被删除或改名"
+            if sheet is not None and sheet.Visible != XL_SHEET_VISIBLE:
+                sheet, note = None, f"工作表「{sheet_name}」是隐藏的，没有跳过去"
+            if sheet is not None:
+                sheet.Activate()
+                if re.fullmatch(r"[A-Za-z]+[1-9]\d*", cell_address or ""):
+                    excel.Goto(sheet.Range(cell_address), Scroll=True)
+        _bring_to_front(excel)
+        return note
+    finally:
+        pythoncom.CoUninitialize()
 
 
 def open_workbook_for_manual_review(

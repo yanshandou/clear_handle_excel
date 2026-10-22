@@ -17,7 +17,7 @@ from core.common import (
     sanitize_filename,
     workbook_rel_name,
 )
-from core.excel_ops import extract_sheet_snapshot, match_excel_row, normalize_workbook_view
+from core.excel_ops import extract_sheet_snapshot, match_excel_row, normalize_workbook_view, open_workbook_in_excel
 from core.pdf_detector import (
     extract_page_lines,
     find_clipped_spans_on_page,
@@ -25,7 +25,13 @@ from core.pdf_detector import (
     render_crop_base64,
     render_page_overview,
 )
-from core.reporter import get_execution_report_snapshot, open_recorded_workbook, render_execution_markdown
+from core.reporter import (
+    EXECUTION_STATE,
+    find_recorded_workbook,
+    find_workbook,
+    get_execution_report_snapshot,
+    render_execution_markdown,
+)
 from core.sheet_preview import preview_image_path, render_workbook_previews, workbook_preview_info
 from core.workflow import (
     QUICK_TASK_NAMES,
@@ -300,16 +306,28 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             self._send_json({"ok": True, **result})
 
-        elif self.path == "/api/records/open":
-            file_name = payload.get("file")
-            if not isinstance(file_name, str) or not file_name:
+        elif self.path == "/api/excel/open":
+            # 网页上任何地方点文件名：在可见 Excel 打开，知道工作表/单元格就跳过去
+            file_name, sheet, cell = payload.get("file"), payload.get("sheet") or "", payload.get("cell") or ""
+            if not isinstance(file_name, str) or not file_name or not isinstance(sheet, str) or not isinstance(cell, str):
                 raise ValueError("需要有效的文件名")
-            autofix.release_excel()  # 别让系统把文件开到自动处理后台的隐藏 Excel 里
+            with STATE_LOCK:
+                job = STATE["job"] or {}
+                if STATE["busy"] and job.get("kind") in QUICK_TASK_NAMES:
+                    raise ValueError(f"「{QUICK_TASK_NAMES[job['kind']]}」正在修改文件，请等它结束后再打开")
+                workbench_folder = STATE.get("folder", "")
+            if payload.get("record") is True:
+                wb_path = find_recorded_workbook(file_name)
+            else:
+                folder = payload.get("folder")
+                wb_path = find_workbook(file_name, [
+                    folder if isinstance(folder, str) else "", workbench_folder, EXECUTION_STATE.get("folder", ""),
+                ])
             try:
-                open_recorded_workbook(file_name)
-            finally:
-                autofix.resume_after_release()
-            self._send_json({"ok": True})
+                autofix.wait_for_writes(15)  # 后台正在保存这个文件时别同时打开
+            except ValueError:
+                raise ValueError("后台正在保存 Excel，请几秒后再点") from None
+            self._send_json({"ok": True, "note": open_workbook_in_excel(wb_path, sheet, cell)})
 
         elif self.path == "/api/autofix/choose":
             gid, index = payload.get("id"), payload.get("index")

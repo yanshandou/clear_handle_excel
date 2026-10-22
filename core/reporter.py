@@ -2,7 +2,6 @@ import atexit
 import copy
 import json
 import logging
-import os
 import threading
 import time
 import unicodedata
@@ -571,33 +570,42 @@ def get_execution_report_snapshot() -> dict[str, Any]:
         return snapshot
 
 
-def open_recorded_workbook(file_name: str) -> Path:
-    """用默认程序（Excel）打开看板里的文件；只接受本次目标文件夹内的 Excel 文件"""
+def find_workbook(file_name: str, roots: list[str]) -> Path:
+    """网页上显示的文件名（相对目标文件夹，或工作台里的完整路径）对应到磁盘上现在的文件。
+
+    文件名前加了 / 去了「★」（旧版本是「🟡」）也能找到；只认这些文件夹内的 Excel 文件。
+    """
+    folders = [Path(root).resolve() for root in dict.fromkeys(filter(None, roots))]
+    if not folders:
+        raise ValueError("还没有选择目标文件夹")
+    raw = Path(file_name)
+    bases = [raw] if raw.is_absolute() else [folder / raw for folder in folders]
+    for base in bases:
+        names = dict.fromkeys([base.name, strip_review_prefix(base.name), *review_name_variants(base.name)])
+        for name in names:
+            wb_path = base.with_name(name).resolve()
+            if (
+                any(wb_path.is_relative_to(folder) for folder in folders)
+                and wb_path.suffix.lower() in EXCEL_EXTENSIONS
+                and not wb_path.name.startswith("~$")
+                and wb_path.is_file()
+            ):
+                return wb_path
+    raise ValueError(f"找不到文件「{raw.name}」，可能已被移动或改名")
+
+
+def find_recorded_workbook(file_name: str) -> Path:
+    """看板里的文件现在在磁盘上的路径；只接受本次目标文件夹内的 Excel 文件"""
     with REPORT_LOCK:
         folder_str = EXECUTION_STATE.get("folder", "")
         entry = EXECUTION_STATE["files"].get(file_name)
     if not folder_str or entry is None:
         raise ValueError("看板里没有这个文件，请刷新页面")
-    folder = Path(folder_str).resolve()
-    candidates = [entry.get("renamed_to"), file_name]
-    # 等待稍后人工复检的文件名前临时加了「★」（旧版本是「🟡」）
-    candidates += [
-        str(Path(name).with_name(variant))
-        for name in filter(None, candidates) for variant in review_name_variants(Path(name).name)
-    ]
-    for name in filter(None, candidates):
-        wb_path = (folder / name).resolve()
+    for name in filter(None, [entry.get("renamed_to"), file_name]):
         try:
-            wb_path.relative_to(folder)
+            return find_workbook(name, [folder_str])
         except ValueError:
-            raise ValueError("只能打开目标文件夹内的文件") from None
-        if (
-            wb_path.suffix.lower() in EXCEL_EXTENSIONS
-            and not wb_path.name.startswith("~$")
-            and wb_path.is_file()
-        ):
-            os.startfile(wb_path)  # type: ignore[attr-defined]  # 仅 Windows
-            return wb_path
+            continue
     raise ValueError(f"找不到文件「{file_name}」，可能已被移动或改名")
 
 

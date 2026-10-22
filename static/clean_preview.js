@@ -145,8 +145,9 @@ function cardBodyHtml(name, sheetIndex) {
   const meta = [];
   if (info && info.hidden) meta.push('隐藏');
   if (info && info.pages > 1) meta.push(`共 ${info.pages} 页`);
+  const excel = excelLinkHtml('📗 Excel', { file: fileName, folder, sheet: name }, 'pv-excel');
   return `
-    <span class="pv-thumb">${preview}</span>
+    <span class="pv-thumb">${preview}${excel}</span>
     <span class="pv-card-foot">
       <span class="pv-card-name" title="${escapeHtml(name)}">${cardNameHtml(name)}</span>
       <span class="pv-card-meta">${escapeHtml(meta.join(' · '))}</span>
@@ -340,7 +341,9 @@ async function pollRun() {
 async function init() {
   const [dir, base] = splitDirAndBase(fileName);
   document.title = `预览 - ${base}`;
-  document.getElementById('pvFileName').textContent = `🖼️ ${base || 'Sheet 预览确认'}`;
+  document.getElementById('pvFileName').innerHTML = base
+    ? `🖼️ ${excelLinkHtml(escapeHtml(base), { file: fileName, folder })}`
+    : '🖼️ Sheet 预览确认';
   document.getElementById('pvFolder').textContent = `${folder}${dir ? ` › ${dir.replace(/[\\/]$/, '')}` : ''}`;
   let size = 'm';
   try {

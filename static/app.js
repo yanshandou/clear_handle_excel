@@ -427,7 +427,7 @@ function renderTriage() {
       <div class="triage-stamp triage-stamp-skip">跳过</div>
       <div class="triage-card-head">
         <div>
-          <b>#${Number(next.seq || 1)} ${escapeHtml(next.wb_name)}</b>
+          <b>#${Number(next.seq || 1)} ${excelLinkHtml(escapeHtml(next.wb_name), { file: next.wb_path, sheet: next.sheet_name, cell: next.cell_addr })}</b>
           <span style="color:#64748b;">/ ${escapeHtml(next.sheet_name)}（第 ${pageLabel(next)} 页）</span>
         </div>
         <span class="badge ${st.badgeClass}">${escapeHtml(next.status === 'pending' ? (next.is_new ? '🆕 新发现 · 待筛选' : '待筛选') : st.badgeText)}</span>
@@ -721,7 +721,7 @@ function renderFix() {
     <div class="fix-card">
       <div class="triage-card-head">
         <div>
-          <b>${escapeHtml(group.wb_name)}</b>
+          <b>${groupExcelLink(group, items)}</b>
           <span style="color:#64748b;">/ ${escapeHtml(group.sheet_name)} · 第 ${Number(group.row)} 行${group.base_height ? `（当前行高 ${group.base_height}pt）` : ''}</span>
         </div>
         <span class="badge ${group.manual ? 'badge-warn' : 'badge-selected'}">${group.manual ? '人工处理中' : `本行 ${items.length} 处`}</span>
@@ -775,6 +775,13 @@ function confirmKey(g) {
   return `${g.wb_path.replace(REVIEW_PREFIX_PATTERN, '$1')}\0${g.sheet_name}\0${g.row}`;
 }
 
+// 分组标题里的文件名：点开 Excel 跳到这一行第一处问题
+function groupExcelLink(group, items) {
+  return excelLinkHtml(escapeHtml(group.wb_name), {
+    file: group.wb_path, sheet: group.sheet_name, cell: items[0]?.cell_addr || `A${Number(group.row) || 1}`,
+  });
+}
+
 function confirmCardHtml(group) {
   const items = group.item_ids.map(id => latestItems[id] || serverItems[id]).filter(Boolean);
   const reverted = group.status === 'reverted';
@@ -807,7 +814,7 @@ function confirmCardHtml(group) {
   return `
     <div class="triage-card-head">
       <div>
-        <b>${escapeHtml(group.wb_name)}</b>
+        <b>${groupExcelLink(group, items)}</b>
         <span style="color:#64748b;">/ ${escapeHtml(group.sheet_name)} · 第 ${Number(group.row)} 行</span>
       </div>
       <span class="badge ${reverted ? 'badge-warn' : 'badge-selected'}">${escapeHtml(state)}</span>
@@ -987,6 +994,10 @@ function reviewFileLabel(path, entry) {
   return firstId ? latestItems[firstId].wb_name : stripReviewPrefix(path.split(/[\\/]/).pop());
 }
 
+function firstOpenMark(entry) {
+  return entry.marks.find(m => !markResolved(m)) || entry.marks[0];
+}
+
 function markResolved(mark) {
   return mark.item_ids.every(id => !serverItems[id] || isResolved(serverItems[id]));
 }
@@ -1017,7 +1028,8 @@ function renderReview() {
   const rows = files.map(([path, entry]) => `
     <div class="review-file">
       <div class="review-file-head">
-        <b><span class="review-dot" aria-hidden="true"></span>${escapeHtml(reviewFileLabel(path, entry))}</b>
+        <b><span class="review-dot" aria-hidden="true"></span>${excelLinkHtml(escapeHtml(reviewFileLabel(path, entry)), {
+          file: path, sheet: firstOpenMark(entry)?.sheet, cell: firstOpenMark(entry)?.addr })}</b>
         <span>${entry.marks.length} 处</span>
       </div>
       ${entry.error ? `<div class="review-file-error">${escapeHtml(entry.error)}</div>` : ''}
@@ -1031,7 +1043,7 @@ function renderReview() {
         const preview = mark.item_ids.map(id => serverItems[id]?.image).find(Boolean) || '';
         const zoomCaption = `${mark.sheet}!${mark.addr} ${text}`;
         return `<div class="review-mark ${resolved ? 'is-resolved' : ''}" data-zoom="${escapeHtml(preview)}" data-zoom-caption="${escapeHtml(zoomCaption)}">
-          <span class="review-mark-cell">${escapeHtml(mark.sheet)}!${escapeHtml(mark.addr)}</span>
+          <span class="review-mark-cell">${excelLinkHtml(`${escapeHtml(mark.sheet)}!${escapeHtml(mark.addr)}`, { file: path, sheet: mark.sheet, cell: mark.addr })}</span>
           <span class="review-mark-text" title="${escapeHtml(text)}">${escapeHtml(text)}</span>
           <span class="review-mark-state">${state}</span>
           ${resolved ? '' : `<button type="button" class="btn btn-outline btn-sm" ${busy ? 'disabled' : ''}
