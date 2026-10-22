@@ -1,12 +1,13 @@
 import copy
 import json
 import logging
+import os
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from core.common import PROJECT_ROOT, RECORD_PATH, workbook_rel_name
+from core.common import EXCEL_EXTENSIONS, PROJECT_ROOT, RECORD_PATH, workbook_rel_name
 from core.storage import load_snapshot, save_snapshot
 
 REPORT_LOCK = threading.RLock()
@@ -427,6 +428,31 @@ def get_execution_report_snapshot() -> dict[str, Any]:
         snapshot = copy.deepcopy(EXECUTION_STATE)
         snapshot["markdown"] = render_execution_markdown()
         return snapshot
+
+
+def open_recorded_workbook(file_name: str) -> Path:
+    """用默认程序（Excel）打开看板里的文件；只接受本次目标文件夹内的 Excel 文件"""
+    with REPORT_LOCK:
+        folder_str = EXECUTION_STATE.get("folder", "")
+        entry = EXECUTION_STATE["files"].get(file_name)
+    if not folder_str or entry is None:
+        raise ValueError("看板里没有这个文件，请刷新页面")
+    folder = Path(folder_str).resolve()
+    candidates = [entry.get("renamed_to"), file_name]
+    for name in filter(None, candidates):
+        wb_path = (folder / name).resolve()
+        try:
+            wb_path.relative_to(folder)
+        except ValueError:
+            raise ValueError("只能打开目标文件夹内的文件") from None
+        if (
+            wb_path.suffix.lower() in EXCEL_EXTENSIONS
+            and not wb_path.name.startswith("~$")
+            and wb_path.is_file()
+        ):
+            os.startfile(wb_path)  # type: ignore[attr-defined]  # 仅 Windows
+            return wb_path
+    raise ValueError(f"找不到文件「{file_name}」，可能已被移动或改名")
 
 
 _restore_report()

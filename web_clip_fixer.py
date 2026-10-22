@@ -23,7 +23,7 @@ from core.pdf_detector import (
     render_crop_base64,
     render_page_overview,
 )
-from core.reporter import get_execution_report_snapshot, render_execution_markdown
+from core.reporter import get_execution_report_snapshot, open_recorded_workbook, render_execution_markdown
 from core.sheet_preview import preview_image_path, render_workbook_previews, workbook_preview_info
 from core.workflow import (
     QUICK_TASK_NAMES,
@@ -271,6 +271,13 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": f"生成预览图失败: {err}"}, status=500)
                 return
             self._send_json({"ok": True, **result})
+
+        elif self.path == "/api/records/open":
+            file_name = payload.get("file")
+            if not isinstance(file_name, str) or not file_name:
+                raise ValueError("需要有效的文件名")
+            open_recorded_workbook(file_name)
+            self._send_json({"ok": True})
 
         elif self.path == "/api/progress/import":
             self._send_json({"ok": True, **import_progress(payload)})

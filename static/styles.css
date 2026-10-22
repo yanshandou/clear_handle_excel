@@ -1932,6 +1932,22 @@ input[type="text"] {
   background: #edf4ff;
 }
 
+.file-open-link {
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.file-open-link:hover {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+
+.file-open-link.opening {
+  opacity: 0.55;
+  cursor: progress;
+}
+
 .records-table tbody tr.row-processing {
   background: linear-gradient(90deg, #dbeafe 0%, #eff6ff 100%);
 }

@@ -90,6 +90,7 @@ function renderFilesTable(filesList) {
       const fileDisplayName = f.renamed_to && f.renamed_to !== f.name
         ? `${escapeHtml(f.name)} <span style="color:#b45309; font-size:12px;">→ ${escapeHtml(f.renamed_to)}</span>`
         : escapeHtml(f.name);
+      const fileLink = `<a href="#" class="file-open-link" data-file="${escapeHtml(f.name)}" title="点击在 Excel 中打开">📄 ${fileDisplayName}</a>`;
 
       const det = Number(f.clip_detected || 0);
       const fix = Number(f.clip_fixed || 0);
@@ -111,7 +112,7 @@ function renderFilesTable(filesList) {
       return `
         <tr class="${rowClass}">
           <td><b>${Number(f.index || 1)}</b></td>
-          <td><b>📄 ${fileDisplayName}</b></td>
+          <td><b>${fileLink}</b></td>
           <td>${getFileStatusBadge(f.status)}</td>
           <td>${sheetsHtml}</td>
           <td style="text-align:center;"><b>${Number(f.exported_pdfs || 0)}</b></td>
@@ -182,6 +183,31 @@ async function pollRecords() {
     }
   } catch (e) {}
 }
+
+async function openRecordFile(link) {
+  if (link.classList.contains('opening')) return;
+  link.classList.add('opening');
+  try {
+    const res = await fetch('/api/records/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: link.dataset.file }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || '打开失败');
+  } catch (e) {
+    alert(`无法打开文件：${e.message}`);
+  } finally {
+    setTimeout(() => link.classList.remove('opening'), 1500);
+  }
+}
+
+document.getElementById('recordsTableBody').addEventListener('click', e => {
+  const link = e.target.closest('.file-open-link');
+  if (!link) return;
+  e.preventDefault();
+  openRecordFile(link);
+});
 
 async function copyMarkdownReport() {
   const md = latestReportData?.markdown || document.getElementById('markdownPreview').textContent || '';
