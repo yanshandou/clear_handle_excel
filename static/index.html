@@ -76,7 +76,15 @@
       <div class="panel-section-head" style="margin-bottom: 2px;">
         <div class="panel-section-title">
           <span class="step-chip step-chip-teal">STEP 02</span>
-          <span>逐个筛选：跳过无需修改的，其余在 Excel 中人工修改</span>
+          <span>处理切字：先筛选，再自动处理</span>
+        </div>
+        <div class="view-switcher" role="tablist" aria-label="处理步骤">
+          <button type="button" id="tabTriageBtn" class="view-tab active" onclick="setStepTab('triage')">
+            ① 筛选（← 保留 / 跳过 →）
+          </button>
+          <button type="button" id="tabFixBtn" class="view-tab" onclick="setStepTab('fix')">
+            ② 自动处理
+          </button>
         </div>
       </div>
 
@@ -89,7 +97,7 @@
         </div>
 
         <div class="toolbar-right">
-          <span class="toolbar-hint">在 Excel 中修改并保存后，再点上方「扫描切字」复检，改好的会自动记为已修复。</span>
+          <span class="toolbar-hint">① 把不用改的跳过；② 后台逐次加高行并截图，点一张合适的就写进 Excel。</span>
         </div>
       </div>
     </section>
@@ -112,15 +120,15 @@
         <div class="workflow-step-card">
           <div class="workflow-step-num">2</div>
           <div class="workflow-step-text">
-            <b>逐个筛选</b>
+            <b>① 筛选</b>
             <span>一次看一处 2.5 倍特写，无需修改的跳过，以后不再检查。</span>
           </div>
         </div>
         <div class="workflow-step-card">
           <div class="workflow-step-num">3</div>
           <div class="workflow-step-text">
-            <b>人工修改 &amp; 增量复检</b>
-            <span>在 Excel 中修改并保存后再次扫描，只检查改过的问题文件，不再压线的自动记为已修复。</span>
+            <b>② 自动处理</b>
+            <span>后台一次加一点行高并截图，点一张合适的就写进 Excel；不行就转人工，改好后复检。</span>
           </div>
         </div>
       </div>
@@ -148,9 +156,22 @@
       </div>
       <p class="triage-hint">键盘 ← 保留、→ 跳过、Backspace 撤销；也可以按住卡片向左 / 向右拖动。跳过会立即保存，保留只记录在本浏览器里，用来标记已看过。</p>
     </section>
+    <!-- 第 2 步：自动处理（九宫格选图） -->
+    <section id="fixView" class="panel fix-panel hidden" aria-label="自动处理">
+      <div class="fix-toolbar">
+        <span id="fixProgressText">后台准备中...</span>
+        <button type="button" class="btn btn-outline btn-sm" id="fixAutoBtn" onclick="toggleFullAuto()"
+          title="按推荐的那张自动写入剩下所有行，不用再一张张点">
+          ⚡ 全自动处理剩下的
+        </button>
+      </div>
+      <div id="fixStage" class="fix-stage"></div>
+      <p class="triage-hint">每张图是同一行加高后的样子：第一张是原样，打勾的是已显示全的。点一张就按它的行高写进 Excel 并保存，自动跳到下一行；带「推荐」边框的是显示全后再多加一次的那张，留一点余量。加高 8 次还不行的，请点「人工处理」在 Excel 里改，保存后点「复检」。</p>
+    </section>
+
     <!-- 使用说明 + 实时处理日志 -->
     <section class="panel info-panel">
-      <p>① 逐个查看每一处：无需修改的跳过（→），需要修改的保留（←）。卡片上可以「在 Excel 中定位」直接跳到单元格。② 保留的在 Excel 中修改并保存。③ 再点「扫描切字」：只检查改过的文件，不再有问题的自动记为已修复。</p>
+      <p>① 筛选：逐个查看每一处，无需修改的跳过（→），需要修改的保留（←）。② 自动处理：后台在文件副本上一次加 3pt 行高并截图，你点选合适的那张后才写进原文件；也可以「全自动处理剩下的」。自动处理不了的转人工，改好保存后点「复检」。</p>
       <p>标【隐藏截断】的：PDF 外观正常，但单元格内容没显示全（行高或列宽不够），卡片上会写出完整内容和 PDF 里实际显示的部分。跳过的位置以后不再检查；未修改的文件直接沿用上次结果。</p>
       <div class="console-frame">
         <div class="console-frame-bar">

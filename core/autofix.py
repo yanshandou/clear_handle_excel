@@ -1,0 +1,461 @@
+"""自动处理切字：在工作簿副本上一次加一点行高，每次导出 PDF 截图并判断是否已显示全，
+做出最多 9 张图（原样 + 8 次加高）给用户挑；用户点哪张，就把那张的行高写进原文件。
+
+- 同一行的几处问题合成一组处理（加的是整行高度）
+- 预览只在副本上做，不锁、不改原文件；用户挑选时后台继续准备后面的组
+- 显示全之后再多加一次就停，推荐多加的那张（留一点余量）
+- 「全自动」打开后，后面准备好的组直接按推荐写入
+- 后台有扫描、复检、人工定位等任务时暂停，任务结束后继续
+"""
+import base64
+import hashlib
+import shutil
+import tempfile
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+from core.common import XL_SHEET_VISIBLE, as_bbox
+from core.excel_ops import CellProbe, extract_sheet_snapshot, normalize_workbook_view, snapshot_cells
+from core.hidden_text import collect_text_pieces, find_hidden_cells, locate_text
+from core.pdf_detector import RegionTrackingError, fitz, is_region_still_clipped, render_crop_base64
+from core.workflow import (
+    RESOLVED_STATUSES,
+    STATE,
+    STATE_LOCK,
+    _export_sheet_pdf,
+    _file_version,
+    _persist_state,
+    _sync_problem_counts,
+    log_msg,
+    pythoncom,
+    win32,
+)
+
+STEP_PT = 3.0
+MAX_ATTEMPTS = 8  # 加上原样共 9 张，正好九宫格
+MAX_ROW_HEIGHT = 409.0  # Excel 行高上限
+MANUAL_STATUSES = {"manual_review"}
+LOCKED_RETRY_SECONDS = 5.0
+
+_LOCK = threading.RLock()
+_WAKE = threading.Event()
+_IDLE = threading.Event()  # 后台没有开着的 Excel
+_IDLE.set()
+AUTOFIX: dict[str, Any] = {"auto": False, "groups": {}, "hold": 0}
+_worker: threading.Thread | None = None
+
+
+class _Paused(Exception):
+    """后台有别的任务、或这组已不需要处理，中止当前预览，稍后重来"""
+
+
+def _group_id(wb_path: str, sheet_name: str, row: int) -> str:
+    return hashlib.sha1(f"{wb_path}\0{sheet_name}\0{row}".encode()).hexdigest()[:16]
+
+
+def _busy() -> bool:
+    with _LOCK:
+        if AUTOFIX["hold"]:
+            return True
+    with STATE_LOCK:
+        return bool(STATE["busy"])
+
+
+def release_excel(timeout: float = 120.0) -> None:
+    """开始扫描、人工定位等任务前调用：让后台关掉自己的 Excel 并暂停，
+    免得人工定位时连到后台那个隐藏的 Excel。任务排上队后调用 resume_after_release。"""
+    with _LOCK:
+        AUTOFIX["hold"] += 1
+    _WAKE.set()
+    if _worker is not None and _worker.is_alive():
+        _IDLE.wait(timeout)
+
+
+def resume_after_release() -> None:
+    with _LOCK:
+        AUTOFIX["hold"] = max(0, AUTOFIX["hold"] - 1)
+    _WAKE.set()
+
+
+def sync_groups() -> None:
+    """按当前未解决的问题项整理分组；组内问题项变了（重新扫描等）就重新准备"""
+    with STATE_LOCK:
+        items = [
+            (item["id"], item["wb_path"], item["wb_name"], item["sheet_name"], int(item["excel_row"]),
+             int(item.get("seq") or 0), item["status"])
+            for item in STATE["items"].values() if item["status"] not in RESOLVED_STATUSES
+        ]
+    wanted: dict[str, dict[str, Any]] = {}
+    for item_id, wb_path, wb_name, sheet_name, row, seq, status in items:
+        gid = _group_id(wb_path, sheet_name, row)
+        entry = wanted.setdefault(gid, {
+            "wb_path": wb_path, "wb_name": wb_name, "sheet_name": sheet_name, "row": row,
+            "item_ids": [], "seq": seq, "manual": False,
+        })
+        entry["item_ids"].append(item_id)
+        entry["seq"] = min(entry["seq"], seq)
+        entry["manual"] = entry["manual"] or status in MANUAL_STATUSES
+    with _LOCK:
+        groups = AUTOFIX["groups"]
+        for gid in list(groups):
+            # 已写入的组问题项都已解决，保留记录供页面显示
+            if gid not in wanted and groups[gid]["status"] != "applied":
+                del groups[gid]
+        for gid, entry in wanted.items():
+            group = groups.get(gid)
+            # 写入过的行又检出了问题（重新扫描）也重新准备
+            if group is None or group["status"] == "applied" or sorted(group["item_ids"]) != sorted(entry["item_ids"]):
+                group = groups[gid] = {
+                    "id": gid, **entry, "status": "queued", "attempts": [], "recommended": None,
+                    "chosen": None, "base_height": None, "message": "",
+                }
+            group["manual"] = entry["manual"]
+            group["seq"] = entry["seq"]
+
+
+def snapshot() -> dict[str, Any]:
+    """页面轮询用：不含图片（图片按需单独取）"""
+    ensure_worker()
+    sync_groups()
+    with _LOCK:
+        groups = sorted(AUTOFIX["groups"].values(), key=lambda g: g["seq"])
+        return {
+            "auto": AUTOFIX["auto"],
+            "step_pt": STEP_PT,
+            "groups": [
+                {
+                    **{k: v for k, v in g.items() if k != "attempts"},
+                    "attempts": [{"height": a["height"], "ok": a["ok"]} for a in g["attempts"]],
+                }
+                for g in groups
+            ],
+        }
+
+
+def attempt_image(gid: str, index: int) -> bytes | None:
+    with _LOCK:
+        group = AUTOFIX["groups"].get(gid)
+        if group is None or not 0 <= index < len(group["attempts"]):
+            return None
+        image = group["attempts"][index]["image"]
+    if not image:
+        return None
+    return base64.b64decode(image.split(",", 1)[1])
+
+
+def choose(gid: str, index: int) -> None:
+    with _LOCK:
+        group = AUTOFIX["groups"].get(gid)
+        if group is None:
+            raise ValueError("这一组已重新扫描或已处理，请刷新页面")
+        if group["status"] not in {"ready", "failed"}:
+            raise ValueError("这一组还没准备好或已在写入")
+        if not 1 <= index < len(group["attempts"]) or not group["attempts"][index]["ok"]:
+            raise ValueError("只能选择已显示全的调整结果")
+        group["chosen"] = index
+        group["status"] = "applying"
+        group["message"] = "正在写入 Excel..."
+    _WAKE.set()
+
+
+def set_auto(on: bool) -> None:
+    with _LOCK:
+        AUTOFIX["auto"] = on
+        if on:
+            for group in AUTOFIX["groups"].values():
+                if group["status"] == "ready" and not group["manual"] and group["recommended"] is not None:
+                    group["chosen"] = group["recommended"]
+                    group["status"] = "applying"
+                    group["message"] = "全自动：正在写入 Excel..."
+    _WAKE.set()
+
+
+def ensure_worker() -> None:
+    global _worker
+    with _LOCK:
+        if _worker is not None and _worker.is_alive():
+            return
+        _worker = threading.Thread(target=_run, name="autofix", daemon=True)
+        _worker.start()
+
+
+class _ExcelSession:
+    """后台专用的隐藏 Excel；预览用工作簿副本，写入时才短暂打开原文件"""
+
+    def __init__(self) -> None:
+        self.excel: Any = None
+        self.temp_dir: Path | None = None
+        self.copies: dict[str, tuple[dict[str, int], Any]] = {}
+
+    def app(self) -> Any:
+        if self.excel is None:
+            _IDLE.clear()
+            self.excel = win32.DispatchEx("Excel.Application")
+            self.excel.Visible = False
+            self.excel.DisplayAlerts = False
+            self.temp_dir = Path(tempfile.mkdtemp(prefix="clip_autofix_"))
+        return self.excel
+
+    def copy_of(self, wb_path: str) -> Any:
+        """原文件的副本（原文件改过就重新复制）"""
+        version = _file_version(Path(wb_path))
+        cached = self.copies.get(wb_path)
+        if cached is not None and cached[0] == version:
+            return cached[1]
+        if cached is not None:
+            cached[1].Close(SaveChanges=False)
+        app = self.app()
+        assert self.temp_dir is not None
+        target = self.temp_dir / f"{len(self.copies)}_{Path(wb_path).name}"
+        shutil.copy2(wb_path, target)
+        workbook = app.Workbooks.Open(str(target))
+        self.copies[wb_path] = (version, workbook)
+        return workbook
+
+    def temp_pdf(self) -> Path:
+        self.app()
+        assert self.temp_dir is not None
+        return self.temp_dir / "attempt.pdf"
+
+    def close(self) -> None:
+        for _, workbook in self.copies.values():
+            try:
+                workbook.Close(SaveChanges=False)
+            except Exception:
+                pass
+        self.copies = {}
+        if self.excel is not None:
+            try:
+                self.excel.Quit()
+            except Exception:
+                pass
+            self.excel = None
+        if self.temp_dir is not None:
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
+            self.temp_dir = None
+        _IDLE.set()
+
+
+def _run() -> None:
+    pythoncom.CoInitialize()
+    session = _ExcelSession()
+    blocked: dict[str, float] = {}  # 原文件被占用，暂缓写入到这个时间
+    try:
+        while True:
+            if _busy():
+                session.close()  # 让出 Excel，避免和扫描、人工定位抢同一个文件
+                _WAKE.wait(2)
+                _WAKE.clear()
+                continue
+            sync_groups()
+            task = _next_task(blocked)
+            if task is None:
+                session.close()
+                _WAKE.wait(3)
+                _WAKE.clear()
+                continue
+            kind, payload = task
+            try:
+                if kind == "apply":
+                    if not _apply(session, *payload):
+                        blocked[payload[0]] = time.monotonic() + LOCKED_RETRY_SECONDS
+                else:
+                    _preview(session, payload)
+            except _Paused:
+                continue
+            except Exception as err:
+                gids = payload[1] if kind == "apply" else [payload]
+                with _LOCK:
+                    for gid in gids:
+                        if gid in AUTOFIX["groups"]:
+                            AUTOFIX["groups"][gid]["status"] = "error"
+                            AUTOFIX["groups"][gid]["message"] = f"自动处理失败，请人工处理: {err}"
+                log_msg(f"⚠️ 自动处理失败: {err}")
+                session.close()
+    finally:
+        session.close()
+        pythoncom.CoUninitialize()
+
+
+def _next_task(blocked: dict[str, float]) -> tuple[str, Any] | None:
+    now = time.monotonic()
+    with _LOCK:
+        groups = sorted(AUTOFIX["groups"].values(), key=lambda g: g["seq"])
+        for group in groups:
+            if group["status"] == "applying" and blocked.get(group["wb_path"], 0) <= now:
+                same_file = [
+                    g["id"] for g in groups if g["status"] == "applying" and g["wb_path"] == group["wb_path"]
+                ]
+                return "apply", (group["wb_path"], same_file)
+        for group in groups:
+            if group["status"] == "queued" and not group["manual"]:
+                return "preview", group["id"]
+    return None
+
+
+def _items(item_ids: list[str]) -> list[dict[str, Any]]:
+    with STATE_LOCK:
+        return [dict(STATE["items"][i]) for i in item_ids if i in STATE["items"]]
+
+
+def _check_still_wanted(gid: str) -> None:
+    with _LOCK:
+        group = AUTOFIX["groups"].get(gid)
+        if group is None or group["status"] != "running" or group["manual"]:
+            raise _Paused
+    if _busy():
+        raise _Paused
+
+
+def _preview(session: _ExcelSession, gid: str) -> None:
+    with _LOCK:
+        group = AUTOFIX["groups"][gid]
+        group.update(status="running", attempts=[], recommended=None, chosen=None, message="")
+        wb_path, sheet_name, row = group["wb_path"], group["sheet_name"], group["row"]
+        item_ids = list(group["item_ids"])
+    items = _items(item_ids)
+    sheet = session.copy_of(wb_path).Sheets(sheet_name)
+    if sheet.Visible != XL_SHEET_VISIBLE:
+        raise ValueError("工作表已隐藏")
+    cells = snapshot_cells(extract_sheet_snapshot(sheet))
+    probe = CellProbe(sheet)
+    texts: dict[tuple[int, int], str | None] = {}
+
+    def display_text(r: int, c: int) -> str | None:
+        if (r, c) not in texts:
+            texts[(r, c)] = probe.text(r, c)
+        return texts[(r, c)]
+
+    base = round(float(sheet.Rows(row).RowHeight or 15.0), 1)
+    with _LOCK:
+        group["base_height"] = base
+    pdf_path = session.temp_pdf()
+    success_at = None
+    try:
+        for k in range(MAX_ATTEMPTS + 1):
+            _check_still_wanted(gid)
+            height = min(MAX_ROW_HEIGHT, round(base + STEP_PT * k, 1))
+            with _LOCK:
+                if k and height == group["attempts"][-1]["height"]:
+                    break
+            sheet.Rows(row).RowHeight = height
+            _export_sheet_pdf(sheet, pdf_path)
+            ok, image = _evaluate(pdf_path, items, cells, display_text, probe.printed)
+            with _LOCK:
+                group["attempts"].append({"height": height, "ok": ok, "image": image})
+            if success_at is not None:
+                break  # 显示全之后再多加一次就停
+            if k and ok:
+                success_at = k
+    except _Paused:
+        with _LOCK:
+            if gid in AUTOFIX["groups"] and AUTOFIX["groups"][gid]["status"] == "running":
+                AUTOFIX["groups"][gid].update(status="queued", attempts=[])
+        raise
+    finally:
+        sheet.Rows(row).RowHeight = base
+        pdf_path.unlink(missing_ok=True)
+
+    with _LOCK:
+        oks = [i for i, a in enumerate(group["attempts"]) if i and a["ok"]]
+        group["recommended"] = oks[-1] if oks else None
+        if not oks:
+            group["status"] = "failed"
+            group["message"] = f"加高 {MAX_ATTEMPTS} 次仍未显示全，可能定位不对或是列宽不够，请人工处理"
+        elif AUTOFIX["auto"]:
+            group.update(status="applying", chosen=group["recommended"], message="全自动：正在写入 Excel...")
+            _WAKE.set()
+        else:
+            group["status"] = "ready"
+
+
+def _evaluate(pdf_path: Path, items: list[dict[str, Any]], cells, display_text, printed) -> tuple[bool, str]:
+    """这一次导出的 PDF 里，组内每处是否都已显示全；返回 (是否全部显示全, 截图)"""
+    all_ok = True
+    boxes: list[tuple[int, tuple[float, float, float, float]]] = []
+    with fitz.open(pdf_path) as doc:
+        hidden_results = None
+        for item in items:
+            if item.get("kind") == "hidden":
+                if hidden_results is None:
+                    hidden_results = find_hidden_cells(cells, collect_text_pieces(doc), display_text, printed)
+                found = next(
+                    (r for r in hidden_results
+                     if r["row"] == int(item["excel_row"]) and r["text"] == item["text"]),
+                    None,
+                )
+                ok = found is None
+                location = (
+                    (found["page"], found["bbox"]) if found and found["bbox"] is not None
+                    else locate_text(collect_text_pieces(doc), item["text"])
+                )
+            else:
+                try:
+                    still, _, bbox, page = is_region_still_clipped(
+                        pdf_path, int(item["page_index"]), item["text"], as_bbox(item["bbox"]),
+                        occurrence=item.get("occurrence"),
+                    )
+                    ok, location = not still, (page, bbox)
+                except RegionTrackingError:
+                    ok, location = False, None
+            all_ok = all_ok and ok
+            if location is not None:
+                boxes.append(location)
+        image = ""
+        if boxes:
+            page = boxes[0][0]
+            same_page = [b for p, b in boxes if p == page]
+            union = (
+                min(b[0] for b in same_page), min(b[1] for b in same_page),
+                max(b[2] for b in same_page), max(b[3] for b in same_page),
+            )
+            image = render_crop_base64(doc[page], union, highlight=not all_ok)
+    return all_ok, image
+
+
+def _apply(session: _ExcelSession, wb_path: str, gids: list[str]) -> bool:
+    """把用户选中的行高写进原文件并保存；原文件正被 Excel 打开时返回 False，稍后再试"""
+    path = Path(wb_path)
+    if path.with_name("~$" + path.name).exists():
+        with _LOCK:
+            for gid in gids:
+                AUTOFIX["groups"][gid]["message"] = "文件正在 Excel 中打开，关闭后自动写入"
+        return False
+    with _LOCK:
+        plan = [
+            (gid, g["sheet_name"], g["row"], g["base_height"], g["attempts"][g["chosen"]]["height"],
+             g["chosen"], list(g["item_ids"]))
+            for gid in gids if (g := AUTOFIX["groups"].get(gid)) and g["status"] == "applying"
+        ]
+    if not plan:
+        return True
+    excel = session.app()
+    workbook = excel.Workbooks.Open(str(path.resolve()))
+    try:
+        for _, sheet_name, row, _, height, _, _ in plan:
+            workbook.Sheets(sheet_name).Rows(row).RowHeight = height
+        normalize_workbook_view(excel, workbook)
+        workbook.Save()
+    finally:
+        workbook.Close(SaveChanges=False)
+
+    with STATE_LOCK:
+        for _, sheet_name, row, base, height, chosen, item_ids in plan:
+            for item_id in item_ids:
+                item = STATE["items"].get(item_id)
+                if item is None:
+                    continue
+                item["status"] = "fixed"
+                item["row_height"] = height
+                item["iterations"] = chosen
+                item["review_reason"] = f"自动处理：行高 {base}pt → {height}pt"
+            log_msg(f"✅ 自动处理 [{path.name} / {sheet_name} 行{row}] 行高 {base}pt → {height}pt，已保存")
+        _persist_state()
+        _sync_problem_counts(wb_path, f"自动处理写入 {len(plan)} 行")
+    with _LOCK:
+        for gid, *_ in plan:
+            if gid in AUTOFIX["groups"]:
+                AUTOFIX["groups"][gid].update(status="applied", message="已写入")
+    return True
