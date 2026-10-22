@@ -28,11 +28,7 @@
 
 .batch-actions { margin-top: 16px; padding-top: 16px; border-top: 1px dashed rgba(148, 170, 205, .6); }
 
-/* 瀑布流分区：标题带颜色圆点、数量徽章和同色分隔线 */
-.batch-group-title { display: flex; align-items: center; gap: 10px; margin: 28px 0 14px; padding-bottom: 10px; border-bottom: 2px solid var(--c-line); color: var(--c-ink); font-size: 16px; }
-.batch-group-title .batch-dot { width: 12px; height: 12px; }
-.batch-group-title .batch-count { background: var(--c); color: var(--c-on); }
-.batch-group:first-child .batch-group-title { margin-top: 4px; }
+/* 瀑布流：所有颜色混排，按处理顺序固定位置，改色不挪卡片 */
 .batch-waterfall { display: flex; align-items: flex-start; gap: 18px; }
 .batch-column { flex: 1; min-width: 0; }
 
@@ -54,6 +50,7 @@
 .batch-card .batch-problem { margin-top: 12px; padding: 8px 10px; border-radius: 8px; background: #fff4e5; color: #9a3412; }
 .batch-card .batch-handling { padding: 8px 10px; border-radius: 8px; background: #ffffffb3; color: #1e3a8a; }
 .batch-card .batch-text { padding-left: 10px; border-left: 3px solid #cbd5e1; color: #334155; }
+.batch-card .batch-no-blue { margin-top: 6px; padding: 6px 10px; border: 1px dashed var(--review-blue-line); border-radius: 8px; background: #ffffffb3; color: #475569; font-size: 12px; }
 .batch-card .batch-message, .batch-card .batch-state { margin-top: 4px; color: #64748b; font-size: 12px; }
 .batch-missing { display: grid; min-height: 90px; place-items: center; color: #94a3b8; font-size: 12px; }
 .batch-card-footer { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid color-mix(in srgb, var(--c-line) 55%, transparent); }
