@@ -10,13 +10,13 @@ function page() {
   function element() {
     return { value: '', innerHTML: '', dataset: {}, style: {}, classList: { toggle() {}, add() {} },
       listeners: {}, addEventListener(name, fn) { this.listeners[name] = fn; },
-      scrollIntoView() {}, querySelector() { return element(); } };
+      scrollIntoView() {}, querySelector() { return element(); }, querySelectorAll() { return []; } };
   }
   const requests = [];
   const listeners = {};
   const context = vm.createContext({
     document: { activeElement: null, getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); },
-      addEventListener(name, fn) { listeners[name] = fn; } },
+      addEventListener(name, fn) { listeners[name] = fn; }, querySelectorAll() { return []; } },
     localStorage: { getItem() { return ''; } }, window: { confirm() { return true; }, addEventListener() {} },
     setInterval() {}, fetch() { return new Promise(() => {}); },
     excelLinkHtml(label) { return `<a>${label}</a>`; }, Date, requests,
@@ -158,4 +158,44 @@ test('cards say what was detected and how much the row height changed', () => {
     '处理：本行行高未修改（其他行调整后重新导出已完整显示）');
   assert.equal(p.run(`handlingText({excel_row: 41, after_kind: 'attempt', base_height: 15, attempt_height: 39})`),
     '处理：第 41 行行高试到 15pt → 39pt（+24pt）仍未通过，原文件未修改');
+});
+
+test('the selection circle toggles selection without changing color', () => {
+  const p = page();
+  const click = target => p.elements.get('cardList').listeners.click({ target });
+  const card = { dataset: { id: 'a' } };
+  const circle = { closest(sel) { return sel === '[data-id]' ? card : sel === '[data-action]' ? { dataset: { action: 'select' } } : null; } };
+  click(circle);
+  assert.deepEqual(Array.from(p.run('[...selectedIds]')), ['a']);
+  click(circle);
+  assert.equal(p.run('selectedIds.size'), 0);
+  assert.equal(p.requests.length, 0);
+});
+
+test('select all and invert act on the cards in the current filter', () => {
+  const p = page();
+  p.run(`selectShown('all')`);
+  assert.deepEqual(Array.from(p.run('[...selectedIds]')).sort(), ['a', 'b']);
+  p.run(`selectedIds.delete('a'); selectShown('invert')`);
+  assert.deepEqual(Array.from(p.run('[...selectedIds]')), ['a']);
+  p.run(`selectedFilter = 'yellow'; selectShown('all')`);
+  assert.deepEqual(Array.from(p.run('[...selectedIds]')).sort(), ['a', 'b']);
+  p.run('render()');
+  assert.deepEqual(Array.from(p.run('[...selectedIds]')), ['b']);
+  p.run(`selectShown('none')`);
+  assert.equal(p.run('selectedIds.size'), 0);
+});
+
+test('batch color change sends one request and keeps the selection', async () => {
+  const p = page();
+  p.run(`selectShown('all'); post = async (url, payload) => {requests.push({url, payload}); return {ok:true, changed:1, skipped:1};};`);
+  await p.run(`changeSelectedColor('blue')`);
+  assert.deepEqual(p.requests.map(r => r.url), ['/api/batch/mark_many']);
+  assert.deepEqual(Array.from(p.requests[0].payload.card_ids).sort(), ['a', 'b']);
+  assert.equal(p.requests[0].payload.color, 'blue');
+  assert.equal(p.run('selectedIds.size'), 2);
+  assert.match(p.run('selectNotice'), /1 张尚未通过检查/);
+  p.run('batchState.busy = true');
+  await p.run(`changeSelectedColor('green')`);
+  assert.equal(p.requests.length, 1);
 });

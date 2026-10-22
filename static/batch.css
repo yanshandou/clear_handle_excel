@@ -40,3 +40,19 @@
 .batch-image-preview img { display: block; max-width: min(74vw, 1000px); max-height: 72vh; object-fit: contain; }
 @media (max-width: 700px) { .batch-shots { grid-template-columns: 1fr; } .batch-tools .panel-section-head { flex-wrap: wrap; gap: 14px; } }
 @media (max-width: 800px) { .batch-large-layout { grid-template-columns: minmax(0, 1fr); } }
+/* 多选：左上角圆圈；批量操作条悬浮在瀑布流底部，一直占位，选中与否都不推动卡片 */
+.batch-card-head { justify-content: flex-start; }
+.batch-card-head > div { flex: 1; min-width: 0; }
+.batch-select { flex: none; width: 24px; height: 24px; margin-top: 1px; padding: 0; border: 2px solid var(--review-color); border-radius: 50%; background: #fff; color: #fff; font-size: 14px; line-height: 20px; text-align: center; cursor: pointer; }
+.batch-select:focus-visible { outline: 2px solid #1e293b; outline-offset: 2px; }
+.batch-card.is-selected { box-shadow: 0 0 0 4px #1e293b33, 0 5px 14px #0f172a0c; }
+.batch-card.is-selected .batch-select { background: var(--review-color); }
+.batch-select-bar { position: sticky; bottom: 12px; z-index: 20; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; margin-top: 8px; padding: 10px 16px; border: 1px solid #cbd5e1; border-radius: 12px; background: #fff; box-shadow: 0 -4px 18px rgba(15, 29, 70, .12); font-size: 13px; color: #475569; }
+#selectCount { font-weight: 700; color: #1e293b; min-width: 9em; }
+.batch-select-group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.batch-select-bar button { font-size: 12px; padding: 7px 12px; }
+.batch-set-color { color: #fff; border: none; }
+.batch-set-color[data-set-color="blue"] { background: #3b82f6; }
+.batch-set-color[data-set-color="green"] { background: #22a06b; }
+.batch-set-color[data-set-color="yellow"] { background: #e5ac16; }
+.batch-set-color:disabled { opacity: .45; cursor: not-allowed; }

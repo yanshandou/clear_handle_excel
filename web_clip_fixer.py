@@ -257,6 +257,8 @@ class WebHandler(BaseHTTPRequestHandler):
         elif self.path == "/api/batch/mark":
             batch.mark(payload.get("id"), payload.get("color"))
             self._send_json({"ok": True})
+        elif self.path == "/api/batch/mark_many":
+            self._send_json({"ok": True, **batch.mark_many(payload.get("card_ids"), payload.get("color"))})
         elif self.path == "/api/batch/pause":
             with STATE_LOCK:
                 if not STATE["busy"] or (STATE["job"] or {}).get("kind") != "batch_scan":

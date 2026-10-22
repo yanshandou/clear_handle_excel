@@ -12,6 +12,8 @@ let layoutKey = '';
 let cardHtmlCache = new Map();
 let lastActiveIndex = 0;
 let lastWheelAt = 0;
+let selectedIds = new Set();
+let selectNotice = '';
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const nextColor = (color, direction = 1) => REVIEW_COLORS[(REVIEW_COLORS.indexOf(color) + direction + 3) % 3];
@@ -64,6 +66,7 @@ function renderControls() {
   $('resumeBtn').disabled = requestBusy;
   $('abandonBtn').classList.toggle('hidden', batchState.busy || !batchState.job?.pending_adjustment);
   $('abandonBtn').disabled = requestBusy;
+  renderSelectBar();
   $('statusText').textContent = batchState.busy ? '⏳ 后台处理中' : batchState.job?.status === 'interrupted' ? '⏸ 可继续任务' : '就绪';
 }
 
@@ -122,14 +125,77 @@ function cardHtml(card, large = false) {
   const comparison = `<div class="batch-shots">${images}</div>`;
   const visuals = large ? `<div class="batch-large-layout">${comparison}${contextHtml(card)}</div>` : comparison;
   return `<article class="batch-card" tabindex="0" role="button" aria-label="${esc(`${card.wb_name} ${card.sheet_name}!${card.cell_addr} ${REVIEW_LABELS[card.color]}，单击切换状态`)}" data-id="${esc(card.id)}" data-color="${card.color}">
-    <div class="batch-card-head"><div>${link}<p><b>${esc(card.sheet_name)}!${esc(card.cell_addr || '定位待确认')}</b></p></div><span class="batch-color-label">${REVIEW_LABELS[card.color]}</span></div>
+    <div class="batch-card-head"><button type="button" class="batch-select" data-action="select" aria-pressed="false" title="选中 / 取消选中">✓</button><div>${link}<p><b>${esc(card.sheet_name)}!${esc(card.cell_addr || '定位待确认')}</b></p></div><span class="batch-color-label">${REVIEW_LABELS[card.color]}</span></div>
     ${visuals}${problemHtml(card)}${handling ? `<p class="batch-handling">${esc(handling)}</p>` : ''}<p>${esc(card.text)}</p><p>${esc(card.message)}</p>
     <p>${card.finalized ? '已提交 · 可人工处理' : '颜色标记待提交'}${batchState.busy ? ' · 后台任务结束后可标记' : ''}</p>
     <div class="batch-card-footer"><button class="btn btn-outline" data-action="large">▣ 大图审核</button>${card.color === 'yellow' && card.finalized ? '<button class="btn btn-outline" data-action="recheck">🔁 单项复检</button>' : ''}</div></article>`;
 }
 
+// 选中状态不进卡片 HTML：勾选只改类名，不重画卡片、不重新加载图片
+function applySelection() {
+  for (const element of document.querySelectorAll('.batch-card[data-id]')) {
+    const selected = selectedIds.has(element.dataset.id);
+    element.classList.toggle('is-selected', selected);
+    element.querySelector('.batch-select')?.setAttribute('aria-pressed', String(selected));
+  }
+  renderSelectBar();
+}
+
+function renderSelectBar() {
+  const busy = batchState.busy || requestBusy;
+  $('selectBar').classList.toggle('hidden', largeMode || !batchState.cards.length);
+  $('selectCount').textContent = (selectedIds.size ? `已选 ${selectedIds.size} 张` : '未选择卡片') + (selectNotice ? ` · ${selectNotice}` : '');
+  for (const button of $('selectBar').querySelectorAll('[data-set-color]')) button.disabled = busy || !selectedIds.size;
+}
+
+function toggleSelected(id) {
+  if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id);
+  selectNotice = '';
+  applySelection();
+}
+
+function selectShown(mode) {
+  const ids = shownCards().map(c => c.id);
+  if (mode === 'all') ids.forEach(id => selectedIds.add(id));
+  else if (mode === 'invert') ids.forEach(id => selectedIds.has(id) ? selectedIds.delete(id) : selectedIds.add(id));
+  else selectedIds.clear();
+  selectNotice = '';
+  applySelection();
+}
+
+async function changeSelectedColor(color) {
+  if (batchState.busy || requestBusy || !selectedIds.size) return;
+  const ids = batchState.cards.filter(c => selectedIds.has(c.id)).map(c => c.id);
+  await action(async () => {
+    const result = await post('/api/batch/mark_many', { card_ids: ids, color });
+    selectNotice = result.skipped ? `${result.skipped} 张尚未通过检查，不能标蓝，保持原色` : '';
+  });
+}
+
+// 整页重画前记下视口里一张颜色没变的卡片的位置，重画后滚回同一位置，页面不跳
+function scrollAnchor() {
+  const colors = new Map(batchState.cards.map(c => [c.id, c.color]));
+  let fallback = null;
+  for (const element of $('cardList').querySelectorAll('.batch-card[data-id]')) {
+    const rect = element.getBoundingClientRect();
+    if (rect.bottom < 90 || rect.top > innerHeight) continue;
+    const anchor = { id: element.dataset.id, top: rect.top };
+    if (colors.get(element.dataset.id) === element.dataset.color) return anchor;
+    fallback = fallback || anchor;
+  }
+  return fallback;
+}
+
+function restoreAnchor(anchor) {
+  const element = anchor && $('cardList').querySelector(`[data-id="${CSS.escape(anchor.id)}"]`);
+  if (element) window.scrollBy(0, element.getBoundingClientRect().top - anchor.top);
+}
+
 function render() {
   renderControls();
+  // 只保留当前筛选下看得到的卡片的选中，批量改色不会改到看不见的卡片
+  const visible = new Set(shownCards().map(c => c.id));
+  for (const id of selectedIds) if (!visible.has(id)) selectedIds.delete(id);
   const p = batchState.progress || {};
   const job = batchState.job;
   const total = job?.workbooks?.length || p.total || 0;
@@ -141,7 +207,7 @@ function render() {
   const filterHtml = ['all', ...REVIEW_COLORS].map(color => `<button class="btn btn-outline" data-filter="${color}" aria-pressed="${selectedFilter === color}">${color === 'all' ? `全部 ${batchState.cards.length}` : `${REVIEW_LABELS[color]} ${counts[color]}`}</button>`).join('');
   if ($('filters').innerHTML !== filterHtml) $('filters').innerHTML = filterHtml;
   const key = JSON.stringify([batchState.cards, selectedFilter, largeMode, activeCardId, batchState.busy]);
-  if (renderKey === key) return;
+  if (renderKey === key) { applySelection(); return; }
   renderKey = key;
   $('cardList').classList.toggle('hidden', largeMode);
   $('largeView').classList.toggle('hidden', !largeMode);
@@ -173,13 +239,16 @@ function render() {
         if (element) element.outerHTML = value;
       }
     } else {
+      const anchor = scrollAnchor();
       $('cardList').innerHTML = shown.length ? sections.map(({ color, cards, columns }) => cards.length
         ? `<section><h2 class="batch-group-title">${REVIEW_LABELS[color]} · ${cards.length}</h2><div class="batch-waterfall">${columns.map(column => `<div class="batch-column">${column.map(c => html.get(c.id)).join('')}</div>`).join('')}</div></section>` : '').join('')
         : `<section class="panel batch-empty"><h2>${batchState.busy ? '正在自动扫描与修复…' : '当前没有待审核卡片'}</h2><p>${batchState.busy ? '文件处理后会在这里出现修改前后对比，无需逐项放行。' : '开始全自动处理，或切换颜色筛选查看结果。'}</p></section>`;
+      restoreAnchor(anchor);
     }
     layoutKey = layout;
     cardHtmlCache = html;
   }
+  applySelection();
 }
 
 function openLarge(id) {
@@ -241,6 +310,11 @@ $('largeBtn').addEventListener('click', () => openLarge());
 $('closeLargeBtn').addEventListener('click', () => { largeMode = false; layoutKey = ''; render(); });
 $('prevBtn').addEventListener('click', () => moveCard(-1));
 $('nextBtn').addEventListener('click', () => moveCard(1));
+$('selectBar').addEventListener('click', event => {
+  const button = event.target.closest('button');
+  if (button?.dataset.select) selectShown(button.dataset.select);
+  else if (button?.dataset.setColor) changeSelectedColor(button.dataset.setColor);
+});
 $('filters').addEventListener('click', event => {
   const button = event.target.closest('[data-filter]');
   if (button) { selectedFilter = button.dataset.filter; render(); }
@@ -250,7 +324,8 @@ for (const id of ['cardList', 'largeCard']) $(id).addEventListener('click', even
   const card = event.target.closest('[data-id]');
   if (!card || event.target.closest('a')) return;
   const button = event.target.closest('[data-action]');
-  if (button?.dataset.action === 'large') openLarge(card.dataset.id);
+  if (button?.dataset.action === 'select') toggleSelected(card.dataset.id);
+  else if (button?.dataset.action === 'large') openLarge(card.dataset.id);
   else if (button?.dataset.action === 'recheck') startJob('/api/batch/recheck', { card_ids: [card.dataset.id] });
   else changeColor(card.dataset.id);
 });

@@ -154,6 +154,26 @@ class BatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "先提交"):
             batch.validate_cards([card["id"]], yellow=True)
 
+    def test_mark_many_persists_once_and_skips_unverified_blue(self):
+        a, _ = self.add_card("A5", "yellow")
+        b, _ = self.add_card("B5", "green")
+        a["verified"] = False
+        with patch.object(self.wf, "_persist_state", wraps=self.wf._persist_state) as persist:
+            result = batch.mark_many([a["id"], b["id"]], "blue")
+        persist.assert_called_once()
+        self.assertEqual(result, {"changed": 1, "skipped": 1})
+        self.assertEqual((a["color"], b["color"]), ("yellow", "blue"))
+        self.assertTrue(b["marked"])
+        batch.mark_many([a["id"], b["id"]], "green")
+        self.assertEqual((a["color"], b["color"]), ("green", "green"))
+        self.excel.Workbooks.Open.assert_not_called()
+
+    def test_mark_many_rejects_stale_cards_without_changing_any(self):
+        a, _ = self.add_card("A5", "yellow")
+        with self.assertRaisesRegex(ValueError, "失效"):
+            batch.mark_many([a["id"], "missing"], "green")
+        self.assertEqual(a["color"], "yellow")
+
     def test_no_automatic_blue_for_unverified_manual_item(self):
         card, _ = self.add_card(color="yellow")
         card["verified"] = False
