@@ -15,7 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from core import storage
+from core import excel_ops, storage
 
 
 class PersistenceTests(unittest.TestCase):
@@ -61,6 +61,7 @@ class PersistenceTests(unittest.TestCase):
         self.excel.Workbooks.Open.return_value = self.wb
         self.patch_value(workflow, "pythoncom", Mock())
         self.patch_value(workflow, "win32", Mock(DispatchEx=Mock(return_value=self.excel)))
+        self.patch_value(excel_ops, "win32", workflow.win32)  # 后台 Excel 由 excel_ops 启动
         self.patch_value(workflow, "normalize_workbook_view", Mock())
         self.patch_value(workflow, "_refresh_sheet_pages_in_state", Mock())
         self.detect = Mock(return_value=(True, "new", [0, 0, 10, 10], 0))
@@ -423,7 +424,7 @@ class PersistenceTests(unittest.TestCase):
         self.row.RowHeight = 37.0
         self.workflow.queue_job("recheck", {"selected_ids": ["item_1"]})
         self.workflow.run_pending_workflow()
-        self.excel.Workbooks.Open.assert_called_once_with(str(self.wb_path), ReadOnly=True)
+        self.excel.Workbooks.Open.assert_called_once_with(str(self.wb_path), ReadOnly=True, UpdateLinks=0)
         self.wb.Save.assert_not_called()
         self.sheet.ExportAsFixedFormat.assert_called_once()
         self.assertEqual(self.row.RowHeight, 37.0)
@@ -749,7 +750,7 @@ class PersistenceTests(unittest.TestCase):
         self.sheet.ExportAsFixedFormat.side_effect = None
         self.workflow.queue_job("resume")
         self.workflow.run_pending_workflow()
-        self.excel.Workbooks.Open.assert_called_once_with(str(second_path), ReadOnly=True)
+        self.excel.Workbooks.Open.assert_called_once_with(str(second_path), ReadOnly=True, UpdateLinks=0)
         self.assertEqual(self.workflow.STATE["job"]["status"], "completed")
 
     def test_missing_problem_file_reports_error_instead_of_skipping(self):
@@ -1026,7 +1027,7 @@ class PersistenceTests(unittest.TestCase):
         )
         self.wb.Sheets = []
         self.workflow.run_pending_workflow()
-        self.excel.Workbooks.Open.assert_called_once_with(str(second.resolve()))
+        self.excel.Workbooks.Open.assert_called_once_with(str(second.resolve()), UpdateLinks=0)
         self.assertEqual(set(job["completed"]), {str(self.wb_path), str(second)})
         self.assertEqual(job["status"], "completed")
         self.assertEqual(

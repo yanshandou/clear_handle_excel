@@ -24,13 +24,15 @@ from pathlib import Path
 from typing import Any
 
 from core.common import XL_SHEET_VISIBLE, as_bbox, col_index_to_letters
-from core.excel_ops import CellProbe, extract_sheet_snapshot, normalize_workbook_view, snapshot_cells
+from core.excel_ops import (
+    CellProbe, extract_sheet_snapshot, normalize_workbook_view, quit_background_excel, snapshot_cells,
+    start_background_excel,
+)
 from core.hidden_text import collect_text_pieces, find_hidden_cells, locate_text, normalize_text
 from core.pdf_detector import (
     RegionTrackingError, crossing_horizontal_line, extract_page_lines, fitz,
     is_region_still_clipped, render_crop_base64,
 )
-from core.quiet_dialogs import hide_progress_dialogs
 from core.workflow import (
     RESOLVED_STATUSES,
     STATE,
@@ -47,7 +49,6 @@ from core.workflow import (
     queue_later_review,
     review_entry_needs_mark,
     pythoncom,
-    win32,
 )
 
 STEP_PT = 3.0
@@ -455,15 +456,12 @@ class _ExcelSession:
         self.excel: Any = None
         self.temp_dir: Path | None = None
         self.copies: dict[str, tuple[dict[str, int], Any]] = {}
-        self.quiet: Any = None
+        self.copy_count = 0  # 副本文件名编号只增不减，不同子文件夹里的同名文件也不会撞名
 
     def app(self) -> Any:
         if self.excel is None:
             _IDLE.clear()
-            self.excel = win32.DispatchEx("Excel.Application")
-            self.excel.Visible = False
-            self.excel.DisplayAlerts = False
-            self.quiet = hide_progress_dialogs(self.excel)
+            self.excel = start_background_excel()
             self.temp_dir = Path(tempfile.mkdtemp(prefix="clip_autofix_"))
         return self.excel
 
@@ -477,9 +475,10 @@ class _ExcelSession:
             cached[1].Close(SaveChanges=False)
         app = self.app()
         assert self.temp_dir is not None
-        target = self.temp_dir / f"{len(self.copies)}_{Path(wb_path).name}"
+        self.copy_count += 1
+        target = self.temp_dir / f"{self.copy_count}_{Path(wb_path).name}"
         shutil.copy2(wb_path, target)
-        workbook = app.Workbooks.Open(str(target))
+        workbook = app.Workbooks.Open(str(target), UpdateLinks=0)
         self.copies[wb_path] = (version, workbook)
         return workbook
 
@@ -505,13 +504,10 @@ class _ExcelSession:
         self.copies = {}
         if self.excel is not None:
             try:
-                self.excel.Quit()
+                quit_background_excel(self.excel)
             except Exception:
                 pass
             self.excel = None
-        if self.quiet is not None:
-            self.quiet.stop()
-            self.quiet = None
         if self.temp_dir is not None:
             shutil.rmtree(self.temp_dir, ignore_errors=True)
             self.temp_dir = None
@@ -790,7 +786,7 @@ def _apply(session: _ExcelSession, wb_path: str, gids: list[str]) -> bool:
     if not plan:
         return True
     excel = session.app()
-    workbook = excel.Workbooks.Open(str(path.resolve()))
+    workbook = excel.Workbooks.Open(str(path.resolve()), UpdateLinks=0)
     try:
         for _, sheet_name, row, _, height, *_ in plan:
             workbook.Sheets(sheet_name).Rows(row).RowHeight = height

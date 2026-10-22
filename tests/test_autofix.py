@@ -79,7 +79,7 @@ class AutofixTests(unittest.TestCase):
         self.real_heights = {5: 15.0}
         self.books = []
 
-        def open_book(path):
+        def open_book(path, **_):
             heights = self.real_heights if Path(path) == self.wb_path.resolve() else dict(self.real_heights)
             book = FakeBook(self, Path(path), heights)
             self.books.append(book)
@@ -87,7 +87,7 @@ class AutofixTests(unittest.TestCase):
         excel = Mock()
         excel.Workbooks.Open.side_effect = open_book
         for name, value in {
-            "win32": Mock(DispatchEx=Mock(return_value=excel)),
+            "start_background_excel": Mock(return_value=excel),
             "extract_sheet_snapshot": Mock(return_value={"start_r": 5, "start_c": 2, "rows_vals": [("Target",)]}),
             "normalize_workbook_view": Mock(),
         }.items():

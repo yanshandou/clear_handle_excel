@@ -42,8 +42,10 @@ from core.excel_ops import (
     normalize_workbook_view,
     open_workbook_for_manual_review,
     pythoncom,
+    quit_background_excel,
     scan_workbook_sheets,
     snapshot_cells,
+    start_background_excel,
     win32,
 )
 from core.hidden_text import clip_check_supported, collect_text_pieces, find_hidden_cells
@@ -813,7 +815,7 @@ def _scan_one_workbook(
         + (f"（只查有问题的工作表：{'、'.join(entry['sheets'])}）" if sheets_only else " ...")
     )
     update_file_progress(wb_label, status="processing", current_action="正在打开工作簿...", error="")
-    wb = excel.Workbooks.Open(str(wb_path.resolve()))
+    wb = excel.Workbooks.Open(str(wb_path.resolve()), UpdateLinks=0)
     try:
         all_names = [s.Name for s in wb.Sheets]
         deleted_bkp_list: list[str] = []
@@ -983,9 +985,7 @@ def scan_folder_workflow(
                     continue
                 if excel is None:
                     # 按需启动 Excel：全部文件都未修改时不必打开
-                    excel = win32.DispatchEx("Excel.Application")
-                    excel.Visible = False
-                    excel.DisplayAlerts = False
+                    excel = start_background_excel()
                 if rescan_all:
                     previous = [record for record in stash if record["wb_path"] == path]
                 else:
@@ -1013,7 +1013,7 @@ def scan_folder_workflow(
         finally:
             try:
                 if excel is not None:
-                    excel.Quit()
+                    quit_background_excel(excel)
             finally:
                 pythoncom.CoUninitialize()
 
@@ -1233,9 +1233,7 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
     pythoncom.CoInitialize()
     excel = None
     try:
-        excel = win32.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
+        excel = start_background_excel()
         for path, entry in by_file.items():
             workbook = None
             try:
@@ -1245,7 +1243,7 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
                     Path(path).name, status="processing",
                     current_action="根据新 PDF 重新检测问题工作表（不自动加高）", error="",
                 )
-                workbook = excel.Workbooks.Open(str(Path(path).resolve()), ReadOnly=True)
+                workbook = excel.Workbooks.Open(str(Path(path).resolve()), ReadOnly=True, UpdateLinks=0)
                 new_pages: dict[str, Any] = {}
                 new_items: dict[str, Any] = {}
                 with STATE_LOCK:
@@ -1326,7 +1324,7 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
     finally:
         try:
             if excel is not None:
-                excel.Quit()
+                quit_background_excel(excel)
         finally:
             pythoncom.CoUninitialize()
 
@@ -1549,9 +1547,7 @@ def review_open_workflow() -> None:
         pythoncom.CoInitialize()
         excel = None
         try:
-            excel = win32.DispatchEx("Excel.Application")
-            excel.Visible = False
-            excel.DisplayAlerts = False
+            excel = start_background_excel()
             for path in paths:
                 try:
                     if not mark_review_file(excel, path):
@@ -1561,7 +1557,7 @@ def review_open_workflow() -> None:
         finally:
             try:
                 if excel is not None:
-                    excel.Quit()
+                    quit_background_excel(excel)
             finally:
                 pythoncom.CoUninitialize()
     with STATE_LOCK:
@@ -1625,14 +1621,12 @@ def review_recheck_workflow() -> None:
             if path in skipped:
                 continue
             if excel is None:
-                excel = win32.DispatchEx("Excel.Application")
-                excel.Visible = False
-                excel.DisplayAlerts = False
+                excel = start_background_excel()
             results[path] = restore_review_file(excel, path)
     finally:
         try:
             if excel is not None:
-                excel.Quit()
+                quit_background_excel(excel)
         finally:
             pythoncom.CoUninitialize()
     with STATE_LOCK:
@@ -1696,9 +1690,7 @@ def fix_selected_workflow(
         )
 
         pythoncom.CoInitialize()
-        excel = win32.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
+        excel = start_background_excel()
 
         total_skipped = 0
         try:
@@ -1720,7 +1712,7 @@ def fix_selected_workflow(
                 attempted_ids: list[str] = []
                 skipped_ids: list[str] = []
                 try:
-                    wb = excel.Workbooks.Open(str(wb_path.resolve()))
+                    wb = excel.Workbooks.Open(str(wb_path.resolve()), UpdateLinks=0)
 
                     for item in items:
                         if item["status"] in {"fixed", "accepted"}:
@@ -1885,7 +1877,7 @@ def fix_selected_workflow(
                     if wb is not None:
                         wb.Close(SaveChanges=False)
         finally:
-            excel.Quit()
+            quit_background_excel(excel)
             pythoncom.CoUninitialize()
 
         done_msg = "🎉 所有选中项微调完毕！画布、放大镜截图与执行记录报告已更新。"
@@ -1912,12 +1904,10 @@ def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
         if excel is None:
             pythoncom.CoInitialize()
             try:
-                excel = win32.DispatchEx("Excel.Application")
+                excel = start_background_excel()
             except Exception:
                 pythoncom.CoUninitialize()
                 raise
-            excel.Visible = False
-            excel.DisplayAlerts = False
         return excel
 
     try:
@@ -1926,7 +1916,7 @@ def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
     finally:
         if excel is not None:
             try:
-                excel.Quit()
+                quit_background_excel(excel)
             finally:
                 pythoncom.CoUninitialize()
     return {"folder": str(folder), "files": files}
@@ -2124,7 +2114,7 @@ def _clean_backup_sheets(
                 record(pre_names, action, uncertain=uncertain_sel)
                 return
 
-    wb = get_excel().Workbooks.Open(str(wb_path.resolve()))
+    wb = get_excel().Workbooks.Open(str(wb_path.resolve()), UpdateLinks=0)
     rename_map: dict[str, str] = {}
     final_uncertain: list[str] = []
     try:
@@ -2170,7 +2160,7 @@ def _export_workbook_pdfs(
     get_excel: Callable[[], Any], wb_path: Path, root_folder: Path, used_pdf_paths: set[Path],
 ) -> list[Path]:
     wb_label = workbook_rel_name(wb_path, root_folder)
-    wb = get_excel().Workbooks.Open(str(wb_path.resolve()), ReadOnly=True)
+    wb = get_excel().Workbooks.Open(str(wb_path.resolve()), ReadOnly=True, UpdateLinks=0)
     try:
         file_stem = sanitize_filename(strip_review_prefix(wb_path.stem))
         exported: list[Path] = []
@@ -2198,7 +2188,7 @@ def _export_workbook_pdfs(
 def _normalize_workbook_file(get_excel: Callable[[], Any], wb_path: Path, root_folder: Path) -> None:
     wb_label = workbook_rel_name(wb_path, root_folder)
     excel = get_excel()
-    wb = excel.Workbooks.Open(str(wb_path.resolve()))
+    wb = excel.Workbooks.Open(str(wb_path.resolve()), UpdateLinks=0)
     try:
         normalize_workbook_view(excel, wb, on_error=log_msg)
         wb.Save()
@@ -2253,9 +2243,7 @@ def quick_task_workflow(kind: str) -> None:
         # 按需启动 Excel：精简 Sheet 时没有备份表的文件无需打开
         nonlocal excel
         if excel is None:
-            excel = win32.DispatchEx("Excel.Application")
-            excel.Visible = False
-            excel.DisplayAlerts = False
+            excel = start_background_excel()
         return excel
 
     # 已完成文件的 PDF 名称保持占用，续跑时不会被同名工作簿覆盖
@@ -2303,7 +2291,7 @@ def quick_task_workflow(kind: str) -> None:
     finally:
         try:
             if excel is not None:
-                excel.Quit()
+                quit_background_excel(excel)
         finally:
             pythoncom.CoUninitialize()
 

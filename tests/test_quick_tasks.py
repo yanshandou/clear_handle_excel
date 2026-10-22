@@ -12,7 +12,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from core import storage
+from core import excel_ops, storage
 
 
 class FakeSheet:
@@ -69,7 +69,7 @@ class FakeExcel:
         self.Workbooks.Open.side_effect = self.open
         self.Quit = Mock()
 
-    def open(self, path, ReadOnly=False):
+    def open(self, path, ReadOnly=False, UpdateLinks=3):
         p = Path(path)
         try:
             rel = p.resolve().relative_to(self.root_folder.resolve()).as_posix()
@@ -101,6 +101,7 @@ class QuickTaskTests(unittest.TestCase):
         self.normalize = Mock()
         self.patch_value(workflow, "pythoncom", Mock())
         self.patch_value(workflow, "win32", Mock(DispatchEx=self.dispatch))
+        self.patch_value(excel_ops, "win32", workflow.win32)  # 后台 Excel 由 excel_ops 启动
         self.patch_value(workflow, "normalize_workbook_view", self.normalize)
         self.patch_value(workflow, "scan_workbook_sheets", self.read_sheet_names)
 

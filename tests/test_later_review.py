@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from core import storage
+from core import excel_ops, storage
 from core.common import REVIEW_EMOJI, strip_review_prefix, workbook_rel_name
 
 
@@ -207,7 +207,7 @@ class LaterReviewTests(unittest.TestCase):
                 self.workflow.STATE["items"][iid]["status"] = "fixed"
         with patch.object(self.workflow, "recheck_items_workflow", side_effect=recheck), \
                 patch.object(self.workflow, "close_saved_workbooks", return_value=unsaved or {}), \
-                patch.object(self.workflow, "win32", Mock(DispatchEx=Mock(return_value=self.excel))):
+                patch.object(excel_ops, "win32", Mock(DispatchEx=Mock(return_value=self.excel))):
             self.workflow.review_recheck_workflow()
 
     def test_batch_recheck_checks_only_queued_problems_and_cleans_fixed_files(self):
