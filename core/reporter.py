@@ -390,7 +390,7 @@ def render_execution_markdown() -> str:
                 if sh in deleted_set:
                     lines.append(f"- ~~{sh}~~ *(已作为备份表清理)*")
                 elif sh in uncertain_set:
-                    lines.append(f"- **{sh}** *(❓ 待定存疑，已标记图标)*")
+                    lines.append(f"- **{sh}** *(待定存疑，本次未删除)*")
                 else:
                     lines.append(f"- {sh}")
         else:

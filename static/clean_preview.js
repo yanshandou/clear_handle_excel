@@ -207,19 +207,15 @@ function renderActionBar() {
     return;
   }
   const allDeleted = c.delete >= fileInfo.sheets.length;
-  const hasUncertainMark = fileInfo.sheets.some(name => name.startsWith('❓')) ||
-    splitDirAndBase(fileInfo.name)[1].startsWith('❓');
-  const hasAction = c.delete > 0 || c.uncertain > 0 || hasUncertainMark;
+  const hasAction = c.delete > 0; // 待定只是本次不删，不改文件
   execBtn.disabled = phase !== 'ready' || allDeleted || !hasAction;
   if (allDeleted) {
     execBtn.textContent = '⚠️ 请至少保留 1 个工作表';
     hint.textContent = '不能将所有工作表全部标为删除';
   } else if (!hasAction) {
-    execBtn.textContent = '没有标记删除或待定的工作表';
+    execBtn.textContent = '没有标记删除的工作表';
   } else {
-    execBtn.textContent = c.delete || c.uncertain
-      ? `🧹 确认执行（删 ${c.delete} 表 · 待定 ${c.uncertain} 表）`
-      : '✨ 确认执行（清除 ❓ 待定标记）';
+    execBtn.textContent = `🧹 确认执行（删除 ${c.delete} 个工作表）`;
   }
 }
 
