@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from core.common import EXCEL_EXTENSIONS, PROJECT_ROOT, RECORD_PATH, review_marked_name, workbook_rel_name
+from core.common import EXCEL_EXTENSIONS, PROJECT_ROOT, RECORD_PATH, md_wrap, review_marked_name, workbook_rel_name
 from core.storage import load_snapshot, save_snapshot
 
 REPORT_LOCK = threading.RLock()
@@ -425,9 +425,9 @@ def render_execution_markdown() -> str:
         if all_sheets:
             for sh in all_sheets:
                 if sh in deleted_set:
-                    lines.append(f"- ~~{sh}~~ *(已作为备份表清理)*")
+                    lines.append(f"- {md_wrap(sh, '~~')} *(已作为备份表清理)*")
                 elif sh in uncertain_set:
-                    lines.append(f"- **{sh}** *(待定存疑，本次未删除)*")
+                    lines.append(f"- {md_wrap(sh, '**')} *(待定存疑，本次未删除)*")
                 else:
                     lines.append(f"- {sh}")
         else:

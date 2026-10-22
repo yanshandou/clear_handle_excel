@@ -288,6 +288,12 @@ def unique_pdf_path(
     return candidate
 
 
+def md_wrap(text: str, marker: str) -> str:
+    """用 Markdown 标记（~~ / **）包裹文字；标记内侧不能有空格（含全角空格），否则不渲染"""
+    inner = text.strip()
+    return f"{marker}{inner}{marker}" if inner else text
+
+
 def append_record(
     workbook_name: str,
     original_sheet_names: list[str],
@@ -303,7 +309,7 @@ def append_record(
     with RECORD_PATH.open("a", encoding="utf-8", newline="\n") as record:
         record.write(f"{separator}## {workbook_name}\n\n")
         for sheet_name in original_sheet_names:
-            display_name = f"~~{sheet_name}~~" if sheet_name in removed_sheets else sheet_name
+            display_name = md_wrap(sheet_name, "~~") if sheet_name in removed_sheets else sheet_name
             record.write(f"- {display_name}\n")
 
 
