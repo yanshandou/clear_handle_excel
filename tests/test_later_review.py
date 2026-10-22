@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from core import excel_ops, storage
+from core import excel_ops, fix_images, storage
 from core.common import REVIEW_PREFIX, strip_review_prefix, workbook_rel_name
 
 
@@ -61,6 +61,9 @@ class LaterReviewTests(unittest.TestCase):
         reporter_patch = patch.object(reporter, "RECORD_PATH", self.root / "record.md")
         reporter_patch.start()
         self.addCleanup(reporter_patch.stop)
+        images_patch = patch.object(fix_images, "IMAGES_DIR", self.root / "_report_images")
+        images_patch.start()
+        self.addCleanup(images_patch.stop)
         self.autofix = importlib.reload(autofix)
         self.autofix._worker = Mock(is_alive=Mock(return_value=True))
         p = patch.object(self.workflow, "normalize_workbook_view", Mock())

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core import reporter, storage
+from core import fix_images, reporter, storage
 
 
 class ReportAccumulateTests(unittest.TestCase):
@@ -15,7 +15,8 @@ class ReportAccumulateTests(unittest.TestCase):
         self.folder = self.root / "excel"
         self.folder.mkdir()
         for name, value in [(storage, ("DATABASE_PATH", self.root / "t.sqlite3")),
-                            (reporter, ("RECORD_PATH", self.root / "record.md"))]:
+                            (reporter, ("RECORD_PATH", self.root / "record.md")),
+                            (fix_images, ("IMAGES_DIR", self.root / "_report_images"))]:
             p = patch.object(name, *value)
             p.start()
             self.addCleanup(p.stop)

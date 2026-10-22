@@ -12,7 +12,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from core import excel_ops, storage
+from core import excel_ops, fix_images, storage
 
 
 class FakeSheet:
@@ -93,6 +93,7 @@ class QuickTaskTests(unittest.TestCase):
         self.reporter = importlib.reload(reporter)
         self.workflow = importlib.reload(workflow)
         self.patch_value(reporter, "RECORD_PATH", self.root / "record.md")
+        self.patch_value(fix_images, "IMAGES_DIR", self.root / "_report_images")
         self.patch_value(reporter, "REPORT_STATE_PATH", self.root / "legacy.json")
         self.events = []
         self.books = {}

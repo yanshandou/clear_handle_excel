@@ -33,6 +33,7 @@ from core.common import (
     unique_pdf_path,
     workbook_rel_name,
 )
+from core import fix_images, pdf_detector
 from core.excel_ops import (
     CellProbe,
     close_saved_workbooks,
@@ -558,9 +559,11 @@ def _fix_record(item: dict[str, Any]) -> dict[str, Any]:
         reason = HIDDEN_FIX_REASONS.get(item.get("hidden_reason") or "", item.get("hidden_reason") or "文字没显示全")
     else:
         reason = CLIP_FIX_REASON
+    images = item.get("fix_images") or {}
     return {
         "sheet": item["sheet_name"], "cell": item.get("cell_addr") or "",
         "row": int(item["excel_row"]) if item.get("excel_row") else 0, "reason": reason,
+        "before": images.get("before", ""), "after": images.get("after", ""),
     }
 
 
@@ -640,10 +643,11 @@ def _same_text_problem(a: dict[str, Any], b: dict[str, Any]) -> bool:
 
 def _problem_record(item: dict[str, Any]) -> dict[str, Any]:
     """完整重新扫描前记下旧问题项（不含截图等大字段），用于对应同一处问题"""
+    fix_images.remember_before(item)  # 截图不带走：报告要用的修复前截图先存下来
     return {
         key: copy.deepcopy(item.get(key))
         for key in ("id", "seq", "kind", "wb_path", "sheet_name", "text", "occurrence", "status",
-                    "manual_confirmation", "triage_keep", "later_review")
+                    "manual_confirmation", "triage_keep", "later_review", "fix_images")
     }
 
 
@@ -687,6 +691,8 @@ def _merge_redetected(
     - 新检出、对应不上的：mark_new 时标为「新发现」
     - 旧问题未再检出（keep_unmatched 时保留记录）：未解决的记为已修复，已跳过 / 已修复的保持不变
     """
+    for old in previous:
+        fix_images.remember_before(old)
     matched = _match_previous(new_items, previous)
     merged: dict[str, Any] = {}
     for item in new_items.values():
@@ -695,6 +701,8 @@ def _merge_redetected(
         if old is not None:
             item["id"], item["seq"] = old["id"], old["seq"]
             item["triage_keep"] = bool(old.get("triage_keep"))
+            if old.get("fix_images"):
+                item["fix_images"] = {k: v for k, v in old["fix_images"].items() if k == "before"}
             if old["status"] == "accepted":
                 item["status"] = "accepted"
                 item["manual_confirmation"] = copy.deepcopy(old["manual_confirmation"])
@@ -715,8 +723,26 @@ def _merge_redetected(
             if record["status"] not in RESOLVED_STATUSES:
                 record["status"] = "fixed"
                 record["review_reason"] = MANUALLY_FIXED_REASON
+                _capture_fixed_image(record)
             merged[record["id"]] = record
     return merged
+
+
+def _capture_fixed_image(item: dict[str, Any]) -> None:
+    """人工改好后重新检测没再检出：在刚导出的 PDF 里找回这处文字，截一张修复后的图给报告用。
+    找不到（文字改了、重复文字对不上等）就不放修复后截图。"""
+    pdf_path = Path(item.get("pdf_path") or "")
+    if not item.get("text") or item.get("page_index") is None or not pdf_path.is_file():
+        return
+    try:
+        still, image, _, _ = pdf_detector.is_region_still_clipped(
+            pdf_path, int(item["page_index"]), item["text"], as_bbox(item["bbox"]),
+            occurrence=item.get("occurrence") if (item.get("kind") or "clip") == "clip" else None,
+        )
+    except Exception:
+        return
+    if not still:
+        fix_images.save(item, "after", image)
 
 
 def _set_item_confirmation(item: dict[str, Any], accepted: bool) -> None:
@@ -1215,6 +1241,7 @@ def _update_item_pdf_location(
     page_index: int,
 ) -> None:
     with STATE_LOCK:
+        fix_images.remember_before(item)
         if page_index != item["page_index"]:
             page_entry = next(
                 (page for page in STATE["pages"].values()
@@ -1931,6 +1958,7 @@ def fix_selected_workflow(
                                 with STATE_LOCK:
                                     item["status"] = "fixed"
                                     item["row_height"] = curr_h
+                                    fix_images.save(item, "after", item.get("image") or "")
                                 _sync_row_height_in_state(wb_path_str, sheet_name, target_row, curr_h)
                                 log_msg(f"  ✅ [{sheet_name} 行{target_row}] 复检目标文字已完整显示，无需继续加高")
                                 _persist_state()
@@ -1972,6 +2000,8 @@ def fix_selected_workflow(
                                     still_clip, new_img, new_bbox, resolved_page = located
                                     _update_item_pdf_location(item, new_img, new_bbox, resolved_page)
                                     item["status"] = "fixed" if not still_clip else "pending"
+                                    if not still_clip:
+                                        fix_images.save(item, "after", item.get("image") or "")
                                 item["row_height"] = new_h
                                 peer_iterations = pending.get("peer_iterations", {
                                     peer["id"]: int(peer["iterations"]) + 1 for peer in row_peers
