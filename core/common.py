@@ -240,23 +240,41 @@ def strip_uncertain_prefix(name: str) -> str:
 
 # Excel 异常退出时会留下「~$文件名」锁文件，程序会一直以为文件还开着
 STALE_LOCK_HINT = "（如果 Excel 已经全部关掉还这样，多半是残留的「~$」开头的锁文件，在文件夹里删掉它即可）"
-REVIEW_EMOJI = "🟡"  # 等待稍后人工复检的文件，文件名前加这个，方便在文件夹里找到
+# 等待稍后人工复检的文件，文件名前加这个，方便在文件夹里找到。
+# 用「★」而不用 emoji：日文 Windows 10 的字体没有 🟡，文件夹、Excel 标题栏里会显示成方框
+REVIEW_PREFIX = "★"
+LEGACY_REVIEW_PREFIXES = ("🟡",)  # 旧版本加的前缀，照样认、照样去掉
+_ALL_REVIEW_PREFIXES = (REVIEW_PREFIX, *LEGACY_REVIEW_PREFIXES)
+
+
+def has_review_prefix(name: str) -> bool:
+    """文件名是否带着待人工复检的前缀（含旧版本的 🟡）"""
+    return name.startswith(_ALL_REVIEW_PREFIXES)
 
 
 def review_marked_name(name: str) -> str:
     """待人工复检的文件名（已带前缀的不重复加）"""
-    return name if name.startswith(REVIEW_EMOJI) else REVIEW_EMOJI + name
+    return name if has_review_prefix(name) else REVIEW_PREFIX + name
+
+
+def review_name_variants(name: str) -> list[str]:
+    """磁盘上这个文件可能用的各种带前缀的名字（新前缀在前）"""
+    base = strip_review_prefix(name)
+    return [prefix + base for prefix in _ALL_REVIEW_PREFIXES]
 
 
 def strip_review_prefix(name: str) -> str:
-    """去掉文件名前面的「🟡」前缀，得到原来的文件名"""
-    return name.removeprefix(REVIEW_EMOJI) or name
+    """去掉文件名前面的「★」（或旧版的「🟡」）前缀，得到原来的文件名"""
+    for prefix in _ALL_REVIEW_PREFIXES:
+        if name.startswith(prefix):
+            return name.removeprefix(prefix) or name
+    return name
 
 
 def workbook_rel_name(wb_path: Path, root_folder: Path | str | None = None) -> str:
     """返回工作簿相对于目标根目录的显示名称（顶层文件返回文件名，子文件夹文件返回 sub/file.xlsx）
 
-    「🟡」只是临时标记，显示名称和执行记录里都用原来的文件名。
+    「★」只是临时标记，显示名称和执行记录里都用原来的文件名。
     """
     if root_folder:
         try:

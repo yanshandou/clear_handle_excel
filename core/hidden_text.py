@@ -26,6 +26,12 @@ _BASE_FLAGS = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES | fit
 # 只取裁剪区域内的字（PyMuPDF 1.25 起，旧版只按页面边界裁剪）
 _CLIP_FLAG = getattr(fitz, "TEXT_CLIP", fitz.TEXT_MEDIABOX_CLIP)
 _SPACE_PATTERN = re.compile(r"\s+")
+# 同一个字在 Excel 和 PDF 里可能是不同的码位（Shift_JIS 的老问题：Excel 存「－」「～」，
+# PDF 读出来是「−」「〜」），各种横线统一成「-」，否则单元格只有「-」时会误报“PDF 里找不到”
+_EQUIVALENT_CHARS = str.maketrans({
+    **dict.fromkeys("\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63", "-"),
+    "\u301c": "~", "\u2016": "\u2225",
+})
 
 REASON_TRUNCATED = "PDF 里只打印出开头一部分，后面的文字没显示（行高或列宽不够）"
 REASON_CLIPPED = "有文字超出单元格被裁掉，打印出来看不到（列宽或行高不够）"
@@ -35,7 +41,7 @@ REASON_MISSING = "PDF 里找不到这格的文字，打印时没有显示（行�
 
 def normalize_text(text: str) -> str:
     """比对用：统一全角半角，去掉所有空白（换行位置在 Excel 和 PDF 里不同）"""
-    return _SPACE_PATTERN.sub("", unicodedata.normalize("NFKC", text))
+    return _SPACE_PATTERN.sub("", unicodedata.normalize("NFKC", text)).translate(_EQUIVALENT_CHARS)
 
 
 def _blank_line_offsets(text: str) -> dict[int, int]:

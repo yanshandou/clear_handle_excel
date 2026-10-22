@@ -3302,6 +3302,26 @@ button.preview-sheet-tag:active {
   white-space: nowrap;
 }
 
+/* 黄色圆点 / 方块用 CSS 画：日文 Windows 10 的字体没有 🟡 🟨，会显示成方框 */
+.review-dot,
+.review-swatch {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  margin-right: 0.35em;
+  vertical-align: -0.05em;
+  background: #facc15;
+  border: 1px solid #ca8a04;
+}
+
+.review-dot {
+  border-radius: 50%;
+}
+
+.review-swatch {
+  border-radius: 2px;
+}
+
 @media (max-width: 760px) {
   .review-mark {
     grid-template-columns: auto minmax(0, 1fr);

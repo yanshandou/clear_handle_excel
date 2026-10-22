@@ -57,6 +57,15 @@ class HiddenTextTests(unittest.TestCase):
 
                     self.assertEqual(detect([(46, 26, source)], build), [])
 
+    def test_dash_and_wave_dash_variants_match_pdf_text(self):
+        # Excel 存「－」「～」，PDF 读出来可能是「−」「〜」（Shift_JIS 的码位差异）
+        for source, pdf_text in (("-", "\u2212"), ("－", "\u2212"), ("1～3", "1\u301c3")):
+            with self.subTest(source=source, pdf_text=pdf_text):
+                def build(page):
+                    page.insert_text((70, 105), pdf_text, fontsize=10, fontname="japan")
+
+                self.assertEqual(detect([(86, 18, source)], build), [])
+
     def test_combining_marks_and_compatibility_glyphs_match_complete_text(self):
         for text in ("ﾊﾟﾋﾟﾌﾟﾍﾟﾎﾟ", "カ\u3099", "e\u0301", "A\u0301\u0327", "\u1100\u1161", "㍿"):
             with self.subTest(text=text):

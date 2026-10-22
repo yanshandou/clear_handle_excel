@@ -11,7 +11,7 @@
 - 全自动时加高 8 次仍不行（或出错）的行，直接转稍后人工复检
 - 扫描期间处理已经提交的文件；复检、人工定位等任务时暂停
 - 工作台打开时可为已筛完的行做图；尚未筛完的行不入队
-- 「稍后人工复检」的行不再做图；后台在没有任务时给这些单元格标黄、给文件名加 🟡
+- 「稍后人工复检」的行不再做图；后台在没有任务时给这些单元格标黄、给文件名加 ★
 """
 import base64
 import hashlib
@@ -414,12 +414,12 @@ def _auto_defer(gid: str) -> None:
         except Exception:
             return
         _sync_groups_locked()
-        log_msg(f"🟡 [{label}] 自动处理不了，已转稍后人工复检：{message}")
+        log_msg(f"★ [{label}] 自动处理不了，已转稍后人工复检：{message}")
     _WAKE.set()
 
 
 def rename_groups(old_path: str, new_path: str) -> None:
-    """文件改名（加 / 去 🟡）后分组跟着改，已点选等待写入的行不丢。调用方持有 STATE_LOCK。"""
+    """文件改名（加 / 去 ★）后分组跟着改，已点选等待写入的行不丢。调用方持有 STATE_LOCK。"""
     with _LOCK:
         groups = AUTOFIX["groups"]
         for gid in [gid for gid, g in groups.items() if g["wb_path"] == old_path]:
