@@ -209,6 +209,35 @@ def mark(cid: str, color: str) -> None:
             raise
 
 
+def mark_many(ids: Any, color: str) -> dict:
+    """批量改色，只写一次数据库；尚未通过检查的卡片不能标蓝，跳过并计数。"""
+    with wf.STATE_LOCK:
+        if wf.STATE["busy"]:
+            raise ValueError("任务执行中，请结束或暂停后再审核")
+        if color not in COLORS or not isinstance(ids, list) or not ids:
+            raise ValueError("请选择卡片及颜色")
+        cards = _data()["cards"]
+        targets = []
+        for cid in dict.fromkeys(ids):
+            card = cards.get(cid) if isinstance(cid, str) else None
+            if card is None or card.get("dismissed") or not wf.in_current_folder(card["wb_path"]):
+                raise ValueError("选中的卡片已失效，请刷新页面后重新选择")
+            targets.append(card)
+        skipped = [c for c in targets if color == "blue" and not c.get("verified")]
+        changed = [c for c in targets if c not in skipped]
+        previous = [copy.deepcopy(c) for c in changed]
+        for card in changed:
+            card.update(color=color, finalized=False, marked=True)
+        try:
+            wf._persist_state()
+        except Exception:
+            for card, old in zip(changed, previous):
+                card.clear()
+                card.update(old)
+            raise
+        return {"changed": len(changed), "skipped": len(skipped)}
+
+
 def _check_file(path: str) -> None:
     p = Path(path)
     if not p.is_file():
