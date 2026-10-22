@@ -1,5 +1,6 @@
 let latestPages = {};
 let serverItems = {}; // 服务器返回的问题项
+let stateLoaded = false; // 至少拿到过一次服务器状态
 let latestItems = {}; // 叠加尚未保存的跳过决定后的问题项，页面以此渲染
 let workspaceRestored = false;
 let canResume = false;
@@ -212,6 +213,7 @@ function refreshCounts() {
 function renderItems() {
   refreshCounts();
   renderTriage();
+  renderStepTabs();
   renderFix();
 }
 
@@ -442,7 +444,22 @@ document.addEventListener('keydown', e => {
 /* ==========================================
    第 2 步：自动处理（九宫格选图）
    ========================================== */
+// ① 全部筛完才能进 ②：还有没筛的就不让后台做图
+function triageComplete() {
+  return stateLoaded && triageQueue().length === 0;
+}
+
+function renderStepTabs() {
+  const btn = document.getElementById('tabFixBtn');
+  const left = stateLoaded ? triageQueue().length : 0;
+  const locked = !triageComplete();
+  btn.classList.toggle('is-locked', locked);
+  btn.textContent = locked && left ? `🔒 ② 自动处理（先筛完 ①，还剩 ${left} 处）` : '② 自动处理';
+  btn.title = locked ? '第 ① 步全部筛完后才能进入' : '';
+}
+
 function setStepTab(tab) {
+  if (tab === 'fix' && !triageComplete()) return;
   stepTab = tab === 'fix' ? 'fix' : 'triage';
   document.getElementById('tabTriageBtn').classList.toggle('active', stepTab === 'triage');
   document.getElementById('tabFixBtn').classList.toggle('active', stepTab === 'fix');
@@ -489,6 +506,18 @@ function renderFix() {
   autoBtn.classList.toggle('btn-outline', !fixData.auto);
 
   const stage = document.getElementById('fixStage');
+  if (!triageComplete()) {
+    const left = triageQueue().length;
+    const signature = `locked|${left}`;
+    if (stage.dataset.signature === signature) return;
+    stage.dataset.signature = signature;
+    stage.innerHTML = `<div class="triage-done">
+      <b>还有 ${left} 处没筛选</b>
+      <span>（重新扫描或复检发现了新问题）第 ① 步全部筛完后，后台才会继续做图。</span>
+      <button type="button" class="btn btn-primary btn-sm" onclick="setStepTab('triage')">← 回到 ① 筛选</button>
+    </div>`;
+    return;
+  }
   const group = pickFixGroup();
   if (!group) {
     const signature = `done|${applied}|${groups.length}`;
@@ -553,7 +582,9 @@ function renderFix() {
 
 async function pollAutofix() {
   try {
-    const res = await fetch('/api/autofix');
+    // 只有开着「② 自动处理」时才让后台预先做图，筛选时不在后台导出 PDF
+    const active = stepTab === 'fix' && triageComplete() && !document.hidden ? '?active=1' : '';
+    const res = await fetch(`/api/autofix${active}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '读取自动处理进度失败');
     fixData = data;
@@ -648,6 +679,7 @@ async function pollState() {
 
     latestPages = data.pages || {};
     serverItems = data.items || {};
+    stateLoaded = true;
     // 已被重新检测替换掉的问题项，不再保留未提交的决定
     for (const id of [...pendingSkips.keys()]) {
       if (!serverItems[id]) pendingSkips.delete(id);

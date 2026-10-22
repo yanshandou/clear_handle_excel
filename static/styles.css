@@ -748,6 +748,11 @@ input[type="text"] {
   transition: all 0.18s ease;
 }
 
+.view-tab.is-locked {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .view-tab:hover:not(.active) {
   color: var(--text-strong);
   background: rgba(255, 255, 255, 0.45);

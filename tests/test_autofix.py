@@ -69,6 +69,7 @@ class AutofixTests(unittest.TestCase):
         self.addCleanup(reporter_patch.stop)
         self.autofix = importlib.reload(autofix)
         self.autofix._worker = Mock(is_alive=Mock(return_value=True))  # 测试里不启动后台线程
+        self.autofix.AUTOFIX["active_until"] = float("inf")  # 相当于页面一直开着「② 自动处理」
 
         self.wb_path = self.root / "book.xlsx"
         self.wb_path.write_bytes(b"workbook")
@@ -196,6 +197,25 @@ class AutofixTests(unittest.TestCase):
         group = self.group()
         self.assertEqual((group["manual"], group["status"], group["attempts"]), (False, "queued", []))
         self.assertIn("复检", group["message"])
+
+
+    def test_previews_only_while_fix_page_open(self):
+        gid = self.group()["id"]
+        self.autofix.AUTOFIX["active_until"] = 0.0  # 用户还在筛选
+        self.assertIsNone(self.autofix._next_task({}))
+
+        self.autofix.mark_active()
+        self.assertEqual(self.autofix._next_task({}), ("preview", gid))
+        self.autofix.AUTOFIX["active_until"] = 0.0
+        self.autofix.set_auto(True)  # 全自动也要开着 ② 页面才做图
+        self.assertIsNone(self.autofix._next_task({}))
+
+    def test_chosen_picture_is_still_written_after_leaving_fix_page(self):
+        gid = self.group()["id"]
+        self.autofix._preview(self.session, gid)
+        self.autofix.choose(gid, 3)
+        self.autofix.AUTOFIX["active_until"] = 0.0
+        self.assertEqual(self.autofix._next_task({}), ("apply", (str(self.wb_path), [gid])))
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ import threading
 import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from core import autofix
 from core.common import (
@@ -146,6 +146,8 @@ class WebHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/state":
             self._send_json(get_state_snapshot())
         elif parsed.path == "/api/autofix":
+            if parse_qs(parsed.query).get("active") == ["1"]:
+                autofix.mark_active()
             self._send_json(autofix.snapshot())
         elif parsed.path.startswith("/api/autofix/image/"):
             parts = parsed.path.removeprefix("/api/autofix/image/").split("/")
