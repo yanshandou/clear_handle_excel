@@ -38,6 +38,7 @@ from core.excel_ops import (
     win32,
 )
 from core.hidden_text import clip_check_supported, collect_text_pieces, find_hidden_cells
+from core.row_locator import build_anchors, locate_cell
 from core.pdf_detector import (
     collect_text_spans,
     find_clipped_spans_on_page,
@@ -293,6 +294,10 @@ def _detect_sheet_results(
         if not len(doc):
             raise ValueError(f"导出的 PDF 没有页面: {pdf_path}")
         text_spans = collect_text_spans(doc)
+        probe = CellProbe(sheet)
+        cells = snapshot_cells(sheet_snapshot)
+        pieces = collect_text_pieces(doc)
+        anchors = build_anchors(cells, pieces)
 
         def page_entry(page_index: int) -> str:
             page_id = f"page_{generation}_{page_index}"
@@ -313,10 +318,16 @@ def _detect_sheet_results(
                 continue
             page_id = page_entry(page_index)
             for index, clip in enumerate(clips, start=1):
-                row, address, height = match_excel_row(
-                    sheet_snapshot, clip["text"], page_index, len(doc),
-                    clip["bbox"][1] / max(1.0, page.rect.height),
-                )
+                located = locate_cell(cells, anchors, clip["text"], page_index, clip["bbox"], probe.row_height)
+                if located is not None:
+                    row, col = located
+                    address, height = f"{col_index_to_letters(col)}{row}", probe.row_height(row)
+                else:
+                    # 这一页没有能确定位置的文字时，才按页面位置比例估算
+                    row, address, height = match_excel_row(
+                        sheet_snapshot, clip["text"], page_index, len(doc),
+                        clip["bbox"][1] / max(1.0, page.rect.height),
+                    )
                 item_id = f"item_{generation}_{len(items)}"
                 occurrence = locate_text_occurrence(text_spans, page_index, clip["text"], clip["bbox"])
                 items[item_id] = {
@@ -331,10 +342,7 @@ def _detect_sheet_results(
                 }
 
         # 隐藏截断：单元格完整内容在 PDF 里没显示全（外观上看不出来）
-        probe = CellProbe(sheet)
-        hidden = find_hidden_cells(
-            snapshot_cells(sheet_snapshot), collect_text_pieces(doc), probe.text, probe.printed,
-        )
+        hidden = find_hidden_cells(cells, pieces, probe.text, probe.printed)
         per_page: dict[int | None, int] = {}
         for found in hidden:
             page_index = found["page"]

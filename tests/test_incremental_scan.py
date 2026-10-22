@@ -181,7 +181,7 @@ class IncrementalScanTests(unittest.TestCase):
             "start_r": 23, "start_c": 8, "rows_vals": [("DbExKhplg0000Mapper",)],
         }))
         sheet = self.books["book"].Sheets[0]
-        sheet.Rows = Mock(return_value=Mock(RowHeight=13.5))
+        sheet.Rows = Mock(return_value=Mock(RowHeight=13.5, Hidden=False))
         self.scan()
 
         (item,) = self.workflow.STATE["items"].values()

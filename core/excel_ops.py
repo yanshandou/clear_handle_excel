@@ -256,6 +256,7 @@ class CellProbe:
         self._hidden_rows: dict[int, bool] = {}
         self._hidden_cols: dict[int, bool] = {}
         self._areas: list[tuple[int, int, int, int]] | None = None
+        self._heights: dict[int, float] = {}
 
     def text(self, row: int, col: int) -> str | None:
         try:
@@ -264,10 +265,14 @@ class CellProbe:
             return None
 
     def row_height(self, row: int) -> float:
-        try:
-            return round(float(self.sheet.Rows(row).RowHeight or 15.0), 1)
-        except Exception:
-            return 15.0
+        """行高（隐藏行为 0）；同一行只跨进程读一次"""
+        if row not in self._heights:
+            try:
+                r = self.sheet.Rows(row)
+                self._heights[row] = 0.0 if r.Hidden else round(float(r.RowHeight or 0.0), 1)
+            except Exception:
+                self._heights[row] = 15.0
+        return self._heights[row]
 
     def _print_areas(self) -> list[tuple[int, int, int, int]]:
         if self._areas is None:
