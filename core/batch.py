@@ -1,11 +1,15 @@
 """无人值守扫描修复，以及按单元格进行的三色结果审核。
 
 PDF 坐标只用于当前一次导出。每保存一行，重新检测整张表再选下一行。
+同一状态不重复导出：试算的原样那张用刚检测过的 PDF；写入后副本做同样修改继续用，
+不再重开原文件重新检测；每个文件最后再用原文件完整复查改过的表。
 审核颜色只写数据库；原文件的还原由独立、可续跑的审核任务统一执行。
 """
 import copy
 import hashlib
 import math
+import shutil
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -396,7 +400,12 @@ def _error_value_card(card: dict) -> bool:
         return False
 
 
-def _refresh(excel: Any, path: str, sheets: list[str] | None = None) -> None:
+def _refresh(
+    excel: Any, path: str, sheets: list[str] | None = None, *,
+    session: Any = None, workbook: Any = None, reuse: bool = True, timing: dict[str, float] | None = None,
+) -> None:
+    """重新检测（默认整个文件）。session 给了就沿用同一状态已导出的 PDF（reuse=False 时一律重新导出）；
+    workbook 是和原文件一致的副本时直接用它，不再打开原文件。"""
     with wf.STATE_LOCK:
         cards = _data()["cards"]
         for cid in [cid for cid, card in cards.items()
@@ -417,7 +426,7 @@ def _refresh(excel: Any, path: str, sheets: list[str] | None = None) -> None:
         excel, Path(path), {"mode": "sheets" if sheets else "full", "sheets": sheets, "scanned": bool(previous)},
         previous, job=None, resumed=True, rescan_all=False, delete_backups=False,
         used_pdf_paths={Path(p["pdf_path"]) for p in wf.STATE["pages"].values()},
-        read_only=True,
+        read_only=True, workbook=workbook, pdfs=session, reuse_pdfs=reuse, timing=timing,
     )
     with wf.STATE_LOCK:
         for item in wf.STATE["items"].values():
@@ -494,10 +503,15 @@ def _wrap_targets(sheet: Any, items: list[dict]) -> list[str]:
 def _prepare_row(
     session: Any, path: str, items: list[dict], *,
     on_attempt: Callable[[int, float, dict, list[str]], None] | None = None,
+    timing: dict[str, float] | None = None,
 ) -> tuple[float, dict | None, dict]:
     """只在副本上做图；逐次交出截图，即使随后导出失败也能保留最后已生成的效果。
-    原样没通过、有不换行被横向截断的格子时，从第一次加高起先给这些格子开自动换行。"""
+    原样没通过、有不换行被横向截断的格子时，从第一次加高起先给这些格子开自动换行。
+    原样那张直接用刚才检测导出的 PDF（同一版本）；通过的方案正好是最后一次导出时，
+    chosen["pdf"] 留下那份 PDF，写入后重新检测可直接用。"""
+    timing = {} if timing is None else timing
     sheet = session.copy_of(path).Sheets(items[0]["sheet_name"])
+    exported = session.pdf_for(path, items[0]["sheet_name"])
     autofix.validate_print_targets(sheet, items)
     wrap = _wrap_targets(sheet, items)
     wrapped: list[str] = []
@@ -521,12 +535,19 @@ def _prepare_row(
                     sheet.Range(addr).MergeArea.WrapText = True
                 wrapped = list(wrap)
             sheet.Rows(row).RowHeight = height
-            wf._export_sheet_pdf(sheet, pdf)
+            started = time.perf_counter()
+            source = exported if attempt == 0 and exported is not None else pdf
+            if source == pdf:
+                wf._export_sheet_pdf(sheet, pdf)
+                timing["exports"] = timing.get("exports", 0) + 1
+            timing["export"] = timing.get("export", 0.0) + time.perf_counter() - started
+            started = time.perf_counter()
             # 每次行高改变后重建 probe，避免沿用 Range.Text 缓存。
             probe = CellProbe(sheet)
-            ok, _, need = autofix._evaluate(pdf, items, cells, probe.text, probe.printed)
-            shots = {_key(*_cell(group[0])): autofix._evaluate(pdf, group, cells, probe.text, probe.printed)[1]
+            ok, _, need = autofix._evaluate(source, items, cells, probe.text, probe.printed)
+            shots = {_key(*_cell(group[0])): autofix._evaluate(source, group, cells, probe.text, probe.printed)[1]
                      for group in groups}
+            timing["evaluate"] = timing.get("evaluate", 0.0) + time.perf_counter() - started
             if on_attempt is not None:
                 on_attempt(attempt, height, shots, wrapped)
             if attempt == 0:
@@ -534,6 +555,10 @@ def _prepare_row(
             if ok:
                 chosen = {"height": height, "shots": shots, "wrap": wrapped}
             if (attempt == 0 and ok) or success:
+                if attempt and ok:
+                    # 最后这次导出就是要写入的状态
+                    shutil.copyfile(pdf, session.chosen_pdf())
+                    chosen["pdf"] = session.chosen_pdf()
                 break
             success = ok
             last_height = height
@@ -560,6 +585,7 @@ def _restart_excel(session: Any) -> Any:
 def _repair_file(excel: Any, session: Any, path: str) -> None:
     job = wf.STATE["job"]
     attempted = job.setdefault("attempted_rows", [])
+    copy_checked: set[str] = set()  # 用副本重新检测过的表：最后要用原文件完整复查
     while True:
         if job.get("pause_requested"):
             return
@@ -575,6 +601,16 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                                        for c in _data()["cards"].values()))
             candidates = [it for it in pending if _key(path, it["sheet_name"], it["excel_row"]) not in attempted
                           and (it["sheet_name"], it["excel_row"]) not in manual_rows]
+            sheets = sorted(copy_checked) if not candidates else []
+            copy_checked.difference_update(sheets)
+        if sheets:
+            # 副本和原文件应完全一致；兜底用原文件重新导出检测一遍，复查结果为准
+            session.drop_copy(path)
+            started = time.perf_counter()
+            _refresh(excel, path, sheets, session=session, reuse=False)
+            wf.log_msg(f"⏱ {Path(path).name} 用原文件复查 {len(sheets)} 张表：{time.perf_counter() - started:.1f} 秒")
+            continue
+        with wf.STATE_LOCK:
             if not candidates:
                 # 之前修过的格子因后续分页变化又出现问题，也交给人工，不能循环自动加高。
                 for group in _group_cells(pending):
@@ -606,6 +642,9 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                                 attempt_wrap=[a for a in wrapped if a == card.get("cell_addr")])
                 wf._persist_state()
 
+        timing: dict[str, float] = {}
+        row_started = time.perf_counter()
+        workbook = None  # 和原文件一致的副本：重新检测时直接用，不再打开原文件
         try:
             column_only = [it for it in items if autofix.column_width_only(it)]
             if column_only:
@@ -630,7 +669,8 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                 raise ValueError(reason)
             if any(it.get("location_confirmed") is False or not it.get("cell_addr") for it in items):
                 raise ValueError("单元格定位未确认，请人工核对")
-            base, chosen, before = _prepare_row(session, path, items, on_attempt=remember_attempt)
+            base, chosen, before = _prepare_row(session, path, items, on_attempt=remember_attempt, timing=timing)
+            timing["prepare"] = time.perf_counter() - row_started
             with wf.STATE_LOCK:
                 for card in cards:
                     _save_shot(card, "before", before.get(card["id"], ""))
@@ -658,8 +698,14 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                                   "wrap": {addr: True for addr in chosen.get("wrap", [])}}],
                     }
                 wf._persist_state()
-            if not unchanged:
+            if unchanged:
+                workbook = session.copy_of(path)
+            else:
+                started = time.perf_counter()
                 _finish_pending(excel)
+                timing["write"] = time.perf_counter() - started
+                workbook = session.written(path, version, first["sheet_name"], int(first["excel_row"]),
+                                           chosen["height"], chosen.get("wrap", []), chosen.get("pdf"))
         except _RowDone:
             pass
         except Exception as err:
@@ -688,9 +734,31 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
             for card in cards:
                 card["waiting"] = False
             wf._persist_state()
-        session.drop_copy(path)
+        if workbook is None:
+            session.drop_copy(path)
+        elif "write" in timing:
+            copy_checked.add(first["sheet_name"])
         # 包括成功写入后原来没被检出的新问题，始终以最新整表 PDF 为准。
-        _refresh(excel, path, [first["sheet_name"]])
+        started = time.perf_counter()
+        checking: dict[str, float] = {}
+        _refresh(excel, path, [first["sheet_name"]], session=session, workbook=workbook, timing=checking)
+        if "prepare" in timing:
+            wf.log_msg(_timing_line(first, time.perf_counter() - row_started, timing,
+                                    time.perf_counter() - started, checking))
+
+
+def _timing_line(first: dict, total: float, timing: dict, check: float, checking: dict) -> str:
+    """每行耗时，方便实测时看出慢在哪一步"""
+    parts = [f"试算导出 {int(timing.get('exports', 0))} 次 {timing.get('export', 0):.1f} 秒",
+             f"比对 {timing.get('evaluate', 0):.1f} 秒"]
+    if "write" in timing:
+        parts.append(f"写入保存 {timing['write']:.1f} 秒")
+    detail = [f"导出 {int(checking.get('exports', 0))} 次 {checking.get('export', 0):.1f} 秒",
+              f"检测 {checking.get('detect', 0):.1f} 秒"]
+    if checking.get("open", 0) >= .05:
+        detail.insert(0, f"打开 {checking['open']:.1f} 秒")
+    parts.append(f"重新检测 {check:.1f} 秒（{'，'.join(detail)}）")
+    return f"⏱ {first['wb_name']} / {first['sheet_name']} 行{first['excel_row']}：共 {total:.1f} 秒；" + "，".join(parts)
 
 
 def _commit_review(excel: Any) -> None:
@@ -907,7 +975,11 @@ def run() -> list[str]:
                     try:
                         _check_file(path)
                         excel = session.app()
-                        _refresh(excel, path)
+                        started, checking = time.perf_counter(), {}
+                        _refresh(excel, path, session=session, timing=checking)
+                        wf.log_msg(f"⏱ {Path(path).name} 整份检查：{time.perf_counter() - started:.1f} 秒"
+                                   f"（导出 {int(checking.get('exports', 0))} 次 {checking.get('export', 0):.1f} 秒，"
+                                   f"检测 {checking.get('detect', 0):.1f} 秒）")
                         _repair_file(excel, session, path)
                         if job.get("pause_requested"):
                             break

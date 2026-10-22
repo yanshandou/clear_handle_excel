@@ -3,6 +3,7 @@ import copy
 import re
 import shutil
 import threading
+import time
 import zlib
 from collections.abc import Callable
 from datetime import datetime
@@ -1010,8 +1011,17 @@ def _scan_one_workbook(
     delete_backups: bool,
     used_pdf_paths: set[Path],
     read_only: bool = False,
+    workbook: Any = None,
+    pdfs: Any = None,
+    reuse_pdfs: bool = True,
+    timing: dict[str, float] | None = None,
 ) -> None:
-    """检查一个工作簿；所有工作表检测完成后才一次性替换该文件的旧结果，中途失败不影响旧记录。"""
+    """检查一个工作簿；所有工作表检测完成后才一次性替换该文件的旧结果，中途失败不影响旧记录。
+
+    workbook：已打开、内容和原文件当前版本一致的工作簿（全自动处理的副本），给了就不再打开原文件。
+    pdfs：后台会话的导出记录（autofix._ExcelSession）；同一版本已导出过的表直接用那份 PDF，不再导出。
+    timing：累计打开 / 导出 / 检测各花了几秒。"""
+    timing = {} if timing is None else timing
     path = str(wb_path)
     wb_label = workbook_rel_name(wb_path, STATE.get("folder"))
     sheets_only = set(entry["sheets"]) if entry["mode"] == "sheets" else None
@@ -1023,7 +1033,9 @@ def _scan_one_workbook(
     open_options = {"UpdateLinks": 0}
     if read_only:
         open_options["ReadOnly"] = True
-    wb = excel.Workbooks.Open(str(wb_path.resolve()), **open_options)
+    started = time.perf_counter()
+    wb = workbook if workbook is not None else excel.Workbooks.Open(str(wb_path.resolve()), **open_options)
+    timing["open"] = timing.get("open", 0.0) + time.perf_counter() - started
     try:
         all_names = [s.Name for s in wb.Sheets]
         deleted_bkp_list: list[str] = []
@@ -1063,19 +1075,31 @@ def _scan_one_workbook(
             s_name = sheet.Name
             update_file_progress(wb_label, current_action=f"正在导出并检测 [{s_name}]...")
             pdf_path = unique_pdf_path(wb_path.parent, file_stem, sanitize_filename(s_name), used_pdf_paths)
+            started = time.perf_counter()
+            exported = pdfs.pdf_for(path, s_name, scan_version) if pdfs is not None and reuse_pdfs else None
             try:
-                _export_sheet_pdf(sheet, pdf_path)
+                if exported is None:
+                    _export_sheet_pdf(sheet, pdf_path)
+                    timing["exports"] = timing.get("exports", 0) + 1
+                elif exported != pdf_path:
+                    shutil.copyfile(exported, pdf_path)
             except Exception as e:
                 log_msg(f"  导出 PDF 失败 [{s_name}]: {e}")
                 raise
+            timing["export"] = timing.get("export", 0.0) + time.perf_counter() - started
+            started = time.perf_counter()
             pages, items = _detect_sheet_results(sheet, wb_path, s_name, pdf_path, next_seq)
+            timing["detect"] = timing.get("detect", 0.0) + time.perf_counter() - started
+            if pdfs is not None:
+                pdfs.remember_pdf(path, s_name, scan_version, pdf_path)
             next_seq += len(items)
             file_pages.update(pages)
             file_items.update(items)
         if _file_version(wb_path) != scan_version:
             raise ValueError(f"扫描期间文件已修改，请重新检查: {wb_label}")
     finally:
-        wb.Close(SaveChanges=False)
+        if workbook is None:
+            wb.Close(SaveChanges=False)
 
     merged = _merge_redetected(file_items, previous, mark_new=entry["scanned"], keep_unmatched=not rescan_all)
     fixed_now = sum(
