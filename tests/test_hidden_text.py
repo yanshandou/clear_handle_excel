@@ -232,6 +232,14 @@ class HiddenTextTests(unittest.TestCase):
         self.assertEqual(result[0]["text"], "123456")
         self.assertIsNone(result[1]["bbox"])
 
+    def test_symbol_only_cells_missing_from_pdf_are_not_reported(self):
+        # 「-」「○」这类符号 PDF 里常读不出来；有文字或数字的照样报
+        def build(page):
+            add_text(page, 50, 100, "Other")
+        cells = [(1, 1, "-"), (2, 1, "○"), (3, 1, "・"), (4, 1, "-1"), (5, 1, "A-")]
+        result = detect(cells, build)
+        self.assertEqual([(r["row"], r["reason"]) for r in result], [(4, REASON_MISSING), (5, REASON_MISSING)])
+
     def test_duplicate_texts_need_one_printed_copy_each(self):
         def build(page):
             add_text(page, 50, 100, "Same")

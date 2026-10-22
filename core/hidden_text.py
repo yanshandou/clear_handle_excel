@@ -6,7 +6,8 @@
 1. PDF 里找不到完整内容、只能找到开头一段：后面的行没打印出来（行高不够）
 2. 内容都在 PDF 里，但有字落在裁剪区域外：打印出来看不到（列宽 / 行高不够被裁掉）
 3. 数字显示成 ###：列宽不够
-4. PDF 里完全找不到：只要这格会被打印（不在隐藏行列、在打印区域内），也算没显示
+4. PDF 里完全找不到：只要这格会被打印（不在隐藏行列、在打印区域内），也算没显示；
+   只有「-」「○」这类符号的格子除外（PDF 里常读不出来，几乎都是误报）
 
 对不上的一律报告（宁可多报不漏报）。
 拼接多行时保留原文空行的信息，避免把空行后仍完整显示的下一段误报为截断。
@@ -434,7 +435,7 @@ def find_hidden_cells(
         chain = matcher.find_prefix(cell["text"])
         if chain is not None:
             record(cell, "prefix", chain)
-        elif is_printed(cell["row"], cell["col"]):
+        elif is_printed(cell["row"], cell["col"]) and not _symbols_only(cell["text"]):
             results.append(_result(cell, "", REASON_MISSING, None, None))
 
     # 片段可能在后面被换给别的格子，全部配完后再按最终占用的片段出结果
@@ -457,6 +458,16 @@ def find_hidden_cells(
             results.append(_result(cell, "".join(c for c, _, shown in chars if shown), REASON_CLIPPED, page, bbox))
     results.sort(key=lambda r: (r["row"], r["col"]))
     return results
+
+
+def _symbols_only(text: str) -> bool:
+    """只有「-」「・」「○」这类符号、没有文字和数字。
+
+    这类符号在 PDF 里常被读成别的码位，或者根本读不出文字，PDF 里找不到时几乎都是误报；
+    而且只有一两个字，行高再小也不会整个消失，所以不报“PDF 里找不到”。
+    """
+    key = normalize_text(text)
+    return bool(key) and all(unicodedata.category(c)[0] in "PS" for c in key)
 
 
 def _result(
