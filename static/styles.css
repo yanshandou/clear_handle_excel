@@ -3413,3 +3413,19 @@ button.preview-sheet-tag:active {
 .pv-card:not(:hover):not(:focus-within) .pv-excel {
   opacity: 0;
 }
+
+/* 精简 Sheet：最近打开预览的卡片边框发亮（box-shadow 不占位置，卡片不移动），从预览窗口返回时再闪几下 */
+.preview-list li.is-preview-from {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.55), 0 0 14px rgba(59, 130, 246, 0.45);
+}
+
+.preview-list li.is-return-pulse {
+  animation: preview-return-pulse 0.7s ease-in-out 4;
+}
+
+@keyframes preview-return-pulse {
+  50% {
+    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.85), 0 0 26px rgba(59, 130, 246, 0.75);
+  }
+}

@@ -9,6 +9,7 @@ let pendingSince = 0;
 let previewData = null;
 let sheetDecisions = {}; // { [fileName]: { [sheetName]: 'keep' | 'delete' | 'uncertain' } }
 let processedFiles = new Set(); // 已在预览窗口单独执行过的文件：卡片原地锁定，执行时跳过，重新扫描后才更新
+let previewFromFile = null; // 最近一次打开预览窗口的文件：卡片边框发亮，从预览窗口返回时滚过去
 let pollSeq = 0;
 let minAcceptedSeq = 0; // 发起操作前已在途的轮询结果可能过期，直接丢弃
 
@@ -381,6 +382,22 @@ function openSheetPreview(fileIndex) {
   if (!file) return;
   const query = new URLSearchParams({ folder: previewData.folder, file: file.name });
   window.open(`/clean/preview?${query}`, '_blank');
+  previewFromFile = file.name;
+  renderPreview(); // 只加发亮边框（box-shadow），卡片不移动
+}
+
+// 从预览窗口返回：来源卡片不在视野内时滚到中间，并让边框闪几下
+function revealReturnedCard(fileName) {
+  previewFromFile = fileName;
+  renderPreview();
+  const idx = previewData.files.findIndex(f => f.name === fileName);
+  const card = document.querySelector(`#previewBox li[data-file-index="${idx}"]`);
+  if (!card) return;
+  const rect = card.getBoundingClientRect();
+  const bar = document.getElementById('cleanActionBar');
+  const bottom = bar && !bar.classList.contains('hidden') ? bar.getBoundingClientRect().top : window.innerHeight;
+  if (rect.top < 80 || rect.bottom > bottom) card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  card.classList.add('is-return-pulse');
 }
 
 if (syncChannel) {
@@ -398,6 +415,9 @@ if (syncChannel) {
       });
       renderPreview();
       renderPage();
+    } else if (msg.type === 'return') {
+      window.focus();
+      revealReturnedCard(file.name);
     } else if (msg.type === 'done') {
       processedFiles.add(file.name);
       renderPreview();
@@ -591,7 +611,7 @@ function previewFileItem(file, fileIndex, extraClass = '') {
   if (uncCount) countParts.push(`<strong class="is-uncertain-count">待定 ${uncCount}</strong>`);
 
   return `
-    <li class="${extraClass} ${allDeleted ? 'is-warn' : ''}">
+    <li class="${extraClass} ${allDeleted ? 'is-warn' : ''} ${file.name === previewFromFile ? 'is-preview-from' : ''}" data-file-index="${fileIndex}">
       <div class="preview-file-head">
         <div class="preview-file-title">
           <b title="${escapeHtml(file.name)}">${excelLinkHtml(`📄 ${escapeHtml(splitDirAndBase(file.name)[1])}`, { file: file.name, folder: previewData.folder })}</b>
@@ -600,7 +620,7 @@ function previewFileItem(file, fileIndex, extraClass = '') {
           ${processed
             ? '<span class="preview-counts is-processed">✅ 已在预览窗口处理</span>'
             : `<span class="preview-counts">${countParts.join(' · ')}</span>
-               <button type="button" class="btn btn-outline btn-sm preview-open-btn" onclick="openSheetPreview(${fileIndex})" title="在新窗口里看每个工作表的预览图，并直接标记、执行">🖼 预览</button>`}
+               <button type="button" class="btn btn-outline btn-sm preview-open-btn" onclick="openSheetPreview(${fileIndex})" title="在新标签页里看每个工作表的预览图并标记，标记完成后返回这里统一执行">🖼 预览</button>`}
         </span>` : ''}
       </div>
       ${file.note ? `<span class="preview-note">⚠️ ${escapeHtml(file.note)}</span>` : ''}
@@ -718,6 +738,7 @@ async function runPreview() {
     previewData = data;
     saveLastFolder(folder);
     initSheetDecisions();
+    previewFromFile = null;
     phase = 'preview';
     renderPreview();
     syncChannel?.postMessage({ type: 'rescanned', folder: previewData.folder });
