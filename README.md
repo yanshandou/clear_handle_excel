@@ -70,7 +70,7 @@ clear_handle_excel/
 │   ├── autofix.py                # 九宫格候选图、推荐行高、选图与全自动写入
 │   ├── hidden_text.py            # 对比单元格内容与 PDF 文字，检测隐藏截断
 │   ├── row_locator.py            # 文字锚点推算位置、字体颜色确认单元格
-│   ├── quiet_dialogs.py          # 尝试将后台 Excel 的 PDF 发布进度框移到屏幕外
+│   ├── quiet_dialogs.py          # 后台 Excel 导出 PDF 时，「発行中」进度框先出现在右下角，再挪到屏幕外
 │   ├── pdf_detector.py           # PyMuPDF 切字检测、2.5x 局部特写截图、整页全景渲染、复检比对
 │   ├── sheet_preview.py          # 精简 Sheet 预览确认窗口：工作表预览图渲染与缓存、单元格内容相似度比对
 │   ├── reporter.py               # 实时执行进度统计、文件状态追踪与结构化 Markdown 报告生成

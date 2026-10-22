@@ -333,15 +333,16 @@ class _ExcelSession:
             except Exception:
                 pass
         self.copies = {}
+        if self.quiet is not None:
+            # 先把主窗口挪回原位再退出 Excel
+            self.quiet.stop()
+            self.quiet = None
         if self.excel is not None:
             try:
                 self.excel.Quit()
             except Exception:
                 pass
             self.excel = None
-        if self.quiet is not None:
-            self.quiet.stop()
-            self.quiet = None
         if self.temp_dir is not None:
             shutil.rmtree(self.temp_dir, ignore_errors=True)
             self.temp_dir = None

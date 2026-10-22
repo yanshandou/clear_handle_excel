@@ -16,6 +16,7 @@ from typing import Any
 from core.common import PROJECT_ROOT, XL_SHEET_VISIBLE, normalize_used_values, workbook_rel_name
 from core.excel_ops import pythoncom, win32
 from core.pdf_detector import fitz
+from core.quiet_dialogs import hide_progress_dialogs, release_excel
 from core.workflow import _export_sheet_pdf, _preview_workbook, list_workbooks
 
 PREVIEW_CACHE_DIR = PROJECT_ROOT / "_sheet_preview_cache"
@@ -234,6 +235,7 @@ def render_workbook_previews(folder_str: str, file_name: str) -> dict[str, Any]:
             excel = win32.DispatchEx("Excel.Application")
             excel.Visible = False
             excel.DisplayAlerts = False
+            hide_progress_dialogs(excel)
             wb = excel.Workbooks.Open(str(wb_path.resolve()), ReadOnly=True, UpdateLinks=0)
             contents: dict[str, dict[str, Any] | None] = {}
             for idx, sheet in enumerate(list(wb.Sheets)):
@@ -252,6 +254,7 @@ def render_workbook_previews(folder_str: str, file_name: str) -> dict[str, Any]:
             finally:
                 try:
                     if excel is not None:
+                        release_excel(excel)
                         excel.Quit()
                 finally:
                     pythoncom.CoUninitialize()

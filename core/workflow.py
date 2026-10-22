@@ -39,6 +39,7 @@ from core.excel_ops import (
     snapshot_cells,
     win32,
 )
+from core.quiet_dialogs import hide_progress_dialogs, release_excel
 from core.hidden_text import clip_check_supported, collect_text_pieces, find_hidden_cells
 from core.row_locator import (
     MAX_TAGGED_CELLS,
@@ -958,6 +959,7 @@ def scan_folder_workflow(
                     excel = win32.DispatchEx("Excel.Application")
                     excel.Visible = False
                     excel.DisplayAlerts = False
+                    hide_progress_dialogs(excel)
                 if rescan_all:
                     previous = [record for record in stash if record["wb_path"] == path]
                 else:
@@ -985,6 +987,7 @@ def scan_folder_workflow(
         finally:
             try:
                 if excel is not None:
+                    release_excel(excel)
                     excel.Quit()
             finally:
                 pythoncom.CoUninitialize()
@@ -1208,6 +1211,7 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
         excel = win32.DispatchEx("Excel.Application")
         excel.Visible = False
         excel.DisplayAlerts = False
+        hide_progress_dialogs(excel)
         for path, entry in by_file.items():
             workbook = None
             try:
@@ -1294,6 +1298,7 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
     finally:
         try:
             if excel is not None:
+                release_excel(excel)
                 excel.Quit()
         finally:
             pythoncom.CoUninitialize()
@@ -1350,6 +1355,7 @@ def fix_selected_workflow(
         excel = win32.DispatchEx("Excel.Application")
         excel.Visible = False
         excel.DisplayAlerts = False
+        hide_progress_dialogs(excel)
 
         total_skipped = 0
         try:
@@ -1536,6 +1542,7 @@ def fix_selected_workflow(
                     if wb is not None:
                         wb.Close(SaveChanges=False)
         finally:
+            release_excel(excel)
             excel.Quit()
             pythoncom.CoUninitialize()
 
@@ -1904,6 +1911,7 @@ def quick_task_workflow(kind: str) -> None:
             excel = win32.DispatchEx("Excel.Application")
             excel.Visible = False
             excel.DisplayAlerts = False
+            hide_progress_dialogs(excel)
         return excel
 
     # 已完成文件的 PDF 名称保持占用，续跑时不会被同名工作簿覆盖
@@ -1951,6 +1959,7 @@ def quick_task_workflow(kind: str) -> None:
     finally:
         try:
             if excel is not None:
+                release_excel(excel)
                 excel.Quit()
         finally:
             pythoncom.CoUninitialize()

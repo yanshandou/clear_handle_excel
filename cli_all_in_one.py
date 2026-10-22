@@ -17,6 +17,7 @@ from core.common import (
     unique_pdf_path,
     workbook_rel_name,
 )
+from core.quiet_dialogs import hide_progress_dialogs, release_excel
 from core.excel_ops import (
     adjust_row_heights_against_clipping,
     normalize_workbook_view,
@@ -101,6 +102,7 @@ def process_workbooks(
     excel = win32.DispatchEx("Excel.Application")
     excel.Visible = False
     excel.DisplayAlerts = False
+    hide_progress_dialogs(excel)
 
     used_pdf_paths: set[Path] = set()
     base_folder = root_folder or (workbooks[0].parent if workbooks else Path.cwd())
@@ -207,6 +209,7 @@ def process_workbooks(
                 if wb is not None:
                     wb.Close(SaveChanges=False)
     finally:
+        release_excel(excel)
         excel.Quit()
         pythoncom.CoUninitialize()
         finish_execution_batch("CLI 批处理任务执行完毕")
