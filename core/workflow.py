@@ -1,11 +1,14 @@
+import base64
 import copy
 import re
 import shutil
 import threading
+import zlib
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 from uuid import uuid4
 
 from core.common import (
@@ -124,7 +127,8 @@ if _saved_state is not None:
 
 def _persist_state() -> None:
     with STATE_LOCK:
-        save_snapshot("workflow", STATE)
+        # 截图单独存、只写变了的：每点一下不用把所有截图重写一遍
+        save_snapshot("workflow", STATE, blob_field="image", blob_collections=("pages", "items"))
 
 
 def scan_job_active() -> bool:
@@ -279,6 +283,32 @@ def _progress_summary(report_snap: dict[str, Any]) -> dict[str, Any]:
     return {key: report_snap[key] for key in keys}
 
 
+def _image_url(kind: str, key: str, image: str) -> str:
+    """轮询数据里不带截图本身（问题多时每次都是几 MB），只给地址，浏览器按需单独取。
+    地址里带上图片的特征，图片换了地址就变，浏览器不会用旧缓存。"""
+    if not image:
+        return ""
+    return f"/api/image/{kind}/{quote(key)}?v={len(image)}-{zlib.crc32(image[-256:].encode('ascii', 'ignore'))}"
+
+
+def _without_image(kind: str, entry: dict[str, Any]) -> dict[str, Any]:
+    copied = copy.deepcopy({k: v for k, v in entry.items() if k != "image"})
+    copied["image"] = _image_url(kind, entry["id"], entry.get("image", ""))
+    return copied
+
+
+def state_image(kind: str, key: str) -> bytes | None:
+    """工作台的整页图（page）或问题特写（item），PNG 字节"""
+    with STATE_LOCK:
+        entry = STATE["pages" if kind == "page" else "items"].get(key) if kind in {"page", "item"} else None
+        image = (entry or {}).get("image") or ""
+        if entry is None or not file_available(entry["wb_path"]):
+            return None
+    if "," not in image:
+        return None
+    return base64.b64decode(image.split(",", 1)[1])
+
+
 def get_state_snapshot() -> dict[str, Any]:
     report_snap = get_execution_report_snapshot()
     with STATE_LOCK:
@@ -288,8 +318,8 @@ def get_state_snapshot() -> dict[str, Any]:
             "folder": STATE["folder"],
             "pdf_folder": STATE["pdf_folder"],
             "logs": list(STATE["logs"][-40:]),
-            "pages": {key: copy.deepcopy(p) for key, p in STATE["pages"].items() if p["wb_path"] in available},
-            "items": {key: copy.deepcopy(it) for key, it in STATE["items"].items() if it["wb_path"] in available},
+            "pages": {key: _without_image("page", p) for key, p in STATE["pages"].items() if p["wb_path"] in available},
+            "items": {key: _without_image("item", it) for key, it in STATE["items"].items() if it["wb_path"] in available},
             "scan_progress": copy.deepcopy(STATE["scan_progress"]),
             "review_queue": copy.deepcopy(current_review_queue()),
             "settings": dict(STATE["settings"]),

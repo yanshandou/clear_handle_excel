@@ -6,7 +6,7 @@ import threading
 import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from core import autofix
 from core.common import (
@@ -36,6 +36,7 @@ from core.workflow import (
     fix_selected_workflow,
     get_overview_snapshot,
     get_state_snapshot,
+    state_image,
     import_progress,
     list_workbooks,
     log_msg,
@@ -93,11 +94,13 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def _send_bytes(
         self, body: bytes, content_type: str, status: int = 200, filename: str | None = None,
+        cacheable: bool = False,
     ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        # 带版本号的截图地址内容不会变，可以缓存；其余一律不缓存
+        self.send_header("Cache-Control", "private, max-age=86400" if cacheable else "no-store")
         if filename is not None:
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.end_headers()
@@ -146,6 +149,13 @@ class WebHandler(BaseHTTPRequestHandler):
             self._serve_static_file(rel)
         elif parsed.path == "/api/state":
             self._send_json(get_state_snapshot())
+        elif parsed.path.startswith("/api/image/"):
+            parts = parsed.path.removeprefix("/api/image/").split("/")
+            image = state_image(parts[0], unquote(parts[1])) if len(parts) == 2 else None
+            if image is None:
+                self.send_error(404)
+                return
+            self._send_bytes(image, "image/png", cacheable=True)
         elif parsed.path == "/api/autofix":
             if parse_qs(parsed.query).get("active") == ["1"]:
                 autofix.mark_active()

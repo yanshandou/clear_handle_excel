@@ -1283,7 +1283,21 @@ window.addEventListener('beforeunload', e => {
 triageKept = loadTriageKept();
 legacyKeeps = new Set(triageKept);
 
-setInterval(pollState, 1200);
-setInterval(pollAutofix, 1500);
+// 定时轮询：上一次还没回来就不再发新的，免得请求越积越多（操作后主动刷新不受影响）
+function whenIdle(poll) {
+  let inFlight = false;
+  return async () => {
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      await poll();
+    } finally {
+      inFlight = false;
+    }
+  };
+}
+
+setInterval(whenIdle(pollState), 1200);
+setInterval(whenIdle(pollAutofix), 1500);
 pollAutofix();
 pollState();
