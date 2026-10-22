@@ -176,11 +176,6 @@ async function pollRecords() {
       (acceptedClips ? `（人工确认 ${acceptedClips}）` : '');
 
     renderFilesTable(filesList);
-
-    const mdPreview = document.getElementById('markdownPreview');
-    if (data.markdown && mdPreview.textContent !== data.markdown) {
-      mdPreview.textContent = data.markdown;
-    }
   } catch (e) {}
 }
 
@@ -210,7 +205,7 @@ document.getElementById('recordsTableBody').addEventListener('click', e => {
 });
 
 async function copyMarkdownReport() {
-  const md = latestReportData?.markdown || document.getElementById('markdownPreview').textContent || '';
+  const md = latestReportData?.markdown || '';
   if (!md) return;
   try {
     await navigator.clipboard.writeText(md);
