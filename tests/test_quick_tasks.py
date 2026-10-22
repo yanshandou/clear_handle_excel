@@ -482,6 +482,32 @@ class QuickTaskTests(unittest.TestCase):
         self.assertEqual(files["spec.xlsx"]["uncertain_sheets"], ["❓Main_20250101"])
         self.assertEqual(files["spec.xlsx"]["renamed_to"], "❓spec.xlsx")
 
+    def test_clean_sheets_deletes_old_versions_and_strips_new_prefix(self):
+        self.add_book("layout.xlsx", [
+            "新レイアウト", "旧レイアウト", "新レイアウト(介護給付費請求書1)", "旧レイアウト (介護給付費請求書1)",
+            "新画面", "旧画面", "画面",
+        ])
+        self.run_task("clean_sheets")
+
+        # 新画面 去掉「新」后与现有的 画面 重名，保持原名
+        self.assertEqual(self.books["layout.xlsx"].saved, [
+            ["レイアウト", "レイアウト(介護給付費請求書1)", "新画面", "画面"],
+        ])
+        files = self.report_files()
+        self.assertEqual(files["layout.xlsx"]["deleted_backups"], [
+            "旧レイアウト", "旧レイアウト (介護給付費請求書1)", "旧画面",
+        ])
+        self.assertIn("2 个新版 Sheet 已去掉「新」字", files["layout.xlsx"]["current_action"])
+
+    def test_new_sheet_keeps_prefix_when_old_version_is_kept(self):
+        self.add_book("layout.xlsx", ["新レイアウト", "旧レイアウト", "新帳票", "旧帳票"])
+        plan = {"layout.xlsx": {"delete": ["旧帳票"], "uncertain": []}}
+        self.assertTrue(
+            self.workflow.queue_job("clean_sheets", {"folder": str(self.folder), "plan": plan})
+        )
+        self.workflow.run_pending_workflow()
+        self.assertEqual(self.books["layout.xlsx"].saved, [["新レイアウト", "旧レイアウト", "帳票"]])
+
     def test_clean_sheets_only_listed_files_leaves_other_files_untouched(self):
         # 预览窗口只处理当前文件：其他文件即使带 ❓ 也不会被恢复原名
         self.add_book("spec.xlsx", ["Main", "Main_20250101"])

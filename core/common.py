@@ -10,6 +10,9 @@ DATE_PATTERN = re.compile(r"(?<!\d)((?:19|20)\d{2})([-/.]?)(\d{2})\2(\d{2})(?!\d
 # 独立出现的英文备份标记（前后不是字母），如 _bak、Sheet1-BAK、一覧_old；Bakery、Threshold 不算
 BACKUP_WORD_PATTERN = re.compile(r"(?<![a-z])(?:bak|backup|old|copy)(?![a-z])", re.IGNORECASE)
 # 日文/中文备份标记；「旧」不含「新旧」「復旧」（如 新旧対照表、障害復旧手順 是正式资料）
+BRACKET_GROUP_PATTERN = re.compile(r"\([^()]*\)|\[[^\[\]]*\]|【[^【】]*】|「[^「」]*」|『[^『』]*』")
+NEW_PREFIX = "新"
+OLD_PREFIX = "旧"
 BACKUP_TEXT_PATTERN = re.compile(r"バックアップ|备份|コピー|副本|(?<![新復])旧")
 # 复制工作表产生的「(2)」「(3)」后缀（全角括号统一为半角后判断，有无空格均可），
 # 后面还可以再接日期，如「様式１（基本情報）(2)_20221005」；仍要求同工作簿存在原表才算备份
@@ -142,9 +145,43 @@ def is_auto_generated_sheet(sheet_name: str) -> bool:
     return text.startswith(AUTO_GENERATED_PREFIXES)
 
 
+def _new_old_key(sheet_name: str) -> tuple[str, str] | None:
+    """「新」「旧」开头的表名拆成 (新/旧, 其余部分的比对名)，其余部分为空时返回 None"""
+    text = unicodedata.normalize("NFKC", strip_uncertain_prefix(sheet_name)).lstrip()
+    if text[:1] not in (NEW_PREFIX, OLD_PREFIX):
+        return None
+    rest = _comparable_name(text[1:])
+    return (text[0], rest) if rest else None
+
+
+def find_new_old_pairs(sheet_names: list[str]) -> dict[str, list[str]]:
+    """成对出现的新旧版本：{新表名: [对应的旧表名, ...]}
+
+    如 新レイアウト 与 旧レイアウト、新レイアウト(介護給付費請求書1) 与 旧レイアウト (介護給付費請求書1)：
+    去掉开头的「新」「旧」后名称相同（忽略全角半角、空白与括号）。只有「新」或只有「旧」的不算。
+    """
+    news: dict[str, list[str]] = {}
+    olds: dict[str, list[str]] = {}
+    for name in sheet_names:
+        key = _new_old_key(name)
+        if key is not None:
+            (news if key[0] == NEW_PREFIX else olds).setdefault(key[1], []).append(name)
+    return {new: olds[rest] for rest, names in news.items() if rest in olds for new in names}
+
+
+def strip_new_prefix(sheet_name: str) -> str:
+    """去掉表名开头的「新」：新レイアウト(介護給付費請求書1) → レイアウト(介護給付費請求書1)"""
+    if not sheet_name.startswith(NEW_PREFIX):
+        return sheet_name
+    return sheet_name[len(NEW_PREFIX):].lstrip() or sheet_name
+
+
 def find_clean_targets(sheet_names: list[str]) -> list[str]:
-    """精简 Sheet 默认删除的工作表：有原表的备份表，加上「自動生成」开头的工作表（保持原顺序）"""
+    """精简 Sheet 默认删除的工作表：有原表的备份表、有对应「新」版本的「旧」表，
+    加上「自動生成」开头的工作表（保持原顺序）"""
     targets = set(find_backup_sheets(sheet_names))
+    for olds in find_new_old_pairs(sheet_names).values():
+        targets.update(olds)
     return [name for name in sheet_names if name in targets or is_auto_generated_sheet(name)]
 
 
@@ -153,9 +190,10 @@ def find_contained_sheets(sheet_names: list[str]) -> list[str]:
     可能是备份也可能是正式的明细表，精简 Sheet 时默认标为待定，交给人工确认，不默认删除。
 
     已默认删除、已带 ❓、「自動生成」开头的表不算；被包含的名称至少 2 个字符，
-    且不能把数字从中间切开（Sheet1 与 Sheet12 是不同的表）。
+    且不能把数字从中间切开（Sheet1 与 Sheet12 是不同的表）；多出的部分整段在括号里的也不算。
     """
     targets = set(find_clean_targets(sheet_names))
+    targets.update(find_new_old_pairs(sheet_names))  # 新旧成对的「新」表默认保留（删旧表后去掉「新」字）
     references = {
         c for name in sheet_names
         if name not in targets and len(c := _comparable_name(name)) >= 2
@@ -165,8 +203,10 @@ def find_contained_sheets(sheet_names: list[str]) -> list[str]:
         if name in targets or is_uncertain_name(name) or is_auto_generated_sheet(name):
             continue
         text = _comparable_name(name)
+        # 多出的部分整段在括号里（如 レイアウト 与 レイアウト(介護給付費請求書1)）是用途或页的补充说明，不算
+        bare = _comparable_name(BRACKET_GROUP_PATTERN.sub("", unicodedata.normalize("NFKC", name)))
         for ref in references:
-            if ref == text:
+            if ref == text or ref == bare:
                 continue
             start = text.find(ref)
             while start != -1:

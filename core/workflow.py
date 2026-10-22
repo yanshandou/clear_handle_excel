@@ -20,8 +20,10 @@ from core.common import (
     find_backup_sheets,
     find_clean_targets,
     find_contained_sheets,
+    find_new_old_pairs,
     is_uncertain_name,
     sanitize_filename,
+    strip_new_prefix,
     strip_uncertain_prefix,
     unique_pdf_path,
     unique_sheet_name,
@@ -1366,6 +1368,7 @@ def _preview_workbook(wb_path: Path, folder: Path, get_excel: Callable[[], Any])
         "sheets": [],
         "backups": [],
         "uncertain": [],
+        "new_old_pairs": {},
         "note": "",
     }
     try:
@@ -1382,6 +1385,7 @@ def _preview_workbook(wb_path: Path, folder: Path, get_excel: Callable[[], Any])
         default_delete = [s for s in find_clean_targets(all_names) if s not in set(uncertain)]
         contained = set(find_contained_sheets(all_names))
         entry["uncertain"] = [s for s in all_names if s in contained or s in set(uncertain)]
+        entry["new_old_pairs"] = find_new_old_pairs(all_names)  # 旧表全部删除时，新表去掉「新」字
         if default_delete and len(default_delete) >= len(all_names):
             entry["note"] = "全部工作表均被识别为备份表，将跳过删除"
         else:
@@ -1458,7 +1462,32 @@ def _resolve_clean_targets(
             occupied.add(new_name)
             if new_name != name:
                 renames.append((name, new_name))
+    renames.extend(_new_prefix_renames(all_names, set(to_delete), uncertain_set, occupied))
     return to_delete, uncertain_sel, renames, False
+
+
+def _new_prefix_renames(
+    all_names: list[str], deleted: set[str], uncertain: set[str], occupied: set[str],
+) -> list[tuple[str, str]]:
+    """「旧」表全部删除后，对应的「新」表去掉开头的「新」字（Excel 改表名时会自动更新公式与打印区域等引用）。
+
+    「新」表本身被删除或标为待定、还有「旧」表保留着、去掉后与现有表重名（不区分大小写）时都不改名。
+    occupied 为执行后剩下的表名，改名后同步更新。
+    """
+    renames: list[tuple[str, str]] = []
+    for new_name, olds in find_new_old_pairs(all_names).items():
+        if new_name in deleted or new_name in uncertain or not all(o in deleted for o in olds):
+            continue
+        target = strip_new_prefix(new_name)
+        taken = {n.casefold() for n in occupied if n != new_name}
+        if target == new_name or target.casefold() in taken:
+            if target != new_name:
+                log_msg(f"  ⚠️ 「{new_name}」去掉「新」字后与现有工作表「{target}」重名，保持原名")
+            continue
+        occupied.discard(new_name)
+        occupied.add(target)
+        renames.append((new_name, target))
+    return renames
 
 
 def _target_workbook_path(wb_path: Path, has_uncertain: bool, *, has_plan: bool) -> Path:
@@ -1503,10 +1532,13 @@ def _format_clean_action(
     orig_name: str,
     final_name: str,
     unmarked_any: bool,
+    new_prefix_removed: int = 0,
 ) -> str:
     parts: list[str] = []
     if deleted_list:
         parts.append(f"已删除 {len(deleted_list)} 个备份 Sheet")
+    if new_prefix_removed:
+        parts.append(f"{new_prefix_removed} 个新版 Sheet 已去掉「新」字")
     if uncertain_list:
         parts.append(f"标记 {len(uncertain_list)} 个待定 Sheet（{UNCERTAIN_EMOJI}）")
     elif unmarked_any:
@@ -1616,10 +1648,14 @@ def _clean_backup_sheets(
                 wb.Sheets(name).Delete()
             deleted = list(dict.fromkeys(deleted + to_delete))
             rename_map = dict(renames)
+            new_prefix_removed = 0
             for old_name, new_name in renames:
                 if is_uncertain_name(old_name) and not is_uncertain_name(new_name):
                     unmarked_sheet = True
                 wb.Sheets(old_name).Name = new_name
+                if new_name != old_name and new_name == strip_new_prefix(old_name):
+                    new_prefix_removed += 1
+                    log_msg(f"  已改名: {old_name} → {new_name}")
             final_names = [rename_map.get(s, s) for s in all_names]
             final_uncertain = [rename_map.get(s, s) for s in uncertain_sel]
             target_path = _target_workbook_path(
@@ -1637,6 +1673,7 @@ def _clean_backup_sheets(
                 wb_path.name,
                 target_path.name,
                 unmarked_sheet or (is_uncertain_name(wb_path.name) and not is_uncertain_name(target_path.name)),
+                new_prefix_removed,
             )
             log_msg(f"  {action}")
     finally:
