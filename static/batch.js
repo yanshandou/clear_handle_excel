@@ -8,6 +8,9 @@ let activeCardId = null;
 let requestBusy = false;
 let pollVersion = 0;
 let renderKey = '';
+let layoutKey = '';
+let cardHtmlCache = new Map();
+let lastActiveIndex = 0;
 let lastWheelAt = 0;
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -59,8 +62,13 @@ function renderControls() {
   $('pauseBtn').disabled = requestBusy || !!batchState.job?.pause_requested;
   $('resumeBtn').classList.toggle('hidden', batchState.busy || batchState.job?.status !== 'interrupted');
   $('resumeBtn').disabled = requestBusy;
+  $('abandonBtn').classList.toggle('hidden', batchState.busy || !batchState.job?.pending_adjustment);
+  $('abandonBtn').disabled = requestBusy;
   $('statusText').textContent = batchState.busy ? '⏳ 后台处理中' : batchState.job?.status === 'interrupted' ? '⏸ 可继续任务' : '就绪';
 }
+
+// 图片取不到时换成文字占位（整页图连同红框一起换掉）
+const missingHandler = (text, wholeParent = false) => `${wholeParent ? 'this.parentElement.replaceChildren' : 'this.replaceWith'}(Object.assign(document.createElement('span'),{className:'batch-missing',textContent:'${text}'}))`;
 
 function contextHtml(card) {
   const context = card.context;
@@ -77,16 +85,16 @@ function contextHtml(card) {
   const page = Number.isInteger(context.page_index) ? ` · 第 ${context.page_index + 1} 页` : '';
   return `<aside class="batch-context"><h3>问题所在页面${page}</h3><p class="batch-context-note">检测时的整页截图 · 红框为问题位置</p>
     <div class="batch-context-page" style="--page-ratio:${width / height}">
-      <img src="${esc(context.image)}" alt="问题所在整页，红框标出原检测位置" onerror="this.parentElement.innerHTML='<span class=\'batch-missing\'>整页截图暂不可用</span>'">
+      <img src="${esc(context.image)}" alt="问题所在整页，红框标出原检测位置" onerror="${missingHandler('整页截图暂不可用', true)}">
       <span class="batch-context-marker" aria-label="问题位置" style="left:${left}%;top:${top}%;width:${Math.max(0, right - left)}%;height:${Math.max(0, bottom - top)}%"></span>
     </div></aside>`;
 }
 
 function cardHtml(card, large = false) {
   const link = excelLinkHtml(esc(card.wb_name), { file: card.wb_name, folder: batchState.folder, sheet: card.sheet_name, cell: card.cell_addr });
-  const labels = { before: '修改前', after: card.after_kind === 'attempt' ? '最后一次尝试（未采用）' : '修改后' };
+  const labels = { before: '修改前', after: card.after_kind === 'attempt' ? '最后一次尝试（未采用）' : card.after_kind === 'unchanged' ? '原样导出（未修改）' : '修改后' };
   const images = ['before', 'after'].map(which => `<figure><figcaption>${labels[which]}</figcaption>${card.images?.[which]
-    ? `<img ${large ? '' : 'loading="lazy"'} src="${esc(card.images[which])}" alt="${labels[which]}截图" data-preview="1" onerror="this.outerHTML='<span class=\'batch-missing\'>截图暂不可用</span>'">`
+    ? `<img ${large ? '' : 'loading="lazy"'} src="${esc(card.images[which])}" alt="${labels[which]}截图" data-preview="1" onerror="${missingHandler('截图暂不可用')}">`
     : '<span class="batch-missing">暂无截图</span>'}</figure>`).join('');
   const comparison = `<div class="batch-shots">${images}</div>`;
   const visuals = large ? `<div class="batch-large-layout">${comparison}${contextHtml(card)}</div>` : comparison;
@@ -116,20 +124,38 @@ function render() {
   $('largeView').classList.toggle('hidden', !largeMode);
   const shown = shownCards();
   if (largeMode) {
-    if (!shown.some(c => c.id === activeCardId)) activeCardId = shown[0]?.id;
+    // 改色后卡片离开当前筛选：停在原位置（即下一张），不跳回第一张
+    if (!shown.some(c => c.id === activeCardId)) activeCardId = shown[Math.min(lastActiveIndex, shown.length - 1)]?.id;
     const index = shown.findIndex(c => c.id === activeCardId);
+    if (index >= 0) lastActiveIndex = index;
     $('largeIndex').textContent = shown.length ? `${index + 1} / ${shown.length}` : '没有当前颜色的卡片';
     $('largeCard').innerHTML = index >= 0 ? cardHtml(shown[index], true) : '<p class="batch-empty">当前筛选下没有卡片</p>';
     $('prevBtn').disabled = index <= 0;
     $('nextBtn').disabled = index >= shown.length - 1;
   } else {
     const columnCount = Math.max(1, Math.min(3, Math.floor((($('cardList').clientWidth || 1200) + 18) / 328)));
-    $('cardList').innerHTML = shown.length ? ['yellow', 'green', 'blue'].map(color => {
+    const sections = ['yellow', 'green', 'blue'].map(color => {
       const cards = shown.filter(c => c.color === color);
       const columns = Array.from({ length: columnCount }, () => []);
       cards.forEach((card, index) => columns[index % columnCount].push(card));
-      return cards.length ? `<section><h2 class="batch-group-title">${REVIEW_LABELS[color]} · ${cards.length}</h2><div class="batch-waterfall">${columns.map(column => `<div class="batch-column">${column.map(c => cardHtml(c)).join('')}</div>`).join('')}</div></section>` : '';
-    }).join('') : `<section class="panel batch-empty"><h2>${batchState.busy ? '正在自动扫描与修复…' : '当前没有待审核卡片'}</h2><p>${batchState.busy ? '文件处理后会在这里出现修改前后对比，无需逐项放行。' : '开始全自动处理，或切换颜色筛选查看结果。'}</p></section>`;
+      return { color, cards, columns };
+    });
+    const html = new Map(shown.map(c => [c.id, cardHtml(c)]));
+    const layout = JSON.stringify([sections.map(s => s.columns.map(column => column.map(c => c.id))), batchState.busy]);
+    if (layout === layoutKey && shown.length) {
+      // 卡片位置没变：只换内容有变化的卡片，不整页重画（图片不重新加载、页面不跳）
+      for (const [id, value] of html) {
+        if (cardHtmlCache.get(id) === value) continue;
+        const element = $('cardList').querySelector(`[data-id="${CSS.escape(id)}"]`);
+        if (element) element.outerHTML = value;
+      }
+    } else {
+      $('cardList').innerHTML = shown.length ? sections.map(({ color, cards, columns }) => cards.length
+        ? `<section><h2 class="batch-group-title">${REVIEW_LABELS[color]} · ${cards.length}</h2><div class="batch-waterfall">${columns.map(column => `<div class="batch-column">${column.map(c => html.get(c.id)).join('')}</div>`).join('')}</div></section>` : '').join('')
+        : `<section class="panel batch-empty"><h2>${batchState.busy ? '正在自动扫描与修复…' : '当前没有待审核卡片'}</h2><p>${batchState.busy ? '文件处理后会在这里出现修改前后对比，无需逐项放行。' : '开始全自动处理，或切换颜色筛选查看结果。'}</p></section>`;
+    }
+    layoutKey = layout;
+    cardHtmlCache = html;
   }
 }
 
@@ -166,17 +192,30 @@ async function startJob(url, body = {}) {
 $('startBtn').addEventListener('click', () => {
   const folder = $('folderInput').value.trim();
   if (!folder) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
+  const unsent = batchState.cards.filter(c => !c.finalized).length;
+  if (unsent && batchState.folder && folder !== batchState.folder
+      && !window.confirm(`当前文件夹还有 ${unsent} 张卡片没有提交审核。\n审核记录会保留，以后对原文件夹重新开始全自动处理即可继续审核。\n\n确定换到新文件夹吗？`)) return;
   startJob('/api/batch/start', { folder }).then(() => {
     if (batchState.busy) { try { localStorage.setItem('clear_handle_excel.lastFolder', folder); } catch (_) {} }
   });
 });
 $('resumeBtn').addEventListener('click', () => startJob('/api/resume'));
 $('pauseBtn').addEventListener('click', () => action(() => post('/api/batch/pause')));
-$('commitBtn').addEventListener('click', () => startJob('/api/batch/commit', { card_ids: batchState.cards.map(c => c.id) }));
+$('commitBtn').addEventListener('click', () => {
+  const cards = batchState.cards;
+  const count = color => cards.filter(c => c.color === color).length;
+  const unmarked = cards.filter(c => !c.marked && !c.finalized).length;
+  const message = `将提交全部 ${cards.length} 张卡片：\n蓝（保留修复）${count('blue')}　绿（还原并忽略）${count('green')}　黄（还原后人工）${count('yellow')}`
+    + (unmarked ? `\n\n其中 ${unmarked} 张没有手动改过颜色，将按当前颜色处理。` : '') + '\n\n确定提交吗？';
+  if (window.confirm(message)) startJob('/api/batch/commit', { card_ids: cards.map(c => c.id) });
+});
+$('abandonBtn').addEventListener('click', () => {
+  if (window.confirm('放弃上次未完成的写入？\n不会再改动这个文件，相关单元格转为黄色人工处理，请在 Excel 中核对这一行的行高。')) action(() => post('/api/batch/abandon'));
+});
 $('openAllBtn').addEventListener('click', () => startJob('/api/batch/open', { card_ids: manualCards().map(c => c.id) }));
 $('recheckAllBtn').addEventListener('click', () => startJob('/api/batch/recheck', { card_ids: manualCards().map(c => c.id) }));
 $('largeBtn').addEventListener('click', () => openLarge());
-$('closeLargeBtn').addEventListener('click', () => { largeMode = false; render(); });
+$('closeLargeBtn').addEventListener('click', () => { largeMode = false; layoutKey = ''; render(); });
 $('prevBtn').addEventListener('click', () => moveCard(-1));
 $('nextBtn').addEventListener('click', () => moveCard(1));
 $('filters').addEventListener('click', event => {
@@ -201,7 +240,7 @@ document.addEventListener('keydown', event => {
     if (event.key === 'ArrowDown') moveCard(1);
     if (event.key === 'ArrowLeft') changeColor(activeCardId, -1);
     if (event.key === 'ArrowRight') changeColor(activeCardId, 1);
-    if (event.key === 'Escape') { largeMode = false; render(); }
+    if (event.key === 'Escape') { largeMode = false; layoutKey = ''; render(); }
   } else if (['Enter', ' '].includes(event.key) && event.target.matches('.batch-card')) {
     event.preventDefault(); changeColor(event.target.dataset.id);
   }
@@ -224,7 +263,7 @@ document.addEventListener('pointermove', event => {
   preview.style.top = `${Math.max(8, Math.min(event.clientY + 20, innerHeight - preview.offsetHeight - 12))}px`;
 });
 document.addEventListener('scroll', () => $('imagePreview').classList.add('hidden'), true);
-window.addEventListener('resize', () => { renderKey = ''; render(); });
+window.addEventListener('resize', () => { renderKey = ''; layoutKey = ''; render(); });
 try { $('folderInput').value = localStorage.getItem('clear_handle_excel.lastFolder') || ''; } catch (_) {}
 poll();
 setInterval(poll, 1800);

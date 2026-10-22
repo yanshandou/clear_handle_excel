@@ -12,7 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from core import autofix, fix_images, workflow as wf
-from core.common import workbook_rel_name
+from core.common import STALE_LOCK_HINT, workbook_rel_name
 from core.excel_ops import (
     CellProbe, close_saved_workbooks, extract_sheet_snapshot, normalize_workbook_view,
     open_workbooks_for_review, snapshot_cells,
@@ -119,6 +119,11 @@ def _card_for(items: list[dict]) -> dict:
     return card
 
 
+def _image_url(name: str) -> str:
+    # 同名文件会被后面的尝试覆盖：带版本号，内容变了地址才变，浏览器可以放心缓存
+    return f"/api/batch/image/{name}?v={fix_images.version(name)}"
+
+
 def snapshot() -> dict:
     with wf.STATE_LOCK:
         cards = []
@@ -127,13 +132,13 @@ def snapshot() -> dict:
                 continue
             result = copy.deepcopy(card)
             result["images"] = {
-                which: f"/api/batch/image/{name}" for which, name in card.get("fix_images", {}).items()
+                which: _image_url(name) for which, name in card.get("fix_images", {}).items()
                 if fix_images.image_path(name)
             }
             if result.get("context"):
                 context = result["context"]
                 name = context["image_file"]
-                context["image"] = f"/api/batch/image/{name}" if fix_images.image_path(name) else ""
+                context["image"] = _image_url(name) if fix_images.image_path(name) else ""
             cards.append(result)
         return {"cards": cards, "busy": wf.STATE["busy"], "folder": wf.STATE["folder"],
                 "job": copy.deepcopy(wf.STATE["job"]), "progress": dict(wf.STATE["scan_progress"]),
@@ -164,24 +169,25 @@ def _check_file(path: str) -> None:
     if not p.is_file():
         raise ValueError(f"找不到文件：{p.name}")
     if p.with_name("~$" + p.name).exists():
-        raise ValueError(f"文件仍在 Excel 中打开，请保存并关闭后继续：{p.name}")
+        raise ValueError(f"文件仍在 Excel 中打开，请保存并关闭后继续：{p.name}" + STALE_LOCK_HINT)
 
 
 def _write_rows(excel: Any, journal: dict) -> None:
     """先核对所有行，再写；续跑时目标行高已保存则只补数据库提交。"""
     path = journal["path"]
+    where = f"{Path(path).name}（" + "、".join(f"{r['sheet']} 第 {r['row']} 行" for r in journal["rows"]) + "）"
     _check_file(path)
     book = excel.Workbooks.Open(str(Path(path).resolve()), UpdateLinks=0)
     try:
         if book.ReadOnly:
-            raise ValueError("文件以只读方式打开，未写入")
+            raise ValueError(f"{where} 文件以只读方式打开，未写入")
         actual = [float(book.Sheets(r["sheet"]).Rows(r["row"]).RowHeight) for r in journal["rows"]]
         at_target = all(abs(h - r["target"]) < .05 for h, r in zip(actual, journal["rows"]))
         if wf._file_version(Path(path)) != journal["version"] and not at_target:
-            raise ValueError("文件在准备后被修改，已停止写入；请核对文件后继续")
+            raise ValueError(f"{where} 文件在准备后被修改，已停止写入；核对后可继续任务，或点「放弃这次写入」")
         if not at_target:
             if any(abs(h - r["expected"]) >= .05 for h, r in zip(actual, journal["rows"])):
-                raise ValueError("行高已被其他操作修改，未覆盖人工修改")
+                raise ValueError(f"{where} 行高已被其他操作修改，未覆盖人工修改；可点「放弃这次写入」转人工处理")
             for row in journal["rows"]:
                 book.Sheets(row["sheet"]).Rows(row["row"]).RowHeight = row["target"]
             normalize_workbook_view(excel, book)
@@ -221,6 +227,34 @@ def _finish_pending(excel: Any) -> None:
         wf._sync_problem_counts(pending["path"], "自动处理已保存" if pending["action"] == "fix" else "审核还原已保存")
 
 
+def abandon_pending() -> None:
+    """写入日志结算不了（行高被人工改过、文件被移走等）时放弃这次写入：不动文件，相关卡片转黄色人工处理。
+    否则除了「继续上次任务」什么都不能开始，而继续又会报同样的错。"""
+    with wf.STATE_LOCK:
+        job = wf.STATE["job"] or {}
+        pending = job.get("pending_adjustment")
+        if wf.STATE["busy"] or not pending or not job.get("kind", "").startswith("batch_"):
+            raise ValueError("没有需要放弃的写入")
+        data = _data()
+        for row in pending["rows"]:
+            record = data["rows"].get(row["id"])
+            if record is not None:
+                record["saved"] = False  # 不确定文件里现在是哪个行高，不能再自动还原
+        for cid in pending["cards"]:
+            card = data["cards"].get(cid)
+            if card is None:
+                continue
+            card.update(color="yellow", verified=False, manual=True, finalized=True, dismissed=False,
+                        message="已放弃未完成的自动写入，请在 Excel 中核对这一行的行高，保存后复检")
+            for item in _items_at(card):
+                item.update(status="manual_review", batch_managed=True, triage_keep=False,
+                            review_reason=card["message"])
+        job["pending_adjustment"] = None  # 任务本身仍可「继续上次任务」，这几格已转人工，不会再自动写
+        wf._persist_state()
+    wf.log_msg(f"⚠️ 已放弃 {Path(pending['path']).name} 未完成的写入，相关单元格转为人工处理")
+    wf._sync_problem_counts(pending["path"], "已放弃未完成的写入，等待人工处理")
+
+
 def _refresh(excel: Any, path: str, sheets: list[str] | None = None) -> None:
     with wf.STATE_LOCK:
         # 升级前人工跳过的记录也转成明确的单元格忽略规则，后续复检仍有效。
@@ -251,7 +285,10 @@ def _refresh(excel: Any, path: str, sheets: list[str] | None = None) -> None:
             unresolved = any(it["status"] not in wf.RESOLVED_STATUSES for it in group)
             existing = _data()["cards"].get(cid)
             if unresolved:
-                _card_for(group)
+                card = _card_for(group)
+                if card.get("color") == "blue" or card.get("verified"):
+                    # 后面的行加高、还原改变了分页，之前通过的格子又出问题：不能再当作已修好
+                    card.update(color="yellow", verified=False, message="最新导出仍有问题，需重新处理")
             elif existing and not existing.get("dismissed") and not existing.get("manual") and not existing.get("marked"):
                 existing.update(color="blue", verified=True, after_kind="fixed", message="最新导出已通过检查，等待审核")
                 after = next(((it.get("fix_images") or {}).get("after") for it in group
@@ -313,6 +350,12 @@ def _prepare_row(
         sheet.Rows(row).RowHeight = base
         pdf.unlink(missing_ok=True)
     return base, chosen, before
+
+
+def _restart_excel(session: Any) -> Any:
+    """后台 Excel 可能已经崩溃或卡住：关掉整个会话（含副本），重新开一个"""
+    session.close()
+    return session.app()
 
 
 def _repair_file(excel: Any, session: Any, path: str) -> None:
@@ -378,20 +421,43 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                     raise ValueError("自动试修未通过，原文件行高未修改；最后一次尝试未采用，请人工处理或标绿忽略")
                 for card in cards:
                     _save_shot(card, "after", chosen["shots"].get(card["id"], ""))
-                _data()["rows"][rid] = {"id": rid, "path": path, "sheet": first["sheet_name"],
-                                        "row": int(first["excel_row"]), "base": base,
-                                        "applied": chosen["height"], "saved": False}
-                job["pending_adjustment"] = {
-                    "action": "fix", "path": path, "version": version, "cards": [c["id"] for c in cards],
-                    "rows": [{"id": rid, "sheet": first["sheet_name"], "row": int(first["excel_row"]),
-                              "expected": base, "target": chosen["height"]}],
-                }
+                unchanged = abs(chosen["height"] - base) < .05
+                if unchanged:
+                    # 原样导出就通过：不写文件，也不算一处修复（报告里不列）
+                    for card in cards:
+                        card.update(color="blue", verified=True, after_kind="unchanged",
+                                    message="原样导出已通过检查，未修改行高，等待审核")
+                        for item in _items_at(card):
+                            item.update(status="accepted", batch_managed=True, triage_keep=False,
+                                        review_reason="原样导出已通过检查，未修改")
+                else:
+                    _data()["rows"][rid] = {"id": rid, "path": path, "sheet": first["sheet_name"],
+                                            "row": int(first["excel_row"]), "base": base,
+                                            "applied": chosen["height"], "saved": False}
+                    job["pending_adjustment"] = {
+                        "action": "fix", "path": path, "version": version, "cards": [c["id"] for c in cards],
+                        "rows": [{"id": rid, "sheet": first["sheet_name"], "row": int(first["excel_row"]),
+                                  "expected": base, "target": chosen["height"]}],
+                    }
                 wf._persist_state()
-            _finish_pending(excel)
+            if not unchanged:
+                _finish_pending(excel)
         except Exception as err:
             # 有写入日志时不能吞掉异常：可能原文件已经保存，必须按日志续跑。
             if job.get("pending_adjustment"):
                 raise
+            if not isinstance(err, ValueError):
+                # 程序出错（Excel 崩溃、一时忙不过来等），不是检测不过：重启 Excel 重试这一行，几次都不行才转人工
+                with wf.STATE_LOCK:
+                    errors = job.setdefault("row_errors", {})
+                    errors[rid] = errors.get(rid, 0) + 1
+                    retry = errors[rid] <= autofix.MAX_ERROR_RETRIES
+                    wf._persist_state()
+                if retry:
+                    wf.log_msg(f"⚠️ {first['wb_name']} / {first['sheet_name']} 行{first['excel_row']} 出错，"
+                               f"重启 Excel 后重试（第 {errors[rid]} 次）：{err}")
+                    excel = _restart_excel(session)
+                    continue
             with wf.STATE_LOCK:
                 for card in cards:
                     card.update(color="yellow", verified=False, manual=True, message=str(err))
@@ -548,8 +614,8 @@ def run() -> list[str]:
                 folder, paths = wf.list_workbooks(options["folder"])
                 with wf.STATE_LOCK:
                     if str(folder) != wf.STATE["folder"]:
-                        wf.STATE.update(items={}, pages={}, checked_files={},
-                                        batch_review={"cards": {}, "rows": {}, "ignored": []})
+                        # 审核卡片、忽略规则、行高记录按文件路径区分，各文件夹分开保留：切回来还能审核、还原
+                        wf.STATE.update(items={}, pages={}, checked_files={})
                     wf.STATE.update(folder=str(folder), pdf_folder=str(folder))
                     job["workbooks"] = [str(p) for p in paths]
                     wf._persist_state()
@@ -560,26 +626,45 @@ def run() -> list[str]:
                     continue
                 if job.get("pause_requested"):
                     break
-                try:
-                    _check_file(path)
-                    excel = session.app()
-                    _refresh(excel, path)
-                    _repair_file(excel, session, path)
-                    if job.get("pause_requested"):
+                for tries in range(autofix.MAX_ERROR_RETRIES + 1):
+                    try:
+                        _check_file(path)
+                        excel = session.app()
+                        _refresh(excel, path)
+                        _repair_file(excel, session, path)
+                        if job.get("pause_requested"):
+                            break
+                        with wf.STATE_LOCK:
+                            job["completed"].append(path)
+                            wf.STATE["scan_progress"] = {"total": len(expected), "completed": len(job["completed"]), "status": "running"}
+                            wf._persist_state()
+                        wf._sync_problem_counts(path, "全自动处理完成，等待结果审核")
                         break
-                    with wf.STATE_LOCK:
-                        job["completed"].append(path)
-                        wf.STATE["scan_progress"] = {"total": len(expected), "completed": len(job["completed"]), "status": "running"}
-                        wf._persist_state()
-                    wf._sync_problem_counts(path, "全自动处理完成，等待结果审核")
-                except Exception as err:
-                    wf.log_msg(f"❌ {Path(path).name} 未完成，可续跑：{err}")
-                    update_file_progress(workbook_rel_name(Path(path), wf.STATE["folder"]),
-                                         status="error", error=str(err), current_action="文件未完成，可续跑")
-                    if job.get("pending_adjustment"):
-                        break  # 写入日志未结算前不能处理另一文件
-                finally:
-                    session.drop_copy(path)
+                    except Exception as err:
+                        if job.get("pending_adjustment"):
+                            wf.log_msg(f"❌ {Path(path).name} 写入未结算，可续跑：{err}")
+                            break
+                        # 程序出错（多半是 Excel 崩溃或卡住）：重启 Excel 再试；检测类原因（ValueError）不重试
+                        if not isinstance(err, ValueError) and tries < autofix.MAX_ERROR_RETRIES:
+                            wf.log_msg(f"⚠️ {Path(path).name} 出错，重启 Excel 后重试：{err}")
+                            try:
+                                _restart_excel(session)
+                            except Exception as restart_err:
+                                wf.log_msg(f"❌ 无法重新启动 Excel：{restart_err}")
+                                err = restart_err
+                            else:
+                                continue
+                        wf.log_msg(f"❌ {Path(path).name} 未完成，可续跑：{err}")
+                        update_file_progress(workbook_rel_name(Path(path), wf.STATE["folder"]),
+                                             status="error", error=str(err), current_action="文件未完成，可续跑")
+                        # 下一个文件用新的 Excel，避免一次崩溃拖垮后面所有文件
+                        if not isinstance(err, ValueError):
+                            session.close()
+                        break
+                    finally:
+                        session.drop_copy(path)
+                if job.get("pending_adjustment") or job.get("pause_requested"):
+                    break  # 写入日志未结算前不能处理另一文件
         elif kind == "batch_commit":
             if options.get("refresh_sheets") or any(c["color"] != "blue" and not c.get("dismissed")
                                                    for c in _data()["cards"].values()):

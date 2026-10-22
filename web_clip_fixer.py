@@ -164,7 +164,8 @@ class WebHandler(BaseHTTPRequestHandler):
             if path is None:
                 self.send_error(404)
                 return
-            self._send_bytes(path.read_bytes(), "image/png")
+            # 地址带内容版本号（?v=），内容变了地址就变，可以缓存
+            self._send_bytes(path.read_bytes(), "image/png", cacheable=True)
         elif parsed.path == "/api/state":
             self._send_json(get_state_snapshot())
         elif parsed.path.startswith("/api/image/"):
@@ -263,6 +264,9 @@ class WebHandler(BaseHTTPRequestHandler):
                 STATE["job"]["pause_requested"] = True
                 from core.workflow import _persist_state
                 _persist_state()
+            self._send_json({"ok": True})
+        elif self.path == "/api/batch/abandon":
+            batch.abandon_pending()
             self._send_json({"ok": True})
         elif self.path in {"/api/batch/commit", "/api/batch/recheck", "/api/batch/open"}:
             action = self.path.rsplit("/", 1)[1]
