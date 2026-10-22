@@ -17,7 +17,7 @@ from core.excel_ops import (
     CellProbe, close_saved_workbooks, extract_sheet_snapshot, normalize_workbook_view,
     open_workbooks_for_review, snapshot_cells,
 )
-from core.hidden_text import collect_text_pieces, locate_text, normalize_text
+from core.hidden_text import collect_text_pieces, is_excel_error, locate_text, normalize_text
 from core.pdf_detector import fitz, render_crop_base64
 from core.reporter import finish_execution_batch, init_execution_batch, update_file_progress
 
@@ -300,8 +300,21 @@ def abandon_pending() -> None:
     wf._sync_problem_counts(pending["path"], "已放弃未完成的写入，等待人工处理")
 
 
+def _error_value_card(card: dict) -> bool:
+    """旧版把 #REF! 等公式错误（COM 读成 -2146826265 这类整数）当成隐藏截断出了卡片，现在不再检测"""
+    try:
+        return is_excel_error(int(str(card.get("text", "")).strip()))
+    except ValueError:
+        return False
+
+
 def _refresh(excel: Any, path: str, sheets: list[str] | None = None) -> None:
     with wf.STATE_LOCK:
+        cards = _data()["cards"]
+        for cid in [cid for cid, card in cards.items()
+                    if card["wb_path"] == path and (sheets is None or card["sheet_name"] in sheets)
+                    and _error_value_card(card) and not card.get("finalized")]:
+            del cards[cid]
         # 升级前人工跳过的记录也转成明确的单元格忽略规则，后续复检仍有效。
         for item in wf.STATE["items"].values():
             if (item["wb_path"] == path and item["status"] == "accepted"

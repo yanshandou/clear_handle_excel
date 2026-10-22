@@ -270,6 +270,33 @@ class HiddenTextTests(unittest.TestCase):
                         displayed={(3, 1): "###"}, printed=lambda r, c: False)
         self.assertEqual(result, [])
 
+    def test_excel_error_values_are_not_reported(self):
+        # #REF! 经 COM 读成 -2146826265；打印成空白时 PDF 里找不到，也不是加高能修的问题
+        for shown in ("#REF!", "####", None):
+            with self.subTest(shown=shown):
+                result = find_hidden_cells(
+                    [(1, 1, -2146826265), (1, 2, -2146826246)], [], lambda r, c: shown, lambda r, c: True)
+                self.assertEqual(result, [])
+
+    def test_unique_text_cells_read_display_text_only_when_unmatched(self):
+        calls = []
+
+        def build(page):
+            add_text(page, 50, 100, "Alpha")
+            add_text(page, 50, 120, "Same")
+            add_text(page, 50, 140, "Same")
+        with fitz.open() as doc:
+            build(doc.new_page())
+            data = doc.tobytes()
+        with fitz.open("pdf", data) as doc:
+            pieces = collect_text_pieces(doc)
+        cells = [(1, 1, "Alpha"), (2, 1, "Same"), (3, 1, "Same"), (4, 1, "Gone")]
+        values = {(r, c): v for r, c, v in cells}
+        result = find_hidden_cells(cells, pieces, lambda r, c: calls.append((r, c)) or values[(r, c)],
+                                   lambda r, c: True)
+        self.assertEqual(sorted(calls), [(2, 1), (3, 1), (4, 1)])
+        self.assertEqual([r["text"] for r in result], ["Gone"])
+
     def test_empty_display_format_does_not_claim_other_cells_text(self):
         result = detect([(1, 1, "Same"), (2, 1, "Same")],
                         lambda page: add_text(page, 50, 100, "Same"), displayed={(1, 1): ""})
