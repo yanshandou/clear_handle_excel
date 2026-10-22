@@ -12,6 +12,23 @@ let pollSeq = 0;
 let minAcceptedSeq = 0; // 发起操作前已在途的轮询结果可能过期，直接丢弃
 let lastAppliedPollSeq = 0;
 
+// 与首页、清理 Sheet 共用同一个键：任一处填过的文件夹路径，其他地方自动带出
+const FOLDER_STORAGE_KEY = 'clear_handle_excel.lastFolder';
+
+function readLastFolder() {
+  try {
+    return localStorage.getItem(FOLDER_STORAGE_KEY) || '';
+  } catch (e) {
+    return '';
+  }
+}
+
+function saveLastFolder(folder) {
+  try {
+    localStorage.setItem(FOLDER_STORAGE_KEY, folder);
+  } catch (e) {}
+}
+
 // 点击即跳过：先在页面上生效，再把这期间的多次点选合并成一次提交（每次写库较慢）
 let pendingSkips = new Map(); // item id -> 是否跳过（尚未提交）
 let inFlightSkips = new Map(); // 正在提交的决定
@@ -1119,7 +1136,9 @@ async function pollState() {
     document.getElementById('resumeBtn').classList.toggle('hidden', !canResume);
     document.getElementById('resumeBtn').disabled = data.busy;
     if (!workspaceRestored) {
-      document.getElementById('folderInput').value = data.folder || '';
+      // 进行中或可续跑的任务以服务器为准，否则优先用上次填过的路径
+      const taskFolder = (data.busy || canResume) ? data.folder : '';
+      document.getElementById('folderInput').value = taskFolder || readLastFolder() || data.folder || '';
     }
 
     document.getElementById('scanBtn').disabled = data.busy;
@@ -1215,6 +1234,7 @@ async function startScan() {
   await syncSkips();
   try {
     await postAction('/api/scan', { folder, delete_backups: false, full: false });
+    saveLastFolder(folder);
   } catch (e) {
     alert(e.message);
     return;
