@@ -156,6 +156,53 @@ class IncrementalScanTests(unittest.TestCase):
         self.assertEqual(sorted(self.exports), [("book", "S1"), ("book", "S2")])
         self.assertTrue(self.items_by_text()["late"]["is_new"])
 
+    def test_files_checked_by_older_rules_are_fully_rechecked(self):
+        self.add_book("book", ["S1", "S2"])
+        self.clips[("book", "S1")] = ["k"]
+        self.scan()
+        for version in self.workflow.STATE["checked_files"].values():
+            del version["detector"]  # 加入隐藏截断检查之前的扫描记录
+
+        self.scan()
+        self.assertEqual(self.exports, [("book", "S1"), ("book", "S2")])
+        self.assertFalse(self.items_by_text()["k"]["is_new"])
+
+        self.scan()
+        self.assertEqual(self.exports, [])
+
+    def test_hidden_wrapped_text_is_reported_with_cell(self):
+        path = self.add_book("book", ["S1"])
+        with self.workflow.fitz.open() as doc:
+            page = doc.new_page()
+            page.insert_text((60, 100), "DbExKhplg0", fontsize=10)
+            doc.save(self.root / "hidden.pdf")
+        self.blank_pdf = self.root / "hidden.pdf"
+        self.patch_value(self.workflow, "extract_sheet_snapshot", Mock(return_value={
+            "start_r": 23, "start_c": 8, "rows_vals": [("DbExKhplg0000Mapper",)],
+        }))
+        sheet = self.books["book"].Sheets[0]
+        sheet.Rows = Mock(return_value=Mock(RowHeight=13.5))
+        self.scan()
+
+        (item,) = self.workflow.STATE["items"].values()
+        self.assertEqual(item["kind"], "hidden")
+        self.assertEqual((item["cell_addr"], item["excel_row"], item["row_height"]), ("H23", 23, 13.5))
+        self.assertEqual((item["text"], item["visible_text"]), ("DbExKhplg0000Mapper", "DbExKhplg0"))
+        self.assertEqual(item["page_index"], 0)
+        self.assertIn(item["page_id"], self.workflow.STATE["pages"])
+        report = self.reporter.get_execution_report_snapshot()["files"][path.name]
+        self.assertEqual(report["clip_unfixed"], 1)
+
+        # 改好后重新检查不再检出，记为已修复
+        with self.workflow.fitz.open() as doc:
+            page = doc.new_page()
+            page.insert_text((60, 100), "DbExKhplg0000Mapper", fontsize=10)
+            doc.save(self.root / "hidden.pdf")
+        self.modify(path)
+        self.scan()
+        (item,) = self.workflow.STATE["items"].values()
+        self.assertEqual(item["status"], "fixed")
+
     def test_new_file_is_fully_scanned_and_not_marked_new(self):
         self.add_book("book", ["S1"])
         self.scan()

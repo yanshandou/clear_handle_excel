@@ -38,6 +38,21 @@ function skipButton(item) {
   return `<button class="btn btn-outline btn-sm skip-btn" data-item-id="${escapeHtml(item.id)}" onclick="toggleSkip('${escapeHtml(item.id)}')"></button>`;
 }
 
+// 隐藏截断：PDF 外观看不出来、实际没显示全的文字
+function isHidden(item) {
+  return item.kind === 'hidden';
+}
+
+function itemTextLabel(item) {
+  if (!isHidden(item)) return `文字: ${item.text}`;
+  const shown = item.visible_text ? `PDF 中只显示「${item.visible_text}」` : 'PDF 中没有显示';
+  return `【隐藏截断】完整内容「${item.text}」，${shown}`;
+}
+
+function pageLabel(item) {
+  return item.page_index === null || item.page_index === undefined ? '?' : Number(item.page_index) + 1;
+}
+
 function escapeHtml(str) {
   return String(str ?? '')
     .replace(/&/g, '&amp;')
@@ -226,7 +241,7 @@ function refreshItemClasses() {
     if (hotspot) {
       hotspot.className = `hotspot-box ${st.boxClass}`;
       const tag = hotspot.querySelector('.hotspot-tag');
-      if (tag) tag.textContent = `${st.shortTag} ${item.cell_addr}`;
+      if (tag) tag.textContent = `${isHidden(item) ? '隐 ' : ''}${st.shortTag} ${item.cell_addr}`;
     }
 
     const capsule = document.getElementById('capsule_' + item.id);
@@ -322,7 +337,9 @@ function updateMagnifierContent(item) {
   badgeEl.textContent = st.badgeText;
 
   document.getElementById('magImg').src = item.image;
-  document.getElementById('magText').textContent = `文字内容: ${item.text}`;
+  document.getElementById('magText').textContent = isHidden(item)
+    ? `${itemTextLabel(item)}。${item.hidden_reason || ''}`
+    : `文字内容: ${item.text}`;
   let hint = '💡 无需修改就点击框跳过（再点撤销）；需要修改的在 Excel 中改好保存后重新扫描';
   if (item.status === 'accepted') hint = '已跳过（人工确认无需修改），之后扫描不再检查；再点一次可撤销';
   else if (item.status === 'fixed') hint = '✅ 复检未再检出压线，已记为已修复';
@@ -457,7 +474,7 @@ function renderCanvasStages(pages, items) {
             style="left:${leftPct}%; top:${topPct}%; width:${widthPct}%; height:${heightPct}%;"
             data-item-id="${escapeHtml(item.id)}"
           >
-            <span class="hotspot-tag">${escapeHtml(st.shortTag)} ${escapeHtml(item.cell_addr)}</span>
+            <span class="hotspot-tag">${isHidden(item) ? '隐 ' : ''}${escapeHtml(st.shortTag)} ${escapeHtml(item.cell_addr)}</span>
           </div>
         `;
       })
@@ -474,7 +491,7 @@ function renderCanvasStages(pages, items) {
           >
             <span class="capsule-seq">#${Number(item.index_on_page || item.seq)}</span>
             <span class="capsule-addr">${escapeHtml(item.cell_addr)} (${escapeHtml(item.row_height)}pt)</span>
-            <span class="capsule-text" title="${escapeHtml(item.text)}">${escapeHtml(item.text)}</span>
+            <span class="capsule-text" title="${escapeHtml(itemTextLabel(item))}">${escapeHtml(isHidden(item) ? itemTextLabel(item) : item.text)}</span>
             <label onclick="event.stopPropagation();" style="display:inline-flex; align-items:center; gap:3px;">
               行:
               <input
@@ -593,15 +610,16 @@ function renderCards(items) {
       <div class="card-header">
         <div>
           <b>#${Number(item.seq || 1)} ${escapeHtml(item.wb_name)}</b>
-          <span style="color:#64748b;">/ ${escapeHtml(item.sheet_name)} (P${Number(item.page_index) + 1})</span>
+          <span style="color:#64748b;">/ ${escapeHtml(item.sheet_name)} (P${pageLabel(item)})</span>
         </div>
         <span class="badge ${st.badgeClass}">${escapeHtml(st.badgeText)}</span>
       </div>
-      <div class="card-img-wrap"><img src="${item.image}" alt="crop"></div>
+      ${item.image ? `<div class="card-img-wrap"><img src="${item.image}" alt="crop"></div>` : ''}
       <div class="card-body">
         <div>
           定位: <b>${escapeHtml(item.cell_addr)}</b> | 当前行高: <b>${escapeHtml(item.row_height)}pt</b><br>
-          <span style="color:#64748b;">文字: ${escapeHtml(item.text)}</span>
+          <span style="color:#64748b;">${escapeHtml(itemTextLabel(item))}</span>
+          ${isHidden(item) ? `<br><span style="color:#b45309;">${escapeHtml(item.hidden_reason || '')}</span>` : ''}
         </div>
         <div class="row-adjust" title="如果行号有偏差可手动修正">
           行号:
@@ -710,17 +728,18 @@ function renderTriage() {
       <div class="triage-card-head">
         <div>
           <b>#${Number(next.seq || 1)} ${escapeHtml(next.wb_name)}</b>
-          <span style="color:#64748b;">/ ${escapeHtml(next.sheet_name)}（第 ${Number(next.page_index) + 1} 页）</span>
+          <span style="color:#64748b;">/ ${escapeHtml(next.sheet_name)}（第 ${pageLabel(next)} 页）</span>
         </div>
         <span class="badge ${st.badgeClass}">${escapeHtml(next.status === 'pending' ? (next.is_new ? '🆕 新发现 · 待筛选' : '待筛选') : st.badgeText)}</span>
       </div>
       <div class="triage-card-body">
-        <div class="triage-crop"><img src="${next.image}" alt="2.5x 局部特写" draggable="false"></div>
+        ${next.image ? `<div class="triage-crop"><img src="${next.image}" alt="2.5x 局部特写" draggable="false"></div>` : ''}
         ${pageHtml}
       </div>
       <div class="triage-card-foot">
         定位 <b>${escapeHtml(next.cell_addr)}</b>（Excel 第 ${Number(next.excel_row) || 1} 行 · 行高 ${escapeHtml(next.row_height)}pt${peers > 1 ? ` · 同行共 ${peers} 处切字` : ''}）<br>
-        文字：${escapeHtml(next.text)}
+        ${escapeHtml(itemTextLabel(next))}
+        ${isHidden(next) ? `<br><span style="color:#b45309;">${escapeHtml(next.hidden_reason || '')}</span>` : ''}
         ${next.status !== 'pending' && next.review_reason ? `<br><span style="color:#b45309;">${escapeHtml(next.review_reason)}</span>` : ''}
       </div>
     </div>

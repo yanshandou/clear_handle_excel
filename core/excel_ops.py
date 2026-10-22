@@ -236,6 +236,69 @@ def extract_sheet_snapshot(sheet: Any) -> dict[str, Any]:
     }
 
 
+def snapshot_cells(sheet_snapshot: dict[str, Any]) -> list[tuple[int, int, Any]]:
+    """快照里所有非空单元格: [(行, 列, 值)]"""
+    start_r = sheet_snapshot.get("start_r", 1)
+    start_c = sheet_snapshot.get("start_c", 1)
+    return [
+        (start_r + r_idx, start_c + c_idx, value)
+        for r_idx, row in enumerate(sheet_snapshot.get("rows_vals", []))
+        for c_idx, value in enumerate(row)
+        if value is not None
+    ]
+
+
+class CellProbe:
+    """按需读取单元格的显示文字和打印范围；只有和 PDF 对不上的格子才跨进程查询"""
+
+    def __init__(self, sheet: Any):
+        self.sheet = sheet
+        self._hidden_rows: dict[int, bool] = {}
+        self._hidden_cols: dict[int, bool] = {}
+        self._areas: list[tuple[int, int, int, int]] | None = None
+
+    def text(self, row: int, col: int) -> str | None:
+        try:
+            return str(self.sheet.Cells(row, col).Text)
+        except Exception:
+            return None
+
+    def row_height(self, row: int) -> float:
+        try:
+            return round(float(self.sheet.Rows(row).RowHeight or 15.0), 1)
+        except Exception:
+            return 15.0
+
+    def _print_areas(self) -> list[tuple[int, int, int, int]]:
+        if self._areas is None:
+            self._areas = []
+            try:
+                print_area = str(self.sheet.PageSetup.PrintArea or "")
+                if print_area:
+                    for area in self.sheet.Range(print_area).Areas:
+                        r0, c0 = int(area.Row), int(area.Column)
+                        self._areas.append((r0, c0, r0 + int(area.Rows.Count) - 1, c0 + int(area.Columns.Count) - 1))
+            except Exception:
+                self._areas = []
+        return self._areas
+
+    def printed(self, row: int, col: int) -> bool:
+        """这格会不会被打印：不在隐藏行列、在打印区域内（没设打印区域时整张表都打印）。读不到时按会打印处理。"""
+        try:
+            if row not in self._hidden_rows:
+                r = self.sheet.Rows(row)
+                self._hidden_rows[row] = bool(r.Hidden) or float(r.RowHeight or 0) == 0
+            if col not in self._hidden_cols:
+                c = self.sheet.Columns(col)
+                self._hidden_cols[col] = bool(c.Hidden) or float(c.ColumnWidth or 0) == 0
+        except Exception:
+            return True
+        if self._hidden_rows[row] or self._hidden_cols[col]:
+            return False
+        areas = self._print_areas()
+        return not areas or any(r0 <= row <= r1 and c0 <= col <= c1 for r0, c0, r1, c1 in areas)
+
+
 def match_excel_row(
     sheet_snapshot: dict[str, Any],
     text_snippet: str,
