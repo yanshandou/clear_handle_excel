@@ -11,6 +11,7 @@ from uuid import uuid4
 from core.common import (
     EXCEL_EXTENSIONS,
     EXCLUDE_PDF_SHEETS,
+    REVIEW_EMOJI,
     XL_SHEET_VISIBLE,
     XL_TYPE_PDF,
     as_bbox,
@@ -21,14 +22,20 @@ from core.common import (
     find_contained_sheets,
     find_new_old_pairs,
     is_uncertain_name,
+    review_marked_name,
     sanitize_filename,
     strip_new_prefix,
+    strip_review_prefix,
     unique_pdf_path,
     workbook_rel_name,
 )
 from core.excel_ops import (
     CellProbe,
+    close_saved_workbooks,
     extract_sheet_snapshot,
+    mark_review_cells,
+    open_workbooks_for_review,
+    restore_review_cells,
     restore_font_colors,
     set_font_colors,
     match_excel_row,
@@ -75,6 +82,8 @@ STATE_LOCK = threading.RLock()
 MANUAL_CONFIRMED_REASON = "人工确认无需修复"
 MANUALLY_FIXED_REASON = "人工修改后重新检测未再检出压线"
 RESOLVED_STATUSES = {"accepted", "fixed"}
+LATER_REVIEW_REASON = "已挂起，稍后统一人工复检（Excel 里标了黄色）"
+LATER_REVIEW_FAILED_REASON = "统一复检仍有问题：请继续修改并保存后再复检，或标记无需修改"
 
 # 主页上可单独执行的批处理功能（job kind -> 任务名）
 QUICK_TASK_NAMES = {
@@ -96,6 +105,9 @@ STATE: dict[str, Any] = {
     "job": None,
     "checked_files": {},  # wb_path -> 最近一次完整检查未解决项时的文件版本
     "scan_progress": {},  # 独立于执行报告，避免并行写入覆盖扫描的总进度
+    # 稍后人工复检：wb_path -> {"marks": [{sheet, addr, row, item_ids, state, fill, range, error}], "error"}
+    # state: pending 等后台标黄 / marked 已标黄 / skipped 没能标黄（仍在队列里）
+    "review_queue": {},
 }
 
 _saved_state = load_snapshot("workflow")
@@ -134,6 +146,10 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
     with STATE_LOCK:
         if STATE["busy"]:
             return False
+        if kind == "review_recheck" and not STATE["review_queue"]:
+            raise ValueError("没有挂起的稍后人工复检")
+        if kind == "review_open" and not STATE["review_queue"]:
+            raise ValueError("没有挂起的稍后人工复检")
         if kind in {"fix", "manual_open", "recheck"}:
             ids = (options or {}).get("selected_ids")
             if (
@@ -185,6 +201,12 @@ def run_pending_workflow() -> None:
         elif job["kind"] in {"manual_open", "recheck"}:
             manual_review_workflow(options["selected_ids"], open_excel=job["kind"] == "manual_open")
             expected = options["selected_ids"]
+        elif job["kind"] == "review_open":
+            review_open_workflow()
+            expected = []
+        elif job["kind"] == "review_recheck":
+            review_recheck_workflow()
+            expected = job["options"]["selected_ids"]
         elif job["kind"] in QUICK_TASK_NAMES:
             quick_task_workflow(job["kind"])
             expected = job.get("workbooks", [])
@@ -265,6 +287,7 @@ def get_state_snapshot() -> dict[str, Any]:
             "pages": {key: copy.deepcopy(p) for key, p in STATE["pages"].items() if p["wb_path"] in available},
             "items": {key: copy.deepcopy(it) for key, it in STATE["items"].items() if it["wb_path"] in available},
             "scan_progress": copy.deepcopy(STATE["scan_progress"]),
+            "review_queue": copy.deepcopy(STATE["review_queue"]),
             "settings": dict(STATE["settings"]),
             "can_resume": bool(STATE["job"] and STATE["job"]["status"] == "interrupted"),
             "job": copy.deepcopy(STATE["job"]),
@@ -494,7 +517,8 @@ def _problem_record(item: dict[str, Any]) -> dict[str, Any]:
     """完整重新扫描前记下旧问题项（不含截图等大字段），用于对应同一处问题"""
     return {
         key: copy.deepcopy(item.get(key))
-        for key in ("id", "seq", "kind", "wb_path", "sheet_name", "text", "occurrence", "status", "manual_confirmation", "triage_keep")
+        for key in ("id", "seq", "kind", "wb_path", "sheet_name", "text", "occurrence", "status",
+                    "manual_confirmation", "triage_keep", "later_review")
     }
 
 
@@ -550,6 +574,10 @@ def _merge_redetected(
                 item["status"] = "accepted"
                 item["manual_confirmation"] = copy.deepcopy(old["manual_confirmation"])
                 item["review_reason"] = MANUAL_CONFIRMED_REASON
+            elif old.get("later_review"):
+                # 还挂在稍后人工复检里，等统一复检，不回到逐个处理
+                item.update(status="manual_review", manual_waiting=True, later_review=True,
+                            review_reason=LATER_REVIEW_REASON)
         merged[item["id"]] = item
     if keep_unmatched:
         matched_ids = {old["id"] for old in matched.values()}
@@ -811,7 +839,7 @@ def _scan_one_workbook(
         )
 
         scan_version = _file_version(wb_path)
-        file_stem = sanitize_filename(wb_path.stem)
+        file_stem = sanitize_filename(strip_review_prefix(wb_path.stem))
         sheets = [s for s in _exportable_sheets(wb) if sheets_only is None or s.Name in sheets_only]
         rescanning_names = {s.Name for s in sheets}
         with STATE_LOCK:
@@ -1243,6 +1271,10 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
                         if item["wb_path"] == path and item["sheet_name"] in entry["sheets"]
                     ]
                     merged = _merge_redetected(new_items, previous_items, mark_new=True, keep_unmatched=True)
+                    if job["kind"] == "review_recheck":
+                        for item in merged.values():
+                            if item.get("later_review") and item["status"] not in RESOLVED_STATUSES:
+                                item["review_reason"] = LATER_REVIEW_FAILED_REASON
                     if job["kind"] == "recheck":
                         token = uuid4().hex
                         manual_rows = {tuple(row) for row in job["options"].get("manual_rows", [])}
@@ -1297,6 +1329,323 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
                 excel.Quit()
         finally:
             pythoncom.CoUninitialize()
+
+
+# ==========================================
+# 稍后人工复检：先挂起，最后一次打开全部文件人工修改，再统一复检
+# ==========================================
+def queue_later_review(item_ids: list[str]) -> None:
+    """调用方持有 STATE_LOCK：把这些问题挂到稍后人工复检，后台随后给单元格标黄、给文件名加 🟡。"""
+    previous = {iid: copy.deepcopy(STATE["items"][iid]) for iid in item_ids}
+    previous_queue = copy.deepcopy(STATE["review_queue"])
+    for iid in item_ids:
+        item = STATE["items"][iid]
+        item.pop("manual_recheck_token", None)
+        item.update(status="manual_review", manual_waiting=True, later_review=True, review_reason=LATER_REVIEW_REASON)
+        entry = STATE["review_queue"].setdefault(item["wb_path"], {"marks": [], "error": ""})
+        addr = str(item.get("cell_addr", ""))
+        mark = next((m for m in entry["marks"] if (m["sheet"], m["addr"]) == (item["sheet_name"], addr)), None)
+        if mark is None:
+            mark = {
+                "sheet": item["sheet_name"], "addr": addr, "row": int(item["excel_row"]),
+                "item_ids": [], "state": "pending", "error": "",
+            }
+            entry["marks"].append(mark)
+        if iid not in mark["item_ids"]:
+            mark["item_ids"].append(iid)
+    try:
+        _commit_confirmations(previous, "已挂起，稍后统一人工复检")
+    except Exception:
+        STATE["review_queue"] = previous_queue
+        raise
+
+
+def review_entry_needs_mark(path: str, entry: dict[str, Any]) -> bool:
+    """还有没标黄的单元格，或文件名还没加 🟡（后台标黄失败过的不再自动重试）"""
+    if entry.get("mark_failed"):
+        return False
+    return any(m["state"] == "pending" for m in entry["marks"]) or (
+        bool(entry["marks"]) and not Path(path).name.startswith(REVIEW_EMOJI)
+        and not entry.get("rename_error")
+    )
+
+
+def _rebase_checked_file(path: str, before: dict[str, int]) -> None:
+    """只是标黄 / 去黄色时，文件的检查基线跟着前进，免得下次扫描把它当成改过的文件"""
+    if STATE["checked_files"].get(path) == before:
+        STATE["checked_files"][path] = _file_version(Path(path))
+
+
+def _replace_job_path(old: str, new: str) -> None:
+    job = STATE["job"]
+    if not job:
+        return
+    for key in ("workbooks", "completed"):
+        if isinstance(job.get(key), list):
+            job[key] = [new if value == old else value for value in job[key]]
+    options = job["options"]
+    if isinstance(options.get("recheck_plan"), dict) and old in options["recheck_plan"]:
+        options["recheck_plan"][new] = options["recheck_plan"].pop(old)
+    for row in options.get("manual_rows", []):
+        if row[0] == old:
+            row[0] = new
+    if isinstance(options.get("review_files"), list):
+        options["review_files"] = [new if value == old else value for value in options["review_files"]]
+
+
+def _rename_review_file(path: str, new_name: str) -> str:
+    """改文件名（加 / 去 🟡）并同步工作台记录；改不了时记下原因并返回原路径。"""
+    old = Path(path)
+    new = old.with_name(new_name)
+    if new == old:
+        return path
+    error = ""
+    if new.exists():
+        error = f"已有同名文件「{new.name}」，没有改文件名"
+    else:
+        try:
+            old.rename(new)
+        except OSError as err:
+            error = f"改文件名失败: {err}"
+    if error:
+        with STATE_LOCK:
+            if path in STATE["review_queue"]:
+                STATE["review_queue"][path]["rename_error"] = error
+                _persist_state()
+        log_msg(f"⚠️ {old.name}: {error}")
+        return path
+    from core import autofix
+    with STATE_LOCK:
+        previous = copy.deepcopy(STATE)
+        _sync_renamed_workbook_in_state(old, new, {})
+        if path in STATE["review_queue"]:
+            STATE["review_queue"][str(new)] = STATE["review_queue"].pop(path)
+            STATE["review_queue"][str(new)].pop("rename_error", None)
+        _replace_job_path(path, str(new))
+        try:
+            _persist_state()
+        except Exception:
+            STATE.clear()
+            STATE.update(previous)
+            new.rename(old)
+            raise
+        autofix.rename_groups(path, str(new))
+    log_msg(f"文件名 {old.name} → {new.name}")
+    return str(new)
+
+
+def mark_review_file(excel: Any, path: str) -> bool:
+    """给待复检单元格标黄并保存，再给文件名加 🟡；文件正被 Excel 打开时返回 False，稍后再试。
+
+    调用方保证此时没有别的任务在用这个文件。
+    """
+    wb_path = Path(path)
+    if wb_path.with_name("~$" + wb_path.name).exists():
+        with STATE_LOCK:
+            if path in STATE["review_queue"]:
+                STATE["review_queue"][path]["error"] = "文件正在 Excel 中打开，关闭后自动标黄"
+        return False
+    with STATE_LOCK:
+        entry = STATE["review_queue"].get(path)
+        if entry is None:
+            return True
+        pending = [copy.deepcopy(m) for m in entry["marks"] if m["state"] == "pending"]
+    if pending:
+        before = _file_version(wb_path)
+        workbook = excel.Workbooks.Open(str(wb_path.resolve()), UpdateLinks=0)
+        try:
+            mark_review_cells(workbook, pending)
+            normalize_workbook_view(excel, workbook)
+            workbook.Save()
+        finally:
+            workbook.Close(SaveChanges=False)
+        done = {(m["sheet"], m["addr"]): m for m in pending}
+        with STATE_LOCK:
+            entry = STATE["review_queue"].get(path, {"marks": []})
+            for mark in entry["marks"]:
+                result = done.get((mark["sheet"], mark["addr"]))
+                if result is not None and mark["state"] == "pending":
+                    mark.update({key: result[key] for key in ("state", "error", "range", "fill") if key in result})
+            entry["error"] = ""
+            _rebase_checked_file(path, before)
+            _persist_state()
+        marked = sum(m["state"] == "marked" for m in pending)
+        skipped = [f"{m['sheet']}!{m['addr']} {m['error']}" for m in pending if m["state"] != "marked"]
+        log_msg(
+            f"🟡 稍后人工复检：{wb_path.name} 已把 {marked} 处单元格标成黄色"
+            + (f"；没标黄 {len(skipped)} 处（{'；'.join(skipped[:3])}）" if skipped else "")
+        )
+    with STATE_LOCK:
+        entry = STATE["review_queue"].get(path)
+        rename = entry is not None and bool(entry["marks"])
+    if rename:
+        _rename_review_file(path, review_marked_name(wb_path.name))
+    return True
+
+
+def _mark_resolved(mark: dict[str, Any]) -> bool:
+    # 问题项不在了（例如完整重新扫描后对应不上）也算这处已经没问题
+    return all(
+        STATE["items"].get(iid, {"status": "fixed"})["status"] in RESOLVED_STATUSES for iid in mark["item_ids"]
+    )
+
+
+def restore_review_file(excel: Any, path: str) -> str:
+    """统一复检后：没问题的单元格去掉黄色、还原原来的填充；整个文件都没问题了就去掉 🟡、移出队列。
+
+    返回 clean（已移出队列）/ partial（还有问题）/ locked（文件被打开，没能去黄色）。
+    """
+    wb_path = Path(path)
+    with STATE_LOCK:
+        entry = STATE["review_queue"].get(path)
+        if entry is None:
+            return "clean"
+        done = [copy.deepcopy(m) for m in entry["marks"] if _mark_resolved(m)]
+    to_restore = [m for m in done if m["state"] == "marked"]
+    before = None
+    if to_restore:
+        if wb_path.with_name("~$" + wb_path.name).exists():
+            return "locked"
+        before = _file_version(wb_path)
+        workbook = excel.Workbooks.Open(str(wb_path.resolve()), UpdateLinks=0)
+        try:
+            restore_review_cells(workbook, to_restore)
+            normalize_workbook_view(excel, workbook)
+            workbook.Save()
+        finally:
+            workbook.Close(SaveChanges=False)
+    with STATE_LOCK:
+        if before is not None:
+            _rebase_checked_file(path, before)
+        entry = STATE["review_queue"][path]
+        keys = {(m["sheet"], m["addr"]) for m in done}
+        entry["marks"] = [m for m in entry["marks"] if (m["sheet"], m["addr"]) not in keys]
+        for mark in done:
+            for iid in mark["item_ids"]:
+                if iid in STATE["items"]:
+                    STATE["items"][iid].pop("later_review", None)
+                    STATE["items"][iid].pop("manual_waiting", None)
+        remaining = len(entry["marks"])
+        _persist_state()
+    if to_restore:
+        log_msg(f"统一复检：{wb_path.name} 已去掉 {len(to_restore)} 处黄色")
+    if remaining:
+        return "partial"
+    new_path = _rename_review_file(path, strip_review_prefix(wb_path.name))
+    with STATE_LOCK:
+        STATE["review_queue"].pop(new_path, None)
+        _persist_state()
+    return "clean"
+
+
+def review_open_workflow() -> None:
+    """一次打开全部待复检文件：还没标黄的先标完，再在同一个可见 Excel 里逐个打开并定位。"""
+    with STATE_LOCK:
+        for entry in STATE["review_queue"].values():
+            entry.pop("rename_error", None)  # 打开前再试一次标黄和改名
+            entry.pop("mark_failed", None)
+        paths = [path for path, entry in STATE["review_queue"].items() if review_entry_needs_mark(path, entry)]
+    if paths:
+        pythoncom.CoInitialize()
+        excel = None
+        try:
+            excel = win32.DispatchEx("Excel.Application")
+            excel.Visible = False
+            excel.DisplayAlerts = False
+            for path in paths:
+                try:
+                    if not mark_review_file(excel, path):
+                        log_msg(f"⚠️ {Path(path).name} 正在 Excel 中打开，没能标黄，直接打开")
+                except Exception as err:
+                    log_msg(f"⚠️ {Path(path).name} 标黄失败: {err}")
+        finally:
+            try:
+                if excel is not None:
+                    excel.Quit()
+            finally:
+                pythoncom.CoUninitialize()
+    with STATE_LOCK:
+        targets = [
+            (Path(path), entry["marks"][0]["sheet"], entry["marks"][0]["addr"], int(entry["marks"][0]["row"]))
+            for path, entry in STATE["review_queue"].items() if entry["marks"]
+        ]
+    errors = open_workbooks_for_review(targets)
+    for path, reason in errors.items():
+        log_msg(f"⚠️ 没能打开 {path.name}: {reason}")
+    message = (
+        f"已在 Excel 打开 {len(targets) - len(errors)} 个待复检文件，黄色的单元格就是要改的地方；"
+        "改完保存后回到网页点「统一复检」"
+    )
+    log_msg(message)
+
+
+def review_recheck_workflow() -> None:
+    """统一复检：只重新检查挂起的文件，没问题的去掉黄色和 🟡，还有问题的继续留在队列里。"""
+    with STATE_LOCK:
+        job = STATE["job"]
+        options = job["options"]
+        first_run = "review_files" not in options
+        if first_run:
+            options["review_files"] = list(STATE["review_queue"])
+            _persist_state()
+        files = list(options["review_files"])
+    if first_run:
+        unsaved = close_saved_workbooks([Path(path) for path in files])
+        skipped: dict[str, str] = {}
+        for path in files:
+            wb_path = Path(path)
+            if wb_path in unsaved:
+                skipped[path] = unsaved[wb_path]
+            elif not wb_path.exists():
+                skipped[path] = "找不到文件，可能被移动或改名"
+            elif wb_path.with_name("~$" + wb_path.name).exists():
+                skipped[path] = "文件仍在 Excel 中打开，请关闭后再复检"
+        with STATE_LOCK:
+            ids = [
+                iid
+                for path, entry in STATE["review_queue"].items() if path in files and path not in skipped
+                for mark in entry["marks"] for iid in mark["item_ids"]
+                if iid in STATE["items"] and STATE["items"][iid]["status"] not in RESOLVED_STATUSES
+            ]
+            options["review_skipped"] = skipped
+            options["selected_ids"] = list(dict.fromkeys(ids))
+            _persist_state()
+        for path, reason in skipped.items():
+            log_msg(f"⚠️ 统一复检跳过 {Path(path).name}: {reason}")
+    with STATE_LOCK:
+        ids = list(options["selected_ids"])
+        skipped = dict(options["review_skipped"])
+    if ids:
+        recheck_items_workflow(ids)
+    results: dict[str, str] = {}
+    pythoncom.CoInitialize()
+    excel = None
+    try:
+        for path in files:
+            if path in skipped:
+                continue
+            if excel is None:
+                excel = win32.DispatchEx("Excel.Application")
+                excel.Visible = False
+                excel.DisplayAlerts = False
+            results[path] = restore_review_file(excel, path)
+    finally:
+        try:
+            if excel is not None:
+                excel.Quit()
+        finally:
+            pythoncom.CoUninitialize()
+    with STATE_LOCK:
+        left = sum(len(m["item_ids"]) for entry in STATE["review_queue"].values() for m in entry["marks"])
+    clean = sum(result == "clean" for result in results.values())
+    partial = len(results) - clean
+    message = f"统一复检完成：{clean} 个文件已没问题（去掉了黄色和 🟡）"
+    if partial:
+        message += f"，{partial} 个文件还有问题，继续留在复检队列里（共 {left} 处）"
+    if skipped:
+        message += f"；{len(skipped)} 个文件没复检（未保存或仍打开）"
+    log_msg(message)
+    finish_execution_batch(message)
 
 
 def fix_selected_workflow(
@@ -1823,7 +2172,7 @@ def _export_workbook_pdfs(
     wb_label = workbook_rel_name(wb_path, root_folder)
     wb = get_excel().Workbooks.Open(str(wb_path.resolve()), ReadOnly=True)
     try:
-        file_stem = sanitize_filename(wb_path.stem)
+        file_stem = sanitize_filename(strip_review_prefix(wb_path.stem))
         exported: list[Path] = []
         for sheet in _exportable_sheets(wb):
             pdf_path = unique_pdf_path(
@@ -1880,6 +2229,7 @@ def quick_task_workflow(kind: str) -> None:
             workbooks = [wb for wb in workbooks if workbook_rel_name(wb, folder) in wanted]
         with STATE_LOCK:
             STATE["logs"].clear()
+            waiting_review = len(STATE["review_queue"])
             options["folder"] = str(folder)
             if kind == "export_pdf":
                 options["pdf_folder"] = str(folder)
@@ -1893,6 +2243,8 @@ def quick_task_workflow(kind: str) -> None:
             pdf_folder=folder if kind == "export_pdf" else None,
             backup_folder=None,
         )
+        if kind == "export_pdf" and waiting_review:
+            log_msg(f"⚠️ 还有 {waiting_review} 个文件在等稍后人工复检（单元格标着黄色），导出的 PDF 里会带黄色底色")
     log_msg(f"{'继续' if initialized else '开始'}{task_name}：{folder}（共 {len(workbooks)} 个文件）")
 
     excel = None
@@ -2042,6 +2394,7 @@ def import_progress(data: Any) -> dict[str, Any]:
 
     imported = copy.deepcopy(workflow_state)
     imported.setdefault("scan_progress", {})
+    imported.setdefault("review_queue", {})
     if not isinstance(imported["scan_progress"], dict):
         raise ValueError("进度文件损坏：扫描进度格式无效")
     imported["busy"] = False

@@ -316,6 +316,23 @@ class WebHandler(BaseHTTPRequestHandler):
                 raise ValueError("需要有效的分组和问题项")
             self._send_json({"ok": True, **autofix.skip_group(gid, item_ids)})
 
+        elif self.path == "/api/review/later":
+            gid, item_ids = payload.get("id"), payload.get("item_ids")
+            if (
+                not isinstance(gid, str) or not gid
+                or not isinstance(item_ids, list) or not item_ids
+                or any(not isinstance(iid, str) or not iid for iid in item_ids)
+            ):
+                raise ValueError("需要有效的分组和问题项")
+            autofix.defer_group(gid, item_ids)
+            self._send_json({"ok": True})
+
+        elif self.path == "/api/review/open":
+            self._start_job("review_open")
+
+        elif self.path == "/api/review/recheck":
+            self._start_job("review_recheck")
+
         elif self.path == "/api/autofix/auto":
             on = payload.get("on")
             if not isinstance(on, bool):

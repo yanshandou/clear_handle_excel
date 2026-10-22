@@ -38,6 +38,10 @@ let fixDeferred = new Set(); // 点了「下一个」暂时跳过的组
 let fixChosen = new Set(); // 已点选、等待写入的组
 let fixSkipping = new Set(); // 正在保存“本行无需修改”判断的组
 let manualAction = null; // 打开或复检的任务，等待后端完成后才解除按钮锁定
+// 稍后人工复检：挂起的文件（服务器 review_queue）和一次打开 / 统一复检的任务
+let reviewQueue = {};
+let reviewAction = null; // { kind: 'review_open' | 'review_recheck', submitted }
+let fixDeferring = new Set(); // 正在挂起到稍后人工复检的组
 
 const TRIAGE_KEPT_STORAGE_KEY = 'clear_handle_excel.triageKept';
 const RECHECK_TITLE = '请先在 Excel 中保存手动修改。当前工作表只导出一次 PDF 复检，不会自动增加行高';
@@ -290,7 +294,8 @@ function pipelineMetrics() {
   }
   const handed = [...rows.values()].filter(peers => peers.some(it => triageKept.has(it.id))
     && peers.every(it => isResolved(it) || triageKept.has(it.id)));
-  const done = handed.filter(peers => peers.every(isResolved)).length;
+  // 挂到稍后人工复检的行，② 这一步已经处理完
+  const done = handed.filter(peers => peers.every(it => isResolved(it) || it.later_review)).length;
   const ready = fixQueue().filter(g => ['ready', 'failed', 'error'].includes(g.status)).length;
   return {total: items.length, screened, available: items.length - screened, handed: handed.length, done, ready};
 }
@@ -582,6 +587,7 @@ const FIX_OPEN_STATUSES = new Set(['queued', 'running', 'ready', 'failed', 'erro
 // 还需要用户处理的组：没写入、没点选；跳过（无需修改）的问题项已不在分组里
 function fixQueue() {
   return fixData.groups.filter(g => FIX_OPEN_STATUSES.has(g.status) && !fixChosen.has(g.id)
+    && !fixDeferring.has(g.id) && !g.item_ids.some(id => latestItems[id]?.later_review)
     && g.item_ids.some(id => latestItems[id] && !isResolved(latestItems[id]))
     && g.item_ids.every(id => latestItems[id] && (isResolved(latestItems[id]) || triageKept.has(id))));
 }
@@ -635,19 +641,21 @@ function renderFix() {
     const metrics = pipelineMetrics();
     const syncing = metrics.handed > metrics.done;
     const waiting = scanRunning || untriaged > 0 || writing > 0 || pendingKeeps.size > 0 || !!keepRequest || syncing;
-    const signature = `done|${applied}|${groups.length}|${untriaged}|${waiting}|${syncing}`;
+    const reviewFiles = Object.keys(reviewQueue).length;
+    const signature = `done|${applied}|${groups.length}|${untriaged}|${waiting}|${syncing}|${reviewFiles}`;
     if (stage.dataset.signature === signature) return;
     stage.dataset.signature = signature;
+    const reviewHint = reviewFiles ? `<span>还有 ${reviewFiles} 个文件挂在下方「稍后人工复检」，最后一次打开统一修改。</span>` : '';
     stage.innerHTML = `${notice}<div class="triage-done">${waiting
-      ? `<b>${writing ? '正在保存已选结果…' : syncing ? '已交接的行正在同步处理队列…' : '当前队列已处理完，等待扫描或筛选交接新行…'}</b>`
-      : groups.length ? `<b>当前队列已处理完</b><span>已写入 ${applied} 行。</span>`
+      ? `<b>${writing ? '正在保存已选结果…' : syncing ? '已交接的行正在同步处理队列…' : '当前队列已处理完，等待扫描或筛选交接新行…'}</b>${reviewHint}`
+      : groups.length || reviewFiles ? `<b>当前队列已处理完</b><span>已写入 ${applied} 行。</span>${reviewHint}`
       : '<span>没有需要处理的切字。先在第 ① 步筛选，保留的会出现在这里。</span>'}</div>`;
     return;
   }
 
   const items = group.item_ids.map(id => latestItems[id]).filter(Boolean);
   const skipping = fixSkipping.has(group.id);
-  const blocked = skipping || processingBusy() || !!manualAction;
+  const blocked = skipping || processingBusy() || !!manualAction || !!reviewAction;
   const signature = JSON.stringify([
     group.id, group.status, group.attempts, group.recommended, group.manual, group.message,
     skipping, isBusy, manualAction, untriaged, group.recheck_token,
@@ -678,7 +686,7 @@ function renderFix() {
   let note = '';
   if (manualAction) note = manualAction.kind === 'manual_open' ? '正在打开 Excel 并定位，请稍候…' : '正在复检当前工作表，完成后自动更新结果…';
   else if (group.recheck_token) note = group.message;
-  else if (group.manual) note = '已转人工：在 Excel 里改好并保存后，点「复检」。';
+  else if (group.manual) note = '已转人工：在 Excel 里改好并保存后，点「复检」；也可以挂到稍后统一人工复检。';
   else if (group.message) note = group.message;
   const first = items[0];
   stage.innerHTML = `
@@ -698,7 +706,9 @@ function renderFix() {
         <button type="button" class="btn btn-primary btn-sm" ${blocked ? 'disabled' : ''}
           title="将本行所有问题保存为人工确认无需修改，不修改 Excel"
           onclick="skipFixGroup('${escapeHtml(group.id)}')">${skipping ? '正在保存跳过...' : '跳过本行（无需修改）→'}</button>
-        ${first ? `<button type="button" class="btn btn-outline btn-sm" ${blocked || isBusy ? 'disabled' : ''} title="${scanRunning ? '扫描期间可选图或跳过；人工打开需等待扫描结束' : ''}" onclick="manualOpen('${escapeHtml(first.id)}')">${manualAction?.kind === 'manual_open' ? '正在打开 Excel…' : '人工处理（在 Excel 中打开）'}</button>` : ''}
+        <button type="button" class="btn btn-outline btn-sm" ${blocked ? 'disabled' : ''}
+          title="先记下来，不现在打开 Excel：程序把要改的单元格标成黄色、文件名前加 🟡，最后一次打开全部文件统一修改"
+          onclick="deferReview('${escapeHtml(group.id)}')">🟡 稍后人工复检</button>
         ${group.manual && first ? `<button type="button" class="btn btn-primary btn-sm" ${blocked || isBusy ? 'disabled' : ''} title="${RECHECK_TITLE}" onclick="manualRecheck('${escapeHtml(first.id)}')">${manualAction?.kind === 'recheck' ? '正在复检…' : '复检'}</button>` : ''}
         <button type="button" class="btn btn-outline btn-sm" ${blocked ? 'disabled' : ''} title="暂时换到下一行，不保存跳过判断，稍后还会显示本行" onclick="deferFixGroup('${escapeHtml(group.id)}')">先看下一个 →</button>
       </div>
@@ -738,6 +748,148 @@ async function chooseAttempt(groupId, index) {
     alert(e.message);
   }
   pollAutofix();
+}
+
+async function deferReview(groupId) {
+  const group = fixData.groups.find(g => g.id === groupId);
+  if (!group || fixDeferring.has(groupId) || processingBusy() || manualAction || reviewAction) return;
+  if (canResume && !resumeScan && !confirm('挂起会取消上次中断任务的续跑，避免旧检查点覆盖人工判断。确定吗？')) return;
+  fixDeferring.add(groupId);
+  fixCurrentId = null;
+  renderFix(); // 立刻换下一行，标黄在后台进行
+  try {
+    await syncSkips();
+    await postAction('/api/review/later', { id: groupId, item_ids: group.item_ids });
+    await pollState();
+  } catch (e) {
+    alert(`挂起失败：${e.message}`);
+  } finally {
+    fixDeferring.delete(groupId);
+    await pollAutofix();
+  }
+}
+
+/* ==========================================
+   稍后人工复检：一次打开全部 · 统一复检
+   ========================================== */
+function reviewFileLabel(path, entry) {
+  const firstId = entry.marks.flatMap(m => m.item_ids).find(id => latestItems[id]);
+  return firstId ? latestItems[firstId].wb_name : path.split(/[\\/]/).pop().replace(/^🟡/, '');
+}
+
+function markResolved(mark) {
+  return mark.item_ids.every(id => !serverItems[id] || isResolved(serverItems[id]));
+}
+
+function renderReview() {
+  const panel = document.getElementById('reviewPanel');
+  const files = Object.entries(reviewQueue).sort((a, b) => a[0].localeCompare(b[0]));
+  panel.classList.toggle('hidden', files.length === 0);
+  const busy = isBusy || !!reviewAction || !!manualAction;
+  const signature = JSON.stringify([files, busy, scanRunning, reviewAction,
+    files.flatMap(([, e]) => e.marks.flatMap(m => m.item_ids.map(id => serverItems[id]?.status)))]);
+  if (panel.dataset.signature === signature) return;
+  panel.dataset.signature = signature;
+  if (!files.length) {
+    panel.innerHTML = '';
+    return;
+  }
+  const marks = files.flatMap(([, e]) => e.marks);
+  const open = marks.filter(m => !markResolved(m)).length;
+  const unmarked = files.filter(([path, e]) => !e.rename_error
+    && (e.marks.some(m => m.state === 'pending') || !path.split(/[\\/]/).pop().startsWith('🟡')));
+  const failed = unmarked.filter(([, e]) => e.mark_failed).length;
+  const pending = unmarked.length - failed;
+  const status = [
+    pending ? (isBusy ? `${pending} 个文件等当前任务结束后标黄…` : `后台正在给 ${pending} 个文件标黄、加 🟡…`) : '',
+    failed ? `${failed} 个文件标黄失败，点「一次打开全部」时会再试一次。` : '',
+  ].filter(Boolean).join(' ') || '已全部标黄，文件名前加了 🟡。';
+  const rows = files.map(([path, entry]) => `
+    <div class="review-file">
+      <div class="review-file-head">
+        <b>🟡 ${escapeHtml(reviewFileLabel(path, entry))}</b>
+        <span>${entry.marks.length} 处</span>
+      </div>
+      ${entry.error ? `<div class="review-file-error">${escapeHtml(entry.error)}</div>` : ''}
+      ${entry.rename_error ? `<div class="review-file-error">${escapeHtml(entry.rename_error)}</div>` : ''}
+      ${entry.marks.map(mark => {
+        const resolved = markResolved(mark);
+        const text = mark.item_ids.map(id => serverItems[id]).filter(Boolean).map(it => it.text).join(' / ');
+        const state = resolved ? '✓ 已解决，复检时去掉黄色'
+          : mark.state === 'marked' ? '🟨 已标黄'
+          : mark.state === 'skipped' ? `⚠️ 没标黄：${mark.error || ''}` : '⏳ 等待标黄';
+        return `<div class="review-mark ${resolved ? 'is-resolved' : ''}">
+          <span class="review-mark-cell">${escapeHtml(mark.sheet)}!${escapeHtml(mark.addr)}</span>
+          <span class="review-mark-text" title="${escapeHtml(text)}">${escapeHtml(text)}</span>
+          <span class="review-mark-state">${escapeHtml(state)}</span>
+          ${resolved ? '' : `<button type="button" class="btn btn-outline btn-sm" ${busy ? 'disabled' : ''}
+            title="确认这处其实不用改：记为跳过，统一复检时去掉黄色" onclick="reviewSkip('${escapeHtml(mark.item_ids.join(','))}')">无需修改</button>`}
+        </div>`;
+      }).join('')}
+    </div>`).join('');
+  const opening = reviewAction?.kind === 'review_open';
+  const rechecking = reviewAction?.kind === 'review_recheck';
+  panel.innerHTML = `
+    <div class="review-head">
+      <div>
+        <b>🟡 稍后人工复检：${files.length} 个文件 · 待修改 ${open} 处</b>
+        <span>${escapeHtml(status)}</span>
+      </div>
+      <div class="review-actions">
+        <button type="button" class="btn btn-outline btn-sm" ${busy ? 'disabled' : ''} onclick="reviewOpenAll()"
+          title="在 Excel 里一次打开全部文件，各自跳到第一处黄色单元格">${opening ? '正在打开 Excel…' : `📂 一次打开全部（${files.length} 个）`}</button>
+        <button type="button" class="btn btn-primary btn-sm" ${busy ? 'disabled' : ''} onclick="reviewRecheck()"
+          title="只重新检查这些文件；没问题的去掉黄色和 🟡，还有问题的继续留在这里">${rechecking ? '正在统一复检…' : '🔁 统一复检'}</button>
+      </div>
+    </div>
+    <div class="review-list">${rows}</div>
+    <p class="triage-hint">改完记得在 Excel 里保存。统一复检时，已保存的文件会自动关闭再检查；还有没保存修改的文件会跳过。没问题的单元格会还原成原来的底色，整个文件都没问题了就去掉文件名前的 🟡。</p>`;
+}
+
+async function submitReviewAction(kind, path) {
+  if (isBusy || reviewAction || manualAction) return;
+  if (canResume && !resumeScan && !confirm('此操作会替换上次中断任务的续跑检查点，确定吗？')) return;
+  reviewAction = {kind, submitted: false};
+  renderReview();
+  renderFix();
+  try {
+    await syncSkips();
+    await postAction(path, {});
+    minAcceptedSeq = pollSeq + 1;
+    reviewAction.submitted = true;
+    await pollState();
+  } catch (e) {
+    reviewAction = null;
+    renderReview();
+    renderFix();
+    alert(e.message);
+  }
+}
+
+function reviewOpenAll() {
+  submitReviewAction('review_open', '/api/review/open');
+}
+
+function reviewRecheck() {
+  submitReviewAction('review_recheck', '/api/review/recheck');
+}
+
+async function reviewSkip(ids) {
+  if (isBusy || reviewAction) return;
+  try {
+    await syncSkips();
+    await postAction('/api/manual/skip', { decisions: Object.fromEntries(ids.split(',').map(id => [id, true])) });
+    await pollState();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function finishReviewAction(data) {
+  if (!reviewAction?.submitted || data.busy || data.job?.kind !== reviewAction.kind
+      || !['completed', 'interrupted'].includes(data.job.status)) return false;
+  reviewAction = null;
+  return true;
 }
 
 function deferFixGroup(groupId) {
@@ -853,6 +1005,8 @@ async function pollState() {
     applyPendingSkips();
     flushKeeps();
     const manualCompleted = finishManualAction(data);
+    reviewQueue = data.review_queue || {};
+    const reviewCompleted = finishReviewAction(data);
 
     const hasResults = Object.keys(latestPages).length > 0 || Object.keys(latestItems).length > 0;
     const emptyStage = document.getElementById('emptyStagePlaceholder');
@@ -862,7 +1016,8 @@ async function pollState() {
 
     workspaceRestored = true;
     renderItems();
-    if (manualCompleted) pollAutofix();
+    renderReview();
+    if (manualCompleted || reviewCompleted) pollAutofix();
   } catch (e) {
     document.getElementById('statusText').innerText = `连接或读取失败: ${e.message}`;
   }

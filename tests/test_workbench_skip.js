@@ -253,3 +253,38 @@ test('keep is persisted and a failed save restores the item to triage', async ()
   assert.equal(w.run('triageKept.has("i3")'), true);
   assert.match(w.context.alerts[0], /保存保留判断失败/);
 });
+
+test('later review hides the row immediately and moves on without opening Excel', async () => {
+  const w = workbench();
+  w.run(`renderFix();`);
+  assert.match(w.elements.get('fixStage').innerHTML, /稍后人工复检/);
+  assert.doesNotMatch(w.elements.get('fixStage').innerHTML, /人工处理（在 Excel 中打开）/);
+  w.run(`pollState = async () => { latestItems.i1.later_review = true; latestItems.i2.later_review = true; };`);
+  await w.run(`deferReview('g1')`);
+  assert.deepEqual(JSON.parse(JSON.stringify(w.context.requests)), [
+    {url: '/api/review/later', payload: {id: 'g1', item_ids: ['i1', 'i2']}},
+  ]);
+  assert.deepEqual(Array.from(w.run('fixQueue().map(g => g.id)')), ['g2']);
+  assert.equal(w.run('fixCurrentId'), 'g2');
+});
+
+test('review panel lists queued files and offers open-all and batch recheck', () => {
+  const w = workbench();
+  w.run(`
+    serverItems = {i1: {id: 'i1', status: 'manual_review', text: 'one', later_review: true},
+                   i2: {id: 'i2', status: 'accepted', text: 'two', later_review: true}};
+    latestItems.i1.wb_name = 'book.xlsx';
+    reviewQueue = {'C:\\\\x\\\\🟡book.xlsx': {error: '', marks: [
+      {sheet: 'S1', addr: 'A5', row: 5, item_ids: ['i1'], state: 'marked'},
+      {sheet: 'S1', addr: 'B5', row: 5, item_ids: ['i2'], state: 'marked'},
+    ]}};
+    renderReview();
+  `);
+  const html = w.elements.get('reviewPanel').innerHTML;
+  assert.match(html, /1 个文件 · 待修改 1 处/);
+  assert.match(html, /🟡 book\.xlsx/);
+  assert.match(html, /一次打开全部（1 个）/);
+  assert.match(html, /统一复检/);
+  assert.match(html, /已全部标黄/);
+  assert.match(html, /已解决，复检时去掉黄色/);
+});

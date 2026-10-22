@@ -238,14 +238,31 @@ def strip_uncertain_prefix(name: str) -> str:
     return cleaned or name
 
 
+REVIEW_EMOJI = "🟡"  # 等待稍后人工复检的文件，文件名前加这个，方便在文件夹里找到
+
+
+def review_marked_name(name: str) -> str:
+    """待人工复检的文件名（已带前缀的不重复加）"""
+    return name if name.startswith(REVIEW_EMOJI) else REVIEW_EMOJI + name
+
+
+def strip_review_prefix(name: str) -> str:
+    """去掉文件名前面的「🟡」前缀，得到原来的文件名"""
+    return name.removeprefix(REVIEW_EMOJI) or name
+
+
 def workbook_rel_name(wb_path: Path, root_folder: Path | str | None = None) -> str:
-    """返回工作簿相对于目标根目录的显示名称（顶层文件返回文件名，子文件夹文件返回 sub/file.xlsx）"""
+    """返回工作簿相对于目标根目录的显示名称（顶层文件返回文件名，子文件夹文件返回 sub/file.xlsx）
+
+    「🟡」只是临时标记，显示名称和执行记录里都用原来的文件名。
+    """
     if root_folder:
         try:
-            return wb_path.resolve().relative_to(Path(root_folder).resolve()).as_posix()
+            rel = wb_path.resolve().relative_to(Path(root_folder).resolve())
+            return rel.with_name(strip_review_prefix(rel.name)).as_posix()
         except ValueError:
             pass
-    return wb_path.name
+    return strip_review_prefix(wb_path.name)
 
 
 def sanitize_filename(name: str) -> str:

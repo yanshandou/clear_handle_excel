@@ -7,6 +7,7 @@
 - 「全自动」打开后，后面准备好的组直接按推荐写入
 - 扫描期间处理已经提交的文件；复检、人工定位等任务时暂停
 - 工作台打开时可为已筛完的行做图；尚未筛完的行不入队
+- 「稍后人工复检」的行不再做图；后台在没有任务时给这些单元格标黄、给文件名加 🟡
 """
 import base64
 import hashlib
@@ -35,7 +36,11 @@ from core.workflow import (
     _file_version,
     _persist_state,
     _sync_problem_counts,
+    _check_decision_item,
     log_msg,
+    mark_review_file,
+    queue_later_review,
+    review_entry_needs_mark,
     pythoncom,
     win32,
 )
@@ -264,6 +269,36 @@ def skip_group(gid: str, item_ids: list[str]) -> dict[str, Any]:
     return result
 
 
+def defer_group(gid: str, item_ids: list[str]) -> None:
+    """把这一行挂到稍后人工复检：不再做图，等最后统一打开 Excel 修改。"""
+    with STATE_LOCK:
+        if STATE["busy"] and (STATE["job"] or {}).get("kind") != "scan":
+            raise ValueError("任务正在执行，请结束后再操作")
+        sync_groups()
+        with _LOCK:
+            group = AUTOFIX["groups"].get(gid)
+            if group is None or sorted(group["item_ids"]) != sorted(item_ids):
+                raise ValueError("这一行的问题已更新，请刷新后重新判断")
+            if group["status"] in {"applying", "applied"}:
+                raise ValueError("这一行已开始写入或已保存，不能再挂起")
+            for iid in group["item_ids"]:
+                _check_decision_item(STATE["items"][iid])
+            queue_later_review(list(group["item_ids"]))
+            sync_groups()
+    _WAKE.set()
+
+
+def rename_groups(old_path: str, new_path: str) -> None:
+    """文件改名（加 / 去 🟡）后分组跟着改，已点选等待写入的行不丢。调用方持有 STATE_LOCK。"""
+    with _LOCK:
+        groups = AUTOFIX["groups"]
+        for gid in [gid for gid, g in groups.items() if g["wb_path"] == old_path]:
+            group = groups.pop(gid)
+            group["wb_path"] = new_path
+            group["id"] = _group_id(new_path, group["sheet_name"], group["row"])
+            groups[group["id"]] = group
+
+
 def set_auto(on: bool) -> None:
     with STATE_LOCK, _LOCK:
         _sync_groups_locked()
@@ -320,6 +355,14 @@ class _ExcelSession:
         workbook = app.Workbooks.Open(str(target))
         self.copies[wb_path] = (version, workbook)
         return workbook
+
+    def drop_copy(self, wb_path: str) -> None:
+        cached = self.copies.pop(wb_path, None)
+        if cached is not None:
+            try:
+                cached[1].Close(SaveChanges=False)
+            except Exception:
+                pass
 
     def temp_pdf(self) -> Path:
         self.app()
@@ -378,6 +421,25 @@ def _run() -> None:
                             blocked[payload[0]] = time.monotonic() + LOCKED_RETRY_SECONDS
                     finally:
                         _WRITES_IDLE.set()
+                elif kind == "mark":
+                    with STATE_LOCK:
+                        if STATE["busy"]:
+                            continue
+                        _WRITES_IDLE.clear()
+                    try:
+                        session.drop_copy(payload)
+                        if not mark_review_file(session.app(), payload):
+                            blocked[payload] = time.monotonic() + LOCKED_RETRY_SECONDS
+                    except Exception as err:
+                        with STATE_LOCK:
+                            entry = STATE["review_queue"].get(payload)
+                            if entry is not None:
+                                # 不再自动重试；点「一次打开全部」时会再试一次
+                                entry["mark_failed"] = True
+                                entry["error"] = f"标黄失败: {err}"
+                        raise
+                    finally:
+                        _WRITES_IDLE.set()
                 else:
                     _preview(session, payload)
             except _Paused:
@@ -398,6 +460,12 @@ def _run() -> None:
 
 def _next_task(blocked: dict[str, float]) -> tuple[str, Any] | None:
     now = time.monotonic()
+    with STATE_LOCK:
+        # 标黄、改文件名只在没有任何任务（包括扫描）时做，免得和扫描抢文件、改掉扫描清单里的路径
+        to_mark = [] if STATE["busy"] else [
+            path for path, entry in STATE["review_queue"].items()
+            if review_entry_needs_mark(path, entry) and blocked.get(path, 0) <= now
+        ]
     with _LOCK:
         groups = sorted(AUTOFIX["groups"].values(), key=lambda g: g["seq"])
         for group in groups:
@@ -406,6 +474,10 @@ def _next_task(blocked: dict[str, float]) -> tuple[str, Any] | None:
                     g["id"] for g in groups if g["status"] == "applying" and g["wb_path"] == group["wb_path"]
                 ]
                 return "apply", (group["wb_path"], same_file)
+    if to_mark:
+        return "mark", to_mark[0]
+    with _LOCK:
+        groups = sorted(AUTOFIX["groups"].values(), key=lambda g: g["seq"])
         for group in groups:
             if group["status"] == "queued" and not group["manual"] and _preview_allowed():
                 return "preview", group["id"]

@@ -29,6 +29,44 @@ except ImportError:
     sys.exit(1)
 
 
+def _visible_excel() -> Any:
+    """用户正在用的 Excel；后台隐藏的副本 Excel 不交给用户，另开一个可见的。调用方已 CoInitialize。"""
+    try:
+        excel = win32.GetActiveObject("Excel.Application")
+        if not excel.Visible:
+            # 后台副本可能仍在结束一次导出，不等其退出，也不把它变成用户窗口。
+            excel = win32.DispatchEx("Excel.Application")
+    except pythoncom.com_error as err:
+        if err.args[0] != -2147221021:  # MK_E_UNAVAILABLE: 没有正在运行的 Excel
+            raise
+        excel = win32.DispatchEx("Excel.Application")
+    return excel
+
+
+def _show_in_excel(excel: Any, workbook_path: Path, sheet_name: str, cell_address: str, row: int) -> float:
+    workbook = next(
+        (book for book in excel.Workbooks
+         if Path(book.FullName).resolve() == workbook_path),
+        None,
+    )
+    if workbook is None:
+        excel.Visible = True
+        workbook = excel.Workbooks.Open(str(workbook_path), UpdateLinks=0, IgnoreReadOnlyRecommended=True)
+    sheet = workbook.Sheets(sheet_name)
+    excel.Visible = True
+    excel.WindowState = -4143  # xlNormal
+    if sheet.Visible != XL_SHEET_VISIBLE:
+        raise ValueError("目标工作表已隐藏，请先在 Excel 中取消隐藏后再定位")
+    workbook.Activate()
+    sheet.Activate()
+    if workbook.Windows.Count > 0:
+        workbook.Windows(1).Visible = True
+        workbook.Windows(1).WindowState = -4143  # xlNormal
+    address = cell_address if re.fullmatch(r"[A-Za-z]+[1-9]\d*", cell_address) else f"A{row}"
+    excel.Goto(sheet.Range(address), Scroll=True)
+    return round(float(sheet.Rows(row).RowHeight or 15.0), 1)
+
+
 def open_workbook_for_manual_review(
     workbook_path: Path, sheet_name: str, cell_address: str, row: int
 ) -> float:
@@ -36,38 +74,117 @@ def open_workbook_for_manual_review(
     workbook_path = workbook_path.resolve(strict=True)
     pythoncom.CoInitialize()
     try:
-        try:
-            excel = win32.GetActiveObject("Excel.Application")
-            if not excel.Visible:
-                # 后台副本可能仍在结束一次导出，不等其退出，也不把它变成用户窗口。
-                excel = win32.DispatchEx("Excel.Application")
-        except pythoncom.com_error as err:
-            if err.args[0] != -2147221021:  # MK_E_UNAVAILABLE: 没有正在运行的 Excel
-                raise
-            excel = win32.DispatchEx("Excel.Application")
-        workbook = next(
-            (book for book in excel.Workbooks
-             if Path(book.FullName).resolve() == workbook_path),
-            None,
-        )
-        if workbook is None:
-            excel.Visible = True
-            workbook = excel.Workbooks.Open(str(workbook_path), UpdateLinks=0, IgnoreReadOnlyRecommended=True)
-        sheet = workbook.Sheets(sheet_name)
-        excel.Visible = True
-        excel.WindowState = -4143  # xlNormal
-        if sheet.Visible != XL_SHEET_VISIBLE:
-            raise ValueError("目标工作表已隐藏，请先在 Excel 中取消隐藏后再定位")
-        workbook.Activate()
-        sheet.Activate()
-        if workbook.Windows.Count > 0:
-            workbook.Windows(1).Visible = True
-            workbook.Windows(1).WindowState = -4143  # xlNormal
-        address = cell_address if re.fullmatch(r"[A-Za-z]+[1-9]\d*", cell_address) else f"A{row}"
-        excel.Goto(sheet.Range(address), Scroll=True)
-        return round(float(sheet.Rows(row).RowHeight or 15.0), 1)
+        return _show_in_excel(_visible_excel(), workbook_path, sheet_name, cell_address, row)
     finally:
         pythoncom.CoUninitialize()
+
+
+def open_workbooks_for_review(targets: list[tuple[Path, str, str, int]]) -> dict[Path, str]:
+    """在同一个可见 Excel 里一次打开全部待复检文件，各自定位到第一处黄色单元格。
+
+    返回打不开的文件及原因；不保存、不关闭用户的工作簿。
+    """
+    errors: dict[Path, str] = {}
+    pythoncom.CoInitialize()
+    try:
+        excel = _visible_excel()
+        for workbook_path, sheet_name, cell_address, row in targets:
+            try:
+                _show_in_excel(excel, workbook_path.resolve(strict=True), sheet_name, cell_address, row)
+            except Exception as err:
+                errors[workbook_path] = str(err)
+        return errors
+    finally:
+        pythoncom.CoUninitialize()
+
+
+def close_saved_workbooks(paths: list[Path]) -> dict[Path, str]:
+    """统一复检前关掉用户 Excel 里已保存的待复检文件；还有未保存修改的不动，返回这些文件及原因。"""
+    wanted = {path.resolve(): path for path in paths}
+    left: dict[Path, str] = {}
+    pythoncom.CoInitialize()
+    try:
+        try:
+            excel = win32.GetActiveObject("Excel.Application")
+        except pythoncom.com_error:
+            return left  # 没有正在运行的 Excel
+        for book in list(excel.Workbooks):
+            try:
+                path = Path(book.FullName).resolve()
+            except Exception:
+                continue
+            if path not in wanted:
+                continue
+            if book.Saved:
+                book.Close(SaveChanges=False)
+            else:
+                left[wanted[path]] = "Excel 里还有没保存的修改，请保存后再复检"
+        return left
+    finally:
+        pythoncom.CoUninitialize()
+
+
+REVIEW_FILL_COLOR = 0x00FFFF  # 黄色（Excel 颜色是 BGR）
+XL_SOLID = 1
+XL_FILL_NONE = -4142
+XL_GRADIENT_PATTERNS = {4000, 4001}  # 渐变填充没法原样记下来，不标黄
+
+
+def _safe_get(obj: Any, name: str) -> Any:
+    try:
+        return getattr(obj, name)
+    except Exception:
+        return None
+
+
+def mark_review_cells(workbook: Any, marks: list[dict[str, Any]]) -> None:
+    """把每处待复检单元格（合并单元格按整个合并区域）涂成黄色，原来的填充记到 mark["fill"]。
+
+    逐处更新 mark["state"]：marked 已标黄 / skipped 没标（附 mark["error"]）。不保存。
+    """
+    for mark in marks:
+        try:
+            if not re.fullmatch(r"[A-Za-z]+[1-9]\d*", mark["addr"]):
+                raise ValueError("没有定位到具体单元格")
+            area = workbook.Sheets(mark["sheet"]).Range(mark["addr"]).MergeArea
+            interior = area.Cells(1, 1).Interior
+            fill = {key: _safe_get(interior, key) for key in (
+                "Pattern", "Color", "TintAndShade", "PatternColor", "PatternColorIndex", "PatternTintAndShade",
+            )}
+            if fill["Pattern"] in XL_GRADIENT_PATTERNS:
+                raise ValueError("单元格是渐变填充，没有标黄")
+            area.Interior.Pattern = XL_SOLID
+            area.Interior.Color = REVIEW_FILL_COLOR
+            mark.update(range=area.Address, fill=fill, state="marked", error="")
+        except Exception as err:
+            mark.update(state="skipped", error=str(err))
+
+
+def restore_review_cells(workbook: Any, marks: list[dict[str, Any]]) -> None:
+    """把标过黄色的单元格还原成原来的填充；用户自己改了颜色的不动。不保存。"""
+    for mark in marks:
+        if mark.get("state") != "marked":
+            continue
+        area = workbook.Sheets(mark["sheet"]).Range(mark["range"])
+        current = area.Cells(1, 1).Interior
+        if current.Pattern != XL_SOLID or int(current.Color or 0) != REVIEW_FILL_COLOR:
+            continue
+        fill = mark["fill"]
+        interior = area.Interior
+        if fill.get("Pattern") in (None, XL_FILL_NONE):
+            interior.Pattern = XL_FILL_NONE
+            continue
+        interior.Pattern = fill["Pattern"]
+        for key in ("Color", "TintAndShade"):
+            if fill.get(key) is not None:
+                setattr(interior, key, fill[key])
+        if fill["Pattern"] != XL_SOLID:
+            if fill.get("PatternColorIndex") == -4105:  # xlAutomatic
+                interior.PatternColorIndex = -4105
+            elif fill.get("PatternColor") is not None:
+                interior.PatternColor = fill["PatternColor"]
+            if fill.get("PatternTintAndShade") is not None:
+                interior.PatternTintAndShade = fill["PatternTintAndShade"]
 
 
 def _read_xlsx_sheet_names(workbook_path: Path) -> list[str]:
