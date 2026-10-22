@@ -151,11 +151,12 @@ function handlingText(card) {
   if (card.after_kind === 'attempt') {
     const base = Number.isFinite(card.base_height) ? `${pt(card.base_height)} → ` : '';
     const added = Number.isFinite(card.base_height) && Number.isFinite(card.attempt_height) ? `（+${pt(card.attempt_height - card.base_height)}）` : '';
-    return Number.isFinite(card.attempt_height) ? `处理：第 ${card.excel_row} 行行高试到 ${base}${pt(card.attempt_height)}${added}仍未通过，原文件未修改` : '处理：原文件未修改';
+    const wrap = card.attempt_wrap?.length ? `${card.cell_addr} 开启自动换行，` : '';
+    return Number.isFinite(card.attempt_height) ? `处理：${wrap}第 ${card.excel_row} 行行高试到 ${base}${pt(card.attempt_height)}${added}仍未通过，原文件未修改` : '处理：原文件未修改';
   }
   if (card.after_kind === 'unchanged') return '处理：原样导出已完整显示，未修改行高';
-  if (row?.saved && Math.abs(row.applied - row.base) >= 0.05) return `处理：第 ${card.excel_row} 行行高 ${pt(row.base)} → ${pt(row.applied)}（+${pt(row.applied - row.base)}），已保存`;
-  if (row && !row.saved && Math.abs(row.applied - row.base) < 0.05 && card.finalized) return `处理：已还原为原行高 ${pt(row.base)}`;
+  if (row?.saved && Math.abs(row.applied - row.base) >= 0.05) return `处理：${row.wrap ? `${card.cell_addr} 开启自动换行，` : ''}第 ${card.excel_row} 行行高 ${pt(row.base)} → ${pt(row.applied)}（+${pt(row.applied - row.base)}），已保存`;
+  if (row && !row.saved && Math.abs(row.applied - row.base) < 0.05 && card.finalized) return `处理：已还原为原行高 ${pt(row.base)}${row.wrap ? '，并取消自动换行' : ''}`;
   if (card.after_kind === 'rechecked') return '处理：本行行高未修改（其他行调整后重新导出已完整显示）';
   return '';
 }
@@ -167,9 +168,10 @@ const canBlue = card => card.verified || card.adoptable;
 function blueNote(card) {
   if (card.adoptable) {
     const height = Number.isFinite(card.attempt_height) ? ` ${pt(card.attempt_height)}` : '';
+    const wrap = card.attempt_wrap?.length ? `给 ${card.cell_addr} 开启自动换行，` : '';
     return card.color === 'blue'
-      ? `已按你的判断标蓝：提交时把第 ${card.excel_row} 行行高改为${height}（最后一次尝试）并保存，记为已修复。`
-      : `自动检查没通过，但如果「最后一次尝试」的图已经显示完整，可以标蓝：提交时按${height}写入原文件。`;
+      ? `已按你的判断标蓝：提交时${wrap}把第 ${card.excel_row} 行行高改为${height}（最后一次尝试）并保存，记为已修复。`
+      : `自动检查没通过，但如果「最后一次尝试」的图已经显示完整，可以标蓝：提交时${wrap}按${height}写入原文件。`;
   }
   const why = card.waiting ?? card.message === '等待自动处理' ? '还没轮到自动处理' : '还没有可保留的修复';
   return `${why}，暂时不能标蓝（单击只在黄、绿之间切换）。改好后复检通过会自动变蓝。`;
