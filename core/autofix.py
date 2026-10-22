@@ -717,6 +717,8 @@ def _preview(session: _ExcelSession, gid: str) -> None:
             ok, image, need = _evaluate(pdf_path, items, cells, display_text, probe.printed)
             with _LOCK:
                 group["attempts"].append({"height": height, "ok": ok, "image": image})
+            if not k and ok:
+                break  # 原样已通过：问题已经不在了（多半是同表前面写入的行高改变了分页缩放），不用加高
             if success_at is not None:
                 break  # 显示全之后再多加一次就停
             if k and ok:
@@ -733,6 +735,11 @@ def _preview(session: _ExcelSession, gid: str) -> None:
         pdf_path.unlink(missing_ok=True)
 
     with _LOCK:
+        already_ok = len(group["attempts"]) == 1 and group["attempts"][0]["ok"]
+    if already_ok:
+        _resolve_without_change(gid, base)
+        return
+    with _LOCK:
         group.pop("error_count", None)
         oks = [i for i, a in enumerate(group["attempts"]) if i and a["ok"]]
         group["recommended"] = oks[-1] if oks else None
@@ -745,6 +752,36 @@ def _preview(session: _ExcelSession, gid: str) -> None:
             _WAKE.set()
         else:
             group["status"] = "ready"
+
+
+def _resolve_without_change(gid: str, base: float) -> None:
+    """原样重新检查已完整显示、无压线：不改行高，直接记为已解决。
+    记成 fixed 而不是「无需修改」：之后改回别的行导致又切字时，重新扫描还能再查出来。"""
+    with STATE_LOCK:
+        with _LOCK:
+            group = AUTOFIX["groups"].get(gid)
+            if group is None or group["status"] != "running":
+                return
+            image = group["attempts"][0]["image"]
+            wb_path, sheet_name, row = group["wb_path"], group["sheet_name"], group["row"]
+            item_ids = list(group["item_ids"])
+        for item_id in item_ids:
+            item = STATE["items"].get(item_id)
+            if item is None or item["status"] in RESOLVED_STATUSES:
+                continue
+            fix_images.remember_before(item)
+            if image:
+                fix_images.save(item, "after", image, key=f"{item['wb_path']}\0{gid}")
+            item["status"] = "fixed"
+            item["iterations"] = 0
+            item["row_height"] = base
+            item["review_reason"] = f"重新检查已完整显示（行高 {base}pt 未改动）"
+            item.pop("autofix_unconfirmed", None)
+            item.pop("autofix_base_height", None)
+        log_msg(f"✅ 自动处理 [{Path(wb_path).name} / {sheet_name} 行{row}] 原样重新检查已完整显示，未改行高")
+        _sync_groups_locked()  # 问题项都解决了，这一组随之移除
+        _persist_state()
+        _sync_problem_counts(wb_path, "自动处理：原样已显示完整")
 
 
 def _evaluate(

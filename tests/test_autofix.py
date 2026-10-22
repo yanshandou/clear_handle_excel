@@ -147,6 +147,20 @@ class AutofixTests(unittest.TestCase):
         self.assertEqual(fix_images.image_path(names["before"]).read_bytes(), self.autofix.attempt_image(gid, 0))
         self.assertEqual(fix_images.image_path(names["after"]).read_bytes(), self.autofix.attempt_image(gid, 2))
 
+    def test_original_already_passing_is_resolved_without_writing(self):
+        # 第一步检出、到第二步时原样已经显示全（同表前面写入的行高改变了缩放等）：不加高、不写文件
+        self.needed = 15.0
+        gid = self.group()["id"]
+        self.autofix._preview(self.session, gid)
+        self.assertNotIn(gid, self.autofix.AUTOFIX["groups"])
+        self.assertIsNone(self.autofix._next_task({}))
+        item = self.workflow.STATE["items"]["i1"]
+        self.assertEqual((item["status"], item["row_height"]), ("fixed", 15.0))
+        self.assertNotIn("autofix_unconfirmed", item)
+        self.assertEqual(self.real_heights, {5: 15.0})
+        self.assertTrue(all(not book.saved for book in self.books))
+        self.assertEqual(storage.load_snapshot("workflow")["items"]["i1"]["status"], "fixed")
+
     def test_gives_up_after_nine_pictures(self):
         self.needed = 999.0
         gid = self.group()["id"]
