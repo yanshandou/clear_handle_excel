@@ -9,7 +9,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from core import storage
+from core import fix_images, storage
 
 
 class ProgressTransferTests(unittest.TestCase):
@@ -26,6 +26,7 @@ class ProgressTransferTests(unittest.TestCase):
         self.workflow = importlib.reload(workflow)
         self.record_path = self.root / "record.md"
         self.patch_value(reporter, "RECORD_PATH", self.record_path)
+        self.patch_value(fix_images, "IMAGES_DIR", self.root / "_report_images")
         self.patch_value(reporter, "REPORT_STATE_PATH", self.root / "legacy.json")
 
         self.wb_path = self.folder / "book.xlsx"

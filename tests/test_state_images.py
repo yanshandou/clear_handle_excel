@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core import storage
+from core import fix_images, storage
 
 
 class StateImageTests(unittest.TestCase):
@@ -54,6 +54,9 @@ class StateSnapshotTests(unittest.TestCase):
         from core import reporter, workflow
         self.workflow = importlib.reload(workflow)
         p = patch.object(reporter, "RECORD_PATH", self.root / "record.md")
+        p.start()
+        self.addCleanup(p.stop)
+        p = patch.object(fix_images, "IMAGES_DIR", self.root / "_report_images")
         p.start()
         self.addCleanup(p.stop)
 

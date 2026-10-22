@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from core import fix_images
 from core.common import STALE_LOCK_HINT, XL_SHEET_VISIBLE, as_bbox, col_index_to_letters
 from core.excel_ops import (
     CellProbe, extract_sheet_snapshot, normalize_workbook_view, quit_background_excel, snapshot_cells,
@@ -825,6 +826,13 @@ def _apply(session: _ExcelSession, wb_path: str, gids: list[str]) -> bool:
                 AUTOFIX["groups"][gid]["message"] = "文件正在 Excel 中打开，关闭后自动写入" + STALE_LOCK_HINT
         return False
     with _LOCK:
+        # 报告用：原样那张是修复前，写进去的那张是修复后（同样的截取范围，便于对比）
+        shots = {
+            gid: (g["attempts"][0]["image"] if g["attempts"] else "",
+                  g["attempts"][g["chosen"]]["image"] if g["chosen"] is not None
+                  and 0 <= g["chosen"] < len(g["attempts"]) else "")
+            for gid in gids if (g := AUTOFIX["groups"].get(gid)) and g["status"] == "applying"
+        }
         plan = [
             (gid, g["sheet_name"], g["row"], g["base_height"],
              g["base_height"] if g["status"] == "reverting" else g["attempts"][g["chosen"]]["height"],
@@ -845,7 +853,7 @@ def _apply(session: _ExcelSession, wb_path: str, gids: list[str]) -> bool:
 
     with STATE_LOCK:
         reverted: list[str] = []
-        for _, sheet_name, row, base, height, chosen, item_ids, revert, confirmed in plan:
+        for gid, sheet_name, row, base, height, chosen, item_ids, revert, confirmed in plan:
             for item_id in item_ids:
                 item = STATE["items"].get(item_id)
                 if item is None:
@@ -854,8 +862,18 @@ def _apply(session: _ExcelSession, wb_path: str, gids: list[str]) -> bool:
                 if revert:
                     item.pop("autofix_unconfirmed", None)
                     item.pop("autofix_base_height", None)
+                    fix_images.forget(item, "after")
                     reverted.append(item_id)
                     continue
+                before, after = shots.get(gid, ("", ""))
+                if after:
+                    # 同一行的几处共用一组截图（截的是整行），报告里只放一次
+                    key = f"{item['wb_path']}\0{gid}"
+                    if before:
+                        fix_images.save(item, "before", before, key=key)
+                    else:
+                        fix_images.remember_before(item)
+                    fix_images.save(item, "after", after, key=key)
                 item["status"] = "fixed"
                 item["iterations"] = chosen
                 item["review_reason"] = f"自动处理：行高 {base}pt → {height}pt"

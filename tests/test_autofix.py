@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from core import storage
+from core import fix_images, storage
 
 
 class FakeRow:
@@ -68,6 +68,9 @@ class AutofixTests(unittest.TestCase):
         reporter_patch = patch.object(reporter, "RECORD_PATH", self.root / "record.md")
         reporter_patch.start()
         self.addCleanup(reporter_patch.stop)
+        images_patch = patch.object(fix_images, "IMAGES_DIR", self.root / "images")
+        images_patch.start()
+        self.addCleanup(images_patch.stop)
         self.autofix = importlib.reload(autofix)
         self.autofix._worker = Mock(is_alive=Mock(return_value=True))  # 测试里不启动后台线程
         self.autofix.AUTOFIX["active_until"] = float("inf")  # 相当于页面一直开着「② 自动处理」
@@ -139,6 +142,10 @@ class AutofixTests(unittest.TestCase):
         item = self.workflow.STATE["items"]["i1"]
         self.assertEqual((item["status"], item["row_height"]), ("fixed", 21.0))
         self.assertEqual(self.autofix.AUTOFIX["groups"][gid]["status"], "applied")
+        # 报告用截图：原样那张是修复前，写进去的那张是修复后
+        names = item["fix_images"]
+        self.assertEqual(fix_images.image_path(names["before"]).read_bytes(), self.autofix.attempt_image(gid, 0))
+        self.assertEqual(fix_images.image_path(names["after"]).read_bytes(), self.autofix.attempt_image(gid, 2))
 
     def test_gives_up_after_nine_pictures(self):
         self.needed = 999.0

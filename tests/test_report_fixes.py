@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core import reporter, storage
+from core import fix_images, reporter, storage
 from core.hidden_text import REASON_HASH
 
 
@@ -17,7 +17,8 @@ class ReportFixesTests(unittest.TestCase):
         self.folder = self.root / "excel"
         (self.folder / "sub").mkdir(parents=True)
         for target, name, value in [(storage, "DATABASE_PATH", self.root / "t.sqlite3"),
-                                    (reporter, "RECORD_PATH", self.root / "record.md")]:
+                                    (reporter, "RECORD_PATH", self.root / "record.md"),
+                                    (fix_images, "IMAGES_DIR", self.root / "_report_images")]:
             p = patch.object(target, name, value)
             p.start()
             self.addCleanup(p.stop)

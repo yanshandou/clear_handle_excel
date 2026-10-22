@@ -45,8 +45,12 @@
           <div class="report-meta" id="folderMetaText">目标文件夹：暂无记录</div>
         </div>
         <div class="report-actions">
-          <a href="/api/records/markdown" class="btn btn-primary" download="execution_report.md">
-            📥 下载 Markdown 报告 (.md)
+          <a href="/api/records/zip" class="btn btn-primary" download="execution_report.zip"
+             title="压缩包里有网页版报告（双击打开，含修复前后截图）和 Markdown 版（图片在 images 文件夹）">
+            📥 下载报告（含截图 .zip）
+          </a>
+          <a href="/api/records/markdown" class="btn btn-outline" download="execution_report.md">
+            📄 只下载 Markdown (.md)
           </a>
           <button type="button" class="btn btn-outline" onclick="copyMarkdownReport()">
             📋 复制 Markdown 全文

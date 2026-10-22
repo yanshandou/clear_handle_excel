@@ -32,6 +32,7 @@ from core.reporter import (
     get_execution_report_snapshot,
     render_execution_markdown,
 )
+from core.report_export import build_report_zip
 from core.sheet_preview import preview_image_path, render_workbook_previews, workbook_preview_info
 from core.workflow import (
     QUICK_TASK_NAMES,
@@ -193,6 +194,8 @@ class WebHandler(BaseHTTPRequestHandler):
             )
         elif parsed.path == "/api/records":
             self._send_json(get_execution_report_snapshot())
+        elif parsed.path == "/api/records/zip":
+            self._send_bytes(build_report_zip(), "application/zip", filename="execution_report.zip")
         elif parsed.path == "/api/records/markdown":
             md_bytes = render_execution_markdown().encode("utf-8")
             self.send_response(200)

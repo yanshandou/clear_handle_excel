@@ -212,7 +212,7 @@ async function copyMarkdownReport() {
       toast.textContent = '';
     }, 2500);
   } catch (e) {
-    alert('复制失败，请直接点击「下载 Markdown 报告 (.md)」按钮。');
+    alert('复制失败，请直接点击「只下载 Markdown (.md)」按钮。');
   }
 }
 

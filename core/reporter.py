@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core import fix_images
 from core.common import (
     EXCEL_EXTENSIONS, PROJECT_ROOT, RECORD_PATH, has_review_prefix, md_wrap, review_name_variants, strip_review_prefix,
     workbook_rel_name,
@@ -229,6 +230,8 @@ def init_execution_batch(
         if not keep:
             EXECUTION_STATE["files"].clear()
             EXECUTION_STATE["steps"] = []
+            if old_folder:
+                fix_images.clear()  # 上一个文件夹的修复截图用不到了
         steps = EXECUTION_STATE.setdefault("steps", [])
         if task_name not in steps:
             steps.append(task_name)
@@ -432,28 +435,54 @@ def _unfinished(f: dict[str, Any]) -> bool:
     return f.get("status") in {"pending", "processing", "error"} or int(f.get("clip_unfixed", 0) or 0) > 0
 
 
-def render_execution_markdown() -> str:
+def _report_state() -> dict[str, Any]:
+    with REPORT_LOCK:
+        return copy.deepcopy(EXECUTION_STATE)
+
+
+def _fix_place(fix: dict[str, Any]) -> str:
+    place = fix.get("cell") or ""
+    if fix.get("row"):
+        place = f"{place}（第 {fix['row']} 行）" if place else f"第 {fix['row']} 行"
+    return place
+
+
+def _fix_shots(fixes: list[dict[str, Any]]) -> list[tuple[list[int], str, str]]:
+    """有截图的修复：[(用这组截图的序号们, 修复前文件名, 修复后文件名)]；同一行共用的截图只放一次"""
+    shots: dict[tuple[str, str], list[int]] = {}
+    for i, fix in enumerate(fixes, start=1):
+        before = fix.get("before") if fix_images.image_path(fix.get("before") or "") else ""
+        after = fix.get("after") if fix_images.image_path(fix.get("after") or "") else ""
+        if before or after:
+            shots.setdefault((before, after), []).append(i)
+    return [(numbers, before, after) for (before, after), numbers in shots.items()]
+
+
+def _status_text(state: dict[str, Any], files: list[dict[str, Any]]) -> str:
+    unfinished = [f for f in files if _unfinished(f)]
+    if state["status"] == "running":
+        return "🔄 正在处理"
+    if state["status"] == "interrupted":
+        return "⏸ 已中断，还没处理完"
+    if unfinished:
+        return f"⚠️ 还有 {len(unfinished)} 个文件没处理完"
+    return "✅ 已全部处理完成"
+
+
+def render_execution_markdown(image_dir: str | None = None) -> str:
     """根据当前所有文件的处理结果生成 Markdown 报告（要交给领导）
 
     每个文件一节：① 删除了哪些备份表（删除线），② 修复了几处、在哪、原因。
     只写结果：不写日期时间，不写人工确认 / 自动处理 / 跳过 / 复检等过程，判断为不用改的地方不列出。
+    image_dir：下载压缩包时给图片文件夹名，每处修复下面附修复前 / 修复后截图。
     """
-    with REPORT_LOCK:
-        state = copy.deepcopy(EXECUTION_STATE)
+    state = _report_state()
 
     files = sorted(state["files"].values(), key=lambda f: int(f.get("index", 0)))
     total_deleted = sum(len(f.get("deleted_backups", [])) for f in files)
     total_fixed = sum(len(f.get("fixes") or {}) for f in files)
 
-    unfinished = [f for f in files if _unfinished(f)]
-    if state["status"] == "running":
-        status_text = "🔄 正在处理"
-    elif state["status"] == "interrupted":
-        status_text = "⏸ 已中断，还没处理完"
-    elif unfinished:
-        status_text = f"⚠️ 还有 {len(unfinished)} 个文件没处理完"
-    else:
-        status_text = "✅ 已全部处理完成"
+    status_text = _status_text(state, files)
 
     lines: list[str] = [
         "# 📊 Excel 整理与切字修复记录",
@@ -490,10 +519,16 @@ def render_execution_markdown() -> str:
         if fixes:
             lines += [f"**② 修复切字：{len(fixes)} 处**", "", "| # | Sheet | 位置 | 原因 |", "|---|---|---|---|"]
             for i, fix in enumerate(fixes, start=1):
-                place = fix.get("cell") or ""
-                if fix.get("row"):
-                    place = f"{place}（第 {fix['row']} 行）" if place else f"第 {fix['row']} 行"
-                lines.append(f"| {i} | {_md_cell(fix.get('sheet', ''))} | {_md_cell(place)} | {_md_cell(fix.get('reason', ''))} |")
+                lines.append(
+                    f"| {i} | {_md_cell(fix.get('sheet', ''))} | {_md_cell(_fix_place(fix))} | {_md_cell(fix.get('reason', ''))} |"
+                )
+            if image_dir is not None:
+                for numbers, before, after in _fix_shots(fixes):
+                    first = fixes[numbers[0] - 1]
+                    label = "、".join(f"#{n}" for n in numbers)
+                    lines += ["", f"**{label}　{_md_cell(first.get('sheet', ''))} {_md_cell(_fix_place(first))}**", "",
+                              "| 修复前 | 修复后 |", "|---|---|",
+                              f"| {_md_image(image_dir, before, '修复前')} | {_md_image(image_dir, after, '修复后')} |"]
         else:
             lines.append("**② 修复切字：无**")
         lines.append("")
@@ -501,6 +536,10 @@ def render_execution_markdown() -> str:
             lines += [f"> ❌ 处理出错：{str(f['error']).replace(chr(10), ' ')}", ""]
 
     return "\n".join(lines)
+
+
+def _md_image(image_dir: str, name: str, alt: str) -> str:
+    return f"![{alt}]({image_dir}/{name})" if name else "-"
 
 
 def _write_soon_unlocked() -> None:

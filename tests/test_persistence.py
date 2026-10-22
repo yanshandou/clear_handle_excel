@@ -15,7 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from core import excel_ops, storage
+from core import excel_ops, fix_images, storage
 
 
 class PersistenceTests(unittest.TestCase):
@@ -31,6 +31,7 @@ class PersistenceTests(unittest.TestCase):
         self.workflow = importlib.reload(workflow)
         self.patch_value(reporter, "RECORD_PATH", self.folder / "record.md")
         self.patch_value(reporter, "REPORT_STATE_PATH", self.folder / "legacy.json")
+        self.patch_value(fix_images, "IMAGES_DIR", self.folder / "_report_images")
         self.wb_path = self.folder / "book.xlsx"
         self.wb_path.write_bytes(b"test workbook")
         self.pdf_path = self.folder / "sheet.pdf"
