@@ -3327,3 +3327,33 @@ button.preview-sheet-tag:active {
     grid-template-columns: auto minmax(0, 1fr);
   }
 }
+
+/* 候选图悬停大图：固定定位浮层，不占位、不挡鼠标，不会让页面跳动 */
+.fix-zoom {
+  position: fixed;
+  z-index: 1000;
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.28);
+  pointer-events: none;
+}
+
+.fix-zoom.is-visible {
+  display: flex;
+}
+
+.fix-zoom img {
+  display: block;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.fix-zoom-caption {
+  font-size: 13px;
+  color: var(--text-main);
+}
