@@ -72,6 +72,20 @@ test('single-card navigation preserves card identity when changing colors', () =
   assert.equal(p.run('activeCardId'), 'a');
 });
 
+test('failed trials are clearly labelled as unapplied in both review modes', () => {
+  const p = page();
+  p.run(`batchState.cards[0].after_kind = 'attempt'; batchState.cards[0].color = 'yellow';`);
+  for (const large of [false, true]) {
+    const html = p.run(`cardHtml(batchState.cards[0], ${large})`);
+    assert.match(html, /<figcaption>最后一次尝试（未采用）<\/figcaption>/);
+    assert.match(html, /alt="最后一次尝试（未采用）截图"/);
+    assert.equal((html.match(/<figure>/g) || []).length, 2);
+    assert.doesNotMatch(html, /<figcaption>修改后<\/figcaption>/);
+  }
+  p.run(`batchState.cards[0].after_kind = 'fixed'`);
+  assert.match(p.run(`cardHtml(batchState.cards[0])`), /<figcaption>修改后<\/figcaption>/);
+});
+
 test('keyboard changes status and navigates while text inputs keep their keys', async () => {
   const p = page();
   p.run(`openLarge('a')`);

@@ -183,7 +183,7 @@ class BatchTests(unittest.TestCase):
         self.wf.STATE["job"].update(kind="batch_scan")
         events = []
         cid = a["id"]
-        def prepare(*_):
+        def prepare(*_, **__):
             events.append("prepare")
             return 15, {"height": 24, "shots": {cid: ""}}, {cid: ""}
         def finish(*_):
@@ -203,7 +203,7 @@ class BatchTests(unittest.TestCase):
         item["status"] = "pending"
         batch._data()["rows"].clear()
         prepared = []
-        def prepare(_session, _path, items):
+        def prepare(_session, _path, items, **_):
             prepared.append(items[0]["cell_addr"])
             return 15, {"height": 24, "shots": {}}, {}
         def finish(*_):
@@ -324,6 +324,112 @@ class BatchTests(unittest.TestCase):
         snap = batch.snapshot()
         self.assertTrue(snap["cards"][0]["images"]["before"].startswith("/api/batch/image/"))
         self.assertNotIn("base64", str(snap))
+
+    def test_failed_trials_persist_last_unapplied_picture_without_saving_original(self):
+        card, item = self.add_card()
+        item["status"] = "pending"
+        batch._data()["rows"].clear()
+        original = Path(self.path).read_bytes()
+        before = "data:image/png;base64,YmVmb3Jl"
+        last = "data:image/png;base64,bGFzdA=="
+        def prepare(*_, on_attempt):
+            on_attempt(0, 24, {card["id"]: before})
+            on_attempt(1, 27, {card["id"]: "data:image/png;base64,Zmlyc3Q="})
+            on_attempt(8, 48, {card["id"]: last})
+            return 24, None, {card["id"]: before}
+        with patch.object(batch, "_prepare_row", side_effect=prepare):
+            batch._repair_file(self.excel, Mock(), self.path)
+        self.book.Save.assert_not_called()
+        self.excel.Workbooks.Open.assert_not_called()
+        self.assertEqual(Path(self.path).read_bytes(), original)
+        self.assertEqual(self.heights[5], 24)
+        self.assertEqual(card["color"], "yellow")
+        self.assertTrue(card["manual"])
+        self.assertEqual(card["after_kind"], "attempt")
+        self.assertEqual(card["attempt_height"], 48)
+        self.assertIsNone(self.wf.STATE["job"]["pending_adjustment"])
+        self.assertNotIn("after", item.get("fix_images", {}))
+        saved = storage.load_snapshot("workflow")
+        self.wf.STATE.update(saved)  # 模拟从 SQLite 恢复，不依赖临时 Excel 副本。
+        restored = batch.snapshot()["cards"][0]
+        self.assertEqual(restored["after_kind"], "attempt")
+        self.assertEqual(fix_images.image_path(restored["fix_images"]["before"]).read_bytes(), b"before")
+        self.assertEqual(fix_images.image_path(restored["fix_images"]["after"]).read_bytes(), b"last")
+        self.assertEqual(set(restored["images"]), {"before", "after"})
+
+    def test_export_error_keeps_last_completed_trial_picture(self):
+        card, item = self.add_card()
+        item["status"] = "pending"
+        batch._data()["rows"].clear()
+        def prepare(*_, on_attempt):
+            on_attempt(0, 24, {card["id"]: "data:image/png;base64,YmVmb3Jl"})
+            on_attempt(1, 27, {card["id"]: "data:image/png;base64,bGFzdA=="})
+            raise RuntimeError("下一张 PDF 导出失败")
+        with patch.object(batch, "_prepare_row", side_effect=prepare):
+            batch._repair_file(self.excel, Mock(), self.path)
+        self.assertEqual(fix_images.image_path(card["fix_images"]["after"]).read_bytes(), b"last")
+        self.assertEqual(card["after_kind"], "attempt")
+        self.assertIn("PDF 导出失败", card["message"])
+        self.book.Save.assert_not_called()
+
+    def test_failure_before_first_adjustment_keeps_the_actual_original_preview(self):
+        card, item = self.add_card()
+        item["status"] = "pending"
+        batch._data()["rows"].clear()
+        def prepare(*_, on_attempt):
+            on_attempt(0, 24, {card["id"]: "data:image/png;base64,YmVmb3Jl"})
+            raise RuntimeError("第一张调整图未能导出")
+        with patch.object(batch, "_prepare_row", side_effect=prepare):
+            batch._repair_file(self.excel, Mock(), self.path)
+        self.assertEqual(fix_images.image_path(card["fix_images"]["after"]).read_bytes(), b"before")
+        self.assertEqual(card["after_kind"], "attempt")
+        self.assertEqual(card["attempt_height"], 24)
+        self.book.Save.assert_not_called()
+
+    def test_failed_preview_restores_copy_height_after_all_eight_attempts(self):
+        from test_autofix import AutofixTests
+        fixture = AutofixTests("runTest")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.needed = 999  # 行高上限内始终压线
+        items = list(workflow.STATE["items"].values())
+        frames = []
+        with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot):
+            base, chosen, before = batch._prepare_row(
+                fixture.session, str(fixture.wb_path), items,
+                on_attempt=lambda index, height, shots: frames.append((index, height, shots)))
+        self.assertIsNone(chosen)
+        self.assertEqual((base, frames[-1][0], frames[-1][1]), (15, 8, 39))
+        self.assertTrue(all(before.values()) and all(frames[-1][2].values()))
+        self.assertEqual(fixture.real_heights[5], 15)
+        self.assertEqual(fixture.session.copy_of(str(fixture.wb_path)).heights[5], 15)
+        self.assertFalse(any(book.saved for book in fixture.books))
+
+    def test_successful_write_clears_unapplied_trial_label(self):
+        card, item = self.add_card()
+        item["status"] = "pending"
+        batch._data()["rows"].clear()
+        def prepare(*_, on_attempt):
+            on_attempt(0, 24, {card["id"]: "data:image/png;base64,YmVmb3Jl"})
+            on_attempt(1, 27, {card["id"]: "data:image/png;base64,bGFzdA=="})
+            return 24, {"height": 27, "shots": {card["id"]: "data:image/png;base64,c2VsZWN0ZWQ="}}, {}
+        with patch.object(batch, "_prepare_row", side_effect=prepare):
+            batch._repair_file(self.excel, Mock(), self.path)
+        self.assertEqual((card["color"], card["after_kind"]), ("blue", "fixed"))
+        self.assertEqual(fix_images.image_path(card["fix_images"]["after"]).read_bytes(), b"selected")
+        self.assertEqual(self.heights[5], 27)
+        self.book.Save.assert_called_once()
+
+    def test_manual_recheck_replaces_unapplied_trial_with_actual_after_image(self):
+        card, item = self.add_card(color="yellow")
+        card.update(manual=True, after_kind="attempt")
+        batch._save_shot(card, "after", "data:image/png;base64,dHJpYWw=")
+        actual = {"id": "actual", "wb_path": self.path}
+        fix_images.save(actual, "after", "data:image/png;base64,YWN0dWFs")
+        item.update(status="fixed", fix_images=actual["fix_images"])
+        batch._recheck_file(self.excel, self.path, [card])
+        self.assertEqual((card["color"], card["after_kind"]), ("blue", "fixed"))
+        self.assertEqual(fix_images.image_path(card["fix_images"]["after"]).read_bytes(), b"actual")
 
 
 if __name__ == "__main__":

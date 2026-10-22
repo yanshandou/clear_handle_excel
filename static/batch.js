@@ -64,8 +64,9 @@ function renderControls() {
 
 function cardHtml(card, large = false) {
   const link = excelLinkHtml(esc(card.wb_name), { file: card.wb_name, folder: batchState.folder, sheet: card.sheet_name, cell: card.cell_addr });
-  const images = ['before', 'after'].map(which => `<figure><figcaption>${which === 'before' ? '修改前' : '修改后'}</figcaption>${card.images?.[which]
-    ? `<img ${large ? '' : 'loading="lazy"'} src="${esc(card.images[which])}" alt="${which === 'before' ? '修改前' : '修改后'}截图" data-preview="1" onerror="this.outerHTML='<span class=\'batch-missing\'>截图暂不可用</span>'">`
+  const labels = { before: '修改前', after: card.after_kind === 'attempt' ? '最后一次尝试（未采用）' : '修改后' };
+  const images = ['before', 'after'].map(which => `<figure><figcaption>${labels[which]}</figcaption>${card.images?.[which]
+    ? `<img ${large ? '' : 'loading="lazy"'} src="${esc(card.images[which])}" alt="${labels[which]}截图" data-preview="1" onerror="this.outerHTML='<span class=\'batch-missing\'>截图暂不可用</span>'">`
     : '<span class="batch-missing">暂无截图</span>'}</figure>`).join('');
   return `<article class="batch-card" tabindex="0" role="button" aria-label="${esc(`${card.wb_name} ${card.sheet_name}!${card.cell_addr} ${REVIEW_LABELS[card.color]}，单击切换状态`)}" data-id="${esc(card.id)}" data-color="${card.color}">
     <div class="batch-card-head"><div>${link}<p><b>${esc(card.sheet_name)}!${esc(card.cell_addr || '定位待确认')}</b></p></div><span class="batch-color-label">${REVIEW_LABELS[card.color]}</span></div>

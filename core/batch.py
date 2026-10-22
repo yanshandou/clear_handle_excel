@@ -6,6 +6,7 @@ PDF 坐标只用于当前一次导出。每保存一行，重新检测整张表�
 import copy
 import hashlib
 import math
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -171,7 +172,7 @@ def _finish_pending(excel: Any) -> None:
         for cid in pending["cards"]:
             card = data["cards"][cid]
             if pending["action"] == "fix":
-                card.update(color="blue", verified=True, message="已自动修复并保存，等待审核")
+                card.update(color="blue", verified=True, after_kind="fixed", message="已自动修复并保存，等待审核")
                 for item in _items_at(card):
                     item.update(status="fixed", batch_managed=True, triage_keep=False,
                                 row_height=next(r["target"] for r in pending["rows"] if r["row"] == card["excel_row"]
@@ -217,7 +218,7 @@ def _refresh(excel: Any, path: str, sheets: list[str] | None = None) -> None:
             if unresolved:
                 _card_for(group)
             elif existing and not existing.get("dismissed") and not existing.get("manual") and not existing.get("marked"):
-                existing.update(color="blue", verified=True, message="最新导出已通过检查，等待审核")
+                existing.update(color="blue", verified=True, after_kind="fixed", message="最新导出已通过检查，等待审核")
                 after = next(((it.get("fix_images") or {}).get("after") for it in group
                               if (it.get("fix_images") or {}).get("after")), None)
                 if after:
@@ -232,8 +233,11 @@ def _group_cells(items: list[dict]) -> list[list[dict]]:
     return list(cells.values())
 
 
-def _prepare_row(session: Any, path: str, items: list[dict]) -> tuple[float, dict | None, dict]:
-    """只在最新原文件副本上做图；返回原高、最后通过且含余量的方案、原样截图。"""
+def _prepare_row(
+    session: Any, path: str, items: list[dict], *,
+    on_attempt: Callable[[int, float, dict], None] | None = None,
+) -> tuple[float, dict | None, dict]:
+    """只在副本上做图；逐次交出截图，即使随后导出失败也能保留最后已生成的效果。"""
     sheet = session.copy_of(path).Sheets(items[0]["sheet_name"])
     autofix.validate_print_targets(sheet, items)
     row = int(items[0]["excel_row"])
@@ -258,6 +262,8 @@ def _prepare_row(session: Any, path: str, items: list[dict]) -> tuple[float, dic
             ok, _, need = autofix._evaluate(pdf, items, cells, probe.text, probe.printed)
             shots = {_key(*_cell(group[0])): autofix._evaluate(pdf, group, cells, probe.text, probe.printed)[1]
                      for group in groups}
+            if on_attempt is not None:
+                on_attempt(attempt, height, shots)
             if attempt == 0:
                 before = shots
             if ok:
@@ -308,6 +314,19 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
             wf._persist_state()
         _check_file(path)
         version = wf._file_version(Path(path))
+
+        def remember_attempt(index: int, height: float, shots: dict) -> None:
+            with wf.STATE_LOCK:
+                for card in cards:
+                    if index == 0:
+                        _save_shot(card, "before", shots.get(card["id"], ""))
+                    # 尚未产生调整图就出错时，原样也是最后一次实际生成的预览。
+                    # 只给卡片留参考图，不写入问题项的修复报告，也不写原 Excel。
+                    fix_images.forget(card, "after")
+                    _save_shot(card, "after", shots.get(card["id"], ""))
+                    card.update(after_kind="attempt", attempt_height=height)
+                wf._persist_state()
+
         try:
             reason = autofix.review_only_reason(items)
             if reason:
@@ -316,12 +335,12 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                 raise ValueError(reason)
             if any(it.get("location_confirmed") is False or not it.get("cell_addr") for it in items):
                 raise ValueError("单元格定位未确认，请人工核对")
-            base, chosen, before = _prepare_row(session, path, items)
+            base, chosen, before = _prepare_row(session, path, items, on_attempt=remember_attempt)
             with wf.STATE_LOCK:
                 for card in cards:
                     _save_shot(card, "before", before.get(card["id"], ""))
                 if chosen is None:
-                    raise ValueError("增加行高后仍未通过检查，可能需要调整列宽或人工定位")
+                    raise ValueError("自动试修未通过，原文件行高未修改；右图为最后一次尝试（未采用），请人工处理或标绿忽略")
                 for card in cards:
                     _save_shot(card, "after", chosen["shots"].get(card["id"], ""))
                 _data()["rows"][rid] = {"id": rid, "path": path, "sheet": first["sheet_name"],
@@ -340,7 +359,7 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                 raise
             with wf.STATE_LOCK:
                 for card in cards:
-                    card.update(color="yellow", verified=False, message=str(err))
+                    card.update(color="yellow", verified=False, manual=True, message=str(err))
                 wf.log_msg(f"⚠️ {first['wb_name']} / {first['sheet_name']} 行{first['excel_row']}：{err}")
         with wf.STATE_LOCK:
             if rid not in attempted:
@@ -454,6 +473,9 @@ def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:
                               if (it.get("fix_images") or {}).get("after")), None)
                 if after:
                     card.setdefault("fix_images", {})["after"] = after
+                else:
+                    fix_images.forget(card, "after")
+                card["after_kind"] = "fixed"
         for group in _group_cells(unresolved):
             card = _card_for(group)
             if not card.get("dismissed"):
