@@ -14,6 +14,7 @@ from core.common import (
     XL_SHEET_VISIBLE,
     XL_TYPE_PDF,
     as_bbox,
+    col_index_to_letters,
     console_print,
     find_backup_sheets,
     find_clean_targets,
@@ -26,14 +27,17 @@ from core.common import (
     workbook_rel_name,
 )
 from core.excel_ops import (
+    CellProbe,
     extract_sheet_snapshot,
     match_excel_row,
     normalize_workbook_view,
     open_workbook_for_manual_review,
     pythoncom,
     scan_workbook_sheets,
+    snapshot_cells,
     win32,
 )
+from core.hidden_text import clip_check_supported, collect_text_pieces, find_hidden_cells
 from core.pdf_detector import (
     collect_text_spans,
     find_clipped_spans_on_page,
@@ -289,19 +293,25 @@ def _detect_sheet_results(
         if not len(doc):
             raise ValueError(f"导出的 PDF 没有页面: {pdf_path}")
         text_spans = collect_text_spans(doc)
+
+        def page_entry(page_index: int) -> str:
+            page_id = f"page_{generation}_{page_index}"
+            if page_id not in pages:
+                image, width, height = render_page_overview(doc[page_index])
+                pages[page_id] = {
+                    "id": page_id, "wb_path": str(wb_path), "wb_name": wb_label,
+                    "sheet_name": sheet_name, "pdf_path": str(pdf_path),
+                    "page_index": page_index, "total_pages": len(doc),
+                    "page_width": width, "page_height": height, "image": image,
+                }
+            return page_id
+
         for page_index in range(len(doc)):
             page = doc[page_index]
             clips = find_clipped_spans_on_page(page)
             if not clips:
                 continue
-            page_id = f"page_{generation}_{page_index}"
-            image, width, height = render_page_overview(page)
-            pages[page_id] = {
-                "id": page_id, "wb_path": str(wb_path), "wb_name": wb_label,
-                "sheet_name": sheet_name, "pdf_path": str(pdf_path),
-                "page_index": page_index, "total_pages": len(doc),
-                "page_width": width, "page_height": height, "image": image,
-            }
+            page_id = page_entry(page_index)
             for index, clip in enumerate(clips, start=1):
                 row, address, height = match_excel_row(
                     sheet_snapshot, clip["text"], page_index, len(doc),
@@ -310,7 +320,7 @@ def _detect_sheet_results(
                 item_id = f"item_{generation}_{len(items)}"
                 occurrence = locate_text_occurrence(text_spans, page_index, clip["text"], clip["bbox"])
                 items[item_id] = {
-                    "id": item_id, "seq": start_seq + len(items), "page_id": page_id,
+                    "id": item_id, "seq": start_seq + len(items), "kind": "clip", "page_id": page_id,
                     "index_on_page": index, "wb_path": str(wb_path), "wb_name": wb_label,
                     "sheet_name": sheet_name, "pdf_path": str(pdf_path),
                     "page_index": page_index, "text": clip["text"], "bbox": clip["bbox"],
@@ -319,12 +329,43 @@ def _detect_sheet_results(
                     "image": render_crop_base64(page, clip["bbox"], highlight=True),
                     "status": "pending", "iterations": 0,
                 }
+
+        # 隐藏截断：单元格完整内容在 PDF 里没显示全（外观上看不出来）
+        probe = CellProbe(sheet)
+        hidden = find_hidden_cells(
+            snapshot_cells(sheet_snapshot), collect_text_pieces(doc), probe.text, probe.printed,
+        )
+        per_page: dict[int | None, int] = {}
+        for found in hidden:
+            page_index = found["page"]
+            per_page[page_index] = per_page.get(page_index, 0) + 1
+            address = f"{col_index_to_letters(found['col'])}{found['row']}"
+            item_id = f"item_{generation}_{len(items)}"
+            items[item_id] = {
+                "id": item_id, "seq": start_seq + len(items), "kind": "hidden",
+                "page_id": page_entry(page_index) if page_index is not None else None,
+                "index_on_page": per_page[page_index], "wb_path": str(wb_path), "wb_name": wb_label,
+                "sheet_name": sheet_name, "pdf_path": str(pdf_path),
+                "page_index": page_index, "text": found["text"], "bbox": found["bbox"],
+                "visible_text": found["visible"], "hidden_reason": found["reason"],
+                "occurrence": ["cell", address],
+                "excel_row": found["row"], "cell_addr": address, "row_height": probe.row_height(found["row"]),
+                "image": (
+                    render_crop_base64(doc[page_index], found["bbox"], highlight=True)
+                    if page_index is not None else ""
+                ),
+                "status": "pending", "iterations": 0,
+            }
     return pages, items
+
+
+# 检测规则有新增时加一：之前按旧规则查过的文件即使没改过，下次扫描也要整份重新检查
+DETECTOR_VERSION = 2
 
 
 def _file_version(path: Path) -> dict[str, int]:
     stat = path.stat()
-    return {"mtime_ns": stat.st_mtime_ns, "size": stat.st_size}
+    return {"mtime_ns": stat.st_mtime_ns, "size": stat.st_size, "detector": DETECTOR_VERSION}
 
 
 def _sync_problem_counts(path: str, action: str) -> None:
@@ -341,14 +382,17 @@ def _sync_problem_counts(path: str, action: str) -> None:
 
 
 def _same_text_problem(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    return (a["wb_path"], a["sheet_name"], a["text"]) == (b["wb_path"], b["sheet_name"], b["text"])
+    # 旧版记录没有 kind，都是压线切字
+    return (a["wb_path"], a["sheet_name"], a.get("kind") or "clip", a["text"]) == (
+        b["wb_path"], b["sheet_name"], b.get("kind") or "clip", b["text"]
+    )
 
 
 def _problem_record(item: dict[str, Any]) -> dict[str, Any]:
     """完整重新扫描前记下旧问题项（不含截图等大字段），用于对应同一处问题"""
     return {
         key: copy.deepcopy(item.get(key))
-        for key in ("id", "seq", "wb_path", "sheet_name", "text", "occurrence", "status", "manual_confirmation")
+        for key in ("id", "seq", "kind", "wb_path", "sheet_name", "text", "occurrence", "status", "manual_confirmation")
     }
 
 
@@ -579,6 +623,8 @@ def _scan_plan(workbooks: list[Path], *, rescan_all: bool) -> dict[str, dict[str
             plan[path] = {"mode": "full", "scanned": False}
         elif _file_version(wb_path) == STATE["checked_files"].get(path):
             plan[path] = {"mode": "skip", "scanned": True}
+        elif (STATE["checked_files"].get(path) or {}).get("detector") != DETECTOR_VERSION:
+            plan[path] = {"mode": "full", "scanned": True}
         else:
             # 改过的文件：还有问题的只查问题工作表，之前已没问题的整个文件重新检查
             sheets = sorted({item["sheet_name"] for item in items if item["status"] not in RESOLVED_STATUSES})
@@ -744,6 +790,8 @@ def scan_folder_workflow(
                 _persist_state()
         used_pdf_paths = {Path(p["pdf_path"]) for p in STATE["pages"].values()}
         skipped = [path for path, entry in plan.items() if entry["mode"] == "skip"]
+        if not clip_check_supported():
+            log_msg("⚠️ 当前 PyMuPDF 版本较旧，查不出被单元格遮住的文字；请运行 pip install -U pymupdf 后重新扫描")
         log_msg(
             f"{'完整扫描' if rescan_all else '增量扫描'}：共 {len(workbooks)} 个文件，"
             f"{len(workbooks) - len(skipped)} 个需要检查，{len(skipped)} 个未修改、沿用上次结果"
@@ -1090,7 +1138,8 @@ def fix_selected_workflow(
         by_wb: dict[str, list[dict[str, Any]]] = {}
         for iid in selected_ids:
             item = STATE["items"].get(iid)
-            if item and (job is None or iid not in job["completed"]):
+            # 隐藏截断项靠加高行不一定能解决（也可能是列宽），只报告，由人工在 Excel 中修改
+            if item and item.get("kind") != "hidden" and (job is None or iid not in job["completed"]):
                 by_wb.setdefault(item["wb_path"], []).append(item)
                 if not resume:
                     item["job_iterations"] = 0

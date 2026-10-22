@@ -1,10 +1,6 @@
-let currentViewMode = 'canvas'; // 'canvas' | 'cards' | 'triage'
 let latestPages = {};
 let serverItems = {}; // 服务器返回的问题项
 let latestItems = {}; // 叠加尚未保存的跳过决定后的问题项，页面以此渲染
-let pagesSignatureCache = {};
-let cardsSignatureCache = {};
-let activeHoverItemId = null;
 let workspaceRestored = false;
 let canResume = false;
 let isBusy = false;
@@ -25,7 +21,6 @@ let triageDrag = null;
 let triageAnimationTimer = null;
 const TRIAGE_SWIPE_THRESHOLD = 110;
 
-const ONLY_PENDING_STORAGE_KEY = 'clear_handle_excel.onlyPending';
 const TRIAGE_KEPT_STORAGE_KEY = 'clear_handle_excel.triageKept';
 const RECHECK_TITLE = '请先在 Excel 中保存手动修改。根据新 PDF 重新检测该文件的问题工作表并替换旧标记，不会自动增加行高';
 
@@ -33,9 +28,19 @@ function isResolved(item) {
   return item.status === 'fixed' || item.status === 'accepted';
 }
 
-function skipButton(item) {
-  if (item.status === 'fixed') return '';
-  return `<button class="btn btn-outline btn-sm skip-btn" data-item-id="${escapeHtml(item.id)}" onclick="toggleSkip('${escapeHtml(item.id)}')"></button>`;
+// 隐藏截断：PDF 外观看不出来、实际没显示全的文字
+function isHidden(item) {
+  return item.kind === 'hidden';
+}
+
+function itemTextLabel(item) {
+  if (!isHidden(item)) return `文字: ${item.text}`;
+  const shown = item.visible_text ? `PDF 中只显示「${item.visible_text}」` : 'PDF 中没有显示';
+  return `【隐藏截断】完整内容「${item.text}」，${shown}`;
+}
+
+function pageLabel(item) {
+  return item.page_index === null || item.page_index === undefined ? '?' : Number(item.page_index) + 1;
 }
 
 function escapeHtml(str) {
@@ -54,30 +59,6 @@ function getRowGroupKey(item) {
 function getPeerItemsInSameRow(targetItem) {
   const key = getRowGroupKey(targetItem);
   return Object.values(latestItems).filter(it => getRowGroupKey(it) === key);
-}
-
-function setViewMode(mode) {
-  currentViewMode = ['cards', 'triage'].includes(mode) ? mode : 'canvas';
-  document.getElementById('viewCanvasBtn').classList.toggle('active', currentViewMode === 'canvas');
-  document.getElementById('viewCardsBtn').classList.toggle('active', currentViewMode === 'cards');
-  document.getElementById('viewTriageBtn').classList.toggle('active', currentViewMode === 'triage');
-  document.getElementById('canvasView').classList.toggle('hidden', currentViewMode !== 'canvas');
-  document.getElementById('cardGrid').classList.toggle('hidden', currentViewMode !== 'cards');
-  document.getElementById('triageView').classList.toggle('hidden', currentViewMode !== 'triage');
-  hideMagnifier();
-  triageCurrentId = null;
-  refreshItemClasses();
-  renderTriage();
-}
-
-function setOnlyPending(onlyPending) {
-  document.body.classList.toggle('only-pending', onlyPending);
-  document.getElementById('onlyPendingChk').checked = onlyPending;
-  try {
-    localStorage.setItem(ONLY_PENDING_STORAGE_KEY, onlyPending ? '1' : '0');
-  } catch (e) {}
-  hideMagnifier();
-  refreshItemClasses();
 }
 
 /* ==========================================
@@ -122,11 +103,6 @@ function setSkip(id, skip) {
   renderItems();
   flushSkips();
   return true;
-}
-
-function toggleSkip(id) {
-  const item = latestItems[id];
-  if (item) setSkip(id, item.status !== 'accepted');
 }
 
 function flushSkips() {
@@ -218,413 +194,21 @@ function countByState(items) {
   return counts;
 }
 
-function refreshItemClasses() {
-  Object.values(latestItems).forEach(item => {
-    const st = getItemVisualState(item);
-
-    const hotspot = document.getElementById('hotspot_' + item.id);
-    if (hotspot) {
-      hotspot.className = `hotspot-box ${st.boxClass}`;
-      const tag = hotspot.querySelector('.hotspot-tag');
-      if (tag) tag.textContent = `${st.shortTag} ${item.cell_addr}`;
-    }
-
-    const capsule = document.getElementById('capsule_' + item.id);
-    if (capsule) {
-      capsule.className = `item-capsule ${st.boxClass}`;
-    }
-
-    const card = document.getElementById('card_' + item.id);
-    if (card) {
-      card.className = `card ${st.cardClass}`;
-      const badge = card.querySelector('.badge');
-      if (badge) {
-        badge.className = `badge ${st.badgeClass}`;
-        badge.textContent = st.badgeText;
-      }
-    }
-
-    const skipped = item.status === 'accepted';
-    document.querySelectorAll(`.skip-btn[data-item-id="${CSS.escape(item.id)}"]`).forEach(btn => {
-      btn.textContent = skipped ? '撤销跳过' : '跳过（无需修改）';
-      btn.title = skipped
-        ? '撤销跳过，重新纳入处理'
-        : '跳过此处（人工确认无需修改）；之后扫描不再检查这一处';
-    });
-  });
-
-  const itemsByPage = {};
-  Object.values(latestItems).forEach(item => {
-    (itemsByPage[item.page_id] = itemsByPage[item.page_id] || []).push(item);
-  });
-  Object.keys(latestPages).forEach(pageId => {
-    const counts = countByState(itemsByPage[pageId] || []);
-    const stage = document.getElementById('stage_' + pageId);
-    if (stage) stage.classList.toggle('page-resolved', counts.open === 0);
-    const label = document.getElementById('stagecounts_' + pageId);
-    if (label) {
-      label.innerHTML = `（待人工修改 <b>${counts.open}</b>${counts.isNew ? `（新发现 ${counts.isNew}）` : ''} · `
-        + `已跳过 ${counts.skipped} · 已修复 <b style="color:#059669;">${counts.fixed}</b>）`;
-    }
-  });
-
+function refreshCounts() {
   const totals = countByState(Object.values(latestItems));
   document.getElementById('cntPendingFix').innerText = totals.open;
   document.getElementById('cntNew').innerText = totals.isNew;
   document.getElementById('cntSkipped').innerText = totals.skipped;
   document.getElementById('cntFixed').innerText = totals.fixed;
-  const hasItems = Object.keys(latestItems).length > 0;
-  const showAllDone = hasItems && totals.open === 0
-    && document.body.classList.contains('only-pending') && currentViewMode !== 'triage';
-  document.getElementById('allDoneHint').classList.toggle('hidden', !showAllDone);
 }
 
 function renderItems() {
-  renderCanvasStages(latestPages, latestItems);
-  renderCards(latestItems);
-  refreshItemClasses();
+  refreshCounts();
   renderTriage();
-  if (activeHoverItemId && latestItems[activeHoverItemId]) {
-    updateMagnifierContent(latestItems[activeHoverItemId]);
-  }
 }
 
 /* ==========================================
-   同行高亮联动 & 2.5x 悬停放大镜气泡
-   ========================================== */
-function setRowPeerHighlight(item, active) {
-  getPeerItemsInSameRow(item).forEach(peer => {
-    const h = document.getElementById('hotspot_' + peer.id);
-    if (h) {
-      h.classList.toggle('is-peer-row', active && peer.id !== item.id);
-      h.classList.toggle('is-active-hover', active && peer.id === item.id);
-    }
-    const c = document.getElementById('capsule_' + peer.id);
-    if (c) {
-      c.classList.toggle('is-peer-row', active);
-    }
-    const card = document.getElementById('card_' + peer.id);
-    if (card) {
-      card.classList.toggle('is-peer-row', active && peer.id !== item.id);
-    }
-  });
-}
-
-function updateMagnifierContent(item) {
-  const st = getItemVisualState(item);
-  const peers = getPeerItemsInSameRow(item);
-  const peerTip = peers.length > 1 ? ` · 同行共 ${peers.length} 处切字` : '';
-
-  document.getElementById('magTitle').textContent =
-    `#${item.index_on_page || item.seq} 定位: ${item.cell_addr} (Excel 第 ${item.excel_row} 行 · 当前行高 ${item.row_height}pt${peerTip})`;
-  const badgeEl = document.getElementById('magBadge');
-  badgeEl.className = `badge ${st.badgeClass}`;
-  badgeEl.textContent = st.badgeText;
-
-  document.getElementById('magImg').src = item.image;
-  document.getElementById('magText').textContent = `文字内容: ${item.text}`;
-  let hint = '💡 无需修改就点击框跳过（再点撤销）；需要修改的在 Excel 中改好保存后重新扫描';
-  if (item.status === 'accepted') hint = '已跳过（人工确认无需修改），之后扫描不再检查；再点一次可撤销';
-  else if (item.status === 'fixed') hint = '✅ 复检未再检出压线，已记为已修复';
-  else if (item.status !== 'pending') hint = '需人工处理：在 Excel 中修改保存后重新扫描；确认无需修改时点击框跳过';
-  document.getElementById('magHint').textContent = hint;
-}
-
-function positionMagnifierNearRect(anchorRect) {
-  const pop = document.getElementById('magnifierPopover');
-  const popW = 440;
-  const popH = pop.offsetHeight || 280;
-  const margin = 14;
-
-  let left = anchorRect.right + margin;
-  if (left + popW > window.innerWidth - 12) {
-    left = anchorRect.left - popW - margin;
-  }
-  if (left < 12) {
-    left = Math.max(12, Math.min(window.innerWidth - popW - 12, anchorRect.left));
-  }
-
-  let top = anchorRect.top - 10;
-  if (top + popH > window.innerHeight - 12) {
-    top = window.innerHeight - popH - 12;
-  }
-  if (top < 12) {
-    top = 12;
-  }
-
-  pop.style.left = `${Math.round(left)}px`;
-  pop.style.top = `${Math.round(top)}px`;
-}
-
-function showMagnifierForElement(item, anchorEl) {
-  activeHoverItemId = item.id;
-  setRowPeerHighlight(item, true);
-  updateMagnifierContent(item);
-
-  const pop = document.getElementById('magnifierPopover');
-  pop.classList.remove('hidden');
-  positionMagnifierNearRect(anchorEl.getBoundingClientRect());
-}
-
-function hideMagnifier(item) {
-  activeHoverItemId = null;
-  if (item) {
-    setRowPeerHighlight(item, false);
-  }
-  const pop = document.getElementById('magnifierPopover');
-  if (pop) {
-    pop.classList.add('hidden');
-  }
-}
-
-/* ==========================================
-   视图一渲染：整页画布 + 热区 + 底部胶囊条
-   ========================================== */
-function renderCanvasStages(pages, items) {
-  const container = document.getElementById('canvasView');
-  const pageIds = Object.keys(pages);
-  for (const pageId of Object.keys(pagesSignatureCache)) {
-    if (!pages[pageId]) {
-      document.getElementById('stage_' + pageId)?.remove();
-      delete pagesSignatureCache[pageId];
-    }
-  }
-
-  if (pageIds.length === 0) {
-    container.innerHTML = '';
-    pagesSignatureCache = {};
-    return;
-  }
-
-  // 若用户在某个胶囊输入框内正在输入，跳过本次 DOM 重建以保留输入焦点
-  const activeEl = document.activeElement;
-  if (activeEl && activeEl.tagName === 'INPUT' && container.contains(activeEl)) {
-    return;
-  }
-
-  const itemsByPage = {};
-  Object.values(items).forEach(item => {
-    if (!itemsByPage[item.page_id]) {
-      itemsByPage[item.page_id] = [];
-    }
-    itemsByPage[item.page_id].push(item);
-  });
-
-  pageIds.forEach(pageId => {
-    const page = pages[pageId];
-    const pageItems = itemsByPage[pageId] || [];
-
-    // 状态变化（跳过 / 撤销）只更新样式，不重建整页，避免点选时整页图片闪烁
-    const sigParts = [
-      page.image,
-      ...pageItems.map(
-        it => `${it.id}:${it.iterations}:${it.row_height}:${it.excel_row}:${it.cell_addr}:${it.bbox.join(',')}:${it.image}`
-      ),
-    ];
-    const signature = sigParts.join('|');
-
-    let stageCard = document.getElementById('stage_' + pageId);
-    if (stageCard && pagesSignatureCache[pageId] === signature) {
-      return;
-    }
-    pagesSignatureCache[pageId] = signature;
-
-    if (!stageCard) {
-      stageCard = document.createElement('div');
-      stageCard.id = 'stage_' + pageId;
-      stageCard.className = 'page-stage-card';
-      container.appendChild(stageCard);
-    }
-
-    const pw = Math.max(1, Number(page.page_width) || 595);
-    const ph = Math.max(1, Number(page.page_height) || 842);
-
-    const hotspotsHtml = pageItems
-      .map(item => {
-        const [x0, y0, x1, y1] = item.bbox;
-        const padX = 4;
-        const padY = 3;
-        const leftPct = Math.max(0, ((x0 - padX) / pw) * 100).toFixed(3);
-        const topPct = Math.max(0, ((y0 - padY) / ph) * 100).toFixed(3);
-        const widthPct = Math.min(100, ((x1 - x0 + padX * 2) / pw) * 100).toFixed(3);
-        const heightPct = Math.min(100, ((y1 - y0 + padY * 2) / ph) * 100).toFixed(3);
-        const st = getItemVisualState(item);
-
-        return `
-          <div
-            id="hotspot_${escapeHtml(item.id)}"
-            class="hotspot-box ${st.boxClass}"
-            style="left:${leftPct}%; top:${topPct}%; width:${widthPct}%; height:${heightPct}%;"
-            data-item-id="${escapeHtml(item.id)}"
-          >
-            <span class="hotspot-tag">${escapeHtml(st.shortTag)} ${escapeHtml(item.cell_addr)}</span>
-          </div>
-        `;
-      })
-      .join('');
-
-    const capsulesHtml = pageItems
-      .map(item => {
-        const st = getItemVisualState(item);
-        return `
-          <div
-            id="capsule_${escapeHtml(item.id)}"
-            class="item-capsule ${st.boxClass}"
-            data-item-id="${escapeHtml(item.id)}"
-          >
-            <span class="capsule-seq">#${Number(item.index_on_page || item.seq)}</span>
-            <span class="capsule-addr">${escapeHtml(item.cell_addr)} (${escapeHtml(item.row_height)}pt)</span>
-            <span class="capsule-text" title="${escapeHtml(item.text)}">${escapeHtml(item.text)}</span>
-            <label onclick="event.stopPropagation();" style="display:inline-flex; align-items:center; gap:3px;">
-              行:
-              <input
-                type="number"
-                min="1"
-                class="capsule-row-input"
-                value="${Number(item.excel_row) || 1}"
-                onchange="updateRow('${escapeHtml(item.id)}', this.value)"
-              >
-            </label>
-            <span onclick="event.stopPropagation();">
-              <button class="btn btn-outline btn-sm" onclick="manualOpen('${escapeHtml(item.id)}')">在 Excel 中定位</button>
-              <button class="btn btn-outline btn-sm" title="${RECHECK_TITLE}" onclick="manualRecheck('${escapeHtml(item.id)}')">重新导出复检</button>
-              ${skipButton(item)}
-            </span>
-          </div>
-        `;
-      })
-      .join('');
-
-    stageCard.innerHTML = `
-      <div class="page-stage-header">
-        <div class="page-stage-title">
-          <b>📄 ${escapeHtml(page.wb_name)}</b>
-          <span style="color:#64748b;">/ ${escapeHtml(page.sheet_name)}</span>
-          <span class="page-tag">第 ${Number(page.page_index) + 1} / ${Number(page.total_pages)} 页</span>
-          <span id="stagecounts_${escapeHtml(pageId)}" style="font-size:12.5px; color:#475569;"></span>
-        </div>
-      </div>
-
-      <div class="page-canvas-scroll">
-        <div class="page-canvas-wrap">
-          <img class="page-canvas-img" src="${page.image}" alt="${escapeHtml(page.sheet_name)} 整页预览">
-          <div class="hotspot-layer">
-            ${hotspotsHtml}
-          </div>
-        </div>
-      </div>
-
-      <div class="capsule-bar">
-        <span class="capsule-bar-label">🎯 本页切字定位 &amp; 行号修正：</span>
-        ${capsulesHtml}
-      </div>
-    `;
-
-    // 绑定热区与胶囊交互事件
-    stageCard.querySelectorAll('.hotspot-box, .item-capsule').forEach(el => {
-      const itemId = el.getAttribute('data-item-id');
-      el.addEventListener('click', e => {
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'LABEL') return;
-        toggleSkip(itemId);
-      });
-      el.addEventListener('mouseenter', () => {
-        const currentItem = latestItems[itemId];
-        if (!currentItem) return;
-        const hotspotEl = document.getElementById('hotspot_' + itemId) || el;
-        showMagnifierForElement(currentItem, hotspotEl);
-      });
-      el.addEventListener('mouseleave', () => {
-        const currentItem = latestItems[itemId];
-        hideMagnifier(currentItem);
-      });
-    });
-  });
-}
-
-/* ==========================================
-   视图二渲染：局部 2.5x 特写卡片模式
-   ========================================== */
-function renderCards(items) {
-  const grid = document.getElementById('cardGrid');
-  const keys = Object.keys(items);
-  for (const id of Object.keys(cardsSignatureCache)) {
-    if (!items[id]) {
-      document.getElementById('card_' + id)?.remove();
-      delete cardsSignatureCache[id];
-    }
-  }
-  if (keys.length === 0) {
-    grid.innerHTML = '';
-    cardsSignatureCache = {};
-    return;
-  }
-
-  keys.forEach(id => {
-    const item = items[id];
-    let card = document.getElementById('card_' + id);
-    if (!card) {
-      card = document.createElement('div');
-      card.id = 'card_' + id;
-      card.className = 'card';
-      card.onclick = e => {
-        if (e.target.tagName === 'INPUT') return;
-        toggleSkip(id);
-      };
-      card.onmouseenter = () => setRowPeerHighlight(latestItems[id] || item, true);
-      card.onmouseleave = () => setRowPeerHighlight(latestItems[id] || item, false);
-      grid.appendChild(card);
-    }
-
-    const activeEl = document.activeElement;
-    if (activeEl && activeEl.tagName === 'INPUT' && card.contains(activeEl)) {
-      return;
-    }
-
-    // 状态变化只更新样式（见 refreshItemClasses），不重建卡片
-    const st = getItemVisualState(item);
-    const signature = `${item.iterations}|${item.row_height}|${item.excel_row}|${item.cell_addr}|${item.image}|${item.review_reason || ''}|${item.status === 'fixed'}`;
-    if (cardsSignatureCache[id] === signature) {
-      return;
-    }
-    cardsSignatureCache[id] = signature;
-
-    card.className = `card ${st.cardClass}`;
-    card.innerHTML = `
-      <div class="card-header">
-        <div>
-          <b>#${Number(item.seq || 1)} ${escapeHtml(item.wb_name)}</b>
-          <span style="color:#64748b;">/ ${escapeHtml(item.sheet_name)} (P${Number(item.page_index) + 1})</span>
-        </div>
-        <span class="badge ${st.badgeClass}">${escapeHtml(st.badgeText)}</span>
-      </div>
-      <div class="card-img-wrap"><img src="${item.image}" alt="crop"></div>
-      <div class="card-body">
-        <div>
-          定位: <b>${escapeHtml(item.cell_addr)}</b> | 当前行高: <b>${escapeHtml(item.row_height)}pt</b><br>
-          <span style="color:#64748b;">文字: ${escapeHtml(item.text)}</span>
-        </div>
-        <div class="row-adjust" title="如果行号有偏差可手动修正">
-          行号:
-          <input
-            type="number"
-            min="1"
-            value="${Number(item.excel_row) || 1}"
-            onchange="updateRow('${escapeHtml(id)}', this.value)"
-          >
-        </div>
-      </div>
-      <div onclick="event.stopPropagation();">
-        <button class="btn btn-outline btn-sm" onclick="manualOpen('${escapeHtml(id)}')">在 Excel 中定位</button>
-        <button class="btn btn-outline btn-sm" title="${RECHECK_TITLE}" onclick="manualRecheck('${escapeHtml(id)}')">重新导出复检</button>
-        ${skipButton(item)}
-        <p>${escapeHtml(item.review_reason || '无需修改就跳过；需要修改的在 Excel 中改好保存后重新扫描。')}</p>
-      </div>
-    `;
-  });
-}
-
-/* ==========================================
-   视图三：逐个筛选（← 保留 / 跳过 →）
+   逐个筛选（← 保留 / 跳过 →）
    ========================================== */
 function loadTriageKept() {
   try {
@@ -648,7 +232,6 @@ function triageQueue() {
 }
 
 function renderTriage() {
-  if (currentViewMode !== 'triage') return;
   const reviewable = Object.values(latestItems).filter(item => item.status !== 'fixed');
   const skipped = reviewable.filter(item => item.status === 'accepted').length;
   const kept = reviewable.filter(item => !isResolved(item) && triageKept.has(item.id)).length;
@@ -710,18 +293,27 @@ function renderTriage() {
       <div class="triage-card-head">
         <div>
           <b>#${Number(next.seq || 1)} ${escapeHtml(next.wb_name)}</b>
-          <span style="color:#64748b;">/ ${escapeHtml(next.sheet_name)}（第 ${Number(next.page_index) + 1} 页）</span>
+          <span style="color:#64748b;">/ ${escapeHtml(next.sheet_name)}（第 ${pageLabel(next)} 页）</span>
         </div>
         <span class="badge ${st.badgeClass}">${escapeHtml(next.status === 'pending' ? (next.is_new ? '🆕 新发现 · 待筛选' : '待筛选') : st.badgeText)}</span>
       </div>
       <div class="triage-card-body">
-        <div class="triage-crop"><img src="${next.image}" alt="2.5x 局部特写" draggable="false"></div>
+        ${next.image ? `<div class="triage-crop"><img src="${next.image}" alt="2.5x 局部特写" draggable="false"></div>` : ''}
         ${pageHtml}
       </div>
       <div class="triage-card-foot">
         定位 <b>${escapeHtml(next.cell_addr)}</b>（Excel 第 ${Number(next.excel_row) || 1} 行 · 行高 ${escapeHtml(next.row_height)}pt${peers > 1 ? ` · 同行共 ${peers} 处切字` : ''}）<br>
-        文字：${escapeHtml(next.text)}
+        ${escapeHtml(itemTextLabel(next))}
+        ${isHidden(next) ? `<br><span style="color:#b45309;">${escapeHtml(next.hidden_reason || '')}</span>` : ''}
         ${next.status !== 'pending' && next.review_reason ? `<br><span style="color:#b45309;">${escapeHtml(next.review_reason)}</span>` : ''}
+      </div>
+      <div class="triage-card-tools" onpointerdown="event.stopPropagation();">
+        <label title="如果行号有偏差可手动修正">
+          行号
+          <input type="number" min="1" value="${Number(next.excel_row) || 1}" onchange="updateRow('${escapeHtml(next.id)}', this.value)">
+        </label>
+        <button type="button" class="btn btn-outline btn-sm" onclick="manualOpen('${escapeHtml(next.id)}')">在 Excel 中定位</button>
+        <button type="button" class="btn btn-outline btn-sm" title="${RECHECK_TITLE}" onclick="manualRecheck('${escapeHtml(next.id)}')">重新导出复检</button>
       </div>
     </div>
   `;
@@ -824,7 +416,7 @@ function attachTriageSwipe(card) {
 }
 
 document.addEventListener('keydown', e => {
-  if (currentViewMode !== 'triage' || e.repeat || e.altKey) return;
+  if (e.repeat || e.altKey) return;
   if (e.target.closest && e.target.closest('input, textarea, select')) return;
   if (e.key === 'ArrowLeft') {
     e.preventDefault();
@@ -856,7 +448,6 @@ async function pollState() {
     document.getElementById('resumeBtn').disabled = data.busy;
     if (!workspaceRestored) {
       document.getElementById('folderInput').value = data.folder || '';
-      // 「顺便清理备份表」会直接删除且不预览，不沿用上次的勾选，每次扫描都需手动勾选
     }
 
     document.getElementById('scanBtn').disabled = data.busy;
@@ -899,9 +490,6 @@ async function pollState() {
     triageKept = new Set([...triageKept].filter(id => serverItems[id]));
     if (triageKept.size !== keptBefore) saveTriageKept();
     applyPendingSkips();
-    if (activeHoverItemId && !latestItems[activeHoverItemId]) {
-      hideMagnifier();
-    }
 
     const hasResults = Object.keys(latestPages).length > 0 || Object.keys(latestItems).length > 0;
     const emptyStage = document.getElementById('emptyStagePlaceholder');
@@ -943,24 +531,12 @@ async function startScan() {
   }
   if (canResume && !confirm('开始扫描会替换上次中断任务的续跑进度，确定不继续上次任务吗？')) return;
   await syncSkips();
-  const fullScanChk = document.getElementById('fullScanChk');
   try {
-    await postAction('/api/scan', {
-      folder,
-      delete_backups: document.getElementById('delBackupChk').checked,
-      full: fullScanChk.checked,
-    });
+    await postAction('/api/scan', { folder, delete_backups: false, full: false });
   } catch (e) {
     alert(e.message);
     return;
   }
-  fullScanChk.checked = false; // 完整重新扫描只对本次有效，避免下次误用
-  pagesSignatureCache = {};
-  cardsSignatureCache = {};
-  hideMagnifier();
-  document.getElementById('canvasView').innerHTML = '';
-  document.getElementById('cardGrid').innerHTML = '';
-
   await pollState();
 }
 
@@ -976,7 +552,6 @@ async function manualOpen(id) {
   if (canResume && !confirm('转人工将替换中断任务，旧检查点不再自动续跑。剩余项可之后重新处理。确定吗？')) return;
   await syncSkips();
   try {
-    hideMagnifier();
     await postAction('/api/manual/open', { id });
     await pollState();
   } catch (e) { alert(e.message); }
@@ -988,7 +563,6 @@ async function manualRecheck(id) {
   if (canResume && !confirm(message)) return;
   await syncSkips();
   try {
-    hideMagnifier();
     await postAction('/api/manual/recheck', { id });
     await pollState();
   } catch (e) { alert(e.message); }
@@ -1002,12 +576,7 @@ window.addEventListener('beforeunload', e => {
   }
 });
 
-let savedOnlyPending = false;
-try {
-  savedOnlyPending = localStorage.getItem(ONLY_PENDING_STORAGE_KEY) === '1';
-} catch (e) {}
 triageKept = loadTriageKept();
-setOnlyPending(savedOnlyPending);
 
 setInterval(pollState, 1200);
 pollState();
