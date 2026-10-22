@@ -87,7 +87,7 @@ class AutofixTests(unittest.TestCase):
         excel.Workbooks.Open.side_effect = open_book
         for name, value in {
             "win32": Mock(DispatchEx=Mock(return_value=excel)),
-            "extract_sheet_snapshot": Mock(return_value={}),
+            "extract_sheet_snapshot": Mock(return_value={"start_r": 5, "start_c": 2, "rows_vals": [("Target",)]}),
             "normalize_workbook_view": Mock(),
         }.items():
             p = patch.object(self.autofix, name, value)
@@ -259,6 +259,29 @@ class AutofixTests(unittest.TestCase):
         self.assertTrue(self.autofix._apply(self.session, str(self.wb_path), [gid]))
         self.assertEqual(self.real_heights, {5: 24.0})
 
+    def test_hidden_preview_waits_until_border_no_longer_crosses_text(self):
+        self.workflow.STATE["items"]["i1"]["kind"] = "hidden"
+        self.needed = 27.0
+        gid = self.group()["id"]
+        self.autofix._preview(self.session, gid)
+        group = self.group()
+        self.assertEqual([(a["height"], a["ok"]) for a in group["attempts"]],
+                         [(15.0, False), (18.0, False), (21.0, False), (24.0, False),
+                          (27.0, True), (30.0, True)])
+        self.assertEqual(group["recommended"], 5)
+
+    def test_full_auto_does_not_queue_hidden_text_that_is_still_crossed(self):
+        self.workflow.STATE["items"]["i1"]["kind"] = "hidden"
+        self.needed = 999.0
+        gid = self.group()["id"]
+        self.autofix.set_auto(True)
+        self.autofix._preview(self.session, gid)
+        group = self.group()
+        self.assertEqual((group["status"], group["recommended"], group["chosen"]), ("failed", None, None))
+        self.assertTrue(all(not a["ok"] for a in group["attempts"]))
+        self.assertIsNone(self.autofix._next_task({}))
+        self.assertEqual(self.real_heights, {5: 15.0})
+
     def test_open_file_waits_before_writing(self):
         gid = self.group()["id"]
         self.autofix._preview(self.session, gid)
@@ -319,6 +342,69 @@ class AutofixTests(unittest.TestCase):
         self.autofix.choose(gid, 3)
         self.autofix.AUTOFIX["active_until"] = 0.0
         self.assertEqual(self.autofix._next_task({}), ("apply", (str(self.wb_path), [gid])))
+
+
+class AutofixEvaluationTests(unittest.TestCase):
+    def setUp(self):
+        from core import autofix
+        self.autofix = autofix
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.pdf = Path(self.temp.name) / "attempt.pdf"
+
+    def evaluate(self, text, lines, *, display=None, border=None, cells=None, kind="hidden", item_text=None):
+        from core.pdf_detector import fitz
+        with fitz.open() as doc:
+            page = doc.new_page()
+            for x, y, line in lines:
+                page.insert_text((x, y), line, fontsize=10, fontname="japan")
+            if border:
+                page.draw_line(border[0], border[1], width=0.5)
+            doc.save(self.pdf)
+        item = {"kind": kind, "text": item_text or text, "excel_row": 67,
+                "cell_addr": "R67", "page_index": 0, "bbox": (60, 90, 150, 102)}
+        return self.autofix._evaluate(
+            self.pdf, [item], cells if cells is not None else [(67, 18, text)],
+            lambda r, c: display if display is not None else text,
+            lambda r, c: True,
+        )
+
+    def test_complete_hidden_text_crossed_by_border_is_not_success(self):
+        ok, image = self.evaluate("ryouyouhi_houmon_name", [
+            (60, 100, "ryouyouhi_houmon_n"), (60, 112, "ame"),
+        ], border=((55, 109), (300, 109)))
+        self.assertFalse(ok)
+        self.assertTrue(image)
+
+    def test_shortened_display_text_cannot_hide_missing_suffix(self):
+        ok, _ = self.evaluate("文字列(100)", [(60, 100, "文字列")], display="文字列")
+        self.assertFalse(ok)
+
+    def test_hidden_problem_is_matched_by_cell_even_if_text_representation_changed(self):
+        ok, _ = self.evaluate("文字列(100)", [(60, 100, "文字列")], item_text="文字列（100）")
+        self.assertFalse(ok)
+
+    def test_same_row_problem_in_other_column_does_not_replace_target(self):
+        ok, _ = self.evaluate("Same", [(60, 100, "Same")], cells=[(67, 18, "Same"), (67, 19, "Same")])
+        self.assertTrue(ok)
+
+    def test_missing_target_evidence_is_not_success(self):
+        ok, _ = self.evaluate("Target", [(60, 100, "Target")], cells=[])
+        self.assertFalse(ok)
+
+    def test_clip_problem_also_checks_hidden_suffix(self):
+        ok, _ = self.evaluate("TargetMore", [(60, 100, "Target")], kind="clip", item_text="Target")
+        self.assertFalse(ok)
+
+    def test_complete_target_without_crossing_border_passes(self):
+        ok, image = self.evaluate("文字列(100)", [(60, 100, "文字列(100)")])
+        self.assertTrue(ok)
+        self.assertTrue(image)
+
+    def test_border_crossing_other_column_does_not_fail_target(self):
+        ok, _ = self.evaluate("Target", [(60, 100, "Target"), (250, 100, "Other")],
+                              border=((245, 96), (400, 96)))
+        self.assertTrue(ok)
 
 
 if __name__ == "__main__":

@@ -552,7 +552,7 @@ function renderFix() {
       <button type="button" class="${classes.join(' ')}" ${canPick ? `onclick="chooseAttempt('${escapeHtml(group.id)}', ${index})"` : 'disabled'}>
         ${index === group.recommended ? '<span class="fix-tile-badge">推荐</span>' : ''}
         <img src="/api/autofix/image/${escapeHtml(group.id)}/${index}?h=${attempt.height}" alt="${escapeHtml(attemptLabel(group, index))}">
-        <span class="fix-tile-caption">${escapeHtml(attemptLabel(group, index))} · ${index === 0 ? (attempt.ok ? '已显示全' : '被截断') : (attempt.ok ? '✓ 显示全' : '✗ 仍被截断')}</span>
+        <span class="fix-tile-caption">${escapeHtml(attemptLabel(group, index))} · ${index === 0 ? (attempt.ok ? '完整且无压线' : '未通过检查') : (attempt.ok ? '✓ 完整且无压线' : '✗ 未通过完整显示/压线检查')}</span>
       </button>`;
   });
   if (!group.manual && ['queued', 'running'].includes(group.status) && tiles.length < 9) {

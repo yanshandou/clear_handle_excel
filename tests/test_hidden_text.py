@@ -253,6 +253,15 @@ class HiddenTextTests(unittest.TestCase):
             add_text(page, 50, 100, "No.15")
         self.assertEqual(detect([(1, 1, "15x")], build, {(1, 1): "No.15"}), [])
 
+    def test_display_text_prefix_does_not_shorten_expected_cell_content(self):
+        def build(page):
+            page.insert_text((50, 100), "文字列", fontsize=10, fontname="japan")
+
+        result = detect([(67, 18, "文字列(100)")], build, {(67, 18): "文字列"})
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["text"], "文字列(100)")
+        self.assertEqual(result[0]["reason"], REASON_TRUNCATED)
+
 
 if __name__ == "__main__":
     unittest.main()

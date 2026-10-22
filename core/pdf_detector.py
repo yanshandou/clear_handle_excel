@@ -42,6 +42,21 @@ def extract_page_lines(
     return h_lines, v_lines
 
 
+def crossing_horizontal_line(
+    bbox: tuple[float, float, float, float], lines: list[tuple[float, float, float]],
+) -> float | None:
+    """返回穿过文字核心区域的横线位置；扫描和自动处理共用同一判定。"""
+    b = fitz.Rect(bbox)
+    if b.height < 4:
+        return None
+    pad = b.height * 0.16
+    for ly, lx0, lx1 in lines:
+        if b.x1 > lx0 + 1.5 and b.x0 < lx1 - 1.5:
+            if b.y0 + pad < ly < b.y1 - pad + 0.6:
+                return ly
+    return None
+
+
 def find_clipped_spans_on_page(page: fitz.Page) -> list[dict[str, Any]]:
     """
     在单页 PDF 上寻找被边框横线切穿/压线的文字块。
@@ -61,22 +76,10 @@ def find_clipped_spans_on_page(page: fitz.Page) -> list[dict[str, Any]]:
                 if not text or text in {"-", "－", "_"}:
                     continue
                 b = fitz.Rect(span["bbox"])
-                if b.height < 4:
-                    continue
-
-                pad = b.height * 0.16
-                core_y0 = b.y0 + pad
-                core_y1 = b.y1 - pad
-
-                for ly, lx0, lx1 in h_lines:
-                    if b.x1 > lx0 + 1.5 and b.x0 < lx1 - 1.5:
-                        if core_y0 < ly < core_y1 + 0.6:
-                            results.append({
-                                "text": text,
-                                "bbox": (b.x0, b.y0, b.x1, b.y1),
-                                "line_y": ly,
-                            })
-                            break
+                bbox = (b.x0, b.y0, b.x1, b.y1)
+                line_y = crossing_horizontal_line(bbox, h_lines)
+                if line_y is not None:
+                    results.append({"text": text, "bbox": bbox, "line_y": line_y})
     return results
 
 

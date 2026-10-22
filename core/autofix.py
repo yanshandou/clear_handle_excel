@@ -17,10 +17,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core.common import XL_SHEET_VISIBLE, as_bbox
+from core.common import XL_SHEET_VISIBLE, as_bbox, col_index_to_letters
 from core.excel_ops import CellProbe, extract_sheet_snapshot, normalize_workbook_view, snapshot_cells
-from core.hidden_text import collect_text_pieces, find_hidden_cells, locate_text
-from core.pdf_detector import RegionTrackingError, fitz, is_region_still_clipped, render_crop_base64
+from core.hidden_text import collect_text_pieces, find_hidden_cells, locate_text, normalize_text
+from core.pdf_detector import (
+    RegionTrackingError, crossing_horizontal_line, extract_page_lines, fitz,
+    is_region_still_clipped, render_crop_base64,
+)
 from core.quiet_dialogs import hide_progress_dialogs
 from core.workflow import (
     RESOLVED_STATUSES,
@@ -181,7 +184,7 @@ def choose(gid: str, index: int) -> None:
         if group["status"] not in {"ready", "failed"}:
             raise ValueError("这一组还没准备好或已在写入")
         if not 1 <= index < len(group["attempts"]) or not group["attempts"][index]["ok"]:
-            raise ValueError("只能选择已显示全的调整结果")
+            raise ValueError("只能选择已显示全且无压线的调整结果")
         group["chosen"] = index
         group["status"] = "applying"
         group["message"] = "正在写入 Excel..."
@@ -394,6 +397,7 @@ def _preview(session: _ExcelSession, gid: str) -> None:
                 if k and height == group["attempts"][-1]["height"]:
                     break
             sheet.Rows(row).RowHeight = height
+            texts.clear()  # 行高变化后 Range.Text 也可能变化，不能沿用上一张候选图的显示值
             _export_sheet_pdf(sheet, pdf_path)
             ok, image = _evaluate(pdf_path, items, cells, display_text, probe.printed)
             with _LOCK:
@@ -416,7 +420,7 @@ def _preview(session: _ExcelSession, gid: str) -> None:
         group["recommended"] = oks[-1] if oks else None
         if not oks:
             group["status"] = "failed"
-            group["message"] = f"加高 {MAX_ATTEMPTS} 次仍未显示全，可能定位不对或是列宽不够，请人工处理"
+            group["message"] = f"加高 {MAX_ATTEMPTS} 次仍未通过完整显示与压线检查，可能定位不对或是列宽不够，请人工处理"
         elif AUTOFIX["auto"]:
             group.update(status="applying", chosen=group["recommended"], message="全自动：正在写入 Excel...")
             _WAKE.set()
@@ -425,24 +429,31 @@ def _preview(session: _ExcelSession, gid: str) -> None:
 
 
 def _evaluate(pdf_path: Path, items: list[dict[str, Any]], cells, display_text, printed) -> tuple[bool, str]:
-    """这一次导出的 PDF 里，组内每处是否都已显示全；返回 (是否全部显示全, 截图)"""
-    all_ok = True
+    """要求每个目标单元格取得完整匹配、字符可见且无压线；没有证据不能判通过。"""
+    all_ok = bool(items)
     boxes: list[tuple[int, tuple[float, float, float, float]]] = []
     with fitz.open(pdf_path) as doc:
-        hidden_results = None
+        pieces = collect_text_pieces(doc)
+        matches: dict[tuple[int, int], dict[str, Any]] = {}
+        hidden_results = find_hidden_cells(cells, pieces, display_text, printed, matches=matches)
+        by_address = {
+            f"{col_index_to_letters(col)}{row}": evidence for (row, col), evidence in matches.items()
+        }
+        hidden_by_address = {
+            f"{col_index_to_letters(r['col'])}{r['row']}": r for r in hidden_results
+        }
+        page_lines = {}
         for item in items:
+            address = str(item.get("cell_addr", "")).upper()
+            evidence = by_address.get(address)
+            found = hidden_by_address.get(address)
+            ok = evidence is not None and found is None
             if item.get("kind") == "hidden":
-                if hidden_results is None:
-                    hidden_results = find_hidden_cells(cells, collect_text_pieces(doc), display_text, printed)
-                found = next(
-                    (r for r in hidden_results
-                     if r["row"] == int(item["excel_row"]) and r["text"] == item["text"]),
-                    None,
-                )
-                ok = found is None
+                ok = ok and normalize_text(evidence["text"]) == normalize_text(item["text"])
                 location = (
                     (found["page"], found["bbox"]) if found and found["bbox"] is not None
-                    else locate_text(collect_text_pieces(doc), item["text"])
+                    else (evidence["page"], evidence["bbox"]) if evidence is not None
+                    else locate_text(pieces, item["text"])
                 )
             else:
                 try:
@@ -450,9 +461,18 @@ def _evaluate(pdf_path: Path, items: list[dict[str, Any]], cells, display_text, 
                         pdf_path, int(item["page_index"]), item["text"], as_bbox(item["bbox"]),
                         occurrence=item.get("occurrence"),
                     )
-                    ok, location = not still, (page, bbox)
+                    ok, location = ok and not still, (page, bbox)
                 except RegionTrackingError:
                     ok, location = False, None
+            if evidence is not None:
+                page_index = evidence["page"]
+                if page_index not in page_lines:
+                    page_lines[page_index] = extract_page_lines(doc[page_index])[0]
+                if any(
+                    not shown or crossing_horizontal_line(bbox, page_lines[page_index]) is not None
+                    for char, bbox, shown in evidence["chars"] if normalize_text(char)
+                ):
+                    ok = False
             all_ok = all_ok and ok
             if location is not None:
                 boxes.append(location)

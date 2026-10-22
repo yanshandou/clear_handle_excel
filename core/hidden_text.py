@@ -284,11 +284,13 @@ def find_hidden_cells(
     pieces: list[Piece],
     display_text: Callable[[int, int], str | None],
     is_printed: Callable[[int, int], bool],
+    *, matches: dict[tuple[int, int], dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     cells: [(行, 列, 单元格值)]；display_text 读取 Excel 显示的文字（Range.Text）；
     is_printed 判断这格会不会被打印（隐藏行列、打印区域外的不算）。
     返回: [{"row", "col", "text", "visible", "reason", "page", "bbox"}]，page/bbox 在 PDF 里完全找不到时为 None
+    matches 可选接收完整匹配的单元格证据（含所有原始字符的坐标及可见性），供自动处理核验。
     """
     matcher = _Matcher(pieces)
     results: list[dict[str, Any]] = []
@@ -321,7 +323,13 @@ def find_hidden_cells(
                     left.append(cell)
                     continue
                 _consume(chain)
-                hidden = [c for c, _, shown in _chain_chars(chain) if not shown]
+                chars = _chain_chars(chain)
+                hidden = [c for c, _, shown in chars if not shown]
+                if matches is not None:
+                    page, bbox = _chain_location(chain)
+                    matches[(cell["row"], cell["col"])] = {
+                        "text": cell["text"], "page": page, "bbox": bbox, "chars": chars,
+                    }
                 if hidden:
                     page, bbox = _chain_location(chain)
                     shown_text = "".join(c for c, _, shown in _chain_chars(chain) if shown)
@@ -342,7 +350,10 @@ def find_hidden_cells(
     unchanged, refetched = [], []
     for cell in left:
         shown = display_text(cell["row"], cell["col"]) if isinstance(cell["value"], str) else None
-        if shown is None or shown == cell["text"]:
+        shown_key = normalize_text(shown) if shown is not None else ""
+        original_key = normalize_text(cell["text"])
+        if shown is None or shown == cell["text"] or (shown_key and shown_key in original_key):
+            # Range.Text 若只是原文的一部分，不能用它缩短“应显示的完整内容”。
             unchanged.append(cell)
         elif normalize_text(shown):
             cell["text"] = shown
