@@ -1622,6 +1622,8 @@ def restore_review_file(excel: Any, path: str) -> str:
         log_msg(f"统一复检：{wb_path.name} 已去掉 {len(to_restore)} 处黄色")
     if remaining:
         return "partial"
+    if wb_path.name.startswith(REVIEW_EMOJI) and wb_path.with_name("~$" + wb_path.name).exists():
+        return "locked"  # 文件开着改不了名，关掉后再去 🟡
     new_path = _rename_review_file(path, strip_review_prefix(wb_path.name))
     with STATE_LOCK:
         STATE["review_queue"].pop(new_path, None)
