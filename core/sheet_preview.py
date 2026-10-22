@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from core.common import PROJECT_ROOT, XL_SHEET_VISIBLE, normalize_used_values, workbook_rel_name
-from core.excel_ops import pythoncom, win32
+from core.excel_ops import pythoncom, quit_background_excel, start_background_excel
 from core.pdf_detector import fitz
 from core.workflow import _export_sheet_pdf, _preview_workbook, list_workbooks
 
@@ -50,9 +50,7 @@ def workbook_preview_info(folder_str: str, file_name: str) -> dict[str, Any]:
     def get_excel() -> Any:
         if "excel" not in holder:
             pythoncom.CoInitialize()
-            holder["excel"] = win32.DispatchEx("Excel.Application")
-            holder["excel"].Visible = False
-            holder["excel"].DisplayAlerts = False
+            holder["excel"] = start_background_excel()
         return holder["excel"]
 
     try:
@@ -60,7 +58,7 @@ def workbook_preview_info(folder_str: str, file_name: str) -> dict[str, Any]:
     finally:
         if "excel" in holder:
             try:
-                holder["excel"].Quit()
+                quit_background_excel(holder["excel"])
             finally:
                 pythoncom.CoUninitialize()
     return {"folder": str(folder), "file": entry}
@@ -231,9 +229,7 @@ def render_workbook_previews(folder_str: str, file_name: str) -> dict[str, Any]:
         excel = None
         wb = None
         try:
-            excel = win32.DispatchEx("Excel.Application")
-            excel.Visible = False
-            excel.DisplayAlerts = False
+            excel = start_background_excel()
             wb = excel.Workbooks.Open(str(wb_path.resolve()), ReadOnly=True, UpdateLinks=0)
             contents: dict[str, dict[str, Any] | None] = {}
             for idx, sheet in enumerate(list(wb.Sheets)):
@@ -252,7 +248,7 @@ def render_workbook_previews(folder_str: str, file_name: str) -> dict[str, Any]:
             finally:
                 try:
                     if excel is not None:
-                        excel.Quit()
+                        quit_background_excel(excel)
                 finally:
                     pythoncom.CoUninitialize()
 

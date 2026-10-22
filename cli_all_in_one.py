@@ -21,8 +21,9 @@ from core.excel_ops import (
     adjust_row_heights_against_clipping,
     normalize_workbook_view,
     pythoncom,
+    quit_background_excel,
     scan_workbook_sheets,
-    win32,
+    start_background_excel,
 )
 from core.reporter import (
     finish_execution_batch,
@@ -98,9 +99,7 @@ def process_workbooks(
     root_folder: Path | None = None,
 ) -> None:
     pythoncom.CoInitialize()
-    excel = win32.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
+    excel = start_background_excel()
 
     used_pdf_paths: set[Path] = set()
     base_folder = root_folder or (workbooks[0].parent if workbooks else Path.cwd())
@@ -128,7 +127,7 @@ def process_workbooks(
             )
 
             try:
-                wb = excel.Workbooks.Open(str(workbook_path.resolve()))
+                wb = excel.Workbooks.Open(str(workbook_path.resolve()), UpdateLinks=0)
                 original_sheets = [sh.Name for sh in wb.Sheets]
                 backup_sheets = find_backup_sheets(original_sheets)
 
@@ -207,7 +206,7 @@ def process_workbooks(
                 if wb is not None:
                     wb.Close(SaveChanges=False)
     finally:
-        excel.Quit()
+        quit_background_excel(excel)
         pythoncom.CoUninitialize()
         finish_execution_batch("CLI 批处理任务执行完毕")
 

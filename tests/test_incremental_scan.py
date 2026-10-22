@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from core import storage
+from core import excel_ops, storage
 
 
 class FakeSheet:
@@ -59,10 +59,11 @@ class IncrementalScanTests(unittest.TestCase):
         self.exports = []
         self.fail_export = {}
         self.excel = Mock()
-        self.excel.Workbooks.Open.side_effect = lambda path: self.books[Path(path).stem]
+        self.excel.Workbooks.Open.side_effect = lambda path, **_: self.books[Path(path).stem]
         self.dispatch = Mock(return_value=self.excel)
         self.patch_value(workflow, "pythoncom", Mock())
         self.patch_value(workflow, "win32", Mock(DispatchEx=self.dispatch))
+        self.patch_value(excel_ops, "win32", workflow.win32)  # 后台 Excel 由 excel_ops 启动
         self.patch_value(workflow, "extract_sheet_snapshot", Mock(return_value={}))
         self.patch_value(workflow, "match_excel_row", Mock(return_value=(2, "A2", 15.0)))
         self.patch_value(workflow, "find_clipped_spans_on_page", self.fake_clips)
@@ -113,7 +114,7 @@ class IncrementalScanTests(unittest.TestCase):
         self.books["first"].Close = Mock()
         observed = []
 
-        def open_book(path):
+        def open_book(path, **_):
             if Path(path).stem == "second":
                 self.books["first"].Close.assert_called_once_with(SaveChanges=False)
                 state = self.workflow.get_state_snapshot()

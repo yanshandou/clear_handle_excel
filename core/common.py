@@ -238,6 +238,8 @@ def strip_uncertain_prefix(name: str) -> str:
     return cleaned or name
 
 
+# Excel 异常退出时会留下「~$文件名」锁文件，程序会一直以为文件还开着
+STALE_LOCK_HINT = "（如果 Excel 已经全部关掉还这样，多半是残留的「~$」开头的锁文件，在文件夹里删掉它即可）"
 REVIEW_EMOJI = "🟡"  # 等待稍后人工复检的文件，文件名前加这个，方便在文件夹里找到
 
 

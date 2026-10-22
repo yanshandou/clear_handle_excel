@@ -23,14 +23,16 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core.common import XL_SHEET_VISIBLE, as_bbox, col_index_to_letters
-from core.excel_ops import CellProbe, extract_sheet_snapshot, normalize_workbook_view, snapshot_cells
+from core.common import STALE_LOCK_HINT, XL_SHEET_VISIBLE, as_bbox, col_index_to_letters
+from core.excel_ops import (
+    CellProbe, extract_sheet_snapshot, normalize_workbook_view, quit_background_excel, snapshot_cells,
+    start_background_excel,
+)
 from core.hidden_text import collect_text_pieces, find_hidden_cells, locate_text, normalize_text
 from core.pdf_detector import (
     RegionTrackingError, crossing_horizontal_line, extract_page_lines, fitz,
     is_region_still_clipped, render_crop_base64,
 )
-from core.quiet_dialogs import hide_progress_dialogs
 from core.workflow import (
     RESOLVED_STATUSES,
     STATE,
@@ -45,9 +47,10 @@ from core.workflow import (
     log_msg,
     mark_review_file,
     queue_later_review,
+    restore_review_file,
     review_entry_needs_mark,
+    review_entry_needs_restore,
     pythoncom,
-    win32,
 )
 
 STEP_PT = 3.0
@@ -56,6 +59,7 @@ MAX_ROW_HEIGHT = 409.0  # Excel 行高上限
 MANUAL_STATUSES = {"manual_review"}
 WRITE_STATUSES = {"applying", "reverting"}  # 等后台写进原文件：按选中的图 / 改回原行高
 LOCKED_RETRY_SECONDS = 5.0
+MAX_ERROR_RETRIES = 2  # 偶然出错（Excel 正忙、临时拒绝调用等）先重试这么多次，再转人工
 ACTIVE_GRACE_SECONDS = 8.0  # 页面每 1.5 秒报一次「正开着 ② 自动处理」，超过这么久没报就停下
 
 _LOCK = threading.RLock()
@@ -455,15 +459,12 @@ class _ExcelSession:
         self.excel: Any = None
         self.temp_dir: Path | None = None
         self.copies: dict[str, tuple[dict[str, int], Any]] = {}
-        self.quiet: Any = None
+        self.copy_count = 0  # 副本文件名编号只增不减，不同子文件夹里的同名文件也不会撞名
 
     def app(self) -> Any:
         if self.excel is None:
             _IDLE.clear()
-            self.excel = win32.DispatchEx("Excel.Application")
-            self.excel.Visible = False
-            self.excel.DisplayAlerts = False
-            self.quiet = hide_progress_dialogs(self.excel)
+            self.excel = start_background_excel()
             self.temp_dir = Path(tempfile.mkdtemp(prefix="clip_autofix_"))
         return self.excel
 
@@ -477,9 +478,10 @@ class _ExcelSession:
             cached[1].Close(SaveChanges=False)
         app = self.app()
         assert self.temp_dir is not None
-        target = self.temp_dir / f"{len(self.copies)}_{Path(wb_path).name}"
+        self.copy_count += 1
+        target = self.temp_dir / f"{self.copy_count}_{Path(wb_path).name}"
         shutil.copy2(wb_path, target)
-        workbook = app.Workbooks.Open(str(target))
+        workbook = app.Workbooks.Open(str(target), UpdateLinks=0)
         self.copies[wb_path] = (version, workbook)
         return workbook
 
@@ -505,13 +507,10 @@ class _ExcelSession:
         self.copies = {}
         if self.excel is not None:
             try:
-                self.excel.Quit()
+                quit_background_excel(self.excel)
             except Exception:
                 pass
             self.excel = None
-        if self.quiet is not None:
-            self.quiet.stop()
-            self.quiet = None
         if self.temp_dir is not None:
             shutil.rmtree(self.temp_dir, ignore_errors=True)
             self.temp_dir = None
@@ -571,22 +570,59 @@ def _run() -> None:
                         raise
                     finally:
                         _WRITES_IDLE.set()
+                elif kind == "restore":
+                    with STATE_LOCK:
+                        if STATE["busy"]:
+                            continue
+                        _WRITES_IDLE.clear()
+                    try:
+                        session.drop_copy(payload)
+                        if restore_review_file(session.app(), payload) == "locked":
+                            blocked[payload] = time.monotonic() + LOCKED_RETRY_SECONDS
+                    except Exception as err:
+                        with STATE_LOCK:
+                            entry = STATE["review_queue"].get(payload)
+                            if entry is not None:
+                                # 不再自动重试；点「一次打开全部」或「统一复检」时会再处理
+                                entry["restore_failed"] = True
+                                entry["error"] = f"去掉黄色失败: {err}"
+                        raise
+                    finally:
+                        _WRITES_IDLE.set()
                 else:
                     _preview(session, payload)
             except _Paused:
                 continue
             except Exception as err:
-                gids = payload[1] if kind == "apply" else [payload]
-                with _LOCK:
-                    for gid in gids:
-                        if gid in AUTOFIX["groups"]:
-                            AUTOFIX["groups"][gid]["status"] = "error"
-                            AUTOFIX["groups"][gid]["message"] = f"自动处理失败，请人工处理: {err}"
-                log_msg(f"⚠️ 自动处理失败: {err}")
+                _task_failed(kind, payload, err, blocked)
                 session.close()
     finally:
         session.close()
         pythoncom.CoUninitialize()
+
+
+def _task_failed(kind: str, payload: Any, err: Exception, blocked: dict[str, float]) -> None:
+    """做图或写入出错：先重试几次（多半是 Excel 一时忙不过来），还不行再标成出错、转人工"""
+    gids = payload[1] if kind == "apply" else [payload] if kind == "preview" else []
+    retrying = False
+    with _LOCK:
+        for gid in gids:
+            group = AUTOFIX["groups"].get(gid)
+            if group is None:
+                continue
+            group["error_count"] = group.get("error_count", 0) + 1
+            if group["error_count"] <= MAX_ERROR_RETRIES:
+                retrying = True
+                group["message"] = f"出错了，稍后自动重试（第 {group['error_count']} 次）: {err}"
+                if kind == "preview":
+                    group.update(status="queued", attempts=[])
+                # 写入的保持 applying / reverting，过一会儿再写
+            else:
+                group["status"] = "error"
+                group["message"] = f"自动处理失败，请人工处理: {err}"
+    if retrying and kind == "apply":
+        blocked[payload[0]] = time.monotonic() + LOCKED_RETRY_SECONDS
+    log_msg(f"⚠️ 自动处理{'出错，稍后重试' if retrying else '失败'}: {err}")
 
 
 def _next_task(blocked: dict[str, float]) -> tuple[str, Any] | None:
@@ -596,6 +632,10 @@ def _next_task(blocked: dict[str, float]) -> tuple[str, Any] | None:
         to_mark = [] if STATE["busy"] else [
             path for path, entry in STATE["review_queue"].items()
             if review_entry_needs_mark(path, entry) and blocked.get(path, 0) <= now
+        ]
+        to_restore = [] if STATE["busy"] else [
+            path for path, entry in STATE["review_queue"].items()
+            if review_entry_needs_restore(path, entry) and blocked.get(path, 0) <= now
         ]
     with _LOCK:
         groups = sorted(AUTOFIX["groups"].values(), key=lambda g: g["seq"])
@@ -607,6 +647,8 @@ def _next_task(blocked: dict[str, float]) -> tuple[str, Any] | None:
                 return "apply", (group["wb_path"], same_file)
     if to_mark:
         return "mark", to_mark[0]
+    if to_restore:
+        return "restore", to_restore[0]
     with _LOCK:
         groups = sorted(AUTOFIX["groups"].values(), key=lambda g: g["seq"])
         for group in groups:
@@ -690,6 +732,7 @@ def _preview(session: _ExcelSession, gid: str) -> None:
         pdf_path.unlink(missing_ok=True)
 
     with _LOCK:
+        group.pop("error_count", None)
         oks = [i for i, a in enumerate(group["attempts"]) if i and a["ok"]]
         group["recommended"] = oks[-1] if oks else None
         if not oks:
@@ -778,7 +821,7 @@ def _apply(session: _ExcelSession, wb_path: str, gids: list[str]) -> bool:
     if path.with_name("~$" + path.name).exists():
         with _LOCK:
             for gid in gids:
-                AUTOFIX["groups"][gid]["message"] = "文件正在 Excel 中打开，关闭后自动写入"
+                AUTOFIX["groups"][gid]["message"] = "文件正在 Excel 中打开，关闭后自动写入" + STALE_LOCK_HINT
         return False
     with _LOCK:
         plan = [
@@ -790,7 +833,7 @@ def _apply(session: _ExcelSession, wb_path: str, gids: list[str]) -> bool:
     if not plan:
         return True
     excel = session.app()
-    workbook = excel.Workbooks.Open(str(path.resolve()))
+    workbook = excel.Workbooks.Open(str(path.resolve()), UpdateLinks=0)
     try:
         for _, sheet_name, row, _, height, *_ in plan:
             workbook.Sheets(sheet_name).Rows(row).RowHeight = height
@@ -827,6 +870,7 @@ def _apply(session: _ExcelSession, wb_path: str, gids: list[str]) -> bool:
         with _LOCK:
             for gid, *_, revert, _ in plan:
                 if gid in AUTOFIX["groups"]:
+                    AUTOFIX["groups"][gid].pop("error_count", None)
                     AUTOFIX["groups"][gid].update(
                         status="reverted" if revert else "applied", reapply=False,
                         message="已改回原行高，转稍后人工复检" if revert else "已写入")

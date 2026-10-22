@@ -14,6 +14,7 @@ from core.common import (
     find_backup_sheets,
     normalize_used_values,
 )
+from core.quiet_dialogs import hide_progress_dialogs, release_excel
 
 try:
     import pythoncom
@@ -27,6 +28,35 @@ try:
 except ImportError:
     print("请先安装 openpyxl: pip install openpyxl")
     sys.exit(1)
+
+
+MSO_AUTOMATION_SECURITY_FORCE_DISABLE = 3
+
+
+def start_background_excel() -> Any:
+    """后台用的隐藏 Excel。调用方已 CoInitialize，用完调用 quit_background_excel。
+
+    禁用宏和事件：带宏的文件在看不见的 Excel 里弹提示框时没人能点，任务会一直卡住
+    （这两个设置只对这个 Excel 进程有效，不影响用户自己的 Excel）。
+    同时装上「発行中」进度框钩子。"""
+    excel = win32.DispatchEx("Excel.Application")
+    excel.Visible = False
+    excel.DisplayAlerts = False
+    for name, value in (("AutomationSecurity", MSO_AUTOMATION_SECURITY_FORCE_DISABLE), ("EnableEvents", False)):
+        try:
+            setattr(excel, name, value)
+        except Exception:
+            pass
+    hide_progress_dialogs(excel)
+    return excel
+
+
+def quit_background_excel(excel: Any) -> None:
+    """先把主窗口挪回原位、卸下钩子，再退出 Excel"""
+    if excel is None:
+        return
+    release_excel(excel)
+    excel.Quit()
 
 
 def _visible_excel() -> Any:
@@ -165,7 +195,11 @@ def restore_review_cells(workbook: Any, marks: list[dict[str, Any]]) -> None:
     for mark in marks:
         if mark.get("state") != "marked":
             continue
-        area = workbook.Sheets(mark["sheet"]).Range(mark["range"])
+        try:
+            sheet = workbook.Sheets(mark["sheet"])
+        except Exception:
+            continue  # 工作表已被删掉（例如精简 Sheet），没有要还原的
+        area = sheet.Range(mark["range"])
         current = area.Cells(1, 1).Interior
         if current.Pattern != XL_SOLID or int(current.Color or 0) != REVIEW_FILL_COLOR:
             continue
@@ -210,7 +244,7 @@ def scan_workbook_sheets(
     """
     if workbook_path.suffix.lower() == ".xls":
         if get_excel is not None:
-            wb = get_excel().Workbooks.Open(str(workbook_path.resolve()), ReadOnly=True)
+            wb = get_excel().Workbooks.Open(str(workbook_path.resolve()), ReadOnly=True, UpdateLinks=0)
             try:
                 all_sheets = [sh.Name for sh in wb.Sheets]
             finally:
@@ -218,18 +252,16 @@ def scan_workbook_sheets(
             return all_sheets, find_backup_sheets(all_sheets)
 
         pythoncom.CoInitialize()
-        excel = win32.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
+        excel = start_background_excel()
         wb = None
         try:
-            wb = excel.Workbooks.Open(str(workbook_path.resolve()), ReadOnly=True)
+            wb = excel.Workbooks.Open(str(workbook_path.resolve()), ReadOnly=True, UpdateLinks=0)
             all_sheets = [sh.Name for sh in wb.Sheets]
             return all_sheets, find_backup_sheets(all_sheets)
         finally:
             if wb is not None:
                 wb.Close(SaveChanges=False)
-            excel.Quit()
+            quit_background_excel(excel)
             pythoncom.CoUninitialize()
 
     try:

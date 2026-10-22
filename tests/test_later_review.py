@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from core import storage
+from core import excel_ops, storage
 from core.common import REVIEW_EMOJI, strip_review_prefix, workbook_rel_name
 
 
@@ -207,7 +207,7 @@ class LaterReviewTests(unittest.TestCase):
                 self.workflow.STATE["items"][iid]["status"] = "fixed"
         with patch.object(self.workflow, "recheck_items_workflow", side_effect=recheck), \
                 patch.object(self.workflow, "close_saved_workbooks", return_value=unsaved or {}), \
-                patch.object(self.workflow, "win32", Mock(DispatchEx=Mock(return_value=self.excel))):
+                patch.object(excel_ops, "win32", Mock(DispatchEx=Mock(return_value=self.excel))):
             self.workflow.review_recheck_workflow()
 
     def test_batch_recheck_checks_only_queued_problems_and_cleans_fixed_files(self):
@@ -227,6 +227,46 @@ class LaterReviewTests(unittest.TestCase):
         self.assertTrue(self.marked_path().exists())
         self.assertEqual(self.cells["B5"].Interior.Color, 0x00FFFF)
         self.assertEqual(list(self.workflow.STATE["review_queue"]), [str(self.marked_path())])
+
+    def test_resolved_cells_are_restored_in_background(self):
+        self.defer(5)
+        self.workflow.mark_review_file(self.excel, str(self.wb_path))
+        new = str(self.marked_path())
+        self.assertNotEqual((self.autofix._next_task({}) or ("",))[0], "restore")
+        # 不经统一复检就解决了（例如标了无需修改）：后台自己去黄、去 🟡
+        self.workflow.STATE["items"]["i1"]["status"] = "accepted"
+        self.assertEqual(self.autofix._next_task({}), ("restore", new))
+        self.assertEqual(self.workflow.restore_review_file(self.excel, new), "clean")
+        self.assertTrue(self.wb_path.exists())
+        self.assertEqual(self.cells["B5"].Interior.Color, 0xCCFFCC)
+
+    def test_review_in_other_folder_is_left_alone_after_switching_folders(self):
+        self.defer(5)
+        self.workflow.mark_review_file(self.excel, str(self.wb_path))
+        new = str(self.marked_path())
+        other = self.root.parent / (self.root.name + "_other")
+        other.mkdir()
+        self.addCleanup(other.rmdir)
+        # 换文件夹完整扫描：旧问题记录被清掉
+        self.workflow.STATE.update(folder=str(other), items={}, pages={}, checked_files={})
+        self.assertIsNone(self.autofix._next_task({}))
+        self.assertEqual(self.workflow.get_state_snapshot()["review_queue"], {})
+        with self.assertRaises(ValueError):
+            self.workflow.queue_job("review_recheck")
+        # 没检查过，不能当成已解决去掉黄色
+        self.assertEqual(self.workflow.restore_review_file(self.excel, new), "partial")
+        self.assertEqual(self.cells["B5"].Interior.Color, 0x00FFFF)
+
+        # 换回来重新扫描：同一格子仍有问题，接回稍后人工复检
+        self.workflow.STATE.update(folder=str(self.root), checked_files={new: {}})
+        self.workflow.STATE["items"]["n1"] = {
+            "id": "n1", "seq": 1, "kind": "hidden", "wb_path": new, "wb_name": "設計書.xlsx",
+            "sheet_name": "S1", "excel_row": 5, "cell_addr": "B5", "status": "pending",
+        }
+        self.workflow._relink_review_marks(new)
+        self.assertEqual(self.workflow.STATE["review_queue"][new]["marks"][0]["item_ids"], ["n1"])
+        self.assertTrue(self.workflow.STATE["items"]["n1"]["later_review"])
+        self.assertEqual(self.workflow.restore_review_file(self.excel, new), "partial")
 
 
 if __name__ == "__main__":

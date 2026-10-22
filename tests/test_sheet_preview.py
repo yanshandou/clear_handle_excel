@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from core import sheet_preview
+from core import excel_ops, sheet_preview
 from core.sheet_preview import find_similar_sheets, preview_image_path, read_sheet_content
 
 
@@ -144,11 +144,13 @@ class RenderWorkbookPreviewsTests(unittest.TestCase):
         for name, value in [
             ("PREVIEW_CACHE_DIR", self.root / "cache"),
             ("pythoncom", Mock()),
-            ("win32", Mock(DispatchEx=Mock(return_value=self.excel))),
         ]:
             patcher = patch.object(sheet_preview, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        patcher = patch.object(excel_ops, "win32", Mock(DispatchEx=Mock(return_value=self.excel)))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_renders_thumbnails_marks_similarity_and_reuses_cache(self):
         result = sheet_preview.render_workbook_previews(str(self.folder), "spec.xlsx")
