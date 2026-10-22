@@ -734,8 +734,8 @@ function renderFix() {
           title="将本行所有问题保存为人工确认无需修改，不修改 Excel"
           onclick="skipFixGroup('${escapeHtml(group.id)}')">${skipping ? '正在保存跳过...' : '跳过本行（无需修改）→'}</button>
         <button type="button" class="btn btn-outline btn-sm" ${blocked ? 'disabled' : ''}
-          title="先记下来，不现在打开 Excel：程序把要改的单元格标成黄色、文件名前加 🟡，最后一次打开全部文件统一修改"
-          onclick="deferReview('${escapeHtml(group.id)}')">🟡 稍后人工复检</button>
+          title="先记下来，不现在打开 Excel：程序把要改的单元格标成黄色、文件名前加 ★，最后一次打开全部文件统一修改"
+          onclick="deferReview('${escapeHtml(group.id)}')"><span class="review-dot" aria-hidden="true"></span>稍后人工复检</button>
         ${group.manual && first ? `<button type="button" class="btn btn-primary btn-sm" ${blocked || isBusy ? 'disabled' : ''} title="${RECHECK_TITLE}" onclick="manualRecheck('${escapeHtml(first.id)}')">${manualAction?.kind === 'recheck' ? '正在复检…' : '复检'}</button>` : ''}
         <button type="button" class="btn btn-outline btn-sm" ${blocked ? 'disabled' : ''} title="暂时换到下一行，不保存跳过判断，稍后还会显示本行" onclick="deferFixGroup('${escapeHtml(group.id)}')">先看下一个 →</button>
       </div>
@@ -770,9 +770,9 @@ function confirmGroups() {
   return listed.sort((a, b) => rank.get(key(a)) - rank.get(key(b)));
 }
 
-// 文件名前加 / 去 🟡 时分组 id 会变，排序用去掉 🟡 的路径
+// 文件名前加 / 去 ★ 时分组 id 会变，排序用去掉 ★ 的路径
 function confirmKey(g) {
-  return `${g.wb_path.replace(/(^|[\\/])🟡/, '$1')}\0${g.sheet_name}\0${g.row}`;
+  return `${g.wb_path.replace(REVIEW_PREFIX_PATTERN, '$1')}\0${g.sheet_name}\0${g.row}`;
 }
 
 function confirmCardHtml(group) {
@@ -817,7 +817,7 @@ function confirmCardHtml(group) {
     ${group.restored && !reverted ? `<div class="fix-note">${escapeHtml(group.message)}</div>` : ''}
     ${reverted ? '' : `<div class="triage-card-tools">
       <button type="button" class="btn btn-outline btn-sm" ${canAct && group.base_height != null ? '' : 'disabled'}
-        title="改回原来的行高，并转到稍后人工复检（单元格标黄、文件名加 🟡）"
+        title="改回原来的行高，并转到稍后人工复检（单元格标黄、文件名加 ★）"
         onclick="rejectConfirm('${escapeHtml(group.id)}')">${group.status === 'reverting' || confirmBusy.has(group.id) && !writing ? '正在提交…' : '✗ 不对，改回原样转人工'}</button>
     </div>`}`;
 }
@@ -963,9 +963,28 @@ async function deferReview(groupId) {
 /* ==========================================
    稍后人工复检：一次打开全部 · 统一复检
    ========================================== */
+// 文件名前缀：★，旧版本是 🟡（日文 Windows 10 的字体没有 🟡，会显示成方框）
+const REVIEW_PREFIXES = ['★', '🟡'];
+const REVIEW_PREFIX_PATTERN = /(^|[\\/])(?:★|🟡)/;
+
+function hasReviewPrefix(name) {
+  return REVIEW_PREFIXES.some(p => name.startsWith(p));
+}
+
+function stripReviewPrefix(name) {
+  const prefix = REVIEW_PREFIXES.find(p => name.startsWith(p));
+  return prefix ? name.slice(prefix.length) : name;
+}
+
+// 复检列表里每处显示「内容」和原因；内容只有「-」这类短符号时也看得出是单元格的文字
+function reviewItemText(item) {
+  const reason = isHidden(item) ? (item.hidden_reason || '文字没显示全') : '文字被边框线压到';
+  return `「${item.text}」${reason}`;
+}
+
 function reviewFileLabel(path, entry) {
   const firstId = entry.marks.flatMap(m => m.item_ids).find(id => latestItems[id]);
-  return firstId ? latestItems[firstId].wb_name : path.split(/[\\/]/).pop().replace(/^🟡/, '');
+  return firstId ? latestItems[firstId].wb_name : stripReviewPrefix(path.split(/[\\/]/).pop());
 }
 
 function markResolved(mark) {
@@ -988,31 +1007,31 @@ function renderReview() {
   const marks = files.flatMap(([, e]) => e.marks);
   const open = marks.filter(m => !markResolved(m)).length;
   const unmarked = files.filter(([path, e]) => !e.rename_error
-    && (e.marks.some(m => m.state === 'pending') || !path.split(/[\\/]/).pop().startsWith('🟡')));
+    && (e.marks.some(m => m.state === 'pending') || !hasReviewPrefix(path.split(/[\\/]/).pop())));
   const failed = unmarked.filter(([, e]) => e.mark_failed).length;
   const pending = unmarked.length - failed;
   const status = [
-    pending ? (isBusy ? `${pending} 个文件等当前任务结束后标黄…` : `后台正在给 ${pending} 个文件标黄、加 🟡…`) : '',
+    pending ? (isBusy ? `${pending} 个文件等当前任务结束后标黄…` : `后台正在给 ${pending} 个文件标黄、加 ★…`) : '',
     failed ? `${failed} 个文件标黄失败，点「一次打开全部」时会再试一次。` : '',
-  ].filter(Boolean).join(' ') || '已全部标黄，文件名前加了 🟡。';
+  ].filter(Boolean).join(' ') || '已全部标黄，文件名前加了 ★。';
   const rows = files.map(([path, entry]) => `
     <div class="review-file">
       <div class="review-file-head">
-        <b>🟡 ${escapeHtml(reviewFileLabel(path, entry))}</b>
+        <b><span class="review-dot" aria-hidden="true"></span>${escapeHtml(reviewFileLabel(path, entry))}</b>
         <span>${entry.marks.length} 处</span>
       </div>
       ${entry.error ? `<div class="review-file-error">${escapeHtml(entry.error)}</div>` : ''}
       ${entry.rename_error ? `<div class="review-file-error">${escapeHtml(entry.rename_error)}</div>` : ''}
       ${entry.marks.map(mark => {
         const resolved = markResolved(mark);
-        const text = mark.item_ids.map(id => serverItems[id]).filter(Boolean).map(it => it.text).join(' / ');
-        const state = resolved ? '✓ 已解决，复检时去掉黄色'
-          : mark.state === 'marked' ? '🟨 已标黄'
-          : mark.state === 'skipped' ? `⚠️ 没标黄：${mark.error || ''}` : '⏳ 等待标黄';
+        const text = mark.item_ids.map(id => serverItems[id]).filter(Boolean).map(reviewItemText).join(' / ');
+        const state = resolved ? escapeHtml('✓ 已解决，复检时去掉黄色')
+          : mark.state === 'marked' ? '<span class="review-swatch" aria-hidden="true"></span>已标黄'
+          : escapeHtml(mark.state === 'skipped' ? `⚠️ 没标黄：${mark.error || ''}` : '⏳ 等待标黄');
         return `<div class="review-mark ${resolved ? 'is-resolved' : ''}">
           <span class="review-mark-cell">${escapeHtml(mark.sheet)}!${escapeHtml(mark.addr)}</span>
           <span class="review-mark-text" title="${escapeHtml(text)}">${escapeHtml(text)}</span>
-          <span class="review-mark-state">${escapeHtml(state)}</span>
+          <span class="review-mark-state">${state}</span>
           ${resolved ? '' : `<button type="button" class="btn btn-outline btn-sm" ${busy ? 'disabled' : ''}
             title="确认这处其实不用改：记为跳过，统一复检时去掉黄色" onclick="reviewSkip('${escapeHtml(mark.item_ids.join(','))}')">无需修改</button>`}
         </div>`;
@@ -1023,18 +1042,18 @@ function renderReview() {
   panel.innerHTML = `
     <div class="review-head">
       <div>
-        <b>🟡 稍后人工复检：${files.length} 个文件 · 待修改 ${open} 处</b>
+        <b><span class="review-dot" aria-hidden="true"></span>稍后人工复检：${files.length} 个文件 · 待修改 ${open} 处</b>
         <span>${escapeHtml(status)}</span>
       </div>
       <div class="review-actions">
         <button type="button" class="btn btn-outline btn-sm" ${busy ? 'disabled' : ''} onclick="reviewOpenAll()"
           title="在 Excel 里一次打开全部文件，各自跳到第一处黄色单元格">${opening ? '正在打开 Excel…' : `📂 一次打开全部（${files.length} 个）`}</button>
         <button type="button" class="btn btn-primary btn-sm" ${busy ? 'disabled' : ''} onclick="reviewRecheck()"
-          title="只重新检查这些文件；没问题的去掉黄色和 🟡，还有问题的继续留在这里">${rechecking ? '正在统一复检…' : '🔁 统一复检'}</button>
+          title="只重新检查这些文件；没问题的去掉黄色和 ★，还有问题的继续留在这里">${rechecking ? '正在统一复检…' : '🔁 统一复检'}</button>
       </div>
     </div>
     <div class="review-list">${rows}</div>
-    <p class="triage-hint">改完记得在 Excel 里保存。统一复检时，已保存的文件会自动关闭再检查；还有没保存修改的文件会跳过。没问题的单元格会还原成原来的底色，整个文件都没问题了就去掉文件名前的 🟡。</p>`;
+    <p class="triage-hint">改完记得在 Excel 里保存。统一复检时，已保存的文件会自动关闭再检查；还有没保存修改的文件会跳过。没问题的单元格会还原成原来的底色，整个文件都没问题了就去掉文件名前的 ★。</p>`;
 }
 
 async function submitReviewAction(kind, path) {

@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from core import excel_ops, storage
-from core.common import REVIEW_EMOJI, strip_review_prefix, workbook_rel_name
+from core.common import REVIEW_PREFIX, strip_review_prefix, workbook_rel_name
 
 
 class FakeInterior:
@@ -98,13 +98,13 @@ class LaterReviewTests(unittest.TestCase):
         self.autofix.defer_group(group["id"], group["item_ids"])
 
     def marked_path(self):
-        return self.wb_path.with_name(REVIEW_EMOJI + self.wb_path.name)
+        return self.wb_path.with_name(REVIEW_PREFIX + self.wb_path.name)
 
     def test_display_name_and_report_ignore_review_prefix(self):
-        marked = self.root / "sub" / f"{REVIEW_EMOJI}a.xlsx"
+        marked = self.root / "sub" / f"{REVIEW_PREFIX}a.xlsx"
         self.assertEqual(workbook_rel_name(marked, self.root), "sub/a.xlsx")
         self.assertEqual(workbook_rel_name(marked), "a.xlsx")
-        self.assertEqual(strip_review_prefix(f"{REVIEW_EMOJI}a.xlsx"), "a.xlsx")
+        self.assertEqual(strip_review_prefix(f"{REVIEW_PREFIX}a.xlsx"), "a.xlsx")
 
     def test_deferred_row_leaves_preview_queue_and_is_recorded(self):
         self.defer(5)

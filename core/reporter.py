@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from core.common import (
-    EXCEL_EXTENSIONS, PROJECT_ROOT, RECORD_PATH, REVIEW_EMOJI, md_wrap, review_marked_name, strip_review_prefix,
+    EXCEL_EXTENSIONS, PROJECT_ROOT, RECORD_PATH, has_review_prefix, md_wrap, review_name_variants, strip_review_prefix,
     workbook_rel_name,
 )
 from core.storage import load_snapshot, save_snapshot
@@ -56,15 +56,15 @@ def _restore_report() -> None:
 
 
 def _base_name(name: str) -> str:
-    """记录名里的文件名部分，去掉「🟡」"""
+    """记录名里的文件名部分，去掉「★」"""
     return strip_review_prefix(Path(name).name)
 
 
 def _merge_review_duplicates_unlocked() -> bool:
-    """旧版本按「🟡」改名后的文件名另记了一条：并回原文件那一条（数字之后由工作台重新同步）"""
+    """旧版本按「★」改名后的文件名另记了一条：并回原文件那一条（数字之后由工作台重新同步）"""
     files = EXECUTION_STATE["files"]
     changed = False
-    for key in [k for k in files if Path(k).name.startswith(REVIEW_EMOJI)]:
+    for key in [k for k in files if has_review_prefix(Path(k).name)]:
         dup = files.pop(key)
         targets = [k for k in files if _base_name(k) == _base_name(key)]
         if len(targets) != 1:
@@ -262,7 +262,7 @@ def update_file_progress(
             if entry is not None:
                 wb_name = rel_key
         if entry is None:
-            # 只给了文件名（可能还带着「🟡」）：按去掉「🟡」后的文件名找同一个文件
+            # 只给了文件名（可能还带着「★」）：按去掉「★」后的文件名找同一个文件
             base = _base_name(wb_name)
             matches = [
                 (k, v)
@@ -536,8 +536,11 @@ def open_recorded_workbook(file_name: str) -> Path:
         raise ValueError("看板里没有这个文件，请刷新页面")
     folder = Path(folder_str).resolve()
     candidates = [entry.get("renamed_to"), file_name]
-    # 等待稍后人工复检的文件名前临时加了「🟡」
-    candidates += [str(Path(name).with_name(review_marked_name(Path(name).name))) for name in filter(None, candidates)]
+    # 等待稍后人工复检的文件名前临时加了「★」（旧版本是「🟡」）
+    candidates += [
+        str(Path(name).with_name(variant))
+        for name in filter(None, candidates) for variant in review_name_variants(Path(name).name)
+    ]
     for name in filter(None, candidates):
         wb_path = (folder / name).resolve()
         try:

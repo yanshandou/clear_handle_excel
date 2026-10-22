@@ -291,7 +291,7 @@ test('review panel lists queued files and offers open-all and batch recheck', ()
   `);
   const html = w.elements.get('reviewPanel').innerHTML;
   assert.match(html, /1 个文件 · 待修改 1 处/);
-  assert.match(html, /🟡 book\.xlsx/);
+  assert.match(html, /review-dot" aria-hidden="true"><\/span>book\.xlsx/);
   assert.match(html, /一次打开全部（1 个）/);
   assert.match(html, /统一复检/);
   assert.match(html, /已全部标黄/);

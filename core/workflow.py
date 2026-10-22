@@ -14,7 +14,6 @@ from uuid import uuid4
 from core.common import (
     EXCEL_EXTENSIONS,
     EXCLUDE_PDF_SHEETS,
-    REVIEW_EMOJI,
     STALE_LOCK_HINT,
     XL_SHEET_VISIBLE,
     XL_TYPE_PDF,
@@ -25,6 +24,7 @@ from core.common import (
     find_clean_targets,
     find_contained_sheets,
     find_new_old_pairs,
+    has_review_prefix,
     is_uncertain_name,
     review_marked_name,
     sanitize_filename,
@@ -478,7 +478,7 @@ def _detect_sheet_results(
 
 
 # 检测规则变化时加一：之前按旧规则查过的文件即使没改过，下次扫描也要整份重新检查
-DETECTOR_VERSION = 6
+DETECTOR_VERSION = 7
 
 
 def _confirm_clip_cells(
@@ -547,7 +547,7 @@ HIDDEN_FIX_REASONS = {
 
 
 def _report_name(path: str) -> str:
-    """执行记录里这个文件的名字（相对目标文件夹，去掉「🟡」）"""
+    """执行记录里这个文件的名字（相对目标文件夹，去掉「★」）"""
     return workbook_rel_name(Path(path), STATE.get("folder"))
 
 
@@ -1054,7 +1054,7 @@ def scan_folder_workflow(
                          if entry["marks"] and not in_current_folder(path)]
         if elsewhere and not initialized:
             log_msg(
-                f"⚠️ 别的文件夹还有 {len(elsewhere)} 个文件挂着稍后人工复检（单元格标着黄色、文件名带 🟡），"
+                f"⚠️ 别的文件夹还有 {len(elsewhere)} 个文件挂着稍后人工复检（单元格标着黄色、文件名带 ★），"
                 f"例如 {Path(elsewhere[0]).name}；换回那个文件夹扫描后可以继续复检"
             )
         used_pdf_paths = {Path(p["pdf_path"]) for p in STATE["pages"].values()}
@@ -1433,7 +1433,7 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
 # 稍后人工复检：先挂起，最后一次打开全部文件人工修改，再统一复检
 # ==========================================
 def queue_later_review(item_ids: list[str]) -> None:
-    """调用方持有 STATE_LOCK：把这些问题挂到稍后人工复检，后台随后给单元格标黄、给文件名加 🟡。"""
+    """调用方持有 STATE_LOCK：把这些问题挂到稍后人工复检，后台随后给单元格标黄、给文件名加 ★。"""
     previous = {iid: copy.deepcopy(STATE["items"][iid]) for iid in item_ids}
     previous_queue = copy.deepcopy(STATE["review_queue"])
     for iid in item_ids:
@@ -1476,22 +1476,22 @@ def current_review_queue() -> dict[str, Any]:
 
 
 def review_entry_needs_mark(path: str, entry: dict[str, Any]) -> bool:
-    """还有没标黄的单元格，或文件名还没加 🟡（后台标黄失败过的不再自动重试）"""
+    """还有没标黄的单元格，或文件名还没加 ★（后台标黄失败过的不再自动重试）"""
     if entry.get("mark_failed") or not in_current_folder(path):
         return False
     waiting = [m for m in entry["marks"] if not _mark_resolved(m, path)]
     return any(m["state"] == "pending" for m in waiting) or (
-        bool(waiting) and not Path(path).name.startswith(REVIEW_EMOJI)
+        bool(waiting) and not has_review_prefix(Path(path).name)
         and not entry.get("rename_error")
     )
 
 
 def review_entry_needs_restore(path: str, entry: dict[str, Any]) -> bool:
-    """有些格子已经不用复检了（重新扫描后没再检出、标了无需修改等），可以去掉黄色；全没了就去掉 🟡"""
+    """有些格子已经不用复检了（重新扫描后没再检出、标了无需修改等），可以去掉黄色；全没了就去掉 ★"""
     if entry.get("restore_failed") or not in_current_folder(path) or not file_available(path):
         return False
     return any(_mark_resolved(m, path) for m in entry["marks"]) or (
-        not entry["marks"] and Path(path).name.startswith(REVIEW_EMOJI) and not entry.get("rename_error")
+        not entry["marks"] and has_review_prefix(Path(path).name) and not entry.get("rename_error")
     )
 
 
@@ -1540,7 +1540,7 @@ def _replace_job_path(old: str, new: str) -> None:
 
 
 def _rename_review_file(path: str, new_name: str) -> str:
-    """改文件名（加 / 去 🟡）并同步工作台记录；改不了时记下原因并返回原路径。"""
+    """改文件名（加 / 去 ★）并同步工作台记录；改不了时记下原因并返回原路径。"""
     old = Path(path)
     new = old.with_name(new_name)
     if new == old:
@@ -1580,7 +1580,7 @@ def _rename_review_file(path: str, new_name: str) -> str:
 
 
 def mark_review_file(excel: Any, path: str) -> bool:
-    """给待复检单元格标黄并保存，再给文件名加 🟡；文件正被 Excel 打开时返回 False，稍后再试。
+    """给待复检单元格标黄并保存，再给文件名加 ★；文件正被 Excel 打开时返回 False，稍后再试。
 
     调用方保证此时没有别的任务在用这个文件。
     """
@@ -1617,7 +1617,7 @@ def mark_review_file(excel: Any, path: str) -> bool:
         marked = sum(m["state"] == "marked" for m in pending)
         skipped = [f"{m['sheet']}!{m['addr']} {m['error']}" for m in pending if m["state"] != "marked"]
         log_msg(
-            f"🟡 稍后人工复检：{wb_path.name} 已把 {marked} 处单元格标成黄色"
+            f"★ 稍后人工复检：{wb_path.name} 已把 {marked} 处单元格标成黄色"
             + (f"；没标黄 {len(skipped)} 处（{'；'.join(skipped[:3])}）" if skipped else "")
         )
     with STATE_LOCK:
@@ -1641,7 +1641,7 @@ def _mark_resolved(mark: dict[str, Any], path: str) -> bool:
 
 
 def restore_review_file(excel: Any, path: str) -> str:
-    """统一复检后：没问题的单元格去掉黄色、还原原来的填充；整个文件都没问题了就去掉 🟡、移出队列。
+    """统一复检后：没问题的单元格去掉黄色、还原原来的填充；整个文件都没问题了就去掉 ★、移出队列。
 
     返回 clean（已移出队列）/ partial（还有问题）/ locked（文件被打开，没能去黄色）。
     """
@@ -1681,8 +1681,8 @@ def restore_review_file(excel: Any, path: str) -> str:
         log_msg(f"统一复检：{wb_path.name} 已去掉 {len(to_restore)} 处黄色")
     if remaining:
         return "partial"
-    if wb_path.name.startswith(REVIEW_EMOJI) and wb_path.with_name("~$" + wb_path.name).exists():
-        return "locked"  # 文件开着改不了名，关掉后再去 🟡
+    if has_review_prefix(wb_path.name) and wb_path.with_name("~$" + wb_path.name).exists():
+        return "locked"  # 文件开着改不了名，关掉后再去 ★
     new_path = _rename_review_file(path, strip_review_prefix(wb_path.name))
     with STATE_LOCK:
         STATE["review_queue"].pop(new_path, None)
@@ -1733,7 +1733,7 @@ def review_open_workflow() -> None:
 
 
 def review_recheck_workflow() -> None:
-    """统一复检：只重新检查挂起的文件，没问题的去掉黄色和 🟡，还有问题的继续留在队列里。"""
+    """统一复检：只重新检查挂起的文件，没问题的去掉黄色和 ★，还有问题的继续留在队列里。"""
     with STATE_LOCK:
         job = STATE["job"]
         options = job["options"]
@@ -1790,7 +1790,7 @@ def review_recheck_workflow() -> None:
         left = sum(len(m["item_ids"]) for entry in current_review_queue().values() for m in entry["marks"])
     clean = sum(result == "clean" for result in results.values())
     partial = len(results) - clean
-    message = f"统一复检完成：{clean} 个文件已没问题（去掉了黄色和 🟡）"
+    message = f"统一复检完成：{clean} 个文件已没问题（去掉了黄色和 ★）"
     if partial:
         message += f"，{partial} 个文件还有问题，继续留在复检队列里（共 {left} 处）"
     if skipped:
