@@ -1972,24 +1972,6 @@ input[type="text"] {
   font-weight: 600;
 }
 
-.markdown-preview-box {
-  background: linear-gradient(180deg, #0b1631 0%, #0f1e42 100%);
-  color: #dbeafe;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12.5px;
-  line-height: 1.6;
-  padding: 16px 18px;
-  border-radius: 14px;
-  border: 2px solid #c3d4ec;
-  box-shadow:
-    inset 0 4px 12px rgba(0, 0, 0, 0.65),
-    0 2px 0 rgba(255, 255, 255, 0.9);
-  max-height: 380px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  margin: 0;
-}
-
 .empty-placeholder {
   background: linear-gradient(155deg, #f8fbff 0%, #e8f0fc 100%);
   border: 1.5px dashed #93b4e0;

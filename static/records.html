@@ -51,6 +51,7 @@
           <button type="button" class="btn btn-outline" onclick="copyMarkdownReport()">
             📋 复制 Markdown 全文
           </button>
+          <span id="copyToast" style="align-self:center; font-size:12.5px; color:#059669; font-weight:700;"></span>
         </div>
       </div>
 
@@ -149,17 +150,6 @@
       </div>
     </section>
 
-    <!-- 实时 Markdown 报告预览面板 -->
-    <section class="panel">
-      <div class="panel-section-head">
-        <div class="panel-section-title">
-          <span class="step-chip">MARKDOWN</span>
-          <span>实时报告内容预览 (<code>record.md</code>)</span>
-        </div>
-        <span id="copyToast" style="font-size:12.5px; color:#059669; font-weight:700;"></span>
-      </div>
-      <pre id="markdownPreview" class="markdown-preview-box">等待生成报告...</pre>
-    </section>
   </main>
 
   <script src="/static/records.js"></script>
