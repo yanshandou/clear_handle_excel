@@ -52,7 +52,15 @@ from core.excel_ops import (
     start_background_excel,
     win32,
 )
-from core.hidden_text import clip_check_supported, collect_text_pieces, find_hidden_cells
+from core.hidden_text import (
+    REASON_CLIPPED,
+    REASON_HASH,
+    REASON_MISSING,
+    REASON_TRUNCATED,
+    clip_check_supported,
+    collect_text_pieces,
+    find_hidden_cells,
+)
 from core.row_locator import (
     MAX_TAGGED_CELLS,
     build_anchors,
@@ -75,6 +83,7 @@ from core.pdf_detector import (
 )
 from core.reporter import (
     finish_execution_batch,
+    flush_execution_report,
     get_execution_report_snapshot,
     init_execution_batch,
     interrupt_execution_batch,
@@ -527,17 +536,68 @@ def _file_version(path: Path) -> dict[str, int]:
     return {"mtime_ns": stat.st_mtime_ns, "size": stat.st_size, "detector": DETECTOR_VERSION}
 
 
-def _sync_problem_counts(path: str, action: str) -> None:
+# 报告里写给领导看的修复原因（只写原因，不写是怎么处理的）
+CLIP_FIX_REASON = "文字压线，被边框切到（行高不够）"
+HIDDEN_FIX_REASONS = {
+    REASON_TRUNCATED: "文字没显示全，后半段被截掉（行高或列宽不够）",
+    REASON_CLIPPED: "文字超出单元格被裁掉（列宽或行高不够）",
+    REASON_HASH: "列宽不够，数字显示成 ###",
+    REASON_MISSING: "文字打印不出来（行高或列宽太小）",
+}
+
+
+def _report_name(path: str) -> str:
+    """执行记录里这个文件的名字（相对目标文件夹，去掉「🟡」）"""
+    return workbook_rel_name(Path(path), STATE.get("folder"))
+
+
+def _fix_record(item: dict[str, Any]) -> dict[str, Any]:
+    if (item.get("kind") or "clip") == "hidden":
+        reason = HIDDEN_FIX_REASONS.get(item.get("hidden_reason") or "", item.get("hidden_reason") or "文字没显示全")
+    else:
+        reason = CLIP_FIX_REASON
+    return {
+        "sheet": item["sheet_name"], "cell": item.get("cell_addr") or "",
+        "row": int(item["excel_row"]) if item.get("excel_row") else 0, "reason": reason,
+    }
+
+
+def _problem_counts(path: str) -> dict[str, Any]:
+    """这个文件的切字统计和已修复位置，交给 update_file_progress"""
     items = [item for item in STATE["items"].values() if item["wb_path"] == path]
     fixed = sum(item["status"] == "fixed" for item in items)
     accepted = sum(item["status"] == "accepted" for item in items)
-    pending = len(items) - fixed - accepted
+    return {
+        "clip_detected": len(items), "clip_fixed": fixed, "clip_accepted": accepted,
+        "clip_unfixed": len(items) - fixed - accepted,
+        "fixes": {item["id"]: _fix_record(item) if item["status"] == "fixed" else None for item in items},
+    }
+
+
+def _sync_problem_counts(path: str, action: str) -> None:
+    counts = _problem_counts(path)
     update_file_progress(
-        workbook_rel_name(Path(path), STATE.get("folder")),
-        status="needs_fix" if pending else "done",
-        clip_detected=len(items), clip_fixed=fixed, clip_accepted=accepted,
-        clip_unfixed=pending, current_action=action, error="",
+        _report_name(path), status="needs_fix" if counts["clip_unfixed"] else "done",
+        current_action=action, error="", **counts,
     )
+
+
+def resync_report_from_state() -> None:
+    """启动时用工作台的问题记录刷新执行记录（旧版本的记录可能停在旧状态、也没有修复位置）"""
+    report = get_execution_report_snapshot()
+    with STATE_LOCK:
+        paths = list(dict.fromkeys(item["wb_path"] for item in STATE["items"].values()))
+        if not STATE.get("folder") or not report.get("folder") or Path(STATE["folder"]) != Path(report["folder"]):
+            return
+        for path in paths:
+            entry = report["files"].get(_report_name(path))
+            if entry is None:
+                continue  # 执行记录里没有的文件（如已删除）不补
+            counts = _problem_counts(path)
+            if report["status"] != "running" and entry.get("status") != "error":
+                counts["status"] = "needs_fix" if counts["clip_unfixed"] else "done"
+            update_file_progress(_report_name(path), **counts)
+    flush_execution_report()
 
 
 def _same_text_problem(a: dict[str, Any], b: dict[str, Any]) -> bool:
@@ -1208,8 +1268,7 @@ def manual_review_workflow(selected_ids: list[str], *, open_excel: bool) -> None
                 peer["manual_waiting"] = True
                 peer.pop("manual_recheck_token", None)
                 peer["review_reason"] = "请人工核对自动推测的行号；调整并保存后重新导出复检"
-            wb_items = [it for it in STATE["items"].values() if it["wb_path"] == item["wb_path"]]
-            fixed = sum(it["status"] == "fixed" for it in wb_items)
+            counts = _problem_counts(item["wb_path"])
             job["completed"].append(item["id"])
             _persist_state()
         message = (
@@ -1218,8 +1277,7 @@ def manual_review_workflow(selected_ids: list[str], *, open_excel: bool) -> None
         )
         log_msg(message)
         update_file_progress(
-            item["wb_name"], status="needs_fix", current_action=message, error="",
-            clip_fixed=fixed, clip_unfixed=sum(it["status"] not in {"fixed", "accepted"} for it in wb_items),
+            _report_name(item["wb_path"]), status="needs_fix", current_action=message, error="", **counts,
         )
         finish_execution_batch("等待人工调整并保存 Excel")
         return
@@ -1281,7 +1339,7 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
                 version = _file_version(Path(path))
                 log_msg(f"刷新复检文件: {Path(path).name}（重新检测 {len(entry['sheets'])} 个问题工作表）")
                 update_file_progress(
-                    Path(path).name, status="processing",
+                    _report_name(path), status="processing",
                     current_action="根据新 PDF 重新检测问题工作表（不自动加高）", error="",
                 )
                 workbook = excel.Workbooks.Open(str(Path(path).resolve()), ReadOnly=True, UpdateLinks=0)
@@ -1338,8 +1396,7 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
                     STATE["pages"].update(new_pages)
                     STATE["items"].update(merged)
                     wb_items = [it for it in STATE["items"].values() if it["wb_path"] == path]
-                    fixed = sum(it["status"] == "fixed" for it in wb_items)
-                    accepted = sum(it["status"] == "accepted" for it in wb_items)
+                    counts = _problem_counts(path)
                     # 只有全部未解决项都被检查，才能更新整个文件的版本基线。
                     if all(it["status"] in {"fixed", "accepted"} or it["sheet_name"] in entry["sheets"] for it in wb_items):
                         STATE["checked_files"][path] = version
@@ -1351,10 +1408,12 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
                         STATE.update(previous)
                         raise
                 update_file_progress(
-                    Path(path).name, status="done" if fixed + accepted == len(wb_items) else "needs_fix",
-                    clip_detected=len(wb_items), clip_fixed=fixed, clip_accepted=accepted,
-                    clip_unfixed=len(wb_items) - fixed - accepted,
-                    current_action=f"已重新检测问题工作表，当前待处理 {len(wb_items) - fixed - accepted} 处，人工确认 {accepted} 处", error="",
+                    _report_name(path), status="needs_fix" if counts["clip_unfixed"] else "done",
+                    current_action=(
+                        f"已重新检测问题工作表，当前待处理 {counts['clip_unfixed']} 处，"
+                        f"人工确认 {counts['clip_accepted']} 处"
+                    ),
+                    error="", **counts,
                 )
             finally:
                 if workbook is not None:
@@ -1800,7 +1859,7 @@ def fix_selected_workflow(
 
                 log_msg(f"🔧 开始微调工作簿: {wb_path.name} (共 {len(items)} 处)...")
                 update_file_progress(
-                    wb_path.name,
+                    _report_name(wb_path_str),
                     status="processing",
                     current_action=f"正在微调 {len(items)} 处选中切字项...",
                     error="",
@@ -1934,13 +1993,10 @@ def fix_selected_workflow(
                     total_skipped += len(skipped_ids)
 
                     with STATE_LOCK:
-                        wb_all_items = [
-                            it for it in STATE["items"].values() if it["wb_path"] == wb_path_str
-                        ]
-                        wb_total_clips = len(wb_all_items)
-                        wb_fixed_clips = sum(1 for it in wb_all_items if it["status"] == "fixed")
-                        wb_accepted_clips = sum(it["status"] == "accepted" for it in wb_all_items)
-                        wb_unfixed_clips = wb_total_clips - wb_fixed_clips - wb_accepted_clips
+                        counts = _problem_counts(wb_path_str)
+                        wb_total_clips = counts["clip_detected"]
+                        wb_fixed_clips = counts["clip_fixed"]
+                        wb_unfixed_clips = counts["clip_unfixed"]
 
                     action = (
                         "未修改 Excel" if untouched
@@ -1949,14 +2005,11 @@ def fix_selected_workflow(
                     if skipped_ids:
                         action += f"；{len(skipped_ids)} 处无法可靠定位，已跳过并标记人工核对"
                     update_file_progress(
-                        wb_path.name,
+                        _report_name(wb_path_str),
                         status="done" if wb_unfixed_clips == 0 else "needs_fix",
-                        clip_detected=wb_total_clips,
-                        clip_fixed=wb_fixed_clips,
-                        clip_accepted=wb_accepted_clips,
-                        clip_unfixed=wb_unfixed_clips,
                         normalized_a1=not untouched,
                         current_action=action,
+                        **counts,
                     )
                     with STATE_LOCK:
                         if job is not None:
@@ -1965,7 +2018,7 @@ def fix_selected_workflow(
                 except Exception as err:
                     log_msg(f"❌ 修复失败 {wb_path.name}: {err}")
                     update_file_progress(
-                        wb_path.name,
+                        _report_name(wb_path_str),
                         status="error",
                         error=str(err),
                         current_action=f"修复失败: {err}",

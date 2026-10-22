@@ -260,7 +260,7 @@ class PersistenceTests(unittest.TestCase):
         report = self.snapshot("report")["files"]["book.xlsx"]
         self.assertEqual((report["clip_fixed"], report["clip_accepted"], report["clip_unfixed"]), (0, 1, 0))
         self.assertEqual(report["status"], "done")
-        self.assertIn("人工确认", self.reporter.render_execution_markdown())
+        self.assertNotIn("人工确认", self.reporter.render_execution_markdown())  # 报告只写结果
         self.restart()
         self.workflow.get_state_snapshot()
         self.assertEqual(self.workflow.STATE["items"]["item_1"]["status"], "accepted")

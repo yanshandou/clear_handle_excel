@@ -9,7 +9,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from core.common import EXCEL_EXTENSIONS, PROJECT_ROOT, RECORD_PATH, md_wrap, review_marked_name, workbook_rel_name
+from core.common import (
+    EXCEL_EXTENSIONS, PROJECT_ROOT, RECORD_PATH, REVIEW_EMOJI, md_wrap, review_marked_name, strip_review_prefix,
+    workbook_rel_name,
+)
 from core.storage import load_snapshot, save_snapshot
 
 REPORT_LOCK = threading.RLock()
@@ -17,14 +20,6 @@ REPORT_STATE_PATH = PROJECT_ROOT / "record_state.json"
 WRITE_INTERVAL = 1.0  # 进度更新很频繁：数据库和 Markdown 最多每秒写一次，开始、结束、中断时立即写
 _last_write = 0.0
 _write_timer: threading.Timer | None = None
-
-STATUS_LABELS = {
-    "pending": "⏳ 待处理",
-    "processing": "🔄 正在处理",
-    "needs_fix": "🔧 已扫描（待人工修改）",
-    "done": "✅ 已完成",
-    "error": "❌ 处理失败",
-}
 
 EXECUTION_STATE: dict[str, Any] = {
     "task_name": "尚未开始任务",
@@ -55,8 +50,34 @@ def _restore_report() -> None:
         save_snapshot("report", loaded)
     if loaded is not None:
         EXECUTION_STATE.update(loaded)
-        if _mark_running_as_interrupted_unlocked():
+        changed = _merge_review_duplicates_unlocked()
+        if _mark_running_as_interrupted_unlocked() or changed:
             save_snapshot("report", EXECUTION_STATE)
+
+
+def _base_name(name: str) -> str:
+    """记录名里的文件名部分，去掉「🟡」"""
+    return strip_review_prefix(Path(name).name)
+
+
+def _merge_review_duplicates_unlocked() -> bool:
+    """旧版本按「🟡」改名后的文件名另记了一条：并回原文件那一条（数字之后由工作台重新同步）"""
+    files = EXECUTION_STATE["files"]
+    changed = False
+    for key in [k for k in files if Path(k).name.startswith(REVIEW_EMOJI)]:
+        dup = files.pop(key)
+        targets = [k for k in files if _base_name(k) == _base_name(key)]
+        if len(targets) != 1:
+            plain = str(Path(key).with_name(_base_name(key))).replace("\\", "/")
+            dup["name"] = plain
+            files[plain] = dup
+        changed = True
+    batch = EXECUTION_STATE.get("batch")
+    if changed and batch:
+        EXECUTION_STATE["batch"] = [k for k in dict.fromkeys(batch) if k in files]
+    if changed:
+        _recompute_counters_unlocked()
+    return changed
 
 
 def _mark_running_as_interrupted_unlocked() -> bool:
@@ -226,9 +247,13 @@ def update_file_progress(
     clip_accepted: int | None = None,
     clip_unfixed: int | None = None,
     normalized_a1: bool | None = None,
+    fixes: dict[str, dict[str, Any] | None] | None = None,
     error: str | None = None,
 ) -> None:
-    """实时更新单个 Excel 文件的处理进度与统计指标"""
+    """实时更新单个 Excel 文件的处理进度与统计指标
+
+    fixes：{问题 id: 修复记录}，值为 None 表示这处现在不算已修复；没提到的问题沿用以前的记录
+    （重新扫描后旧问题项可能不在工作台了，但文件里确实修过）。"""
     with REPORT_LOCK:
         entry = EXECUTION_STATE["files"].get(wb_name)
         if entry is None and EXECUTION_STATE.get("folder"):
@@ -237,13 +262,18 @@ def update_file_progress(
             if entry is not None:
                 wb_name = rel_key
         if entry is None:
+            # 只给了文件名（可能还带着「🟡」）：按去掉「🟡」后的文件名找同一个文件
+            base = _base_name(wb_name)
             matches = [
                 (k, v)
                 for k, v in EXECUTION_STATE["files"].items()
-                if Path(v.get("path", k)).name == Path(wb_name).name
+                if base in {_base_name(k), _base_name(v.get("path", k))}
             ]
             if len(matches) == 1:
                 wb_name, entry = matches[0]
+            else:
+                wb_name = str(Path(wb_name).with_name(base)).replace("\\", "/")
+                entry = EXECUTION_STATE["files"].get(wb_name)
         if entry is None:
             entry = {
                 "index": max((int(f.get("index", 0)) for f in EXECUTION_STATE["files"].values()), default=0) + 1,
@@ -274,10 +304,18 @@ def update_file_progress(
             EXECUTION_STATE["current_step"] = f"[{wb_name}] {current_action}"
         if status == "processing":
             EXECUTION_STATE["current_file"] = wb_name
-        if all_sheets is not None:
-            entry["all_sheets"] = list(all_sheets)
         if deleted_backups is not None:
-            entry["deleted_backups"] = list(deleted_backups)
+            # 删掉的表只会越来越多：后面的步骤（切字扫描等）不知道前面删过什么，不能把记录清掉
+            entry["deleted_backups"] = list(dict.fromkeys(list(entry.get("deleted_backups", [])) + list(deleted_backups)))
+        if all_sheets is not None:
+            entry["all_sheets"] = _merge_sheet_list(entry.get("all_sheets", []), list(all_sheets), entry.get("deleted_backups", []))
+        if fixes is not None:
+            known = entry.setdefault("fixes", {})
+            for item_id, record in fixes.items():
+                if record is None:
+                    known.pop(item_id, None)
+                else:
+                    known[item_id] = dict(record)
         if uncertain_sheets is not None:
             entry["uncertain_sheets"] = list(uncertain_sheets)
         if renamed_to is not None:
@@ -300,6 +338,18 @@ def update_file_progress(
         entry["updated_at"] = _time_str()
         _recompute_counters_unlocked()
         _write_soon_unlocked()
+
+
+def _merge_sheet_list(old: list[str], new: list[str], deleted: list[str]) -> list[str]:
+    """新读到的工作表列表里已经没有删掉的表了：把以前删掉的表按原来的位置插回去"""
+    result = list(new)
+    gone = set(deleted) - set(new)
+    for pos, name in enumerate(old):
+        if name not in gone or name in result:
+            continue
+        before = next((old[i] for i in range(pos - 1, -1, -1) if old[i] in result), None)
+        result.insert(result.index(before) + 1 if before is not None else 0, name)
+    return result
 
 
 def finish_execution_batch(summary_step: str = "全部任务处理完毕") -> None:
@@ -325,114 +375,87 @@ def interrupt_execution_batch(message: str) -> None:
         _persist_and_write_markdown_unlocked()
 
 
-def render_execution_markdown() -> str:
-    """根据当前所有文件的处理状态生成结构化 Markdown 报告
+def _fix_sort_key(record: dict[str, Any], sheets: list[str]) -> tuple[Any, ...]:
+    sheet = record.get("sheet", "")
+    return (sheets.index(sheet) if sheet in sheets else len(sheets), sheet,
+            int(record.get("row") or 0), str(record.get("cell", "")))
 
-    报告会提交给别人，不写任何日期和时间（开始时间、最后更新、各文件处理时间只在网页看板显示）。
+
+def _md_cell(text: Any) -> str:
+    return str(text).replace("|", "\\|").replace("\n", " ").strip() or "-"
+
+
+def _unfinished(f: dict[str, Any]) -> bool:
+    return f.get("status") in {"pending", "processing", "error"} or int(f.get("clip_unfixed", 0) or 0) > 0
+
+
+def render_execution_markdown() -> str:
+    """根据当前所有文件的处理结果生成 Markdown 报告（要交给领导）
+
+    每个文件一节：① 删除了哪些备份表（删除线），② 修复了几处、在哪、原因。
+    只写结果：不写日期时间，不写人工确认 / 自动处理 / 跳过 / 复检等过程，判断为不用改的地方不列出。
     """
     with REPORT_LOCK:
         state = copy.deepcopy(EXECUTION_STATE)
 
-    files = list(state["files"].values())
-    total_clips = sum(int(f.get("clip_detected", 0)) for f in files)
-    fixed_clips = sum(int(f.get("clip_fixed", 0)) for f in files)
-    accepted_clips = sum(int(f.get("clip_accepted", 0)) for f in files)
-    total_pdfs = sum(int(f.get("exported_pdfs", 0)) for f in files)
-    total_bkp_del = sum(len(f.get("deleted_backups", [])) for f in files)
-    total_uncertain = sum(len(f.get("uncertain_sheets", [])) for f in files)
+    files = sorted(state["files"].values(), key=lambda f: int(f.get("index", 0)))
+    total_deleted = sum(len(f.get("deleted_backups", [])) for f in files)
+    total_fixed = sum(len(f.get("fixes") or {}) for f in files)
 
-    status_badge = {
-        "idle": "⚪ 空闲",
-        "running": "🔄 正在执行中",
-        "completed": "✅ 已全部完成",
-        "interrupted": "⏸ 已中断，等待继续",
-    }.get(state["status"], state["status"])
-
-    summary_parts = [
-        f"共清理备份 Sheet **{total_bkp_del}** 个",
-        *(
-            [f"待定存疑 Sheet **{total_uncertain}** 个"]
-            if total_uncertain
-            else []
-        ),
-        f"导出 PDF **{total_pdfs}** 份",
-        f"检出切字 **{total_clips}** 处（已修复 **{fixed_clips}** 处，人工确认无需修复 **{accepted_clips}** 处）",
-    ]
+    unfinished = [f for f in files if _unfinished(f)]
+    if state["status"] == "running":
+        status_text = "🔄 正在处理"
+    elif state["status"] == "interrupted":
+        status_text = "⏸ 已中断，还没处理完"
+    elif unfinished:
+        status_text = f"⚠️ 还有 {len(unfinished)} 个文件没处理完"
+    else:
+        status_text = "✅ 已全部处理完成"
 
     lines: list[str] = [
-        "# 📊 Excel 批处理与切字检查执行记录报告",
+        "# 📊 Excel 整理与切字修复记录",
         "",
-        f"- **当前任务**：{state['task_name']}",
-        *([f"- **已执行步骤**：{' → '.join(state['steps'])}"] if len(state.get("steps") or []) > 1 else []),
-        f"- **任务状态**：{status_badge}（当前进度：**{state['progress_pct']}%**，`{state['completed_files']}/{state['total_files']}` 个文件）",
         f"- **目标文件夹**：`{state['folder'] or '-'}`",
-    ]
-    if state.get("pdf_folder"):
-        lines.append(f"- **PDF 导出目录**：`{state['pdf_folder']}`")
-    if state.get("backup_folder"):
-        lines.append(f"- **原文件备份目录**：`{state['backup_folder']}`")
-    lines.extend([
-        f"- **统计汇总**：{' ｜ '.join(summary_parts)}",
+        f"- **处理状态**：{status_text}",
+        f"- **汇总**：共 {len(files)} 个文件 ｜ 删除备份 Sheet **{total_deleted}** 个 ｜ 修复切字 **{total_fixed}** 处",
         "",
         "---",
         "",
-        "## 各工作簿处理与 Sheet 明细",
-        "",
-    ])
+    ]
 
-    for f in files:
-        st_label = STATUS_LABELS.get(f["status"], f["status"])
-        title_name = f["name"]
+    for number, f in enumerate(files, start=1):
+        title = f["name"]
         if f.get("renamed_to") and f["renamed_to"] != f["name"]:
-            title_name += f" → {f['renamed_to']}"
-        lines.append(f"### {f['index']}. {title_name} （{st_label}）")
+            title += f" → {f['renamed_to']}"
+        title += "（还没处理完）" if _unfinished(f) and state["status"] != "running" else ""
+        lines += [f"## {number}. {title}", ""]
+
+        all_sheets = list(f.get("all_sheets", []))
+        deleted = list(f.get("deleted_backups", []))
+        deleted_set = set(deleted)
+        lines.append(f"**① 删除备份 Sheet：{len(deleted)} 个**" if deleted else "**① 删除备份 Sheet：无**")
         lines.append("")
+        for sh in all_sheets:
+            lines.append(f"- {md_wrap(sh, '~~')}" if sh in deleted_set else f"- {sh}")
+        for sh in deleted:
+            if sh not in all_sheets:
+                lines.append(f"- {md_wrap(sh, '~~')}")
+        if all_sheets or deleted:
+            lines.append("")
 
-        all_sheets = f.get("all_sheets", [])
-        deleted_set = set(f.get("deleted_backups", []))
-        uncertain_set = set(f.get("uncertain_sheets", []))
-        sheet_cnt = len(all_sheets)
-        bkp_cnt = len(deleted_set)
-        unc_cnt = len(uncertain_set)
-        pdf_cnt = int(f.get("exported_pdfs", 0))
-        det_cnt = int(f.get("clip_detected", 0))
-        fix_cnt = int(f.get("clip_fixed", 0))
-        note = str(f.get("error") or f.get("current_action") or "-").replace("\n", " ")
-
-        sheet_meta = f"共 {sheet_cnt} 个 Sheet"
-        sheet_sub: list[str] = []
-        if bkp_cnt:
-            sheet_sub.append(f"已删 {bkp_cnt}")
-        if unc_cnt:
-            sheet_sub.append(f"待定 {unc_cnt}")
-        if sheet_sub:
-            sheet_meta += f"（{' · '.join(sheet_sub)}）"
-
-        meta_parts: list[str] = [note, sheet_meta]
-        if pdf_cnt > 0:
-            meta_parts.append(f"导出 PDF {pdf_cnt} 份")
-        if det_cnt > 0:
-            clip_str = f"切字 {fix_cnt}/{det_cnt}"
-            if f.get("clip_accepted", 0):
-                clip_str += f"（人工确认 {f['clip_accepted']}）"
-            meta_parts.append(clip_str)
-        if f.get("normalized_a1"):
-            meta_parts.append("A1+100% 已标准化")
-
-        lines.append(f"> {' ｜ '.join(meta_parts)}")
-        lines.append("")
-
-        if all_sheets:
-            for sh in all_sheets:
-                if sh in deleted_set:
-                    lines.append(f"- {md_wrap(sh, '~~')} *(已作为备份表清理)*")
-                elif sh in uncertain_set:
-                    lines.append(f"- {md_wrap(sh, '**')} *(待定存疑，本次未删除)*")
-                else:
-                    lines.append(f"- {sh}")
+        fixes = sorted((f.get("fixes") or {}).values(), key=lambda r: _fix_sort_key(r, all_sheets))
+        if fixes:
+            lines += [f"**② 修复切字：{len(fixes)} 处**", "", "| # | Sheet | 位置 | 原因 |", "|---|---|---|---|"]
+            for i, fix in enumerate(fixes, start=1):
+                place = fix.get("cell") or ""
+                if fix.get("row"):
+                    place = f"{place}（第 {fix['row']} 行）" if place else f"第 {fix['row']} 行"
+                lines.append(f"| {i} | {_md_cell(fix.get('sheet', ''))} | {_md_cell(place)} | {_md_cell(fix.get('reason', ''))} |")
         else:
-            lines.append("- *(暂未读取工作表列表)*")
+            lines.append("**② 修复切字：无**")
         lines.append("")
+        if f.get("status") == "error" and f.get("error"):
+            lines += [f"> ❌ 处理出错：{str(f['error']).replace(chr(10), ' ')}", ""]
 
     return "\n".join(lines)
 
