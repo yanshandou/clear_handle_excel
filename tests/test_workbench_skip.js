@@ -5,9 +5,10 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'app.js'), 'utf8');
+const openExcelSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'open_excel.js'), 'utf8');
 
 function fakeElement() {
-  const el = { dataset: {}, style: {setProperty() {}}, children: [],
+  const el = { dataset: {}, style: {setProperty() {}}, children: [], querySelector() { return fakeElement(); },
     classList: { toggle() {}, add() {}, remove() {} }, addEventListener() {}, innerHTML: '' };
   el.prepend = child => { child.parent = el; el.children.unshift(child); };
   el.after = sibling => { const list = el.parent.children; sibling.parent = el.parent; list.splice(list.indexOf(el) + 1, 0, sibling); };
@@ -22,6 +23,7 @@ function workbench() {
       hidden: false,
       addEventListener() {},
       createElement() { return fakeElement(); },
+      body: { appendChild() {} },
       getElementById(id) {
         if (!elements.has(id)) elements.set(id, fakeElement());
         return elements.get(id);
@@ -33,6 +35,8 @@ function workbench() {
     fetch() { return new Promise(() => {}); }, // 不访问正在运行的服务
     alerts: [], requests: [],
   });
+  vm.runInContext(openExcelSource, context);
+  vm.runInContext('var excelLinkHtml = window.excelLinkHtml;', context);
   vm.runInContext(source, context);
   vm.runInContext(`
     alert = message => alerts.push(message);
@@ -291,7 +295,7 @@ test('review panel lists queued files and offers open-all and batch recheck', ()
   `);
   const html = w.elements.get('reviewPanel').innerHTML;
   assert.match(html, /1 个文件 · 待修改 1 处/);
-  assert.match(html, /review-dot" aria-hidden="true"><\/span>book\.xlsx/);
+  assert.match(html, /review-dot" aria-hidden="true"><\/span><a [^>]*>book\.xlsx<\/a>/);
   assert.match(html, /一次打开全部（1 个）/);
   assert.match(html, /统一复检/);
   assert.match(html, /已全部标黄/);
@@ -334,7 +338,7 @@ test('full auto lists written rows for confirmation and keeps rows in progress o
   assert.doesNotMatch(cards[0].innerHTML, /switchAttempt\('g1', 0\)/); // 原样不能选
   assert.match(cards[1].innerHTML, /正在写入 Excel/);
   assert.doesNotMatch(cards[1].innerHTML, /switchAttempt/);
-  assert.match(w.elements.get('confirmHead').innerHTML, /全部确认（1 行）/);
+  assert.match(w.elements.get('confirmBar').innerHTML, /全部确认（1 行）/);
 });
 
 test('switch, reject and confirm-all post the right requests', async () => {

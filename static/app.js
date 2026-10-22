@@ -845,7 +845,10 @@ function renderConfirm() {
       <div>
         <b>✅ 已自动处理，待你确认：${confirmable.length} 行</b>
         <span>每行已按带框的那张写进 Excel 并保存。要换就点另一张通过的图；不对就点「改回原样转人工」。${reverted ? `已退回 ${reverted} 行。` : ''}</span>
-      </div>
+      </div>`;
+    // 按钮放在列表底部的悬浮条里（sticky），往下翻卡片时一直在窗口底部，不用回到顶部找
+    document.getElementById('confirmBar').innerHTML = `
+      <span>待确认 ${confirmable.length} 行${reverted ? ` · 已退回 ${reverted} 行` : ''}</span>
       <button type="button" class="btn btn-primary btn-sm" ${busy || !(confirmable.length || reverted) ? 'disabled' : ''}
         onclick="confirmAll()">${confirmSubmitting ? '正在确认…' : `✓ 全部确认（${confirmable.length} 行）`}</button>`;
   }
