@@ -74,6 +74,7 @@ MIME_TYPES = {
     ".json": "application/json; charset=utf-8",
     ".svg": "image/svg+xml",
     ".png": "image/png",
+    ".pdf": "application/pdf",
 }
 
 
@@ -131,7 +132,7 @@ class WebHandler(BaseHTTPRequestHandler):
             if image is None:
                 self.send_error(404)
                 return
-            self._send_bytes(image.read_bytes(), "image/png")
+            self._send_bytes(image.read_bytes(), MIME_TYPES[image.suffix])
         elif parsed.path in {"/workbench", "/index.html"}:
             self._serve_static_file("index.html")
         elif parsed.path in {"/records", "/records.html"}:

@@ -100,8 +100,11 @@ function cardBodyHtml(name, sheetIndex) {
   let preview;
   if (info && info.image) {
     const src = `/api/clean/thumb/${encodeURIComponent(renders.key)}/${encodeURIComponent(info.image)}`;
+    const pdf = info.pdf
+      ? `/api/clean/thumb/${encodeURIComponent(renders.key)}/${encodeURIComponent(info.pdf)}`
+      : src;
     preview = `<img src="${src}" alt="" loading="lazy" draggable="false">
-      <a class="pv-zoom" href="${src}" target="_blank" title="在新标签页查看大图" onclick="event.stopPropagation()">🔍</a>`;
+      <a class="pv-zoom" href="${pdf}" target="_blank" title="在新标签页打开导出的 PDF（与「导出 PDF」功能的结果一致，含全部页）" onclick="event.stopPropagation()">🔍 PDF</a>`;
   } else if (info) {
     preview = `<span class="pv-thumb-note">${escapeHtml(info.note || '无法生成预览')}</span>`;
   } else if (renderError) {
@@ -114,7 +117,7 @@ function cardBodyHtml(name, sheetIndex) {
     const other = escapeHtml(stripUncertainEmoji(info.similar.match));
     similar = info.similar.identical
       ? `🟰 与「${other}」内容完全相同`
-      : `≈ 与「${other}」约 ${Math.round(info.similar.ratio * 100)}% 相同`;
+      : `≈ 与「${other}」约 ${Math.round(info.similar.ratio * 100)}% 相同，可能是新旧版本`;
   }
   const st = states[name] || 'keep';
   const meta = [];

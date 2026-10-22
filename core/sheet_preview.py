@@ -1,13 +1,12 @@
-"""精简 Sheet 的预览确认窗口：用 Excel 只读打开工作簿，把每个工作表导出成临时 PDF，再用 pymupdf 渲染第 1 页缩略图。
+"""精简 Sheet 的预览确认窗口：用 Excel 只读打开工作簿，按导出 PDF 功能相同的参数把每个工作表导出成 PDF，再用 pymupdf 渲染第 1 页缩略图。
 
-缩略图缓存在 _sheet_preview_cache/<键>/ 下，键由文件路径、修改时间与大小决定；文件没改过时再次打开直接读缓存。
+PDF 与缩略图缓存在 _sheet_preview_cache/<键>/ 下，键由文件路径、修改时间与大小决定；文件没改过时再次打开直接读缓存。
 """
 
 import hashlib
 import json
 import re
 import shutil
-import tempfile
 import threading
 import time
 from collections import Counter
@@ -26,8 +25,8 @@ PREVIEW_CLIP_MARGIN = 12  # 裁掉页面空白时四周保留的边距（pt）
 CACHE_MAX_AGE_SECONDS = 7 * 24 * 3600
 MANIFEST_NAME = "manifest.json"
 CACHE_KEY_RE = re.compile(r"^[0-9a-f]{16}$")
-IMAGE_NAME_RE = re.compile(r"^\d{1,4}\.png$")
-SIMILARITY_MIN_RATIO = 0.8  # 低于这个相似度不提示
+IMAGE_NAME_RE = re.compile(r"^\d{1,4}\.(?:png|pdf)$")
+SIMILARITY_MIN_RATIO = 0.5  # 低于这个相似度不提示；新旧版本之间通常只改了一部分内容
 SIMILARITY_MAX_CELLS = 500_000  # 已用区域超过这么多单元格时跳过比对，避免读取过慢
 
 _render_locks: dict[str, threading.Lock] = {}
@@ -128,7 +127,9 @@ def find_similar_sheets(contents: dict[str, dict[str, Any] | None]) -> dict[str,
     """两两比较工作表内容，给每个表找出最相似的另一个表
 
     完全相同：每个单元格的位置和值都一样。
-    相似度：按「行」比较（行内容相同即算一致，插入或删除几行也不影响其余行），2×相同行数 ÷ 两表行数之和。
+    相似度取两种算法的较大值：
+    - 按单元格：同一位置值相同的单元格数 ÷ 两表有内容的单元格位置总数（改了几个单元格时准确）
+    - 按行：2×内容相同的行数 ÷ 两表行数之和（插入或删除几行、后面整体错位时准确）
     空白表、图表页不参与比较；相似度低于 SIMILARITY_MIN_RATIO 不提示。
     """
     names = [name for name, content in contents.items() if content and content["rows"]]
@@ -143,9 +144,12 @@ def find_similar_sheets(contents: dict[str, dict[str, Any] | None]) -> dict[str,
             if identical:
                 ratio = 1.0
             else:
+                cells_a, cells_b = contents[name]["cells"], contents[other]["cells"]
+                same_cells = sum(1 for pos, value in cells_a.items() if cells_b.get(pos) == value)
+                cell_ratio = same_cells / len(cells_a.keys() | cells_b.keys())
                 common = sum((counters[name] & counters[other]).values())
                 total = len(contents[name]["rows"]) + len(contents[other]["rows"])
-                ratio = min(2 * common / total, 0.99)
+                ratio = min(max(cell_ratio, 2 * common / total), 0.99)
             if ratio < SIMILARITY_MIN_RATIO:
                 continue
             if best is None or (identical, ratio) > (best["identical"], best["ratio"]):
@@ -172,7 +176,9 @@ def _content_clip(page: Any) -> Any:
 def _render_sheet(sheet: Any, pdf_path: Path, png_path: Path) -> dict[str, Any]:
     """导出单个工作表的缩略图；隐藏的表临时取消隐藏（只读打开、不保存，不影响原文件）"""
     hidden = sheet.Visible != XL_SHEET_VISIBLE
-    result: dict[str, Any] = {"name": sheet.Name, "image": "", "pages": 0, "hidden": hidden, "note": ""}
+    result: dict[str, Any] = {
+        "name": sheet.Name, "image": "", "pdf": "", "pages": 0, "hidden": hidden, "note": "",
+    }
     if hidden:
         try:
             sheet.Visible = XL_SHEET_VISIBLE
@@ -185,6 +191,7 @@ def _render_sheet(sheet: Any, pdf_path: Path, png_path: Path) -> dict[str, Any]:
         result["note"] = "没有可打印的内容（可能是空白表）"
         return result
     try:
+        result["pdf"] = pdf_path.name
         with fitz.open(pdf_path) as doc:
             result["pages"] = doc.page_count
             if doc.page_count:
@@ -229,10 +236,9 @@ def render_workbook_previews(folder_str: str, file_name: str) -> dict[str, Any]:
             excel.DisplayAlerts = False
             wb = excel.Workbooks.Open(str(wb_path.resolve()), ReadOnly=True, UpdateLinks=0)
             contents: dict[str, dict[str, Any] | None] = {}
-            with tempfile.TemporaryDirectory() as tmp:
-                for idx, sheet in enumerate(list(wb.Sheets)):
-                    contents[sheet.Name] = read_sheet_content(sheet)
-                    sheets.append(_render_sheet(sheet, Path(tmp) / f"{idx}.pdf", staging / f"{idx}.png"))
+            for idx, sheet in enumerate(list(wb.Sheets)):
+                contents[sheet.Name] = read_sheet_content(sheet)
+                sheets.append(_render_sheet(sheet, staging / f"{idx}.pdf", staging / f"{idx}.png"))
             similar = find_similar_sheets(contents)
             for entry in sheets:
                 entry["similar"] = similar.get(entry["name"])
@@ -257,7 +263,7 @@ def render_workbook_previews(folder_str: str, file_name: str) -> dict[str, Any]:
 
 
 def preview_image_path(key: str, image_name: str) -> Path | None:
-    """缩略图文件路径；键或文件名格式不对、文件不存在时返回 None"""
+    """缩略图或导出的 PDF 路径；键或文件名格式不对、文件不存在时返回 None"""
     if not CACHE_KEY_RE.match(key) or not IMAGE_NAME_RE.match(image_name):
         return None
     path = PREVIEW_CACHE_DIR / key / image_name

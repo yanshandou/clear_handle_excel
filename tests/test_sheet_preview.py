@@ -59,6 +59,15 @@ class FindSimilarSheetsTests(unittest.TestCase):
         self.assertGreaterEqual(result["A"]["ratio"], 0.9)
         self.assertLess(result["A"]["ratio"], 1.0)
 
+    def test_edited_cells_in_every_row_still_found_as_old_version(self):
+        # 设计书改版：每行都改了一个单元格，按行比几乎没有相同行，按单元格比仍然大部分一致
+        old = [f"項目{i}\t説明{i}\t旧" for i in range(10)]
+        new = [f"項目{i}\t説明{i}\t新" for i in range(10)]
+        result = find_similar_sheets({"設計": self.content(new), "設計_20240105": self.content(old)})
+        self.assertEqual(result["設計_20240105"]["match"], "設計")
+        self.assertFalse(result["設計_20240105"]["identical"])
+        self.assertEqual(result["設計_20240105"]["ratio"], 0.67)  # 30 个单元格里 20 个一致
+
     def test_same_rows_at_other_position_are_not_identical(self):
         rows = ["a", "b"]
         result = find_similar_sheets({"A": self.content(rows), "B": self.content(rows, offset=3)})
@@ -147,6 +156,8 @@ class RenderWorkbookPreviewsTests(unittest.TestCase):
         self.assertFalse(result["cached"])
         self.assertEqual(sheets["Main"]["pages"], 2)
         self.assertTrue(preview_image_path(result["key"], sheets["Main"]["image"]))
+        # 导出的 PDF 一并保留，可在浏览器里查看完整 PDF
+        self.assertTrue(preview_image_path(result["key"], sheets["Main"]["pdf"]))
         # 隐藏表临时取消隐藏后照样出图；只读打开、关闭时不保存
         self.assertTrue(sheets["Main(2)"]["hidden"])
         self.assertTrue(sheets["Main(2)"]["image"])
