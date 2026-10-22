@@ -248,6 +248,36 @@ class HiddenTextTests(unittest.TestCase):
         cells = [(1, 1, "No"), (2, 1, "hihokensha_no")]
         self.assertEqual(detect(cells, build), [])
 
+    def test_single_digit_lines_of_truncated_cell_stay_with_it(self):
+        # 多行格子里单独一行的「4」「3」，不能被表里更靠下的「4」「3」格子先占走，
+        # 否则只认出第一行，「还能看到什么」和「还缺几行」都会算错
+        lines = ["桁数④が1以上の場合、", "4", "桁数③が1以上の場合、", "3", "桁数②が1以上の場合、"]
+        text = "桁数④が1以上の場合、4\n桁数③が1以上の場合、3\n桁数②が1以上の場合、2\n上記以外の場合、0"
+
+        def build(page):
+            for i, line in enumerate(lines):
+                page.insert_text((200, 100 + 12 * i), line, fontsize=10, fontname="japan")
+            page.insert_text((50, 400), "4", fontsize=10, fontname="japan")
+            page.insert_text((50, 412), "3", fontsize=10, fontname="japan")
+
+        cells = [(104, 10, text), (200, 1, 4.0), (201, 1, 3.0)]
+        result = detect(cells, build, {(200, 1): "4", (201, 1): "3"})
+        self.assertEqual(len(result), 1)
+        self.assertEqual((result[0]["row"], result[0]["reason"]), (104, REASON_TRUNCATED))
+        self.assertEqual(result[0]["visible"], "".join(lines))
+        self.assertEqual(result[0]["missing_lines"], 2)  # 「2」和「上記以外の場合、0」
+        self.assertAlmostEqual(result[0]["line_pitch"], 12.0, places=1)
+
+    def test_only_copy_of_short_text_is_not_taken_away(self):
+        def build(page):
+            page.insert_text((200, 100), "桁数④が1以上の場合、", fontsize=10, fontname="japan")
+            page.insert_text((200, 112), "4", fontsize=10, fontname="japan")
+
+        cells = [(104, 10, "桁数④が1以上の場合、4\n上記以外の場合、0"), (200, 1, 4.0)]
+        result = detect(cells, build, {(200, 1): "4"})
+        self.assertEqual([r["row"] for r in result], [104])
+        self.assertEqual(result[0]["visible"], "桁数④が1以上の場合、")
+
     def test_formatted_text_uses_displayed_value(self):
         def build(page):
             add_text(page, 50, 100, "No.15")

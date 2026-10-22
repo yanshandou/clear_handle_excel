@@ -1,6 +1,8 @@
 """自动处理切字：在工作簿副本上一次加一点行高，每次导出 PDF 截图并判断是否已显示全，
 做出最多 9 张图（原样 + 8 次加高）给用户挑；用户点哪张，就把那张的行高写进原文件。
 
+- 每次加 3pt；隐藏截断还缺整行没打印时，先按缺的行数一次补上，剩下不到一行再按 3pt 加
+
 - 同一行的几处问题合成一组处理（加的是整行高度）
 - 预览只在副本上做，不锁、不改原文件；用户挑选时后台继续准备后面的组
 - 显示全之后再多加一次就停，推荐多加的那张（留一点余量）
@@ -11,6 +13,7 @@
 """
 import base64
 import hashlib
+import math
 import shutil
 import tempfile
 import threading
@@ -529,23 +532,26 @@ def _preview(session: _ExcelSession, gid: str) -> None:
         group["base_height"] = base
     pdf_path = session.temp_pdf()
     success_at = None
+    extra = 0.0
     try:
         for k in range(MAX_ATTEMPTS + 1):
             _check_still_wanted(gid)
-            height = min(MAX_ROW_HEIGHT, round(base + STEP_PT * k, 1))
+            height = min(MAX_ROW_HEIGHT, round(base + extra, 1))
             with _LOCK:
                 if k and height == group["attempts"][-1]["height"]:
                     break
             sheet.Rows(row).RowHeight = height
             texts.clear()  # 行高变化后 Range.Text 也可能变化，不能沿用上一张候选图的显示值
             _export_sheet_pdf(sheet, pdf_path)
-            ok, image = _evaluate(pdf_path, items, cells, display_text, probe.printed)
+            ok, image, need = _evaluate(pdf_path, items, cells, display_text, probe.printed)
             with _LOCK:
                 group["attempts"].append({"height": height, "ok": ok, "image": image})
             if success_at is not None:
                 break  # 显示全之后再多加一次就停
             if k and ok:
                 success_at = k
+            # 多行文字缺好几行时 3pt 一次加不完 8 次，按缺的行数直接补上（仍按 3pt 取整）
+            extra = max(extra + STEP_PT, math.ceil(round((extra + need) / STEP_PT, 3)) * STEP_PT)
     except _Paused:
         with _LOCK:
             if gid in AUTOFIX["groups"] and AUTOFIX["groups"][gid]["status"] == "running":
@@ -568,9 +574,13 @@ def _preview(session: _ExcelSession, gid: str) -> None:
             group["status"] = "ready"
 
 
-def _evaluate(pdf_path: Path, items: list[dict[str, Any]], cells, display_text, printed) -> tuple[bool, str]:
-    """要求每个目标单元格取得完整匹配、字符可见且无压线；没有证据不能判通过。"""
+def _evaluate(
+    pdf_path: Path, items: list[dict[str, Any]], cells, display_text, printed,
+) -> tuple[bool, str, float]:
+    """要求每个目标单元格取得完整匹配、字符可见且无压线；没有证据不能判通过。
+    第三个返回值：还有整行没打印出来时，大约还要加多高（pt），否则为 0。"""
     all_ok = bool(items)
+    need = 0.0
     boxes: list[tuple[int, tuple[float, float, float, float]]] = []
     with fitz.open(pdf_path) as doc:
         pieces = collect_text_pieces(doc)
@@ -588,6 +598,8 @@ def _evaluate(pdf_path: Path, items: list[dict[str, Any]], cells, display_text, 
             evidence = by_address.get(address)
             found = hidden_by_address.get(address)
             ok = evidence is not None and found is None
+            if found is not None and found.get("missing_lines"):
+                need = max(need, found["missing_lines"] * found["line_pitch"])
             if item.get("kind") == "hidden":
                 ok = ok and normalize_text(evidence["text"]) == normalize_text(item["text"])
                 location = (
@@ -625,7 +637,7 @@ def _evaluate(pdf_path: Path, items: list[dict[str, Any]], cells, display_text, 
                 max(b[2] for b in same_page), max(b[3] for b in same_page),
             )
             image = render_crop_base64(doc[page], union, highlight=not all_ok)
-    return all_ok, image
+    return all_ok, image, need
 
 
 def _apply(session: _ExcelSession, wb_path: str, gids: list[str]) -> bool:
