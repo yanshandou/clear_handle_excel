@@ -256,6 +256,7 @@ class CellProbe:
         self._hidden_rows: dict[int, bool] = {}
         self._hidden_cols: dict[int, bool] = {}
         self._areas: list[tuple[int, int, int, int]] | None = None
+        self._heights: dict[int, float] = {}
 
     def text(self, row: int, col: int) -> str | None:
         try:
@@ -264,10 +265,14 @@ class CellProbe:
             return None
 
     def row_height(self, row: int) -> float:
-        try:
-            return round(float(self.sheet.Rows(row).RowHeight or 15.0), 1)
-        except Exception:
-            return 15.0
+        """行高（隐藏行为 0）；同一行只跨进程读一次"""
+        if row not in self._heights:
+            try:
+                r = self.sheet.Rows(row)
+                self._heights[row] = 0.0 if r.Hidden else round(float(r.RowHeight or 0.0), 1)
+            except Exception:
+                self._heights[row] = 15.0
+        return self._heights[row]
 
     def _print_areas(self) -> list[tuple[int, int, int, int]]:
         if self._areas is None:
@@ -297,6 +302,30 @@ class CellProbe:
             return False
         areas = self._print_areas()
         return not areas or any(r0 <= row <= r1 and c0 <= col <= c1 for r0, c0, r1, c1 in areas)
+
+
+def set_font_colors(sheet: Any, colors: dict[tuple[int, int], int]) -> dict[tuple[int, int], Any]:
+    """把格子的字体改成指定颜色（Excel 的 BGR 整数），返回原来的颜色用于还原；改不了的格子跳过"""
+    originals: dict[tuple[int, int], Any] = {}
+    for (row, col), color in colors.items():
+        try:
+            font = sheet.Cells(row, col).Font
+            originals[(row, col)] = font.Color
+            font.Color = color
+        except Exception:
+            continue
+    return originals
+
+
+def restore_font_colors(sheet: Any, originals: dict[tuple[int, int], Any]) -> None:
+    """还原 set_font_colors 改过的颜色（一格多种颜色的富文本读不到原色，工作簿不保存，不影响原文件）"""
+    for (row, col), color in originals.items():
+        if color is None:
+            continue
+        try:
+            sheet.Cells(row, col).Font.Color = color
+        except Exception:
+            pass
 
 
 def match_excel_row(
