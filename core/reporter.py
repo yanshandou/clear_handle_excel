@@ -290,7 +290,10 @@ def interrupt_execution_batch(message: str) -> None:
 
 
 def render_execution_markdown() -> str:
-    """根据当前所有文件的处理状态生成结构化 Markdown 报告"""
+    """根据当前所有文件的处理状态生成结构化 Markdown 报告
+
+    报告会提交给别人，不写任何日期和时间（开始时间、最后更新、各文件处理时间只在网页看板显示）。
+    """
     with REPORT_LOCK:
         state = copy.deepcopy(EXECUTION_STATE)
 
@@ -332,8 +335,6 @@ def render_execution_markdown() -> str:
     if state.get("backup_folder"):
         lines.append(f"- **原文件备份目录**：`{state['backup_folder']}`")
     lines.extend([
-        f"- **开始时间**：{state['started_at'] or '-'}",
-        f"- **最后更新**：{state['updated_at'] or '-'}",
         f"- **统计汇总**：{' ｜ '.join(summary_parts)}",
         "",
         "---",
@@ -380,8 +381,6 @@ def render_execution_markdown() -> str:
             meta_parts.append(clip_str)
         if f.get("normalized_a1"):
             meta_parts.append("A1+100% 已标准化")
-        if f.get("updated_at"):
-            meta_parts.append(str(f["updated_at"]))
 
         lines.append(f"> {' ｜ '.join(meta_parts)}")
         lines.append("")
