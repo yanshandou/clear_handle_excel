@@ -170,6 +170,38 @@ class IncrementalScanTests(unittest.TestCase):
         self.scan()
         self.assertEqual(self.exports, [])
 
+    def test_previous_detector_version_rechecks_unchanged_workbooks(self):
+        self.add_book("book", ["S1", "S2"])
+        self.scan()
+        for version in self.workflow.STATE["checked_files"].values():
+            version["detector"] = self.workflow.DETECTOR_VERSION - 1
+
+        self.scan()
+        self.assertEqual(self.exports, [("book", "S1"), ("book", "S2")])
+        self.scan()
+        self.assertEqual(self.exports, [])
+
+    def test_visible_spaced_paragraphs_do_not_create_hidden_items(self):
+        path = self.add_book("book", ["S1"])
+        lines = ["●登録前チェック", "BIIryouChk::chkErrorRyouyouhiMeisai()",
+                 "●請求エラーチェック", "BIIryouKokuhoError::getKokuhoKindEntry()"]
+        text = "\n".join(lines[:2]) + "\n\n" + "\n".join(lines[2:])
+        with self.workflow.fitz.open() as doc:
+            page = doc.new_page()
+            for y, line in zip((100, 112, 148, 160), lines):
+                page.insert_text((60, y), line, fontsize=10, fontname="japan")
+            doc.save(self.root / "paragraphs.pdf")
+        self.blank_pdf = self.root / "paragraphs.pdf"
+        self.patch_value(self.workflow, "extract_sheet_snapshot", Mock(return_value={
+            "start_r": 47, "start_c": 33, "rows_vals": [(text,)],
+        }))
+
+        job = self.scan()
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(self.workflow.STATE["items"], {})
+        report = self.reporter.get_execution_report_snapshot()["files"][path.name]
+        self.assertEqual((report["status"], report["clip_unfixed"]), ("done", 0))
+
     def test_hidden_wrapped_text_is_reported_with_cell(self):
         path = self.add_book("book", ["S1"])
         with self.workflow.fitz.open() as doc:

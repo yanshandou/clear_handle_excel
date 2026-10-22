@@ -7,6 +7,7 @@ from core.hidden_text import (
     REASON_TRUNCATED,
     collect_text_pieces,
     find_hidden_cells,
+    locate_text,
 )
 from core.pdf_detector import fitz
 
@@ -66,6 +67,83 @@ class HiddenTextTests(unittest.TestCase):
         self.assertEqual(result[0]["visible"], "DbExKhplg0")
         self.assertEqual(result[0]["page"], 0)
 
+    def test_visible_paragraphs_separated_by_empty_lines_are_not_truncated(self):
+        for newline in ("\n", "\r\n"):
+            for blank_lines in (1, 2):
+                with self.subTest(newline=newline, blank_lines=blank_lines):
+                    lines = ["Registration check", "chkErrorRyouyouhiMeisai()",
+                             "Claim error check", "getKokuhoKindEntry()"]
+                    text = newline.join(lines[:2]) + newline * (blank_lines + 1) + newline.join(lines[2:])
+
+                    def build(page):
+                        second_y = 112 + 12 * (blank_lines + 2)
+                        for y, line in zip((100, 112, second_y, second_y + 12), lines):
+                            add_text(page, 50, y, line)
+
+                    self.assertEqual(detect([(47, 33, text)], build), [])
+
+    def test_japanese_check_descriptions_with_blank_line_are_not_truncated(self):
+        lines = ["●登録前チェック", "BIIryouChk::chkErrorRyouyouhiMeisai()",
+                 "●請求エラーチェック", "BIIryouKokuhoError::getKokuhoKindEntry()"]
+        text = "\n".join(lines[:2]) + "\n\n" + "\n".join(lines[2:])
+
+        def build(page):
+            for y, line in zip((100, 112, 148, 160), lines):
+                page.insert_text((50, y), line, fontsize=10, fontname="japan")
+
+        self.assertEqual(detect([(47, 33, text)], build), [])
+
+    def test_missing_last_line_after_blank_line_is_still_truncated(self):
+        text = "Registration\ncheckMethod()\n\nClaim\nmissingMethod()"
+
+        def build(page):
+            for y, line in ((100, "Registration"), (112, "checkMethod()"), (148, "Claim")):
+                add_text(page, 50, y, line)
+
+        result = detect([(47, 33, text)], build)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["reason"], REASON_TRUNCATED)
+        self.assertEqual(result[0]["visible"], "RegistrationcheckMethod()Claim")
+
+    def test_large_gap_without_source_blank_line_is_not_joined(self):
+        def build(page):
+            add_text(page, 50, 100, "First")
+            add_text(page, 50, 148, "Second")
+
+        result = detect([(1, 1, "First\nSecond")], build)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["reason"], REASON_TRUNCATED)
+
+    def test_source_blank_line_does_not_join_another_column_or_distant_row(self):
+        for x, y in ((300, 136), (50, 300)):
+            with self.subTest(x=x, y=y):
+                def build(page):
+                    add_text(page, 50, 100, "First")
+                    add_text(page, x, y, "Second")
+
+                result = detect([(1, 1, "First\n\nSecond")], build)
+                self.assertEqual(len(result), 1)
+                self.assertEqual(result[0]["reason"], REASON_TRUNCATED)
+
+    def test_blank_line_paragraphs_still_check_character_clipping(self):
+        def build(page):
+            add_text(page, 50, 100, "First")
+            add_text(page, 52, 136, "LongSecondParagraph", clip=(50, 126, 100, 140))
+
+        result = detect([(1, 1, "First\n\nLongSecondParagraph")], build)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["reason"], REASON_CLIPPED)
+        self.assertLess(len(result[0]["visible"]), len("FirstLongSecondParagraph"))
+
+    def test_location_includes_visible_paragraph_after_blank_line(self):
+        with fitz.open() as doc:
+            page = doc.new_page()
+            add_text(page, 50, 100, "First")
+            add_text(page, 50, 136, "Second")
+            location = locate_text(collect_text_pieces(doc), "First\n\nSecond")
+        self.assertIsNotNone(location)
+        self.assertGreater(location[1][3], 136)
+
     def test_text_cut_off_by_clip_region_is_reported(self):
         def build(page):
             add_text(page, 52, 100, "VeryLongTextBehindNeighbour", clip=(50, 90, 100, 104))
@@ -92,6 +170,16 @@ class HiddenTextTests(unittest.TestCase):
             add_text(page, 50, 100, "Same")
         cells = [(1, 1, "Same"), (2, 1, "Same")]
         result = detect(cells, build)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["reason"], REASON_MISSING)
+
+    def test_spaced_paragraphs_cannot_be_reused_for_two_cells(self):
+        def build(page):
+            add_text(page, 50, 100, "First")
+            add_text(page, 50, 136, "Second")
+
+        text = "First\n\nSecond"
+        result = detect([(1, 1, text), (2, 1, text)], build)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["reason"], REASON_MISSING)
 

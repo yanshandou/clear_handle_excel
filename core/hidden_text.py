@@ -9,6 +9,7 @@
 4. PDF 里完全找不到：只要这格会被打印（不在隐藏行列、在打印区域内），也算没显示
 
 对不上的一律报告（宁可多报不漏报）。
+拼接多行时保留原文空行的信息，避免把空行后仍完整显示的下一段误报为截断。
 """
 import re
 import unicodedata
@@ -34,6 +35,24 @@ REASON_MISSING = "PDF 里找不到这格的文字，打印时没有显示（行�
 def normalize_text(text: str) -> str:
     """比对用：统一全角半角，去掉所有空白（换行位置在 Excel 和 PDF 里不同）"""
     return _SPACE_PATTERN.sub("", unicodedata.normalize("NFKC", text))
+
+
+def _blank_line_offsets(text: str) -> dict[int, int]:
+    """原文每个段落起点前的空行数，位置使用去空白后的字符偏移。"""
+    offsets: dict[int, int] = {}
+    pos = 0
+    blanks = 0
+    for line in text.splitlines():
+        key = normalize_text(line)
+        if not key:
+            if pos:
+                blanks += 1
+            continue
+        if blanks:
+            offsets[pos] = blanks
+        pos += len(key)
+        blanks = 0
+    return offsets
 
 
 @dataclass
@@ -129,18 +148,23 @@ class _Matcher:
         for piece in pieces:
             self.by_page.setdefault(piece.page, []).append(piece)
 
-    def _below(self, prev: Piece) -> list[Piece]:
-        """自动换行的下一行：同一页、紧挨在下面、横向有重叠"""
+    def _below(self, prev: Piece, blank_lines: int = 0) -> list[Piece]:
+        """同页、横向重叠的下一行；仅在原文确有空行处扩大纵向间距。"""
         x0, y0, x1, y1 = prev.bbox
+        max_y = y1 + prev.height * (1 + blank_lines)
+        if blank_lines:
+            max_y += 1.0  # 给空行排版和 PDF 坐标取整留少量余量
         return [
             p for p in self.by_page[prev.page]
-            if y0 + prev.height * 0.3 < p.bbox[1] < y1 + prev.height
+            if y0 + prev.height * 0.3 < p.bbox[1] < max_y
             and p.bbox[0] < x1 + 2 and p.bbox[2] > x0 - 2
         ]
 
-    def _chunks(self, text: str, pos: int, prev: Piece | None, loose: bool) -> list[Chunk]:
+    def _chunks(
+        self, text: str, pos: int, prev: Piece | None, loose: bool, blank_lines: int = 0,
+    ) -> list[Chunk]:
         """text[pos:] 开头能对上的片段。exact 只认整段；loose 允许首段是某段的后半、末段是某段的前半。"""
-        candidates = self.by_char.get(text[pos], []) if prev is None else self._below(prev)
+        candidates = self.by_char.get(text[pos], []) if prev is None else self._below(prev, blank_lines)
         found: list[Chunk] = []
         for piece in candidates:
             starts = [0] if prev is not None or not loose else [
@@ -167,8 +191,11 @@ class _Matcher:
 
     def find(self, text: str, loose: bool) -> list[Chunk] | None:
         """找一组能拼出完整 text 的片段（自上而下的换行），找不到返回 None"""
+        blank_lines = _blank_line_offsets(text)
+        text = normalize_text(text)
+
         def search(pos: int, prev: Piece | None, chain: list[Chunk]) -> list[Chunk] | None:
-            for chunk in self._chunks(text, pos, prev, loose):
+            for chunk in self._chunks(text, pos, prev, loose, blank_lines.get(pos, 0)):
                 piece, start, end = chunk
                 nxt = pos + end - start
                 if nxt == len(text):
@@ -181,12 +208,14 @@ class _Matcher:
 
     def find_prefix(self, text: str) -> list[Chunk] | None:
         """只能拼出 text 开头一段时，返回能拼出的最长一段（后面的没打印出来）"""
+        blank_lines = _blank_line_offsets(text)
+        text = normalize_text(text)
         best: list[Chunk] = []
         best_len = 0
 
         def search(pos: int, prev: Piece | None, chain: list[Chunk]) -> None:
             nonlocal best, best_len
-            for chunk in self._chunks(text, pos, prev, prev is None):
+            for chunk in self._chunks(text, pos, prev, prev is None, blank_lines.get(pos, 0)):
                 piece, start, end = chunk
                 if end != len(piece.key):
                     continue
@@ -269,7 +298,7 @@ def find_hidden_cells(
         for loose in (False, True):
             left = []
             for cell in sorted(group, key=lambda c: -len(normalize_text(c["text"]))):
-                chain = matcher.find(normalize_text(cell["text"]), loose)
+                chain = matcher.find(cell["text"], loose)
                 if chain is None:
                     left.append(cell)
                     continue
@@ -304,7 +333,7 @@ def find_hidden_cells(
     left = unchanged + match_full(refetched)
 
     for cell in sorted(left, key=lambda c: -len(normalize_text(c["text"]))):
-        chain = matcher.find_prefix(normalize_text(cell["text"]))
+        chain = matcher.find_prefix(cell["text"])
         if chain is not None:
             _consume(chain)
             page, bbox = _chain_location(chain)
@@ -329,6 +358,5 @@ def _result(
 def locate_text(pieces: list[Piece], text: str) -> tuple[int, BBox] | None:
     """PDF 里这段文字（完整或开头一段）所在的页码和范围，找不到返回 None；只读，不占用片段"""
     matcher = _Matcher(pieces)
-    key = normalize_text(text)
-    chain = matcher.find(key, True) or matcher.find_prefix(key)
+    chain = matcher.find(text, True) or matcher.find_prefix(text)
     return _chain_location(chain) if chain else None
