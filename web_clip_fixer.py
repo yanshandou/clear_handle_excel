@@ -170,15 +170,13 @@ class WebHandler(BaseHTTPRequestHandler):
                 autofix.mark_active()
             self._send_json(autofix.snapshot())
         elif parsed.path.startswith("/api/autofix/image/"):
-            parts = parsed.path.removeprefix("/api/autofix/image/").split("/")
-            image = (
-                autofix.attempt_image(parts[0], int(parts[1]))
-                if len(parts) == 2 and parts[1].isdigit() else None
-            )
+            key = unquote(parsed.path.removeprefix("/api/autofix/image/"))
+            image = autofix.attempt_image(key) if key and "/" not in key else None
             if image is None:
                 self.send_error(404)
                 return
-            self._send_bytes(image, "image/png")
+            # 每张候选图的编号都不同，内容不会变：可以缓存，卡片重画时不用再取一遍
+            self._send_bytes(image, "image/png", cacheable=True)
         elif parsed.path == "/api/overview":
             self._send_json(get_overview_snapshot())
         elif parsed.path == "/api/progress/export":

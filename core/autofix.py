@@ -20,8 +20,10 @@ import shutil
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from core import fix_images
 from core.common import STALE_LOCK_HINT, XL_SHEET_VISIBLE, as_bbox, col_index_to_letters
@@ -70,11 +72,27 @@ _IDLE.set()
 _WRITES_IDLE = threading.Event()  # 人工打开只需等正在进行的原文件写入，不等副本 Excel 退出
 _WRITES_IDLE.set()
 AUTOFIX: dict[str, Any] = {"auto": True, "groups": {}, "hold": 0, "active_until": 0.0}
+# 候选图按各自的编号取：页面拿到的编号和图一一对应，组被重新准备、改名后旧编号也不会对上别的图。
+# 最近做过的图另外留一份，页面还没刷新时（这一组刚重新准备）照样取得到。
+_RECENT_IMAGES: "OrderedDict[str, str]" = OrderedDict()
+RECENT_IMAGE_LIMIT = 300
 _worker: threading.Thread | None = None
 
 
 class _Paused(Exception):
     """后台有别的任务、或这组已不需要处理，中止当前预览，稍后重来"""
+
+
+def _attempt(height: float, ok: bool, image: str) -> dict[str, Any]:
+    """一张候选图；key 是取图的编号（没有图时为 None，页面直接显示「暂无截图」）"""
+    key = None
+    if image:
+        key = uuid4().hex[:16]
+        with _LOCK:
+            _RECENT_IMAGES[key] = image
+            while len(_RECENT_IMAGES) > RECENT_IMAGE_LIMIT:
+                _RECENT_IMAGES.popitem(last=False)
+    return {"height": height, "ok": ok, "image": image, "key": key}
 
 
 def _group_id(wb_path: str, sheet_name: str, row: int) -> str:
@@ -205,7 +223,7 @@ def _sync_groups_locked() -> None:
                 group.update(
                     status="failed", recheck_token=entry["recheck_token"],
                     base_height=entry["recheck_height"], recommended=None, chosen=None,
-                    attempts=[{"height": entry["recheck_height"], "ok": False, "image": entry["recheck_image"]}],
+                    attempts=[_attempt(entry["recheck_height"], False, entry["recheck_image"])],
                     message="本次复检仍有问题，请继续修改、跳过本行或先看下一行",
                 )
 
@@ -226,15 +244,29 @@ def _restore_unconfirmed_locked(groups: dict[str, Any], wanted: dict[str, Any]) 
                 rows.setdefault(gid, []).append(item)
     for gid, items in rows.items():
         first = items[0]
+        base, applied = first.get("autofix_base_height"), first.get("row_height")
+        # 程序重启后候选图没了，但报告里存了修复前 / 修复后的截图，能找到就照样显示这两张
+        shots = next((it.get("fix_images") or {} for it in items if (it.get("fix_images") or {}).get("after")), {})
+        attempts = []
+        if base is not None and applied is not None and fix_images.image_path(shots.get("after", "")):
+            before = shots.get("before", "")
+            attempts = [
+                {"height": base, "ok": False, "image": "",
+                 "key": f"f:{before}" if fix_images.image_path(before) else None},
+                {"height": applied, "ok": True, "image": "", "key": f"f:{shots['after']}"},
+            ]
         groups[gid] = {
             "id": gid, "wb_path": first["wb_path"], "wb_name": first["wb_name"],
             "sheet_name": first["sheet_name"], "row": int(first["excel_row"]),
             "item_ids": [it["id"] for it in items], "seq": min(int(it.get("seq") or 0) for it in items),
             "manual": False, "manual_waiting": False, "revision": first.get("autofix_revision"),
-            "status": "applied", "attempts": [], "recommended": None, "chosen": None,
-            "base_height": first.get("autofix_base_height"), "applied_height": first.get("row_height"),
+            "status": "applied", "attempts": attempts, "recommended": None,
+            "chosen": 1 if attempts else None,
+            "base_height": base, "applied_height": applied,
             "confirmed": False, "restored": True,
-            "message": "程序重启过，候选图已清除；行高已写入，可直接确认或点「不对」改回原行高",
+            "message": (
+                "程序重启过，其他候选图已清除，只留下原样和写入的那张；行高已写入，可直接确认或点「不对」改回原行高"
+                if attempts else "程序重启过，候选图已清除；行高已写入，可直接确认或点「不对」改回原行高"),
         }
 
 
@@ -250,20 +282,25 @@ def snapshot() -> dict[str, Any]:
             "groups": [
                 {
                     **{k: v for k, v in g.items() if k != "attempts"},
-                    "attempts": [{"height": a["height"], "ok": a["ok"]} for a in g["attempts"]],
+                    "attempts": [{"height": a["height"], "ok": a["ok"], "key": a.get("key")} for a in g["attempts"]],
                 }
                 for g in groups
             ],
         }
 
 
-def attempt_image(gid: str, index: int) -> bytes | None:
+def attempt_image(key: str) -> bytes | None:
+    if key.startswith("f:"):
+        # 重启后恢复的行：用报告里存的修复前 / 修复后截图
+        path = fix_images.image_path(key[2:])
+        return path.read_bytes() if path is not None else None
     with _LOCK:
-        group = AUTOFIX["groups"].get(gid)
-        if group is None or not 0 <= index < len(group["attempts"]):
-            return None
-        image = group["attempts"][index]["image"]
-    if not image:
+        image = _RECENT_IMAGES.get(key)
+        if image is None:
+            image = next((
+                a["image"] for g in AUTOFIX["groups"].values() for a in g["attempts"] if a.get("key") == key
+            ), None)
+    if not image or "," not in image:
         return None
     return base64.b64decode(image.split(",", 1)[1])
 
@@ -716,7 +753,7 @@ def _preview(session: _ExcelSession, gid: str) -> None:
             _export_sheet_pdf(sheet, pdf_path)
             ok, image, need = _evaluate(pdf_path, items, cells, display_text, probe.printed)
             with _LOCK:
-                group["attempts"].append({"height": height, "ok": ok, "image": image})
+                group["attempts"].append(_attempt(height, ok, image))
             if not k and ok:
                 break  # 原样已通过：问题已经不在了（多半是同表前面写入的行高改变了分页缩放），不用加高
             if success_at is not None:

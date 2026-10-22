@@ -635,6 +635,29 @@ function attemptLabel(group, index) {
   return `+${(attempt.height - group.attempts[0].height).toFixed(1).replace(/\.0$/, '')}pt → ${attempt.height}pt`;
 }
 
+// 候选图：按每张图自己的编号取（内容不变、可缓存）；没有图或多次取不到时显示占位文字，不显示裂图
+function fixTileImage(group, index, lazy = false) {
+  const attempt = group.attempts[index];
+  if (!attempt.key) return '<span class="fix-tile-missing">暂无截图</span>';
+  return `<img ${lazy ? 'loading="lazy" ' : ''}src="/api/autofix/image/${encodeURIComponent(attempt.key)}" alt="${escapeHtml(attemptLabel(group, index))}" onerror="fixImageFailed(this)">`;
+}
+
+function fixImageFailed(img) {
+  const tries = Number(img.dataset.tries || 0);
+  if (tries < 2) {
+    // 偶尔一次没取到（程序正忙等）：过一会儿再试
+    img.dataset.tries = tries + 1;
+    setTimeout(() => {
+      if (img.isConnected) img.src = `${img.src.split('?')[0]}?retry=${tries + 1}`;
+    }, 1500 * (tries + 1));
+    return;
+  }
+  const missing = document.createElement('span');
+  missing.className = 'fix-tile-missing';
+  missing.textContent = '截图暂不可用';
+  img.replaceWith(missing);
+}
+
 function renderFix() {
   renderPipelineProgress();
   const groups = fixData.groups;
@@ -701,7 +724,7 @@ function renderFix() {
     return `
       <button type="button" class="${classes.join(' ')}" ${canPick ? `onclick="chooseAttempt('${escapeHtml(group.id)}', ${index})"` : 'disabled'}>
         ${index === group.recommended ? '<span class="fix-tile-badge">推荐</span>' : ''}
-        <img src="/api/autofix/image/${escapeHtml(group.id)}/${index}?h=${attempt.height}&v=${escapeHtml(group.recheck_token || '')}" alt="${escapeHtml(attemptLabel(group, index))}">
+        ${fixTileImage(group, index)}
         <span class="fix-tile-caption">${escapeHtml(attemptLabel(group, index))} · ${index === 0 ? (attempt.ok ? '完整且无压线' : '未通过检查') : (attempt.ok ? '✓ 完整且无压线' : '✗ 未通过完整显示/压线检查')}</span>
       </button>`;
   });
@@ -801,7 +824,7 @@ function confirmCardHtml(group) {
     return `
       <button type="button" class="${classes.join(' ')}" ${canPick ? `title="改用这张：按它的行高重新写入" onclick="switchAttempt('${escapeHtml(group.id)}', ${index})"` : 'disabled'}>
         ${badge ? `<span class="fix-tile-badge">${badge}</span>` : ''}
-        <img loading="lazy" src="/api/autofix/image/${escapeHtml(group.id)}/${index}?h=${attempt.height}&v=${escapeHtml(group.recheck_token || '')}" alt="${escapeHtml(attemptLabel(group, index))}">
+        ${fixTileImage(group, index, true)}
         <span class="fix-tile-caption">${escapeHtml(attemptLabel(group, index))} · ${index === 0 ? (attempt.ok ? '完整且无压线' : '未通过检查') : (attempt.ok ? '✓ 完整且无压线' : '✗ 未通过')}</span>
       </button>`;
   });

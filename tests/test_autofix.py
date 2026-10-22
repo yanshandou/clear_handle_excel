@@ -127,9 +127,9 @@ class AutofixTests(unittest.TestCase):
         )
         self.assertEqual((group["status"], group["recommended"]), ("ready", 3))
         self.assertTrue(all(a["image"] for a in group["attempts"]))
-        self.assertIsNotNone(self.autofix.attempt_image(gid, 0))
+        self.assertIsNotNone(self.autofix.attempt_image(group["attempts"][0]["key"]))
         self.assertEqual(self.real_heights, {5: 15.0})  # 预览只动副本
-        self.assertNotIn("image", str(self.autofix.snapshot()["groups"][0]["attempts"]))
+        self.assertNotIn("'image'", str(self.autofix.snapshot()["groups"][0]["attempts"]))
 
         with self.assertRaisesRegex(ValueError, "已显示全"):
             self.autofix.choose(gid, 1)
@@ -144,8 +144,21 @@ class AutofixTests(unittest.TestCase):
         self.assertEqual(self.autofix.AUTOFIX["groups"][gid]["status"], "applied")
         # 报告用截图：原样那张是修复前，写进去的那张是修复后
         names = item["fix_images"]
-        self.assertEqual(fix_images.image_path(names["before"]).read_bytes(), self.autofix.attempt_image(gid, 0))
-        self.assertEqual(fix_images.image_path(names["after"]).read_bytes(), self.autofix.attempt_image(gid, 2))
+        keys = [a["key"] for a in group["attempts"]]
+        self.assertEqual(fix_images.image_path(names["before"]).read_bytes(), self.autofix.attempt_image(keys[0]))
+        self.assertEqual(fix_images.image_path(names["after"]).read_bytes(), self.autofix.attempt_image(keys[2]))
+
+    def test_old_picture_still_served_after_group_is_prepared_again(self):
+        """页面拿到的候选图编号在这一组重新准备后仍能取到图；重新准备的图换新编号，页面会重画"""
+        gid = self.group()["id"]
+        self.autofix._preview(self.session, gid)
+        old_keys = [a["key"] for a in self.group()["attempts"]]
+        self.autofix._preview(self.session, gid)
+        new_keys = [a["key"] for a in self.group()["attempts"]]
+        self.assertFalse(set(old_keys) & set(new_keys))
+        self.assertTrue(all(self.autofix.attempt_image(k) for k in old_keys + new_keys))
+        self.assertIsNone(self.autofix.attempt_image("missing"))
+        self.assertIsNone(self.autofix.attempt_image("f:../x.png"))
 
     def test_original_already_passing_is_resolved_without_writing(self):
         # 第一步检出、到第二步时原样已经显示全（同表前面写入的行高改变了缩放等）：不加高、不写文件
@@ -373,8 +386,13 @@ class AutofixTests(unittest.TestCase):
         self.written(gid)
         self.autofix.AUTOFIX["groups"].clear()  # 相当于重启：内存里的图片没了
         group = self.group()
-        self.assertEqual((group["status"], group["confirmed"], group["base_height"], group["attempts"]),
-                         ("applied", False, 15.0, []))
+        self.assertEqual((group["status"], group["confirmed"], group["base_height"]), ("applied", False, 15.0))
+        # 报告里存了修复前 / 修复后截图：重启后照样显示原样和写入的那张
+        self.assertEqual([(a["height"], a["ok"]) for a in group["attempts"]], [(15.0, False), (24.0, True)])
+        self.assertEqual(group["chosen"], 1)
+        names = self.workflow.STATE["items"]["i1"]["fix_images"]
+        self.assertEqual(self.autofix.attempt_image(group["attempts"][1]["key"]),
+                         fix_images.image_path(names["after"]).read_bytes())
         self.autofix.reject_group(gid)
         self.written(gid)
         self.assertEqual(self.real_heights, {5: 15.0})
@@ -479,8 +497,9 @@ class AutofixTests(unittest.TestCase):
                     manual_recheck_token="check1", image="data:image/png;base64,YQ==", row_height=33.0)
         group = self.group()
         self.assertEqual((group["status"], group["recommended"]), ("failed", None))
-        self.assertEqual(self.autofix.snapshot()["groups"][0]["attempts"], [{"height": 33.0, "ok": False}])
-        self.assertEqual(self.autofix.attempt_image(gid, 0), b"a")
+        key = group["attempts"][0]["key"]
+        self.assertEqual(self.autofix.snapshot()["groups"][0]["attempts"], [{"height": 33.0, "ok": False, "key": key}])
+        self.assertEqual(self.autofix.attempt_image(key), b"a")
         self.assertNotIn("recheck_image", group)
         self.assertIsNone(self.autofix._next_task({}))
         self.autofix.sync_groups()
