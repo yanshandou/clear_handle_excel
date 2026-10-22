@@ -199,3 +199,24 @@ test('batch color change sends one request and keeps the selection', async () =>
   await p.run(`changeSelectedColor('green')`);
   assert.equal(p.requests.length, 1);
 });
+
+test('commit leaves cards that have not been processed yet out of the submission', async () => {
+  const p = page();
+  p.run(`batchState.cards.push({id:'c', seq:3, wb_name:'book.xlsx', sheet_name:'Sheet', cell_addr:'A7', color:'yellow', waiting:true, message:'等待自动处理', images:{}})`);
+  p.run(`window.confirm = text => { globalThis.asked = text; return true; }`);
+  await p.elements.get('commitBtn').listeners.click();
+  await new Promise(resolve => setImmediate(resolve));
+  const asked = p.run('globalThis.asked');
+  assert.match(asked, /另有 1 张还没轮到自动处理/);
+  assert.equal(JSON.stringify(p.requests.at(-1).payload.card_ids), '["a","b"]');
+});
+
+test('committing while the automatic run is paused does not warn about losing its resume point', async () => {
+  const p = page();
+  p.run(`batchState.job = {kind:'batch_scan', status:'interrupted', completed:[]}; globalThis.asks = 0;
+    window.confirm = text => { if (text.includes('续跑点')) globalThis.asks++; return true; }`);
+  await p.elements.get('commitBtn').listeners.click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(p.run('globalThis.asks'), 0);
+  assert.equal(p.requests.at(-1).url, '/api/batch/commit');
+});

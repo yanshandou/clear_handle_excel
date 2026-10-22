@@ -275,8 +275,13 @@ async function changeColor(id, direction = 1) {
   await action(() => post('/api/batch/mark', { id, color }));
 }
 
+// 暂停的全自动处理在提交、复检、打开文件后会放回来，不算替换续跑点
+const KEEPS_PAUSED_SCAN = new Set(['/api/batch/commit', '/api/batch/recheck', '/api/batch/open']);
+const waitingCard = card => card.waiting ?? card.message === '等待自动处理';
+
 async function startJob(url, body = {}) {
-  if (batchState.job?.status === 'interrupted' && url !== '/api/resume'
+  const keeps = batchState.job?.kind === 'batch_scan' && KEEPS_PAUSED_SCAN.has(url);
+  if (batchState.job?.status === 'interrupted' && url !== '/api/resume' && !keeps
       && !window.confirm('这会替换上次任务的续跑点。已保存的修复和审核标记会保留，继续吗？')) return;
   await action(() => post(url, body));
 }
@@ -294,11 +299,14 @@ $('startBtn').addEventListener('click', () => {
 $('resumeBtn').addEventListener('click', () => startJob('/api/resume'));
 $('pauseBtn').addEventListener('click', () => action(() => post('/api/batch/pause')));
 $('commitBtn').addEventListener('click', () => {
-  const cards = batchState.cards;
+  const waiting = batchState.cards.filter(waitingCard).length;
+  const cards = batchState.cards.filter(c => !waitingCard(c));
+  if (!cards.length) { $('errorText').textContent = '卡片都还没轮到自动处理，暂时没有可提交的标记'; return; }
   const count = color => cards.filter(c => c.color === color).length;
   const unmarked = cards.filter(c => !c.marked && !c.finalized).length;
-  const message = `将提交全部 ${cards.length} 张卡片：\n蓝（保留修复）${count('blue')}　绿（还原并忽略）${count('green')}　黄（还原后人工）${count('yellow')}`
-    + (unmarked ? `\n\n其中 ${unmarked} 张没有手动改过颜色，将按当前颜色处理。` : '') + '\n\n确定提交吗？';
+  const message = `将提交 ${cards.length} 张卡片：\n蓝（保留修复）${count('blue')}　绿（还原并忽略）${count('green')}　黄（还原后人工）${count('yellow')}`
+    + (unmarked ? `\n\n其中 ${unmarked} 张没有手动改过颜色，将按当前颜色处理。` : '')
+    + (waiting ? `\n\n另有 ${waiting} 张还没轮到自动处理，这次不提交，继续全自动处理后再审核。` : '') + '\n\n确定提交吗？';
   if (window.confirm(message)) startJob('/api/batch/commit', { card_ids: cards.map(c => c.id) });
 });
 $('abandonBtn').addEventListener('click', () => {

@@ -32,7 +32,7 @@ from core.excel_ops import (
     CellProbe, extract_sheet_snapshot, normalize_workbook_view, quit_background_excel, snapshot_cells,
     start_background_excel,
 )
-from core.hidden_text import REASON_MISSING, collect_text_pieces, find_hidden_cells, locate_text, normalize_text
+from core.hidden_text import REASON_HASH, REASON_MISSING, collect_text_pieces, find_hidden_cells, locate_text, normalize_text
 from core.pdf_detector import (
     RegionTrackingError, crossing_horizontal_line, extract_page_lines, fitz,
     is_region_still_clipped, render_crop_base64,
@@ -90,6 +90,14 @@ def review_only_reason(items: list[dict[str, Any]]) -> str:
            or it.get("hidden_reason") == REASON_MISSING for it in items):
         return "PDF 未匹配到文字或无法定位，不能确认作者是否有意不显示；未调整行高，请人工核对或标绿忽略"
     return ""
+
+
+COLUMN_ONLY_REASON = "列宽不够，数字显示成 ###；加高行高修不好，未调整行高，请人工加宽列或标绿忽略"
+
+
+def column_width_only(item: dict[str, Any]) -> bool:
+    """### 是列宽问题，加高怎么试都不会通过，不用白白导出八九次"""
+    return item.get("hidden_reason") == REASON_HASH
 
 
 def validate_print_targets(sheet: Any, items: list[dict[str, Any]]) -> None:

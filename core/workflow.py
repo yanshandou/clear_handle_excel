@@ -182,6 +182,9 @@ def _check_decision_item(item: dict[str, Any]) -> None:
     autofix.check_row_not_writing(item)
 
 
+BATCH_REVIEW_KINDS = {"batch_commit", "batch_recheck", "batch_open"}
+
+
 def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
     with STATE_LOCK:
         if STATE["busy"]:
@@ -204,10 +207,17 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
                 raise ValueError("没有可继续的中断任务")
             STATE["job"].pop("pause_requested", None)
         else:
+            old_job = STATE["job"]
             STATE["job"] = {
                 "kind": kind, "options": options or {}, "completed": [],
                 "pending_adjustment": None, "status": "running",
             }
+            if (kind in BATCH_REVIEW_KINDS and old_job and old_job.get("status") == "interrupted"
+                    and old_job["kind"] in {"batch_scan", *BATCH_REVIEW_KINDS}):
+                # 暂停的全自动处理先收起来，审核提交 / 复检 / 打开做完后放回，仍可「继续上次任务」
+                paused = old_job.get("paused_scan") if old_job["kind"] != "batch_scan" else old_job
+                if paused:
+                    STATE["job"]["paused_scan"] = paused
             if kind == "scan":
                 STATE["scan_progress"] = {"total": 0, "completed": 0, "status": "running"}
             if kind == "fix":
@@ -283,6 +293,12 @@ def run_pending_workflow() -> None:
             )
         if job["status"] == "interrupted":
             interrupt_execution_batch("部分文件处理失败，可点击继续上次任务重试")
+        elif job.get("paused_scan"):
+            with STATE_LOCK:
+                STATE["job"] = job.pop("paused_scan")
+                STATE["job"]["status"] = "interrupted"
+            log_msg("ℹ️ 审核操作已完成；全自动处理仍处于暂停，可点「继续上次任务」")
+            interrupt_execution_batch("全自动处理已暂停，可点击继续上次任务")
     except Exception as err:
         with STATE_LOCK:
             STATE["job"]["status"] = "interrupted"
@@ -512,7 +528,7 @@ def _detect_sheet_results(
 
 
 # 检测规则变化时加一：之前按旧规则查过的文件即使没改过，下次扫描也要整份重新检查
-DETECTOR_VERSION = 11
+DETECTOR_VERSION = 12
 
 
 def _confirm_clip_cells(
@@ -576,7 +592,7 @@ HIDDEN_FIX_REASONS = {
     REASON_TRUNCATED: "文字没显示全，后半段被截掉（行高或列宽不够）",
     REASON_CLIPPED: "文字超出单元格被裁掉（列宽或行高不够）",
     REASON_HASH: "列宽不够，数字显示成 ###",
-    REASON_MISSING: "PDF 未匹配到文字，无法确认显示意图，需人工核对",
+    REASON_MISSING: "文字打印不出来（行高或列宽太小）",
 }
 
 

@@ -31,6 +31,8 @@ except ImportError:
 
 
 MSO_AUTOMATION_SECURITY_FORCE_DISABLE = 3
+XL_A1 = 1
+XL_R1C1 = -4150
 
 
 def start_background_excel() -> Any:
@@ -497,7 +499,14 @@ class CellProbe:
             try:
                 print_area = str(self.sheet.PageSetup.PrintArea or "")
                 if print_area:
-                    for area in self.sheet.Range(print_area).Areas:
+                    try:
+                        ranges = self.sheet.Range(print_area)
+                    except Exception:
+                        # Excel 设成 R1C1 引用样式时 PrintArea 是「R1C1:R50C10」，Range() 认不出，先换成 A1 样式
+                        converted = str(self.sheet.Application.ConvertFormula(
+                            "=" + print_area, XL_R1C1, XL_A1)).lstrip("=")
+                        ranges = self.sheet.Range(converted)
+                    for area in ranges.Areas:
                         r0, c0 = int(area.Row), int(area.Column)
                         self._areas.append((r0, c0, r0 + int(area.Rows.Count) - 1, c0 + int(area.Columns.Count) - 1))
                     self._areas_unknown = not bool(self._areas)
@@ -506,25 +515,43 @@ class CellProbe:
                 self._areas_unknown = True
         return self._areas
 
+    def _row_hidden(self, row: int) -> bool:
+        if row not in self._hidden_rows:
+            r = self.sheet.Rows(row)
+            self._hidden_rows[row] = bool(r.Hidden) or float(r.RowHeight or 0) == 0
+        return self._hidden_rows[row]
+
+    def _col_hidden(self, col: int) -> bool:
+        if col not in self._hidden_cols:
+            c = self.sheet.Columns(col)
+            self._hidden_cols[col] = bool(c.Hidden) or float(c.ColumnWidth or 0) == 0
+        return self._hidden_cols[col]
+
     def printed(self, row: int, col: int) -> bool | None:
-        """明确隐藏/区域外为 False，可打印为 True；属性读取失败为 None，不能据此自动修改。"""
+        """明确隐藏/区域外为 False，可打印为 True；属性读取失败为 None，不能据此自动修改。
+        合并单元格的左上角所在行列被隐藏时，只要合并区域里还有可见的行和列，文字照样会打印。"""
         try:
-            if row not in self._hidden_rows:
-                r = self.sheet.Rows(row)
-                self._hidden_rows[row] = bool(r.Hidden) or float(r.RowHeight or 0) == 0
-            if self._hidden_rows[row]:
-                return False
-            if col not in self._hidden_cols:
-                c = self.sheet.Columns(col)
-                self._hidden_cols[col] = bool(c.Hidden) or float(c.ColumnWidth or 0) == 0
+            hidden = self._row_hidden(row) or self._col_hidden(col)
         except Exception:
             return None
-        if self._hidden_rows[row] or self._hidden_cols[col]:
-            return False
+        rows, cols = [row], [col]
+        if hidden:
+            try:
+                merge = self.sheet.Cells(row, col).MergeArea
+                r0, c0, height, width = int(merge.Row), int(merge.Column), int(merge.Rows.Count), int(merge.Columns.Count)
+                if height * width <= 1:
+                    return False
+                rows = [r for r in range(r0, r0 + height) if not self._row_hidden(r)]
+                cols = [c for c in range(c0, c0 + width) if not self._col_hidden(c)]
+            except Exception:
+                return False  # 这一格本身明确隐藏，读不到合并信息就按隐藏处理
+            if not rows or not cols:
+                return False
         areas = self._print_areas()
         if self._areas_unknown:
             return None
-        return not areas or any(r0 <= row <= r1 and c0 <= col <= c1 for r0, c0, r1, c1 in areas)
+        return not areas or any(r0 <= r <= r1 and c0 <= c <= c1
+                                for r0, c0, r1, c1 in areas for r in rows for c in cols)
 
 
 def set_font_colors(sheet: Any, colors: dict[tuple[int, int], int]) -> dict[tuple[int, int], Any]:
