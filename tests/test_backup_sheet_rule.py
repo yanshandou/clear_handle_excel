@@ -1,6 +1,13 @@
 import unittest
 
-from core.common import find_backup_sheets, find_clean_targets, find_contained_sheets, has_backup_marker
+from core.common import (
+    find_backup_sheets,
+    find_clean_targets,
+    find_contained_sheets,
+    find_new_old_pairs,
+    has_backup_marker,
+    strip_new_prefix,
+)
 
 
 class BackupMarkerTests(unittest.TestCase):
@@ -163,6 +170,45 @@ class ContainedSheetTests(unittest.TestCase):
         names = ["概要", "概要_bak", "概要_bak詳細"]
         self.assertEqual(find_contained_sheets(names), ["概要_bak詳細"])
         self.assertEqual(find_contained_sheets(["一覧1340", "一覧"]), ["一覧1340"])
+
+
+
+class NewOldPairTests(unittest.TestCase):
+    NAMES = [
+        "新レイアウト", "旧レイアウト",
+        "新レイアウト(介護給付費請求書1)", "新レイアウト(介護給付費請求書2)",
+        "旧レイアウト(介護給付費請求書1)", "旧レイアウト (介護給付費請求書2)",
+    ]
+
+    def test_old_sheets_with_new_version_default_to_delete(self):
+        # 括号前有无空格、全角半角都算同一对
+        self.assertEqual(find_new_old_pairs(self.NAMES), {
+            "新レイアウト": ["旧レイアウト"],
+            "新レイアウト(介護給付費請求書1)": ["旧レイアウト(介護給付費請求書1)"],
+            "新レイアウト(介護給付費請求書2)": ["旧レイアウト (介護給付費請求書2)"],
+        })
+        self.assertEqual(find_clean_targets(self.NAMES), [
+            "旧レイアウト", "旧レイアウト(介護給付費請求書1)", "旧レイアウト (介護給付費請求書2)",
+        ])
+        # 新表默认保留，不因名称包含「新レイアウト」标为待定；只影响精简 Sheet，导出 PDF 不受影响
+        self.assertEqual(find_contained_sheets(self.NAMES), [])
+        self.assertEqual(find_backup_sheets(self.NAMES), [])
+
+    def test_unpaired_new_or_old_sheets_are_untouched(self):
+        names = ["新規登録", "旧画面定義", "新旧対照表", "新レイアウト", "旧帳票"]
+        self.assertEqual(find_new_old_pairs(names), {})
+        self.assertEqual(find_clean_targets(names), [])
+
+    def test_renamed_sheets_with_bracketed_suffix_are_not_uncertain(self):
+        # 改名后再次扫描：多出的部分整段在括号里，不标待定
+        names = ["レイアウト", "レイアウト(介護給付費請求書1)", "レイアウト（介護給付費請求書2）", "一覧", "一覧(詳細)", "一覧詳細"]
+        self.assertEqual(find_contained_sheets(names), ["一覧詳細"])
+
+    def test_strip_new_prefix(self):
+        self.assertEqual(strip_new_prefix("新レイアウト(介護給付費請求書1)"), "レイアウト(介護給付費請求書1)")
+        self.assertEqual(strip_new_prefix("新 レイアウト (２ページ以降)"), "レイアウト (２ページ以降)")
+        self.assertEqual(strip_new_prefix("レイアウト"), "レイアウト")
+        self.assertEqual(strip_new_prefix("新"), "新")
 
 
 if __name__ == "__main__":

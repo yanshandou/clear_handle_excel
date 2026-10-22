@@ -3016,3 +3016,10 @@ button.preview-sheet-tag:active {
 .preview-sheet-tag.is-processed {
   opacity: 0.6;
 }
+
+/* 旧版删除后去掉的「新」字：只加删除线，不改变标签宽度 */
+.strip-new-prefix {
+  text-decoration-thickness: 2px;
+  text-decoration-color: #dc2626;
+  opacity: 0.6;
+}

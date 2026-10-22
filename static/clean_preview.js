@@ -67,7 +67,7 @@ function cycleState(sheetIndex) {
   if (name === undefined) return;
   states[name] = NEXT_SHEET_STATE[states[name]] || 'keep';
   broadcast({ type: 'states', states });
-  updateCard(sheetIndex);
+  fileInfo.sheets.forEach((_, idx) => updateCard(idx)); // 旧表状态会影响新表是否去掉「新」字
   renderActionBar();
 }
 
@@ -90,9 +90,31 @@ function counts() {
 /* ==========================================
    页面渲染：卡片尺寸固定，预览图加载前后、切换状态时卡片都不移动
    ========================================== */
+// 「旧」表全部标为删除、「新」表保留时，执行后「新」表去掉开头的「新」字（与后端 _new_prefix_renames 一致）；
+// 去掉后与剩下的表重名时不改名
+function findNewPrefixRenames(sheets, stateOf, pairs) {
+  const renamed = new Set();
+  const remaining = sheets.filter(n => stateOf(n) !== 'delete');
+  Object.entries(pairs || {}).forEach(([newName, olds]) => {
+    if (stateOf(newName) !== 'keep' || !olds.every(o => stateOf(o) === 'delete')) return;
+    const target = newName.replace(/^新\s*/, '');
+    if (!target || target === newName) return;
+    const taken = remaining.some(n => n !== newName && n.toLowerCase() === target.toLowerCase());
+    if (!taken) renamed.add(newName);
+  });
+  return renamed;
+}
+
 function renderInfoForSheet(name) {
   if (!renders) return null;
   return renders.sheets.find(s => s.name === name) || null;
+}
+
+function cardNameHtml(name) {
+  const display = stripUncertainEmoji(name);
+  const renamed = findNewPrefixRenames(fileInfo.sheets, n => states[n] || 'keep', fileInfo.new_old_pairs);
+  if (!renamed.has(name)) return escapeHtml(display);
+  return `<s class="strip-new-prefix" title="旧版删除后去掉「新」字">新</s>${escapeHtml(display.slice(1))}`;
 }
 
 function cardBodyHtml(name, sheetIndex) {
@@ -126,7 +148,7 @@ function cardBodyHtml(name, sheetIndex) {
   return `
     <span class="pv-thumb">${preview}</span>
     <span class="pv-card-foot">
-      <span class="pv-card-name" title="${escapeHtml(name)}">${escapeHtml(stripUncertainEmoji(name))}</span>
+      <span class="pv-card-name" title="${escapeHtml(name)}">${cardNameHtml(name)}</span>
       <span class="pv-card-meta">${escapeHtml(meta.join(' · '))}</span>
       <span class="preview-sheet-tag is-${st}">${STATE_LABEL[st]}</span>
     </span>
@@ -149,6 +171,7 @@ function updateCard(idx) {
   if (!card) return;
   const name = fileInfo.sheets[idx];
   card.className = `pv-card is-${states[name] || 'keep'}`;
+  card.querySelector('.pv-card-name').innerHTML = cardNameHtml(name);
   card.querySelector('.pv-card-foot .preview-sheet-tag').outerHTML =
     `<span class="preview-sheet-tag is-${states[name] || 'keep'}">${STATE_LABEL[states[name] || 'keep']}</span>`;
 }

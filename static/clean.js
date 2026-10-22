@@ -287,6 +287,21 @@ function computeFileSheetHighlights(file) {
   return highlights;
 }
 
+// 「旧」表全部标为删除、「新」表保留时，执行后「新」表去掉开头的「新」字（与后端 _new_prefix_renames 一致）；
+// 去掉后与剩下的表重名时不改名
+function findNewPrefixRenames(sheets, stateOf, pairs) {
+  const renamed = new Set();
+  const remaining = sheets.filter(n => stateOf(n) !== 'delete');
+  Object.entries(pairs || {}).forEach(([newName, olds]) => {
+    if (stateOf(newName) !== 'keep' || !olds.every(o => stateOf(o) === 'delete')) return;
+    const target = newName.replace(/^新\s*/, '');
+    if (!target || target === newName) return;
+    const taken = remaining.some(n => n !== newName && n.toLowerCase() === target.toLowerCase());
+    if (!taken) renamed.add(newName);
+  });
+  return renamed;
+}
+
 function renderSheetLabelHtml(displayName, highlight) {
   if (!highlight || !highlight.mask || !highlight.mask.some(Boolean)) {
     return escapeHtml(displayName);
@@ -569,18 +584,26 @@ function previewFileItem(file, fileIndex, extraClass = '') {
   const processed = processedFiles.has(file.name);
   const allDeleted = !processed && file.sheets.length > 0 && delCount >= file.sheets.length;
   const highlights = computeFileSheetHighlights(file);
+  const newRenames = findNewPrefixRenames(file.sheets, n => getSheetState(file.name, n), file.new_old_pairs);
 
   const tags = file.sheets.map((name, sheetIndex) => {
     const st = getSheetState(file.name, name);
     const isDeleted = st === 'delete';
     const isUncertain = st === 'uncertain';
     const displayName = stripUncertainEmoji(name);
-    const labelHtml = renderSheetLabelHtml(displayName, highlights[sheetIndex]);
-    const tip = isDeleted
+    const highlight = highlights[sheetIndex];
+    // 删除线只划掉「新」字，标签宽度不变，切换旧表状态时卡片不会跳动
+    const stripNew = newRenames.has(name);
+    const labelHtml = stripNew
+      ? '<s class="strip-new-prefix">新</s>' + renderSheetLabelHtml(
+        displayName.slice(1), highlight && { ...highlight, mask: highlight.mask.slice(1) })
+      : renderSheetLabelHtml(displayName, highlight);
+    const renameTip = stripNew ? `；旧版删除后改名为「${displayName.replace(/^新\s*/, '')}」` : '';
+    const tip = (isDeleted
       ? '当前：删除（单击切换为「待定」，再点切换为「保留」）'
       : (isUncertain
         ? '当前：待定，本次不删并在执行后给文件名与 Sheet 加 ❓（单击切换为「保留」）'
-        : '当前：保留（单击切换为「删除」）');
+        : '当前：保留（单击切换为「删除」）')) + renameTip;
     if (processed) {
       return `<span class="preview-sheet-tag is-${st} is-processed" title="已在预览窗口处理，重新扫描后更新">${labelHtml}</span>`;
     }
