@@ -1,8 +1,10 @@
+import atexit
 import copy
 import json
 import logging
 import os
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -12,6 +14,9 @@ from core.storage import load_snapshot, save_snapshot
 
 REPORT_LOCK = threading.RLock()
 REPORT_STATE_PATH = PROJECT_ROOT / "record_state.json"
+WRITE_INTERVAL = 1.0  # 进度更新很频繁：数据库和 Markdown 最多每秒写一次，开始、结束、中断时立即写
+_last_write = 0.0
+_write_timer: threading.Timer | None = None
 
 STATUS_LABELS = {
     "pending": "⏳ 待处理",
@@ -99,7 +104,11 @@ def _time_str() -> str:
 
 
 def _recompute_counters_unlocked() -> None:
-    files = list(EXECUTION_STATE["files"].values())
+    batch = EXECUTION_STATE.get("batch") or []
+    files = (
+        [EXECUTION_STATE["files"][name] for name in batch if name in EXECUTION_STATE["files"]]
+        if batch else list(EXECUTION_STATE["files"].values())
+    )
     total = len(files)
     done_cnt = sum(1 for f in files if f["status"] in {"done", "needs_fix"})
     proc_cnt = sum(1 for f in files if f["status"] == "processing")
@@ -118,6 +127,15 @@ def _recompute_counters_unlocked() -> None:
     EXECUTION_STATE["updated_at"] = _now_str()
 
 
+def _same_folder(a: str, b: Path) -> bool:
+    if not a:
+        return False
+    try:
+        return Path(a).resolve() == b.resolve()
+    except OSError:
+        return Path(a) == b
+
+
 def init_execution_batch(
     task_name: str,
     folder: Path,
@@ -126,36 +144,49 @@ def init_execution_batch(
     backup_folder: Path | None = None,
     preserve_existing_files: bool = False,
 ) -> None:
-    """初始化一批待处理 Excel 文件的执行记录队列"""
+    """初始化一批待处理 Excel 文件的执行记录队列。
+
+    同一个文件夹接着做下一步（精简 Sheet → 导出 PDF → 切字扫描……）时累加：
+    每个文件的记录合并，前面步骤的结果不丢；换了文件夹才清空重来。"""
     with REPORT_LOCK:
         now = _now_str()
+        keep = preserve_existing_files or _same_folder(EXECUTION_STATE.get("folder", ""), folder)
         EXECUTION_STATE["task_name"] = task_name
         EXECUTION_STATE["folder"] = str(folder)
-        # 新批次不沿用上一批的输出目录，避免报告里出现与本次任务无关的路径
-        if pdf_folder is not None or not preserve_existing_files:
+        # 换文件夹不沿用上一批的输出目录，避免报告里出现与本次任务无关的路径
+        if pdf_folder is not None or not keep:
             EXECUTION_STATE["pdf_folder"] = str(pdf_folder) if pdf_folder is not None else ""
         if backup_folder is not None or not preserve_existing_files:
             EXECUTION_STATE["backup_folder"] = str(backup_folder) if backup_folder is not None else ""
         EXECUTION_STATE["status"] = "running"
-        if not preserve_existing_files or not EXECUTION_STATE["started_at"]:
+        if not keep or not EXECUTION_STATE["started_at"]:
             EXECUTION_STATE["started_at"] = now
         EXECUTION_STATE["updated_at"] = now
         EXECUTION_STATE["current_file"] = ""
         EXECUTION_STATE["current_step"] = f"准备执行：{task_name}"
 
-        if not preserve_existing_files:
+        if not keep:
             EXECUTION_STATE["files"].clear()
+            EXECUTION_STATE["steps"] = []
+        steps = EXECUTION_STATE.setdefault("steps", [])
+        if task_name not in steps:
+            steps.append(task_name)
 
-        for idx, wb_path in enumerate(workbooks, start=1):
+        next_index = max((int(f.get("index", 0)) for f in EXECUTION_STATE["files"].values()), default=0) + 1
+        batch: list[str] = []
+        for wb_path in workbooks:
             wb_name = workbook_rel_name(wb_path, folder)
-            if preserve_existing_files and wb_name in EXECUTION_STATE["files"]:
-                existing = EXECUTION_STATE["files"][wb_name]
+            batch.append(wb_name)
+            existing = EXECUTION_STATE["files"].get(wb_name)
+            if existing is not None:
                 existing["status"] = "pending"
+                existing["path"] = str(wb_path)
                 existing["current_action"] = "排队等待处理..."
+                existing["error"] = ""
                 existing["updated_at"] = _time_str()
             else:
                 EXECUTION_STATE["files"][wb_name] = {
-                    "index": idx,
+                    "index": next_index,
                     "name": wb_name,
                     "path": str(wb_path),
                     "status": "pending",  # pending | processing | needs_fix | done | error
@@ -172,6 +203,9 @@ def init_execution_batch(
                     "updated_at": _time_str(),
                     "error": "",
                 }
+                next_index += 1
+        # 进度只按这一步要处理的文件算；报告里仍列出这个文件夹做过的全部文件
+        EXECUTION_STATE["batch"] = batch
 
         _recompute_counters_unlocked()
         _persist_and_write_markdown_unlocked()
@@ -212,7 +246,7 @@ def update_file_progress(
                 wb_name, entry = matches[0]
         if entry is None:
             entry = {
-                "index": len(EXECUTION_STATE["files"]) + 1,
+                "index": max((int(f.get("index", 0)) for f in EXECUTION_STATE["files"].values()), default=0) + 1,
                 "name": wb_name,
                 "path": wb_name,
                 "status": "pending",
@@ -230,6 +264,8 @@ def update_file_progress(
                 "error": "",
             }
             EXECUTION_STATE["files"][wb_name] = entry
+            if EXECUTION_STATE.get("batch"):
+                EXECUTION_STATE["batch"].append(wb_name)
 
         if status is not None:
             entry["status"] = status
@@ -263,7 +299,7 @@ def update_file_progress(
 
         entry["updated_at"] = _time_str()
         _recompute_counters_unlocked()
-        _persist_and_write_markdown_unlocked()
+        _write_soon_unlocked()
 
 
 def finish_execution_batch(summary_step: str = "全部任务处理完毕") -> None:
@@ -327,6 +363,7 @@ def render_execution_markdown() -> str:
         "# 📊 Excel 批处理与切字检查执行记录报告",
         "",
         f"- **当前任务**：{state['task_name']}",
+        *([f"- **已执行步骤**：{' → '.join(state['steps'])}"] if len(state.get("steps") or []) > 1 else []),
         f"- **任务状态**：{status_badge}（当前进度：**{state['progress_pct']}%**，`{state['completed_files']}/{state['total_files']}` 个文件）",
         f"- **目标文件夹**：`{state['folder'] or '-'}`",
     ]
@@ -400,7 +437,45 @@ def render_execution_markdown() -> str:
     return "\n".join(lines)
 
 
+def _write_soon_unlocked() -> None:
+    global _write_timer
+    wait = _last_write + WRITE_INTERVAL - time.monotonic()
+    if wait <= 0:
+        _persist_and_write_markdown_unlocked()
+    elif _write_timer is None:
+        _write_timer = threading.Timer(wait, _flush_pending_write)
+        _write_timer.daemon = True
+        _write_timer.start()
+
+
+def _flush_pending_write() -> None:
+    global _write_timer
+    with REPORT_LOCK:
+        if _write_timer is None:
+            return  # 已经立即写过了
+        _write_timer = None
+        try:
+            _persist_and_write_markdown_unlocked()
+        except Exception:
+            logging.exception("无法保存执行记录")
+
+
+def flush_execution_report() -> None:
+    """把还没写的进度立即写进数据库和 Markdown（程序退出时也会调用）"""
+    with REPORT_LOCK:
+        if _write_timer is not None:
+            _persist_and_write_markdown_unlocked()
+
+
+atexit.register(flush_execution_report)
+
+
 def _persist_and_write_markdown_unlocked() -> None:
+    global _last_write, _write_timer
+    if _write_timer is not None:
+        _write_timer.cancel()
+        _write_timer = None
+    _last_write = time.monotonic()
     save_snapshot("report", EXECUTION_STATE)
 
     md_text = render_execution_markdown()

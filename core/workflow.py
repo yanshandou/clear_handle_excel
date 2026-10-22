@@ -84,6 +84,7 @@ STATE_LOCK = threading.RLock()
 MANUAL_CONFIRMED_REASON = "人工确认无需修复"
 MANUALLY_FIXED_REASON = "人工修改后重新检测未再检出压线"
 RESOLVED_STATUSES = {"accepted", "fixed"}
+MAX_LOG_LINES = 500
 LATER_REVIEW_REASON = "已挂起，稍后统一人工复检（Excel 里标了黄色）"
 LATER_REVIEW_FAILED_REASON = "统一复检仍有问题：请继续修改并保存后再复检，或标记无需修改"
 
@@ -258,6 +259,8 @@ def log_msg(msg: str) -> None:
     line = f"[{timestamp}] {msg}"
     with STATE_LOCK:
         STATE["logs"].append(line)
+        # ② 可以长时间在后台跑，日志只留最近这些行（每次保存状态都会带上日志）
+        del STATE["logs"][:-MAX_LOG_LINES]
     console_print(line)
 
 

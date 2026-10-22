@@ -266,6 +266,7 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(self.workflow.STATE["items"]["item_1"]["status"], "accepted")
         self.assertEqual(self.workflow._select_changed_problem_items(), [])
         self.workflow.set_manual_confirmation("item_1", False)
+        self.reporter.flush_execution_report()  # 进度最多每秒写一次库
         report = self.snapshot("report")["files"]["book.xlsx"]
         self.assertEqual((report["clip_accepted"], report["clip_unfixed"]), (0, 1))
         self.assertEqual(self.workflow.STATE["items"]["item_1"]["status"], "pending")
