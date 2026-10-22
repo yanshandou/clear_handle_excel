@@ -17,7 +17,9 @@ from core.excel_ops import (
     CellProbe, close_saved_workbooks, extract_sheet_snapshot, normalize_workbook_view,
     open_workbooks_for_review, snapshot_cells,
 )
-from core.hidden_text import collect_text_pieces, is_excel_error, locate_text, normalize_text
+from core.hidden_text import (
+    REASON_CLIPPED, REASON_TRUNCATED, collect_text_pieces, is_excel_error, locate_text, normalize_text,
+)
 from core.pdf_detector import fitz, render_crop_base64
 from core.reporter import finish_execution_batch, init_execution_batch, update_file_progress
 
@@ -28,6 +30,7 @@ WAITING_MESSAGE = "等待自动处理"
 # Excel 行高按屏幕像素取整（100% 缩放 0.75pt、125% 0.6pt），写入后读回会差一点；
 # 比这个差得少就算同一个行高（日文 Excel 默认 18.75pt，按 0.1 取整成 18.8 会被误判成「已被修改」）
 ROW_HEIGHT_TOLERANCE = .4
+XL_HALIGN_RIGHT, XL_HALIGN_CENTER = -4152, -4108
 
 
 def _data() -> dict[str, Any]:
@@ -207,7 +210,8 @@ def snapshot() -> dict:
                 result["problems"] = list({p["kind"]: p for p in map(_problem, _items_at(card))}.values())
             row = _row_record(card)
             if row is not None:
-                result["row_height"] = {"base": row["base"], "applied": row["applied"], "saved": row["saved"]}
+                result["row_height"] = {"base": row["base"], "applied": row["applied"], "saved": row["saved"],
+                                        "wrap": card.get("cell_addr") in row.get("wrap", [])}
             result["adoptable"] = _adoptable(card)
             result["images"] = {
                 which: _image_url(name) for which, name in card.get("fix_images", {}).items()
@@ -289,18 +293,29 @@ def _write_rows(excel: Any, journal: dict) -> None:
         if book.ReadOnly:
             raise ValueError(f"{where} 文件以只读方式打开，未写入")
         actual = [float(book.Sheets(r["sheet"]).Rows(r["row"]).RowHeight) for r in journal["rows"]]
-        at_target = all(abs(h - r["target"]) < ROW_HEIGHT_TOLERANCE for h, r in zip(actual, journal["rows"]))
+        # 自动换行和行高一起保存；续跑时两样都已到位才算写过
+        wraps = [(r["sheet"], addr, on) for r in journal["rows"] for addr, on in (r.get("wrap") or {}).items()]
+        at_target = (all(abs(h - r["target"]) < ROW_HEIGHT_TOLERANCE for h, r in zip(actual, journal["rows"]))
+                     and all(bool(book.Sheets(sh).Range(addr).MergeArea.WrapText) == on for sh, addr, on in wraps))
         if wf._file_version(Path(path)) != journal["version"] and not at_target:
             raise ValueError(f"{where} 文件在准备后被修改，已停止写入；核对后可继续任务，或点「放弃这次写入」")
         if not at_target:
             if any(abs(h - r["expected"]) >= ROW_HEIGHT_TOLERANCE for h, r in zip(actual, journal["rows"])):
                 raise ValueError(f"{where} 行高已被其他操作修改，未覆盖人工修改；可点「放弃这次写入」转人工处理")
+            for sheet, addr, on in wraps:
+                book.Sheets(sheet).Range(addr).MergeArea.WrapText = on
             for row in journal["rows"]:
                 book.Sheets(row["sheet"]).Rows(row["row"]).RowHeight = row["target"]
             normalize_workbook_view(excel, book)
             book.Save()
     finally:
         book.Close(SaveChanges=False)
+
+
+def _wrapped(pending: dict, card: dict) -> list[str]:
+    """这次写入在卡片所在行开启自动换行的单元格"""
+    return [addr for r in pending["rows"] if r["row"] == card["excel_row"] and r["sheet"] == card["sheet_name"]
+            for addr, on in (r.get("wrap") or {}).items() if on]
 
 
 def _finish_pending(excel: Any) -> None:
@@ -316,6 +331,8 @@ def _finish_pending(excel: Any) -> None:
             # 人工认可的加高等同正式接受，不再属于可还原的待审核修改
             record["saved"] = pending["action"] == "fix"
             record["applied"] = row["target"]
+            if pending["action"] != "restore":
+                record["wrap"] = [addr for addr, on in (row.get("wrap") or {}).items() if on]
             if pending["action"] == "fix" and row["id"] not in job.setdefault("attempted_rows", []):
                 job["attempted_rows"].append(row["id"])
         for cid in pending["cards"]:
@@ -324,12 +341,15 @@ def _finish_pending(excel: Any) -> None:
                 card.update(color="blue", verified=True, after_kind="fixed", message="已自动修复并保存，等待审核")
                 for item in _items_at(card):
                     item.update(status="fixed", batch_managed=True, triage_keep=False,
+                                wrap_text=card.get("cell_addr") in _wrapped(pending, card),
                                 row_height=next(r["target"] for r in pending["rows"] if r["row"] == card["excel_row"]
                                                 and r["sheet"] == card["sheet_name"]),
                                 fix_images=copy.deepcopy(card.get("fix_images", {})),
                                 review_reason="全自动批处理：已修复并保存")
             elif pending["action"] == "adopt":
-                card.update(verified=True, adopted=True, after_kind="fixed", message="已按最后一次尝试加高并保存",
+                card.update(verified=True, adopted=True, after_kind="fixed",
+                            message="已按最后一次尝试" + ("开启自动换行、" if _wrapped(pending, card) else "")
+                            + "加高并保存",
                             adopted_height=next(r["target"] for r in pending["rows"] if r["row"] == card["excel_row"]
                                                 and r["sheet"] == card["sheet_name"]))
             else:
@@ -443,13 +463,44 @@ def _group_cells(items: list[dict]) -> list[list[dict]]:
     return list(cells.values())
 
 
+def _wrap_targets(sheet: Any, items: list[dict]) -> list[str]:
+    """没开自动换行、整行文字横向放不下被截掉的格子：怎么加高都没用，要先开自动换行再加高。
+    只改这一格（合并单元格按整个合并区域），不动列宽，整页排版不变。
+    没合并的格子旁边是空格时，文字本来会延伸到旁边显示，截断多半不是横向的，不开换行，免得改变原来的显示方式。"""
+    targets = []
+    for item in items:
+        if item.get("kind") != "hidden" or item.get("hidden_reason") not in (REASON_TRUNCATED, REASON_CLIPPED):
+            continue
+        addr = item.get("cell_addr") or ""
+        try:
+            area = sheet.Range(addr).MergeArea
+            if area.WrapText is not False or area.ShrinkToFit:
+                continue  # 已经换行（或合并区域里设置不一致），缩小字体填充的也不动
+            row, col = int(area.Row), int(area.Column)
+            if int(area.Cells.Count) == 1:
+                align = area.HorizontalAlignment
+                sides = ([col - 1] if align == XL_HALIGN_RIGHT else [col - 1, col + 1] if align == XL_HALIGN_CENTER
+                         else [col + 1])
+                if not any(c > 0 and (sheet.Cells(row, c).MergeCells or str(sheet.Cells(row, c).Formula) != "")
+                           for c in sides):
+                    continue
+        except Exception:
+            continue  # 读不到格式就按原来的方式只加高
+        if addr not in targets:
+            targets.append(addr)
+    return targets
+
+
 def _prepare_row(
     session: Any, path: str, items: list[dict], *,
-    on_attempt: Callable[[int, float, dict], None] | None = None,
+    on_attempt: Callable[[int, float, dict, list[str]], None] | None = None,
 ) -> tuple[float, dict | None, dict]:
-    """只在副本上做图；逐次交出截图，即使随后导出失败也能保留最后已生成的效果。"""
+    """只在副本上做图；逐次交出截图，即使随后导出失败也能保留最后已生成的效果。
+    原样没通过、有不换行被横向截断的格子时，从第一次加高起先给这些格子开自动换行。"""
     sheet = session.copy_of(path).Sheets(items[0]["sheet_name"])
     autofix.validate_print_targets(sheet, items)
+    wrap = _wrap_targets(sheet, items)
+    wrapped: list[str] = []
     row = int(items[0]["excel_row"])
     base = round(float(sheet.Rows(row).RowHeight), 2)
     cells = snapshot_cells(extract_sheet_snapshot(sheet))
@@ -465,6 +516,10 @@ def _prepare_row(
             height = min(autofix.MAX_ROW_HEIGHT, round(base + extra, 2))
             if attempt and height <= last_height:
                 break
+            if attempt == 1 and wrap:
+                for addr in wrap:
+                    sheet.Range(addr).MergeArea.WrapText = True
+                wrapped = list(wrap)
             sheet.Rows(row).RowHeight = height
             wf._export_sheet_pdf(sheet, pdf)
             # 每次行高改变后重建 probe，避免沿用 Range.Text 缓存。
@@ -473,11 +528,11 @@ def _prepare_row(
             shots = {_key(*_cell(group[0])): autofix._evaluate(pdf, group, cells, probe.text, probe.printed)[1]
                      for group in groups}
             if on_attempt is not None:
-                on_attempt(attempt, height, shots)
+                on_attempt(attempt, height, shots, wrapped)
             if attempt == 0:
                 before = shots
             if ok:
-                chosen = {"height": height, "shots": shots}
+                chosen = {"height": height, "shots": shots, "wrap": wrapped}
             if (attempt == 0 and ok) or success:
                 break
             success = ok
@@ -486,6 +541,8 @@ def _prepare_row(
                         math.ceil(round((extra + need) / autofix.STEP_PT, 3)) * autofix.STEP_PT)
     finally:
         sheet.Rows(row).RowHeight = base
+        for addr in wrapped:
+            sheet.Range(addr).MergeArea.WrapText = False
         pdf.unlink(missing_ok=True)
     return base, chosen, before
 
@@ -535,7 +592,7 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
         _check_file(path)
         version = wf._file_version(Path(path))
 
-        def remember_attempt(index: int, height: float, shots: dict) -> None:
+        def remember_attempt(index: int, height: float, shots: dict, wrapped: list[str] = ()) -> None:
             with wf.STATE_LOCK:
                 for card in cards:
                     if index == 0:
@@ -545,7 +602,8 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                     # 只给卡片留参考图，不写入问题项的修复报告，也不写原 Excel。
                     fix_images.forget(card, "after")
                     _save_shot(card, "after", shots.get(card["id"], ""))
-                    card.update(after_kind="attempt", attempt_height=height)
+                    card.update(after_kind="attempt", attempt_height=height,
+                                attempt_wrap=[a for a in wrapped if a == card.get("cell_addr")])
                 wf._persist_state()
 
         try:
@@ -592,11 +650,12 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                 else:
                     _data()["rows"][rid] = {"id": rid, "path": path, "sheet": first["sheet_name"],
                                             "row": int(first["excel_row"]), "base": base,
-                                            "applied": chosen["height"], "saved": False}
+                                            "applied": chosen["height"], "saved": False, "wrap": []}
                     job["pending_adjustment"] = {
                         "action": "fix", "path": path, "version": version, "cards": [c["id"] for c in cards],
                         "rows": [{"id": rid, "sheet": first["sheet_name"], "row": int(first["excel_row"]),
-                                  "expected": base, "target": chosen["height"]}],
+                                  "expected": base, "target": chosen["height"],
+                                  "wrap": {addr: True for addr in chosen.get("wrap", [])}}],
                     }
                 wf._persist_state()
             if not unchanged:
@@ -668,7 +727,8 @@ def _commit_review(excel: Any) -> None:
             if not row or row["path"] != path or not row["saved"] or all(c["color"] == "blue" for c in peers):
                 continue
             rows.append({"id": rid, "sheet": row["sheet"], "row": row["row"],
-                         "expected": row["applied"], "target": row["base"]})
+                         "expected": row["applied"], "target": row["base"],
+                         "wrap": {addr: False for addr in row.get("wrap", [])}})
             reverting.extend(c["id"] for c in peers)
         if rows:
             job["options"].setdefault("refresh_sheets", {})[path] = sorted({r["sheet"] for r in rows})
@@ -686,6 +746,7 @@ def _commit_review(excel: Any) -> None:
                     rule = {"cell": list(_cell(card)), "signatures": card["signatures"]}
                     if card.get("adopted"):
                         rule["fixed"] = {"row_height": card["adopted_height"], "batch_managed": True,
+                                         "wrap_text": bool(card.get("attempt_wrap")),
                                          "fix_images": copy.deepcopy(card.get("fix_images", {})),
                                          "review_reason": "全自动批处理：已修复并保存"}
                     if rule not in data["ignored"]:
@@ -752,7 +813,8 @@ def _adopt_rows(excel: Any, path: str, by_row: dict[str, list[dict]]) -> None:
                                       "row": int(first["excel_row"]), "base": first["base_height"],
                                       "applied": first["base_height"], "saved": False})
         rows.append({"id": rid, "sheet": first["sheet_name"], "row": int(first["excel_row"]),
-                     "expected": first["base_height"], "target": target})
+                     "expected": first["base_height"], "target": target,
+                     "wrap": {addr: True for c in mine for addr in c.get("attempt_wrap", [])}})
         adopting.extend(c["id"] for c in mine)
     if not rows:
         return

@@ -596,6 +596,9 @@ HIDDEN_FIX_REASONS = {
 }
 
 
+WRAP_FIX_REASON = "文字超出列宽、没有自动换行，后半段被截掉"
+
+
 def _report_name(path: str) -> str:
     """执行记录里这个文件的名字（相对目标文件夹，去掉「★」）"""
     return workbook_rel_name(Path(path), STATE.get("folder"))
@@ -604,6 +607,8 @@ def _report_name(path: str) -> str:
 def _fix_record(item: dict[str, Any]) -> dict[str, Any]:
     if (item.get("kind") or "clip") == "hidden":
         reason = HIDDEN_FIX_REASONS.get(item.get("hidden_reason") or "", item.get("hidden_reason") or "文字没显示全")
+        if item.get("wrap_text"):
+            reason = WRAP_FIX_REASON
     else:
         reason = CLIP_FIX_REASON
     images = item.get("fix_images") or {}

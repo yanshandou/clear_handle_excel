@@ -486,6 +486,94 @@ class BatchTests(unittest.TestCase):
             _, chosen, _ = batch._prepare_row(fixture.session, str(fixture.wb_path), items)
         self.assertEqual(chosen["height"], 21)
 
+    def wrap_sheet(self, *, wrap=False, merged=True, neighbor="", align=1):
+        cells = {}
+        def cell(row, col):
+            return cells.setdefault((row, col), Mock(MergeCells=False, Formula=neighbor if col != 16 else "x"))
+        area = Mock(WrapText=wrap, ShrinkToFit=False, Row=146, Column=16, HorizontalAlignment=align)
+        area.Cells.Count = 3 if merged else 1
+        sheet = Mock()
+        sheet.Range.return_value.MergeArea = area
+        sheet.Cells.side_effect = cell
+        return sheet, area
+
+    def test_unwrapped_text_cut_off_sideways_is_wrapped(self):
+        """文字不换行、横向被截掉（如 概要!P146）：加高没用，要先开自动换行"""
+        item = {"kind": "hidden", "hidden_reason": batch.REASON_TRUNCATED, "cell_addr": "P146"}
+        sheet, _ = self.wrap_sheet()
+        self.assertEqual(batch._wrap_targets(sheet, [item]), ["P146"])
+        # 已经换行、压线问题、没合并且右边是空格（文字本来会延伸显示）的都不动
+        self.assertEqual(batch._wrap_targets(self.wrap_sheet(wrap=True)[0], [item]), [])
+        self.assertEqual(batch._wrap_targets(sheet, [{**item, "kind": "clip"}]), [])
+        self.assertEqual(batch._wrap_targets(self.wrap_sheet(merged=False)[0], [item]), [])
+        self.assertEqual(batch._wrap_targets(self.wrap_sheet(merged=False, neighbor="備考")[0], [item]), ["P146"])
+        # 右对齐看左边
+        right = self.wrap_sheet(merged=False, neighbor="x", align=batch.XL_HALIGN_RIGHT)[0]
+        self.assertEqual(batch._wrap_targets(right, [item]), ["P146"])
+
+    def test_preparation_turns_on_wrap_from_first_raise_and_restores_copy(self):
+        from test_autofix import AutofixTests, FakeSheet
+        fixture = AutofixTests("runTest")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        items = list(workflow.STATE["items"].values())
+        area = Mock(WrapText=False)
+        states = []
+        frames = []
+        def record(index, height, shots, wrapped):
+            states.append(area.WrapText)
+            frames.append((index, list(wrapped)))
+        with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot), \
+                patch.object(batch, "_wrap_targets", return_value=["B5"]), \
+                patch.object(FakeSheet, "Range", create=True, new=lambda self, addr: Mock(MergeArea=area)):
+            base, chosen, _ = batch._prepare_row(fixture.session, str(fixture.wb_path), items, on_attempt=record)
+        self.assertEqual(frames[0], (0, []))  # 修改前就是原样
+        self.assertEqual(states[:2], [False, True])
+        self.assertTrue(all(wrapped == ["B5"] for _, wrapped in frames[1:]))
+        self.assertEqual(chosen["wrap"], ["B5"])
+        self.assertIs(area.WrapText, False)  # 副本也还原
+        self.assertFalse(any(book.saved for book in fixture.books))
+
+    def test_wrapped_fix_is_saved_restored_and_reported(self):
+        card, item = self.add_card(address="A5", color="yellow")
+        item["status"] = "pending"
+        batch._data()["rows"].clear()
+        area = self.book.Sheets.return_value.Range.return_value.MergeArea
+        area.WrapText = False
+        def prepare(*_, on_attempt):
+            on_attempt(0, 24, {card["id"]: "data:image/png;base64,YmVmb3Jl"}, [])
+            on_attempt(1, 33, {card["id"]: "data:image/png;base64,bGFzdA=="}, ["A5"])
+            return 24, {"height": 36, "shots": {}, "wrap": ["A5"]}, {}
+        with patch.object(batch, "_prepare_row", side_effect=prepare):
+            batch._repair_file(self.excel, Mock(), self.path)
+        self.assertIs(area.WrapText, True)
+        self.assertEqual(self.heights[5], 36)
+        self.assertTrue(item["wrap_text"])
+        self.assertEqual(self.wf._fix_record(item)["reason"], self.wf.WRAP_FIX_REASON)
+        self.assertTrue(batch.snapshot()["cards"][0]["row_height"]["wrap"])
+        # 续跑时换行和行高都到位：不重复保存
+        self.book.Save.reset_mock()
+        rid = batch._key(self.path, "S1", 5)
+        batch._write_rows(self.excel, {"path": self.path, "version": "old", "rows": [
+            {"id": rid, "sheet": "S1", "row": 5, "expected": 24, "target": 36, "wrap": {"A5": True}}]})
+        self.book.Save.assert_not_called()
+        # 标绿：行高和自动换行一起还原
+        batch.mark(card["id"], "green")
+        self.commit([card])
+        self.assertEqual(self.heights[5], 24)
+        self.assertIs(area.WrapText, False)
+
+    def test_blue_on_failed_wrapped_attempt_writes_wrap_too(self):
+        card, item = self.attempt_card()
+        card["attempt_wrap"] = ["A5"]
+        area = self.book.Sheets.return_value.Range.return_value.MergeArea
+        area.WrapText = False
+        batch.mark(card["id"], "blue")
+        self.commit([card])
+        self.assertEqual(self.heights[5], 33.0)
+        self.assertIs(area.WrapText, True)
+        self.assertTrue(item["wrap_text"])
+
     def test_snapshot_restores_cards_but_never_includes_inline_image_data(self):
         card, _ = self.add_card()
         batch._save_shot(card, "before", "data:image/png;base64,YQ==")
@@ -619,7 +707,7 @@ class BatchTests(unittest.TestCase):
         with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot):
             base, chosen, before = batch._prepare_row(
                 fixture.session, str(fixture.wb_path), items,
-                on_attempt=lambda index, height, shots: frames.append((index, height, shots)))
+                on_attempt=lambda index, height, shots, wrapped: frames.append((index, height, shots)))
         self.assertIsNone(chosen)
         self.assertEqual((base, frames[-1][0], frames[-1][1]), (15, 8, 39))
         self.assertTrue(all(before.values()) and all(frames[-1][2].values()))
@@ -798,7 +886,7 @@ class BatchTests(unittest.TestCase):
         result = batch.snapshot()["cards"][0]
         self.assertEqual(result["problems"], [{"kind": "hidden", "label": "隐藏截断",
                                                "reason": "后面的文字没显示", "missing": "空"}])
-        self.assertEqual(result["row_height"], {"base": 15.0, "applied": 24.0, "saved": True})
+        self.assertEqual(result["row_height"], {"base": 15.0, "applied": 24.0, "saved": True, "wrap": False})
         clip = {**item, "id": "clip", "kind": "clip", "cell_addr": "B5"}
         self.assertEqual(batch._problem(clip)["label"], "压线")
         self.assertEqual(batch._problem(clip)["missing"], "")
