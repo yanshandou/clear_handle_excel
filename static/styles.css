@@ -1554,6 +1554,20 @@ input[type="text"] {
   line-height: 1.7;
 }
 
+.triage-card-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 14px;
+  font-size: 13px;
+}
+
+.triage-card-tools input {
+  width: 72px;
+  margin-left: 4px;
+}
+
 .triage-actions {
   display: flex;
   justify-content: space-between;
