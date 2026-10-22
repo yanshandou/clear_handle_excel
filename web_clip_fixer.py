@@ -137,6 +137,8 @@ class WebHandler(BaseHTTPRequestHandler):
             self._serve_static_file("index.html")
         elif parsed.path in {"/records", "/records.html"}:
             self._serve_static_file("records.html")
+        elif parsed.path == "/favicon.ico":
+            self._serve_static_file("favicon.svg")
         elif parsed.path.startswith("/static/"):
             rel = parsed.path.removeprefix("/static/")
             self._serve_static_file(rel)
