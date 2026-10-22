@@ -8,7 +8,13 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
-from core.common import STATIC_DIR, console_print, find_backup_sheets, sanitize_filename
+from core.common import (
+    STATIC_DIR,
+    console_print,
+    find_backup_sheets,
+    sanitize_filename,
+    workbook_rel_name,
+)
 from core.excel_ops import extract_sheet_snapshot, match_excel_row, normalize_workbook_view
 from core.pdf_detector import (
     extract_page_lines,
@@ -18,6 +24,7 @@ from core.pdf_detector import (
     render_page_overview,
 )
 from core.reporter import get_execution_report_snapshot, render_execution_markdown
+from core.sheet_preview import preview_image_path, render_workbook_previews, workbook_preview_info
 from core.workflow import (
     QUICK_TASK_NAMES,
     STATE,
@@ -36,6 +43,7 @@ from core.workflow import (
     run_pending_workflow,
     set_manual_confirmation,
     update_item_row,
+    validate_clean_files,
     validate_clean_plan,
 )
 
@@ -115,6 +123,15 @@ class WebHandler(BaseHTTPRequestHandler):
             self._serve_static_file("home.html")
         elif parsed.path in {"/clean", "/clean.html"}:
             self._serve_static_file("clean.html")
+        elif parsed.path in {"/clean/preview", "/clean_preview.html"}:
+            self._serve_static_file("clean_preview.html")
+        elif parsed.path.startswith("/api/clean/thumb/"):
+            parts = parsed.path.removeprefix("/api/clean/thumb/").split("/")
+            image = preview_image_path(*parts) if len(parts) == 2 else None
+            if image is None:
+                self.send_error(404)
+                return
+            self._send_bytes(image.read_bytes(), "image/png")
         elif parsed.path in {"/workbench", "/index.html"}:
             self._serve_static_file("index.html")
         elif parsed.path in {"/records", "/records.html"}:
@@ -219,14 +236,38 @@ class WebHandler(BaseHTTPRequestHandler):
             kind = payload.get("kind")
             if not isinstance(kind, str) or kind not in QUICK_TASK_NAMES:
                 raise ValueError("未知的功能")
-            folder, _ = list_workbooks(_require_folder(payload))
+            folder, workbooks = list_workbooks(_require_folder(payload))
             options: dict[str, object] = {"folder": str(folder)}
             if kind == "clean_sheets" and "plan" in payload:
                 options["plan"] = validate_clean_plan(payload["plan"])
+            if kind == "clean_sheets" and "files" in payload:
+                options["files"] = validate_clean_files(payload["files"])
+                existing = {workbook_rel_name(wb, folder) for wb in workbooks}
+                if not existing.intersection(options["files"]):
+                    raise ValueError("要处理的文件已被移动或改名，请重新扫描")
             self._start_job(kind, options)
 
         elif self.path == "/api/clean/preview":
             self._send_json({"ok": True, **preview_backup_sheets(_require_folder(payload))})
+
+        elif self.path == "/api/clean/file":
+            file_name = payload.get("file")
+            if not isinstance(file_name, str) or not file_name:
+                raise ValueError("需要有效的文件名")
+            self._send_json({"ok": True, **workbook_preview_info(_require_folder(payload), file_name)})
+
+        elif self.path == "/api/clean/render":
+            file_name = payload.get("file")
+            if not isinstance(file_name, str) or not file_name:
+                raise ValueError("需要有效的文件名")
+            try:
+                result = render_workbook_previews(_require_folder(payload), file_name)
+            except ValueError:
+                raise
+            except Exception as err:
+                self._send_json({"ok": False, "error": f"生成预览图失败: {err}"}, status=500)
+                return
+            self._send_json({"ok": True, **result})
 
         elif self.path == "/api/progress/import":
             self._send_json({"ok": True, **import_progress(payload)})
