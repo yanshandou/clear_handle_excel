@@ -86,6 +86,8 @@ from core.reporter import (
     flush_execution_report,
     get_execution_report_snapshot,
     init_execution_batch,
+    report_folder,
+    same_folder,
     interrupt_execution_batch,
     replace_execution_report,
     update_file_progress,
@@ -564,7 +566,9 @@ def _fix_record(item: dict[str, Any]) -> dict[str, Any]:
 
 def _problem_counts(path: str) -> dict[str, Any]:
     """这个文件的切字统计和已修复位置，交给 update_file_progress"""
-    items = [item for item in STATE["items"].values() if item["wb_path"] == path]
+    # 同一个文件可能有新旧两个路径（改名加了 ★ / 去掉 ★），按执行记录里的名字算在一起
+    name = _report_name(path)
+    items = [item for item in STATE["items"].values() if _report_name(item["wb_path"]) == name]
     fixed = sum(item["status"] == "fixed" for item in items)
     accepted = sum(item["status"] == "accepted" for item in items)
     return {
@@ -574,7 +578,25 @@ def _problem_counts(path: str) -> dict[str, Any]:
     }
 
 
+def _report_is_for_workbench() -> bool:
+    """执行记录现在是不是工作台这个文件夹的（主页可能对别的文件夹跑了批处理）"""
+    folder = report_folder()
+    return not folder or same_folder(folder, STATE.get("folder", ""))
+
+
+def _finished_action(counts: dict[str, Any]) -> str:
+    if counts["clip_unfixed"]:
+        return f"还有 {counts['clip_unfixed']} 处待处理"
+    if not counts["clip_detected"]:
+        return "检查完毕，无切字"
+    parts = [f"修复 {counts['clip_fixed']} 处"] if counts["clip_fixed"] else []
+    parts += [f"{counts['clip_accepted']} 处无需修改"] if counts["clip_accepted"] else []
+    return "已处理完：" + "，".join(parts)
+
+
 def _sync_problem_counts(path: str, action: str) -> None:
+    if not _report_is_for_workbench():
+        return  # 不往别的文件夹的执行记录里写
     counts = _problem_counts(path)
     update_file_progress(
         _report_name(path), status="needs_fix" if counts["clip_unfixed"] else "done",
@@ -586,17 +608,26 @@ def resync_report_from_state() -> None:
     """启动时用工作台的问题记录刷新执行记录（旧版本的记录可能停在旧状态、也没有修复位置）"""
     report = get_execution_report_snapshot()
     with STATE_LOCK:
-        paths = list(dict.fromkeys(item["wb_path"] for item in STATE["items"].values()))
-        if not STATE.get("folder") or not report.get("folder") or Path(STATE["folder"]) != Path(report["folder"]):
+        if not STATE.get("folder") or not report.get("folder") or not same_folder(report["folder"], STATE["folder"]):
             return
-        for path in paths:
-            entry = report["files"].get(_report_name(path))
-            if entry is None:
-                continue  # 执行记录里没有的文件（如已删除）不补
-            counts = _problem_counts(path)
-            if report["status"] != "running" and entry.get("status") != "error":
-                counts["status"] = "needs_fix" if counts["clip_unfixed"] else "done"
-            update_file_progress(_report_name(path), **counts)
+        settle = report["status"] not in {"running", "interrupted"}  # 没有可继续的任务时，状态按真实结果改
+        by_name = {_report_name(item["wb_path"]): item["wb_path"] for item in STATE["items"].values()}
+        checked = {_report_name(path) for path in STATE.get("checked_files", {})}
+        for name, entry in report["files"].items():
+            path = by_name.get(name)
+            if path is not None:
+                counts = _problem_counts(path)
+            elif settle and name in checked and entry.get("status") in {"pending", "processing"}:
+                # 检查过、没有切字，却停在「排队等待处理」：上次任务被取消或旧版本没记上
+                counts = {"clip_detected": 0, "clip_fixed": 0, "clip_accepted": 0, "clip_unfixed": 0}
+            else:
+                continue  # 执行记录里有、工作台没检查过的文件（如只精简过 Sheet）不动
+            unresolved_error = entry.get("status") == "error" and counts["clip_unfixed"]
+            if settle and not unresolved_error:
+                status = "needs_fix" if counts["clip_unfixed"] else "done"
+                if status != entry.get("status") or entry.get("status") in {"pending", "processing"} or path is not None:
+                    counts.update(status=status, current_action=_finished_action(counts), error="")
+            update_file_progress(name, **counts)
     flush_execution_report()
 
 
@@ -721,6 +752,7 @@ def _commit_confirmations(previous_items: dict[str, dict[str, Any]], action: str
         _sync_problem_counts(path, action)
     if previous_job and previous_job["status"] == "interrupted" and previous_job.get("kind") != "scan":
         finish_execution_batch("已取消中断任务的续跑，按人工判断更新问题状态")
+        resync_report_from_state()  # 取消的任务里还没轮到的文件不能一直停在「排队等待处理」
 
 
 def set_manual_confirmation(item_id: str, accepted: bool) -> None:
@@ -2582,6 +2614,7 @@ def import_progress(data: Any) -> dict[str, Any]:
         for warning in warnings:
             log_msg(f"  ⚠️ {warning}")
         _persist_state()
+        resync_report_from_state()  # 旧版本导出的进度可能有 🟡 重复行、停在旧状态
         return {
             "exported_at": data.get("exported_at", ""),
             "items": len(STATE["items"]),

@@ -1,5 +1,14 @@
 let currentFilter = 'all';
 let latestReportData = null;
+let lastRenderKey = '';
+const openingFiles = new Set();  // 正在打开的文件：表格每次刷新都会重建，不能靠元素上的 class 防连点
+
+// 看板按记录的键（相对目标文件夹的路径）排序显示；打开文件也用这个键
+function filesOf(data) {
+  return Object.entries(data.files || {})
+    .map(([key, f]) => ({ ...f, key }))
+    .sort((a, b) => Number(a.index || 0) - Number(b.index || 0) || a.key.localeCompare(b.key));
+}
 
 function escapeHtml(str) {
   return String(str ?? '')
@@ -16,7 +25,8 @@ function setStatusFilter(filter) {
     btn.classList.toggle('active', btn.getAttribute('data-filter') === filter);
   });
   if (latestReportData) {
-    renderFilesTable(Object.values(latestReportData.files || {}));
+    lastRenderKey = '';
+    renderFilesTable(filesOf(latestReportData));
   }
 }
 
@@ -38,6 +48,10 @@ function getFileStatusBadge(status) {
 }
 
 function renderFilesTable(filesList) {
+  // 内容没变就不重建表格：不打断选中文字，也不让刚点的链接被换掉
+  const renderKey = currentFilter + JSON.stringify(filesList);
+  if (renderKey === lastRenderKey) return;
+  lastRenderKey = renderKey;
   const tbody = document.getElementById('recordsTableBody');
 
   const cntAll = filesList.length;
@@ -90,16 +104,21 @@ function renderFilesTable(filesList) {
       const fileDisplayName = f.renamed_to && f.renamed_to !== f.name
         ? `${escapeHtml(f.name)} <span style="color:#b45309; font-size:12px;">→ ${escapeHtml(f.renamed_to)}</span>`
         : escapeHtml(f.name);
-      const fileLink = `<a href="#" class="file-open-link" data-file="${escapeHtml(f.name)}" title="点击在 Excel 中打开">📄 ${fileDisplayName}</a>`;
+      const fileLink = `<a href="#" class="file-open-link" data-file="${escapeHtml(f.key)}" title="点击在 Excel 中打开">📄 ${fileDisplayName}</a>`;
 
       const det = Number(f.clip_detected || 0);
       const fix = Number(f.clip_fixed || 0);
       const accepted = Number(f.clip_accepted || 0);
-      let clipHtml = '<span style="color:#059669; font-weight:600;">无切字</span>';
+      // 还没轮到 / 正在处理的文件不能显示「无切字」，看起来像已经查过了
+      let clipHtml = ['pending', 'processing'].includes(f.status) && det === 0
+        ? '<span style="color:#94a3b8;">-</span>'
+        : '<span style="color:#059669; font-weight:600;">无切字</span>';
       if (det > 0) {
+        // 「已处理 / 检出」：修好的和确认无需修改的都算处理完
         const clipColor = fix + accepted >= det ? '#059669' : '#d97706';
-        clipHtml = `<b style="color:${clipColor};">${fix} / ${det}</b>` +
-          (accepted ? `<div>人工确认无需修复 ${accepted} 处</div>` : '');
+        const detail = [fix ? `已修 ${fix}` : '', accepted ? `无需修改 ${accepted}` : ''].filter(Boolean).join(' · ');
+        clipHtml = `<b style="color:${clipColor};">${fix + accepted} / ${det}</b>` +
+          (detail ? `<div>${detail}</div>` : '');
       }
 
       const a1Html = f.normalized_a1
@@ -129,6 +148,7 @@ function renderFilesTable(filesList) {
 async function pollRecords() {
   try {
     const res = await fetch('/api/records');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     latestReportData = data;
 
@@ -163,7 +183,7 @@ async function pollRecords() {
     document.getElementById('progressPctText').textContent = `${pct}% (${done} / ${total} 文件)`;
     document.getElementById('progressBarFill').style.width = `${Math.min(100, Math.max(0, pct))}%`;
 
-    const filesList = Object.values(data.files || {});
+    const filesList = filesOf(data);
     const totalClips = filesList.reduce((acc, f) => acc + Number(f.clip_detected || 0), 0);
     const fixedClips = filesList.reduce((acc, f) => acc + Number(f.clip_fixed || 0), 0);
     const acceptedClips = filesList.reduce((acc, f) => acc + Number(f.clip_accepted || 0), 0);
@@ -172,28 +192,32 @@ async function pollRecords() {
     document.getElementById('kpiDone').innerText = done;
     document.getElementById('kpiProcessing').innerText = Number(data.processing_files || 0);
     document.getElementById('kpiPending').innerText = Number(data.pending_files || 0);
-    document.getElementById('kpiClips').innerText = `${fixedClips} / ${totalClips}` +
-      (acceptedClips ? `（人工确认 ${acceptedClips}）` : '');
+    document.getElementById('kpiClips').innerText = `${fixedClips + acceptedClips} / ${totalClips}` +
+      (acceptedClips ? `（已修 ${fixedClips}，无需修改 ${acceptedClips}）` : '');
 
     renderFilesTable(filesList);
-  } catch (e) {}
+  } catch (e) {
+    // 工具窗口关了或出错时要说清楚，不然看起来像面板一直不更新
+    document.getElementById('statusText').innerText = '⚠️ 连不上工具（命令行窗口是否关了？），下面是之前的数据';
+  }
 }
 
 async function openRecordFile(link) {
-  if (link.classList.contains('opening')) return;
-  link.classList.add('opening');
+  const file = link.dataset.file;
+  if (openingFiles.has(file)) return;
+  openingFiles.add(file);
   try {
     const res = await fetch('/api/records/open', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file: link.dataset.file }),
+      body: JSON.stringify({ file }),
     });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || '打开失败');
   } catch (e) {
     alert(`无法打开文件：${e.message}`);
   } finally {
-    setTimeout(() => link.classList.remove('opening'), 1500);
+    setTimeout(() => openingFiles.delete(file), 1500);
   }
 }
 

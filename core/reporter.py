@@ -5,6 +5,7 @@ import logging
 import os
 import threading
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -60,18 +61,46 @@ def _base_name(name: str) -> str:
     return strip_review_prefix(Path(name).name)
 
 
+def _loose_name(name: str) -> str:
+    """比较文件名用：去掉「★」、全角半角统一（Ｗ/W）、去空格、不分大小写"""
+    return "".join(unicodedata.normalize("NFKC", _base_name(name)).split()).casefold()
+
+
+def _fold_duplicate(target: dict[str, Any], dup: dict[str, Any]) -> None:
+    """旧版本把后面步骤的结果记在了带前缀的那一条上：并进原文件那一条，不丢数据"""
+    target.setdefault("fixes", {}).update(dup.get("fixes") or {})
+    target["deleted_backups"] = list(dict.fromkeys(list(target.get("deleted_backups", [])) + list(dup.get("deleted_backups", []))))
+    if not target.get("all_sheets") and dup.get("all_sheets"):
+        target["all_sheets"] = list(dup["all_sheets"])
+    target["normalized_a1"] = bool(target.get("normalized_a1") or dup.get("normalized_a1"))
+    target["exported_pdfs"] = max(int(target.get("exported_pdfs", 0) or 0), int(dup.get("exported_pdfs", 0) or 0))
+    if target.get("status") in {"pending", "processing"} and dup.get("status") not in {None, "pending", "processing"}:
+        for field in ("status", "current_action", "error", "updated_at", "clip_detected", "clip_fixed",
+                      "clip_accepted", "clip_unfixed"):
+            if field in dup:
+                target[field] = dup[field]
+
+
 def _merge_review_duplicates_unlocked() -> bool:
-    """旧版本按「★」改名后的文件名另记了一条：并回原文件那一条（数字之后由工作台重新同步）"""
+    """旧版本按「🟡」改名后的文件名另记了一条：并回原文件那一条（数字之后由工作台重新同步）"""
     files = EXECUTION_STATE["files"]
     changed = False
     for key in [k for k in files if has_review_prefix(Path(k).name)]:
         dup = files.pop(key)
+        changed = True
         targets = [k for k in files if _base_name(k) == _base_name(key)]
         if len(targets) != 1:
+            targets = [k for k in files if _loose_name(k) == _loose_name(key)]
+        if len(targets) == 1:
+            _fold_duplicate(files[targets[0]], dup)
+        elif dup.get("all_sheets") or dup.get("fixes") or dup.get("deleted_backups"):
             plain = str(Path(key).with_name(_base_name(key))).replace("\\", "/")
-            dup["name"] = plain
-            files[plain] = dup
-        changed = True
+            if plain in files:
+                _fold_duplicate(files[plain], dup)
+            else:
+                dup["name"] = plain
+                files[plain] = dup
+        # 其余（没有工作表、没有修复记录的空壳）直接去掉，切字数字由工作台重新同步
     batch = EXECUTION_STATE.get("batch")
     if changed and batch:
         EXECUTION_STATE["batch"] = [k for k in dict.fromkeys(batch) if k in files]
@@ -107,6 +136,7 @@ def replace_execution_report(state: dict[str, Any]) -> None:
         previous = copy.deepcopy(EXECUTION_STATE)
         EXECUTION_STATE.update(copy.deepcopy(state))
         EXECUTION_STATE.pop("markdown", None)
+        _merge_review_duplicates_unlocked()
         _mark_running_as_interrupted_unlocked()
         try:
             _persist_and_write_markdown_unlocked()
@@ -148,6 +178,15 @@ def _recompute_counters_unlocked() -> None:
     EXECUTION_STATE["updated_at"] = _now_str()
 
 
+def report_folder() -> str:
+    with REPORT_LOCK:
+        return str(EXECUTION_STATE.get("folder", ""))
+
+
+def same_folder(a: str, b: Path | str) -> bool:
+    return _same_folder(a, Path(b)) if b else False
+
+
 def _same_folder(a: str, b: Path) -> bool:
     if not a:
         return False
@@ -171,7 +210,9 @@ def init_execution_batch(
     每个文件的记录合并，前面步骤的结果不丢；换了文件夹才清空重来。"""
     with REPORT_LOCK:
         now = _now_str()
-        keep = preserve_existing_files or _same_folder(EXECUTION_STATE.get("folder", ""), folder)
+        old_folder = EXECUTION_STATE.get("folder", "")
+        # 换了文件夹一定清空：否则上一个文件夹的文件会出现在这个文件夹的报告里，也打不开
+        keep = _same_folder(old_folder, folder) or (preserve_existing_files and not old_folder)
         EXECUTION_STATE["task_name"] = task_name
         EXECUTION_STATE["folder"] = str(folder)
         # 换文件夹不沿用上一批的输出目录，避免报告里出现与本次任务无关的路径
@@ -334,6 +375,9 @@ def update_file_progress(
             entry["normalized_a1"] = bool(normalized_a1)
         if error is not None:
             entry["error"] = str(error)
+        if entry["status"] == "done" and int(entry.get("clip_unfixed", 0) or 0) > 0:
+            # 导出 PDF / 视图标准化等步骤做完了，但还有切字没修，不能算完成
+            entry["status"] = "needs_fix"
 
         entry["updated_at"] = _time_str()
         _recompute_counters_unlocked()

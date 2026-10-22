@@ -52,6 +52,31 @@ class ReportFixesTests(unittest.TestCase):
         self.assertIn("| 1 | 基本情報 | D3（第 3 行） | 列宽不够，数字显示成 ### |", md)
         self.assertIn("| 2 | 基本情報 | C12（第 12 行） | 文字压线，被边框切到（行高不够） |", md)
 
+    def test_resync_settles_stale_queue_notes(self):
+        a, b = self.folder / "sub" / "画面.xlsx", self.folder / "sub" / "無.xlsx"
+        reporter.init_execution_batch("人工调整后导出复检（不自动加高）", self.folder, [a, b])
+        reporter.finish_execution_batch()  # 两个文件都停在「排队等待处理...」
+        self.workflow.STATE.update(folder=str(self.folder), checked_files={str(b): {}}, items={
+            "a": self.item("a", a, "fixed"), "b": self.item("b", a, "accepted"),
+        })
+        self.workflow.resync_report_from_state()
+        files = reporter.get_execution_report_snapshot()["files"]
+        self.assertEqual((files["sub/画面.xlsx"]["status"], files["sub/画面.xlsx"]["current_action"]),
+                         ("done", "已处理完：修复 1 处，1 处无需修改"))
+        self.assertEqual((files["sub/無.xlsx"]["status"], files["sub/無.xlsx"]["current_action"]),
+                         ("done", "检查完毕，无切字"))
+
+    def test_workbench_does_not_write_into_other_folder_report(self):
+        other = self.root / "other"
+        other.mkdir()
+        reporter.init_execution_batch("批量导出 PDF", other, [other / "画面.xlsx"])
+        reporter.finish_execution_batch()
+        path = self.folder / "sub" / "画面.xlsx"
+        self.workflow.STATE.update(folder=str(self.folder), items={"a": self.item("a", path, "fixed")})
+        self.workflow._sync_problem_counts(str(path), "x")
+        entry = reporter.get_execution_report_snapshot()["files"]["画面.xlsx"]
+        self.assertEqual(entry.get("clip_detected", 0), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
