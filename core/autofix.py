@@ -30,7 +30,7 @@ from core import fix_images
 from core.common import STALE_LOCK_HINT, XL_SHEET_VISIBLE, as_bbox, col_index_to_letters
 from core.excel_ops import (
     CellProbe, extract_sheet_snapshot, normalize_workbook_view, quit_background_excel, snapshot_cells,
-    start_background_excel,
+    start_background_excel, open_workbook_checked,
 )
 from core.hidden_text import REASON_HASH, REASON_MISSING, collect_text_pieces, find_hidden_cells, locate_text, normalize_text
 from core.pdf_detector import (
@@ -529,6 +529,9 @@ class _ExcelSession:
 
     def __init__(self) -> None:
         self.excel: Any = None
+        # 副本保留原文件名以正确打印页眉；Excel 同一实例不能同时打开两个同名文件。
+        self.copy_excel: Any = None
+        self.watchdog: Any = None
         self.temp_dir: Path | None = None
         self.copies: dict[str, tuple[dict[str, int], Any]] = {}
         self.copy_count = 0  # 副本文件夹编号只增不减，不同子文件夹里的同名文件也不会撞名
@@ -538,27 +541,40 @@ class _ExcelSession:
 
     def app(self) -> Any:
         if self.excel is None:
+            self.touch()
             _IDLE.clear()
             self.excel = start_background_excel()
+            if self.watchdog is not None:
+                self.watchdog.register(self.excel)
             self.temp_dir = Path(tempfile.mkdtemp(prefix="clip_autofix_"))
         return self.excel
 
+    def touch(self) -> None:
+        if self.watchdog is not None:
+            self.watchdog.progress()
+
     def copy_of(self, wb_path: str) -> Any:
         """原文件的副本（原文件改过就重新复制）"""
+        self.touch()
         version = _file_version(Path(wb_path))
         cached = self.copies.get(wb_path)
         if cached is not None and cached[0] == version:
             return cached[1]
         if cached is not None:
             cached[1].Close(SaveChanges=False)
-        app = self.app()
+        self.app()
+        if self.copy_excel is None:
+            self.copy_excel = start_background_excel()
+            if self.watchdog is not None:
+                self.watchdog.register(self.copy_excel)
+        app = self.copy_excel
         assert self.temp_dir is not None
         self.copy_count += 1
         # 副本和原文件同名（各放一个编号文件夹）：页眉页脚里的 &[文件名] 打印出来和原文件一样
         target = self.temp_dir / str(self.copy_count) / Path(wb_path).name
         target.parent.mkdir()
         shutil.copy2(wb_path, target)
-        workbook = app.Workbooks.Open(str(target), UpdateLinks=0)
+        workbook = open_workbook_checked(app, str(target), UpdateLinks=0)
         self.copies[wb_path] = (version, workbook)
         return workbook
 
@@ -571,6 +587,7 @@ class _ExcelSession:
                 pass
 
     def remember_pdf(self, wb_path: str, sheet_name: str, version: dict[str, int], pdf: Path) -> None:
+        self.touch()
         stat = pdf.stat()
         self.pdfs[(wb_path, sheet_name)] = (version, pdf, (stat.st_mtime_ns, stat.st_size))
 
@@ -595,6 +612,7 @@ class _ExcelSession:
         """原文件这一行刚写入保存：副本做同样的修改，继续当作和原文件一致的工作簿用，不用重新打开原文件。
         别的表没变，之前导出的 PDF 仍可用；这张表只有「通过的那次试算就是写入的高度」时可用那次的 PDF。
         副本状态对不上时返回 None（之后按原来的方式重新打开原文件）。"""
+        self.touch()
         new_version = _file_version(Path(wb_path))
         for key, (version, cached, stat) in list(self.pdfs.items()):
             if key[0] == wb_path:
@@ -637,6 +655,12 @@ class _ExcelSession:
                 pass
         self.copies = {}
         self.pdfs = {}
+        if self.copy_excel is not None:
+            try:
+                quit_background_excel(self.copy_excel)
+            except Exception:
+                pass
+            self.copy_excel = None
         if self.excel is not None:
             try:
                 quit_background_excel(self.excel)
@@ -1008,7 +1032,7 @@ def _apply(session: _ExcelSession, wb_path: str, gids: list[str]) -> bool:
     if not plan:
         return True
     excel = session.app()
-    workbook = excel.Workbooks.Open(str(path.resolve()), UpdateLinks=0)
+    workbook = open_workbook_checked(excel, str(path.resolve()), UpdateLinks=0)
     try:
         for _, sheet_name, row, _, height, *_ in plan:
             workbook.Sheets(sheet_name).Rows(row).RowHeight = height

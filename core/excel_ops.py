@@ -35,6 +35,17 @@ XL_A1 = 1
 XL_R1C1 = -4150
 
 
+def open_workbook_checked(excel: Any, path: str, **options: Any) -> Any:
+    """Excel 拒绝打开时也可能返回 None，不能让后续 Close 掩盖打开失败。"""
+    workbook = excel.Workbooks.Open(path, **options)
+    if workbook is None:
+        raise RuntimeError(
+            f"Excel 未能打开工作簿（Open 返回空对象）：{path}；"
+            "请检查是否有同名工作簿已打开、文件被占用或需要交互确认"
+        )
+    return workbook
+
+
 def start_background_excel() -> Any:
     """后台用的隐藏 Excel。调用方已 CoInitialize，用完调用 quit_background_excel。
 

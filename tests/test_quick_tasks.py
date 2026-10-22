@@ -104,6 +104,7 @@ class QuickTaskTests(unittest.TestCase):
         self.patch_value(workflow, "win32", Mock(DispatchEx=self.dispatch))
         self.patch_value(excel_ops, "win32", workflow.win32)  # 后台 Excel 由 excel_ops 启动
         self.patch_value(workflow, "normalize_workbook_view", self.normalize)
+        self.patch_value(workflow, "ExcelWatchdog", Mock())
         self.patch_value(workflow, "scan_workbook_sheets", self.read_sheet_names)
 
     def patch_value(self, target, name, value):
@@ -149,6 +150,16 @@ class QuickTaskTests(unittest.TestCase):
         self.workflow.STATE.clear()
         self.workflow.STATE.update(copy.deepcopy(loaded))
         self.workflow.STATE["busy"] = False
+
+    def test_clean_empty_open_reports_open_failure_and_keeps_file_uncompleted(self):
+        path = self.add_book("a.xlsx", ["Sheet1", "Sheet1_bak"])
+        self.excel.Workbooks.Open.side_effect = lambda *args, **kwargs: None
+        job = self.run_task("clean_sheets")
+        self.assertNotIn(str(path), job["completed"])
+        error = self.report_files()["a.xlsx"]["error"]
+        self.assertIn("Open 返回空对象", error)
+        self.assertNotIn("Close", error)
+        self.assertEqual(self.books["a.xlsx"].saved, [])
 
     def test_clean_sheets_backs_up_before_deleting_only_backups_with_original(self):
         self.add_book("a.xlsx", ["機能設計", "機能設計_20250315_bak", "基本情報_20241003", "Sheet1 (2)"])

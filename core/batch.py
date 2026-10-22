@@ -19,8 +19,9 @@ from core import autofix, fix_images, workflow as wf
 from core.common import STALE_LOCK_HINT, workbook_rel_name
 from core.excel_ops import (
     CellProbe, close_saved_workbooks, extract_sheet_snapshot, normalize_workbook_view,
-    open_workbooks_for_review, snapshot_cells,
+    open_workbooks_for_review, snapshot_cells, open_workbook_checked,
 )
+from core.excel_watchdog import ExcelWatchdog
 from core.hidden_text import (
     REASON_CLIPPED, REASON_TRUNCATED, collect_text_pieces, is_excel_error, locate_text, normalize_text,
 )
@@ -292,7 +293,7 @@ def _write_rows(excel: Any, journal: dict) -> None:
     path = journal["path"]
     where = f"{Path(path).name}（" + "、".join(f"{r['sheet']} 第 {r['row']} 行" for r in journal["rows"]) + "）"
     _check_file(path)
-    book = excel.Workbooks.Open(str(Path(path).resolve()), UpdateLinks=0)
+    book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
     try:
         if book.ReadOnly:
             raise ValueError(f"{where} 文件以只读方式打开，未写入")
@@ -359,9 +360,39 @@ def _finish_pending(excel: Any) -> None:
             else:
                 card["message"] = "已还原自动修改，等待人工处理" if card["color"] == "yellow" else "已还原，待提交忽略"
         job["pending_adjustment"] = None
-        wf._persist_state()
+        try:
+            wf._persist_state()
+        except Exception:
+            job["pending_adjustment"] = pending
+            raise
         wf._sync_problem_counts(pending["path"], {"fix": "自动处理已保存", "adopt": "审核加高已保存"}.get(
             pending["action"], "审核还原已保存"))
+
+
+def _park_pending(error: Exception) -> None:
+    """隔离本文件的未结算写入；保存日志后允许继续其他文件，不猜测是否已保存。"""
+    with wf.STATE_LOCK:
+        job = wf.STATE["job"]
+        pending = job.get("pending_adjustment")
+        if not pending:
+            return
+        job.setdefault("deferred_adjustments", {})[pending["path"]] = pending
+        job["pending_adjustment"] = None
+        for cid in pending["cards"]:
+            card = _data()["cards"].get(cid)
+            if card:
+                card.update(color="yellow", verified=False, waiting=False,
+                            message=f"文件写入状态待核对，已跳过并保留恢复日志：{error}")
+        wf._persist_state()
+
+
+def _show_deferred_pending() -> None:
+    """任务结束或暂停后沿用现有 UI，逐份展示可续跑 / 放弃的写入。"""
+    job = wf.STATE["job"]
+    deferred = job.get("deferred_adjustments", {})
+    if not job.get("pending_adjustment") and deferred:
+        path = next(iter(deferred))
+        job["pending_adjustment"] = deferred.pop(path)
 
 
 def abandon_pending() -> None:
@@ -387,6 +418,7 @@ def abandon_pending() -> None:
                 item.update(status="manual_review", batch_managed=True, triage_keep=False,
                             review_reason=card["message"])
         job["pending_adjustment"] = None  # 任务本身仍可「继续上次任务」，这几格已转人工，不会再自动写
+        _show_deferred_pending()
         wf._persist_state()
     wf.log_msg(f"⚠️ 已放弃 {Path(pending['path']).name} 未完成的写入，相关单元格转为人工处理")
     wf._sync_problem_counts(pending["path"], "已放弃未完成的写入，等待人工处理")
@@ -629,6 +661,7 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
         version = wf._file_version(Path(path))
 
         def remember_attempt(index: int, height: float, shots: dict, wrapped: list[str] = ()) -> None:
+            session.touch()
             with wf.STATE_LOCK:
                 for card in cards:
                     if index == 0:
@@ -712,6 +745,8 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
             # 有写入日志时不能吞掉异常：可能原文件已经保存，必须按日志续跑。
             if job.get("pending_adjustment"):
                 raise
+            if getattr(getattr(session, "watchdog", None), "timed_out", False) is True:
+                raise TimeoutError("后台 Excel 无进展超时，已跳过该文件，待后续重试") from err
             if not isinstance(err, ValueError):
                 # 程序出错（Excel 崩溃、一时忙不过来等），不是检测不过：重启 Excel 重试这一行，几次都不行才转人工
                 with wf.STATE_LOCK:
@@ -949,9 +984,14 @@ def run() -> list[str]:
     job = wf.STATE["job"]
     kind, options = job["kind"], job["options"]
     session = autofix._ExcelSession()
+    watchdog = ExcelWatchdog(lambda: wf.log_msg(
+        "⚠️ 后台 Excel 长时间无进展，已结束本任务专用 Excel，当前文件将记录错误并重试或跳过")) if kind == "batch_scan" else None
+    session.watchdog = watchdog
+    if watchdog is not None:
+        watchdog.start()
     wf.pythoncom.CoInitialize()
     try:
-        excel = session.app() if job.get("pending_adjustment") else None
+        excel = session.app() if job.get("pending_adjustment") and kind != "batch_scan" else None
         if excel is not None:
             _finish_pending(excel)
         if kind == "batch_scan":
@@ -966,35 +1006,60 @@ def run() -> list[str]:
                     wf._persist_state()
                 init_execution_batch(task_name="全自动扫描与修复", folder=folder, workbooks=paths, pdf_folder=folder)
             expected = job["workbooks"]
+            with wf.STATE_LOCK:
+                if job.get("pending_adjustment"):
+                    pending = job["pending_adjustment"]
+                    job.setdefault("deferred_adjustments", {})[pending["path"]] = pending
+                    job["pending_adjustment"] = None
+                    wf._persist_state()
             for path in expected:
-                if path in job["completed"]:
+                if path in job["completed"] and path not in job.get("deferred_adjustments", {}):
                     continue
                 if job.get("pause_requested"):
                     break
+                with wf.STATE_LOCK:
+                    pending = job.get("deferred_adjustments", {}).pop(path, None)
+                    if pending:
+                        job["pending_adjustment"] = pending
+                        wf._persist_state()
                 for tries in range(autofix.MAX_ERROR_RETRIES + 1):
                     try:
+                        watchdog.progress()
                         _check_file(path)
                         excel = session.app()
+                        if job.get("pending_adjustment"):
+                            _finish_pending(excel)
                         started, checking = time.perf_counter(), {}
                         _refresh(excel, path, session=session, timing=checking)
                         wf.log_msg(f"⏱ {Path(path).name} 整份检查：{time.perf_counter() - started:.1f} 秒"
                                    f"（导出 {int(checking.get('exports', 0))} 次 {checking.get('export', 0):.1f} 秒，"
                                    f"检测 {checking.get('detect', 0):.1f} 秒）")
                         _repair_file(excel, session, path)
+                        watchdog.progress()
                         if job.get("pause_requested"):
                             break
                         with wf.STATE_LOCK:
-                            job["completed"].append(path)
+                            if path not in job["completed"]:
+                                job["completed"].append(path)
+                            job.get("file_errors", {}).pop(path, None)
                             wf.STATE["scan_progress"] = {"total": len(expected), "completed": len(job["completed"]), "status": "running"}
                             wf._persist_state()
                         wf._sync_problem_counts(path, "全自动处理完成，等待结果审核")
                         break
                     except Exception as err:
                         if job.get("pending_adjustment"):
-                            wf.log_msg(f"❌ {Path(path).name} 写入未结算，可续跑：{err}")
+                            _park_pending(err)
+                            wf.log_msg(f"❌ {Path(path).name} 写入未结算，已跳过，继续其他文件：{err}")
+                            with wf.STATE_LOCK:
+                                job.setdefault("file_errors", {})[path] = str(err)
+                                wf._persist_state()
+                            update_file_progress(workbook_rel_name(Path(path), wf.STATE["folder"]),
+                                                 status="error", error=str(err), current_action="写入待核对，已跳过，可续跑")
+                            session.close()
                             break
                         # 程序出错（多半是 Excel 崩溃或卡住）：重启 Excel 再试；检测类原因（ValueError）不重试
-                        if not isinstance(err, ValueError) and tries < autofix.MAX_ERROR_RETRIES:
+                        if (not isinstance(err, (ValueError, TimeoutError)) and not watchdog.timed_out
+                                and tries < autofix.MAX_ERROR_RETRIES):
                             wf.log_msg(f"⚠️ {Path(path).name} 出错，重启 Excel 后重试：{err}")
                             try:
                                 _restart_excel(session)
@@ -1003,17 +1068,19 @@ def run() -> list[str]:
                                 err = restart_err
                             else:
                                 continue
-                        wf.log_msg(f"❌ {Path(path).name} 未完成，可续跑：{err}")
+                        wf.log_msg(f"❌ {Path(path).name} 已跳过，继续其他文件，可续跑：{err}")
+                        with wf.STATE_LOCK:
+                            job.setdefault("file_errors", {})[path] = str(err)
+                            wf._persist_state()
                         update_file_progress(workbook_rel_name(Path(path), wf.STATE["folder"]),
                                              status="error", error=str(err), current_action="文件未完成，可续跑")
                         # 下一个文件用新的 Excel，避免一次崩溃拖垮后面所有文件
-                        if not isinstance(err, ValueError):
-                            session.close()
+                        session.close()
                         break
                     finally:
                         session.drop_copy(path)
-                if job.get("pending_adjustment") or job.get("pause_requested"):
-                    break  # 写入日志未结算前不能处理另一文件
+                if job.get("pause_requested"):
+                    break
         elif kind == "batch_commit":
             if options.get("refresh_sheets") or any(c["color"] != "blue" and not c.get("dismissed")
                                                    for c in _data()["cards"].values()):
@@ -1050,5 +1117,14 @@ def run() -> list[str]:
         finish_execution_batch("处理完成，请审核结果" if set(expected).issubset(job["completed"]) else "部分文件尚未完成，可继续任务")
         return expected
     finally:
-        session.close()
-        wf.pythoncom.CoUninitialize()
+        try:
+            with wf.STATE_LOCK:
+                _show_deferred_pending()
+                wf._persist_state()
+        finally:
+            try:
+                session.close()
+            finally:
+                if watchdog is not None:
+                    watchdog.stop()
+                wf.pythoncom.CoUninitialize()

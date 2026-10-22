@@ -102,6 +102,7 @@ class ProgressTransferTests(unittest.TestCase):
 
     def test_file_changed_after_export_cancels_resume_but_keeps_confirmation(self):
         data = self.exported()
+        data["workflow"]["job"]["deferred_adjustments"] = {str(self.wb_path): {"path": str(self.wb_path)}}
         self.wb_path.write_bytes(b"workbook v2 edited later")
         self.lose_progress()
         result = self.workflow.import_progress(data)
@@ -111,6 +112,7 @@ class ProgressTransferTests(unittest.TestCase):
         saved = storage.load_snapshot("workflow")
         self.assertEqual(saved["job"]["status"], "cancelled")
         self.assertIsNone(saved["job"]["pending_adjustment"])
+        self.assertFalse(saved["job"].get("deferred_adjustments"))
         # 扫描结果和人工确认都保留；保存文件不会让人工确认失效
         self.assertEqual(set(saved["items"]), {"item_1", "item_2"})
         self.assertEqual(saved["items"]["item_1"]["status"], "accepted")

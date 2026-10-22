@@ -35,6 +35,7 @@ from core.common import (
     workbook_rel_name,
 )
 from core import fix_images, pdf_detector
+from core.excel_watchdog import ExcelWatchdog
 from core.excel_ops import (
     CellProbe,
     close_saved_workbooks,
@@ -47,6 +48,7 @@ from core.excel_ops import (
     match_excel_row,
     normalize_workbook_view,
     open_workbook_for_manual_review,
+    open_workbook_checked,
     pythoncom,
     quit_background_excel,
     scan_workbook_sheets,
@@ -191,7 +193,7 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
         if STATE["busy"]:
             return False
         if (kind != "resume" and STATE.get("job") and STATE["job"]["kind"].startswith("batch_")
-                and STATE["job"].get("pending_adjustment")):
+                and (STATE["job"].get("pending_adjustment") or STATE["job"].get("deferred_adjustments"))):
             raise ValueError("上次文件写入尚未结算，请先继续上次任务，不能替换其写入日志")
         if kind in {"review_recheck", "review_open"} and not current_review_queue():
             raise ValueError("当前文件夹没有挂起的稍后人工复检")
@@ -1034,7 +1036,7 @@ def _scan_one_workbook(
     if read_only:
         open_options["ReadOnly"] = True
     started = time.perf_counter()
-    wb = workbook if workbook is not None else excel.Workbooks.Open(str(wb_path.resolve()), **open_options)
+    wb = workbook if workbook is not None else open_workbook_checked(excel, str(wb_path.resolve()), **open_options)
     timing["open"] = timing.get("open", 0.0) + time.perf_counter() - started
     try:
         all_names = [s.Name for s in wb.Sheets]
@@ -2415,7 +2417,7 @@ def _clean_backup_sheets(
                 record(pre_names, action, uncertain=uncertain_sel)
                 return
 
-    wb = get_excel().Workbooks.Open(str(wb_path.resolve()), UpdateLinks=0)
+    wb = open_workbook_checked(get_excel(), str(wb_path.resolve()), UpdateLinks=0)
     rename_map: dict[str, str] = {}
     final_uncertain: list[str] = []
     try:
@@ -2461,7 +2463,7 @@ def _export_workbook_pdfs(
     get_excel: Callable[[], Any], wb_path: Path, root_folder: Path, used_pdf_paths: set[Path],
 ) -> list[Path]:
     wb_label = workbook_rel_name(wb_path, root_folder)
-    wb = get_excel().Workbooks.Open(str(wb_path.resolve()), ReadOnly=True, UpdateLinks=0)
+    wb = open_workbook_checked(get_excel(), str(wb_path.resolve()), ReadOnly=True, UpdateLinks=0)
     try:
         file_stem = sanitize_filename(strip_review_prefix(wb_path.stem))
         exported: list[Path] = []
@@ -2489,7 +2491,7 @@ def _export_workbook_pdfs(
 def _normalize_workbook_file(get_excel: Callable[[], Any], wb_path: Path, root_folder: Path) -> None:
     wb_label = workbook_rel_name(wb_path, root_folder)
     excel = get_excel()
-    wb = excel.Workbooks.Open(str(wb_path.resolve()), UpdateLinks=0)
+    wb = open_workbook_checked(excel, str(wb_path.resolve()), UpdateLinks=0)
     try:
         normalize_workbook_view(excel, wb, on_error=log_msg)
         wb.Save()
@@ -2539,22 +2541,27 @@ def quick_task_workflow(kind: str) -> None:
     log_msg(f"{'继续' if initialized else '开始'}{task_name}：{folder}（共 {len(workbooks)} 个文件）")
 
     excel = None
+    watchdog = ExcelWatchdog(lambda: log_msg(
+        "⚠️ 后台 Excel 长时间无进展，已结束本任务专用 Excel，记录当前文件错误后继续"))
 
     def get_excel() -> Any:
         # 按需启动 Excel：精简 Sheet 时没有备份表的文件无需打开
         nonlocal excel
         if excel is None:
             excel = start_background_excel()
+            watchdog.register(excel)
         return excel
 
     # 已完成文件的 PDF 名称保持占用，续跑时不会被同名工作簿覆盖
     used_pdf_paths = {Path(path) for path in job["exported"]}
     pythoncom.CoInitialize()
+    watchdog.start()
     try:
         for wb_path in workbooks:
             if str(wb_path) in job["completed"]:
                 continue
             wb_label = workbook_rel_name(wb_path, folder)
+            watchdog.progress()
             log_msg(f"正在处理: {wb_label} ...")
             update_file_progress(
                 wb_label, status="processing", current_action=f"正在执行{task_name}...", error="",
@@ -2584,6 +2591,13 @@ def quick_task_workflow(kind: str) -> None:
                 update_file_progress(
                     wb_label, status="error", error=str(err), current_action=f"处理出错: {err}",
                 )
+                # Excel 崩溃后不把失效实例带给后续文件。
+                if excel is not None:
+                    try:
+                        quit_background_excel(excel)
+                    except Exception:
+                        pass
+                    excel = None
                 continue
             with STATE_LOCK:
                 job["completed"].append(str(wb_path))
@@ -2594,6 +2608,7 @@ def quick_task_workflow(kind: str) -> None:
             if excel is not None:
                 quit_background_excel(excel)
         finally:
+            watchdog.stop()
             pythoncom.CoUninitialize()
 
     files = list(get_execution_report_snapshot()["files"].values())
@@ -2702,6 +2717,7 @@ def import_progress(data: Any) -> dict[str, Any]:
         if changed:
             job["status"] = "cancelled"
             job["pending_adjustment"] = None
+            job.pop("deferred_adjustments", None)
             cancelled = True
             warnings.append("已取消上次中断任务的续跑，避免旧检查点覆盖新版本文件；扫描结果和人工判断仍保留")
         else:

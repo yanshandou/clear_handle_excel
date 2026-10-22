@@ -46,6 +46,64 @@ class BatchTests(unittest.TestCase):
         self.refresh = patch.object(batch, "_refresh").start()
         self.addCleanup(patch.stopall)
 
+    def test_empty_open_keeps_write_journal_and_original_height(self):
+        card, _ = self.add_card()
+        pending = {"action": "fix", "path": self.path, "version": self.wf._file_version(Path(self.path)),
+                   "cards": [card["id"]], "rows": [
+                       {"id": batch._key(self.path, "S1", 5), "sheet": "S1", "row": 5,
+                        "expected": 24, "target": 30}]}
+        self.wf.STATE["job"]["pending_adjustment"] = pending
+        self.excel.Workbooks.Open.return_value = None
+        with self.assertRaisesRegex(RuntimeError, "Open 返回空对象"):
+            batch._finish_pending(self.excel)
+        self.assertIs(self.wf.STATE["job"]["pending_adjustment"], pending)
+        self.assertEqual(self.heights[5], 24)
+        self.book.Save.assert_not_called()
+
+    def test_same_named_trial_and_original_use_separate_excel_instances(self):
+        from core import autofix
+        trial_app, trial_book = Mock(), Mock()
+        original_open = self.excel.Workbooks.Open
+        trial_app.Workbooks.Open.return_value = trial_book
+        # 模拟 Excel：一个实例内不能同时打开不同目录的同名工作簿。
+        def open_original(path, **options):
+            if path != self.path:
+                return None
+            return self.book
+        original_open.side_effect = open_original
+        session = autofix._ExcelSession()
+        with patch.object(autofix, "start_background_excel", side_effect=[self.excel, trial_app]), \
+                patch.object(autofix, "quit_background_excel") as quit_excel:
+            try:
+                self.assertIs(session.copy_of(self.path), trial_book)
+                self.assertEqual(Path(trial_app.Workbooks.Open.call_args.args[0]).name, Path(self.path).name)
+                batch._write_rows(session.app(), {
+                    "path": self.path, "version": self.wf._file_version(Path(self.path)),
+                    "rows": [{"sheet": "S1", "row": 5, "expected": 24, "target": 30}]})
+                self.assertEqual(self.heights[5], 30)
+                self.book.Save.assert_called_once()
+                trial_book.Close.assert_not_called()
+                self.assertIs(session.copy_of(self.path), trial_book)
+            finally:
+                session.close()
+            self.assertEqual(quit_excel.call_count, 2)
+            self.assertIsNone(session.copy_excel)
+            self.assertIsNone(session.excel)
+
+    def test_failed_trial_open_is_not_cached(self):
+        from core import autofix
+        trial_app = Mock()
+        trial_app.Workbooks.Open.return_value = None
+        session = autofix._ExcelSession()
+        with patch.object(autofix, "start_background_excel", side_effect=[self.excel, trial_app]), \
+                patch.object(autofix, "quit_background_excel"):
+            try:
+                with self.assertRaisesRegex(RuntimeError, "Open 返回空对象"):
+                    session.copy_of(self.path)
+                self.assertNotIn(self.path, session.copies)
+            finally:
+                session.close()
+
     def add_card(self, address="A5", color="blue", row=5):
         iid = f"i{address}"
         item = {"id": iid, "seq": len(self.wf.STATE["items"]) + 1, "kind": "hidden", "text": address,
@@ -461,6 +519,112 @@ class BatchTests(unittest.TestCase):
         self.wf.STATE["job"]["pending_adjustment"] = {"path": self.path}
         with self.assertRaisesRegex(ValueError, "写入尚未结算"):
             self.wf.queue_job("batch_scan", {"folder": str(self.root)})
+
+    def test_unsettled_files_do_not_stop_later_files_and_resume_keeps_each_journal(self):
+        paths = [self.path, str(self.root / "second.xlsx"), str(self.root / "third.xlsx")]
+        for path in paths[1:]:
+            Path(path).write_bytes(b"workbook")
+        job = self.wf.STATE["job"]
+        job.update(workbooks=paths, options={"folder": str(self.root)})
+        session = Mock()
+        session.app.return_value = self.excel
+        visited = []
+        def repair(excel, session, path):
+            visited.append(path)
+            if path != paths[2]:
+                job["pending_adjustment"] = {"path": path, "cards": [], "rows": [], "action": "fix"}
+                raise RuntimeError("保存后连接断开，状态未知")
+        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch, "_repair_file", side_effect=repair), \
+                patch.object(batch, "finish_execution_batch"):
+            self.assertEqual(batch.run(), paths)
+        self.assertEqual(visited, paths)
+        self.assertEqual(job["completed"], [paths[2]])
+        self.assertEqual(job["pending_adjustment"]["path"], paths[0])
+        self.assertEqual(set(job["deferred_adjustments"]), {paths[1]})
+        self.assertEqual(set(job["file_errors"]), set(paths[:2]))
+        saved = storage.load_snapshot("workflow")["job"]
+        self.assertEqual(saved["pending_adjustment"]["path"], paths[0])
+        self.assertIn(paths[1], saved["deferred_adjustments"])
+        # 恢复时第一份依旧失败，第二份可结算；两份都不会阻塞别的文件。
+        settled, repaired = [], []
+        def finish(excel):
+            pending = job["pending_adjustment"]
+            settled.append(pending["path"])
+            if pending["path"] == paths[0]:
+                raise ValueError("文件被占用")
+            job["pending_adjustment"] = None
+        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch, "_finish_pending", side_effect=finish), \
+                patch.object(batch, "_repair_file", side_effect=lambda excel, session, path: repaired.append(path)), \
+                patch.object(batch, "finish_execution_batch"):
+            batch.run()
+        self.assertEqual(settled, paths[:2])
+        self.assertEqual(repaired, [paths[1]])
+        self.assertEqual(set(job["completed"]), {paths[1], paths[2]})
+        self.assertEqual(job["pending_adjustment"]["path"], paths[0])
+
+    def test_scan_retries_errors_then_skips_file_without_marking_it_complete(self):
+        second = str(self.root / "next.xlsx")
+        Path(second).write_bytes(b"workbook")
+        job = self.wf.STATE["job"]
+        job.update(workbooks=[self.path, second], options={"folder": str(self.root)})
+        session = Mock()
+        attempts = []
+        def refresh(excel, path, **kwargs):
+            attempts.append(path)
+            if path == self.path:
+                raise RuntimeError("Excel 不可用")
+        self.refresh.side_effect = refresh
+        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch, "_repair_file"), patch.object(batch, "finish_execution_batch"):
+            batch.run()
+        self.assertEqual(attempts, [self.path] * 3 + [second])
+        self.assertEqual(job["completed"], [second])
+        self.assertIn(self.path, job["file_errors"])
+
+    def test_abandon_promotes_next_deferred_write_without_losing_it(self):
+        job = self.wf.STATE["job"]
+        job["pending_adjustment"] = {"path": self.path, "rows": [], "cards": []}
+        remaining = {"path": "second.xlsx", "rows": [], "cards": []}
+        job["deferred_adjustments"] = {"second.xlsx": remaining}
+        self.wf.STATE["busy"] = False
+        batch.abandon_pending()
+        self.assertIs(job["pending_adjustment"], remaining)
+        with self.assertRaisesRegex(ValueError, "写入尚未结算"):
+            self.wf.queue_job("batch_scan", {"folder": str(self.root)})
+
+    def test_deferred_writes_also_prevent_replacing_job(self):
+        self.wf.STATE["job"]["deferred_adjustments"] = {self.path: {"path": self.path}}
+        with self.assertRaisesRegex(ValueError, "写入尚未结算"):
+            self.wf.queue_job("batch_scan", {"folder": str(self.root)})
+
+    def test_timeout_skips_file_without_another_long_retry(self):
+        next_path = str(self.root / "next.xlsx")
+        Path(next_path).write_bytes(b"workbook")
+        job = self.wf.STATE["job"]
+        job.update(workbooks=[self.path, next_path], options={"folder": str(self.root)})
+        session = Mock()
+        def refresh(excel, path, **kwargs):
+            if path == self.path:
+                raise TimeoutError("Excel 超时")
+        self.refresh.side_effect = refresh
+        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch, "_repair_file"), patch.object(batch, "finish_execution_batch"):
+            batch.run()
+        self.assertEqual(self.refresh.call_count, 2)
+        self.assertEqual(job["completed"], [next_path])
+
+    def test_timeout_during_trial_escapes_row_retry_loop(self):
+        _, item = self.add_card()
+        item["status"] = "pending"
+        batch._data()["rows"].clear()
+        session = Mock()
+        session.watchdog.timed_out = True
+        with patch.object(batch, "_prepare_row", side_effect=RuntimeError("Excel 进程被结束")) as prepare:
+            with self.assertRaises(TimeoutError):
+                batch._repair_file(self.excel, session, self.path)
+        prepare.assert_called_once()
 
     def test_formally_accepted_blue_height_is_no_longer_pending_rollback(self):
         card, _ = self.add_card()
