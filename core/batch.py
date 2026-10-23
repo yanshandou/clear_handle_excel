@@ -10,6 +10,7 @@ import hashlib
 import math
 import shutil
 import time
+import unicodedata
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -1124,6 +1125,24 @@ def _can_highlight(card: dict) -> bool:
     return bool(card.get("cell_addr")) and all(it.get("location_confirmed") is not False for it in _items_at(card))
 
 
+def _sheet_key(name: str) -> str:
+    return unicodedata.normalize("NFKC", name).strip().casefold()
+
+
+def _find_sheet(book: Any, name: str) -> Any:
+    """按名字找工作表；找不到时忽略首尾空格（含全角）、全半角和大小写再找一次。
+    还是没有（被删除或改名了）返回 None。"""
+    try:
+        return book.Sheets(name)
+    except Exception:  # 名字不存在时 COM 报 DISP_E_BADINDEX（-2147352565）
+        pass
+    want = _sheet_key(name)
+    for sheet in book.Sheets:
+        if _sheet_key(sheet.Name) == want:
+            return sheet
+    return None
+
+
 def _restore_cells(sheet: Any, mark: dict) -> None:
     """只还原仍是标记颜色的格子；人工处理时自己改过颜色的不动"""
     for cell in mark["cells"]:
@@ -1176,9 +1195,20 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
     try:
         if book.ReadOnly:
             raise ValueError(f"{Path(path).name} 以只读方式打开，未能标色")
+        sheets: dict[str, Any] = {}
+
+        def sheet_of(name: str) -> Any:
+            if name not in sheets:
+                sheets[name] = _find_sheet(book, name)
+            return sheets[name]
+
         for card in add:
+            sheet = sheet_of(card["sheet_name"])
+            if sheet is None:
+                failed[card["id"]] = f"工作表「{card['sheet_name']}」已不在文件里，可能已被删除或改名"
+                continue
             try:
-                added[card["id"]] = _apply_cells(book.Sheets(card["sheet_name"]), card, style)
+                added[card["id"]] = _apply_cells(sheet, card, style)
             except Exception as err:
                 failed[card["id"]] = str(err)
         with wf.STATE_LOCK:
@@ -1186,18 +1216,28 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
             marks.update(added)
             wf._persist_state()
         for cid, mark in added.items():
-            area = book.Sheets(mark["sheet"]).Range(mark["addr"]).MergeArea
+            sheet = sheet_of(mark["sheet"])
+            area = sheet.Range(mark["addr"]).MergeArea
             area.Interior.Pattern = XL_PATTERN_SOLID
             area.Interior.Color = mark["fill"]
             for cell in mark["cells"]:
                 if cell["font"] is not None:
-                    book.Sheets(mark["sheet"]).Range(cell["addr"]).Font.Color = mark["font"]
+                    sheet.Range(cell["addr"]).Font.Color = mark["font"]
+        gone: dict[str, int] = {}
         for cid in remove:
             mark = marks[cid]
+            sheet = sheet_of(mark["sheet"])
+            if sheet is None:
+                # 工作表已被删除（例如精简 Sheet 或人工处理时删掉）就没有颜色要还原了，按表汇总说一次
+                gone[mark["sheet"]] = gone.get(mark["sheet"], 0) + 1
+                continue
             try:
-                _restore_cells(book.Sheets(mark["sheet"]), mark)
+                _restore_cells(sheet, mark)
             except Exception as err:
                 wf.log_msg(f"⚠️ {Path(path).name} / {mark['sheet']}!{mark['addr']} 未能还原颜色：{err}")
+        for name, count in gone.items():
+            wf.log_msg(f"ℹ️ {Path(path).name}：工作表「{name}」已不在文件里（被删除或改名），"
+                       f"跳过还原 {count} 格标记颜色；如果是改名，请在新表里手动去掉标记色")
         normalize_workbook_view(excel_for(), book)
         book.Save()
     finally:
@@ -1211,11 +1251,12 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                 card["message"] = f"未能在 Excel 中标色（{error}），请按截图查找后人工处理"
         wf._persist_state()
     parts = [f"标色 {len(added)} 格"] if added else []
-    if remove:
-        parts.append(f"还原颜色 {len(remove)} 格")
+    if len(remove) > sum(gone.values()):
+        parts.append(f"还原颜色 {len(remove) - sum(gone.values())} 格")
     if failed:
         parts.append(f"{len(failed)} 格未能标色（工作表受保护等）")
-    wf.log_msg(f"🎨 {Path(path).name}：" + "，".join(parts))
+    if parts:
+        wf.log_msg(f"🎨 {Path(path).name}：" + "，".join(parts))
 
 
 def _sync_highlights_safely(session: Any, path: str) -> None:

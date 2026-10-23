@@ -151,6 +151,49 @@ class ScanOnlyTests(unittest.TestCase):
         self.assertEqual(self.sheet.cell("A5").Interior.Pattern, batch.XL_PATTERN_NONE)
         self.assertEqual(batch._marks(), {})
 
+    def use_named_sheets(self, sheets):
+        """book.Sheets(name) 像 Excel 一样：名字不存在时抛 DISP_E_BADINDEX，也能遍历"""
+        class Sheets:
+            def __call__(_, name):
+                for sheet in sheets:
+                    if sheet.Name.lower() == name.lower():
+                        return sheet
+                raise Exception(-2147352567, "例外が発生しました。", (0, None, None, None, 0, -2147352565), None)
+
+            def __iter__(_):
+                return iter(sheets)
+        self.book.Sheets = Sheets()
+
+    def test_deleted_sheet_skips_restore_without_warning(self):
+        self.sheet.Name = "S1"
+        self.use_named_sheets([self.sheet])
+        self.add_item("A5")
+        self.scan()
+        self.assertEqual(len(batch._marks()), 1)
+        # 人工处理时整张表被删掉，复检后卡片变蓝
+        self.use_named_sheets([])
+        self.card("A5").update(color="blue", verified=True)
+        with patch.object(self.wf, "log_msg") as log:
+            batch._sync_highlights(lambda: self.excel, self.path)
+        messages = [c.args[0] for c in log.call_args_list]
+        self.assertFalse(any("⚠️" in m for m in messages), messages)
+        self.assertTrue(any("工作表「S1」已不在文件里" in m and "1 格" in m for m in messages), messages)
+        self.assertEqual(batch._marks(), {})
+
+    def test_sheet_name_with_extra_spaces_is_still_found(self):
+        self.sheet.Name = "S1\u3000"
+        self.use_named_sheets([self.sheet])
+        self.add_item("A5")
+        self.scan()
+        self.assertEqual(self.sheet.cell("A5").Interior.Color, batch._excel_color("#C0007A"))
+
+    def test_highlight_on_missing_sheet_explains_why(self):
+        self.use_named_sheets([])
+        self.add_item("A5")
+        self.scan()
+        self.assertIn("工作表「S1」已不在文件里", self.card("A5")["message"])
+        self.assertEqual(batch._marks(), {})
+
     def test_user_marked_cards_keep_their_color(self):
         self.add_item("A5")
         batch._card_for([self.wf.STATE["items"]["iA5"]]).update(color="green", marked=True)
