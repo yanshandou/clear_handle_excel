@@ -16,7 +16,7 @@ from typing import Any
 from uuid import uuid4
 
 from core import autofix, fix_images, workflow as wf
-from core.common import STALE_LOCK_HINT, workbook_rel_name
+from core.common import STALE_LOCK_HINT, workbook_locked, workbook_rel_name
 from core.excel_ops import (
     CellProbe, close_saved_workbooks, extract_sheet_snapshot, normalize_workbook_view,
     open_workbooks_for_review, snapshot_cells, open_workbook_checked,
@@ -312,7 +312,7 @@ def _check_file(path: str) -> None:
     p = Path(path)
     if not p.is_file():
         raise ValueError(f"找不到文件：{p.name}")
-    if p.with_name("~$" + p.name).exists():
+    if workbook_locked(p):
         raise ValueError(f"文件仍在 Excel 中打开，请保存并关闭后继续：{p.name}" + STALE_LOCK_HINT)
 
 
