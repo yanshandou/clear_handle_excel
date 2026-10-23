@@ -1263,6 +1263,12 @@ def run() -> list[str]:
         excel = session.app() if job.get("pending_adjustment") and kind != "batch_scan" else None
         if excel is not None:
             _finish_pending(excel)
+        if kind != "batch_scan" and "workbooks" not in job:
+            # 审核提交 / 复检 / 打开 / 清除颜色也记下本次涉及的文件，网页按本任务显示进度
+            with wf.STATE_LOCK:
+                job["workbooks"] = (list(dict.fromkeys(options["paths"])) if kind == "batch_unhighlight" else
+                                    list(dict.fromkeys(_data()["cards"][cid]["wb_path"] for cid in options["card_ids"])))
+                wf._persist_state()
         if kind == "batch_scan":
             if "workbooks" not in job:
                 folder, paths = wf.list_workbooks(options["folder"])

@@ -1148,8 +1148,8 @@ def _scan_one_workbook(
         if job is not None:
             job["completed"].append(path)
             STATE["scan_progress"].update(completed=len(job["completed"]))
-        else:
-            STATE["scan_progress"]["completed"] = STATE["scan_progress"].get("completed", 0) + 1
+        # job=None 是工作台对单个文件的重新检测（每保存一行、提交、复检都会调用），
+        # 不是一次扫描里多完成了一个文件，不能累加扫描进度，否则会出现「43 / 26 个文件」
         _persist_state()
         wb_items = [item for item in STATE["items"].values() if item["wb_path"] == path]
         unresolved = sum(item["status"] not in RESOLVED_STATUSES for item in wb_items)
