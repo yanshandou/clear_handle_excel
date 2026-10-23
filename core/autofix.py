@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -609,6 +610,14 @@ class _ExcelSession:
 
     def written(self, wb_path: str, old_version: dict[str, int], sheet_name: str, row: int, height: float,
                 wrap: list[str], pdf: Path | None) -> Any:
+        def change(sheet: Any) -> None:
+            for addr in wrap:
+                sheet.Range(addr).MergeArea.WrapText = True
+            sheet.Rows(row).RowHeight = height
+        return self.written_with(wb_path, old_version, sheet_name, change, pdf)
+
+    def written_with(self, wb_path: str, old_version: dict[str, int], sheet_name: str,
+                     change: Callable[[Any], None], pdf: Path | None) -> Any:
         """原文件这一行刚写入保存：副本做同样的修改，继续当作和原文件一致的工作簿用，不用重新打开原文件。
         别的表没变，之前导出的 PDF 仍可用；这张表只有「通过的那次试算就是写入的高度」时可用那次的 PDF。
         副本状态对不上时返回 None（之后按原来的方式重新打开原文件）。"""
@@ -627,10 +636,7 @@ class _ExcelSession:
             self.drop_copy(wb_path)
             return None
         try:
-            sheet = cached[1].Sheets(sheet_name)
-            for addr in wrap:
-                sheet.Range(addr).MergeArea.WrapText = True
-            sheet.Rows(row).RowHeight = height
+            change(cached[1].Sheets(sheet_name))
         except Exception:
             self.drop_copy(wb_path)
             return None
