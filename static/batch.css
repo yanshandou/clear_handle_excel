@@ -26,6 +26,17 @@
 .batch-count { min-width: 26px; padding: 1px 8px; border-radius: 999px; background: #fff; color: var(--c-ink); font-size: 12px; line-height: 18px; text-align: center; }
 .batch-filter[aria-pressed="true"] .batch-count { color: var(--c-ink); }
 
+/* 只扫描的标记颜色 */
+.batch-highlight { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 14px; font-size: 13.5px; font-weight: 600; color: var(--text-main); }
+.batch-highlight label { display: inline-flex; align-items: center; gap: 6px; }
+.batch-highlight input[type="color"] { width: 38px; height: 28px; padding: 0 2px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; cursor: pointer; }
+.batch-highlight-presets { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.batch-highlight-preset { padding: 4px 10px; border: 2px solid transparent; border-radius: 6px; font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.batch-highlight-preset[aria-pressed="true"] { border-color: #0f172a; box-shadow: 0 0 0 2px #fff inset; }
+.batch-highlight-sample { padding: 4px 12px; border: 1px solid #94a3b8; font-weight: 700; }
+.batch-highlight-contrast { font-size: 12.5px; color: var(--text-muted, #64748b); }
+.batch-highlight-contrast.is-low { color: #b42318; }
+
 .batch-actions { margin-top: 16px; padding-top: 16px; border-top: 1px dashed rgba(148, 170, 205, .6); }
 
 /* 瀑布流：所有颜色混排，按处理顺序固定位置，改色不挪卡片 */

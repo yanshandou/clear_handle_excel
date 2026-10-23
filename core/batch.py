@@ -36,10 +36,43 @@ WAITING_MESSAGE = "等待自动处理"
 # 比这个差得少就算同一个行高（日文 Excel 默认 18.75pt，按 0.1 取整成 18.8 会被误判成「已被修改」）
 ROW_HEIGHT_TOLERANCE = .4
 XL_HALIGN_RIGHT, XL_HALIGN_CENTER = -4152, -4108
+XL_PATTERN_NONE, XL_PATTERN_SOLID = -4142, 1
+# 只扫描模式在原 Excel 里给问题单元格标的颜色（可在页面上改）。
+# 默认洋红底白字：业务表格几乎不用这个颜色，一眼就能看到，白字对比度约 6:1；黄色已有别人在用
+DEFAULT_HIGHLIGHT = {"fill": "#C0007A", "font": "#FFFFFF"}
+SCAN_ONLY_MESSAGE = "只扫描：已在 Excel 中标色，请人工修改并保存后复检"
 
 
 def _data() -> dict[str, Any]:
     return wf.STATE.setdefault("batch_review", {"cards": {}, "rows": {}, "ignored": []})
+
+
+def _marks() -> dict[str, dict]:
+    """已在原 Excel 里标色的单元格（按卡片 id），记着原来的底色和字色，人工处理完再还原"""
+    return _data().setdefault("highlights", {})
+
+
+def highlight_style(value: Any) -> dict[str, str]:
+    """页面传来的 {"fill": "#RRGGBB", "font": "#RRGGBB"}；缺了或格式不对用默认颜色"""
+    style = dict(DEFAULT_HIGHLIGHT)
+    if isinstance(value, dict):
+        for key in style:
+            color = value.get(key)
+            if isinstance(color, str) and len(color) == 7 and color[0] == "#":
+                try:
+                    int(color[1:], 16)
+                except ValueError:
+                    continue
+                style[key] = color.upper()
+    if style["fill"] == style["font"]:
+        raise ValueError("标记的底色和字色不能相同")
+    return style
+
+
+def _excel_color(hex_color: str) -> int:
+    """#RRGGBB → Excel 的 Color（BGR 整数）"""
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+    return r + g * 256 + b * 65536
 
 
 def _key(*parts: Any) -> str:
@@ -214,6 +247,7 @@ def snapshot() -> dict:
                 result["row_height"] = {"base": row["base"], "applied": row["applied"], "saved": row["saved"],
                                         "wrap": card.get("cell_addr") in row.get("wrap", [])}
             result["adoptable"] = _adoptable(card)
+            result["highlighted"] = card["id"] in _marks()
             result["images"] = {
                 which: _image_url(name) for which, name in card.get("fix_images", {}).items()
                 if fix_images.image_path(name)
@@ -223,7 +257,8 @@ def snapshot() -> dict:
                 name = context["image_file"]
                 context["image"] = _image_url(name) if fix_images.image_path(name) else ""
             cards.append(result)
-        return {"cards": cards, "busy": wf.STATE["busy"], "folder": wf.STATE["folder"],
+        highlighted = sum(1 for m in _marks().values() if wf.in_current_folder(m["path"]))
+        return {"cards": cards, "busy": wf.STATE["busy"], "folder": wf.STATE["folder"], "highlighted": highlighted,
                 "job": copy.deepcopy(wf.STATE["job"]), "progress": dict(wf.STATE["scan_progress"]),
                 "logs": wf.STATE["logs"][-100:]}
 
@@ -959,6 +994,144 @@ def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:
         wf._sync_problem_counts(path, "人工复检完成")
 
 
+def _hand_over(path: str) -> None:
+    """只扫描：本文件检出的问题全部转人工（黄色、已提交），不试修、不改行高。
+    用户已经手动标成蓝 / 绿、还没提交的卡保留用户的选择。"""
+    with wf.STATE_LOCK:
+        pending = [it for it in wf.STATE["items"].values() if it["wb_path"] == path
+                   and it["status"] not in wf.RESOLVED_STATUSES]
+        for group in _group_cells(pending):
+            card = _card_for(group)
+            if card.get("marked") and card["color"] != "yellow" and not card.get("finalized"):
+                card["waiting"] = False
+                continue
+            if any(autofix.column_width_only(it) for it in group):
+                message = autofix.COLUMN_ONLY_REASON
+            elif not _can_highlight(card):
+                message = "单元格定位未确认，未在 Excel 中标色，请按截图查找后人工处理"
+            else:
+                message = SCAN_ONLY_MESSAGE
+            card.update(color="yellow", verified=False, manual=True, finalized=True, waiting=False,
+                        dismissed=False, after_kind="scan_only", message=message)
+            for item in _items_at(card):
+                item.update(status="manual_review", batch_managed=True, triage_keep=False, review_reason=message)
+        wf._persist_state()
+    wf._sync_problem_counts(path, "只扫描完成，全部转人工处理")
+
+
+def _can_highlight(card: dict) -> bool:
+    return bool(card.get("cell_addr")) and all(it.get("location_confirmed") is not False for it in _items_at(card))
+
+
+def _restore_cells(sheet: Any, mark: dict) -> None:
+    """只还原仍是标记颜色的格子；人工处理时自己改过颜色的不动"""
+    for cell in mark["cells"]:
+        target = sheet.Range(cell["addr"])
+        if int(target.Interior.Color) == mark["fill"] and int(target.Interior.Pattern) == XL_PATTERN_SOLID:
+            if cell["pattern"] == XL_PATTERN_NONE:
+                target.Interior.Pattern = XL_PATTERN_NONE
+            else:
+                target.Interior.Pattern = cell["pattern"]
+                target.Interior.Color = cell["color"]
+                target.Interior.TintAndShade = cell["tint"]
+        if cell["font"] is not None and target.Font.Color is not None and int(target.Font.Color) == mark["font"]:
+            target.Font.Color = cell["font"]
+
+
+def _apply_cells(sheet: Any, card: dict, style: dict) -> dict:
+    """记下合并区域里每一格原来的底色、字色，再标色。只改颜色，不改字体粗细大小，不影响排版和分页。
+    字色混合（同一格里有几种颜色的文字）时不改字色，免得还原时丢掉原来的分段颜色。"""
+    area = sheet.Range(card["cell_addr"]).MergeArea
+    mark = {"path": card["wb_path"], "sheet": card["sheet_name"], "addr": card["cell_addr"],
+            "fill": _excel_color(style["fill"]), "font": _excel_color(style["font"]), "cells": []}
+    for cell in area.Cells:
+        interior, font = cell.Interior, cell.Font.Color
+        mark["cells"].append({"addr": cell.Address, "pattern": int(interior.Pattern), "color": int(interior.Color),
+                              "tint": float(interior.TintAndShade or 0),
+                              "font": None if font is None else int(font)})
+    return mark
+
+
+def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = False) -> None:
+    """让原 Excel 里的标色和卡片一致：只扫描过的文件里，黄色人工待处理的格子标色；
+    复检通过（变蓝）、提交为蓝 / 绿、或要求清除时还原原来的颜色。打开一次、保存一次。"""
+    with wf.STATE_LOCK:
+        data, marks = _data(), _marks()
+        style = data.get("highlight_files", {}).get(path)
+        cards = [c for c in data["cards"].values() if c["wb_path"] == path]
+        want = set() if clear or not style else {
+            c["id"] for c in cards
+            if not c.get("dismissed") and c["color"] == "yellow" and c.get("manual") and _can_highlight(c)}
+        have = {cid for cid, m in marks.items() if m["path"] == path}
+        add = [c for c in cards if c["id"] in want - have]
+        remove = sorted(have - want)
+    if not add and not remove:
+        return
+    _check_file(path)
+    book = open_workbook_checked(excel_for(), str(Path(path).resolve()), UpdateLinks=0)
+    added: dict[str, dict] = {}
+    failed: dict[str, str] = {}
+    try:
+        if book.ReadOnly:
+            raise ValueError(f"{Path(path).name} 以只读方式打开，未能标色")
+        for card in add:
+            try:
+                added[card["id"]] = _apply_cells(book.Sheets(card["sheet_name"]), card, style)
+            except Exception as err:
+                failed[card["id"]] = str(err)
+        with wf.STATE_LOCK:
+            # 先记下原来的颜色再改、再保存：中途出错时记录还在，之后还能还原（不是标记颜色的格子不会被改）
+            marks.update(added)
+            wf._persist_state()
+        for cid, mark in added.items():
+            area = book.Sheets(mark["sheet"]).Range(mark["addr"]).MergeArea
+            area.Interior.Pattern = XL_PATTERN_SOLID
+            area.Interior.Color = mark["fill"]
+            for cell in mark["cells"]:
+                if cell["font"] is not None:
+                    book.Sheets(mark["sheet"]).Range(cell["addr"]).Font.Color = mark["font"]
+        for cid in remove:
+            mark = marks[cid]
+            try:
+                _restore_cells(book.Sheets(mark["sheet"]), mark)
+            except Exception as err:
+                wf.log_msg(f"⚠️ {Path(path).name} / {mark['sheet']}!{mark['addr']} 未能还原颜色：{err}")
+        normalize_workbook_view(excel_for(), book)
+        book.Save()
+    finally:
+        book.Close(SaveChanges=False)
+    with wf.STATE_LOCK:
+        for cid in remove:
+            marks.pop(cid, None)
+        for cid, error in failed.items():
+            card = data["cards"].get(cid)
+            if card:
+                card["message"] = f"未能在 Excel 中标色（{error}），请按截图查找后人工处理"
+        wf._persist_state()
+    parts = [f"标色 {len(added)} 格"] if added else []
+    if remove:
+        parts.append(f"还原颜色 {len(remove)} 格")
+    if failed:
+        parts.append(f"{len(failed)} 格未能标色（工作表受保护等）")
+    wf.log_msg(f"🎨 {Path(path).name}：" + "，".join(parts))
+
+
+def _sync_highlights_safely(session: Any, path: str) -> None:
+    """提交、复检之后顺带更新标色；失败只记日志，不影响审核结果"""
+    try:
+        _sync_highlights(session.app, path)
+    except Exception as err:
+        wf.log_msg(f"⚠️ {Path(path).name} 未能更新 Excel 里的标记颜色：{err}")
+
+
+def highlighted_paths() -> list[str]:
+    with wf.STATE_LOCK:
+        paths = list(dict.fromkeys(m["path"] for m in _marks().values() if wf.in_current_folder(m["path"])))
+        if not paths:
+            raise ValueError("当前文件夹没有标过颜色的单元格")
+        return paths
+
+
 def validate_cards(ids: Any = None, *, yellow: bool = False) -> list[str]:
     with wf.STATE_LOCK:
         available = {c["id"]: c for c in _data()["cards"].values()
@@ -976,6 +1149,7 @@ def run() -> list[str]:
     """由 workflow 的单一任务槽执行；不依赖浏览器心跳。"""
     job = wf.STATE["job"]
     kind, options = job["kind"], job["options"]
+    scan_only = kind == "batch_scan" and bool(options.get("scan_only"))
     session = autofix._ExcelSession()
     watchdog = ExcelWatchdog(lambda: wf.log_msg(
         "⚠️ 后台 Excel 长时间无进展，已结束本任务专用 Excel，当前文件将记录错误并重试或跳过")) if kind == "batch_scan" else None
@@ -997,7 +1171,8 @@ def run() -> list[str]:
                     wf.STATE.update(folder=str(folder), pdf_folder=str(folder))
                     job["workbooks"] = [str(p) for p in paths]
                     wf._persist_state()
-                init_execution_batch(task_name="全自动扫描与修复", folder=folder, workbooks=paths, pdf_folder=folder)
+                init_execution_batch(task_name="只扫描（全部转人工）" if scan_only else "全自动扫描与修复",
+                                     folder=folder, workbooks=paths, pdf_folder=folder)
             expected = job["workbooks"]
             with wf.STATE_LOCK:
                 if job.get("pending_adjustment"):
@@ -1027,7 +1202,14 @@ def run() -> list[str]:
                         wf.log_msg(f"⏱ {Path(path).name} 整份检查：{time.perf_counter() - started:.1f} 秒"
                                    f"（导出 {int(checking.get('exports', 0))} 次 {checking.get('export', 0):.1f} 秒，"
                                    f"检测 {checking.get('detect', 0):.1f} 秒）")
-                        _repair_file(excel, session, path)
+                        if scan_only:
+                            # 不试修、不改行高：检出的全部转人工，在原 Excel 里标色方便定位
+                            with wf.STATE_LOCK:
+                                _data().setdefault("highlight_files", {})[path] = highlight_style(options.get("highlight"))
+                            _hand_over(path)
+                            _sync_highlights(session.app, path)
+                        else:
+                            _repair_file(excel, session, path)
                         watchdog.progress()
                         if job.get("pause_requested"):
                             break
@@ -1037,7 +1219,8 @@ def run() -> list[str]:
                             job.get("file_errors", {}).pop(path, None)
                             wf.STATE["scan_progress"] = {"total": len(expected), "completed": len(job["completed"]), "status": "running"}
                             wf._persist_state()
-                        wf._sync_problem_counts(path, "全自动处理完成，等待结果审核")
+                        if not scan_only:
+                            wf._sync_problem_counts(path, "全自动处理完成，等待结果审核")
                         break
                     except Exception as err:
                         if job.get("pending_adjustment"):
@@ -1080,6 +1263,8 @@ def run() -> list[str]:
                 excel = session.app()
             _commit_review(excel)
             expected = list(dict.fromkeys(_data()["cards"][cid]["wb_path"] for cid in options["card_ids"]))
+            for path in expected:
+                _sync_highlights_safely(session, path)
         elif kind in {"batch_recheck", "batch_open"}:
             cards = [_data()["cards"][cid] for cid in options["card_ids"]]
             expected = list(dict.fromkeys(c["wb_path"] for c in cards))
@@ -1101,10 +1286,29 @@ def run() -> list[str]:
                         continue
                     try:
                         _recheck_file(excel, path, [c for c in cards if c["wb_path"] == path])
+                        _sync_highlights_safely(session, path)
                         job["completed"].append(path)
                         wf._persist_state()
                     except Exception as err:
                         wf.log_msg(f"❌ {Path(path).name} 复检失败，可继续任务：{err}")
+        elif kind == "batch_unhighlight":
+            expected = list(options["paths"])
+            unsaved = close_saved_workbooks([Path(path) for path in expected])
+            for path in expected:
+                if path in job["completed"]:
+                    continue
+                if Path(path) in unsaved:
+                    wf.log_msg(f"⚠️ {Path(path).name}：{unsaved[Path(path)]}，请保存后继续")
+                    continue
+                try:
+                    _sync_highlights(session.app, path, clear=True)
+                    with wf.STATE_LOCK:
+                        # 清除后不再自动标色；以后再「只扫描」才重新标
+                        _data().get("highlight_files", {}).pop(path, None)
+                        job["completed"].append(path)
+                        wf._persist_state()
+                except Exception as err:
+                    wf.log_msg(f"❌ {Path(path).name} 清除标记颜色失败，可继续任务：{err}")
         else:
             raise ValueError("未知批处理任务")
         finish_execution_batch("处理完成，请审核结果" if set(expected).issubset(job["completed"]) else "部分文件尚未完成，可继续任务")

@@ -185,7 +185,7 @@ def _check_decision_item(item: dict[str, Any]) -> None:
     autofix.check_row_not_writing(item)
 
 
-BATCH_REVIEW_KINDS = {"batch_commit", "batch_recheck", "batch_open"}
+BATCH_REVIEW_KINDS = {"batch_commit", "batch_recheck", "batch_open", "batch_unhighlight"}
 
 
 def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
@@ -247,7 +247,7 @@ def run_pending_workflow() -> None:
             job = STATE["job"]
             options = dict(job["options"])
             # 审核提交 / 复检 / 打开不重建执行记录：记录属于别的文件夹时不往里写
-            suspend_report_updates(job["kind"] in {"batch_commit", "batch_recheck", "batch_open"}
+            suspend_report_updates(job["kind"] in BATCH_REVIEW_KINDS
                                    and not _report_is_for_workbench())
         if job["kind"].startswith("batch_"):
             from core import batch

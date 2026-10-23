@@ -61,7 +61,9 @@ async function action(work) {
 
 function renderControls() {
   const busy = batchState.busy || requestBusy;
-  for (const id of ['startBtn', 'commitBtn', 'folderInput']) $(id).disabled = busy;
+  for (const id of ['startBtn', 'scanOnlyBtn', 'commitBtn', 'folderInput']) $(id).disabled = busy;
+  $('unhighlightBtn').disabled = busy || !batchState.highlighted;
+  $('unhighlightBtn').textContent = `🧽 清除 Excel 标记颜色${batchState.highlighted ? `（${batchState.highlighted}）` : ''}`;
   $('commitBtn').disabled = busy || !batchState.cards.length;
   $('largeBtn').disabled = !batchState.cards.length;
   $('largeBtn').title = batchState.cards.length ? '逐张放大查看卡片' : '有待审核卡片后可用';
@@ -154,6 +156,7 @@ function handlingText(card) {
     const wrap = card.attempt_wrap?.length ? `${card.cell_addr} 开启自动换行，` : '';
     return Number.isFinite(card.attempt_height) ? `处理：${wrap}第 ${card.excel_row} 行行高试到 ${base}${pt(card.attempt_height)}${added}仍未通过，原文件未修改` : '处理：原文件未修改';
   }
+  if (card.after_kind === 'scan_only') return `处理：只扫描，未自动修改${card.highlighted ? '；已在 Excel 中给这一格标色' : ''}`;
   if (card.after_kind === 'unchanged') return '处理：原样导出已完整显示，未修改行高';
   if (row?.saved && Math.abs(row.applied - row.base) >= 0.05) return `处理：${row.wrap ? `${card.cell_addr} 开启自动换行，` : ''}第 ${card.excel_row} 行行高 ${pt(row.base)} → ${pt(row.applied)}（+${pt(row.applied - row.base)}），已保存`;
   if (row && !row.saved && Math.abs(row.applied - row.base) < 0.05 && card.finalized) return `处理：已还原为原行高 ${pt(row.base)}${row.wrap ? '，并取消自动换行' : ''}`;
@@ -174,7 +177,7 @@ function blueNote(card) {
 
 function cardHtml(card, large = false) {
   const link = excelLinkHtml(esc(card.wb_name), { file: card.wb_name, folder: batchState.folder, sheet: card.sheet_name, cell: card.cell_addr });
-  const labels = { before: '修改前', after: card.after_kind === 'attempt' ? '最后一次尝试（未采用）' : card.after_kind === 'unchanged' ? '原样导出（未修改）' : card.after_kind === 'rechecked' ? '最新导出（本行未修改）' : '修改后' };
+  const labels = { before: '修改前', after: card.after_kind === 'attempt' ? '最后一次尝试（未采用）' : card.after_kind === 'unchanged' ? '原样导出（未修改）' : card.after_kind === 'rechecked' ? '最新导出（本行未修改）' : card.after_kind === 'scan_only' ? '人工修改后（复检通过后显示）' : '修改后' };
   const handling = handlingText(card);
   const images = ['before', 'after'].map(which => `<figure><figcaption>${labels[which]}</figcaption>${card.images?.[which]
     ? `<img ${large ? '' : 'loading="lazy"'} src="${esc(card.images[which])}" alt="${labels[which]}截图" data-preview="1" onerror="${missingHandler('截图暂不可用')}">`
@@ -329,8 +332,57 @@ async function changeColor(id, direction = 1) {
   await action(() => post('/api/batch/mark', { id, color }));
 }
 
+// 只扫描时 Excel 里的标记颜色：预设 + 自定义，记在本机浏览器
+const HIGHLIGHT_KEY = 'clear_handle_excel.highlightColors';
+const HIGHLIGHT_PRESETS = [
+  { label: '洋红底白字（推荐）', fill: '#C0007A', font: '#FFFFFF' },
+  { label: '宝蓝底白字', fill: '#1649CC', font: '#FFFFFF' },
+  { label: '墨绿底白字', fill: '#006633', font: '#FFFFFF' },
+  { label: '深青底白字', fill: '#006A71', font: '#FFFFFF' },
+  { label: '深紫底白字', fill: '#6D28D9', font: '#FFFFFF' },
+  { label: '橙红底白字', fill: '#C2410C', font: '#FFFFFF' },
+  { label: '深灰底白字', fill: '#333333', font: '#FFFFFF' },
+  { label: '纯黑底黄字', fill: '#000000', font: '#FFFF00' },
+];
+const HEX = /^#[0-9a-f]{6}$/i;
+let highlight = { fill: HIGHLIGHT_PRESETS[0].fill, font: HIGHLIGHT_PRESETS[0].font };
+try {
+  const saved = JSON.parse(localStorage.getItem(HIGHLIGHT_KEY) || 'null');
+  if (HEX.test(saved?.fill) && HEX.test(saved?.font)) highlight = { fill: saved.fill.toUpperCase(), font: saved.font.toUpperCase() };
+} catch (_) {}
+
+function luminance(hex) {
+  const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
+    .map(c => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+const contrastRatio = (a, b) => { const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
+
+function renderHighlight() {
+  $('highlightFill').value = highlight.fill.toLowerCase();
+  $('highlightFont').value = highlight.font.toLowerCase();
+  $('highlightSample').style.background = highlight.fill;
+  $('highlightSample').style.color = highlight.font;
+  $('highlightPresets').innerHTML = HIGHLIGHT_PRESETS.map((p, i) => `<button type="button" class="batch-highlight-preset" data-preset="${i}" aria-pressed="${p.fill === highlight.fill && p.font === highlight.font}" style="background:${p.fill};color:${p.font}">${esc(p.label)}</button>`).join('');
+  const ratio = contrastRatio(highlight.fill, highlight.font);
+  $('highlightContrast').textContent = `对比度 ${ratio.toFixed(1)}:1${ratio < 4.5 ? '，偏低，字可能看不清' : ''}`;
+  $('highlightContrast').classList.toggle('is-low', ratio < 4.5);
+}
+
+function setHighlight(next) {
+  highlight = { fill: next.fill.toUpperCase(), font: next.font.toUpperCase() };
+  try { localStorage.setItem(HIGHLIGHT_KEY, JSON.stringify(highlight)); } catch (_) {}
+  renderHighlight();
+}
+$('highlightPresets').addEventListener('click', event => {
+  const button = event.target.closest('[data-preset]');
+  if (button) setHighlight(HIGHLIGHT_PRESETS[Number(button.dataset.preset)]);
+});
+$('highlightFill').addEventListener('input', event => setHighlight({ ...highlight, fill: event.target.value }));
+$('highlightFont').addEventListener('input', event => setHighlight({ ...highlight, font: event.target.value }));
+
 // 暂停的全自动处理在提交、复检、打开文件后会放回来，不算替换续跑点
-const KEEPS_PAUSED_SCAN = new Set(['/api/batch/commit', '/api/batch/recheck', '/api/batch/open']);
+const KEEPS_PAUSED_SCAN = new Set(['/api/batch/commit', '/api/batch/recheck', '/api/batch/open', '/api/batch/unhighlight']);
 const waitingCard = card => card.waiting ?? card.message === '等待自动处理';
 
 async function startJob(url, body = {}) {
@@ -340,15 +392,24 @@ async function startJob(url, body = {}) {
   await action(() => post(url, body));
 }
 
-$('startBtn').addEventListener('click', () => {
+function startBatch(extra = {}) {
   const folder = $('folderInput').value.trim();
   if (!folder) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
   const unsent = batchState.cards.filter(c => !c.finalized).length;
   if (unsent && batchState.folder && folder !== batchState.folder
       && !window.confirm(`当前文件夹还有 ${unsent} 张卡片没有提交审核。\n审核记录会保留，以后对原文件夹重新开始全自动处理即可继续审核。\n\n确定换到新文件夹吗？`)) return;
-  startJob('/api/batch/start', { folder }).then(() => {
+  startJob('/api/batch/start', { folder, ...extra }).then(() => {
     if (batchState.busy) { try { localStorage.setItem('clear_handle_excel.lastFolder', folder); } catch (_) {} }
   });
+}
+$('startBtn').addEventListener('click', () => startBatch());
+$('scanOnlyBtn').addEventListener('click', () => {
+  if (!$('folderInput').value.trim()) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
+  if (!window.confirm('只扫描：不自动加高，检出的问题全部转为黄色人工项。\n会在原 Excel 里给问题单元格换上标记底色和字色并保存（复检通过或提交蓝 / 绿后自动还原）。\n\n确定开始吗？')) return;
+  startBatch({ scan_only: true, highlight: { ...highlight } });
+});
+$('unhighlightBtn').addEventListener('click', () => {
+  if (window.confirm(`把当前文件夹 ${batchState.highlighted || 0} 个标过颜色的单元格还原成原来的颜色？\n需要先在 Excel 里保存并关闭这些文件；你自己改过颜色的格子不动。之后复检也不再自动标色。`)) startJob('/api/batch/unhighlight');
 });
 $('resumeBtn').addEventListener('click', () => startJob('/api/resume'));
 $('pauseBtn').addEventListener('click', () => action(() => post('/api/batch/pause')));
@@ -438,5 +499,6 @@ document.addEventListener('pointermove', event => {
 document.addEventListener('scroll', () => $('imagePreview').classList.add('hidden'), true);
 window.addEventListener('resize', () => { renderKey = ''; layoutKey = ''; render(); });
 try { $('folderInput').value = localStorage.getItem('clear_handle_excel.lastFolder') || ''; } catch (_) {}
+renderHighlight();
 poll();
 setInterval(poll, 1800);
