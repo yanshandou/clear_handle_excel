@@ -1,15 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
   <defs>
-    <linearGradient id="p" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#ece6f7"/></linearGradient>
-    <linearGradient id="f" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e3dbf7"/><stop offset="1" stop-color="#c4b6ea"/></linearGradient>
-    <linearGradient id="r" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffb3a8"/><stop offset="1" stop-color="#f07f86"/></linearGradient>
-    <radialGradient id="s" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#7b66cc" stop-opacity=".28"/><stop offset="1" stop-color="#7b66cc" stop-opacity="0"/></radialGradient>
+    <linearGradient id="p" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#e6f3ed"/></linearGradient>
+    <linearGradient id="f" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#d3efe2"/><stop offset="1" stop-color="#a9d9c4"/></linearGradient>
+    <linearGradient id="r" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#9fd0f2"/><stop offset="1" stop-color="#4f9fd6"/></linearGradient>
+    <radialGradient id="s" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#3a9a76" stop-opacity=".28"/><stop offset="1" stop-color="#3a9a76" stop-opacity="0"/></radialGradient>
   </defs>
   <ellipse cx="60" cy="106" rx="32" ry="6" fill="url(#s)"/>
   <path d="M34 18h36l18 18v58q0 8-8 8H34q-8 0-8-8V26q0-8 8-8z" fill="url(#p)"/>
   <path d="M70 18l18 18H76q-6 0-6-6z" fill="url(#f)"/>
-  <rect x="36" y="40" width="26" height="5" rx="2.5" fill="#d9d0ef"/>
-  <rect x="36" y="50" width="38" height="5" rx="2.5" fill="#d9d0ef"/>
+  <rect x="36" y="40" width="26" height="5" rx="2.5" fill="#cfe7dc"/>
+  <rect x="36" y="50" width="38" height="5" rx="2.5" fill="#cfe7dc"/>
   <rect x="22" y="62" width="56" height="26" rx="10" fill="url(#r)"/>
   <rect x="27" y="65" width="40" height="5" rx="2.5" fill="#fff" opacity=".45"/>
   <text x="50" y="82.5" text-anchor="middle" font-family="Arial Rounded MT Bold, Arial, sans-serif" font-weight="900" font-size="15" fill="#fff">PDF</text>
