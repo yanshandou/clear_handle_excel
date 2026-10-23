@@ -1209,6 +1209,12 @@ def run() -> list[str]:
                             _hand_over(path)
                             _sync_highlights(session.app, path)
                         else:
+                            with wf.STATE_LOCK:
+                                # 全自动处理时运行中不改颜色（免得和写入行高冲突）；提交后黄色人工项再按这个颜色标
+                                if isinstance(options.get("highlight"), dict):
+                                    _data().setdefault("highlight_files", {})[path] = highlight_style(options["highlight"])
+                                elif options.get("highlight_off"):
+                                    _data().get("highlight_files", {}).pop(path, None)
                             _repair_file(excel, session, path)
                         watchdog.progress()
                         if job.get("pause_requested"):
