@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none" stroke="#d4ff3a" stroke-width="6">
+  <defs>
+    <mask id="t">
+      <rect x="0" y="0" width="120" height="120" fill="#fff" stroke="none"/>
+      <text x="51" y="78" text-anchor="middle" font-family="Bahnschrift, Arial, sans-serif" font-weight="700" font-size="18" fill="#000" stroke="none" letter-spacing="2">PDF</text>
+    </mask>
+  </defs>
+  <path d="M32 58V12h38l20 20v76H32V84"/>
+  <path d="M70 12v20h20"/>
+  <path d="M20 58h62v26H20z" fill="#d4ff3a" stroke="none" mask="url(#t)"/>
+  <path d="M40 96h40" stroke-width="4" stroke-dasharray="6 4"/>
+</svg>

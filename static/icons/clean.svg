@@ -1,20 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
-  <defs>
-    <linearGradient id="h" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ffb36b"/><stop offset=".5" stop-color="#ff8a3d"/><stop offset="1" stop-color="#e8661f"/></linearGradient>
-    <linearGradient id="b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffe27a"/><stop offset="1" stop-color="#f7b52c"/></linearGradient>
-    <linearGradient id="c" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b99cff"/><stop offset="1" stop-color="#7c5cf0"/></linearGradient>
-    <radialGradient id="s" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#5b3fc4" stop-opacity=".35"/><stop offset="1" stop-color="#5b3fc4" stop-opacity="0"/></radialGradient>
-  </defs>
-  <ellipse cx="60" cy="106" rx="38" ry="7" fill="url(#s)"/>
-  <g transform="rotate(-32 60 60)">
-    <rect x="54" y="4" width="12" height="64" rx="6" fill="url(#h)"/>
-    <rect x="56.5" y="8" width="3.5" height="54" rx="1.7" fill="#fff" opacity=".45"/>
-    <rect x="44" y="62" width="32" height="12" rx="5" fill="url(#c)"/>
-    <rect x="47" y="64" width="26" height="3" rx="1.5" fill="#fff" opacity=".45"/>
-    <path d="M42 74h36l8 30q1 6-5 6H39q-6 0-5-6z" fill="url(#b)"/>
-    <path d="M50 78l-3 28M60 78v28M70 78l3 28" stroke="#e39a17" stroke-width="2.5" stroke-linecap="round" opacity=".7"/>
-    <path d="M44 77h10l-4 24q-2 3-5 1z" fill="#fff" opacity=".35"/>
-  </g>
-  <circle cx="92" cy="30" r="7" fill="#8fd3ff"/><circle cx="90" cy="28" r="2.4" fill="#fff" opacity=".8"/>
-  <circle cx="101" cy="50" r="4" fill="#ff9ad5"/><circle cx="20" cy="40" r="5" fill="#8fe3c0"/>
+  <path d="M80 10l10 6-26 44-10-6z" fill="#c9773a" stroke="#1c2858" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M82 16l3 2-22 38" stroke="#e9a066" stroke-width="3" stroke-linecap="round"/>
+  <path d="M44 48l26 15-4 8-26-15z" fill="#ff4d6d" stroke="#1c2858" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M40 56l26 15-10 38H22q-6 0-4-6z" fill="#ffc21f" stroke="#1c2858" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M60 80l-6 26H32" fill="#f39200" opacity=".55"/>
+  <path d="M36 74l-8 26M48 80l-7 22" stroke="#1c2858" stroke-width="5" stroke-linecap="round"/>
+  <path d="M40 64l8 4" stroke="#fff" stroke-width="5" stroke-linecap="round" opacity=".85"/>
+  <path d="M94 66l5 11 11 5-11 5-5 11-5-11-11-5 11-5z" fill="#fff" stroke="#1c2858" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M100 38l3 6 6 3-6 3-3 6-3-6-6-3 6-3z" fill="#3fd0ff" stroke="#1c2858" stroke-width="4" stroke-linejoin="round"/>
 </svg>

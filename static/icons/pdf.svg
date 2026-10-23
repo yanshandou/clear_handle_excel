@@ -1,19 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
-  <defs>
-    <linearGradient id="p" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#e3eefc"/></linearGradient>
-    <linearGradient id="t" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7cc4ff"/><stop offset="1" stop-color="#3b82f6"/></linearGradient>
-    <linearGradient id="r" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff8a8a"/><stop offset="1" stop-color="#f0524a"/></linearGradient>
-    <radialGradient id="s" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#2a5fc4" stop-opacity=".35"/><stop offset="1" stop-color="#2a5fc4" stop-opacity="0"/></radialGradient>
-  </defs>
-  <ellipse cx="60" cy="108" rx="36" ry="6" fill="url(#s)"/>
-  <rect x="34" y="16" width="56" height="78" rx="9" fill="#bcd6f6" transform="rotate(8 62 55)"/>
-  <path d="M28 14h40l20 20v62q0 8-8 8H28q-8 0-8-8V22q0-8 8-8z" fill="url(#p)" stroke="#c9dcf5" stroke-width="1.5"/>
-  <path d="M68 14v14q0 6 6 6h14z" fill="url(#t)"/>
-  <rect x="30" y="40" width="34" height="6" rx="3" fill="url(#t)"/>
-  <rect x="30" y="54" width="46" height="5" rx="2.5" fill="#c4d8f2"/>
-  <rect x="30" y="65" width="40" height="5" rx="2.5" fill="#c4d8f2"/>
-  <rect x="30" y="76" width="44" height="5" rx="2.5" fill="#c4d8f2"/>
-  <rect x="62" y="80" width="40" height="22" rx="8" fill="url(#r)"/>
-  <rect x="66" y="83" width="32" height="5" rx="2.5" fill="#fff" opacity=".35"/>
-  <path d="M71 96v-9h4a3 3 0 0 1 0 6h-4M81 96v-9h3a4.5 4.5 0 0 1 0 9zM93 87h-4v9M89 91h3.5" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M30 10h44l22 22v74q0 6-6 6H30q-6 0-6-6V16q0-6 6-6z" fill="#ffffff" stroke="#1c2858" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M90 34v70q0 4-4 4H34q-4 0-4-4v-8h48q8 0 8-8V34z" fill="#d6e4f7"/>
+  <path d="M74 10v16q0 6 6 6h16z" fill="#9fc0ec" stroke="#1c2858" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M38 30h24M38 42h28" stroke="#b7c6dd" stroke-width="6" stroke-linecap="round"/>
+  <rect x="12" y="54" width="76" height="34" rx="8" fill="#ec2049" stroke="#1c2858" stroke-width="6"/>
+  <path d="M15 80h70v4q0 3-3 3H18q-3 0-3-3z" fill="#a81034"/>
+  <path d="M20 62h30" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity=".5"/>
+  <text x="50" y="80" text-anchor="middle" font-family="Arial Black, Arial, sans-serif" font-weight="900" font-size="22" fill="#fff">PDF</text>
 </svg>
