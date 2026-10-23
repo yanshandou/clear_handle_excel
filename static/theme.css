@@ -1199,3 +1199,237 @@ button.preview-sheet-tag:active {
     height: 92px;
   }
 }
+
+/* ==========================================
+   层次加强（用户 2026-10-23：对比度和层次感更明显）
+   底色压深一档，白色面板更突出；文字、边框加深；面板标题区、进度区、按钮组分层
+   ========================================== */
+:root {
+  --ui-ink: #14213d;
+  --ui-ink-2: #34425e;
+  --ui-ink-3: #62718c;
+  --ui-ink-4: #93a1b7;
+  --ui-line: #d9e4f3;
+  --ui-line-2: #bfd2ec;
+  --ui-panel-shadow:
+    0 1px 3px rgba(25, 55, 115, 0.08),
+    0 14px 34px -6px rgba(35, 75, 155, 0.16);
+  --shadow-card: 0 1px 3px rgba(25, 55, 115, 0.08), 0 8px 20px -4px rgba(35, 75, 155, 0.12);
+  --shadow-keycap: 0 1px 2px rgba(25, 55, 115, 0.08), 0 3px 8px rgba(35, 75, 155, 0.1);
+}
+
+body {
+  background-color: #e3edf9;
+  background-image:
+    radial-gradient(circle at 88% -4%, rgba(150, 200, 255, 0.85) 0, rgba(150, 200, 255, 0) 360px),
+    radial-gradient(circle at 6% 10%, rgba(200, 182, 255, 0.55) 0, rgba(200, 182, 255, 0) 320px),
+    linear-gradient(180deg, #c8e2ff 0%, #d9eaff 260px, #e3edf9 620px);
+}
+
+.app-header {
+  background: rgba(255, 255, 255, 0.92);
+  border-bottom: 1px solid #d3e1f3;
+  box-shadow: 0 6px 22px rgba(35, 75, 155, 0.14);
+}
+
+.nav-link {
+  background: #f3f7fd;
+  border-color: #d3e1f3;
+}
+
+.nav-link:hover {
+  background: #ffffff;
+}
+
+/* 面板：更明显的边框和投影 */
+.panel {
+  border: 1px solid #d6e2f2;
+  box-shadow: var(--ui-panel-shadow);
+}
+
+/* 面板标题区做成一条浅蓝色顶栏，和正文分开（只用负外边距贴边，不改正文位置） */
+.panel > .panel-section-head:first-child {
+  margin: -20px -24px 16px;
+  padding: 14px 24px;
+  border-radius: 20px 20px 0 0;
+  background: linear-gradient(180deg, #eef5ff 0%, #f8fbff 100%);
+  border-bottom: 1px solid #dbe6f5;
+}
+
+.panel-section-title {
+  font-size: 15.5px;
+}
+
+.toolbar-hint {
+  color: var(--ui-ink-3);
+}
+
+/* 输入框：白底 + 更深的边框，和面板分得开 */
+.input-groove-wrap,
+input[type="text"],
+input[type="number"] {
+  background: #ffffff;
+  border-color: #bfd2ec;
+  box-shadow: inset 0 1px 3px rgba(30, 60, 120, 0.08);
+}
+
+/* 按钮：描边加深，主按钮颜色更饱和 */
+.btn-outline {
+  border-color: #bfd2ec;
+  color: #2359c9;
+  box-shadow: var(--shadow-keycap);
+}
+
+.btn-outline:hover:not(:disabled) {
+  border-color: #8fb6ea;
+}
+
+.btn-primary {
+  background: linear-gradient(180deg, #4fb2ff 0%, #2f72ee 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), inset 0 -2px 0 rgba(0, 40, 120, 0.14), 0 6px 14px -2px rgba(47, 114, 238, 0.45);
+}
+
+.btn-success {
+  background: linear-gradient(180deg, #4fd8a8 0%, #12a678 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), inset 0 -2px 0 rgba(0, 80, 50, 0.14), 0 6px 14px -2px rgba(18, 166, 120, 0.42);
+}
+
+.btn-danger {
+  background: linear-gradient(180deg, #ff8a78 0%, #e23f37 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), inset 0 -2px 0 rgba(120, 20, 10, 0.14), 0 6px 14px -2px rgba(226, 63, 55, 0.42);
+}
+
+/* 进度区：浅蓝凹槽，进度条更粗、更亮 */
+.progress-wrap,
+.mini-progress-box {
+  background: linear-gradient(180deg, #e9f2fe 0%, #f4f8ff 100%);
+  border-color: #d3e1f3;
+}
+
+.progress-track {
+  background: #d3e0f2;
+  box-shadow: inset 0 1px 3px rgba(25, 55, 115, 0.2);
+}
+
+.progress-fill {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.45) 0%, rgba(255, 255, 255, 0) 60%),
+    linear-gradient(90deg, #4fb2ff 0%, #2f72ee 100%);
+  box-shadow: 0 1px 5px rgba(47, 114, 238, 0.5);
+}
+
+/* 主页瓷片：颜色更饱和，投影更明显 */
+.feature-violet { --tile-top: #dccfff; --tile-line: #cdbcf9; }
+.feature-sky { --tile-top: #c8e4ff; --tile-line: #b6d6f8; }
+.feature-rose { --tile-top: #ffd1d9; --tile-line: #f7bdc8; }
+.feature-mint { --tile-top: #c4f0d8; --tile-line: #addfc3; }
+
+.feature-card {
+  box-shadow: 0 1px 3px rgba(25, 55, 115, 0.08), 0 16px 34px -12px color-mix(in srgb, var(--tile-accent) 55%, transparent);
+}
+
+.feature-sub {
+  color: var(--ui-ink-2);
+}
+
+/* 执行记录：KPI 瓷片更饱和，表头和斑马纹分层 */
+.kpi-card {
+  --kpi-top: #d5e8ff;
+  border-color: color-mix(in srgb, var(--kpi-top) 55%, #c9d8ee);
+  box-shadow: var(--shadow-card);
+}
+
+.kpi-done { --kpi-top: #cdf1dd; }
+.kpi-processing { --kpi-top: #c8e4ff; }
+.kpi-pending { --kpi-top: #e2e7f1; }
+.kpi-clips { --kpi-top: #ffe0bd; }
+
+.kpi-value {
+  font-size: 28px;
+}
+
+.filter-pill {
+  border-color: #d3e1f3;
+  background: #f6f9fe;
+}
+
+.table-responsive {
+  border-color: #d3e1f3;
+  box-shadow: 0 1px 3px rgba(25, 55, 115, 0.06);
+}
+
+.records-table th {
+  color: var(--ui-ink);
+  background: linear-gradient(180deg, #eaf2fd 0%, #e1ecfb 100%);
+  border-bottom: 1px solid #cddcf1;
+}
+
+.records-table th,
+.records-table td {
+  border-bottom-color: #e4ecf7;
+}
+
+.records-table tbody tr:nth-child(even) {
+  background: #f8fbff;
+}
+
+.records-table tbody tr:hover {
+  background: #eef5ff;
+}
+
+/* 精简 Sheet：文件卡片和分组标题更清楚 */
+.preview-list li {
+  border-color: #d6e2f2;
+  box-shadow: 0 1px 2px rgba(25, 55, 115, 0.06), 0 4px 12px -4px rgba(35, 75, 155, 0.12);
+}
+
+.clean-folder-title {
+  border-bottom-color: #d6e2f2;
+}
+
+.clean-actionbar,
+.batch-select-bar {
+  border-color: #cddcf1;
+  box-shadow: 0 12px 34px rgba(35, 75, 155, 0.24);
+}
+
+/* 工作台：按钮组放进浅色托盘，审核卡片投影加重 */
+.batch-actions {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid #dbe6f5;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #f2f7ff 0%, #f8fbff 100%);
+}
+
+.batch-card {
+  box-shadow: 0 1px 3px rgba(25, 55, 115, 0.08), 0 10px 24px -6px rgba(35, 75, 155, 0.16);
+}
+
+.batch-card:hover {
+  box-shadow: 0 2px 6px rgba(25, 55, 115, 0.1), 0 16px 32px -8px rgba(35, 75, 155, 0.22);
+}
+
+.batch-shots figure {
+  border-color: #d6e2f2;
+}
+
+.batch-filter {
+  box-shadow: 0 1px 2px rgba(25, 55, 115, 0.08), 0 3px 8px rgba(35, 75, 155, 0.08);
+}
+
+.info-panel .log-box {
+  border-color: #d6e2f2;
+  background: #f3f7fd;
+}
+
+/* 对话框：标题区颜色更深一点 */
+.task-dialog-head {
+  border-bottom-color: color-mix(in srgb, var(--tile-line, #cde3fb) 80%, #b7c9e3);
+}
+
+.task-notes,
+.app-dialog-message {
+  background: #eef4fd;
+  border-color: #d6e2f2;
+}
