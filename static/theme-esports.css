@@ -70,9 +70,9 @@
 
 /* 四种功能色：主页卡片、对话框标题、精简 Sheet 页标题共用 */
 .feature-violet { --tile: var(--neon); --tile-frame: var(--frame-lime); --tile-icon: url("/static/icons/esports/clean.svg"); --tile-code: "MODULE 01"; }
-.feature-sky { --tile: var(--mint); --tile-frame: var(--frame-mint); --tile-icon: url("/static/icons/esports/pdf.svg"); --tile-code: "MODULE 02"; }
-.feature-rose { --tile: var(--amber); --tile-frame: var(--frame-amber); --tile-icon: url("/static/icons/esports/search.svg"); --tile-code: "MODULE 03"; }
-.feature-mint { --tile: var(--cyan); --tile-frame: var(--frame-cyan); --tile-icon: url("/static/icons/esports/target.svg"); --tile-code: "MODULE 04"; }
+.feature-sky { --tile: var(--mint); --tile-frame: var(--frame-mint); --tile-icon: url("/static/icons/esports/pdf.svg"); --tile-code: "MODULE 04"; }
+.feature-rose { --tile: var(--amber); --tile-frame: var(--frame-amber); --tile-icon: url("/static/icons/esports/search.svg"); --tile-code: "MODULE 02"; }
+.feature-mint { --tile: var(--cyan); --tile-frame: var(--frame-cyan); --tile-icon: url("/static/icons/esports/target.svg"); --tile-code: "MODULE 03"; }
 
 /* 切角线框：边框粗细 2px 固定，border-image 只换颜色 */
 .panel,
