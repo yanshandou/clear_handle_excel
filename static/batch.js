@@ -1,6 +1,7 @@
 'use strict';
 const REVIEW_COLORS = ['blue', 'green', 'yellow'];
 const REVIEW_LABELS = { blue: '蓝 · 已修复', green: '绿 · 还原并忽略', yellow: '黄 · 人工处理' };
+const REVIEW_JOB_NAMES = { batch_commit: '提交审核', batch_recheck: '复检', batch_open: '打开文件', batch_unhighlight: '清除标记颜色' };
 let batchState = { cards: [], busy: false, job: null, progress: {}, logs: [] };
 let selectedFilter = 'all';
 let largeMode = false;
@@ -263,9 +264,15 @@ function render() {
   for (const id of selectedIds) if (!visible.has(id)) selectedIds.delete(id);
   const p = batchState.progress || {};
   const job = batchState.job;
-  const total = job?.workbooks?.length || p.total || 0;
-  const completed = job?.kind === 'batch_scan' ? job.completed.length : p.completed || 0;
-  $('progressText').textContent = `${batchState.busy ? '正在处理' : job?.status === 'interrupted' ? '已暂停或部分文件未完成' : '当前进度'}：${completed} / ${total} 个文件 · 待审核 ${batchState.cards.length} 个单元格`;
+  // 全自动处理看本任务的文件；审核提交 / 复检等运行中看它自己涉及的文件；其余时候显示上次扫描的进度
+  const own = job && Array.isArray(job.workbooks) && (job.kind === 'batch_scan' || (job.kind?.startsWith('batch_') && job.status !== 'completed'));
+  const done = own ? new Set(job.completed || []) : null;
+  const total = own ? job.workbooks.length : p.total || 0;
+  // 已完成只算本任务列表里的文件（去重），不会超过总数
+  const completed = own ? job.workbooks.filter(path => done.has(path)).length : Math.min(p.completed || 0, total);
+  const label = batchState.busy ? (own && job.kind !== 'batch_scan' ? `正在${REVIEW_JOB_NAMES[job.kind] || '处理'}` : '正在处理')
+    : job?.status === 'interrupted' ? '已暂停或部分文件未完成' : '当前进度';
+  $('progressText').textContent = `${label}：${completed} / ${total} 个文件 · 待审核 ${batchState.cards.length} 个单元格`;
   $('progressFill').style.width = `${total ? Math.round(completed * 100 / total) : 0}%`;
   $('logBox').textContent = batchState.logs.join('\n') || '等待操作…';
   const counts = Object.fromEntries(REVIEW_COLORS.map(c => [c, batchState.cards.filter(card => card.color === c).length]));
