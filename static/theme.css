@@ -63,10 +63,10 @@
 }
 
 /* 四种功能色：主页卡片、对话框标题、精简 Sheet 页标题共用 */
-.feature-violet { --tile-bg: var(--purple); --tile-ink: #ffffff; --tile-tag: var(--lime); --tile-tag-ink: var(--ink); --tile-icon: url("/static/icons/clean.svg"); }
-.feature-sky { --tile-bg: var(--lime); --tile-ink: var(--ink); --tile-tag: var(--ink); --tile-tag-ink: var(--lime); --tile-icon: url("/static/icons/pdf.svg"); }
-.feature-rose { --tile-bg: var(--pink); --tile-ink: #ffffff; --tile-tag: var(--ink); --tile-tag-ink: #ffffff; --tile-icon: url("/static/icons/search.svg"); }
-.feature-mint { --tile-bg: #2b2b33; --tile-ink: #ffffff; --tile-tag: var(--purple); --tile-tag-ink: #ffffff; --tile-icon: url("/static/icons/target.svg"); }
+.feature-violet { --tile-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpolygon points='0,17 100,8 100,84 0,93'/%3E%3Crect x='1.84' y='14' width='2.2' height='8'/%3E%3Crect x='1.84' y='78' width='2.2' height='15'/%3E%3Crect x='7.72' y='1' width='2.2' height='21'/%3E%3Crect x='7.72' y='78' width='2.2' height='11'/%3E%3Crect x='13.61' y='14' width='2.2' height='8'/%3E%3Crect x='13.61' y='78' width='2.2' height='13'/%3E%3Crect x='19.49' y='14' width='2.2' height='8'/%3E%3Crect x='19.49' y='78' width='2.2' height='13'/%3E%3Crect x='25.37' y='78' width='2.2' height='21'/%3E%3Crect x='31.25' y='78' width='2.2' height='13'/%3E%3Crect x='37.14' y='1' width='2.2' height='21'/%3E%3Crect x='37.14' y='78' width='2.2' height='15'/%3E%3Crect x='43.02' y='0' width='2.2' height='22'/%3E%3Crect x='48.9' y='10' width='2.2' height='12'/%3E%3Crect x='48.9' y='78' width='2.2' height='17'/%3E%3Crect x='54.78' y='12' width='2.2' height='10'/%3E%3Crect x='60.66' y='8' width='2.2' height='14'/%3E%3Crect x='60.66' y='78' width='2.2' height='21'/%3E%3Crect x='66.55' y='6' width='2.2' height='16'/%3E%3Crect x='72.43' y='6' width='2.2' height='16'/%3E%3Crect x='72.43' y='78' width='2.2' height='11'/%3E%3Crect x='78.31' y='8' width='2.2' height='14'/%3E%3Crect x='78.31' y='78' width='2.2' height='17'/%3E%3Crect x='84.19' y='8' width='2.2' height='14'/%3E%3Crect x='84.19' y='78' width='2.2' height='22'/%3E%3Crect x='95.96' y='3' width='2.2' height='19'/%3E%3Crect x='95.96' y='78' width='2.2' height='19'/%3E%3C/svg%3E"); --tile-bg: var(--purple); --tile-ink: #ffffff; --tile-cat: "CLEAN UP"; --tile-icon: url("/static/icons/clean.svg"); }
+.feature-sky { --tile-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpolygon points='0,17 100,8 100,84 0,93'/%3E%3Crect x='1.84' y='14' width='2.2' height='8'/%3E%3Crect x='7.72' y='12' width='2.2' height='10'/%3E%3Crect x='7.72' y='78' width='2.2' height='15'/%3E%3Crect x='13.61' y='14' width='2.2' height='8'/%3E%3Crect x='13.61' y='78' width='2.2' height='15'/%3E%3Crect x='19.49' y='1' width='2.2' height='21'/%3E%3Crect x='19.49' y='78' width='2.2' height='21'/%3E%3Crect x='25.37' y='0' width='2.2' height='22'/%3E%3Crect x='25.37' y='78' width='2.2' height='17'/%3E%3Crect x='31.25' y='78' width='2.2' height='15'/%3E%3Crect x='37.14' y='0' width='2.2' height='22'/%3E%3Crect x='43.02' y='0' width='2.2' height='22'/%3E%3Crect x='43.02' y='78' width='2.2' height='21'/%3E%3Crect x='48.9' y='12' width='2.2' height='10'/%3E%3Crect x='48.9' y='78' width='2.2' height='15'/%3E%3Crect x='54.78' y='78' width='2.2' height='13'/%3E%3Crect x='60.66' y='0' width='2.2' height='22'/%3E%3Crect x='60.66' y='78' width='2.2' height='17'/%3E%3Crect x='66.55' y='10' width='2.2' height='12'/%3E%3Crect x='78.31' y='8' width='2.2' height='14'/%3E%3Crect x='78.31' y='78' width='2.2' height='15'/%3E%3Crect x='84.19' y='1' width='2.2' height='21'/%3E%3Crect x='84.19' y='78' width='2.2' height='22'/%3E%3Crect x='90.08' y='6' width='2.2' height='16'/%3E%3Crect x='90.08' y='78' width='2.2' height='22'/%3E%3Crect x='95.96' y='78' width='2.2' height='21'/%3E%3C/svg%3E"); --tile-bg: var(--lime); --tile-ink: var(--ink); --tile-cat: "EXPORT"; --tile-icon: url("/static/icons/pdf.svg"); }
+.feature-rose { --tile-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpolygon points='0,17 100,8 100,84 0,93'/%3E%3Crect x='7.72' y='78' width='2.2' height='15'/%3E%3Crect x='13.61' y='10' width='2.2' height='12'/%3E%3Crect x='13.61' y='78' width='2.2' height='21'/%3E%3Crect x='19.49' y='6' width='2.2' height='16'/%3E%3Crect x='19.49' y='78' width='2.2' height='21'/%3E%3Crect x='25.37' y='0' width='2.2' height='22'/%3E%3Crect x='25.37' y='78' width='2.2' height='13'/%3E%3Crect x='31.25' y='0' width='2.2' height='22'/%3E%3Crect x='31.25' y='78' width='2.2' height='13'/%3E%3Crect x='37.14' y='0' width='2.2' height='22'/%3E%3Crect x='37.14' y='78' width='2.2' height='22'/%3E%3Crect x='43.02' y='3' width='2.2' height='19'/%3E%3Crect x='43.02' y='78' width='2.2' height='13'/%3E%3Crect x='48.9' y='8' width='2.2' height='14'/%3E%3Crect x='54.78' y='8' width='2.2' height='14'/%3E%3Crect x='54.78' y='78' width='2.2' height='11'/%3E%3Crect x='60.66' y='12' width='2.2' height='10'/%3E%3Crect x='60.66' y='78' width='2.2' height='17'/%3E%3Crect x='66.55' y='3' width='2.2' height='19'/%3E%3Crect x='66.55' y='78' width='2.2' height='21'/%3E%3Crect x='72.43' y='14' width='2.2' height='8'/%3E%3Crect x='72.43' y='78' width='2.2' height='22'/%3E%3Crect x='78.31' y='10' width='2.2' height='12'/%3E%3Crect x='78.31' y='78' width='2.2' height='19'/%3E%3Crect x='84.19' y='78' width='2.2' height='15'/%3E%3Crect x='90.08' y='8' width='2.2' height='14'/%3E%3Crect x='95.96' y='12' width='2.2' height='10'/%3E%3Crect x='95.96' y='78' width='2.2' height='19'/%3E%3C/svg%3E"); --tile-bg: var(--pink); --tile-ink: #ffffff; --tile-cat: "INSPECT"; --tile-icon: url("/static/icons/search.svg"); }
+.feature-mint { --tile-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpolygon points='0,17 100,8 100,84 0,93'/%3E%3Crect x='1.84' y='0' width='2.2' height='22'/%3E%3Crect x='1.84' y='78' width='2.2' height='21'/%3E%3Crect x='7.72' y='1' width='2.2' height='21'/%3E%3Crect x='7.72' y='78' width='2.2' height='15'/%3E%3Crect x='13.61' y='10' width='2.2' height='12'/%3E%3Crect x='13.61' y='78' width='2.2' height='22'/%3E%3Crect x='19.49' y='14' width='2.2' height='8'/%3E%3Crect x='19.49' y='78' width='2.2' height='15'/%3E%3Crect x='25.37' y='14' width='2.2' height='8'/%3E%3Crect x='25.37' y='78' width='2.2' height='17'/%3E%3Crect x='31.25' y='0' width='2.2' height='22'/%3E%3Crect x='31.25' y='78' width='2.2' height='21'/%3E%3Crect x='37.14' y='8' width='2.2' height='14'/%3E%3Crect x='37.14' y='78' width='2.2' height='21'/%3E%3Crect x='43.02' y='78' width='2.2' height='22'/%3E%3Crect x='48.9' y='8' width='2.2' height='14'/%3E%3Crect x='54.78' y='0' width='2.2' height='22'/%3E%3Crect x='54.78' y='78' width='2.2' height='15'/%3E%3Crect x='60.66' y='10' width='2.2' height='12'/%3E%3Crect x='60.66' y='78' width='2.2' height='19'/%3E%3Crect x='66.55' y='78' width='2.2' height='11'/%3E%3Crect x='72.43' y='5' width='2.2' height='17'/%3E%3Crect x='72.43' y='78' width='2.2' height='22'/%3E%3Crect x='78.31' y='6' width='2.2' height='16'/%3E%3Crect x='90.08' y='12' width='2.2' height='10'/%3E%3Crect x='90.08' y='78' width='2.2' height='19'/%3E%3Crect x='95.96' y='8' width='2.2' height='14'/%3E%3Crect x='95.96' y='78' width='2.2' height='19'/%3E%3C/svg%3E"); --tile-bg: #3d6bff; --tile-ink: #ffffff; --tile-cat: "NORMALIZE"; --tile-icon: url("/static/icons/target.svg"); }
 
 /* 页面底色：浅灰白 + 淡点阵（不放涂鸦，免得被当成按钮） */
 body {
@@ -552,123 +552,158 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 
 .feature-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 24px;
+  gap: 18px;
 }
 
-/* 图标在上、文字在下（HTML 里是文字在前，这里用 column-reverse 调到上面） */
+/* 功能卡片：竖条色块（参考游戏角色选择海报）
+   色块本身画在 ::before 上：中间一块上下斜切的长条，上下伸出长短不一的竖条，叠一道斜向高光。
+   形状用 mask 裁出来，不占位置；卡片本身透明，悬停只调亮颜色，不位移。 */
 .feature-card {
   flex-direction: column-reverse;
   justify-content: flex-end;
-  align-items: center;
-  gap: 4px;
-  min-height: 300px;
-  padding: 26px 20px 24px;
-  text-align: center;
-  border: 3px solid var(--ink);
-  border-radius: 24px;
-  color: var(--ink);
-  background: #ffffff;
-  box-shadow: 6px 6px 0 var(--ink);
-  transition: box-shadow 0.15s ease, background 0.15s ease;
+  align-items: stretch;
+  gap: 0;
+  min-height: 440px;
+  padding: 84px 22px 76px;
+  text-align: left;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+  color: var(--tile-ink);
+  background: transparent;
+  box-shadow: none;
+  transition: none;
 }
 
-/* 顶部一块功能色色带（不占位置） */
 .feature-card::before {
+  inset: 0;
   width: auto;
-  height: 118px;
+  height: auto;
   left: 0;
   right: 0;
   top: 0;
+  bottom: 0;
   transform: none;
+  border: 0;
   border-radius: 0;
-  border-bottom: 3px solid var(--ink);
   background:
-    radial-gradient(circle, rgba(255, 255, 255, 0.22) 1.4px, transparent 1.8px) 0 0 / 14px 14px,
+    linear-gradient(118deg, transparent 56%, rgba(255, 255, 255, 0.2) 56%, rgba(255, 255, 255, 0.2) 74%, transparent 74%),
+    linear-gradient(200deg, transparent 72%, rgba(0, 0, 0, 0.14) 72%),
     var(--tile-bg);
+  -webkit-mask: var(--tile-mask) 0 0 / 100% 100% no-repeat;
+  mask: var(--tile-mask) 0 0 / 100% 100% no-repeat;
+  transition: filter 0.15s ease;
 }
 
 .feature-card:hover {
   transform: none;
-  box-shadow: 6px 6px 0 var(--purple);
+  box-shadow: none;
+}
+
+.feature-card:hover::before {
+  filter: brightness(1.08) saturate(1.05);
 }
 
 .feature-card:active {
   transform: none;
   filter: none;
-  box-shadow: 3px 3px 0 var(--ink);
+  box-shadow: none;
+}
+
+.feature-card:active::before {
+  filter: brightness(0.95);
 }
 
 .feature-card:focus-visible {
-  outline: 4px solid var(--lime);
-  outline-offset: 3px;
+  outline: 4px solid var(--ink);
+  outline-offset: 4px;
 }
 
 .feature-text {
-  align-items: center;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 6px;
   padding: 0;
 }
 
-/* 卡片标题：倾斜的贴纸标签 */
-.feature-title {
-  display: inline-block;
-  padding: 4px 12px;
-  border: 2.5px solid var(--ink);
-  border-radius: 6px;
-  font-size: 21px;
+/* 分类行：圆形徽章 + 英文大写分类名 */
+.feature-text::before {
+  content: var(--tile-cat, "");
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding-left: 36px;
+  font-size: 15px;
   font-weight: 900;
-  letter-spacing: 1px;
-  color: var(--tile-tag-ink);
-  background: var(--tile-tag);
-  box-shadow: 3px 3px 0 var(--ink);
-  text-shadow: none;
-  transform: rotate(-2.5deg);
+  letter-spacing: 1.5px;
+  color: var(--tile-ink);
+  background:
+    var(--tile-icon) 3px 50% / 22px 22px no-repeat,
+    radial-gradient(circle at 14px 50%, #ffffff 13px, var(--ink) 13.5px, var(--ink) 15.5px, transparent 16px) no-repeat;
 }
 
+.feature-title,
 .feature-card:nth-child(even) .feature-title {
-  transform: rotate(2deg);
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  font-size: 30px;
+  line-height: 1.15;
+  font-weight: 900;
+  letter-spacing: 1px;
+  color: var(--tile-ink);
+  background: none;
+  box-shadow: none;
+  text-shadow: none;
+  transform: none;
 }
 
 .feature-sub {
-  margin-top: 6px;
+  margin-top: 2px;
   font-size: 13.5px;
-  font-weight: 600;
-  color: var(--ink-2);
-  opacity: 1;
+  font-weight: 700;
+  color: var(--tile-ink);
+  opacity: 0.92;
   text-shadow: none;
 }
 
 .feature-meta {
-  align-self: center;
-  margin-top: 14px;
-  padding: 7px 16px;
-  border: 2px solid var(--ink);
+  align-self: flex-start;
+  margin-top: 12px;
+  padding: 6px 14px;
+  border: 0;
   border-radius: 999px;
-  color: var(--ink);
+  color: #ffffff;
   font-size: 12.5px;
   font-weight: 800;
-  background: #ffffff;
-  box-shadow: 2px 2px 0 var(--ink);
+  background: rgba(17, 17, 17, 0.78);
+  box-shadow: none;
   text-shadow: none;
 }
 
+/* 图标：白底圆角贴纸，微微倾斜 */
 .feature-orb {
-  width: 132px;
-  height: 132px;
-  margin: 0 0 8px;
+  align-self: center;
+  width: 128px;
+  height: 128px;
+  margin: 0 0 22px;
   border-radius: 28px;
   background: #ffffff;
   border: 3px solid var(--ink);
-  box-shadow: 4px 4px 0 var(--ink);
+  box-shadow: 5px 5px 0 rgba(17, 17, 17, 0.85);
   display: grid;
   place-items: center;
+  transform: rotate(-5deg);
 }
 
-/* 原来的 emoji 换成方框线框图标（文字隐藏，读屏仍有 aria-hidden） */
+.feature-card:nth-child(even) .feature-orb {
+  transform: rotate(4deg);
+}
+
 .feature-icon {
   display: block;
-  width: 108px;
-  height: 108px;
+  width: 104px;
+  height: 104px;
   font-size: 0;
   color: transparent;
   background: var(--tile-icon) center / contain no-repeat;
@@ -678,7 +713,7 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 }
 
 .feature-card:hover .feature-icon {
-  transform: rotate(-6deg);
+  transform: scale(1.06);
 }
 
 @media (max-width: 1000px) {
@@ -1369,7 +1404,7 @@ button.preview-sheet-tag:active {
   }
 
   .feature-card {
-    min-height: 240px;
+    min-height: 380px;
   }
 
   .home-hero h2 {
