@@ -1,12 +1,12 @@
 /* ==========================================
    紫色潮流贴纸风主题
    浅灰白底、亮紫主色 + 荧光黄绿点缀、粗黑描边、黑色块标签（微微倾斜的贴纸感）、
-   超粗标题、圆角卡片带硬阴影、页面边缘的手绘涂鸦、方框线框图标（static/icons/*.svg）。
+   超粗标题、圆角卡片带硬阴影、方框线框图标（static/icons/*.svg）。
    放在 styles.css（及 batch.css）之后加载，只改外观，不改功能。
    约束：
    - 点击后卡片、标签、按钮的尺寸和位置不变（各状态边框粗细一致），悬停不上浮，按下也不位移
    - 白字元素一律 text-shadow: none，避免日文 Windows 上继承白色投影出现重影
-   - 涂鸦只放在页面背景和标题旁边（pointer-events: none），工作区本身保持干净
+   - 不放和功能无关的涂鸦（叉号、波浪线等容易被当成按钮），只留主页标题旁的小皇冠
    - 三色审核变量（batch.css）和标记颜色预设不动
    ========================================== */
 :root {
@@ -68,31 +68,13 @@
 .feature-rose { --tile-bg: var(--pink); --tile-ink: #ffffff; --tile-tag: var(--ink); --tile-tag-ink: #ffffff; --tile-icon: url("/static/icons/search.svg"); }
 .feature-mint { --tile-bg: #2b2b33; --tile-ink: #ffffff; --tile-tag: var(--purple); --tile-tag-ink: #ffffff; --tile-icon: url("/static/icons/target.svg"); }
 
-/* 页面底色 + 四角手绘涂鸦（固定在背景，面板是不透明白底，只在页边露出来） */
+/* 页面底色：浅灰白 + 淡点阵（不放涂鸦，免得被当成按钮） */
 body {
   color: var(--ink-2);
   background-color: var(--paper);
-  background-image:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='260' viewBox='0 0 260 260'%3E%3Cpath d='M40 210c30-60 70-40 90-90s60-60 90-40-10 70-50 90-80 60-130 40z' fill='%237c3aed' opacity='.9'/%3E%3Cpath d='M70 70l14 14M84 70L70 84' stroke='%23111' stroke-width='8' stroke-linecap='round'/%3E%3Cpath d='M200 196l6 10M216 190l-10 6' stroke='%23111' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E"),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='60' viewBox='0 0 120 60'%3E%3Cpath d='M8 36q10-20 20 0t20 0 20 0 20 0 20 0' fill='none' stroke='%237c3aed' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E"),
-    radial-gradient(circle, rgba(17, 17, 17, 0.07) 1.2px, transparent 1.6px);
-  background-position: right -90px bottom -90px, left 18px bottom 40px, 0 0;
-  background-size: 260px 260px, 120px 60px, 22px 22px;
-  background-repeat: no-repeat, no-repeat, repeat;
-  background-attachment: fixed, fixed, fixed;
-}
-
-/* 主页两侧留白多，左上角再加一笔黑色涂鸦；工作页面板占满宽度，不放，免得从面板边上露出半截 */
-body:has(.home-container) {
-  background-image:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='120' viewBox='0 0 220 120'%3E%3Cpath d='M12 92C40 30 60 18 52 52s20 40 46-10 34-30 30 6 26 30 58-22' fill='none' stroke='%23111' stroke-width='9' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='260' viewBox='0 0 260 260'%3E%3Cpath d='M40 210c30-60 70-40 90-90s60-60 90-40-10 70-50 90-80 60-130 40z' fill='%237c3aed' opacity='.9'/%3E%3Cpath d='M70 70l14 14M84 70L70 84' stroke='%23111' stroke-width='8' stroke-linecap='round'/%3E%3Cpath d='M200 196l6 10M216 190l-10 6' stroke='%23111' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E"),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='60' viewBox='0 0 120 60'%3E%3Cpath d='M8 36q10-20 20 0t20 0 20 0 20 0 20 0' fill='none' stroke='%237c3aed' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E"),
-    radial-gradient(circle, rgba(17, 17, 17, 0.07) 1.2px, transparent 1.6px);
-  background-position: left -30px top 70px, right -90px bottom -90px, left 18px bottom 40px, 0 0;
-  background-size: 220px 120px, 260px 260px, 120px 60px, 22px 22px;
-  background-repeat: no-repeat, no-repeat, no-repeat, repeat;
-  background-attachment: fixed, fixed, fixed, fixed;
+  background-image: radial-gradient(circle, rgba(17, 17, 17, 0.07) 1.2px, transparent 1.6px);
+  background-size: 22px 22px;
+  background-attachment: fixed;
 }
 
 code {
@@ -745,14 +727,7 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 }
 
 .task-dialog-head::before {
-  /* 右上角的小涂鸦 */
-  width: 90px;
-  height: 60px;
-  right: 56px;
-  top: 6px;
-  border-radius: 0;
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 90 60'%3E%3Cpath d='M6 40q10-24 22-4t22-6 18-8 16 6' fill='none' stroke='%23111' stroke-width='5' stroke-linecap='round'/%3E%3Cpath d='M74 6l4 8M84 14l-8 2' stroke='%23111' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
-  opacity: 0.85;
+  display: none;
 }
 
 .task-dialog-icon {
