@@ -393,32 +393,32 @@ const waitingCard = card => card.waiting ?? card.message === '等待自动处理
 async function startJob(url, body = {}) {
   const keeps = batchState.job?.kind === 'batch_scan' && KEEPS_PAUSED_SCAN.has(url);
   if (batchState.job?.status === 'interrupted' && url !== '/api/resume' && !keeps
-      && !window.confirm('这会替换上次任务的续跑点。已保存的修复和审核标记会保留，继续吗？')) return;
+      && !(await appConfirm('这会替换上次任务的续跑点。已保存的修复和审核标记会保留，继续吗？', { okText: '继续' }))) return;
   await action(() => post(url, body));
 }
 
-function startBatch(extra = {}) {
+async function startBatch(extra = {}) {
   const folder = $('folderInput').value.trim();
   if (!folder) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
   const unsent = batchState.cards.filter(c => !c.finalized).length;
   if (unsent && batchState.folder && folder !== batchState.folder
-      && !window.confirm(`当前文件夹还有 ${unsent} 张卡片没有提交审核。\n审核记录会保留，以后对原文件夹重新开始全自动处理即可继续审核。\n\n确定换到新文件夹吗？`)) return;
-  startJob('/api/batch/start', { folder, ...extra }).then(() => {
+      && !(await appConfirm(`当前文件夹还有 ${unsent} 张卡片没有提交审核。\n审核记录会保留，以后对原文件夹重新开始全自动处理即可继续审核。\n\n确定换到新文件夹吗？`, { title: '换文件夹', okText: '换到新文件夹' }))) return;
+  await startJob('/api/batch/start', { folder, ...extra }).then(() => {
     if (batchState.busy) { try { localStorage.setItem('clear_handle_excel.lastFolder', folder); } catch (_) {} }
   });
 }
 $('startBtn').addEventListener('click', () => startBatch($('highlightAuto').checked ? { highlight: { ...highlight } } : {}));
-$('scanOnlyBtn').addEventListener('click', () => {
+$('scanOnlyBtn').addEventListener('click', async () => {
   if (!$('folderInput').value.trim()) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
-  if (!window.confirm('只扫描：不自动加高，检出的问题全部转为黄色人工项。\n会在原 Excel 里给问题单元格换上标记底色和字色并保存（复检通过或提交蓝 / 绿后自动还原）。\n\n确定开始吗？')) return;
-  startBatch({ scan_only: true, highlight: { ...highlight } });
+  if (!(await appConfirm('不自动加高，检出的问题全部转为黄色人工项。\n会在原 Excel 里给问题单元格换上标记底色和字色并保存（复检通过或提交蓝 / 绿后自动还原）。\n\n确定开始吗？', { title: '只扫描，全部转人工', okText: '开始扫描' }))) return;
+  await startBatch({ scan_only: true, highlight: { ...highlight } });
 });
-$('unhighlightBtn').addEventListener('click', () => {
-  if (window.confirm(`把当前文件夹 ${batchState.highlighted || 0} 个标过颜色的单元格还原成原来的颜色？\n需要先在 Excel 里保存并关闭这些文件；你自己改过颜色的格子不动。之后提交、复检也不再自动标色，重新开始处理时才按设置标色。`)) startJob('/api/batch/unhighlight');
+$('unhighlightBtn').addEventListener('click', async () => {
+  if (await appConfirm(`把当前文件夹 ${batchState.highlighted || 0} 个标过颜色的单元格还原成原来的颜色？\n需要先在 Excel 里保存并关闭这些文件；你自己改过颜色的格子不动。之后提交、复检也不再自动标色，重新开始处理时才按设置标色。`, { title: '清除 Excel 标记颜色', okText: '还原颜色' })) await startJob('/api/batch/unhighlight');
 });
 $('resumeBtn').addEventListener('click', () => startJob('/api/resume'));
 $('pauseBtn').addEventListener('click', () => action(() => post('/api/batch/pause')));
-$('commitBtn').addEventListener('click', () => {
+$('commitBtn').addEventListener('click', async () => {
   const waiting = batchState.cards.filter(waitingCard).length;
   const cards = batchState.cards.filter(c => !waitingCard(c));
   if (!cards.length) { $('errorText').textContent = '卡片都还没轮到自动处理，暂时没有可提交的标记'; return; }
@@ -428,10 +428,10 @@ $('commitBtn').addEventListener('click', () => {
     + (cards.some(c => c.color === 'blue' && c.adoptable) ? `\n\n其中 ${cards.filter(c => c.color === 'blue' && c.adoptable).length} 张蓝色是自动检查没通过、由你看图认可的：会按最后一次尝试的行高写入原文件。` : '')
     + (unmarked ? `\n\n其中 ${unmarked} 张没有手动改过颜色，将按当前颜色处理。` : '')
     + (waiting ? `\n\n另有 ${waiting} 张还没轮到自动处理，这次不提交，继续全自动处理后再审核。` : '') + '\n\n确定提交吗？';
-  if (window.confirm(message)) startJob('/api/batch/commit', { card_ids: cards.map(c => c.id) });
+  if (await appConfirm(message, { title: '确认并处理标记', okText: '提交', tone: 'info' })) await startJob('/api/batch/commit', { card_ids: cards.map(c => c.id) });
 });
-$('abandonBtn').addEventListener('click', () => {
-  if (window.confirm('放弃上次未完成的写入？\n不会再改动这个文件，相关单元格转为黄色人工处理，请在 Excel 中核对这一行的行高。')) action(() => post('/api/batch/abandon'));
+$('abandonBtn').addEventListener('click', async () => {
+  if (await appConfirm('放弃上次未完成的写入？\n不会再改动这个文件，相关单元格转为黄色人工处理，请在 Excel 中核对这一行的行高。', { title: '放弃这次写入', okText: '放弃写入', tone: 'danger' })) action(() => post('/api/batch/abandon'));
 });
 $('copyErrorBtn').addEventListener('click', event => {
   const parts = [$('pendingNotice').classList.contains('hidden') ? '' : $('pendingNotice').textContent,
