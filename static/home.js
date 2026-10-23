@@ -236,14 +236,14 @@ function onPrimaryAction() {
 
 function readFolderInput() {
   const folder = document.getElementById('taskFolderInput').value.trim();
-  if (!folder) alert('请先输入 Excel 文件夹路径！');
+  if (!folder) appAlert('请先输入 Excel 文件夹路径！', { tone: 'warn' });
   return folder;
 }
 
 async function startTask() {
   const folder = readFolderInput();
   if (!folder) return;
-  if (overview && overview.can_resume && !confirm('开始新任务会替换上次中断任务的续跑进度，确定吗？')) return;
+  if (overview && overview.can_resume && !(await appConfirm('开始新任务会替换上次中断任务的续跑进度，确定吗？', { okText: '开始新任务' }))) return;
   // 后端先递归列出文件再返回，期间轮询不能把按钮还原成可点击
   starting = true;
   renderDialog();
@@ -253,7 +253,7 @@ async function startTask() {
     phase = 'running';
     minAcceptedSeq = pollSeq + 1;
   } catch (e) {
-    alert(e.message);
+    appAlert(e.message, { tone: 'error' });
   }
   starting = false;
   renderDialog();
@@ -264,7 +264,7 @@ async function resumeTask() {
   try {
     await postAction('/api/resume', {});
   } catch (e) {
-    alert(e.message);
+    appAlert(e.message, { tone: 'error' });
     return;
   }
   if (canResumeActiveTask()) phase = 'running';
@@ -294,7 +294,7 @@ async function exportProgress() {
     link.remove();
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   } catch (e) {
-    alert(e.message);
+    appAlert(e.message, { tone: 'error' });
   } finally {
     btn.disabled = Boolean(overview && overview.busy);
   }
@@ -309,7 +309,7 @@ function pickProgressFile() {
 async function importProgressFile(file) {
   const message = `导入「${file.name}」会替换当前全部进度（扫描结果、人工判断、续跑点和执行记录），无法撤销。\n`
     + '建议先点「导出进度」备份当前进度。确定导入吗？';
-  if (!confirm(message)) return;
+  if (!(await appConfirm(message, { title: '导入进度', okText: '导入', tone: 'danger' }))) return;
   try {
     const res = await fetch('/api/progress/import', {
       method: 'POST',
@@ -324,9 +324,9 @@ async function importProgressFile(file) {
     ];
     if (data.can_resume) lines.push('包含中断的任务，可点击「继续上次任务」继续。');
     data.warnings.forEach(warning => lines.push(`⚠️ ${warning}`));
-    alert(lines.join('\n'));
+    appAlert(lines.join('\n'), { title: '导入完成', icon: '✅' });
   } catch (e) {
-    alert(`导入失败：${e.message}`);
+    appAlert(`导入失败：${e.message}`, { tone: 'error' });
   }
   minAcceptedSeq = pollSeq + 1;
   await pollState();

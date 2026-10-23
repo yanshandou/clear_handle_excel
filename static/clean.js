@@ -731,7 +731,7 @@ function renderRunBox() {
    ========================================== */
 function readFolderInput() {
   const folder = document.getElementById('cleanFolderInput').value.trim();
-  if (!folder) alert('请先输入 Excel 文件夹路径！');
+  if (!folder) appAlert('请先输入 Excel 文件夹路径！', { tone: 'warn' });
   return folder;
 }
 
@@ -750,7 +750,7 @@ async function runPreview() {
     renderPreview();
     syncChannel?.postMessage({ type: 'rescanned', folder: previewData.folder });
   } catch (e) {
-    alert(e.message);
+    appAlert(e.message, { tone: 'error' });
   } finally {
     pending = null;
     renderPage();
@@ -761,7 +761,7 @@ async function startTask() {
   if (pending || phase !== 'preview' || document.getElementById('execBtn').disabled) return;
   const folder = readFolderInput();
   if (!folder) return;
-  if (overview && overview.can_resume && !confirm('开始新任务会替换上次中断任务的续跑进度，确定吗？')) return;
+  if (overview && overview.can_resume && !(await appConfirm('开始新任务会替换上次中断任务的续跑进度，确定吗？', { okText: '开始新任务' }))) return;
   setPending('start');
   try {
     const payload = { kind: CLEAN_KIND, folder, plan: buildCleanPlan() };
@@ -771,7 +771,7 @@ async function startTask() {
     phase = 'running';
     minAcceptedSeq = pollSeq + 1;
   } catch (e) {
-    alert(e.message);
+    appAlert(e.message, { tone: 'error' });
   } finally {
     pending = null;
   }
@@ -783,7 +783,7 @@ async function resumeTask() {
   try {
     await postAction('/api/resume', {});
   } catch (e) {
-    alert(e.message);
+    appAlert(e.message, { tone: 'error' });
     return;
   }
   phase = 'running';

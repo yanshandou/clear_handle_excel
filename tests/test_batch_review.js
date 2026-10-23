@@ -17,7 +17,7 @@ function page() {
   const context = vm.createContext({
     document: { activeElement: null, getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); },
       addEventListener(name, fn) { listeners[name] = fn; }, querySelectorAll() { return []; } },
-    localStorage: { getItem() { return ''; } }, window: { confirm() { return true; }, addEventListener() {} },
+    localStorage: { getItem() { return ''; } }, window: { addEventListener() {} }, appConfirm: async () => true,
     setInterval() {}, fetch() { return new Promise(() => {}); },
     MutationObserver: class { observe() {} },
     excelLinkHtml(label) { return `<a>${label}</a>`; }, Date, requests,
@@ -215,7 +215,7 @@ test('batch color change sends one request and keeps the selection', async () =>
 test('commit leaves cards that have not been processed yet out of the submission', async () => {
   const p = page();
   p.run(`batchState.cards.push({id:'c', seq:3, wb_name:'book.xlsx', sheet_name:'Sheet', cell_addr:'A7', color:'yellow', waiting:true, message:'等待自动处理', images:{}})`);
-  p.run(`window.confirm = text => { globalThis.asked = text; return true; }`);
+  p.run(`appConfirm = async text => { globalThis.asked = text; return true; }`);
   await p.elements.get('commitBtn').listeners.click();
   await new Promise(resolve => setImmediate(resolve));
   const asked = p.run('globalThis.asked');
@@ -226,7 +226,7 @@ test('commit leaves cards that have not been processed yet out of the submission
 test('committing while the automatic run is paused does not warn about losing its resume point', async () => {
   const p = page();
   p.run(`batchState.job = {kind:'batch_scan', status:'interrupted', completed:[]}; globalThis.asks = 0;
-    window.confirm = text => { if (text.includes('续跑点')) globalThis.asks++; return true; }`);
+    appConfirm = async text => { if (text.includes('续跑点')) globalThis.asks++; return true; }`);
   await p.elements.get('commitBtn').listeners.click();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(p.run('globalThis.asks'), 0);
