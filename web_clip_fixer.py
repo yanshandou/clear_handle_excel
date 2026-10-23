@@ -253,7 +253,12 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def _handle_post(self, payload: dict) -> None:
         if self.path == "/api/batch/start":
-            self._start_job("batch_scan", {"folder": _require_folder(payload)})
+            options = {"folder": _require_folder(payload)}
+            if payload.get("scan_only") is True:
+                options.update(scan_only=True, highlight=batch.highlight_style(payload.get("highlight")))
+            self._start_job("batch_scan", options)
+        elif self.path == "/api/batch/unhighlight":
+            self._start_job("batch_unhighlight", {"paths": batch.highlighted_paths()})
         elif self.path == "/api/batch/mark":
             batch.mark(payload.get("id"), payload.get("color"))
             self._send_json({"ok": True})
