@@ -31,6 +31,8 @@ except ImportError:
 
 
 MSO_AUTOMATION_SECURITY_FORCE_DISABLE = 3
+# 跳转目标：单元格（A1）或区域（A10:H12，分页切开的合并区域）
+CELL_OR_RANGE = r"[A-Za-z]+[1-9]\d*(?::[A-Za-z]+[1-9]\d*)?"
 XL_A1 = 1
 XL_R1C1 = -4150
 
@@ -129,7 +131,7 @@ def _show_in_excel(excel: Any, workbook_path: Path, sheet_name: str, cell_addres
     if workbook.Windows.Count > 0:
         workbook.Windows(1).Visible = True
         workbook.Windows(1).WindowState = -4143  # xlNormal
-    address = cell_address if re.fullmatch(r"[A-Za-z]+[1-9]\d*", cell_address) else f"A{row}"
+    address = cell_address if re.fullmatch(CELL_OR_RANGE, cell_address) else f"A{row}"
     excel.Goto(sheet.Range(address), Scroll=True)
     _bring_to_front(excel)
     return round(float(sheet.Rows(row).RowHeight or 15.0), 1)
@@ -161,7 +163,7 @@ def open_workbook_in_excel(workbook_path: Path, sheet_name: str = "", cell_addre
                 sheet, note = None, f"工作表「{sheet_name}」是隐藏的，没有跳过去"
             if sheet is not None:
                 sheet.Activate()
-                if re.fullmatch(r"[A-Za-z]+[1-9]\d*", cell_address or ""):
+                if re.fullmatch(CELL_OR_RANGE, cell_address or ""):
                     excel.Goto(sheet.Range(cell_address), Scroll=True)
         _bring_to_front(excel)
         return note

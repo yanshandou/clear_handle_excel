@@ -35,7 +35,7 @@ from core.common import (
     workbook_locked,
     workbook_rel_name,
 )
-from core import fix_images, pdf_detector
+from core import fix_images, page_breaks, pdf_detector
 from core.excel_watchdog import ExcelWatchdog
 from core.excel_ops import (
     CellProbe,
@@ -528,11 +528,33 @@ def _detect_sheet_results(
                 ),
                 "status": "pending", "iterations": 0,
             }
+
+        # 分页切开合并单元格：自动分页落在多行合并区域中间（PDF 上不一定看得出缺字，按 Excel 的分页判断）
+        breaks = page_breaks.read_breaks(sheet)
+        for block in page_breaks.find_cut_blocks(sheet, breaks, probe.printed) if breaks is not None else []:
+            image, page_index, bbox = page_breaks.shot_around(
+                sheet, breaks, doc, block["break_row"], block["left"], block["text"], pieces)
+            if page_index is None:
+                page_index = page_breaks.page_index(sheet, breaks, block["break_row"], block["left"], len(doc))
+                if page_index is not None:  # 文字没找到：框住新一页的顶部
+                    rect = doc[page_index].rect
+                    bbox = [rect.x0 + 20, rect.y0 + 20, rect.x1 - 20, rect.y0 + rect.height * .2]
+            item_id = f"item_{generation}_{len(items)}"
+            items[item_id] = {
+                "id": item_id, "seq": start_seq + len(items), "kind": "pagebreak",
+                "page_id": page_entry(page_index) if page_index is not None else None,
+                "index_on_page": 1, "wb_path": str(wb_path), "wb_name": wb_label,
+                "sheet_name": sheet_name, "pdf_path": str(pdf_path),
+                "page_index": page_index, "text": block["text"], "bbox": bbox or None,
+                "occurrence": ["cell", block["addr"]], "block": block, "location_confirmed": True,
+                "excel_row": block["top"], "cell_addr": block["addr"], "row_height": probe.row_height(block["top"]),
+                "image": image, "status": "pending", "iterations": 0,
+            }
     return pages, items
 
 
 # 检测规则变化时加一：之前按旧规则查过的文件即使没改过，下次扫描也要整份重新检查
-DETECTOR_VERSION = 12
+DETECTOR_VERSION = 13
 
 
 def _confirm_clip_cells(
@@ -609,7 +631,9 @@ def _report_name(path: str) -> str:
 
 
 def _fix_record(item: dict[str, Any]) -> dict[str, Any]:
-    if (item.get("kind") or "clip") == "hidden":
+    if item.get("kind") == "pagebreak":
+        reason = page_breaks.FIX_REASON
+    elif (item.get("kind") or "clip") == "hidden":
         reason = HIDDEN_FIX_REASONS.get(item.get("hidden_reason") or "", item.get("hidden_reason") or "文字没显示全")
         if item.get("wrap_text"):
             reason = WRAP_FIX_REASON

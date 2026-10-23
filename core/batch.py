@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from core import autofix, fix_images, workflow as wf
+from core import autofix, fix_images, page_breaks, workflow as wf
 from core.common import STALE_LOCK_HINT, workbook_locked, workbook_rel_name
 from core.excel_ops import (
     CellProbe, close_saved_workbooks, extract_sheet_snapshot, normalize_workbook_view,
@@ -29,7 +29,7 @@ from core.pdf_detector import fitz, render_crop_base64
 from core.reporter import finish_execution_batch, init_execution_batch, update_file_progress
 
 COLORS = ("blue", "green", "yellow")
-KIND_LABELS = {"hidden": "隐藏截断", "clip": "压线"}
+KIND_LABELS = {"hidden": "隐藏截断", "clip": "压线", "pagebreak": "分页切开"}
 CLIP_REASON = "文字被边框横线切穿，打印出来被切掉一部分（行高不够）"
 WAITING_MESSAGE = "等待自动处理"
 # Excel 行高按屏幕像素取整（100% 缩放 0.75pt、125% 0.6pt），写入后读回会差一点；
@@ -83,6 +83,17 @@ def _cell(item: dict) -> tuple[str, str, str]:
     return item["wb_path"], item["sheet_name"], item.get("cell_addr", "")
 
 
+def _is_break(obj: dict) -> bool:
+    """分页切开合并区域的问题项 / 卡片：修法是插手动分页，不是加高"""
+    return obj.get("kind") == "pagebreak"
+
+
+def _rid(obj: dict) -> str:
+    """一处可写入、可还原的修改：同一行的行高共用一个；插分页另算一个，和行高互不影响"""
+    parts = (obj["wb_path"], obj["sheet_name"], int(obj["excel_row"]))
+    return _key(*parts, "break") if _is_break(obj) else _key(*parts)
+
+
 def _signature(item: dict) -> list[str]:
     return [item.get("kind") or "clip", item.get("text", "")]
 
@@ -115,8 +126,8 @@ def _problem(item: dict) -> dict:
     kind = item.get("kind") or "clip"
     text, visible = normalize_text(item.get("text", "")), normalize_text(item.get("visible_text") or "")
     missing = text[len(visible):] if kind == "hidden" and visible and text.startswith(visible) else ""
-    return {"kind": kind, "label": KIND_LABELS.get(kind, kind),
-            "reason": (item.get("hidden_reason") if kind == "hidden" else "") or CLIP_REASON, "missing": missing}
+    reason = {"hidden": item.get("hidden_reason"), "pagebreak": page_breaks.REASON}.get(kind) or CLIP_REASON
+    return {"kind": kind, "label": KIND_LABELS.get(kind, kind), "reason": reason, "missing": missing}
 
 
 def _remember_problems(card: dict, items: list[dict]) -> None:
@@ -126,7 +137,7 @@ def _remember_problems(card: dict, items: list[dict]) -> None:
 
 
 def _row_record(card: dict) -> dict | None:
-    return _data()["rows"].get(_key(card["wb_path"], card["sheet_name"], card["excel_row"]))
+    return _data()["rows"].get(_rid(card))
 
 
 def _latest_shot(card: dict, items: list[dict]) -> str:
@@ -218,6 +229,8 @@ def _card_for(items: list[dict]) -> dict:
             "finalized": False, "verified": False, "manual": False, "message": WAITING_MESSAGE,
             "waiting": True, "gen": uuid4().hex[:8], "signatures": signatures,
         }
+        if _is_break(first):
+            card["kind"] = "pagebreak"
         _save_shot(card, "before", first.get("image", ""))
     card["item_ids"] = [it["id"] for it in items]
     _remember_problems(card, items)
@@ -243,7 +256,9 @@ def snapshot() -> dict:
             if not result.get("problems"):  # 旧版本留下的卡片没存问题说明，按单元格现有的问题项补上
                 result["problems"] = list({p["kind"]: p for p in map(_problem, _items_at(card))}.values())
             row = _row_record(card)
-            if row is not None:
+            if row is not None and _is_break(card):
+                result["page_break"] = {"row": row["row"], "saved": row["saved"], "applied": row["applied"] >= .5}
+            elif row is not None:
                 result["row_height"] = {"base": row["base"], "applied": row["applied"], "saved": row["saved"],
                                         "wrap": card.get("cell_addr") in row.get("wrap", [])}
             result["adoptable"] = _adoptable(card)
@@ -316,6 +331,14 @@ def _check_file(path: str) -> None:
         raise ValueError(f"文件仍在 Excel 中打开，请保存并关闭后继续：{p.name}" + STALE_LOCK_HINT)
 
 
+def _row_value(book: Any, row: dict) -> float:
+    """写入日志里一行现在的值：行高；插分页的行是 1（上方有手动分页）/ 0（没有）"""
+    target = book.Sheets(row["sheet"]).Rows(row["row"])
+    if row.get("kind") == "break":
+        return 1.0 if int(target.PageBreak) == page_breaks.XL_PAGEBREAK_MANUAL else 0.0
+    return float(target.RowHeight)
+
+
 def _write_rows(excel: Any, journal: dict) -> None:
     """先核对所有行，再写；续跑时目标行高已保存则只补数据库提交。"""
     path = journal["path"]
@@ -325,7 +348,7 @@ def _write_rows(excel: Any, journal: dict) -> None:
     try:
         if book.ReadOnly:
             raise ValueError(f"{where} 文件以只读方式打开，未写入")
-        actual = [float(book.Sheets(r["sheet"]).Rows(r["row"]).RowHeight) for r in journal["rows"]]
+        actual = [_row_value(book, r) for r in journal["rows"]]
         # 自动换行和行高一起保存；续跑时两样都已到位才算写过
         wraps = [(r["sheet"], addr, on) for r in journal["rows"] for addr, on in (r.get("wrap") or {}).items()]
         at_target = (all(abs(h - r["target"]) < ROW_HEIGHT_TOLERANCE for h, r in zip(actual, journal["rows"]))
@@ -338,7 +361,11 @@ def _write_rows(excel: Any, journal: dict) -> None:
             for sheet, addr, on in wraps:
                 book.Sheets(sheet).Range(addr).MergeArea.WrapText = on
             for row in journal["rows"]:
-                book.Sheets(row["sheet"]).Rows(row["row"]).RowHeight = row["target"]
+                target = book.Sheets(row["sheet"]).Rows(row["row"])
+                if row.get("kind") == "break":
+                    target.PageBreak = page_breaks.XL_PAGEBREAK_MANUAL if row["target"] else page_breaks.XL_PAGEBREAK_NONE
+                else:
+                    target.RowHeight = row["target"]
             normalize_workbook_view(excel, book)
             book.Save()
     finally:
@@ -370,7 +397,14 @@ def _finish_pending(excel: Any) -> None:
                 job["attempted_rows"].append(row["id"])
         for cid in pending["cards"]:
             card = data["cards"][cid]
-            if pending["action"] == "fix":
+            if pending["action"] == "fix" and _is_break(card):
+                card.update(color="blue", verified=True, after_kind="fixed",
+                            message="已在合并区域上方插入分页并保存，等待审核")
+                for item in _items_at(card):
+                    item.update(status="fixed", batch_managed=True, triage_keep=False, page_break=True,
+                                fix_images=copy.deepcopy(card.get("fix_images", {})),
+                                review_reason="全自动批处理：已修复并保存")
+            elif pending["action"] == "fix":
                 card.update(color="blue", verified=True, after_kind="fixed", message="已自动修复并保存，等待审核")
                 for item in _items_at(card):
                     item.update(status="fixed", batch_managed=True, triage_keep=False,
@@ -511,7 +545,8 @@ def _refresh(
                 row = _row_record(existing)
                 if row and row["saved"] and abs(row["applied"] - row["base"]) >= ROW_HEIGHT_TOLERANCE:
                     existing.update(color="blue", verified=True, after_kind="fixed", waiting=False,
-                                    message="已加高并保存，最新导出已通过检查，等待审核")
+                                    message=("已插入分页" if _is_break(existing) else "已加高")
+                                    + "并保存，最新导出已通过检查，等待审核")
                     after = next(((it.get("fix_images") or {}).get("after") for it in group
                                   if (it.get("fix_images") or {}).get("after")), None)
                     if after:
@@ -521,7 +556,9 @@ def _refresh(
                     fix_images.forget(existing, "after")
                     _save_shot(existing, "after", _latest_shot(existing, group))
                     existing.update(color="blue", verified=True, after_kind="rechecked", waiting=False,
-                                    message="本行行高未修改：其他行调整后重新导出，这一格已完整显示，等待审核")
+                                    message="未插入分页：其他行调整后重新导出，已不再被分页切开，等待审核"
+                                    if _is_break(existing) else
+                                    "本行行高未修改：其他行调整后重新导出，这一格已完整显示，等待审核")
         wf._persist_state()
 
 
@@ -632,6 +669,70 @@ def _prepare_row(
     return base, chosen, before
 
 
+def _prepare_break(session: Any, path: str, item: dict, timing: dict[str, float]) -> dict:
+    """在副本上合并区域第一行上方插手动分页，核对整块不再被切开，导出一份截图后把副本改回去。
+    缩放到 N 页高（Excel 忽略手动分页）、合并区域比一页还高、上方已有手动分页的都不改，转人工。"""
+    block = item.get("block") or {}
+    top, bottom = int(block.get("top") or 0), int(block.get("bottom") or 0)
+    if not top or bottom <= top:
+        raise ValueError("合并区域信息缺失，请重新扫描")
+    sheet = session.copy_of(path).Sheets(item["sheet_name"])
+    if page_breaks.fit_to_pages_tall(sheet):
+        raise ValueError(page_breaks.FIT_REASON)
+    row = sheet.Rows(top)
+    if int(row.PageBreak) == page_breaks.XL_PAGEBREAK_MANUAL:
+        raise ValueError(page_breaks.MANUAL_REASON)
+    pdf = session.chosen_pdf()
+    row.PageBreak = page_breaks.XL_PAGEBREAK_MANUAL
+    try:
+        breaks = page_breaks.read_breaks(sheet)
+        if breaks is None:
+            raise ValueError("读不到 Excel 的分页信息（可能没有设置打印机），未修改，请人工处理")
+        if not any(r == top and manual for r, manual in breaks["h"]):
+            raise ValueError("插入的分页没有生效（打印设置不支持手动分页），未修改，请人工处理")
+        if page_breaks.still_cut(breaks, block):
+            raise ValueError(page_breaks.TALL_REASON)
+        started = time.perf_counter()
+        wf._export_sheet_pdf(sheet, pdf)
+        timing["exports"] = timing.get("exports", 0) + 1
+        timing["export"] = timing.get("export", 0.0) + time.perf_counter() - started
+        with fitz.open(pdf) as doc:
+            after = page_breaks.shot_around(sheet, breaks, doc, top, int(block.get("left") or 1), item["text"])[0]
+    finally:
+        row.PageBreak = page_breaks.XL_PAGEBREAK_NONE
+    return {"after": after, "pdf": pdf}
+
+
+def _repair_break(
+    excel: Any, session: Any, path: str, item: dict, cards: list[dict], rid: str,
+    version: dict, timing: dict[str, float],
+) -> Any:
+    """分页切开的合并区域：插分页，走写入日志保存到原文件（可续跑、提交绿 / 黄时可还原）。返回和原文件一致的副本"""
+    started = time.perf_counter()
+    chosen = _prepare_break(session, path, item, timing)
+    timing["prepare"] = time.perf_counter() - started
+    top = int(item["block"]["top"])
+    with wf.STATE_LOCK:
+        for card in cards:
+            fix_images.forget(card, "after")
+            _save_shot(card, "after", chosen["after"])
+        _data()["rows"][rid] = {"id": rid, "kind": "break", "path": path, "sheet": item["sheet_name"], "row": top,
+                                "base": 0.0, "applied": 1.0, "saved": False, "wrap": []}
+        wf.STATE["job"]["pending_adjustment"] = {
+            "action": "fix", "path": path, "version": version, "cards": [c["id"] for c in cards],
+            "rows": [{"id": rid, "kind": "break", "sheet": item["sheet_name"], "row": top,
+                      "expected": 0.0, "target": 1.0}],
+        }
+        wf._persist_state()
+    started = time.perf_counter()
+    _finish_pending(excel)
+    timing["write"] = time.perf_counter() - started
+
+    def insert(sheet: Any) -> None:
+        sheet.Rows(top).PageBreak = page_breaks.XL_PAGEBREAK_MANUAL
+    return session.written_with(path, version, item["sheet_name"], insert, chosen["pdf"])
+
+
 class _RowDone(Exception):
     """这一行没有需要自动加高的格子了（如只有 ### 列宽问题），直接算处理过"""
 
@@ -652,15 +753,13 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
         with wf.STATE_LOCK:
             pending = [it for it in wf.STATE["items"].values() if it["wb_path"] == path
                        and it["status"] not in wf.RESOLVED_STATUSES]
-            manual_rows = {(c["sheet_name"], c["excel_row"]) for c in _data()["cards"].values()
+            manual_rows = {_rid(c) for c in _data()["cards"].values()
                            if c["wb_path"] == path and (c.get("manual") or c.get("marked")) and not c.get("dismissed")}
-            manual_rows.update((r["sheet"], r["row"]) for r in _data()["rows"].values()
+            manual_rows.update(r["id"] for r in _data()["rows"].values()
                                if r["path"] == path and r["saved"]
-                               and any(not c.get("dismissed") and c["wb_path"] == path
-                                       and c["sheet_name"] == r["sheet"] and c["excel_row"] == r["row"]
+                               and any(not c.get("dismissed") and c["wb_path"] == path and _rid(c) == r["id"]
                                        for c in _data()["cards"].values()))
-            candidates = [it for it in pending if _key(path, it["sheet_name"], it["excel_row"]) not in attempted
-                          and (it["sheet_name"], it["excel_row"]) not in manual_rows]
+            candidates = [it for it in pending if _rid(it) not in attempted and _rid(it) not in manual_rows]
             sheets = sorted(copy_checked) if not candidates else []
             copy_checked.difference_update(sheets)
         if sheets:
@@ -679,11 +778,11 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                         card.update(color="yellow", verified=False, waiting=False, message="当前导出仍有问题，需人工处理")
                 wf._persist_state()
                 return
-            first = min(candidates, key=lambda it: (it["sheet_name"], int(it["excel_row"]), it["seq"]))
-            items = [it for it in pending if it["sheet_name"] == first["sheet_name"]
-                     and it["excel_row"] == first["excel_row"]]
+            # 从上往下处理；同一行先插分页（合并区域整块挪到下一页后，里面的格子常常就不缺字了）
+            first = min(candidates, key=lambda it: (it["sheet_name"], int(it["excel_row"]), not _is_break(it), it["seq"]))
+            rid = _rid(first)
+            items = [it for it in pending if _rid(it) == rid]
             cards = [_card_for(group) for group in _group_cells(items)]
-            rid = _key(path, first["sheet_name"], first["excel_row"])
             wf._persist_state()
         _check_file(path)
         version = wf._file_version(Path(path))
@@ -707,6 +806,9 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
         row_started = time.perf_counter()
         workbook = None  # 和原文件一致的副本：重新检测时直接用，不再打开原文件
         try:
+            if _is_break(first):
+                workbook = _repair_break(excel, session, path, items[0], cards, rid, version, timing)
+                raise _RowDone
             column_only = [it for it in items if autofix.column_width_only(it)]
             if column_only:
                 # ### 交给人工改列宽；同行其他格子照常自动加高
@@ -830,16 +932,15 @@ def _commit_review(excel: Any) -> None:
     if "commit_card_ids" not in job["options"]:
         # 还没轮到自动处理的卡不提交：提交会把它们转成人工项，之后再跑全自动也不会修了
         cards = [data["cards"][cid] for cid in job["options"]["card_ids"] if not _waiting(data["cards"][cid])]
-        selected_rows = {_key(c["wb_path"], c["sheet_name"], c["excel_row"]) for c in cards}
+        selected_rows = {_rid(c) for c in cards}
         job["options"]["commit_card_ids"] = [c["id"] for c in data["cards"].values()
-            if not c.get("dismissed") and not _waiting(c)
-            and _key(c["wb_path"], c["sheet_name"], c["excel_row"]) in selected_rows]
+            if not c.get("dismissed") and not _waiting(c) and _rid(c) in selected_rows]
     # 提交计划固定下来；即使保存还原后、复检前退出，已收起的绿/蓝卡也仍会完成该文件的复检。
     job["options"]["card_ids"] = list(job["options"]["commit_card_ids"])
     cards = [data["cards"][cid] for cid in job["options"]["commit_card_ids"]]
     by_row: dict[str, list[dict]] = {}
     for card in cards:
-        by_row.setdefault(_key(card["wb_path"], card["sheet_name"], card["excel_row"]), []).append(card)
+        by_row.setdefault(_rid(card), []).append(card)
     # 只在仍有自动修改需要还原时检查同行冲突；已经忽略的格子不因后来复检重新入队。
     # 人工认可的加高也改整行行高：同行颜色不一致同样整行转黄
     for rid, peers in by_row.items():
@@ -857,7 +958,7 @@ def _commit_review(excel: Any) -> None:
             row = data["rows"].get(rid)
             if not row or row["path"] != path or not row["saved"] or all(c["color"] == "blue" for c in peers):
                 continue
-            rows.append({"id": rid, "sheet": row["sheet"], "row": row["row"],
+            rows.append({"id": rid, "kind": row.get("kind"), "sheet": row["sheet"], "row": row["row"],
                          "expected": row["applied"], "target": row["base"],
                          "wrap": {addr: False for addr in row.get("wrap", [])}})
             reverting.extend(c["id"] for c in peers)
@@ -1041,8 +1142,9 @@ def _restore_cells(sheet: Any, mark: dict) -> None:
 def _apply_cells(sheet: Any, card: dict, style: dict) -> dict:
     """记下合并区域里每一格原来的底色、字色，再标色。只改颜色，不改字体粗细大小，不影响排版和分页。
     字色混合（同一格里有几种颜色的文字）时不改字色，免得还原时丢掉原来的分段颜色。"""
-    area = sheet.Range(card["cell_addr"]).MergeArea
-    mark = {"path": card["wb_path"], "sheet": card["sheet_name"], "addr": card["cell_addr"],
+    addr = card["cell_addr"].split(":")[0]  # 分页切开的卡片是整个合并区域（A10:H12），按左上角找合并区域
+    area = sheet.Range(addr).MergeArea
+    mark = {"path": card["wb_path"], "sheet": card["sheet_name"], "addr": addr,
             "fill": _excel_color(style["fill"]), "font": _excel_color(style["font"]), "cells": []}
     for cell in area.Cells:
         interior, font = cell.Interior, cell.Font.Color
