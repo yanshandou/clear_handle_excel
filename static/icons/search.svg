@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+  <defs>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff9aa8"/><stop offset="1" stop-color="#ee5a6f"/></linearGradient>
+    <radialGradient id="g" cx=".38" cy=".35" r=".7"><stop offset="0" stop-color="#ffffff"/><stop offset=".55" stop-color="#d9f1ff"/><stop offset="1" stop-color="#9fd6ff"/></radialGradient>
+    <linearGradient id="h" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7c8cff"/><stop offset="1" stop-color="#4f5ae0"/></linearGradient>
+    <radialGradient id="s" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#c43a52" stop-opacity=".3"/><stop offset="1" stop-color="#c43a52" stop-opacity="0"/></radialGradient>
+  </defs>
+  <ellipse cx="60" cy="108" rx="38" ry="6" fill="url(#s)"/>
+  <path d="M74 74l24 24" stroke="url(#h)" stroke-width="16" stroke-linecap="round"/>
+  <path d="M80 80l14 14" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity=".4"/>
+  <circle cx="50" cy="50" r="34" fill="url(#ring)"/>
+  <circle cx="50" cy="50" r="25" fill="url(#g)"/>
+  <rect x="36" y="42" width="22" height="5" rx="2.5" fill="#5aa9f0"/>
+  <rect x="36" y="53" width="15" height="5" rx="2.5" fill="#f7b52c"/>
+  <path d="M30 34a24 24 0 0 1 16-10" stroke="#fff" stroke-width="5" stroke-linecap="round" fill="none" opacity=".85"/>
+</svg>
