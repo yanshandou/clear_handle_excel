@@ -1,34 +1,36 @@
 /* ==========================================
-   紫色潮流贴纸风主题
-   浅灰白底、亮紫主色 + 荧光黄绿点缀、粗黑描边、黑色块标签（微微倾斜的贴纸感）、
-   超粗标题、圆角卡片带硬阴影、方框线框图标（static/icons/*.svg）。
+   贴纸风主题（手游 UI 风格）
+   浅蓝底、粗藏青描边、厚底立体按钮（按用途配色：绿=执行/确认，红=删除，蓝=选中/信息，
+   白=次要操作，灰=不可用）、黄色缎带标签、渐变描边大标题、彩色卡牌式功能卡片、
+   粗描边彩色图标（static/icons/*.svg）。
    放在 styles.css（及 batch.css）之后加载，只改外观，不改功能。
    约束：
    - 点击后卡片、标签、按钮的尺寸和位置不变（各状态边框粗细一致），悬停不上浮，按下也不位移
    - 白字元素一律 text-shadow: none，避免日文 Windows 上继承白色投影出现重影
-   - 不放和功能无关的涂鸦（叉号、波浪线等容易被当成按钮），只留主页标题旁的小皇冠
+   - 不放和功能无关的涂鸦（叉号、波浪线等容易被当成按钮）
+   - 立体按钮按下只把底边变薄（box-shadow），按钮本身不位移
    - 三色审核变量（batch.css）和标记颜色预设不动
    ========================================== */
 :root {
-  --ink: #111111;
-  --ink-2: #2b2b33;
-  --ink-3: #5c5c6b;
-  --ink-4: #9a9aa8;
-  --paper: #f3f2f7;
-  --line-soft: #e4e2ec;
-  --purple: #7c3aed;
-  --purple-2: #9b5cff;
-  --purple-soft: #efe7ff;
-  --purple-ink: #5b21b6;
-  --lime: #c6f432;
-  --lime-2: #dcff6b;
-  --lime-ink: #3d5200;
-  --pink: #ff4fa3;
-  --red: #ff4b4b;
+  --ink: #1c2858;
+  --ink-2: #26326a;
+  --ink-3: #56628f;
+  --ink-4: #93a0c2;
+  --paper: #e9f1fc;
+  --line-soft: #dbe4f3;
+  --purple: #2f80ff;
+  --purple-2: #5aa0ff;
+  --purple-soft: #e2eeff;
+  --purple-ink: #1f5fc4;
+  --lime: #ffc21f;
+  --lime-2: #ffdb6e;
+  --lime-ink: #7a4a00;
+  --pink: #ff8a1f;
+  --red: #ec2049;
   --stroke: 2.5px solid var(--ink);
-  --hard: 4px 4px 0 var(--ink);
-  --hard-sm: 3px 3px 0 var(--ink);
-  --hard-lg: 6px 6px 0 var(--ink);
+  --hard: 0 4px 0 var(--ink);
+  --hard-sm: 0 3px 0 var(--ink);
+  --hard-lg: 0 6px 0 var(--ink);
 
   /* 兼容旧变量：styles.css 里没单独覆盖的规则也用这套色板 */
   --ui-ink: var(--ink);
@@ -36,7 +38,7 @@
   --ui-ink-3: var(--ink-3);
   --ui-ink-4: var(--ink-4);
   --ui-line: var(--line-soft);
-  --ui-line-2: #cfcbdc;
+  --ui-line-2: #c3d1e8;
   --ui-blue-ink: var(--purple-ink);
   --bg-chassis: var(--paper);
   --bg-chassis-light: #fafafc;
@@ -59,20 +61,20 @@
   --shadow-groove: inset 0 1px 2px rgba(0, 0, 0, 0.06);
   --shadow-groove-sm: inset 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow-keycap: var(--hard-sm);
-  --shadow-keycap-pressed: 1px 1px 0 var(--ink);
+  --shadow-keycap-pressed: 0 1px 0 var(--ink);
 }
 
 /* 四种功能色：主页卡片、对话框标题、精简 Sheet 页标题共用 */
-.feature-violet { --tile-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpolygon points='0,17 100,8 100,84 0,93'/%3E%3Crect x='1.84' y='14' width='2.2' height='8'/%3E%3Crect x='1.84' y='78' width='2.2' height='15'/%3E%3Crect x='7.72' y='1' width='2.2' height='21'/%3E%3Crect x='7.72' y='78' width='2.2' height='11'/%3E%3Crect x='13.61' y='14' width='2.2' height='8'/%3E%3Crect x='13.61' y='78' width='2.2' height='13'/%3E%3Crect x='19.49' y='14' width='2.2' height='8'/%3E%3Crect x='19.49' y='78' width='2.2' height='13'/%3E%3Crect x='25.37' y='78' width='2.2' height='21'/%3E%3Crect x='31.25' y='78' width='2.2' height='13'/%3E%3Crect x='37.14' y='1' width='2.2' height='21'/%3E%3Crect x='37.14' y='78' width='2.2' height='15'/%3E%3Crect x='43.02' y='0' width='2.2' height='22'/%3E%3Crect x='48.9' y='10' width='2.2' height='12'/%3E%3Crect x='48.9' y='78' width='2.2' height='17'/%3E%3Crect x='54.78' y='12' width='2.2' height='10'/%3E%3Crect x='60.66' y='8' width='2.2' height='14'/%3E%3Crect x='60.66' y='78' width='2.2' height='21'/%3E%3Crect x='66.55' y='6' width='2.2' height='16'/%3E%3Crect x='72.43' y='6' width='2.2' height='16'/%3E%3Crect x='72.43' y='78' width='2.2' height='11'/%3E%3Crect x='78.31' y='8' width='2.2' height='14'/%3E%3Crect x='78.31' y='78' width='2.2' height='17'/%3E%3Crect x='84.19' y='8' width='2.2' height='14'/%3E%3Crect x='84.19' y='78' width='2.2' height='22'/%3E%3Crect x='95.96' y='3' width='2.2' height='19'/%3E%3Crect x='95.96' y='78' width='2.2' height='19'/%3E%3C/svg%3E"); --tile-bg: var(--purple); --tile-ink: #ffffff; --tile-cat: "CLEAN UP"; --tile-icon: url("/static/icons/clean.svg"); }
-.feature-sky { --tile-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpolygon points='0,17 100,8 100,84 0,93'/%3E%3Crect x='1.84' y='14' width='2.2' height='8'/%3E%3Crect x='7.72' y='12' width='2.2' height='10'/%3E%3Crect x='7.72' y='78' width='2.2' height='15'/%3E%3Crect x='13.61' y='14' width='2.2' height='8'/%3E%3Crect x='13.61' y='78' width='2.2' height='15'/%3E%3Crect x='19.49' y='1' width='2.2' height='21'/%3E%3Crect x='19.49' y='78' width='2.2' height='21'/%3E%3Crect x='25.37' y='0' width='2.2' height='22'/%3E%3Crect x='25.37' y='78' width='2.2' height='17'/%3E%3Crect x='31.25' y='78' width='2.2' height='15'/%3E%3Crect x='37.14' y='0' width='2.2' height='22'/%3E%3Crect x='43.02' y='0' width='2.2' height='22'/%3E%3Crect x='43.02' y='78' width='2.2' height='21'/%3E%3Crect x='48.9' y='12' width='2.2' height='10'/%3E%3Crect x='48.9' y='78' width='2.2' height='15'/%3E%3Crect x='54.78' y='78' width='2.2' height='13'/%3E%3Crect x='60.66' y='0' width='2.2' height='22'/%3E%3Crect x='60.66' y='78' width='2.2' height='17'/%3E%3Crect x='66.55' y='10' width='2.2' height='12'/%3E%3Crect x='78.31' y='8' width='2.2' height='14'/%3E%3Crect x='78.31' y='78' width='2.2' height='15'/%3E%3Crect x='84.19' y='1' width='2.2' height='21'/%3E%3Crect x='84.19' y='78' width='2.2' height='22'/%3E%3Crect x='90.08' y='6' width='2.2' height='16'/%3E%3Crect x='90.08' y='78' width='2.2' height='22'/%3E%3Crect x='95.96' y='78' width='2.2' height='21'/%3E%3C/svg%3E"); --tile-bg: var(--lime); --tile-ink: var(--ink); --tile-cat: "EXPORT"; --tile-icon: url("/static/icons/pdf.svg"); }
-.feature-rose { --tile-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpolygon points='0,17 100,8 100,84 0,93'/%3E%3Crect x='7.72' y='78' width='2.2' height='15'/%3E%3Crect x='13.61' y='10' width='2.2' height='12'/%3E%3Crect x='13.61' y='78' width='2.2' height='21'/%3E%3Crect x='19.49' y='6' width='2.2' height='16'/%3E%3Crect x='19.49' y='78' width='2.2' height='21'/%3E%3Crect x='25.37' y='0' width='2.2' height='22'/%3E%3Crect x='25.37' y='78' width='2.2' height='13'/%3E%3Crect x='31.25' y='0' width='2.2' height='22'/%3E%3Crect x='31.25' y='78' width='2.2' height='13'/%3E%3Crect x='37.14' y='0' width='2.2' height='22'/%3E%3Crect x='37.14' y='78' width='2.2' height='22'/%3E%3Crect x='43.02' y='3' width='2.2' height='19'/%3E%3Crect x='43.02' y='78' width='2.2' height='13'/%3E%3Crect x='48.9' y='8' width='2.2' height='14'/%3E%3Crect x='54.78' y='8' width='2.2' height='14'/%3E%3Crect x='54.78' y='78' width='2.2' height='11'/%3E%3Crect x='60.66' y='12' width='2.2' height='10'/%3E%3Crect x='60.66' y='78' width='2.2' height='17'/%3E%3Crect x='66.55' y='3' width='2.2' height='19'/%3E%3Crect x='66.55' y='78' width='2.2' height='21'/%3E%3Crect x='72.43' y='14' width='2.2' height='8'/%3E%3Crect x='72.43' y='78' width='2.2' height='22'/%3E%3Crect x='78.31' y='10' width='2.2' height='12'/%3E%3Crect x='78.31' y='78' width='2.2' height='19'/%3E%3Crect x='84.19' y='78' width='2.2' height='15'/%3E%3Crect x='90.08' y='8' width='2.2' height='14'/%3E%3Crect x='95.96' y='12' width='2.2' height='10'/%3E%3Crect x='95.96' y='78' width='2.2' height='19'/%3E%3C/svg%3E"); --tile-bg: var(--pink); --tile-ink: #ffffff; --tile-cat: "INSPECT"; --tile-icon: url("/static/icons/search.svg"); }
-.feature-mint { --tile-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpolygon points='0,17 100,8 100,84 0,93'/%3E%3Crect x='1.84' y='0' width='2.2' height='22'/%3E%3Crect x='1.84' y='78' width='2.2' height='21'/%3E%3Crect x='7.72' y='1' width='2.2' height='21'/%3E%3Crect x='7.72' y='78' width='2.2' height='15'/%3E%3Crect x='13.61' y='10' width='2.2' height='12'/%3E%3Crect x='13.61' y='78' width='2.2' height='22'/%3E%3Crect x='19.49' y='14' width='2.2' height='8'/%3E%3Crect x='19.49' y='78' width='2.2' height='15'/%3E%3Crect x='25.37' y='14' width='2.2' height='8'/%3E%3Crect x='25.37' y='78' width='2.2' height='17'/%3E%3Crect x='31.25' y='0' width='2.2' height='22'/%3E%3Crect x='31.25' y='78' width='2.2' height='21'/%3E%3Crect x='37.14' y='8' width='2.2' height='14'/%3E%3Crect x='37.14' y='78' width='2.2' height='21'/%3E%3Crect x='43.02' y='78' width='2.2' height='22'/%3E%3Crect x='48.9' y='8' width='2.2' height='14'/%3E%3Crect x='54.78' y='0' width='2.2' height='22'/%3E%3Crect x='54.78' y='78' width='2.2' height='15'/%3E%3Crect x='60.66' y='10' width='2.2' height='12'/%3E%3Crect x='60.66' y='78' width='2.2' height='19'/%3E%3Crect x='66.55' y='78' width='2.2' height='11'/%3E%3Crect x='72.43' y='5' width='2.2' height='17'/%3E%3Crect x='72.43' y='78' width='2.2' height='22'/%3E%3Crect x='78.31' y='6' width='2.2' height='16'/%3E%3Crect x='90.08' y='12' width='2.2' height='10'/%3E%3Crect x='90.08' y='78' width='2.2' height='19'/%3E%3Crect x='95.96' y='8' width='2.2' height='14'/%3E%3Crect x='95.96' y='78' width='2.2' height='19'/%3E%3C/svg%3E"); --tile-bg: #3d6bff; --tile-ink: #ffffff; --tile-cat: "NORMALIZE"; --tile-icon: url("/static/icons/target.svg"); }
+.feature-violet { --tile-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpolygon points='0,17 100,8 100,84 0,93'/%3E%3Crect x='1.84' y='14' width='2.2' height='8'/%3E%3Crect x='1.84' y='78' width='2.2' height='15'/%3E%3Crect x='7.72' y='1' width='2.2' height='21'/%3E%3Crect x='7.72' y='78' width='2.2' height='11'/%3E%3Crect x='13.61' y='14' width='2.2' height='8'/%3E%3Crect x='13.61' y='78' width='2.2' height='13'/%3E%3Crect x='19.49' y='14' width='2.2' height='8'/%3E%3Crect x='19.49' y='78' width='2.2' height='13'/%3E%3Crect x='25.37' y='78' width='2.2' height='21'/%3E%3Crect x='31.25' y='78' width='2.2' height='13'/%3E%3Crect x='37.14' y='1' width='2.2' height='21'/%3E%3Crect x='37.14' y='78' width='2.2' height='15'/%3E%3Crect x='43.02' y='0' width='2.2' height='22'/%3E%3Crect x='48.9' y='10' width='2.2' height='12'/%3E%3Crect x='48.9' y='78' width='2.2' height='17'/%3E%3Crect x='54.78' y='12' width='2.2' height='10'/%3E%3Crect x='60.66' y='8' width='2.2' height='14'/%3E%3Crect x='60.66' y='78' width='2.2' height='21'/%3E%3Crect x='66.55' y='6' width='2.2' height='16'/%3E%3Crect x='72.43' y='6' width='2.2' height='16'/%3E%3Crect x='72.43' y='78' width='2.2' height='11'/%3E%3Crect x='78.31' y='8' width='2.2' height='14'/%3E%3Crect x='78.31' y='78' width='2.2' height='17'/%3E%3Crect x='84.19' y='8' width='2.2' height='14'/%3E%3Crect x='84.19' y='78' width='2.2' height='22'/%3E%3Crect x='95.96' y='3' width='2.2' height='19'/%3E%3Crect x='95.96' y='78' width='2.2' height='19'/%3E%3C/svg%3E"); --tile-bg: #4fbf1f; --tile-ink: #ffffff; --tile-cat: "CLEAN UP"; --tile-icon: url("/static/icons/clean.svg"); }
+.feature-sky { --tile-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpolygon points='0,17 100,8 100,84 0,93'/%3E%3Crect x='1.84' y='14' width='2.2' height='8'/%3E%3Crect x='7.72' y='12' width='2.2' height='10'/%3E%3Crect x='7.72' y='78' width='2.2' height='15'/%3E%3Crect x='13.61' y='14' width='2.2' height='8'/%3E%3Crect x='13.61' y='78' width='2.2' height='15'/%3E%3Crect x='19.49' y='1' width='2.2' height='21'/%3E%3Crect x='19.49' y='78' width='2.2' height='21'/%3E%3Crect x='25.37' y='0' width='2.2' height='22'/%3E%3Crect x='25.37' y='78' width='2.2' height='17'/%3E%3Crect x='31.25' y='78' width='2.2' height='15'/%3E%3Crect x='37.14' y='0' width='2.2' height='22'/%3E%3Crect x='43.02' y='0' width='2.2' height='22'/%3E%3Crect x='43.02' y='78' width='2.2' height='21'/%3E%3Crect x='48.9' y='12' width='2.2' height='10'/%3E%3Crect x='48.9' y='78' width='2.2' height='15'/%3E%3Crect x='54.78' y='78' width='2.2' height='13'/%3E%3Crect x='60.66' y='0' width='2.2' height='22'/%3E%3Crect x='60.66' y='78' width='2.2' height='17'/%3E%3Crect x='66.55' y='10' width='2.2' height='12'/%3E%3Crect x='78.31' y='8' width='2.2' height='14'/%3E%3Crect x='78.31' y='78' width='2.2' height='15'/%3E%3Crect x='84.19' y='1' width='2.2' height='21'/%3E%3Crect x='84.19' y='78' width='2.2' height='22'/%3E%3Crect x='90.08' y='6' width='2.2' height='16'/%3E%3Crect x='90.08' y='78' width='2.2' height='22'/%3E%3Crect x='95.96' y='78' width='2.2' height='21'/%3E%3C/svg%3E"); --tile-bg: #2f80ff; --tile-ink: #ffffff; --tile-cat: "EXPORT"; --tile-icon: url("/static/icons/pdf.svg"); }
+.feature-rose { --tile-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpolygon points='0,17 100,8 100,84 0,93'/%3E%3Crect x='7.72' y='78' width='2.2' height='15'/%3E%3Crect x='13.61' y='10' width='2.2' height='12'/%3E%3Crect x='13.61' y='78' width='2.2' height='21'/%3E%3Crect x='19.49' y='6' width='2.2' height='16'/%3E%3Crect x='19.49' y='78' width='2.2' height='21'/%3E%3Crect x='25.37' y='0' width='2.2' height='22'/%3E%3Crect x='25.37' y='78' width='2.2' height='13'/%3E%3Crect x='31.25' y='0' width='2.2' height='22'/%3E%3Crect x='31.25' y='78' width='2.2' height='13'/%3E%3Crect x='37.14' y='0' width='2.2' height='22'/%3E%3Crect x='37.14' y='78' width='2.2' height='22'/%3E%3Crect x='43.02' y='3' width='2.2' height='19'/%3E%3Crect x='43.02' y='78' width='2.2' height='13'/%3E%3Crect x='48.9' y='8' width='2.2' height='14'/%3E%3Crect x='54.78' y='8' width='2.2' height='14'/%3E%3Crect x='54.78' y='78' width='2.2' height='11'/%3E%3Crect x='60.66' y='12' width='2.2' height='10'/%3E%3Crect x='60.66' y='78' width='2.2' height='17'/%3E%3Crect x='66.55' y='3' width='2.2' height='19'/%3E%3Crect x='66.55' y='78' width='2.2' height='21'/%3E%3Crect x='72.43' y='14' width='2.2' height='8'/%3E%3Crect x='72.43' y='78' width='2.2' height='22'/%3E%3Crect x='78.31' y='10' width='2.2' height='12'/%3E%3Crect x='78.31' y='78' width='2.2' height='19'/%3E%3Crect x='84.19' y='78' width='2.2' height='15'/%3E%3Crect x='90.08' y='8' width='2.2' height='14'/%3E%3Crect x='95.96' y='12' width='2.2' height='10'/%3E%3Crect x='95.96' y='78' width='2.2' height='19'/%3E%3C/svg%3E"); --tile-bg: #ff8a1f; --tile-ink: #ffffff; --tile-cat: "INSPECT"; --tile-icon: url("/static/icons/search.svg"); }
+.feature-mint { --tile-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Cpolygon points='0,17 100,8 100,84 0,93'/%3E%3Crect x='1.84' y='0' width='2.2' height='22'/%3E%3Crect x='1.84' y='78' width='2.2' height='21'/%3E%3Crect x='7.72' y='1' width='2.2' height='21'/%3E%3Crect x='7.72' y='78' width='2.2' height='15'/%3E%3Crect x='13.61' y='10' width='2.2' height='12'/%3E%3Crect x='13.61' y='78' width='2.2' height='22'/%3E%3Crect x='19.49' y='14' width='2.2' height='8'/%3E%3Crect x='19.49' y='78' width='2.2' height='15'/%3E%3Crect x='25.37' y='14' width='2.2' height='8'/%3E%3Crect x='25.37' y='78' width='2.2' height='17'/%3E%3Crect x='31.25' y='0' width='2.2' height='22'/%3E%3Crect x='31.25' y='78' width='2.2' height='21'/%3E%3Crect x='37.14' y='8' width='2.2' height='14'/%3E%3Crect x='37.14' y='78' width='2.2' height='21'/%3E%3Crect x='43.02' y='78' width='2.2' height='22'/%3E%3Crect x='48.9' y='8' width='2.2' height='14'/%3E%3Crect x='54.78' y='0' width='2.2' height='22'/%3E%3Crect x='54.78' y='78' width='2.2' height='15'/%3E%3Crect x='60.66' y='10' width='2.2' height='12'/%3E%3Crect x='60.66' y='78' width='2.2' height='19'/%3E%3Crect x='66.55' y='78' width='2.2' height='11'/%3E%3Crect x='72.43' y='5' width='2.2' height='17'/%3E%3Crect x='72.43' y='78' width='2.2' height='22'/%3E%3Crect x='78.31' y='6' width='2.2' height='16'/%3E%3Crect x='90.08' y='12' width='2.2' height='10'/%3E%3Crect x='90.08' y='78' width='2.2' height='19'/%3E%3Crect x='95.96' y='8' width='2.2' height='14'/%3E%3Crect x='95.96' y='78' width='2.2' height='19'/%3E%3C/svg%3E"); --tile-bg: #7c5cf0; --tile-ink: #ffffff; --tile-cat: "NORMALIZE"; --tile-icon: url("/static/icons/target.svg"); }
 
 /* 页面底色：浅灰白 + 淡点阵（不放涂鸦，免得被当成按钮） */
 body {
   color: var(--ink-2);
   background-color: var(--paper);
-  background-image: radial-gradient(circle, rgba(17, 17, 17, 0.07) 1.2px, transparent 1.6px);
+  background-image: radial-gradient(circle, rgba(28, 40, 88, 0.07) 1.2px, transparent 1.6px);
   background-size: 22px 22px;
   background-attachment: fixed;
 }
@@ -80,7 +82,7 @@ body {
 code {
   background: var(--purple-soft);
   color: var(--purple-ink);
-  border: 1px solid #d8c6ff;
+  border: 1px solid #b9d3ff;
   box-shadow: none;
 }
 
@@ -204,7 +206,7 @@ code {
 }
 
 .panel-section-head {
-  border-bottom: 2px dashed #d6d2e2;
+  border-bottom: 2px dashed #cad6ea;
   box-shadow: none;
 }
 
@@ -418,7 +420,7 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 }
 
 .checkbox-label:hover {
-  background: #fafff0;
+  background: #fffbea;
 }
 
 .checkbox-label:active {
@@ -428,7 +430,7 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 /* ---------- 进度条 ---------- */
 .progress-wrap,
 .mini-progress-box {
-  background: #faf9fd;
+  background: #f5f9ff;
   border: 2px solid var(--ink);
   border-radius: 16px;
   box-shadow: none;
@@ -472,12 +474,12 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 .badge-selected { background: var(--purple-soft); color: var(--purple-ink); border-color: var(--ink); }
 .badge-fixed { background: var(--lime); color: var(--ink); border-color: var(--ink); }
 .badge-pending { background: #fff1c2; color: #6b4700; border-color: var(--ink); }
-.badge-ignored { background: #f1f0f5; color: var(--ink-3); border-color: var(--ink); }
+.badge-ignored { background: #eef2f8; color: var(--ink-3); border-color: var(--ink); }
 .badge-warn { background: #ffe0e0; color: #b3141b; border-color: var(--ink); }
 
 /* ---------- 链接与提示 ---------- */
 .excel-link {
-  text-decoration-color: rgba(124, 58, 237, 0.45);
+  text-decoration-color: rgba(47, 128, 255, 0.45);
 }
 
 .excel-link:hover {
@@ -494,7 +496,7 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 
 /* ---------- 日志控制台：黑底荧光字 ---------- */
 .console-frame {
-  background: #141418;
+  background: #141c3e;
   border: 2.5px solid var(--ink);
   box-shadow: none;
 }
@@ -502,11 +504,11 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 .console-frame-bar {
   background: var(--ink);
   color: var(--lime);
-  border-bottom: 1px solid #2c2c33;
+  border-bottom: 1px solid #2a3566;
 }
 
 .log-box {
-  color: #e8e6f0;
+  color: #e6ecfa;
 }
 
 /* ==========================================
@@ -538,7 +540,7 @@ input[type="checkbox"]:not(.hidden):focus-visible {
   height: 30px;
   pointer-events: none;
   transform: rotate(-16deg);
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 30'%3E%3Cpath d='M4 24L6 6l9 9 5-11 5 11 9-9 2 18z' fill='none' stroke='%237c3aed' stroke-width='3' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 30'%3E%3Cpath d='M4 24L6 6l9 9 5-11 5 11 9-9 2 18z' fill='none' stroke='%23ffc21f' stroke-width='3' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 
 .home-hero p {
@@ -676,7 +678,7 @@ input[type="checkbox"]:not(.hidden):focus-visible {
   color: #ffffff;
   font-size: 12.5px;
   font-weight: 800;
-  background: rgba(17, 17, 17, 0.78);
+  background: rgba(28, 40, 88, 0.78);
   box-shadow: none;
   text-shadow: none;
 }
@@ -690,7 +692,7 @@ input[type="checkbox"]:not(.hidden):focus-visible {
   border-radius: 28px;
   background: #ffffff;
   border: 3px solid var(--ink);
-  box-shadow: 5px 5px 0 rgba(17, 17, 17, 0.85);
+  box-shadow: 5px 5px 0 rgba(28, 40, 88, 0.85);
   display: grid;
   place-items: center;
   transform: rotate(-5deg);
@@ -809,8 +811,8 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 }
 
 .task-notes {
-  background: #faf9fd;
-  border: 2px dashed #cfcbdc;
+  background: #f5f9ff;
+  border: 2px dashed #c3d1e8;
   border-radius: 14px;
   box-shadow: none;
   color: var(--ink-2);
@@ -822,10 +824,10 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 }
 
 .task-dialog-foot {
-  border-top: 2px dashed #d6d2e2;
+  border-top: 2px dashed #cad6ea;
 }
 
-.task-result.is-ok { background: #f2ffd0; color: var(--lime-ink); border-color: var(--ink); }
+.task-result.is-ok { background: #e6f9d8; color: var(--lime-ink); border-color: var(--ink); }
 .task-result.is-warn { background: #fff1c2; color: #6b4700; border-color: var(--ink); }
 
 .preview-box {
@@ -861,7 +863,7 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 }
 
 .app-dialog-message {
-  background: #faf9fd;
+  background: #f5f9ff;
   border: 2px solid var(--ink);
   border-radius: 14px;
   box-shadow: none;
@@ -878,7 +880,7 @@ input[type="checkbox"]:not(.hidden):focus-visible {
    ========================================== */
 .report-meta {
   color: var(--ink-3);
-  background: #faf9fd;
+  background: #f5f9ff;
   border: 2px solid var(--ink);
   border-radius: 10px;
   box-shadow: none;
@@ -904,7 +906,7 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 .kpi-done { --kpi-accent: var(--lime); --kpi-ink: var(--ink); }
 .kpi-processing { --kpi-accent: var(--purple); --kpi-ink: var(--purple); }
 .kpi-pending { --kpi-accent: var(--ink); --kpi-ink: var(--ink-2); }
-.kpi-clips { --kpi-accent: var(--pink); --kpi-ink: #d1166f; }
+.kpi-clips { --kpi-accent: var(--pink); --kpi-ink: #d9620a; }
 
 .kpi-label {
   color: var(--ink);
@@ -974,7 +976,7 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 
 .records-table th,
 .records-table td {
-  border-bottom: 1px solid #ebe9f2;
+  border-bottom: 1px solid #e3ebf7;
 }
 
 /* 表头：黑底荧光字 */
@@ -988,7 +990,7 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 }
 
 .records-table tbody tr:nth-child(even) {
-  background: #faf9fd;
+  background: #f5f9ff;
 }
 
 .records-table tbody tr:hover {
@@ -996,7 +998,7 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 }
 
 .records-table tbody tr.row-processing {
-  background: linear-gradient(90deg, #f2ffd0 0%, #ffffff 100%);
+  background: linear-gradient(90deg, #e6f9d8 0%, #ffffff 100%);
 }
 
 .deleted-sheet-tag {
@@ -1033,7 +1035,7 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 .clean-folder-title {
   color: var(--ink);
   font-weight: 900;
-  border-bottom: 2px dashed #d6d2e2;
+  border-bottom: 2px dashed #cad6ea;
 }
 
 .clean-folder-title span {
@@ -1125,7 +1127,7 @@ button.preview-sheet-tag:active {
 }
 
 .clean-spinner {
-  border-color: rgba(124, 58, 237, 0.22);
+  border-color: rgba(47, 128, 255, 0.22);
   border-top-color: var(--purple);
 }
 
@@ -1173,7 +1175,7 @@ button.preview-sheet-tag:active {
 /* ==========================================
    切字工作台 /workbench（三色配色不变，卡片尺寸不变）
    ========================================== */
-[data-filter="all"] { --c: #111111; --c-bg: #ffffff; --c-line: #111111; --c-ink: #111111; --c-on: #ffffff; }
+[data-filter="all"] { --c: #1c2858; --c-bg: #ffffff; --c-line: #1c2858; --c-ink: #1c2858; --c-on: #ffffff; }
 
 /* 筛选按钮：黑描边（宽度和原来一样 2px），选中时填三色 */
 .batch-filter {
@@ -1206,9 +1208,9 @@ button.preview-sheet-tag:active {
 .batch-actions {
   margin-top: 16px;
   padding: 14px 16px;
-  border: 2px dashed #cfcbdc;
+  border: 2px dashed #c3d1e8;
   border-radius: 16px;
-  background: #faf9fd;
+  background: #f5f9ff;
 }
 
 .batch-highlight {
@@ -1390,7 +1392,7 @@ button.preview-sheet-tag:active {
 .info-panel .log-box {
   border: 2px solid var(--ink);
   border-radius: 14px;
-  background: #faf9fd;
+  background: #f5f9ff;
   color: var(--ink-2);
 }
 
@@ -1422,4 +1424,339 @@ button.preview-sheet-tag:active {
     width: 82px;
     height: 82px;
   }
+}
+
+/* ==========================================
+   手游 UI 风格（参考手游界面素材）
+   - 藏青顶栏，导航当前项是蓝色立体按钮
+   - 按钮厚底立体：上亮下暗的渐变 + 底边深色 + 外侧一道藏青底影；按下只变薄，不位移
+   - 按用途配色：绿=执行/确认，红=删除，蓝=信息，白=次要，灰=不可用
+   - 主页功能卡片做成彩色卡牌，文字放在白色铭牌里
+   ========================================== */
+body {
+  background-color: var(--paper);
+  background-image: radial-gradient(circle, rgba(47, 128, 255, 0.1) 1.4px, transparent 1.8px);
+  background-size: 24px 24px;
+}
+
+/* ---------- 顶栏 ---------- */
+.app-header {
+  background: linear-gradient(180deg, #2a3a7a 0%, var(--ink) 100%);
+  color: #ffffff;
+  border-bottom: 0;
+  box-shadow: 0 5px 0 #111a3f;
+}
+
+.app-header h1 {
+  color: #ffffff;
+  text-shadow: none;
+}
+
+.subtitle {
+  color: #b9c6ea;
+}
+
+.nav-link {
+  color: #ffffff;
+  border: 3px solid transparent;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: none;
+}
+
+.nav-link:hover {
+  color: #ffffff;
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.nav-link.active,
+.nav-link.active:hover {
+  color: #ffffff;
+  border-color: #0e1533;
+  background: linear-gradient(180deg, #5aa6ff 0%, #2f80ff 100%);
+  box-shadow: inset 0 -4px 0 #1f5fc4, inset 0 2px 0 rgba(255, 255, 255, 0.4);
+}
+
+.nav-badge,
+.nav-link.active .nav-badge {
+  background: var(--lime);
+  color: var(--ink);
+  border: 2px solid #0e1533;
+}
+
+.theme-toggle select option {
+  color: var(--ink);
+  background: #ffffff;
+}
+
+.status-pill {
+  color: var(--ink);
+  background: linear-gradient(180deg, #ffd54a 0%, #ffb800 100%);
+  border: 3px solid #0e1533;
+  border-radius: 12px;
+  box-shadow: inset 0 -3px 0 #e08a00;
+}
+
+/* ---------- 面板与标题 ---------- */
+.panel {
+  border: 3px solid var(--ink);
+  border-radius: 22px;
+  box-shadow: 0 6px 0 var(--ink);
+}
+
+.panel-section-head {
+  border-bottom: 3px solid #e3ebf7;
+}
+
+.panel-section-title {
+  font-size: 17px;
+}
+
+/* 步骤标签：黄色缎带 */
+.step-chip {
+  color: var(--ink);
+  background: linear-gradient(180deg, #ffd54a 0%, #ffb800 100%);
+  border: 3px solid var(--ink);
+  border-radius: 9px;
+  box-shadow: inset 0 -3px 0 #e08a00;
+}
+
+.step-chip-teal {
+  color: #ffffff;
+  background: linear-gradient(180deg, #5aa6ff 0%, #2f80ff 100%);
+  box-shadow: inset 0 -3px 0 #1f5fc4;
+}
+
+/* ---------- 立体按钮 ---------- */
+.btn {
+  --b-top: #ffffff;
+  --b: #f1f6ff;
+  --b-edge: #c3d1e8;
+  color: var(--ink);
+  background: linear-gradient(180deg, var(--b-top) 0%, var(--b) 100%);
+  border: 3px solid var(--ink);
+  border-radius: 13px;
+  font-weight: 900;
+  text-shadow: none;
+  box-shadow: inset 0 -5px 0 var(--b-edge), inset 0 3px 0 rgba(255, 255, 255, 0.45), 0 3px 0 var(--ink);
+}
+
+.btn-sm {
+  border-radius: 11px;
+  box-shadow: inset 0 -4px 0 var(--b-edge), inset 0 2px 0 rgba(255, 255, 255, 0.45), 0 2px 0 var(--ink);
+}
+
+.btn-outline,
+.btn-outline:hover:not(:disabled),
+.btn-outline:active:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--ink);
+  background: linear-gradient(180deg, var(--b-top) 0%, var(--b) 100%);
+}
+
+.btn-outline:hover:not(:disabled) {
+  --b: #e2eeff;
+}
+
+.btn-primary { --b-top: #63d936; --b: #35a514; --b-edge: #23780a; color: #ffffff; }
+.btn-success { --b-top: #5aa6ff; --b: #2f80ff; --b-edge: #1f5fc4; color: #ffffff; }
+.btn-danger { --b-top: #ff5c7a; --b: #ec2049; --b-edge: #a81034; color: #ffffff; }
+
+.btn-primary,
+.btn-success,
+.btn-danger,
+.btn-danger:hover:not(:disabled) {
+  border-color: var(--ink);
+  background: linear-gradient(180deg, var(--b-top) 0%, var(--b) 100%);
+}
+
+.btn:hover:not(:disabled) {
+  transform: none;
+  filter: brightness(1.06);
+}
+
+.btn:active:not(:disabled),
+.btn-outline:active:not(:disabled),
+.btn-primary:active:not(:disabled),
+.btn-success:active:not(:disabled),
+.btn-danger:active:not(:disabled) {
+  transform: none;
+  filter: brightness(0.97);
+  box-shadow: inset 0 -2px 0 var(--b-edge), inset 0 2px 0 rgba(255, 255, 255, 0.3), 0 1px 0 var(--ink);
+}
+
+.btn:disabled {
+  --b-top: #c5d0e2;
+  --b: #a9b7cf;
+  --b-edge: #8494b0;
+  color: #ffffff;
+  opacity: 0.8;
+  filter: none;
+  box-shadow: inset 0 -4px 0 var(--b-edge), 0 2px 0 var(--ink);
+}
+
+/* 选中态的切换按钮（预览尺寸等）用蓝色 */
+.pv-size-switch .btn.is-active {
+  --b-top: #5aa6ff;
+  --b: #2f80ff;
+  --b-edge: #1f5fc4;
+  color: #ffffff;
+}
+
+/* ---------- 进度条：黄色立体填充 ---------- */
+.progress-track {
+  border: 3px solid var(--ink);
+  background: #dbe4f3;
+}
+
+.progress-fill {
+  background:
+    repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.25) 0 8px, rgba(255, 255, 255, 0) 8px 16px),
+    linear-gradient(180deg, #ffd54a 0%, #ffb800 100%);
+  box-shadow: inset 0 -3px 0 #e08a00;
+}
+
+.progress-pct {
+  color: #ffffff;
+  background: var(--ink);
+}
+
+/* ---------- 执行记录：KPI 卡底边立体 ---------- */
+.kpi-card {
+  box-shadow: inset 0 -6px 0 var(--kpi-accent), 0 4px 0 var(--ink);
+}
+
+.filter-pill,
+.filter-pill.active {
+  border-width: 3px;
+  box-shadow: 0 2px 0 var(--ink);
+}
+
+.filter-pill.active {
+  background: linear-gradient(180deg, #5aa6ff 0%, #2f80ff 100%);
+}
+
+.records-table th {
+  color: #ffffff;
+}
+
+/* ==========================================
+   主页：渐变描边大标题 + 彩色卡牌
+   ========================================== */
+.home-hero h2 {
+  padding: 0 8px 0 2px;
+  font-size: 42px;
+  font-style: italic;
+  letter-spacing: 3px;
+  color: transparent;
+  background: linear-gradient(180deg, #ffe066 0%, #ffc21f 48%, #ff8a1f 52%, #ff6a1f 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  /* 描边用几层 drop-shadow 叠出来：-webkit-text-stroke 会盖住渐变填充 */
+  filter:
+    drop-shadow(2px 0 0 var(--ink)) drop-shadow(-2px 0 0 var(--ink))
+    drop-shadow(0 2px 0 var(--ink)) drop-shadow(0 -2px 0 var(--ink))
+    drop-shadow(0 4px 0 var(--ink));
+}
+
+.home-hero h2::before {
+  content: none;
+}
+
+.feature-violet { --g-top: #7ee04a; --g-bot: #4fbf1f; --g-edge: #34900f; --g-soft: #e6f9d8; }
+.feature-sky { --g-top: #6cb2ff; --g-bot: #2f80ff; --g-edge: #1f5fc4; --g-soft: #e2eeff; }
+.feature-rose { --g-top: #ffc066; --g-bot: #ff8a1f; --g-edge: #d9620a; --g-soft: #fff0dc; }
+.feature-mint { --g-top: #b49cff; --g-bot: #7c5cf0; --g-edge: #5a3cc8; --g-soft: #eee8ff; }
+
+.feature-card {
+  justify-content: flex-start;
+  min-height: 0;
+  padding: 16px 16px 24px;
+  color: var(--ink);
+  border: 3px solid var(--ink);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 50% 30%, rgba(255, 255, 255, 0.35) 0, rgba(255, 255, 255, 0) 46%),
+    linear-gradient(180deg, var(--g-top) 0%, var(--g-bot) 100%);
+  box-shadow: inset 0 -9px 0 var(--g-edge), inset 0 4px 0 rgba(255, 255, 255, 0.4), 0 6px 0 var(--ink);
+  transition: filter 0.15s ease;
+}
+
+.feature-card::before {
+  display: none;
+}
+
+.feature-card:hover {
+  filter: brightness(1.05);
+  box-shadow: inset 0 -9px 0 var(--g-edge), inset 0 4px 0 rgba(255, 255, 255, 0.4), 0 6px 0 var(--ink);
+}
+
+.feature-card:active {
+  filter: brightness(0.97);
+  box-shadow: inset 0 -5px 0 var(--g-edge), inset 0 3px 0 rgba(255, 255, 255, 0.3), 0 3px 0 var(--ink);
+}
+
+.feature-orb,
+.feature-card:nth-child(even) .feature-orb {
+  width: 150px;
+  height: 150px;
+  margin: 4px 0 14px;
+  border: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.5) 0, rgba(255, 255, 255, 0) 68%);
+  box-shadow: none;
+  transform: none;
+}
+
+.feature-icon {
+  width: 124px;
+  height: 124px;
+  filter: drop-shadow(0 5px 0 rgba(28, 40, 88, 0.35));
+}
+
+/* 白色铭牌：分类 + 名称 + 说明 + 状态 */
+.feature-text {
+  align-self: stretch;
+  gap: 4px;
+  padding: 12px 14px 16px;
+  background: #ffffff;
+  border: 3px solid var(--ink);
+  border-radius: 16px;
+  box-shadow: inset 0 -4px 0 #dbe4f3;
+}
+
+.feature-text::before {
+  min-height: 0;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  letter-spacing: 1.5px;
+  color: #ffffff;
+  background: var(--ink);
+}
+
+.feature-title,
+.feature-card:nth-child(even) .feature-title {
+  font-size: 25px;
+  color: var(--ink);
+}
+
+.feature-sub {
+  color: var(--ink-3);
+  opacity: 1;
+}
+
+.feature-meta {
+  margin-top: 8px;
+  padding: 4px 12px;
+  color: var(--ink);
+  background: var(--g-soft);
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+}
+
+.feature-card:focus-visible {
+  outline: 4px solid var(--lime);
+  outline-offset: 4px;
 }

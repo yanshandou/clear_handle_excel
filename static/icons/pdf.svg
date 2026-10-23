@@ -1,8 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
-  <path d="M14 34V14h20M86 14h20v20M106 86v20H86M34 106H14V86" fill="none" stroke="#7c3aed" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M100 4l-5 9M112 12l-9 5M114 26l-9-1" stroke="#b6f000" stroke-width="5" stroke-linecap="round"/>
-  <path d="M36 28h34l16 16v48H36z" fill="#fff" stroke="#111" stroke-width="6" stroke-linejoin="round"/>
-  <path d="M70 28v16h16" fill="#b6f000" stroke="#111" stroke-width="6" stroke-linejoin="round"/>
-  <rect x="30" y="56" width="44" height="20" rx="4" fill="#7c3aed" stroke="#111" stroke-width="5"/>
-  <text x="52" y="71.5" text-anchor="middle" font-family="Arial Black, Arial, sans-serif" font-weight="900" font-size="14" fill="#fff">PDF</text>
+  <path d="M30 10h44l22 22v74q0 6-6 6H30q-6 0-6-6V16q0-6 6-6z" fill="#ffffff" stroke="#1c2858" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M90 34v70q0 4-4 4H34q-4 0-4-4v-8h48q8 0 8-8V34z" fill="#d6e4f7"/>
+  <path d="M74 10v16q0 6 6 6h16z" fill="#9fc0ec" stroke="#1c2858" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M38 30h24M38 42h28" stroke="#b7c6dd" stroke-width="6" stroke-linecap="round"/>
+  <rect x="12" y="54" width="76" height="34" rx="8" fill="#ec2049" stroke="#1c2858" stroke-width="6"/>
+  <path d="M15 80h70v4q0 3-3 3H18q-3 0-3-3z" fill="#a81034"/>
+  <path d="M20 62h30" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity=".5"/>
+  <text x="50" y="80" text-anchor="middle" font-family="Arial Black, Arial, sans-serif" font-weight="900" font-size="22" fill="#fff">PDF</text>
 </svg>
