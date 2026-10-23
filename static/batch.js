@@ -336,9 +336,13 @@ async function changeColor(id, direction = 1) {
 const HIGHLIGHT_KEY = 'clear_handle_excel.highlightColors';
 const HIGHLIGHT_PRESETS = [
   { label: '洋红底白字（推荐）', fill: '#C0007A', font: '#FFFFFF' },
-  { label: '深蓝底白字', fill: '#1D4ED8', font: '#FFFFFF' },
+  { label: '宝蓝底白字', fill: '#1649CC', font: '#FFFFFF' },
+  { label: '墨绿底白字', fill: '#006633', font: '#FFFFFF' },
+  { label: '深青底白字', fill: '#006A71', font: '#FFFFFF' },
   { label: '深紫底白字', fill: '#6D28D9', font: '#FFFFFF' },
   { label: '橙红底白字', fill: '#C2410C', font: '#FFFFFF' },
+  { label: '深灰底白字', fill: '#333333', font: '#FFFFFF' },
+  { label: '纯黑底黄字', fill: '#000000', font: '#FFFF00' },
 ];
 const HEX = /^#[0-9a-f]{6}$/i;
 let highlight = { fill: HIGHLIGHT_PRESETS[0].fill, font: HIGHLIGHT_PRESETS[0].font };
