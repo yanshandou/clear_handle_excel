@@ -200,11 +200,23 @@ code {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
 }
 
-/* 切换风格按钮（theme_switch.js 插入），外观跟导航链接一致 */
+/* 切换风格下拉框（theme_switch.js 插入），外框沿用导航链接的样式 */
 .theme-toggle {
-  font-family: inherit;
-  background: none;
   cursor: pointer;
+}
+
+.theme-toggle select {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.theme-toggle select option {
+  color: #1e293b;
+  background: #ffffff;
 }
 
 .nav-link:hover {

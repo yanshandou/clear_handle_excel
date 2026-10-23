@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+  <g transform="skewX(-8) translate(8 0)">
+    <circle cx="60" cy="60" r="32" fill="none" stroke="#ffffff" stroke-width="7"/>
+    <circle cx="60" cy="60" r="15" fill="#d4ff3a"/>
+    <path d="M60 14v18M60 88v18M14 60h18M88 60h18" stroke="#ffffff" stroke-width="7"/>
+  </g>
+</svg>
