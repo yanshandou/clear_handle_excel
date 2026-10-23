@@ -27,7 +27,7 @@ from typing import Any
 from uuid import uuid4
 
 from core import fix_images
-from core.common import STALE_LOCK_HINT, XL_SHEET_VISIBLE, as_bbox, col_index_to_letters
+from core.common import STALE_LOCK_HINT, workbook_locked, XL_SHEET_VISIBLE, as_bbox, col_index_to_letters
 from core.excel_ops import (
     CellProbe, extract_sheet_snapshot, normalize_workbook_view, quit_background_excel, snapshot_cells,
     start_background_excel, open_workbook_checked,
@@ -1010,7 +1010,7 @@ def _apply(session: _ExcelSession, wb_path: str, gids: list[str]) -> bool:
         if not file_available(wb_path):
             return False
     path = Path(wb_path)
-    if path.with_name("~$" + path.name).exists():
+    if workbook_locked(path):
         with _LOCK:
             for gid in gids:
                 AUTOFIX["groups"][gid]["message"] = "文件正在 Excel 中打开，关闭后自动写入" + STALE_LOCK_HINT

@@ -1,4 +1,6 @@
+import os
 import re
+import stat
 import sys
 import unicodedata
 from datetime import datetime
@@ -238,8 +240,41 @@ def strip_uncertain_prefix(name: str) -> str:
     return cleaned or name
 
 
-# Excel 异常退出时会留下「~$文件名」锁文件，程序会一直以为文件还开着
-STALE_LOCK_HINT = "（如果 Excel 已经全部关掉还这样，多半是残留的「~$」开头的锁文件，在文件夹里删掉它即可）"
+# 锁文件残留会自动清掉；还报「打开」时文件确实被某个 Excel 占着，常见的是看不见窗口的后台 Excel
+STALE_LOCK_HINT = ("（如果看不到打开它的 Excel 窗口，多半是之前中断或卡住的后台 Excel 还占着文件："
+                   "在任务管理器里结束所有「Microsoft Excel」后再继续）")
+
+
+def _held_open(path: Path) -> bool:
+    """原文件是否真的被某个进程打开着。Excel 编辑时拒绝别的进程写打开，能写打开就说明没人占用。
+    只在 Windows 上能这样判断；其他系统按旧规则当作占用（只用于测试）。"""
+    if sys.platform != "win32":
+        return True
+    try:
+        fd = os.open(str(path), os.O_RDWR | getattr(os, "O_BINARY", 0))
+    except PermissionError:
+        return True
+    except OSError:
+        return False  # 文件不存在等：交给调用方各自报错
+    os.close(fd)
+    return False
+
+
+def workbook_locked(path: Path | str) -> bool:
+    """文件正在 Excel 中打开（有「~$文件名」锁文件且原文件确实被占用）。
+    Excel 崩溃、被结束进程时锁文件会残留，原文件没人占用：顺手删掉残留锁文件，按未打开处理。"""
+    path = Path(path)
+    lock = path.with_name("~$" + path.name)
+    if not lock.exists():
+        return False
+    if _held_open(path):
+        return True
+    try:
+        os.chmod(lock, stat.S_IWRITE)  # 锁文件带隐藏/只读属性时也能删
+        lock.unlink()
+    except OSError:
+        pass  # 删不掉也不影响：原文件没人占用，照样可以打开
+    return False
 # 等待稍后人工复检的文件，文件名前加这个，方便在文件夹里找到。
 # 用「★」而不用 emoji：日文 Windows 10 的字体没有 🟡，文件夹、Excel 标题栏里会显示成方框
 REVIEW_PREFIX = "★"

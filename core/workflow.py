@@ -32,6 +32,7 @@ from core.common import (
     strip_new_prefix,
     strip_review_prefix,
     unique_pdf_path,
+    workbook_locked,
     workbook_rel_name,
 )
 from core import fix_images, pdf_detector
@@ -1728,7 +1729,7 @@ def mark_review_file(excel: Any, path: str) -> bool:
     调用方保证此时没有别的任务在用这个文件。
     """
     wb_path = Path(path)
-    if wb_path.with_name("~$" + wb_path.name).exists():
+    if workbook_locked(wb_path):
         with STATE_LOCK:
             if path in STATE["review_queue"]:
                 STATE["review_queue"][path]["error"] = "文件正在 Excel 中打开，关闭后自动标黄" + STALE_LOCK_HINT
@@ -1797,7 +1798,7 @@ def restore_review_file(excel: Any, path: str) -> str:
     to_restore = [m for m in done if m["state"] == "marked"]
     before = None
     if to_restore:
-        if wb_path.with_name("~$" + wb_path.name).exists():
+        if workbook_locked(wb_path):
             return "locked"
         before = _file_version(wb_path)
         workbook = excel.Workbooks.Open(str(wb_path.resolve()), UpdateLinks=0)
@@ -1824,7 +1825,7 @@ def restore_review_file(excel: Any, path: str) -> str:
         log_msg(f"统一复检：{wb_path.name} 已去掉 {len(to_restore)} 处黄色")
     if remaining:
         return "partial"
-    if has_review_prefix(wb_path.name) and wb_path.with_name("~$" + wb_path.name).exists():
+    if has_review_prefix(wb_path.name) and workbook_locked(wb_path):
         return "locked"  # 文件开着改不了名，关掉后再去 ★
     new_path = _rename_review_file(path, strip_review_prefix(wb_path.name))
     with STATE_LOCK:
@@ -1894,7 +1895,7 @@ def review_recheck_workflow() -> None:
                 skipped[path] = unsaved[wb_path]
             elif not wb_path.exists():
                 skipped[path] = "找不到文件，可能被移动或改名"
-            elif wb_path.with_name("~$" + wb_path.name).exists():
+            elif workbook_locked(wb_path):
                 skipped[path] = "文件仍在 Excel 中打开，请关闭后再复检" + STALE_LOCK_HINT
         with STATE_LOCK:
             ids = [
