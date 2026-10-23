@@ -652,24 +652,31 @@ function renderFolderGroups(items, extraClassOf = () => '') {
 // 瀑布流：每张卡片按自身高度占用若干 1px 的网格行，矮卡片下方不再留空，且保持从左到右的阅读顺序
 const MASONRY_GAP = 8;
 
+// 先量完所有卡片高度再统一写入：卡片是顶端对齐，高度只取决于内容，不需要先清掉 span。
+// 以前是逐张「清 span → 量高度」，量的时候整片网格塌成 1px 一行，页面瞬间变矮，
+// 浏览器把滚动位置夹回顶部附近（页面滚得越靠下越容易发生）。
 function layoutMasonry() {
-  document.querySelectorAll('#previewBox .clean-grid').forEach(grid => {
-    if (!grid.offsetParent) return; // 折叠中的列表展开时再排
+  const grids = Array.from(document.querySelectorAll('#previewBox .clean-grid'))
+    .filter(grid => grid.offsetParent); // 折叠中的列表展开时再排
+  const spans = grids.map(grid => Array.from(grid.querySelectorAll(':scope > li'), li =>
+    [li, Math.ceil(li.getBoundingClientRect().height + MASONRY_GAP)]));
+  grids.forEach((grid, i) => {
     grid.classList.add('is-masonry');
-    grid.querySelectorAll(':scope > li').forEach(li => {
-      li.style.gridRowEnd = '';
-      const height = li.getBoundingClientRect().height;
-      li.style.gridRowEnd = `span ${Math.ceil(height + MASONRY_GAP)}`;
-    });
+    spans[i].forEach(([li, span]) => { li.style.gridRowEnd = `span ${span}`; });
   });
 }
 
 // 全部文件按文件夹放在一起，按扫描顺序排列；没有检出备份表的文件所有标签默认为保留，单击标签不会改变卡片位置
 function renderPreview() {
   const indexed = previewData.files.map((file, idx) => ({ file, idx }));
-  document.getElementById('previewBox').innerHTML =
-    renderFolderGroups(indexed, file => (file.note ? 'is-warn' : ''));
+  const box = document.getElementById('previewBox');
+  const scrollY = window.scrollY;
+  // 重建期间先撑住原高度，页面不会因为暂时变矮而被拉回顶部
+  box.style.minHeight = `${box.offsetHeight}px`;
+  box.innerHTML = renderFolderGroups(indexed, file => (file.note ? 'is-warn' : ''));
   layoutMasonry();
+  box.style.minHeight = '';
+  if (window.scrollY !== scrollY) window.scrollTo(window.scrollX, scrollY);
 }
 
 function renderRunBox() {
