@@ -282,7 +282,10 @@ class WebHandler(BaseHTTPRequestHandler):
         elif self.path in {"/api/batch/commit", "/api/batch/recheck", "/api/batch/open"}:
             action = self.path.rsplit("/", 1)[1]
             ids = batch.validate_cards(payload.get("card_ids"), yellow=action != "commit")
-            self._start_job(f"batch_{action}", {"card_ids": ids})
+            if action == "recheck" and batch.enqueue_recheck(ids):
+                self._send_json({"ok": True, "queued": True})
+            else:
+                self._start_job(f"batch_{action}", {"card_ids": ids})
         elif self.path == "/api/scan":
             folder = _require_folder(payload)
             self._start_job("scan", {

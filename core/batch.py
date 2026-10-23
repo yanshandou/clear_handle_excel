@@ -76,6 +76,21 @@ def _excel_color(hex_color: str) -> int:
     return r + g * 256 + b * 65536
 
 
+def _sheet_checks() -> dict[str, dict[str, Any]]:
+    """文件 -> {工作表: 检测时原文件的版本}；"*" 表示整份文件按那个版本检测过"""
+    return _data().setdefault("sheet_checks", {})
+
+
+def _unchanged_since_check(path: str, sheets: list[str]) -> bool:
+    """这些表上次检测之后原文件没再改过（检测规则也没变）：重新导出检测的结果和上次一样"""
+    checks = _sheet_checks().get(path) or {}
+    try:
+        current = wf._file_version(Path(path))
+    except OSError:
+        return False
+    return checks.get("*") == current or all(checks.get(name) == current for name in sheets)
+
+
 def _key(*parts: Any) -> str:
     return hashlib.sha256("\0".join(map(str, parts)).encode()).hexdigest()[:24]
 
@@ -524,6 +539,13 @@ def _refresh(
         read_only=True, workbook=workbook, pdfs=session, reuse_pdfs=reuse, timing=timing,
     )
     with wf.STATE_LOCK:
+        if workbook is None:
+            # 记下这几张表是按原文件哪个版本检测的：文件没再改过时复检结果必然一样，不用重新导出
+            checked = wf.STATE["checked_files"].get(path)
+            if sheets is None:
+                _sheet_checks()[path] = {"*": checked}
+            else:
+                _sheet_checks().setdefault(path, {}).update(dict.fromkeys(sheets, checked))
         for item in wf.STATE["items"].values():
             if item["wb_path"] == path:
                 item.update(batch_managed=True, triage_keep=False)
@@ -1062,18 +1084,40 @@ def _adopt_rows(excel: Any, path: str, by_row: dict[str, list[dict]]) -> None:
 def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:
     _check_file(path)
     sheets = sorted({c["sheet_name"] for c in cards})
-    _refresh(excel, path, sheets)
+    with wf.STATE_LOCK:
+        # 整张表本来就要重新导出检测：同表其他已提交的黄色卡一起出结果，不用再一张张单独复检（每次都要重新导出）
+        listed = {c["id"] for c in cards}
+        cards = cards + [c for c in _data()["cards"].values()
+                         if c["id"] not in listed and c["wb_path"] == path and c["sheet_name"] in sheets
+                         and c["color"] == "yellow" and c.get("finalized") and not c.get("dismissed")]
+        # 已提交的人工项复检没通过仍是人工项，改好后可直接再复检，不必先重新提交
+        handed = {c["id"] for c in cards if c["color"] == "yellow" and c.get("finalized") and c.get("manual")}
+    started = time.perf_counter()
+    if _unchanged_since_check(path, sheets):
+        # 上次检测之后文件没改过，重新导出结果必然一样：直接用上次的检测结果，准确度不变
+        wf.log_msg(f"ℹ️ {Path(path).name}：上次检测后文件没有修改，沿用上次检测结果（{'、'.join(sheets)}）")
+        with wf.STATE_LOCK:
+            carry_item_policies(wf.STATE["items"])
+    else:
+        checking: dict[str, float] = {}
+        _refresh(excel, path, sheets, timing=checking)
+        wf.log_msg(f"⏱ {Path(path).name} 复检 {len(sheets)} 张表：{time.perf_counter() - started:.1f} 秒"
+                   f"（打开 {checking.get('open', 0):.1f} 秒，导出 {int(checking.get('exports', 0))} 次 "
+                   f"{checking.get('export', 0):.1f} 秒，检测 {checking.get('detect', 0):.1f} 秒）")
     with wf.STATE_LOCK:
         unresolved = [it for it in wf.STATE["items"].values() if it["wb_path"] == path
                       and it["sheet_name"] in sheets and it["status"] not in wf.RESOLVED_STATUSES]
+        passed = 0
         for card in cards:
             still = [it for it in unresolved if _cell(it) == _cell(card)]
             # 定位不确定的同表问题不能据此断言原格已修复。
             uncertain = any(it.get("location_confirmed") is False and it["sheet_name"] == card["sheet_name"]
                             for it in unresolved)
             card.update(color="yellow" if still or uncertain else "blue", verified=not (still or uncertain),
-                        finalized=False, message="复检仍有问题" if still or uncertain else "人工修改复检通过，等待确认")
+                        finalized=bool(still or uncertain) and card["id"] in handed,
+                        message="复检仍有问题" if still or uncertain else "人工修改复检通过，等待确认")
             if not still and not uncertain:
+                passed += 1
                 # 用刚导出的 PDF 按文字重新截图；旧坐标在人工修改、重新分页后可能指到别处，截不到就不放图
                 prior = _items_at(card)
                 sources = [p for p in wf.STATE["pages"].values()
@@ -1089,11 +1133,19 @@ def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:
                 card["after_kind"] = "fixed"
         for group in _group_cells(unresolved):
             card = _card_for(group)
-            if not card.get("dismissed"):
+            if card.get("dismissed"):
+                continue
+            if card["id"] in handed:
+                message = "复检仍有问题，请继续修改并保存后再复检"
+                card.update(color="yellow", verified=False, manual=True, finalized=True, waiting=False, message=message)
+                for item in group:
+                    item.update(status="manual_review", batch_managed=True, triage_keep=False, review_reason=message)
+            else:
                 card.update(color="yellow", verified=False, manual=True, finalized=False, waiting=False,
                             message="复检仍有问题或发现新问题，请人工处理")
         wf._persist_state()
         wf._sync_problem_counts(path, "人工复检完成")
+    wf.log_msg(f"🔁 {Path(path).name}：复检 {len(cards)} 格，通过 {passed} 格")
 
 
 def _hand_over(path: str) -> None:
@@ -1275,6 +1327,32 @@ def highlighted_paths() -> list[str]:
         return paths
 
 
+def enqueue_recheck(ids: list[str]) -> bool:
+    """复检任务正在跑时把新点的复检排进同一个任务（同一个后台 Excel 接着查），不用等它结束再点。
+    没有在跑的复检任务、或它已经查完准备收尾时返回 False，由调用方另起任务。"""
+    with wf.STATE_LOCK:
+        job = wf.STATE.get("job") or {}
+        if not wf.STATE.get("busy") or job.get("kind") != "batch_recheck" or job.get("closing"):
+            return False
+        cards = _data()["cards"]
+        job["options"]["card_ids"] = list(dict.fromkeys(job["options"]["card_ids"] + ids))
+        for path in dict.fromkeys(cards[cid]["wb_path"] for cid in ids):
+            if path == job.get("current"):
+                # 正在查的文件又点了复检（多半是刚又改过）：查完再查一遍，没改过的话第二遍不会重新导出
+                if path not in job.setdefault("again", []):
+                    job["again"].append(path)
+                continue
+            # 已查完或跳过的文件重新排队
+            for done in ("completed", "skipped"):
+                if path in job.get(done, []):
+                    job[done].remove(path)
+            if path not in job["workbooks"]:
+                job["workbooks"].append(path)
+        wf._persist_state()
+    wf.log_msg(f"➕ 已加入复检队列：{len(ids)} 格，当前文件查完后接着查")
+    return True
+
+
 def validate_cards(ids: Any = None, *, yellow: bool = False) -> list[str]:
     with wf.STATE_LOCK:
         available = {c["id"]: c for c in _data()["cards"].values()
@@ -1432,20 +1510,48 @@ def run() -> list[str]:
                     wf.log_msg(f"⚠️ {path.name}：{error}")
             else:
                 excel = session.app()
-                unsaved = close_saved_workbooks([Path(path) for path in expected])
-                for path in expected:
-                    if path in job["completed"]:
-                        continue
-                    if Path(path) in unsaved:
-                        wf.log_msg(f"⚠️ {Path(path).name}：{unsaved[Path(path)]}，请保存后继续")
-                        continue
+                with wf.STATE_LOCK:
+                    job.update(skipped=[], again=[], closing=False, current=None)
+                while True:
+                    with wf.STATE_LOCK:
+                        # 复检进行中还能继续点复检（enqueue_recheck 追加到本任务），这里每次取下一个没查过的文件
+                        path = next((p for p in job["workbooks"]
+                                     if p not in job["completed"] and p not in job["skipped"]), None)
+                        if path is None:
+                            job["closing"], job["current"] = True, None  # 之后再点复检另起任务，不会漏掉
+                            break
+                        job["skipped"].append(path)
+                        job["current"] = path
+                        cards = [card for cid in dict.fromkeys(options["card_ids"])
+                                 for card in [_data()["cards"].get(cid)]
+                                 if card and card["wb_path"] == path and not card.get("dismissed")]
                     try:
-                        _recheck_file(excel, path, [c for c in cards if c["wb_path"] == path])
-                        _sync_highlights_safely(session, path)
-                        job["completed"].append(path)
-                        wf._persist_state()
+                        unsaved = close_saved_workbooks([Path(path)])
+                        if Path(path) in unsaved:
+                            wf.log_msg(f"⚠️ {Path(path).name}：{unsaved[Path(path)]}，请保存后继续")
+                            continue
+                        if cards:
+                            _recheck_file(excel, path, cards)
+                            _sync_highlights_safely(session, path)
+                        with wf.STATE_LOCK:
+                            job["skipped"].remove(path)
+                            if path not in job["again"]:
+                                job["completed"].append(path)
+                            wf._persist_state()
                     except Exception as err:
                         wf.log_msg(f"❌ {Path(path).name} 复检失败，可继续任务：{err}")
+                    finally:
+                        with wf.STATE_LOCK:
+                            job["current"] = None
+                            if path in job["again"]:
+                                # 查的时候又点了这个文件的复检：排到队尾再查一遍
+                                job["again"].remove(path)
+                                if path in job["skipped"]:
+                                    job["skipped"].remove(path)
+                                job["workbooks"].remove(path)
+                                job["workbooks"].append(path)
+                            wf._persist_state()
+                expected = list(job["workbooks"])
         elif kind == "batch_unhighlight":
             expected = list(options["paths"])
             unsaved = close_saved_workbooks([Path(path) for path in expected])

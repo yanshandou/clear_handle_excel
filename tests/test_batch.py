@@ -1009,6 +1009,129 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(fix_images.image_path(card["fix_images"]["after"]).read_bytes(), b"actual")
         self.assertEqual(item["fix_images"]["after"], card["fix_images"]["after"])  # 报告用同一张
 
+    def manual_card(self, address, row=5, sheet="S1", status="manual_review"):
+        card, item = self.add_card(address, color="yellow", row=row)
+        batch._data()["rows"].pop(batch._key(self.path, "S1", row), None)
+        if sheet != "S1":
+            del batch._data()["cards"][card["id"]]
+            item["sheet_name"] = sheet
+            card = batch._card_for([item])
+        card.update(color="yellow", finalized=True, manual=True, verified=False, waiting=False)
+        item["status"] = status
+        return card, item
+
+    def test_recheck_one_card_also_settles_other_cards_on_the_same_sheet(self):
+        """整张表本来就重新导出了：同表其他已提交的黄卡一起出结果，不用一张张再复检"""
+        a, item_a = self.manual_card("A5")
+        b, item_b = self.manual_card("B5")
+        other, item_o = self.manual_card("C5", sheet="S2")
+        def refresh(excel, path, sheets, **_):
+            self.assertEqual(sheets, ["S1"])  # 只查点了的那张表
+            item_a["status"] = item_b["status"] = item_o["status"] = "fixed"
+        self.refresh.side_effect = refresh
+        with patch.object(batch, "_latest_shot", return_value=""):
+            batch._recheck_file(self.excel, self.path, [a])
+        self.assertEqual((a["color"], b["color"]), ("blue", "blue"))
+        self.assertEqual(b["message"], "人工修改复检通过，等待确认")
+        self.assertEqual(other["color"], "yellow")  # 别的表没导出，不能判断
+
+    def test_failed_recheck_keeps_card_ready_to_recheck_again(self):
+        """已提交的人工项复检没过：仍是已提交的人工项，改好后直接再复检，不必先重新提交"""
+        card, item = self.manual_card("A5")
+        def refresh(*_, **__):
+            item["status"] = "pending"  # 重新检测出来的新记录
+        self.refresh.side_effect = refresh
+        batch._recheck_file(self.excel, self.path, [card])
+        self.assertEqual((card["color"], card["finalized"], card["manual"]), ("yellow", True, True))
+        self.assertEqual(item["status"], "manual_review")
+        self.assertEqual(batch.validate_cards([card["id"]], yellow=True), [card["id"]])
+
+    def test_new_problem_found_by_recheck_still_needs_a_decision(self):
+        card, item = self.manual_card("A5")
+        new_item = dict(item, id="new", cell_addr="D5", status="pending", seq=99)
+        def refresh(*_, **__):
+            item["status"] = "fixed"
+            self.wf.STATE["items"]["new"] = new_item
+        self.refresh.side_effect = refresh
+        with patch.object(batch, "_latest_shot", return_value=""):
+            batch._recheck_file(self.excel, self.path, [card])
+        new_card = batch._data()["cards"][batch._key(self.path, "S1", "D5")]
+        self.assertEqual((new_card["color"], new_card["finalized"]), ("yellow", False))
+
+    def test_refresh_remembers_which_file_version_each_sheet_was_checked_at(self):
+        version = self.wf._file_version(Path(self.path))
+        def scan(*_, **kwargs):
+            self.wf.STATE["checked_files"][self.path] = version
+        with patch.object(self.wf, "_scan_one_workbook", side_effect=scan):
+            self.real_refresh(self.excel, self.path, ["S1"])
+            self.assertTrue(batch._unchanged_since_check(self.path, ["S1"]))
+            self.assertFalse(batch._unchanged_since_check(self.path, ["S1", "S2"]))
+            # 副本上的检测不算原文件的检测
+            self.real_refresh(self.excel, self.path, ["S2"], workbook=Mock())
+            self.assertFalse(batch._unchanged_since_check(self.path, ["S2"]))
+            self.real_refresh(self.excel, self.path)
+            self.assertTrue(batch._unchanged_since_check(self.path, ["S1", "S2"]))
+        Path(self.path).write_bytes(b"edited workbook")
+        self.assertFalse(batch._unchanged_since_check(self.path, ["S1"]))
+
+    def test_recheck_of_unchanged_file_reuses_last_detection_without_exporting(self):
+        card, item = self.manual_card("A5")
+        item["status"] = "pending"
+        batch._sheet_checks()[self.path] = {"S1": self.wf._file_version(Path(self.path))}
+        batch._recheck_file(self.excel, self.path, [card])
+        self.refresh.assert_not_called()
+        self.assertEqual((card["color"], card["finalized"]), ("yellow", True))
+        # 文件改过就重新导出检测
+        Path(self.path).write_bytes(b"edited workbook")
+        batch._recheck_file(self.excel, self.path, [card])
+        self.refresh.assert_called_once()
+
+    def recheck_job(self, cards, paths):
+        self.wf.STATE.update(busy=True)
+        self.wf.STATE["job"] = {"kind": "batch_recheck", "options": {"card_ids": [c["id"] for c in cards]},
+                                "completed": [], "pending_adjustment": None, "status": "running",
+                                "workbooks": list(paths)}
+        return self.wf.STATE["job"]
+
+    def test_recheck_clicked_while_rechecking_joins_the_running_task(self):
+        second = str(self.root / "second.xlsx")
+        Path(second).write_bytes(b"workbook")
+        a, _ = self.manual_card("A5")
+        b, item_b = self.manual_card("B5")
+        item_b["wb_path"] = second
+        del batch._data()["cards"][b["id"]]
+        b = batch._card_for([item_b])
+        b.update(color="yellow", finalized=True, manual=True)
+        job = self.recheck_job([a], [self.path])
+        session = Mock()
+        session.app.return_value = self.excel
+        checked = []
+        def recheck(excel, path, cards):
+            checked.append((path, [c["id"] for c in cards]))
+            if len(checked) == 1:
+                self.assertTrue(batch.enqueue_recheck([b["id"]]))    # 另一个文件：排在后面
+                self.assertTrue(batch.enqueue_recheck([a["id"]]))    # 正在查的文件又点了：查完再查一遍
+        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch, "close_saved_workbooks", return_value={}), \
+                patch.object(batch, "_recheck_file", side_effect=recheck), \
+                patch.object(batch, "_sync_highlights_safely"), \
+                patch.object(batch, "finish_execution_batch"):
+            self.assertEqual(batch.run(), [second, self.path])
+        self.assertEqual(checked, [(self.path, [a["id"]]), (second, [b["id"]]), (self.path, [a["id"]])])
+        self.assertEqual(set(job["completed"]), {self.path, second})
+        self.assertTrue(job["closing"])
+        self.assertFalse(batch.enqueue_recheck([a["id"]]))  # 已在收尾：另起任务
+
+    def test_recheck_cannot_join_other_tasks(self):
+        a, _ = self.manual_card("A5")
+        self.wf.STATE.update(busy=True)
+        self.wf.STATE["job"].update(kind="batch_commit", options={"card_ids": []})
+        self.assertFalse(batch.enqueue_recheck([a["id"]]))
+        self.wf.STATE.update(busy=False)
+        self.recheck_job([a], [self.path])["status"] = "interrupted"
+        self.wf.STATE.update(busy=False)
+        self.assertFalse(batch.enqueue_recheck([a["id"]]))
+
     def test_manual_recheck_does_not_reuse_crop_from_old_coordinates(self):
         """复检通过时按旧坐标裁的图可能是别处：最新 PDF 找不到这格文字就不放图"""
         card, item = self.add_card(color="yellow")

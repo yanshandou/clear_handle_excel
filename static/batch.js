@@ -69,7 +69,9 @@ function renderControls() {
   $('largeBtn').disabled = !batchState.cards.length;
   $('largeBtn').title = batchState.cards.length ? '逐张放大查看卡片' : '有待审核卡片后可用';
   $('openAllBtn').disabled = busy || !manualCards().length;
-  $('recheckAllBtn').disabled = busy || !manualCards().length;
+  // 复检进行中还能接着点复检：排进同一个任务，不用等它结束
+  const rechecking = batchState.busy && batchState.job?.kind === 'batch_recheck';
+  $('recheckAllBtn').disabled = (busy && !rechecking) || requestBusy || !manualCards().length;
   $('pauseBtn').classList.toggle('hidden', !batchState.busy || batchState.job?.kind !== 'batch_scan');
   $('pauseBtn').disabled = requestBusy || !!batchState.job?.pause_requested;
   $('resumeBtn').classList.toggle('hidden', batchState.busy || batchState.job?.status !== 'interrupted');
