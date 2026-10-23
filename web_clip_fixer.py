@@ -256,6 +256,10 @@ class WebHandler(BaseHTTPRequestHandler):
             options = {"folder": _require_folder(payload)}
             if payload.get("scan_only") is True:
                 options.update(scan_only=True, highlight=batch.highlight_style(payload.get("highlight")))
+            elif payload.get("highlight") is not None:
+                options["highlight"] = batch.highlight_style(payload.get("highlight"))
+            else:
+                options["highlight_off"] = True
             self._start_job("batch_scan", options)
         elif self.path == "/api/batch/unhighlight":
             self._start_job("batch_unhighlight", {"paths": batch.highlighted_paths()})

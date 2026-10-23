@@ -187,7 +187,7 @@ function cardHtml(card, large = false) {
   return `<article class="batch-card" tabindex="0" role="button" aria-label="${esc(`${card.wb_name} ${card.sheet_name}!${card.cell_addr} ${REVIEW_LABELS[card.color]}，单击切换状态`)}" data-id="${esc(card.id)}" data-color="${card.color}">
     <div class="batch-card-head"><button type="button" class="batch-select" data-action="select" aria-pressed="false" title="选中 / 取消选中">✓</button><div class="batch-card-title">${link}<p class="batch-cell">${esc(card.sheet_name)}!${esc(card.cell_addr || '定位待确认')}</p></div><span class="batch-color-label">${REVIEW_LABELS[card.color]}</span></div>
     ${visuals}${problemHtml(card)}${handling ? `<p class="batch-handling">${esc(handling)}</p>` : ''}${card.text ? `<p class="batch-text">${esc(card.text)}</p>` : ''}${card.message ? `<p class="batch-message">${esc(card.message)}</p>` : ''}
-    <p class="batch-state">${card.finalized ? '已提交 · 可人工处理' : '颜色标记待提交'}${batchState.busy ? ' · 后台任务结束后可标记' : ''}</p>
+    <p class="batch-state">${card.finalized ? '已提交 · 可人工处理' : '颜色标记待提交'}${card.highlighted && card.after_kind !== 'scan_only' ? ' · 已在 Excel 中标色' : ''}${batchState.busy ? ' · 后台任务结束后可标记' : ''}</p>
     ${card.verified ? '' : `<p class="batch-no-blue">${blueNote(card)}</p>`}
     <div class="batch-card-footer"><button class="btn btn-outline" data-action="large"><span class="batch-icon-enlarge" aria-hidden="true"></span>大图审核</button>${card.color === 'yellow' && card.finalized ? '<button class="btn btn-outline" data-action="recheck">🔁 单项复检</button>' : ''}</div></article>`;
 }
@@ -378,6 +378,11 @@ $('highlightPresets').addEventListener('click', event => {
   const button = event.target.closest('[data-preset]');
   if (button) setHighlight(HIGHLIGHT_PRESETS[Number(button.dataset.preset)]);
 });
+const HIGHLIGHT_AUTO_KEY = 'clear_handle_excel.highlightAuto';
+try { $('highlightAuto').checked = localStorage.getItem(HIGHLIGHT_AUTO_KEY) !== '0'; } catch (_) { $('highlightAuto').checked = true; }
+$('highlightAuto').addEventListener('change', event => {
+  try { localStorage.setItem(HIGHLIGHT_AUTO_KEY, event.target.checked ? '1' : '0'); } catch (_) {}
+});
 $('highlightFill').addEventListener('input', event => setHighlight({ ...highlight, fill: event.target.value }));
 $('highlightFont').addEventListener('input', event => setHighlight({ ...highlight, font: event.target.value }));
 
@@ -402,14 +407,14 @@ function startBatch(extra = {}) {
     if (batchState.busy) { try { localStorage.setItem('clear_handle_excel.lastFolder', folder); } catch (_) {} }
   });
 }
-$('startBtn').addEventListener('click', () => startBatch());
+$('startBtn').addEventListener('click', () => startBatch($('highlightAuto').checked ? { highlight: { ...highlight } } : {}));
 $('scanOnlyBtn').addEventListener('click', () => {
   if (!$('folderInput').value.trim()) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
   if (!window.confirm('只扫描：不自动加高，检出的问题全部转为黄色人工项。\n会在原 Excel 里给问题单元格换上标记底色和字色并保存（复检通过或提交蓝 / 绿后自动还原）。\n\n确定开始吗？')) return;
   startBatch({ scan_only: true, highlight: { ...highlight } });
 });
 $('unhighlightBtn').addEventListener('click', () => {
-  if (window.confirm(`把当前文件夹 ${batchState.highlighted || 0} 个标过颜色的单元格还原成原来的颜色？\n需要先在 Excel 里保存并关闭这些文件；你自己改过颜色的格子不动。之后复检也不再自动标色。`)) startJob('/api/batch/unhighlight');
+  if (window.confirm(`把当前文件夹 ${batchState.highlighted || 0} 个标过颜色的单元格还原成原来的颜色？\n需要先在 Excel 里保存并关闭这些文件；你自己改过颜色的格子不动。之后提交、复检也不再自动标色，重新开始处理时才按设置标色。`)) startJob('/api/batch/unhighlight');
 });
 $('resumeBtn').addEventListener('click', () => startJob('/api/resume'));
 $('pauseBtn').addEventListener('click', () => action(() => post('/api/batch/pause')));

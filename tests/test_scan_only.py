@@ -177,6 +177,35 @@ class ScanOnlyTests(unittest.TestCase):
         self.assertEqual(self.sheet.cell("A5").Interior.Color, batch._excel_color("#6D28D9"))
         self.assertIn(self.path, self.wf.STATE["job"]["completed"])
 
+    def test_full_auto_colors_yellow_cards_only_after_commit(self):
+        self.add_item("A5")
+        self.wf.STATE["job"]["options"] = {"folder": str(self.root), "highlight": {"fill": "#006633", "font": "#FFFFFF"}}
+        session = Mock()
+        session.app.return_value = self.excel
+        mocks = dict(ExcelWatchdog=Mock(return_value=Mock(timed_out=False)), init_execution_batch=Mock(),
+                     finish_execution_batch=Mock(), _refresh=Mock())
+        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.multiple(batch, **mocks), \
+                patch.object(self.wf, "list_workbooks", return_value=(self.root, [Path(self.path)])), \
+                patch.object(self.wf.pythoncom, "CoInitialize", create=True), \
+                patch.object(self.wf.pythoncom, "CoUninitialize", create=True), \
+                patch.object(batch, "_repair_file", side_effect=lambda *a: batch._card_for(
+                    [self.wf.STATE["items"]["iA5"]]).update(color="yellow", manual=True, waiting=False)):
+            batch.run()
+            self.excel.Workbooks.Open.assert_not_called()  # 处理过程中不改颜色
+            card = self.card("A5")
+            self.wf.STATE["job"] = {"kind": "batch_commit", "options": {"card_ids": [card["id"]]},
+                                    "completed": [], "pending_adjustment": None}
+            batch.run()
+        self.assertEqual(self.sheet.cell("A5").Interior.Color, batch._excel_color("#006633"))
+
+    def test_full_auto_without_highlight_stops_coloring(self):
+        self.add_item("A5")
+        self.scan()
+        batch._data()["highlight_files"].pop(self.path)
+        batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(self.sheet.cell("A5").Interior.Pattern, batch.XL_PATTERN_NONE)
+
 
 if __name__ == "__main__":
     unittest.main()
