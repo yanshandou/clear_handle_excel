@@ -992,6 +992,48 @@ def _exportable_sheets(wb: Any) -> list[Any]:
     ]
 
 
+def _sheet_code(sheet: Any) -> str:
+    try:
+        return str(sheet.CodeName or "")
+    except Exception:
+        return ""
+
+
+def _follow_renamed_sheets(
+    path: str, wb: Any, exportable: set[str], entry: dict[str, Any], previous: list[dict[str, Any]],
+) -> list[str]:
+    """要检测的表按名字找不到时，用 Excel 的代码名（改表名时不变）认出改名后的表，记录全部换成新名字，
+    审核卡片也还是原来那张。认不出来、或者表已删除 / 隐藏 / 不再导出的，返回这些旧表名，entry["missing"] 里也记一份。"""
+    codes = {sheet.Name: _sheet_code(sheet) for sheet in wb.Sheets}
+    with STATE_LOCK:
+        known = STATE.setdefault("sheet_codes", {}).get(path, {})
+        wanted = (list(entry["sheets"]) if entry["mode"] == "sheets"
+                  else list(dict.fromkeys(p["sheet_name"] for p in previous)))
+        missing = []
+        for old in wanted:
+            if old in exportable:
+                continue
+            code = known.get(old, "")
+            found = [name for name, c in codes.items() if code and c == code]
+            new = found[0] if len(found) == 1 else None
+            if old in codes or new is None or new not in exportable or new in wanted:
+                missing.append(old)
+                continue
+            log_msg(f"  ℹ️ 工作表「{old}」已改名为「{new}」，按新名字检测")
+            _sync_renamed_workbook_in_state(Path(path), Path(path), {old: new})
+            from core import batch
+            batch.rename_sheet(path, old, new)
+            for p in previous:
+                if p["sheet_name"] == old:
+                    p["sheet_name"] = new
+            if entry["mode"] == "sheets":
+                entry["sheets"] = [new if name == old else name for name in entry["sheets"]]
+        # 代码名为空（个别新建的表）就认不出改名，只能当作找不到
+        STATE["sheet_codes"][path] = {name: code for name, code in codes.items() if code}
+        entry["missing"] = missing
+    return missing
+
+
 def _export_sheet_pdf(sheet: Any, pdf_path: Path) -> None:
     sheet.ExportAsFixedFormat(
         Type=XL_TYPE_PDF,
@@ -1089,7 +1131,20 @@ def _scan_one_workbook(
 
         scan_version = _file_version(wb_path)
         file_stem = sanitize_filename(strip_review_prefix(wb_path.stem))
-        sheets = [s for s in _exportable_sheets(wb) if sheets_only is None or s.Name in sheets_only]
+        exportable = _exportable_sheets(wb)
+        missing = _follow_renamed_sheets(path, wb, {s.Name for s in exportable}, entry, previous)
+        if missing:
+            log_msg(f"  ⚠️ 找不到工作表（可能被改名、删除或隐藏）：{'、'.join(missing)}")
+            if sheets_only is not None:
+                # 只查部分表时这些表没检测：旧问题不能因为「没再检出」被当成已修好，原样保留
+                previous[:] = [p for p in previous if p["sheet_name"] not in missing]
+                entry["sheets"] = [name for name in entry["sheets"] if name not in missing]
+            else:
+                # 整份检查已包含现在所有要打印的表：表都不在了，上面的旧问题算解决；改名后认不出的表照样被检测，问题按新表出
+                missing = []
+        if sheets_only is not None:
+            sheets_only = set(entry["sheets"])
+        sheets = [s for s in exportable if sheets_only is None or s.Name in sheets_only]
         rescanning_names = {s.Name for s in sheets}
         with STATE_LOCK:
             for p in STATE["pages"].values():
@@ -1139,7 +1194,8 @@ def _scan_one_workbook(
             item["autofix_revision"] = revision
         for collection in ("pages", "items"):
             for key, value in list(STATE[collection].items()):
-                if value["wb_path"] == path and (sheets_only is None or value["sheet_name"] in sheets_only):
+                if (value["wb_path"] == path and value["sheet_name"] not in missing
+                        and (sheets_only is None or value["sheet_name"] in sheets_only)):
                     del STATE[collection][key]
         STATE["pages"].update(file_pages)
         STATE["items"].update(merged)

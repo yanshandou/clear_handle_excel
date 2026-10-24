@@ -15,6 +15,7 @@ class FakeSheet:
         self.test = test
         self.book = book
         self.Name = name
+        self.CodeName = f"code_{name}"
         self.Visible = -1
 
     def ExportAsFixedFormat(self, **kwargs):
@@ -199,6 +200,63 @@ class IncrementalScanTests(unittest.TestCase):
             (report["clip_unfixed"], report["clip_fixed"], report["clip_accepted"]), (2, 1, 1),
         )
         self.assertIn("本次确认已修复 1 处", report["current_action"])
+
+    def test_renamed_sheet_is_followed_by_code_name(self):
+        """人工处理时改了表名：按 Excel 代码名认出新表，照常检测，不能当作问题都修好了"""
+        path = self.add_book("book", ["S1", "S2"])
+        self.clips[("book", "S1")] = ["k", "i"]
+        self.scan()
+        first = self.items_by_text()
+        self.books["book"].Sheets[0].Name = "S1b"
+        self.clips[("book", "S1b")] = ["k"]
+        self.modify(path)
+        self.scan()
+        self.assertEqual(self.exports, [("book", "S1b")])
+        items = self.items_by_text()
+        self.assertEqual((items["k"]["id"], items["k"]["status"], items["k"]["sheet_name"]),
+                         (first["k"]["id"], "pending", "S1b"))
+        self.assertEqual((items["i"]["status"], items["i"]["sheet_name"]), ("fixed", "S1b"))
+
+    def test_missing_sheet_keeps_its_problems_open(self):
+        for case in ("deleted", "hidden", "no code name"):
+            with self.subTest(case):
+                self.workflow.STATE.update(items={}, pages={}, checked_files={}, folder="")
+                path = self.add_book("book", ["S1", "S2"])
+                self.clips[("book", "S1")] = ["k"]
+                if case == "no code name":
+                    self.books["book"].Sheets[0].CodeName = ""
+                self.scan()
+                sheet = self.books["book"].Sheets[0]
+                if case == "deleted":
+                    self.books["book"].Sheets.remove(sheet)
+                elif case == "hidden":
+                    sheet.Visible = 0
+                else:
+                    sheet.Name = "S1b"
+                    self.clips[("book", "S1b")] = ["k"]
+                self.modify(path)
+                self.scan()
+                self.assertNotIn(("book", "S1"), self.exports)
+                item = self.items_by_text()["k"]
+                self.assertEqual((item["status"], item["sheet_name"]), ("pending", "S1"))
+
+    def test_full_check_counts_problems_on_a_vanished_sheet_as_solved(self):
+        """整份检查已包含现在所有的表：表不在了，上面的旧问题算解决（改名认不出时问题按新表另出）"""
+        path = self.add_book("book", ["S1", "S2"])
+        self.clips[("book", "S1")] = ["k"]
+        self.books["book"].Sheets[0].CodeName = ""
+        self.scan()
+        self.books["book"].Sheets[0].Name = "S1b"
+        self.clips[("book", "S1b")] = ["k"]
+        self.modify(path)
+        previous = [dict(it) for it in self.workflow.STATE["items"].values()]
+        entry = {"mode": "full", "sheets": None, "scanned": True}
+        self.workflow._scan_one_workbook(
+            self.excel, path, entry, previous, job=None, resumed=True, rescan_all=False,
+            delete_backups=False, used_pdf_paths=set(), read_only=True)
+        self.assertEqual(entry["missing"], ["S1"])
+        by_sheet = {(it["sheet_name"], it["status"]) for it in self.workflow.STATE["items"].values()}
+        self.assertEqual(by_sheet, {("S1", "fixed"), ("S1b", "pending")})
 
     def test_modified_file_without_open_problems_is_fully_rechecked(self):
         path = self.add_book("book", ["S1", "S2"])
