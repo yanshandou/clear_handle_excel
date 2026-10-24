@@ -1031,9 +1031,8 @@ class BatchTests(unittest.TestCase):
         self.refresh.side_effect = refresh
         with patch.object(batch, "_latest_shot", return_value=""):
             batch._recheck_file(self.excel, self.path, [a])
-        self.assertEqual((a["color"], b["color"]), ("blue", "blue"))
-        self.assertEqual(b["message"], "人工修改复检通过，等待确认")
-        self.assertEqual((other["color"], other["finalized"]), ("yellow", True))  # 别的表还有问题
+        self.assertTrue(a["dismissed"] and b["dismissed"])  # 翻篇，移出列表
+        self.assertEqual((other["color"], other["finalized"], other["dismissed"]), ("yellow", True, False))
 
     def test_failed_recheck_keeps_card_ready_to_recheck_again(self):
         """已提交的人工项复检没过：仍是已提交的人工项，改好后直接再复检，不必先重新提交"""
@@ -1046,7 +1045,8 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(item["status"], "manual_review")
         self.assertEqual(batch.validate_cards([card["id"]], yellow=True), [card["id"]])
 
-    def test_new_problem_found_by_recheck_still_needs_a_decision(self):
+    def test_problems_found_by_recheck_are_shown_ready_for_manual_fixing(self):
+        """原来的卡翻篇，这次查出的问题直接是人工待处理项：改好保存后直接复检，不用先提交"""
         card, item = self.manual_card("A5")
         new_item = dict(item, id="new", cell_addr="D5", status="pending", seq=99)
         def refresh(*_, **__):
@@ -1056,7 +1056,10 @@ class BatchTests(unittest.TestCase):
         with patch.object(batch, "_latest_shot", return_value=""):
             batch._recheck_file(self.excel, self.path, [card])
         new_card = batch._data()["cards"][batch._key(self.path, "S1", "D5")]
-        self.assertEqual((new_card["color"], new_card["finalized"]), ("yellow", False))
+        self.assertEqual((new_card["color"], new_card["finalized"], new_card["manual"]), ("yellow", True, True))
+        self.assertEqual(new_item["status"], "manual_review")
+        self.assertTrue(card["dismissed"])
+        self.assertEqual(batch.validate_cards([new_card["id"]], yellow=True), [new_card["id"]])
 
     def test_refresh_remembers_which_file_version_each_sheet_was_checked_at(self):
         version = self.wf._file_version(Path(self.path))
@@ -1093,8 +1096,7 @@ class BatchTests(unittest.TestCase):
             return ["S1"]
         self.refresh.side_effect = refresh
         batch._recheck_file(self.excel, self.path, [card])
-        self.assertEqual((card["color"], card["verified"]), ("blue", True))
-        self.assertIn("工作表「S1」已不在文件里", card["message"])
+        self.assertTrue(card["dismissed"])
 
     def test_renamed_sheet_moves_cards_rows_rules_and_highlights(self):
         card, item = self.add_card("A5", color="yellow")
@@ -1116,6 +1118,20 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(batch._data()["ignored"][-1]["cell"][1], "新")
         self.assertEqual(batch._sheet_checks()[self.path], {"新": {"v": 1}})
         self.assertEqual(self.wf.STATE["job"]["options"]["card_ids"], [new_id])
+
+    def test_recheck_without_marked_colors_checks_the_file_directly(self):
+        card, _ = self.manual_card("A5")
+        batch._recheck_file(self.excel, self.path, [card])
+        self.assertIsNone(self.refresh.call_args.kwargs["workbook"])
+        self.excel.Workbooks.Open.assert_not_called()
+
+    def test_unfinished_auto_cards_are_left_alone_by_recheck(self):
+        card, _ = self.manual_card("A5")
+        waiting, item_w = self.add_card("B5", color="yellow")
+        waiting.update(waiting=True, message=batch.WAITING_MESSAGE)
+        item_w["status"] = "pending"
+        batch._recheck_file(self.excel, self.path, [card])
+        self.assertEqual((waiting["finalized"], waiting.get("manual")), (False, False))
 
     def recheck_job(self, cards, paths):
         self.wf.STATE.update(busy=True)

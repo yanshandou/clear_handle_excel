@@ -26,7 +26,7 @@ class FakeSheet:
     def Range(self, addr):
         cell = self.cell(addr)
         members = [self.cell(a) for a in self.merges.get(cell.Address, [cell.Address])]
-        area = Mock(Cells=members)
+        area = Mock(Cells=members, Address=cell.Address)
         interior = Mock()
 
         def set_interior(name, value):
@@ -61,11 +61,15 @@ class ScanOnlyTests(unittest.TestCase):
                              batch_review={"cards": {}, "rows": {}, "ignored": []},
                              job={"kind": "batch_scan", "options": {}, "completed": [], "pending_adjustment": None})
         self.sheet = FakeSheet()
+        self.sheet.Name = "S1"
         self.book = Mock(ReadOnly=False)
         self.book.Sheets.return_value = self.sheet
+        self.book.Names.side_effect = KeyError  # 默认当作文件里没有这个名称，按原地址还原
         self.excel = Mock()
         self.excel.Workbooks.Open.return_value = self.book
         patch.object(batch, "normalize_workbook_view").start()
+        self.real_find = batch._find_marked_cells
+        self.leftovers = patch.object(batch, "_find_marked_cells", return_value=[]).start()
         patch.object(self.wf, "_sync_problem_counts").start()
         self.addCleanup(patch.stopall)
 
@@ -126,6 +130,123 @@ class ScanOnlyTests(unittest.TestCase):
         self.assertEqual(b5.Interior.Color, 0x123456)
         self.assertEqual(b5.Font.Color, 0)  # 字色还是标记色时照常还原
         self.assertEqual(batch._marks(), {})
+
+    def test_recheck_checks_with_original_colors_then_marks_this_rounds_problems(self):
+        """复检：先把标记色全部还原再检测，查完只给这次查出的问题重新标色"""
+        self.add_item("A5")
+        self.add_item("B5")
+        self.scan()
+        seen = {}
+        # 只读打开、内存里还原颜色、不保存就关：关掉时文件还是原来标着颜色的样子
+        saved = {k: (c.Interior.Pattern, c.Interior.Color, c.Font.Color) for k, c in self.sheet.cells.items()}
+        def discard(SaveChanges):
+            for k, (pattern, color, font) in saved.items():
+                cell = self.sheet.cells[k]
+                cell.Interior.Pattern, cell.Interior.Color, cell.Font.Color = pattern, color, font
+            self.book.Close.side_effect = None
+        self.book.Close.side_effect = discard
+        def refresh(*_, workbook=None, **__):
+            self.assertIs(workbook, self.book)  # 检测用的就是还原过颜色的这一份，不再另外打开
+            seen["A5"] = self.sheet.cell("A5").Interior.Pattern
+            seen["B5"] = self.sheet.cell("B5").Interior.Pattern
+            self.wf.STATE["items"]["iA5"]["status"] = "fixed"   # A5 改好了
+            self.wf.STATE["items"]["iB5"]["status"] = "pending"  # B5 还有问题
+            self.add_item("C5")                                  # 又冒出 C5
+        saves = self.book.Save.call_count
+        with patch.object(batch, "_refresh", side_effect=refresh):
+            batch._recheck_file(self.excel, self.path, [self.card("A5")])
+        self.assertEqual(self.book.Save.call_count, saves)  # 检测前不保存
+        self.assertEqual(self.sheet.cell("A5").Interior.Color, batch._excel_color("#C0007A"))  # 文件里还是标着的
+        none = batch.XL_PATTERN_NONE
+        self.assertEqual(seen, {"A5": none, "B5": none})  # 检测时是原来的颜色（无填充）
+        batch._sync_highlights(lambda: self.excel, self.path)
+        marked = batch._excel_color("#C0007A")
+        self.assertTrue(self.card("A5")["dismissed"])
+        self.assertEqual(self.sheet.cell("A5").Interior.Pattern, none)
+        self.assertEqual(self.sheet.cell("B5").Interior.Color, marked)
+        self.assertEqual(self.sheet.cell("C5").Interior.Color, marked)
+        self.assertEqual((self.card("C5")["color"], self.card("C5")["finalized"]), ("yellow", True))
+
+    def test_restore_follows_cells_moved_by_inserted_rows(self):
+        """人工在上面插了 2 行：标色的 A5 跑到 A7，按标色时建的隐藏名称找到 A7 还原，不动现在的 A5"""
+        self.add_item("A5")
+        self.scan()
+        mark = next(iter(batch._marks().values()))
+        self.assertEqual(self.book.Names.Add.call_args.kwargs,
+                         {"Name": mark["name"], "RefersTo": "='S1'!$A$5", "Visible": False})
+        marked = batch._excel_color("#C0007A")
+        moved, stays = self.sheet.cell("A7"), self.sheet.cell("A5")
+        moved.Interior.Pattern, moved.Interior.Color = batch.XL_PATTERN_SOLID, marked
+        moved.Font.Color = batch._excel_color("#FFFFFF")
+        stays.Interior.Pattern, stays.Interior.Color, stays.Font.Color = batch.XL_PATTERN_SOLID, marked, 0
+        self.sheet.Cells = lambda row, col: self.sheet.cell(f"{chr(64 + col)}{row}")
+        names = {mark["name"]: Mock(RefersToRange=Mock(Row=7, Column=1, Worksheet=self.sheet))}
+        self.book.Names.side_effect = lambda name: names[name]
+        self.card("A5").update(color="blue")
+        batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(moved.Interior.Pattern, batch.XL_PATTERN_NONE)
+        self.assertEqual(moved.Font.Color, 0)
+        self.assertEqual(stays.Interior.Pattern, batch.XL_PATTERN_SOLID)  # 现在的 A5 是别的格子，不动
+        names[mark["name"]].Delete.assert_called_once()  # 还原后名称删掉，交出去的文件里不留
+
+    def test_cell_deleted_by_user_needs_no_restore(self):
+        self.add_item("A5")
+        self.scan()
+        mark = next(iter(batch._marks().values()))
+        broken = Mock()
+        type(broken).RefersToRange = property(lambda _: (_ for _ in ()).throw(RuntimeError("#REF!")))
+        self.book.Names.side_effect = lambda name: broken
+        self.card("A5").update(color="blue")
+        batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(batch._marks(), {})
+        broken.Delete.assert_called_once()
+
+    def test_leftover_marker_color_is_restored_when_content_matches_one_record(self):
+        """旧记录没有隐藏名称、被插行挪到 A7：兜底按「还是标记底色 + 内容对得上唯一一条」找到并还原；
+        对不上的不乱改，列在日志里"""
+        self.add_item("A5")
+        self.scan()
+        mark = next(iter(batch._marks().values()))
+        mark.pop("name", None)
+        mark["value"] = "合計"
+        marked = batch._excel_color("#C0007A")
+        a5 = self.sheet.cell("A5")
+        a5.Interior.Pattern, a5.Font.Color = batch.XL_PATTERN_NONE, 0  # 现在的 A5 是插进来的空行
+        moved, other = self.sheet.cell("A7"), self.sheet.cell("C9")
+        for cell, value in ((moved, "合計"), (other, "?")):
+            cell.Interior.Pattern, cell.Interior.Color, cell.Font.Color = batch.XL_PATTERN_SOLID, marked, 0xFFFFFF
+            cell.Formula = value
+        self.sheet.Cells = lambda row, col: self.sheet.cell(f"{chr(64 + col)}{row}")
+        self.leftovers.return_value = [(self.sheet, 7, 1), (self.sheet, 9, 3)]
+        self.card("A5").update(color="blue")
+        with patch.object(batch.wf, "log_msg") as log:
+            batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(moved.Interior.Pattern, batch.XL_PATTERN_NONE)
+        self.assertEqual(moved.Font.Color, 0)
+        self.assertEqual(other.Interior.Color, marked)  # 对不上的不动
+        messages = [c.args[0] for c in log.call_args_list]
+        self.assertTrue(any("按格子内容找到并还原" in m for m in messages), messages)
+        self.assertTrue(any("手动去掉" in m and "S1!C9" in m for m in messages), messages)
+
+    def test_cells_still_marked_on_purpose_are_not_leftovers(self):
+        self.add_item("A5")
+        self.add_item("B5")
+        self.scan()
+        self.leftovers.return_value = [(self.sheet, 5, 2)]  # B5 还要继续标着
+        self.card("A5").update(color="blue")
+        with patch.object(batch.wf, "log_msg") as log:
+            batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertFalse(any("手动去掉" in c.args[0] for c in log.call_args_list))
+
+    def test_find_marked_cells_walks_every_match_once(self):
+        found = [Mock(Address=a, MergeArea=Mock(Row=r, Column=c)) for a, r, c in
+                 (("$A$7", 7, 1), ("$B$7", 7, 1), ("$C$9", 9, 3))]
+        sheet = Mock(Name="S1")
+        sheet.Cells.Find.side_effect = found + [found[0]]
+        app, book = Mock(), Mock(Worksheets=[sheet])
+        self.assertEqual(self.real_find(app, book, {123}), [(sheet, 7, 1), (sheet, 9, 3)])
+        self.assertEqual(app.FindFormat.Interior.Color, 123)
+        self.assertTrue(app.FindFormat.Clear.called)
 
     def test_merged_area_and_mixed_font_color(self):
         self.sheet.merges["$A$5"] = ["$A$5", "$B$5"]
