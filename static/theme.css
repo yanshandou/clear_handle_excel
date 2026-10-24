@@ -966,6 +966,8 @@ input[type="checkbox"]:not(.hidden):focus-visible {
   background: var(--lime);
   color: var(--ink);
   box-shadow: none;
+  /* 选中按钮的白字描边会继承下来，黄底深色数字再描深色边就糊成一团 */
+  text-shadow: none;
 }
 
 .table-responsive {
