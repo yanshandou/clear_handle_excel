@@ -549,7 +549,7 @@ def _refresh(
     session: Any = None, workbook: Any = None, reuse: bool = True, timing: dict[str, float] | None = None,
 ) -> list[str]:
     """重新检测（默认整个文件）。session 给了就沿用同一状态已导出的 PDF（reuse=False 时一律重新导出）；
-    workbook 是和原文件一致的副本时直接用它，不再打开原文件。
+    workbook 给了就直接用它检测（全自动的副本，或复检时在内存里还原过标记色的原文件），不再打开原文件。
     返回这次找不到、没有检测的工作表（被删除、隐藏，或改名后认不出来）。"""
     with wf.STATE_LOCK:
         cards = _data()["cards"]
@@ -1143,10 +1143,13 @@ def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:
         with wf.STATE_LOCK:
             carry_item_policies(wf.STATE["items"])
     else:
-        # 先把原来标的颜色全部还原再检测：检测的就是最后交出去的样子，查完再给这次的问题重新标色
-        _sync_highlights(lambda: excel, path, clear=True)
         checking: dict[str, float] = {}
-        _refresh(excel, path, timing=checking)
+        book = _open_without_marks(excel, path)
+        try:
+            _refresh(excel, path, workbook=book, timing=checking)
+        finally:
+            if book is not None:
+                book.Close(SaveChanges=False)  # 只在内存里还原过颜色，不保存；之后标色时统一打开保存一次
         wf.log_msg(f"⏱ {Path(path).name} 整份复检：{time.perf_counter() - started:.1f} 秒"
                    f"（打开 {checking.get('open', 0):.1f} 秒，导出 {int(checking.get('exports', 0))} 次 "
                    f"{checking.get('export', 0):.1f} 秒，检测 {checking.get('detect', 0):.1f} 秒）")
@@ -1188,6 +1191,25 @@ def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:
         wf._sync_problem_counts(path, "人工复检完成" + (f"，还有 {found} 处问题" if found else "，没有查出问题"))
     wf.log_msg(f"🔁 {Path(path).name}：原来 {len(cards)} 处翻篇（{passed} 处已不再有问题），"
                + (f"这次查出 {found} 处问题，改好后再复检" if found else "这次没有查出问题，全部通过"))
+
+
+def _open_without_marks(excel: Any, path: str) -> Any:
+    """复检用：只读打开原文件，在内存里把标过的颜色全部还原（不保存），检测的就是最后交出去的样子。
+    没标过颜色返回 None，照常由检测自己打开。"""
+    with wf.STATE_LOCK:
+        marks = [copy.deepcopy(m) for m in _marks().values() if m["path"] == path]
+    if not marks:
+        return None
+    book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0, ReadOnly=True)
+    try:
+        for mark in marks:
+            sheet = _find_sheet(book, mark["sheet"])
+            if sheet is not None:
+                _restore_cells(sheet, mark)
+    except Exception:
+        book.Close(SaveChanges=False)
+        raise
+    return book
 
 
 def _hand_over(path: str) -> None:

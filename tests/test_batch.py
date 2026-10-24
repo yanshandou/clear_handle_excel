@@ -1119,14 +1119,11 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(batch._sheet_checks()[self.path], {"新": {"v": 1}})
         self.assertEqual(self.wf.STATE["job"]["options"]["card_ids"], [new_id])
 
-    def test_recheck_restores_marked_colors_before_checking(self):
-        """先还原原来标的颜色再检测，检测的是最后交出去的样子"""
+    def test_recheck_without_marked_colors_checks_the_file_directly(self):
         card, _ = self.manual_card("A5")
-        events = []
-        with patch.object(batch, "_sync_highlights", side_effect=lambda *_, **kw: events.append(("colors", kw))):
-            self.refresh.side_effect = lambda *_, **__: events.append(("check", {}))
-            batch._recheck_file(self.excel, self.path, [card])
-        self.assertEqual(events, [("colors", {"clear": True}), ("check", {})])
+        batch._recheck_file(self.excel, self.path, [card])
+        self.assertIsNone(self.refresh.call_args.kwargs["workbook"])
+        self.excel.Workbooks.Open.assert_not_called()
 
     def test_unfinished_auto_cards_are_left_alone_by_recheck(self):
         card, _ = self.manual_card("A5")

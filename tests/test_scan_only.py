@@ -133,14 +133,26 @@ class ScanOnlyTests(unittest.TestCase):
         self.add_item("B5")
         self.scan()
         seen = {}
-        def refresh(*_, **__):
+        # 只读打开、内存里还原颜色、不保存就关：关掉时文件还是原来标着颜色的样子
+        saved = {k: (c.Interior.Pattern, c.Interior.Color, c.Font.Color) for k, c in self.sheet.cells.items()}
+        def discard(SaveChanges):
+            for k, (pattern, color, font) in saved.items():
+                cell = self.sheet.cells[k]
+                cell.Interior.Pattern, cell.Interior.Color, cell.Font.Color = pattern, color, font
+            self.book.Close.side_effect = None
+        self.book.Close.side_effect = discard
+        def refresh(*_, workbook=None, **__):
+            self.assertIs(workbook, self.book)  # 检测用的就是还原过颜色的这一份，不再另外打开
             seen["A5"] = self.sheet.cell("A5").Interior.Pattern
             seen["B5"] = self.sheet.cell("B5").Interior.Pattern
             self.wf.STATE["items"]["iA5"]["status"] = "fixed"   # A5 改好了
             self.wf.STATE["items"]["iB5"]["status"] = "pending"  # B5 还有问题
             self.add_item("C5")                                  # 又冒出 C5
+        saves = self.book.Save.call_count
         with patch.object(batch, "_refresh", side_effect=refresh):
             batch._recheck_file(self.excel, self.path, [self.card("A5")])
+        self.assertEqual(self.book.Save.call_count, saves)  # 检测前不保存
+        self.assertEqual(self.sheet.cell("A5").Interior.Color, batch._excel_color("#C0007A"))  # 文件里还是标着的
         none = batch.XL_PATTERN_NONE
         self.assertEqual(seen, {"A5": none, "B5": none})  # 检测时是原来的颜色（无填充）
         batch._sync_highlights(lambda: self.excel, self.path)
