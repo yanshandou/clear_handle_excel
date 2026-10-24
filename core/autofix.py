@@ -68,6 +68,18 @@ MAX_ERROR_RETRIES = 2  # 偶然出错（Excel 正忙、临时拒绝调用等）�
 ACTIVE_GRACE_SECONDS = 8.0  # 页面每 1.5 秒报一次「正开着 ② 自动处理」，超过这么久没报就停下
 
 _LOCK = threading.RLock()
+
+
+def print_scale(sheet: Any) -> float:
+    """打印缩放比例：缺口是在 PDF 上量出来的，除以它才是要加的行高。
+    设成「缩放到 N 页」时 Excel 不给实际比例，按 1 算（和原来一样，多试几次也能补够）。"""
+    try:
+        zoom = sheet.PageSetup.Zoom
+    except Exception:
+        return 1.0
+    if isinstance(zoom, bool) or not isinstance(zoom, (int, float)) or zoom <= 0:
+        return 1.0
+    return min(4.0, max(.1, float(zoom) / 100))
 _WAKE = threading.Event()
 _IDLE = threading.Event()  # 后台没有开着的 Excel
 _IDLE.set()
@@ -883,6 +895,8 @@ def _preview(session: _ExcelSession, gid: str) -> None:
             if k and ok:
                 success_at = k
             # 多行文字缺好几行时 3pt 一次加不完 8 次，按缺的行数直接补上（仍按 3pt 取整）
+            if need:
+                need /= print_scale(sheet)
             extra = max(extra + STEP_PT, math.ceil(round((extra + need) / STEP_PT, 3)) * STEP_PT)
     except _Paused:
         with _LOCK:
