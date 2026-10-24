@@ -131,14 +131,11 @@ test('keyboard changes status and navigates while text inputs keep their keys', 
   assert.equal(p.run('activeCardId'), 'a');
 });
 
-test('mouse wheel moves cards and throttles continuous trackpad events', () => {
+test('mouse wheel scrolls the page instead of switching cards', () => {
   const p = page();
   p.run(`openLarge('a')`);
-  const wheel = p.elements.get('largeView').listeners.wheel;
-  wheel({ deltaY: 100, preventDefault() {} });
-  assert.equal(p.run('activeCardId'), 'b');
-  wheel({ deltaY: -100, preventDefault() {} });
-  assert.equal(p.run('activeCardId'), 'b');
+  assert.equal(p.elements.get('largeView').listeners.wheel, undefined);
+  assert.equal(p.run('activeCardId'), 'a');
 });
 
 test('only submitted yellow cards are eligible for manual actions', () => {

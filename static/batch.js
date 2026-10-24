@@ -12,7 +12,6 @@ let renderKey = '';
 let layoutKey = '';
 let cardHtmlCache = new Map();
 let lastActiveIndex = 0;
-let lastWheelAt = 0;
 let selectedIds = new Set();
 let selectNotice = '';
 // 筛选后改了颜色的卡片继续留在当前筛选里，不立刻消失；重新点筛选按钮才按新颜色过滤
@@ -603,13 +602,6 @@ document.addEventListener('keydown', event => {
     event.preventDefault(); changeColor(event.target.dataset.id);
   }
 });
-$('largeView').addEventListener('wheel', event => {
-  if (!largeMode || Math.abs(event.deltaY) < 8 || event.ctrlKey) return;
-  event.preventDefault();
-  if (Date.now() - lastWheelAt < 280) return;
-  lastWheelAt = Date.now();
-  moveCard(event.deltaY > 0 ? 1 : -1);
-}, { passive: false });
 
 document.addEventListener('pointermove', event => {
   const image = event.target.closest('#cardList img[data-preview]');
