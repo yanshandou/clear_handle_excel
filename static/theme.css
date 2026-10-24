@@ -1358,7 +1358,13 @@ button.preview-sheet-tag:active {
 
 /* 右侧标题靠右，和左侧对称；斜切那一侧的内边距已给 VS 徽章留出位置 */
 .batch-shots figure:last-of-type figcaption {
+  padding-left: 14px;
   text-align: right;
+}
+
+/* VS 大字压在两块的里侧上角，标题文字往外让一点 */
+.batch-shots figure:first-of-type figcaption {
+  padding-right: 14px;
 }
 
 .batch-shots img,
@@ -1383,12 +1389,12 @@ button.preview-sheet-tag:active {
   display: block;
   position: absolute;
   z-index: 2;
-  top: 2px;
+  top: -9px;
   left: 50%;
   /* 分界是斜线：徽章所在的顶部那段，接缝比卡片正中偏右约半个斜切量，跟着挪过去才显得居中 */
   transform: translateX(calc(-50% + var(--vs-slant) / 2));
-  padding: 0 6px 0 2px;
-  font-size: 27px;
+  padding: 0 8px 0 3px;
+  font-size: 40px;
   font-style: italic;
   font-weight: 900;
   line-height: 1.05;
@@ -1424,7 +1430,8 @@ button.preview-sheet-tag:active {
   padding: calc(var(--vs-slant) + 8px) 12px 12px 12px;
 }
 
-#largeView .batch-shots figure:last-of-type figcaption {
+#largeView .batch-shots figcaption {
+  padding: 0;
   text-align: left;
 }
 
@@ -1455,7 +1462,9 @@ button.preview-sheet-tag:active {
     padding: calc(var(--vs-slant) + 8px) 12px 12px 12px;
   }
 
+  .batch-shots figure:first-of-type figcaption,
   .batch-shots figure:last-of-type figcaption {
+    padding: 0;
     text-align: left;
   }
 
