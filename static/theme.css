@@ -1382,7 +1382,8 @@ button.preview-sheet-tag:active {
   z-index: 2;
   top: 2px;
   left: 50%;
-  transform: translateX(-50%);
+  /* 分界是斜线：徽章所在的顶部那段，接缝比卡片正中偏右约半个斜切量，跟着挪过去才显得居中 */
+  transform: translateX(calc(-50% + var(--vs-slant) / 2));
   padding: 0 6px 0 2px;
   font-size: 27px;
   font-style: italic;
