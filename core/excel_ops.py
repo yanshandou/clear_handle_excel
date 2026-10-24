@@ -1,5 +1,6 @@
 import re
 import sys
+import threading
 import zipfile
 from collections.abc import Callable
 from xml.etree import ElementTree
@@ -276,8 +277,32 @@ def open_workbooks_for_review(targets: list[tuple[Path, str, str, int]]) -> dict
         pythoncom.CoUninitialize()
 
 
-def close_saved_workbooks(paths: list[Path]) -> dict[Path, str]:
-    """统一复检前关掉用户 Excel 里已保存的待复检文件；还有未保存修改的不动，返回这些文件及原因。"""
+USER_EXCEL_TIMEOUT = 30.0
+
+
+def close_saved_workbooks(paths: list[Path], timeout: float = USER_EXCEL_TIMEOUT) -> dict[Path, str]:
+    """统一复检前关掉用户 Excel 里已保存的待复检文件；还有未保存修改的不动，返回这些文件及原因。
+    你自己的 Excel 开着对话框、或正在编辑某个单元格时不响应，程序会一直等：超过 timeout 秒就不等了，报错说明。"""
+    result: dict[str, Any] = {}
+
+    def work() -> None:
+        try:
+            result["left"] = _close_saved_workbooks(paths)
+        except BaseException as err:  # 交回调用方的线程再抛
+            result["error"] = err
+
+    worker = threading.Thread(target=work, name="close-saved-workbooks", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise ValueError(f"你打开的 Excel {int(timeout)} 秒没有响应（可能开着对话框，或正在编辑某个单元格）。"
+                         "请在 Excel 里关掉对话框、按 Enter 或 Esc 结束编辑，再点一次")
+    if "error" in result:
+        raise result["error"]
+    return result["left"]
+
+
+def _close_saved_workbooks(paths: list[Path]) -> dict[Path, str]:
     wanted = {path.resolve(): path for path in paths}
     left: dict[Path, str] = {}
     pythoncom.CoInitialize()

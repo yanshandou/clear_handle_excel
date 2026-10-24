@@ -1512,6 +1512,7 @@ def _shows_mark(mark: dict | None) -> bool:
 
 
 XL_FORMULAS, XL_WHOLE = -4123, 1
+UNHIGHLIGHT_STALL_SECONDS = 300
 
 
 def _marked_matches(sheet: Any, value: str, fill: int) -> list[tuple[int, int]]:
@@ -1894,8 +1895,11 @@ def run() -> list[str]:
     kind, options = job["kind"], job["options"]
     scan_only = kind == "batch_scan" and bool(options.get("scan_only"))
     session = autofix._ExcelSession()
+    # 每种任务都看着后台 Excel：它在看不见的地方卡住（弹了没人能点的框等）时结束它，不让任务永远卡着。
+    # 清除颜色每改一格都报进度，卡 5 分钟就算卡住；检测类一张大表导出可能要很久，按默认时长
     watchdog = ExcelWatchdog(lambda: wf.log_msg(
-        "⚠️ 后台 Excel 长时间无进展，已结束本任务专用 Excel，当前文件将记录错误并重试或跳过")) if kind == "batch_scan" else None
+        "⚠️ 后台 Excel 长时间无进展，已结束本任务专用 Excel，当前文件将记录错误并重试或跳过"),
+        timeout=UNHIGHLIGHT_STALL_SECONDS if kind == "batch_unhighlight" else None)
     session.watchdog = watchdog
     if watchdog is not None:
         watchdog.start()
@@ -2112,6 +2116,7 @@ def run() -> list[str]:
                             wf.log_msg(f"⚠️ {Path(path).name}：{unsaved[Path(path)]}，请保存后继续")
                             continue
                         if cards:
+                            session.touch()
                             for tries in range(2):
                                 try:
                                     _recheck_file(session.app(), path, cards)  # Excel 重启过就用新的
@@ -2148,22 +2153,32 @@ def run() -> list[str]:
                         _sync_highlights_safely(session, path)
         elif kind == "batch_unhighlight":
             expected = list(options["paths"])
+            wf.log_msg(f"🧽 开始清除标记颜色：{len(expected)} 份文件")
             unsaved = close_saved_workbooks([Path(path) for path in expected])
-            for path in expected:
+            for i, path in enumerate(expected, 1):
                 if path in job["completed"]:
                     continue
                 if Path(path) in unsaved:
                     wf.log_msg(f"⚠️ {Path(path).name}：{unsaved[Path(path)]}，请保存后继续")
                     continue
-                try:
-                    _sync_highlights(session.app, path, clear=True, tick=session.touch)
-                    with wf.STATE_LOCK:
-                        # 清除后不再自动标色；以后再「只扫描」才重新标
-                        _data().get("highlight_files", {}).pop(path, None)
-                        job["completed"].append(path)
-                        wf._persist_state()
-                except Exception as err:
-                    wf.log_msg(f"❌ {Path(path).name} 清除标记颜色失败，可继续任务：{err}")
+                wf.log_msg(f"🧽 正在还原（{i} / {len(expected)}）：{Path(path).name}")
+                for tries in range(2):
+                    try:
+                        watchdog.progress()
+                        _sync_highlights(session.app, path, clear=True, tick=session.touch)
+                        with wf.STATE_LOCK:
+                            # 清除后不再自动标色；以后再「只扫描」才重新标
+                            _data().get("highlight_files", {}).pop(path, None)
+                            job["completed"].append(path)
+                            wf._persist_state()
+                        break
+                    except Exception as err:
+                        if isinstance(err, ValueError) or tries:
+                            wf.log_msg(f"❌ {Path(path).name} 清除标记颜色失败，可继续任务：{err}{_where(err)}")
+                            break
+                        # 后台 Excel 卡住被结束、或崩溃了：换一个新的再试，后面的文件也用新的
+                        wf.log_msg(f"⚠️ {Path(path).name} 清除标记颜色出错，重启 Excel 后重试：{err}{_where(err)}")
+                        _restart_excel(session)
         else:
             raise ValueError("未知批处理任务")
         finish_execution_batch("处理完成，请审核结果" if set(expected).issubset(job["completed"]) else "部分文件尚未完成，可继续任务")
