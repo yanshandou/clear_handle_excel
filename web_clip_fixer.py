@@ -9,7 +9,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from core import autofix, batch, fix_images
+from core import autofix, batch, debug_log, fix_images
 from core.common import (
     STATIC_DIR,
     console_print,
@@ -133,6 +133,16 @@ class WebHandler(BaseHTTPRequestHandler):
         self._send_bytes(target.read_bytes(), content_type)
 
     def do_GET(self) -> None:
+        try:
+            self._handle_get()
+        except ConnectionError:
+            raise
+        except Exception as err:
+            # 没预料到的错误：完整 traceback 写进调试日志，网页上给一句说明
+            debug_log.exception(err, f"GET {self.path}")
+            self._send_json({"ok": False, "error": f"程序出错：{err}（详细信息已写进调试日志）"}, status=500)
+
+    def _handle_get(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path in {"/", "/home.html"}:
             self._serve_static_file("home.html")
@@ -200,6 +210,16 @@ class WebHandler(BaseHTTPRequestHandler):
                 "application/json; charset=utf-8",
                 filename=f"excel_progress_{datetime.now():%Y%m%d_%H%M%S}.json",
             )
+        elif parsed.path == "/api/debug-log/list":
+            self._send_json({"tasks": debug_log.tasks()})
+        elif parsed.path == "/api/debug-log/copy":
+            # 选中的那次任务（默认最近一次），按 〰 分隔线从 log.txt 里整段挑出来
+            title, text = debug_log.task_text((parse_qs(parsed.query).get("id") or [""])[0])
+            body = debug_log.for_copy(title, text) if text else "（还没有调试日志：跑过一次任务后才会有）"
+            self._send_bytes(body.encode("utf-8"), "text/plain; charset=utf-8")
+        elif parsed.path == "/api/debug-log/download":
+            data = debug_log.LOG_PATH.read_bytes() if debug_log.LOG_PATH.exists() else b""
+            self._send_bytes(data, "text/plain; charset=utf-8", filename="log.txt")
         elif parsed.path == "/api/records":
             self._send_json(get_execution_report_snapshot())
         elif parsed.path == "/api/records/zip":
@@ -224,11 +244,15 @@ class WebHandler(BaseHTTPRequestHandler):
                 raise ValueError("请求内容不是有效的 JSON（文件可能已损坏）") from None
             if not isinstance(payload, dict):
                 raise ValueError("请求内容必须为 JSON 对象")
+            debug_log.event("🖱️ 网页操作", 路径=self.path, 参数=debug_log.summary(payload)[:600])
             self._handle_post(payload)
         except ConnectionError:
             # 浏览器已断开（刷新、关闭页面或离开），结果送不回去，也不必再回错误
             self._log_client_disconnect()
         except (ValueError, TypeError, UnicodeError) as err:
+            debug_log.event("🚫 网页操作被拒绝", 路径=self.path, 原因=err)
+            if not isinstance(err, ValueError):
+                debug_log.exception(err, f"POST {self.path}")
             self._send_json({"ok": False, "error": str(err)}, status=400)
         except sqlite3.Error as err:
             log_msg(f"❌ 无法保存任务: {err}")
@@ -236,6 +260,9 @@ class WebHandler(BaseHTTPRequestHandler):
         except OSError as err:
             log_msg(f"❌ 操作失败: {err}")
             self._send_json({"ok": False, "error": f"操作失败: {err}"}, status=500)
+        except Exception as err:
+            debug_log.exception(err, f"POST {self.path}")
+            self._send_json({"ok": False, "error": f"程序出错：{err}（详细信息已写进调试日志）"}, status=500)
 
     def handle_one_request(self) -> None:
         try:
@@ -514,7 +541,7 @@ class WebHandler(BaseHTTPRequestHandler):
             if not queued:
                 self._send_json({"ok": False, "error": "已有任务正在执行"}, status=409)
                 return
-            threading.Thread(target=run_pending_workflow, daemon=True).start()
+            threading.Thread(target=run_pending_workflow, name="任务", daemon=True).start()
             self._send_json({"ok": True})
             return
         # 先让自动处理的后台关掉它的 Excel，任务排上队后它会一直等到任务结束
@@ -526,11 +553,12 @@ class WebHandler(BaseHTTPRequestHandler):
         if not queued:
             self._send_json({"ok": False, "error": "已有任务正在执行"}, status=409)
             return
-        threading.Thread(target=run_pending_workflow, daemon=True).start()
+        threading.Thread(target=run_pending_workflow, name="任务", daemon=True).start()
         self._send_json({"ok": True})
 
 
 def main() -> None:
+    debug_log.install()
     port = 8765
     try:
         resync_report_from_state()

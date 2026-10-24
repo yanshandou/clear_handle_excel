@@ -15,6 +15,7 @@ from core.common import (
     find_backup_sheets,
     normalize_used_values,
 )
+from core import debug_log
 from core.quiet_dialogs import hide_progress_dialogs, release_excel
 
 try:
@@ -64,6 +65,7 @@ def start_background_excel() -> Any:
         except Exception:
             pass
     hide_progress_dialogs(excel)
+    debug_log.excel_started(excel)
     return excel
 
 
@@ -294,7 +296,10 @@ def close_saved_workbooks(paths: list[Path], timeout: float = USER_EXCEL_TIMEOUT
     worker = threading.Thread(target=work, name="close-saved-workbooks", daemon=True)
     worker.start()
     worker.join(timeout)
+    debug_log.event("🪟 关闭你 Excel 里已保存的文件", 文件数=len(paths), 超时=worker.is_alive(),
+                    没保存=[Path(p).name for p in result.get("left", {})] or "-")
     if worker.is_alive():
+        debug_log.dump_threads("你的 Excel 不响应")
         raise ValueError(f"你打开的 Excel {int(timeout)} 秒没有响应（可能开着对话框，或正在编辑某个单元格）。"
                          "请在 Excel 里关掉对话框、按 Enter 或 Esc 结束编辑，再点一次")
     if "error" in result:
@@ -318,6 +323,7 @@ def _close_saved_workbooks(paths: list[Path]) -> dict[Path, str]:
                 continue
             if path not in wanted:
                 continue
+            debug_log.event("🪟 你的 Excel 里开着", 文件=path.name, 已保存=book.Saved)
             if book.Saved:
                 book.Close(SaveChanges=False)
             else:
