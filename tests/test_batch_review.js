@@ -232,3 +232,25 @@ test('committing while the automatic run is paused does not warn about losing it
   assert.equal(p.run('globalThis.asks'), 0);
   assert.equal(p.requests.at(-1).url, '/api/batch/commit');
 });
+
+test('scanning counts scanned files, and switching to manual is a plain request', async () => {
+  const p = page();
+  p.run(`batchState.busy = true; batchState.job = {kind:'batch_scan', status:'running', options:{folder:'C:/Excel'}, workbooks:['a','b'], scanned:['a'], completed:[]}; render();`);
+  assert.match(p.elements.get('progressText').textContent, /正在扫描.*1 \/ 2 个文件/);
+  p.run(`batchState.job.phase = 'repair'; batchState.mode = {to_manual: true}; render();`);
+  assert.match(p.elements.get('progressText').textContent, /正在自动处理：0 \/ 2 个文件/);
+  await p.elements.get('toManualBtn').listeners.click();
+  assert.deepEqual(p.requests.map(r => r.url), ['/api/batch/to_manual']);
+});
+
+test('handed-over cards explain they were not tried and can go back to automatic', async () => {
+  const p = page();
+  p.run(`Object.assign(batchState.cards[1], {after_kind:'handover', handed_over:true});`);
+  const html = p.run(`cardHtml(batchState.cards[1])`);
+  assert.match(html, /转人工时自动还没处理到这一格/);
+  assert.match(html, /可转回自动/);
+  assert.match(html, /人工修改后（复检通过后显示）/);
+  p.run(`batchState.mode = {to_auto: true}`);
+  await p.elements.get('toAutoBtn').listeners.click();
+  assert.equal(p.requests.at(-1).url, '/api/batch/to_auto');
+});

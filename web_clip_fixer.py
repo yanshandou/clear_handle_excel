@@ -276,6 +276,20 @@ class WebHandler(BaseHTTPRequestHandler):
                 from core.workflow import _persist_state
                 _persist_state()
             self._send_json({"ok": True})
+        elif self.path == "/api/batch/to_manual":
+            if batch.request_manual():
+                self._start_job("resume")  # 暂停中：续跑任务，不再修，直接转人工
+            else:
+                self._send_json({"ok": True})
+        elif self.path == "/api/batch/to_auto":
+            batch.check_auto()
+            with STATE_LOCK:
+                options = {"folder": STATE["folder"], "back_to_auto": True}
+            if payload.get("highlight") is not None:
+                options["highlight"] = batch.highlight_style(payload.get("highlight"))
+            else:
+                options["highlight_off"] = True
+            self._start_job("batch_scan", options)
         elif self.path == "/api/batch/abandon":
             batch.abandon_pending()
             self._send_json({"ok": True})
