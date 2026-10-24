@@ -86,7 +86,7 @@ function renderFilesTable(filesList) {
       const allSheets = f.all_sheets || [];
       const delSet = new Set(f.deleted_backups || []);
       const uncSet = new Set(f.uncertain_sheets || []);
-      let sheetsHtml = `<span style="color:#64748b;">共 ${allSheets.length} 个 Sheet</span>`;
+      let sheetsHtml = `<span style="color:#475569;">共 ${allSheets.length} 个 Sheet</span>`;
       if (delSet.size > 0) {
         const delTags = Array.from(delSet)
           .map(s => `<span class="deleted-sheet-tag">${escapeHtml(s)}</span>`)
@@ -110,19 +110,19 @@ function renderFilesTable(filesList) {
       const accepted = Number(f.clip_accepted || 0);
       // 还没轮到 / 正在处理的文件不能显示「无切字」，看起来像已经查过了
       let clipHtml = ['pending', 'processing'].includes(f.status) && det === 0
-        ? '<span style="color:#94a3b8;">-</span>'
-        : '<span style="color:#059669; font-weight:600;">无切字</span>';
+        ? '<span style="color:#64748b;">-</span>'
+        : '<span style="color:#047857; font-weight:600;">无切字</span>';
       if (det > 0) {
         // 「已处理 / 检出」：修好的和确认无需修改的都算处理完
-        const clipColor = fix + accepted >= det ? '#059669' : '#d97706';
+        const clipColor = fix + accepted >= det ? '#047857' : '#b45309';
         const detail = [fix ? `已修 ${fix}` : '', accepted ? `无需修改 ${accepted}` : ''].filter(Boolean).join(' · ');
         clipHtml = `<b style="color:${clipColor};">${fix + accepted} / ${det}</b>` +
           (detail ? `<div>${detail}</div>` : '');
       }
 
       const a1Html = f.normalized_a1
-        ? '<span style="color:#059669; font-weight:700;">✓ 已标准化</span>'
-        : '<span style="color:#94a3b8;">-</span>';
+        ? '<span style="color:#047857; font-weight:700;">✓ 已标准化</span>'
+        : '<span style="color:#64748b;">-</span>';
 
       const rowClass = f.status === 'processing' ? 'row-processing' : '';
       const noteText = f.error ? `❌ ${f.error}` : (f.current_action || '-');
@@ -136,8 +136,8 @@ function renderFilesTable(filesList) {
           <td style="text-align:center;"><b>${Number(f.exported_pdfs || 0)}</b></td>
           <td style="text-align:center;">${clipHtml}</td>
           <td style="text-align:center;">${a1Html}</td>
-          <td style="color:${f.error ? '#dc2626' : '#334155'};">${escapeHtml(noteText)}</td>
-          <td style="text-align:center; color:#64748b; font-family:monospace;">${escapeHtml(f.updated_at || '-')}</td>
+          <td style="color:${f.error ? '#b91c1c' : '#334155'};">${escapeHtml(noteText)}</td>
+          <td style="text-align:center; color:#475569; font-family:monospace;">${escapeHtml(f.updated_at || '-')}</td>
         </tr>
       `;
     })

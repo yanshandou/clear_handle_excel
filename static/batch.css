@@ -64,7 +64,7 @@
 .batch-card .batch-text { padding-left: 10px; border-left: 3px solid #cbd5e1; color: #334155; }
 .batch-card .batch-no-blue { margin-top: 6px; padding: 6px 10px; border: 1px dashed var(--review-blue-line); border-radius: 8px; background: #ffffffb3; color: #475569; font-size: 12px; }
 .batch-card .batch-message, .batch-card .batch-state { margin-top: 4px; color: #64748b; font-size: 12px; }
-.batch-missing { display: grid; min-height: 90px; place-items: center; color: #94a3b8; font-size: 12px; }
+.batch-missing { display: grid; min-height: 90px; place-items: center; color: #64748b; font-size: 12px; }
 .batch-card-footer { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid color-mix(in srgb, var(--c-line) 55%, transparent); }
 .batch-card-footer button { font-size: 12px; padding: 6px 10px; }
 .batch-empty { text-align: center; padding: 56px 20px; color: #64748b; }
@@ -86,7 +86,7 @@
 .batch-context-page { position: relative; width: 100%; max-width: calc(max(180px, 100vh - 400px) * var(--page-ratio)); margin: 0 auto; border: 1px solid #e2e8f0; }
 .batch-context-page img { display: block; width: 100%; height: auto; }
 .batch-context-marker { position: absolute; box-sizing: border-box; border: 2px solid #ef2222; background: #ef222210; min-width: 4px; min-height: 4px; pointer-events: none; }
-.batch-context-missing { min-height: 220px; display: grid; align-content: center; text-align: center; color: #94a3b8; font-size: 13px; line-height: 1.8; }
+.batch-context-missing { min-height: 220px; display: grid; align-content: center; text-align: center; color: #64748b; font-size: 13px; line-height: 1.8; }
 .batch-image-preview { position: fixed; z-index: 1000; pointer-events: none; padding: 12px; border: 1px solid #cbd5e1; border-radius: 12px; background: #fff; box-shadow: 0 12px 45px #0f172a30; }
 .batch-image-preview img { display: block; max-width: min(74vw, 1000px); max-height: 72vh; object-fit: contain; }
 @media (max-width: 700px) { .batch-shots { grid-template-columns: 1fr; } .batch-tools .panel-section-head { flex-wrap: wrap; gap: 14px; } }

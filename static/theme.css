@@ -6,7 +6,8 @@
    放在 styles.css（及 batch.css）之后加载，只改外观，不改功能。
    约束：
    - 点击后卡片、标签、按钮的尺寸和位置不变（各状态边框粗细一致），悬停不上浮，按下也不位移
-   - 白字元素一律 text-shadow: none，避免日文 Windows 上继承白色投影出现重影
+   - 白字元素不加白色投影（日文 Windows 上会重影）；彩色底白字统一用 --white-stroke 深色描边
+  - 文字和背景对比度不低于 4.5:1（WCAG AA），不可用按钮也要看得清（见文件末尾「文字对比度」）
    - 不放和功能无关的涂鸦（叉号、波浪线等容易被当成按钮）
    - 立体按钮按下只把底边变薄（box-shadow），按钮本身不位移
    - 三色审核变量（batch.css）和标记颜色预设不动
@@ -2278,4 +2279,72 @@ input[type="checkbox"]:not(.hidden):checked::before {
   .fx-star {
     animation: none;
   }
+}
+
+/* ==========================================
+   文字对比度（按 WCAG：正文 ≥ 4.5:1）
+   - 浅色底一律深色字；彩色底保留白字，但加一圈深色描边（游戏 UI 常用做法），
+     描边用 --ink，白字和描边的对比约 14:1，底色再浅也看得清
+   - 不可用按钮不再靠「灰底白字 + 半透明」表示，改成浅灰底、深灰蓝字、虚线边框、
+     去掉立体厚底（看起来按不下去），字仍然清楚可读
+   ========================================== */
+:root {
+  --white-stroke:
+    1px 0 0 var(--ink), -1px 0 0 var(--ink), 0 1px 0 var(--ink), 0 -1px 0 var(--ink),
+    1px 1px 0 var(--ink), -1px -1px 0 var(--ink), 1px -1px 0 var(--ink), -1px 1px 0 var(--ink),
+    0 2px 0 var(--ink);
+}
+
+.btn-primary,
+.btn-success,
+.btn-danger,
+.pv-size-switch .btn.is-active,
+.nav-link.active,
+.nav-link.active:hover,
+.step-chip-teal,
+.filter-pill.active,
+.task-dialog-heading p,
+[data-color="blue"] .batch-color-label,
+[data-color="green"] .batch-color-label,
+.batch-set-color:not(:disabled):not([data-set-color="yellow"]) {
+  text-shadow: var(--white-stroke);
+}
+
+.btn:disabled,
+.btn:disabled:hover,
+.batch-tools .btn:disabled,
+.btn-outline:disabled,
+.btn-primary:disabled,
+.btn-success:disabled,
+.btn-danger:disabled {
+  --b-top: #eef2f8;
+  --b: #e3e9f2;
+  --b-edge: #e3e9f2;
+  color: #4f5b7d;
+  background: linear-gradient(180deg, var(--b-top) 0%, var(--b) 100%);
+  border-style: dashed;
+  border-color: #7d89a8;
+  opacity: 1;
+  text-shadow: none;
+  filter: grayscale(1);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+/* 底部悬浮条「选中的改为 蓝 / 绿 / 黄」没选卡片时：淡色底 + 各自的深色字 */
+.batch-set-color:disabled,
+.batch-set-color:disabled:hover {
+  color: var(--c-ink);
+  background: var(--c-bg);
+  border-color: var(--c-line);
+  filter: none;
+}
+
+/* 选中卡片后「改为 蓝 / 绿 / 黄」按钮用各自的颜色做立体底（原来被 .btn 的白底盖住，白字看不见） */
+.batch-set-color:not(:disabled) {
+  --b-top: color-mix(in srgb, var(--c) 78%, #ffffff);
+  --b: var(--c);
+  --b-edge: color-mix(in srgb, var(--c) 70%, #000000);
+  color: var(--c-on);
+  background: linear-gradient(180deg, var(--b-top) 0%, var(--b) 100%);
 }
