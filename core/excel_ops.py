@@ -119,6 +119,80 @@ def _bring_to_front(excel: Any) -> None:
         pass
 
 
+XL_FORMULAS = -4123
+XL_PART = 2
+XL_BY_COLUMNS = 2
+XL_PREVIOUS = 2
+MIN_ZOOM = 10  # Excel 允许的最小缩放
+MAX_FIT_ZOOM = 100  # 表格很窄时也不放大，保持平时的样子
+
+
+def _range_right_column(target: Any) -> int:
+    """区域最右一列；多块区域（打印区域可以是几块）取最右的那块。"""
+    right = 0
+    for area in target.Areas:
+        right = max(right, int(area.Column) + int(area.Columns.Count) - 1)
+    return right
+
+
+def _sheet_right_column(sheet: Any) -> int:
+    """表格要完整显示到哪一列：设了打印区域按打印区域，否则按最右一个有内容的格子。"""
+    try:
+        print_area = sheet.PageSetup.PrintArea
+        if print_area:
+            return _range_right_column(sheet.Range(print_area))
+    except Exception:
+        pass
+    try:
+        last = sheet.Cells.Find(
+            What="*", After=sheet.Cells(1, 1), LookIn=XL_FORMULAS, LookAt=XL_PART,
+            SearchOrder=XL_BY_COLUMNS, SearchDirection=XL_PREVIOUS,
+        )
+        if last is not None:
+            return int(last.Column)
+    except Exception:
+        pass
+    return 1
+
+
+def _fits(window: Any, right_column: int) -> bool:
+    visible = window.VisibleRange
+    # 最后一列只露出一半也会有横向滚动，所以要看到它右边那一列才算放得下
+    return int(visible.Column) + int(visible.Columns.Count) - 1 > right_column
+
+
+def _goto_fit_width(excel: Any, workbook: Any, sheet: Any, address: str) -> None:
+    """定位到问题格，并把缩放调到表格宽度刚好放进窗口：左边从 A 列开始，不用横向滚动就能看到问题格。
+
+    只改窗口显示，不保存；文件原来是已保存状态的，改完缩放后照样算已保存。
+    """
+    target = sheet.Range(address)
+    was_saved = workbook.Saved
+    excel.Goto(target, Scroll=True)  # 先按原来的方式跳过去：就算下面调缩放失败，至少问题格在眼前
+    try:
+        window = excel.ActiveWindow
+        right_column = max(_range_right_column(target), _sheet_right_column(sheet))
+        usable = float(window.UsableWidth)
+        width = float(sheet.Range(sheet.Cells(1, 1), sheet.Cells(1, right_column)).Width)
+        zoom = MAX_FIT_ZOOM if width <= 0 else int(usable / width * 100)
+        zoom = max(MIN_ZOOM, min(MAX_FIT_ZOOM, zoom))
+        window.Zoom = zoom
+        window.ScrollColumn = 1
+        # 估算有误差（行号栏、滚动条），实际看一下还放不下就再缩一点
+        while zoom > MIN_ZOOM and not _fits(window, right_column):
+            zoom = max(MIN_ZOOM, zoom - 5)
+            window.Zoom = zoom
+            window.ScrollColumn = 1
+        window.ScrollRow = max(1, int(target.Row) - 3)  # 问题行上面留几行，看得出位置
+    except Exception:
+        pass  # 冻结窗格、受保护的表等调不了缩放时，保持上面已经跳过去的样子
+    if was_saved:
+        try:
+            workbook.Saved = True
+        except Exception:
+            pass
+
+
 def _show_in_excel(excel: Any, workbook_path: Path, sheet_name: str, cell_address: str, row: int) -> float:
     workbook = _find_or_open(excel, workbook_path)
     sheet = workbook.Sheets(sheet_name)
@@ -132,7 +206,7 @@ def _show_in_excel(excel: Any, workbook_path: Path, sheet_name: str, cell_addres
         workbook.Windows(1).Visible = True
         workbook.Windows(1).WindowState = -4143  # xlNormal
     address = cell_address if re.fullmatch(CELL_OR_RANGE, cell_address) else f"A{row}"
-    excel.Goto(sheet.Range(address), Scroll=True)
+    _goto_fit_width(excel, workbook, sheet, address)
     _bring_to_front(excel)
     return round(float(sheet.Rows(row).RowHeight or 15.0), 1)
 
@@ -164,7 +238,7 @@ def open_workbook_in_excel(workbook_path: Path, sheet_name: str = "", cell_addre
             if sheet is not None:
                 sheet.Activate()
                 if re.fullmatch(CELL_OR_RANGE, cell_address or ""):
-                    excel.Goto(sheet.Range(cell_address), Scroll=True)
+                    _goto_fit_width(excel, workbook, sheet, cell_address)
         _bring_to_front(excel)
         return note
     finally:
