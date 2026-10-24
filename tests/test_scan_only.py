@@ -14,6 +14,32 @@ class FakeCell:
         self.Font = Mock(Color=font)
 
 
+def _shared(members, part, name):
+    """整块读：每格一样返回那个值，不一样返回 None（和 Excel 一样）"""
+    values = {getattr(getattr(m, part), name) for m in members}
+    return values.pop() if len(values) == 1 else None
+
+
+class FakeArea:
+    def __init__(self, members):
+        self.Cells = members
+        self.Address = members[0].Address if len(members) == 1 else f"{members[0].Address}:{members[-1].Address}"
+        self.MergeArea = self
+        area = self
+
+        class Part:
+            def __init__(self, part):
+                object.__setattr__(self, "part", part)
+
+            def __getattr__(self, name):
+                return _shared(area.Cells, self.part, name)
+
+            def __setattr__(self, name, value):
+                for m in area.Cells:
+                    setattr(getattr(m, self.part), name, value)
+        self.Interior, self.Font = Part("Interior"), Part("Font")
+
+
 class FakeSheet:
     def __init__(self):
         self.cells = {}
@@ -23,20 +49,13 @@ class FakeSheet:
         key = "$" + addr[0] + "$" + addr[1:] if not addr.startswith("$") else addr
         return self.cells.setdefault(key, FakeCell(key))
 
-    def Range(self, addr):
-        cell = self.cell(addr)
-        members = [self.cell(a) for a in self.merges.get(cell.Address, [cell.Address])]
-        area = Mock(Cells=members, Address=cell.Address)
-        interior = Mock()
-
-        def set_interior(name, value):
-            for m in members:
-                setattr(m.Interior, name, value)
-        type(interior).Pattern = property(lambda _: members[0].Interior.Pattern,
-                                          lambda _, v: set_interior("Pattern", v))
-        type(interior).Color = property(lambda _: members[0].Interior.Color,
-                                        lambda _, v: set_interior("Color", v))
-        area.Interior = interior
+    def Range(self, addr, *corner):
+        if corner:  # Range(左上格, 右下格)
+            addr = f"{addr.Address}:{corner[0].Address}"
+        cell = self.cell(addr.split(":")[0])
+        area = FakeArea([self.cell(a) for a in self.merges.get(cell.Address, [cell.Address])])
+        if ":" in addr:
+            return area
         cell.MergeArea = area
         return cell
 
@@ -258,6 +277,86 @@ class ScanOnlyTests(unittest.TestCase):
         self.card("A5").update(dismissed=True)
         batch._sync_highlights(lambda: self.excel, self.path)
         self.assertEqual(self.sheet.cell("B5").Interior.Pattern, batch.XL_PATTERN_NONE)
+
+    def test_uniform_merged_area_is_read_once_and_restored_after_shift(self):
+        """方眼紙的大合并区域颜色一致：整块记一条，不一格一格读；插行挪了位置也整块还原"""
+        block = [f"${c}$5" for c in "ABCDEF"]
+        self.sheet.merges["$A$5"] = block
+        for addr in block:
+            self.sheet.cells[addr] = FakeCell(addr, pattern=1, color=0xCCFFCC, font=0x0000FF)
+        self.add_item("A5")
+        self.scan()
+        mark = next(iter(batch._marks().values()))
+        self.assertEqual(mark["cells"], [{"addr": "$A$5:$F$5", "pattern": 1, "color": 0xCCFFCC,
+                                          "tint": 0.0, "font": 0x0000FF}])
+        self.assertTrue(mark["saved"])
+        marked = batch._excel_color("#C0007A")
+        self.assertTrue(all(self.sheet.cell(a).Interior.Color == marked for a in block))
+        # 人工在上面插了 2 行：整块挪到第 7 行
+        moved = [f"${c}$7" for c in "ABCDEF"]
+        for old, new in zip(block, moved):
+            src = self.sheet.cell(old)
+            self.sheet.cells[new] = FakeCell(new, pattern=src.Interior.Pattern, color=src.Interior.Color,
+                                             font=src.Font.Color)
+        self.sheet.merges["$A$7"] = moved
+        self.sheet.Cells = lambda row, col: self.sheet.cell(f"{chr(64 + col)}{row}")
+        names = {mark["name"]: Mock(RefersToRange=Mock(Row=7, Column=1, Worksheet=self.sheet))}
+        self.book.Names.side_effect = lambda name: names[name]
+        self.card("A5").update(color="blue")
+        batch._sync_highlights(lambda: self.excel, self.path)
+        for addr in moved:
+            cell = self.sheet.cell(addr)
+            self.assertEqual((cell.Interior.Pattern, cell.Interior.Color, cell.Font.Color), (1, 0xCCFFCC, 0x0000FF))
+
+    def test_partly_recolored_merged_area_restores_only_marked_cells(self):
+        block = ["$A$5", "$B$5"]
+        self.sheet.merges["$A$5"] = block
+        self.add_item("A5")
+        self.scan()
+        self.sheet.cell("B5").Interior.Color = 0x123456  # 人工改了其中一格
+        self.card("A5").update(color="blue")
+        batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(self.sheet.cell("A5").Interior.Pattern, batch.XL_PATTERN_NONE)
+        self.assertEqual(self.sheet.cell("B5").Interior.Color, 0x123456)
+
+    def test_interrupted_highlight_is_colored_again_next_time(self):
+        """标色到一半被打断（看门狗结束 Excel）：记录存了、颜色没存进文件。重扫时要重新标，不能当作已标过"""
+        self.add_item("A5")
+        self.book.Save.side_effect = RuntimeError("Excel 被结束")
+        with self.assertRaises(RuntimeError):
+            self.scan()
+        mark = next(iter(batch._marks().values()))
+        self.assertFalse(mark["saved"])
+        self.assertFalse(batch.snapshot()["cards"][0]["highlighted"])
+        self.sheet.cells.clear()  # 没保存：文件里还是原来的颜色
+        self.book.Save.side_effect = None
+        with patch.object(batch.wf, "log_msg") as log:
+            self.scan()
+        self.assertEqual(self.sheet.cell("A5").Interior.Color, batch._excel_color("#C0007A"))
+        self.assertTrue(next(iter(batch._marks().values()))["saved"])
+        self.assertTrue(any("没有存进文件" in c.args[0] for c in log.call_args_list))
+        self.assertTrue(batch.snapshot()["cards"][0]["highlighted"])
+
+    def test_old_record_still_colored_is_confirmed_without_saving(self):
+        self.add_item("A5")
+        self.scan()
+        next(iter(batch._marks().values())).pop("saved")  # 旧版本的记录没有这一项
+        saves = self.book.Save.call_count
+        batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(self.book.Save.call_count, saves)  # 颜色还在：只确认，不改文件
+        self.assertTrue(next(iter(batch._marks().values()))["saved"])
+        batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(self.excel.Workbooks.Open.call_count, 2)  # 确认过以后不用再打开
+
+    def test_every_cell_tells_watchdog_it_is_alive(self):
+        for row in range(5, 65):
+            self.add_item(f"A{row}", row=row)
+        batch._data().setdefault("highlight_files", {})[self.path] = batch.highlight_style(None)
+        batch._hand_over(self.path)
+        tick = Mock()
+        batch._sync_highlights(lambda: self.excel, self.path, tick=tick)
+        self.assertGreaterEqual(tick.call_count, 120)  # 记原色、标色各一次
+        self.assertTrue(self.excel.ScreenUpdating)  # 结束后恢复
 
     def test_unconfirmed_location_is_not_colored(self):
         self.add_item("A5", location_confirmed=False)
