@@ -342,7 +342,9 @@ async function pollState() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '读取状态失败');
     if (seq < minAcceptedSeq) return;
+    const wasBusy = Boolean(overview && overview.busy);
     overview = data;
+    if (wasBusy && !data.busy) celebrateFinished();
 
     renderHeader();
     renderStrip();
@@ -354,6 +356,14 @@ async function pollState() {
   } catch (e) {
     document.getElementById('statusText').innerText = `连接或读取失败: ${e.message}`;
   }
+}
+
+// 后台任务刚跑完且全部成功：撒花庆祝（失败或中断不庆祝，结果框里会提示）
+function celebrateFinished() {
+  const p = overview.progress || {};
+  if (overview.can_resume || p.status === 'interrupted' || p.error_files) return;
+  const files = p.total_files ? ` · ${p.total_files} 个文件` : '';
+  window.gameFx?.celebrate('任务完成！', `${p.task_name || '后台任务'}${files}`);
 }
 
 async function postAction(path, payload) {

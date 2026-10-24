@@ -41,6 +41,7 @@ async function poll() {
     if (!response.ok) throw new Error(`无法读取进度：HTTP ${response.status}`);
     const value = await response.json();
     if (version !== pollVersion || requestBusy) return;
+    celebrateFinished(batchState, value);
     batchState = value;
     if (!document.activeElement || document.activeElement.id !== 'folderInput') {
       if (value.folder && !$('folderInput').value) $('folderInput').value = value.folder;
@@ -48,6 +49,17 @@ async function poll() {
     }
     render();
   } catch (error) { $('errorText').textContent = error.message; }
+}
+
+// 后台任务刚结束且成功：撒花。提交 / 复检时若有暂停的全自动处理会被放回来，任务种类变了也算提交完成
+const FINISH_TITLES = { batch_scan: '全自动处理完成！', batch_commit: '审核已提交！', batch_recheck: '复检完成！' };
+function celebrateFinished(before, after) {
+  const kind = before.job?.kind;
+  if (!before.busy || after.busy || !FINISH_TITLES[kind]) return;
+  if (after.job?.kind === kind && after.job?.status !== 'completed') return;
+  const left = after.cards.length;
+  const title = kind === 'batch_scan' && before.job.options?.scan_only ? '扫描完成！' : FINISH_TITLES[kind];
+  window.gameFx?.celebrate(title, left ? `还有 ${left} 张卡片待审核` : '全部卡片都处理完了');
 }
 
 async function action(work) {
