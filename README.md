@@ -81,6 +81,8 @@ clear_handle_excel/
 │   ├── reporter.py               # 实时执行进度统计、文件状态追踪与结构化 Markdown 报告生成
 │   ├── report_export.py          # 看板「下载报告」压缩包：内嵌截图的 HTML + Markdown + images/
 │   ├── storage.py                # SQLite 状态快照持久化（Python 标准库，无新增依赖）
+│   ├── debug_log.py              # 调试日志：每个任务一个 _debug_logs/task_*.log，远程排查用
+│   ├── build_info.py             # GitHub ZIP 下载时自动填入的提交号（export-subst）
 │   └── workflow.py               # Web 状态管理、批量导出、增量扫描与复检工作流
 ├── static/                       # Web 前端静态资源（蓝色系拟物风格 UI，HTML / CSS / JS 分离）
 │   ├── home.html                 # 功能主页 (/)：常用功能卡片与单项任务对话框
@@ -94,6 +96,7 @@ clear_handle_excel/
 │   ├── favicon.svg               # 浏览器标签页图标
 │   ├── styles.css                # 蓝色系拟物风格样式（浮雕面板、内凹槽位、立体按键、蓝图灯箱、2.5x 光学放大镜）
 │   ├── open_excel.js             # 各页面共用：点 Excel 文件名在可见 Excel 中打开并跳到工作表/单元格
+│   ├── debug_log.js              # 工作台 / 主页共用：选择任务，复制或下载调试日志
 │   └── records.js                # 执行记录看板筛选、进度渲染与 Markdown 复制/导出逻辑
 ├── web_clip_fixer.py             # 【推荐】可视化 Web 工具启动入口
 ├── cli_all_in_one.py             # 命令行一键批处理脚本入口
