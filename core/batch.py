@@ -8,6 +8,7 @@ PDF 坐标只用于当前一次导出。每保存一行，重新检测整张表�
 import copy
 import hashlib
 import math
+import re
 import shutil
 import time
 import unicodedata
@@ -1203,9 +1204,9 @@ def _open_without_marks(excel: Any, path: str) -> Any:
     book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0, ReadOnly=True)
     try:
         for mark in marks:
-            sheet = _find_sheet(book, mark["sheet"])
-            if sheet is not None:
-                _restore_cells(sheet, mark)
+            found = _locate_mark(book, mark)
+            if found is not None and found[0] is not None:
+                _restore_cells(found[0], mark, found[1])
     except Exception:
         book.Close(SaveChanges=False)
         raise
@@ -1259,10 +1260,63 @@ def _find_sheet(book: Any, name: str) -> Any:
     return None
 
 
-def _restore_cells(sheet: Any, mark: dict) -> None:
-    """只还原仍是标记颜色的格子；人工处理时自己改过颜色的不动"""
+def _mark_name(cid: str) -> str:
+    return f"CHE_MARK_{cid[:20]}"
+
+
+def _sheet_ref(name: str) -> str:
+    return "'" + name.replace("'", "''") + "'"
+
+
+def _delete_name(book: Any, name: str | None) -> None:
+    if not name:
+        return
+    try:
+        book.Names(name).Delete()
+    except Exception:
+        pass
+
+
+def _cell_rc(addr: str) -> tuple[int, int]:
+    match = re.fullmatch(r"\$?([A-Za-z]+)\$?(\d+)", addr.split(":")[0])
+    if match is None:
+        raise ValueError(f"无法识别的单元格地址：{addr}")
+    col = 0
+    for ch in match.group(1).upper():
+        col = col * 26 + ord(ch) - 64
+    return int(match.group(2)), col
+
+
+def _locate_mark(book: Any, mark: dict) -> tuple[Any, tuple[int, int]] | None:
+    """标过色的格子现在在哪：先按标色时建的隐藏名称找（插删行列、改表名后 Excel 会自动更新），
+    返回 (工作表, (下移行数, 右移列数))；名称还在但格子已被删掉返回 None。
+    旧记录没有名称、或名称被删了，按原来的表名和地址找（工作表找不到时工作表为 None）。"""
+    name = mark.get("name")
+    if name:
+        try:
+            defined = book.Names(name)
+        except Exception:
+            defined = None
+        if defined is not None:
+            try:
+                area = defined.RefersToRange
+                row, col = _cell_rc(mark["addr"])
+                shift = (int(area.Row) - row, int(area.Column) - col)
+                return area.Worksheet, shift
+            except Exception:
+                # 指向 #REF!：整张表被删了，或者格子被删了
+                return (None, (0, 0)) if _find_sheet(book, mark["sheet"]) is None else None
+    return _find_sheet(book, mark["sheet"]), (0, 0)
+
+
+def _restore_cells(sheet: Any, mark: dict, shift: tuple[int, int] = (0, 0)) -> None:
+    """只还原仍是标记颜色的格子；人工处理时自己改过颜色的不动。shift 是格子被插删行列挪动的行数、列数"""
     for cell in mark["cells"]:
-        target = sheet.Range(cell["addr"])
+        if shift == (0, 0):
+            target = sheet.Range(cell["addr"])
+        else:
+            row, col = _cell_rc(cell["addr"])
+            target = sheet.Cells(row + shift[0], col + shift[1])
         if int(target.Interior.Color) == mark["fill"] and int(target.Interior.Pattern) == XL_PATTERN_SOLID:
             if cell["pattern"] == XL_PATTERN_NONE:
                 target.Interior.Pattern = XL_PATTERN_NONE
@@ -1308,6 +1362,7 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
     book = open_workbook_checked(excel_for(), str(Path(path).resolve()), UpdateLinks=0)
     added: dict[str, dict] = {}
     failed: dict[str, str] = {}
+    deleted = 0
     try:
         if book.ReadOnly:
             raise ValueError(f"{Path(path).name} 以只读方式打开，未能标色")
@@ -1325,6 +1380,7 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                 continue
             try:
                 added[card["id"]] = _apply_cells(sheet, card, style)
+                added[card["id"]]["name"] = _mark_name(card["id"])
             except Exception as err:
                 failed[card["id"]] = str(err)
         with wf.STATE_LOCK:
@@ -1334,6 +1390,12 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
         for cid, mark in added.items():
             sheet = sheet_of(mark["sheet"])
             area = sheet.Range(mark["addr"]).MergeArea
+            try:
+                # 隐藏名称跟着格子走：人工插删行列、改表名后，Excel 会自动更新它指向的位置，还原时按它找到格子
+                _delete_name(book, mark["name"])
+                book.Names.Add(Name=mark["name"], RefersTo=f"={_sheet_ref(sheet.Name)}!{area.Address}", Visible=False)
+            except Exception:
+                mark.pop("name", None)  # 建不了名称就只能按原地址还原
             area.Interior.Pattern = XL_PATTERN_SOLID
             area.Interior.Color = mark["fill"]
             for cell in mark["cells"]:
@@ -1342,13 +1404,18 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
         gone: dict[str, int] = {}
         for cid in remove:
             mark = marks[cid]
-            sheet = sheet_of(mark["sheet"])
+            found = _locate_mark(book, mark)
+            _delete_name(book, mark.get("name"))
+            if found is None:
+                deleted += 1  # 标色的格子已被人工删掉，没有颜色要还原
+                continue
+            sheet, shift = found
             if sheet is None:
                 # 工作表已被删除（例如精简 Sheet 或人工处理时删掉）就没有颜色要还原了，按表汇总说一次
                 gone[mark["sheet"]] = gone.get(mark["sheet"], 0) + 1
                 continue
             try:
-                _restore_cells(sheet, mark)
+                _restore_cells(sheet, mark, shift)
             except Exception as err:
                 wf.log_msg(f"⚠️ {Path(path).name} / {mark['sheet']}!{mark['addr']} 未能还原颜色：{err}")
         for name, count in gone.items():
@@ -1367,8 +1434,10 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                 card["message"] = f"未能在 Excel 中标色（{error}），请按截图查找后人工处理"
         wf._persist_state()
     parts = [f"标色 {len(added)} 格"] if added else []
-    if len(remove) > sum(gone.values()):
-        parts.append(f"还原颜色 {len(remove) - sum(gone.values())} 格")
+    if len(remove) > sum(gone.values()) + deleted:
+        parts.append(f"还原颜色 {len(remove) - sum(gone.values()) - deleted} 格")
+    if deleted:
+        parts.append(f"{deleted} 格标色的格子已被删掉，不用还原")
     if failed:
         parts.append(f"{len(failed)} 格未能标色（工作表受保护等）")
     if parts:

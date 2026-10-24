@@ -26,7 +26,7 @@ class FakeSheet:
     def Range(self, addr):
         cell = self.cell(addr)
         members = [self.cell(a) for a in self.merges.get(cell.Address, [cell.Address])]
-        area = Mock(Cells=members)
+        area = Mock(Cells=members, Address=cell.Address)
         interior = Mock()
 
         def set_interior(name, value):
@@ -61,8 +61,10 @@ class ScanOnlyTests(unittest.TestCase):
                              batch_review={"cards": {}, "rows": {}, "ignored": []},
                              job={"kind": "batch_scan", "options": {}, "completed": [], "pending_adjustment": None})
         self.sheet = FakeSheet()
+        self.sheet.Name = "S1"
         self.book = Mock(ReadOnly=False)
         self.book.Sheets.return_value = self.sheet
+        self.book.Names.side_effect = KeyError  # 默认当作文件里没有这个名称，按原地址还原
         self.excel = Mock()
         self.excel.Workbooks.Open.return_value = self.book
         patch.object(batch, "normalize_workbook_view").start()
@@ -162,6 +164,40 @@ class ScanOnlyTests(unittest.TestCase):
         self.assertEqual(self.sheet.cell("B5").Interior.Color, marked)
         self.assertEqual(self.sheet.cell("C5").Interior.Color, marked)
         self.assertEqual((self.card("C5")["color"], self.card("C5")["finalized"]), ("yellow", True))
+
+    def test_restore_follows_cells_moved_by_inserted_rows(self):
+        """人工在上面插了 2 行：标色的 A5 跑到 A7，按标色时建的隐藏名称找到 A7 还原，不动现在的 A5"""
+        self.add_item("A5")
+        self.scan()
+        mark = next(iter(batch._marks().values()))
+        self.assertEqual(self.book.Names.Add.call_args.kwargs,
+                         {"Name": mark["name"], "RefersTo": "='S1'!$A$5", "Visible": False})
+        marked = batch._excel_color("#C0007A")
+        moved, stays = self.sheet.cell("A7"), self.sheet.cell("A5")
+        moved.Interior.Pattern, moved.Interior.Color = batch.XL_PATTERN_SOLID, marked
+        moved.Font.Color = batch._excel_color("#FFFFFF")
+        stays.Interior.Pattern, stays.Interior.Color, stays.Font.Color = batch.XL_PATTERN_SOLID, marked, 0
+        self.sheet.Cells = lambda row, col: self.sheet.cell(f"{chr(64 + col)}{row}")
+        names = {mark["name"]: Mock(RefersToRange=Mock(Row=7, Column=1, Worksheet=self.sheet))}
+        self.book.Names.side_effect = lambda name: names[name]
+        self.card("A5").update(color="blue")
+        batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(moved.Interior.Pattern, batch.XL_PATTERN_NONE)
+        self.assertEqual(moved.Font.Color, 0)
+        self.assertEqual(stays.Interior.Pattern, batch.XL_PATTERN_SOLID)  # 现在的 A5 是别的格子，不动
+        names[mark["name"]].Delete.assert_called_once()  # 还原后名称删掉，交出去的文件里不留
+
+    def test_cell_deleted_by_user_needs_no_restore(self):
+        self.add_item("A5")
+        self.scan()
+        mark = next(iter(batch._marks().values()))
+        broken = Mock()
+        type(broken).RefersToRange = property(lambda _: (_ for _ in ()).throw(RuntimeError("#REF!")))
+        self.book.Names.side_effect = lambda name: broken
+        self.card("A5").update(color="blue")
+        batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(batch._marks(), {})
+        broken.Delete.assert_called_once()
 
     def test_merged_area_and_mixed_font_color(self):
         self.sheet.merges["$A$5"] = ["$A$5", "$B$5"]
