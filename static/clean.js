@@ -9,7 +9,7 @@ let pendingSince = 0;
 let previewData = null;
 let sheetDecisions = {}; // { [fileName]: { [sheetName]: 'keep' | 'delete' | 'uncertain' } }
 let processedFiles = new Set(); // 已在预览窗口单独执行过的文件：卡片原地锁定，执行时跳过，重新扫描后才更新
-let previewFromFile = null; // 最近一次打开预览窗口的文件：卡片边框发亮，从预览窗口返回时滚过去
+let previewFromFile = null; // 最近一次打开预览窗口的文件：卡片边框发亮，从预览窗口返回时滚过去、闪完去掉
 let pollSeq = 0;
 let minAcceptedSeq = 0; // 发起操作前已在途的轮询结果可能过期，直接丢弃
 
@@ -386,8 +386,11 @@ function openSheetPreview(fileIndex) {
   renderPreview(); // 只加发亮边框（box-shadow），卡片不移动
 }
 
-// 从预览窗口返回：来源卡片不在视野内时滚到中间，并让边框闪几下
+// 从预览窗口返回：来源卡片不在视野内时滚到中间，并让边框闪几下，闪完恢复原状
+const RETURN_PULSE_MS = 2800; // 和 CSS preview-return-pulse 0.7s × 4 一致
+let returnPulseTimer = null;
 function revealReturnedCard(fileName) {
+  clearTimeout(returnPulseTimer);
   previewFromFile = fileName;
   renderPreview();
   const idx = previewData.files.findIndex(f => f.name === fileName);
@@ -398,6 +401,13 @@ function revealReturnedCard(fileName) {
   const bottom = bar && !bar.classList.contains('hidden') ? bar.getBoundingClientRect().top : window.innerHeight;
   if (rect.top < 80 || rect.bottom > bottom) card.scrollIntoView({ block: 'center', behavior: 'smooth' });
   card.classList.add('is-return-pulse');
+  // 卡片可能已被重新渲染，按 data-file-index 重新找；只去掉边框和阴影，尺寸位置不变
+  returnPulseTimer = setTimeout(() => {
+    if (previewFromFile !== fileName) return;
+    previewFromFile = null;
+    document.querySelector(`#previewBox li[data-file-index="${idx}"]`)
+      ?.classList.remove('is-preview-from', 'is-return-pulse');
+  }, RETURN_PULSE_MS);
 }
 
 if (syncChannel) {
