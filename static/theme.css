@@ -1311,7 +1311,8 @@ button.preview-sheet-tag:active {
   content: "";
   position: absolute;
   z-index: -1;
-  border-radius: 14px;
+  /* 斜线劈开的那一侧不要圆角：--vs-round 里贴着斜线的角为 0，外侧的角为 1 */
+  border-radius: calc(14px * var(--vs-r1)) calc(14px * var(--vs-r2)) calc(14px * var(--vs-r3)) calc(14px * var(--vs-r4));
   clip-path: var(--vs-clip);
 }
 
@@ -1322,7 +1323,7 @@ button.preview-sheet-tag:active {
 
 .batch-shots figure::after {
   inset: 2.5px;
-  border-radius: 12px;
+  border-radius: calc(12px * var(--vs-r1)) calc(12px * var(--vs-r2)) calc(12px * var(--vs-r3)) calc(12px * var(--vs-r4));
   background: linear-gradient(160deg, var(--vs-top) 0%, var(--vs-bot) 100%);
   box-shadow: inset 0 -4px 0 rgba(28, 40, 88, 0.18), inset 0 3px 0 rgba(255, 255, 255, 0.45);
 }
@@ -1331,6 +1332,7 @@ button.preview-sheet-tag:active {
   --vs-top: #ffe27a;
   --vs-bot: #ffa41b;
   --vs-clip: polygon(0 0, 100% 0, calc(100% - var(--vs-slant)) 100%, 0 100%);
+  --vs-r1: 1; --vs-r2: 0; --vs-r3: 0; --vs-r4: 1;
   padding: 10px calc(var(--vs-slant) + 10px) 12px 12px;
 }
 
@@ -1338,6 +1340,7 @@ button.preview-sheet-tag:active {
   --vs-top: #8fd0ff;
   --vs-bot: #2f80ff;
   --vs-clip: polygon(var(--vs-slant) 0, 100% 0, 100% 100%, 0 100%);
+  --vs-r1: 0; --vs-r2: 1; --vs-r3: 1; --vs-r4: 0;
   padding: 10px 12px 12px calc(var(--vs-slant) + 10px);
 }
 
@@ -1355,7 +1358,13 @@ button.preview-sheet-tag:active {
 
 /* 右侧标题靠右，和左侧对称；斜切那一侧的内边距已给 VS 徽章留出位置 */
 .batch-shots figure:last-of-type figcaption {
+  padding-left: 14px;
   text-align: right;
+}
+
+/* VS 大字压在两块的里侧上角，标题文字往外让一点 */
+.batch-shots figure:first-of-type figcaption {
+  padding-right: 14px;
 }
 
 .batch-shots img,
@@ -1380,11 +1389,12 @@ button.preview-sheet-tag:active {
   display: block;
   position: absolute;
   z-index: 2;
-  top: 2px;
+  top: -9px;
   left: 50%;
-  transform: translateX(-50%);
-  padding: 0 6px 0 2px;
-  font-size: 27px;
+  /* 分界是斜线：徽章所在的顶部那段，接缝比卡片正中偏右约半个斜切量，跟着挪过去才显得居中 */
+  transform: translateX(calc(-50% + var(--vs-slant) / 2));
+  padding: 0 8px 0 3px;
+  font-size: 40px;
   font-style: italic;
   font-weight: 900;
   line-height: 1.05;
@@ -1410,15 +1420,18 @@ button.preview-sheet-tag:active {
 
 #largeView .batch-shots figure:first-of-type {
   --vs-clip: polygon(0 0, 100% 0, 100% calc(100% - var(--vs-slant)), 0 100%);
+  --vs-r1: 1; --vs-r2: 1; --vs-r3: 0; --vs-r4: 0;
   padding: 10px 12px calc(var(--vs-slant) + 10px) 12px;
 }
 
 #largeView .batch-shots figure:last-of-type {
   --vs-clip: polygon(0 var(--vs-slant), 100% 0, 100% 100%, 0 100%);
+  --vs-r1: 0; --vs-r2: 0; --vs-r3: 1; --vs-r4: 1;
   padding: calc(var(--vs-slant) + 8px) 12px 12px 12px;
 }
 
-#largeView .batch-shots figure:last-of-type figcaption {
+#largeView .batch-shots figcaption {
+  padding: 0;
   text-align: left;
 }
 
@@ -1439,15 +1452,19 @@ button.preview-sheet-tag:active {
 
   .batch-shots figure:first-of-type {
     --vs-clip: polygon(0 0, 100% 0, 100% calc(100% - var(--vs-slant)), 0 100%);
+  --vs-r1: 1; --vs-r2: 1; --vs-r3: 0; --vs-r4: 0;
     padding: 10px 12px calc(var(--vs-slant) + 10px) 12px;
   }
 
   .batch-shots figure:last-of-type {
     --vs-clip: polygon(0 var(--vs-slant), 100% 0, 100% 100%, 0 100%);
+  --vs-r1: 0; --vs-r2: 0; --vs-r3: 1; --vs-r4: 1;
     padding: calc(var(--vs-slant) + 8px) 12px 12px 12px;
   }
 
+  .batch-shots figure:first-of-type figcaption,
   .batch-shots figure:last-of-type figcaption {
+    padding: 0;
     text-align: left;
   }
 
