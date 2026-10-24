@@ -65,6 +65,8 @@
 .batch-card .batch-no-blue { margin-top: 6px; padding: 6px 10px; border: 1px dashed var(--review-blue-line); border-radius: 8px; background: #ffffffb3; color: #475569; font-size: 12px; }
 .batch-card .batch-message, .batch-card .batch-state { margin-top: 4px; color: #64748b; font-size: 12px; }
 .batch-missing { display: grid; min-height: 90px; place-items: center; color: #64748b; font-size: 12px; }
+/* 瀑布流里的截图框固定高度（图按比例缩在框里）：截图懒加载前后卡片高度不变，分列才能按真实高度排平 */
+#cardList .batch-shots img, #cardList .batch-shots .batch-missing { height: 120px; min-height: 0; max-height: none; }
 .batch-card-footer { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid color-mix(in srgb, var(--c-line) 55%, transparent); }
 .batch-card-footer button { font-size: 12px; padding: 6px 10px; }
 .batch-empty { text-align: center; padding: 56px 20px; color: #64748b; }
