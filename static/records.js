@@ -149,6 +149,10 @@ async function pollRecords() {
     const res = await fetch('/api/records');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+    // 看着看板时任务跑完：撒花庆祝
+    if (latestReportData && latestReportData.status === 'running' && data.status === 'completed') {
+      window.gameFx?.celebrate('任务完成！', data.task_name || '');
+    }
     latestReportData = data;
 
     const isRunning = data.status === 'running';

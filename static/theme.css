@@ -1,5 +1,5 @@
 /* ==========================================
-   贴纸风主题（手游 UI 风格）
+   游戏风主题（手游 UI 风格）
    浅蓝底、粗藏青描边、厚底立体按钮（按用途配色：绿=执行/确认，红=删除，蓝=选中/信息，
    白=次要操作，灰=不可用）、黄色缎带标签、渐变描边大标题、彩色卡牌式功能卡片、
    粗描边彩色图标（static/icons/*.svg）。
@@ -1485,11 +1485,6 @@ body {
   border: 2px solid #0e1533;
 }
 
-.theme-toggle select option {
-  color: var(--ink);
-  background: #ffffff;
-}
-
 .status-pill {
   color: var(--ink);
   background: linear-gradient(180deg, #ffd54a 0%, #ffb800 100%);
@@ -1759,4 +1754,369 @@ body {
 .feature-card:focus-visible {
   outline: 4px solid var(--lime);
   outline-offset: 4px;
+}
+
+/* ==========================================
+   游戏感加强（参考手游 UI 素材）
+   - 胶囊进度条：藏青槽 + 绿色亮面填充，斜纹缓慢流动
+   - 步骤标签做成带燕尾的缎带
+   - 彩色按钮上半截加一道高光，更像游戏按钮
+   - 开关：开=绿底白钮，关=灰蓝底白钮
+   - 执行记录的数字做成资源计数条
+   - 主页卡牌悬停时扫过一道反光（卡片本身不动）
+   - 对话框弹出时轻微放大弹入；game_fx.js 的撒花、缎带横幅、点击星星
+   约束同上：卡片和按钮不位移、不改尺寸；三色审核颜色不动；特效不挡操作
+   ========================================== */
+
+/* ---------- 胶囊进度条 ---------- */
+.progress-track {
+  height: 26px;
+  padding: 3px;
+  background: #1c2858;
+  border: 3px solid var(--ink);
+  border-radius: 999px;
+  box-shadow: inset 0 3px 0 rgba(0, 0, 0, 0.35), 0 2px 0 rgba(28, 40, 88, 0.25);
+}
+
+.progress-track-sm {
+  height: 20px;
+  padding: 2px;
+}
+
+.progress-fill {
+  position: relative;
+  border-radius: 999px;
+  background:
+    repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.22) 0 8px, rgba(255, 255, 255, 0) 8px 16px) 0 0 / 22.6px 100%,
+    linear-gradient(180deg, #8ae85a 0%, #4fbf1f 55%, #3a9e12 100%);
+  box-shadow: inset 0 3px 0 rgba(255, 255, 255, 0.45), inset 0 -2px 0 #2c7f0c;
+  animation: fx-stripes 1.2s linear infinite;
+}
+
+@keyframes fx-stripes {
+  to { background-position: 22.6px 0, 0 0; }
+}
+
+.progress-pct {
+  color: var(--ink);
+  background: linear-gradient(180deg, #ffe066 0%, #ffc21f 100%);
+  border: 3px solid var(--ink);
+  border-radius: 999px;
+  font-weight: 900;
+  box-shadow: inset 0 -3px 0 #e08a00;
+}
+
+/* ---------- 缎带步骤标签：两端燕尾，画在标签后面 ---------- */
+.panel-section-title {
+  position: relative;
+  z-index: 0;
+}
+
+.step-chip {
+  position: relative;
+  margin: 0 14px;
+  transform: none;
+}
+
+.step-chip::before,
+.step-chip::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: 6px;
+  bottom: -6px;
+  width: 22px;
+  pointer-events: none;
+  background: #e08a00;
+  border: 3px solid var(--ink);
+  border-radius: 4px;
+}
+
+.step-chip::before {
+  left: -17px;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 8px 50%);
+}
+
+.step-chip::after {
+  right: -17px;
+  clip-path: polygon(0 0, 100% 0, calc(100% - 8px) 50%, 100% 100%, 0 100%);
+}
+
+.step-chip-teal::before,
+.step-chip-teal::after {
+  background: #1f5fc4;
+}
+
+/* ---------- 彩色按钮加上半截高光 ---------- */
+.btn-primary,
+.btn-success,
+.btn-danger,
+.btn-danger:hover:not(:disabled),
+.pv-size-switch .btn.is-active,
+.nav-link.active,
+.nav-link.active:hover {
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.26) 0 46%, rgba(255, 255, 255, 0) 46%),
+    linear-gradient(180deg, var(--b-top, #5aa6ff) 0%, var(--b, #2f80ff) 100%);
+}
+
+.btn-primary,
+.btn-success,
+.btn-danger {
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.22);
+}
+
+/* ---------- 开关：绿 / 灰蓝，白色圆钮带底影 ---------- */
+input[type="checkbox"]:not(.hidden) {
+  background: #8a97b5;
+  border: 2.5px solid var(--ink);
+  box-shadow: inset 0 2px 0 rgba(0, 0, 0, 0.18);
+}
+
+input[type="checkbox"]:not(.hidden)::before {
+  background: #ffffff;
+  box-shadow: inset 0 -3px 0 #c9d3e6;
+}
+
+input[type="checkbox"]:not(.hidden):checked {
+  background: linear-gradient(180deg, #7ee04a 0%, #4fbf1f 100%);
+}
+
+input[type="checkbox"]:not(.hidden):checked::before {
+  background: #ffffff;
+}
+
+/* 顶栏「🎉 特效」开关（game_fx.js 插入） */
+.fx-toggle {
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.fx-toggle input[type="checkbox"]:not(.hidden) {
+  width: 34px;
+  height: 20px;
+  border-color: #0e1533;
+}
+
+.fx-toggle input[type="checkbox"]:not(.hidden)::before {
+  top: 1.5px;
+  left: 1.5px;
+  width: 12px;
+  height: 12px;
+}
+
+.fx-toggle input[type="checkbox"]:not(.hidden):checked::before {
+  left: 15.5px;
+}
+
+/* ---------- 执行记录：数字做成资源计数条 ---------- */
+.kpi-value,
+.kpi-done .kpi-value,
+.kpi-processing .kpi-value,
+.kpi-pending .kpi-value,
+.kpi-clips .kpi-value {
+  display: inline-block;
+  min-width: 84px;
+  padding: 2px 18px;
+  color: #ffffff;
+  background: linear-gradient(180deg, #2a3a7a 0%, var(--ink) 100%);
+  border: 3px solid var(--ink);
+  border-radius: 999px;
+  box-shadow: inset 0 -4px 0 #111a3f, inset 0 2px 0 rgba(255, 255, 255, 0.15);
+  text-align: center;
+}
+
+.kpi-done .kpi-value { color: #8ae85a; }
+.kpi-processing .kpi-value { color: #8cc2ff; }
+.kpi-clips .kpi-value { color: #ffd54a; }
+
+/* ---------- 面板：内侧一圈浅蓝描边，像游戏窗口的双层边框 ---------- */
+.panel {
+  box-shadow: inset 0 0 0 4px #eef4ff, 0 6px 0 var(--ink);
+}
+
+/* ---------- 主页卡牌：悬停扫过一道反光，卡片不动 ---------- */
+.feature-card {
+  overflow: hidden;
+}
+
+.feature-card::after {
+  content: "";
+  position: absolute;
+  top: -20%;
+  bottom: -20%;
+  left: -60%;
+  width: 40%;
+  pointer-events: none;
+  background: linear-gradient(100deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.55) 50%, rgba(255, 255, 255, 0) 100%);
+  transform: skewX(-18deg);
+  opacity: 0;
+}
+
+.feature-card:hover::after {
+  animation: fx-sheen 0.75s ease-out;
+}
+
+@keyframes fx-sheen {
+  0% { left: -60%; opacity: 1; }
+  100% { left: 130%; opacity: 1; }
+}
+
+/* ---------- 对话框弹入 ---------- */
+.task-dialog[open],
+.app-dialog[open] {
+  animation: fx-pop-in 0.26s cubic-bezier(.2, 1.4, .4, 1);
+}
+
+@keyframes fx-pop-in {
+  from { opacity: 0; transform: scale(0.88); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* 成功结果框：左侧一颗星 */
+.task-result.is-ok b::before {
+  content: "★ ";
+  color: #ffc21f;
+  -webkit-text-stroke: 1px var(--ink);
+}
+
+/* ---------- 撒花画布、缎带横幅、点击星星（都不挡操作） ---------- */
+.fx-confetti {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 9998;
+  pointer-events: none;
+}
+
+.fx-banner {
+  position: fixed;
+  left: 50%;
+  top: 16vh;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+  transform: translateX(-50%);
+  animation: fx-banner-in 0.42s cubic-bezier(.2, 1.5, .4, 1) both;
+}
+
+.fx-banner.is-leaving {
+  animation: fx-banner-out 0.38s ease-in both;
+}
+
+@keyframes fx-banner-in {
+  from { opacity: 0; transform: translateX(-50%) scale(0.4); }
+  to { opacity: 1; transform: translateX(-50%) scale(1); }
+}
+
+@keyframes fx-banner-out {
+  to { opacity: 0; transform: translateX(-50%) scale(0.9); }
+}
+
+.fx-banner-stars {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.fx-star {
+  width: 46px;
+  height: 46px;
+  background: #8a97b5;
+  clip-path: polygon(50% 2%, 63% 36%, 99% 37%, 70% 59%, 81% 95%, 50% 74%, 19% 95%, 30% 59%, 1% 37%, 37% 36%);
+  filter: drop-shadow(0 3px 0 var(--ink));
+  animation: fx-star-pop 0.4s cubic-bezier(.2, 1.6, .4, 1) both;
+  animation-delay: calc(0.25s + var(--i) * 0.14s);
+}
+
+.fx-star:nth-child(2) {
+  width: 60px;
+  height: 60px;
+}
+
+.fx-star.is-on {
+  background: linear-gradient(180deg, #ffe066 0%, #ffc21f 55%, #ff9f1f 100%);
+}
+
+@keyframes fx-star-pop {
+  from { opacity: 0; transform: scale(0.2) rotate(-40deg); }
+  to { opacity: 1; transform: scale(1) rotate(0); }
+}
+
+.fx-banner-ribbon {
+  position: relative;
+  padding: 10px 44px 12px;
+  color: #ffffff;
+  font-size: 30px;
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 3px;
+  white-space: nowrap;
+  text-shadow: 0 3px 0 var(--ink), 2px 0 0 var(--ink), -2px 0 0 var(--ink), 0 -2px 0 var(--ink);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28) 0 46%, rgba(255, 255, 255, 0) 46%),
+    linear-gradient(180deg, #7ee04a 0%, #3fae14 100%);
+  border: 4px solid var(--ink);
+  border-radius: 14px;
+  box-shadow: inset 0 -6px 0 #2c7f0c, 0 6px 0 var(--ink);
+}
+
+.fx-banner-sub {
+  max-width: min(80vw, 560px);
+  padding: 5px 16px;
+  overflow: hidden;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 800;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: var(--ink);
+  border-radius: 999px;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.25);
+}
+
+.fx-spark {
+  position: fixed;
+  z-index: 9999;
+  width: 9px;
+  height: 9px;
+  pointer-events: none;
+  clip-path: polygon(50% 0, 62% 38%, 100% 50%, 62% 62%, 50% 100%, 38% 62%, 0 50%, 38% 38%);
+}
+
+/* ---------- 滚动条：粗圆角 ---------- */
+::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+::-webkit-scrollbar-track {
+  background: #dbe4f3;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #8a97b5;
+  border: 3px solid #dbe4f3;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #56628f;
+}
+
+/* 系统设置了「减少动画」：关掉流动斜纹、反光和弹入 */
+@media (prefers-reduced-motion: reduce) {
+  .progress-fill,
+  .feature-card:hover::after,
+  .task-dialog[open],
+  .app-dialog[open],
+  .fx-banner,
+  .fx-star {
+    animation: none;
+  }
 }
