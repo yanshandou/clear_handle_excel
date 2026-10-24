@@ -1502,43 +1502,38 @@ def _shows_mark(mark: dict | None) -> bool:
     return mark is not None and mark.get("saved") is not False
 
 
-XL_FORMULAS, XL_PART = -4123, 2
+XL_FORMULAS, XL_WHOLE = -4123, 1
 
 
-def _find_marked_cells(app: Any, book: Any, fills: set[int]) -> list[tuple[Any, int, int]]:
-    """用 Excel 的「按格式查找」找出底色还是标记色的格子（合并区域按左上角），返回 (工作表, 行, 列)"""
-    found: dict[tuple[str, int, int], tuple[Any, int, int]] = {}
-    for fill in fills:
-        app.FindFormat.Clear()
-        app.FindFormat.Interior.Color = fill
-        try:
-            for sheet in book.Worksheets:
-                cell = sheet.Cells.Find(What="", LookIn=XL_FORMULAS, LookAt=XL_PART, SearchFormat=True)
-                first, steps = None, 0
-                while cell is not None and steps < 10000:
-                    if cell.Address == first:
-                        break
-                    first = first or cell.Address
-                    area = cell.MergeArea
-                    found.setdefault((sheet.Name, int(area.Row), int(area.Column)),
-                                     (sheet, int(area.Row), int(area.Column)))
-                    cell = sheet.Cells.Find(What="", After=cell, LookIn=XL_FORMULAS, LookAt=XL_PART, SearchFormat=True)
-                    steps += 1
-        finally:
-            app.FindFormat.Clear()
-    return list(found.values())
+def _marked_matches(sheet: Any, value: str, fill: int) -> list[tuple[int, int]]:
+    """在工作表里按内容找（整格完全一致、区分大小写），只留下底色还是标记色的格子（合并区域按左上角）。
+    不用「按格式查找」：实测在用户机器上不生效，会把每一格都当成匹配。"""
+    if not value or len(value) > 255:
+        return []  # Excel 查找最多 255 个字
+    what = value.replace("~", "~~").replace("*", "~*").replace("?", "~?")
+    cells = sheet.UsedRange
+    cell = cells.Find(What=what, LookIn=XL_FORMULAS, LookAt=XL_WHOLE, MatchCase=True)
+    found: list[tuple[int, int]] = []
+    first, steps = None, 0
+    while cell is not None and steps < 200:
+        if cell.Address == first:
+            break
+        first = first or cell.Address
+        area = cell.MergeArea
+        top = (int(area.Row), int(area.Column))
+        color = area.Interior.Color
+        if (top not in found and color is not None and int(color) == fill
+                and int(area.Interior.Pattern) == XL_PATTERN_SOLID):
+            found.append(top)
+        cell = cells.FindNext(cell)
+        steps += 1
+    return found
 
 
-def _sweep_leftover_marks(app: Any, book: Any, path: str, removed: list[dict], missed: list[dict],
-                          kept: list[dict]) -> None:
-    """兜底：还原后整份文件再找一遍还是标记底色的格子（不算还要继续标着的）。
-    多半是旧记录没有隐藏名称时被插删行列挪了位置，或者被复制到了别处：格子内容和没还原掉的记录
-    正好对上一条的，按那条记录还原；对不上或对上好几条的不乱改，列在日志里请人工去掉。"""
-    try:
-        cells = _find_marked_cells(app, book, {m["fill"] for m in removed})
-    except Exception as err:
-        wf.log_msg(f"⚠️ {Path(path).name}：没能检查有没有残留的标记颜色：{err}")
-        return
+def _sweep_leftover_marks(book: Any, path: str, missed: list[dict], kept: list[dict]) -> None:
+    """兜底：原位置没找到标记色的记录（多半是旧记录没有隐藏名称时被插删行列挪了位置），
+    按标色时记下的格子内容在同一张表里找，找到的格子还得是标记底色、而且只有一个，才按这条记录还原；
+    其他情况不乱改。只在有这种记录时才找，平常不多花时间。"""
     keep: set[tuple[str, int, int]] = set()
     for mark in kept:
         located = _locate_mark(book, mark)
@@ -1548,29 +1543,27 @@ def _sweep_leftover_marks(app: Any, book: Any, path: str, removed: list[dict], m
                 row, col = _cell_rc(cell["addr"])
                 keep.add((sheet.Name, row + dr, col + dc))
     fixed, left = 0, []
-    for sheet, row, col in cells:
-        if (sheet.Name, row, col) in keep:
-            continue
+    for mark in missed:
+        sheet = _find_sheet(book, mark["sheet"])
+        if sheet is None or not mark.get("value"):
+            continue  # 表不在了（前面已说明）或旧记录没记内容：没法找
         try:
-            value = str(sheet.Cells(row, col).Formula)
-        except Exception:
-            value = ""
-        same = [m for m in missed if value and m.get("value") == value]
-        if len(same) == 1:
-            r0, c0 = _cell_rc(same[0]["addr"])
-            try:
-                if _restore_cells(sheet, same[0], (row - r0, col - c0)):
-                    missed.remove(same[0])
+            spots = [rc for rc in _marked_matches(sheet, mark["value"], mark["fill"])
+                     if (sheet.Name, *rc) not in keep]
+            if len(spots) == 1:
+                r0, c0 = _cell_rc(mark["addr"])
+                if _restore_cells(sheet, mark, (spots[0][0] - r0, spots[0][1] - c0)):
                     fixed += 1
                     continue
-            except Exception:
-                pass
-        left.append(f"{sheet.Name}!{_col_letters(col)}{row}")
+            if spots:
+                left.append(f"{sheet.Name}!" + "、".join(f"{_col_letters(c)}{r}" for r, c in spots[:3]))
+        except Exception:
+            continue
     if fixed:
         wf.log_msg(f"🧹 {Path(path).name}：{fixed} 格标记颜色挪了位置，按格子内容找到并还原了")
     if left:
-        wf.log_msg(f"⚠️ {Path(path).name}：还有 {len(left)} 格是标记底色，没法确定原来的颜色，请在 Excel 里手动去掉："
-                   + "、".join(left[:10]) + ("……" if len(left) > 10 else ""))
+        wf.log_msg(f"⚠️ {Path(path).name}：有 {len(left)} 处标记颜色挪了位置、对上的格子不止一个，没有自动还原，"
+                   "请在 Excel 里看一下：" + "；".join(left[:20]) + ("……" if len(left) > 20 else ""))
 
 
 def _col_letters(col: int) -> str:
@@ -1736,9 +1729,9 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                     missed.append(mark)
             except Exception as err:
                 wf.log_msg(f"⚠️ {Path(path).name} / {mark['sheet']}!{mark['addr']} 未能还原颜色：{err}")
-        if remove:
+        if missed:
             kept = [m for cid, m in marks.items() if m["path"] == path and cid not in remove]
-            _sweep_leftover_marks(app, book, path, [marks[cid] for cid in remove], missed, kept)
+            _sweep_leftover_marks(book, path, missed, kept)
         for name, count in gone.items():
             wf.log_msg(f"ℹ️ {Path(path).name}：工作表「{name}」已不在文件里（被删除或改名），"
                        f"跳过还原 {count} 格标记颜色；如果是改名，请在新表里手动去掉标记色")

@@ -87,8 +87,8 @@ class ScanOnlyTests(unittest.TestCase):
         self.excel = Mock()
         self.excel.Workbooks.Open.return_value = self.book
         patch.object(batch, "normalize_workbook_view").start()
-        self.real_find = batch._find_marked_cells
-        self.leftovers = patch.object(batch, "_find_marked_cells", return_value=[]).start()
+        self.real_matches = batch._marked_matches
+        self.matches = patch.object(batch, "_marked_matches", return_value=[]).start()
         patch.object(self.wf, "_sync_problem_counts").start()
         self.addCleanup(patch.stopall)
 
@@ -220,52 +220,70 @@ class ScanOnlyTests(unittest.TestCase):
         self.assertEqual(batch._marks(), {})
         broken.Delete.assert_called_once()
 
-    def test_leftover_marker_color_is_restored_when_content_matches_one_record(self):
-        """旧记录没有隐藏名称、被插行挪到 A7：兜底按「还是标记底色 + 内容对得上唯一一条」找到并还原；
-        对不上的不乱改，列在日志里"""
-        self.add_item("A5")
+    def moved_mark(self, *others):
+        """旧记录没有隐藏名称、被插了 2 行：A5 的标记色挪到了 A7，现在的 A5 是插进来的空行"""
+        for addr in ("A5",) + others:
+            self.add_item(addr)
         self.scan()
-        mark = next(iter(batch._marks().values()))
+        mark = next(m for m in batch._marks().values() if m["addr"].replace("$", "") == "A5")
         mark.pop("name", None)
         mark["value"] = "合計"
-        marked = batch._excel_color("#C0007A")
         a5 = self.sheet.cell("A5")
-        a5.Interior.Pattern, a5.Font.Color = batch.XL_PATTERN_NONE, 0  # 现在的 A5 是插进来的空行
-        moved, other = self.sheet.cell("A7"), self.sheet.cell("C9")
-        for cell, value in ((moved, "合計"), (other, "?")):
-            cell.Interior.Pattern, cell.Interior.Color, cell.Font.Color = batch.XL_PATTERN_SOLID, marked, 0xFFFFFF
-            cell.Formula = value
+        a5.Interior.Pattern, a5.Font.Color = batch.XL_PATTERN_NONE, 0
+        moved = self.sheet.cell("A7")
+        moved.Interior.Pattern, moved.Interior.Color = batch.XL_PATTERN_SOLID, batch._excel_color("#C0007A")
+        moved.Font.Color = 0xFFFFFF
         self.sheet.Cells = lambda row, col: self.sheet.cell(f"{chr(64 + col)}{row}")
-        self.leftovers.return_value = [(self.sheet, 7, 1), (self.sheet, 9, 3)]
         self.card("A5").update(color="blue")
+        return mark, moved
+
+    def test_moved_marker_color_is_found_by_content_and_restored(self):
+        mark, moved = self.moved_mark()
+        self.matches.return_value = [(7, 1)]
         with patch.object(batch.wf, "log_msg") as log:
             batch._sync_highlights(lambda: self.excel, self.path)
-        self.assertEqual(moved.Interior.Pattern, batch.XL_PATTERN_NONE)
-        self.assertEqual(moved.Font.Color, 0)
-        self.assertEqual(other.Interior.Color, marked)  # 对不上的不动
+        self.matches.assert_called_once_with(self.sheet, "合計", mark["fill"])
+        self.assertEqual((moved.Interior.Pattern, moved.Font.Color), (batch.XL_PATTERN_NONE, 0))
+        self.assertTrue(any("按格子内容找到并还原" in c.args[0] for c in log.call_args_list))
+
+    def test_several_matching_cells_are_left_alone_and_listed(self):
+        _, moved = self.moved_mark()
+        self.matches.return_value = [(7, 1), (9, 3)]
+        with patch.object(batch.wf, "log_msg") as log:
+            batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(moved.Interior.Pattern, batch.XL_PATTERN_SOLID)  # 不确定就不改
         messages = [c.args[0] for c in log.call_args_list]
-        self.assertTrue(any("按格子内容找到并还原" in m for m in messages), messages)
-        self.assertTrue(any("手动去掉" in m and "S1!C9" in m for m in messages), messages)
+        self.assertTrue(any("不止一个" in m and "S1!A7、C9" in m for m in messages), messages)
 
-    def test_cells_still_marked_on_purpose_are_not_leftovers(self):
+    def test_cells_still_marked_on_purpose_do_not_count(self):
+        _, moved = self.moved_mark("B5")
+        self.matches.return_value = [(5, 2), (7, 1)]  # B5 还要继续标着，不算
+        batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(moved.Interior.Pattern, batch.XL_PATTERN_NONE)
+
+    def test_no_search_when_every_mark_was_restored_in_place(self):
+        """平常都在原位置还原了：不做任何查找，不多花时间，也不报残留"""
         self.add_item("A5")
-        self.add_item("B5")
         self.scan()
-        self.leftovers.return_value = [(self.sheet, 5, 2)]  # B5 还要继续标着
         self.card("A5").update(color="blue")
         with patch.object(batch.wf, "log_msg") as log:
             batch._sync_highlights(lambda: self.excel, self.path)
-        self.assertFalse(any("手动去掉" in c.args[0] for c in log.call_args_list))
+        self.matches.assert_not_called()
+        self.assertFalse(any("⚠️" in c.args[0] for c in log.call_args_list))
 
-    def test_find_marked_cells_walks_every_match_once(self):
-        found = [Mock(Address=a, MergeArea=Mock(Row=r, Column=c)) for a, r, c in
-                 (("$A$7", 7, 1), ("$B$7", 7, 1), ("$C$9", 9, 3))]
-        sheet = Mock(Name="S1")
-        sheet.Cells.Find.side_effect = found + [found[0]]
-        app, book = Mock(), Mock(Worksheets=[sheet])
-        self.assertEqual(self.real_find(app, book, {123}), [(sheet, 7, 1), (sheet, 9, 3)])
-        self.assertEqual(app.FindFormat.Interior.Color, 123)
-        self.assertTrue(app.FindFormat.Clear.called)
+    def test_marked_matches_keeps_only_cells_still_in_marker_color(self):
+        fill = batch._excel_color("#C0007A")
+        def cell(addr, row, col, color):
+            return Mock(Address=addr, MergeArea=Mock(Row=row, Column=col, Interior=Mock(
+                Color=color, Pattern=batch.XL_PATTERN_SOLID)))
+        hits = [cell("$A$7", 7, 1, fill), cell("$B$7", 7, 1, fill), cell("$C$9", 9, 3, 0xFFFF00)]
+        used = Mock()
+        used.Find.return_value = hits[0]
+        used.FindNext.side_effect = hits[1:] + [hits[0]]
+        sheet = Mock(UsedRange=used)
+        self.assertEqual(self.real_matches(sheet, "*合計?", fill), [(7, 1)])  # 合并区域只算一次，黄底的不算
+        self.assertEqual(used.Find.call_args.kwargs["What"], "~*合計~?")  # 通配符按原字找
+        self.assertEqual(self.real_matches(sheet, "", fill), [])
 
     def test_merged_area_and_mixed_font_color(self):
         self.sheet.merges["$A$5"] = ["$A$5", "$B$5"]

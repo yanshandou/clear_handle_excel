@@ -106,6 +106,7 @@ MANUAL_CONFIRMED_REASON = "人工确认无需修复"
 MANUALLY_FIXED_REASON = "人工修改后重新检测未再检出压线"
 RESOLVED_STATUSES = {"accepted", "fixed"}
 MAX_LOG_LINES = 500
+MAX_LOG_CHARS = 2000  # 单行日志上限：异常信息、格子清单再长也不能撑大每次刷新的网页数据
 LATER_REVIEW_REASON = "已挂起，稍后统一人工复检（Excel 里标了黄色）"
 LATER_REVIEW_FAILED_REASON = "统一复检仍有问题：请继续修改并保存后再复检，或标记无需修改"
 
@@ -322,6 +323,8 @@ def run_pending_workflow() -> None:
 
 def log_msg(msg: str) -> None:
     timestamp = datetime.now().strftime("%H:%M:%S")
+    if len(msg) > MAX_LOG_CHARS:
+        msg = msg[:MAX_LOG_CHARS] + "……（太长，后面省略）"
     line = f"[{timestamp}] {msg}"
     with STATE_LOCK:
         STATE["logs"].append(line)

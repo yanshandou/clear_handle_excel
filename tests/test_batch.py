@@ -1133,6 +1133,10 @@ class BatchTests(unittest.TestCase):
         batch._recheck_file(self.excel, self.path, [card])
         self.assertEqual((waiting["finalized"], waiting.get("manual")), (False, False))
 
+    def test_one_huge_log_line_is_cut_short(self):
+        self.wf.log_msg("x" * 100000)
+        self.assertLess(len(self.wf.STATE["logs"][-1]), self.wf.MAX_LOG_CHARS + 100)
+
     def recheck_job(self, cards, paths):
         self.wf.STATE.update(busy=True)
         self.wf.STATE["job"] = {"kind": "batch_recheck", "options": {"card_ids": [c["id"] for c in cards]},
