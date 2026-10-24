@@ -15,6 +15,12 @@ BACKUP_WORD_PATTERN = re.compile(r"(?<![a-z])(?:bak|backup|old|copy)(?![a-z])", 
 BRACKET_GROUP_PATTERN = re.compile(r"\([^()]*\)|\[[^\[\]]*\]|【[^【】]*】|「[^「」]*」|『[^『』]*』")
 NEW_PREFIX = "新"
 OLD_PREFIX = "旧"
+# 「新」开头、但「新」是词的一部分的表名（新規登録、新旧対照表、新着一覧 等），没有「旧」表时也不去掉「新」字
+NEW_PREFIX_WORDS = (
+    "新規", "新旧", "新着", "新設", "新人", "新卒", "新入", "新年", "新春", "新聞", "新築", "新宿", "新潟",
+    "新橋", "新幹線", "新興", "新鮮", "新生", "新型", "新品", "新刊", "新婚", "新郎", "新婦", "新米", "新緑",
+    "新しい", "新た",
+)
 BACKUP_TEXT_PATTERN = re.compile(r"バックアップ|备份|コピー|副本|(?<![新復])旧")
 # 复制工作表产生的「(2)」「(3)」后缀（全角括号统一为半角后判断，有无空格均可），
 # 后面还可以再接日期，如「様式１（基本情報）(2)_20221005」；仍要求同工作簿存在原表才算备份
@@ -170,6 +176,30 @@ def find_new_old_pairs(sheet_names: list[str]) -> dict[str, list[str]]:
     return {new: olds[rest] for rest, names in news.items() if rest in olds for new in names}
 
 
+def find_new_prefix_sheets(sheet_names: list[str]) -> dict[str, list[str]]:
+    """执行后可以去掉开头「新」字的表：{新表名: [对应的旧表名, ...]}（保持原顺序）
+
+    除了新旧成对的「新」表，没有「旧」表的「新X」也算（对应空列表）：旧版早就不在了，「新」字没有意义。
+    「新規」「新旧」这类「新」是词的一部分的表名不算。
+    """
+    pairs = find_new_old_pairs(sheet_names)
+    result: dict[str, list[str]] = {}
+    for name in sheet_names:
+        if name in pairs:
+            result[name] = pairs[name]
+        elif _is_lone_new_sheet(name):
+            result[name] = []
+    return result
+
+
+def _is_lone_new_sheet(sheet_name: str) -> bool:
+    """「新」开头、去掉后还有内容，且「新」不是词的一部分（新規、新旧 等）的表名"""
+    key = _new_old_key(sheet_name)
+    if key is None or key[0] != NEW_PREFIX or strip_new_prefix(sheet_name) == sheet_name:
+        return False
+    return not unicodedata.normalize("NFKC", sheet_name).startswith(NEW_PREFIX_WORDS)
+
+
 def strip_new_prefix(sheet_name: str) -> str:
     """去掉表名开头的「新」：新レイアウト(介護給付費請求書1) → レイアウト(介護給付費請求書1)"""
     if not sheet_name.startswith(NEW_PREFIX):
@@ -196,19 +226,26 @@ def find_contained_sheets(sheet_names: list[str]) -> list[str]:
     """
     targets = set(find_clean_targets(sheet_names))
     targets.update(find_new_old_pairs(sheet_names))  # 新旧成对的「新」表默认保留（删旧表后去掉「新」字）
+    # 没有旧表的「新」表执行后会去掉「新」字，按去掉后的名字比对：
+    # 新レイアウト（２ページ以降）与 レイアウト 只多出括号里的说明，不标待定
+    lone_new = {name for name, olds in find_new_prefix_sheets(sheet_names).items() if not olds}
+
+    def compare_name(name: str) -> str:
+        return strip_new_prefix(name) if name in lone_new else name
+
     # 有备份表的原表就是当前在用的版本（如 精神科基本療養費 与 精神科基本療養費20260402），默认保留
     has_backup = {_original_name_of(name) for name in find_backup_sheets(sheet_names)}
     references = {
         c for name in sheet_names
-        if name not in targets and len(c := _comparable_name(name)) >= 2
+        if name not in targets and len(c := _comparable_name(compare_name(name))) >= 2
     }
     contained: list[str] = []
     for name in sheet_names:
-        text = _comparable_name(name)
+        text = _comparable_name(compare_name(name))
         if name in targets or is_uncertain_name(name) or is_auto_generated_sheet(name) or text in has_backup:
             continue
         # 多出的部分整段在括号里（如 レイアウト 与 レイアウト(介護給付費請求書1)）是用途或页的补充说明，不算
-        bare = _comparable_name(BRACKET_GROUP_PATTERN.sub("", unicodedata.normalize("NFKC", name)))
+        bare = _comparable_name(BRACKET_GROUP_PATTERN.sub("", unicodedata.normalize("NFKC", compare_name(name))))
         for ref in references:
             if ref == text or ref == bare:
                 continue

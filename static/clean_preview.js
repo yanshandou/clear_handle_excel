@@ -88,8 +88,8 @@ function counts() {
 /* ==========================================
    页面渲染：卡片尺寸固定，预览图加载前后、切换状态时卡片都不移动
    ========================================== */
-// 「旧」表全部标为删除、「新」表保留时，执行后「新」表去掉开头的「新」字（与后端 _new_prefix_renames 一致）；
-// 去掉后与剩下的表重名时不改名
+// 「旧」表全部标为删除（或本来就没有「旧」表，olds 为空）、「新」表保留时，执行后「新」表去掉开头的「新」字
+// （与后端 _new_prefix_renames 一致）；去掉后与剩下的表重名时不改名
 function findNewPrefixRenames(sheets, stateOf, pairs) {
   const renamed = new Set();
   const remaining = sheets.filter(n => stateOf(n) !== 'delete');
@@ -112,7 +112,7 @@ function cardNameHtml(name) {
   const display = stripUncertainEmoji(name);
   const renamed = findNewPrefixRenames(fileInfo.sheets, n => states[n] || 'keep', fileInfo.new_old_pairs);
   if (!renamed.has(name)) return escapeHtml(display);
-  return `<s class="strip-new-prefix" title="旧版删除后去掉「新」字">新</s>${escapeHtml(display.slice(1))}`;
+  return `<s class="strip-new-prefix" title="执行后去掉「新」字">新</s>${escapeHtml(display.slice(1))}`;
 }
 
 function cardBodyHtml(name, sheetIndex) {

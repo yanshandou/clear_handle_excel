@@ -5,6 +5,7 @@ from core.common import (
     find_clean_targets,
     find_contained_sheets,
     find_new_old_pairs,
+    find_new_prefix_sheets,
     has_backup_marker,
     strip_new_prefix,
 )
@@ -209,6 +210,18 @@ class NewOldPairTests(unittest.TestCase):
         # 改名后再次扫描：多出的部分整段在括号里，不标待定
         names = ["レイアウト", "レイアウト(介護給付費請求書1)", "レイアウト（介護給付費請求書2）", "一覧", "一覧(詳細)", "一覧詳細"]
         self.assertEqual(find_contained_sheets(names), ["一覧詳細"])
+
+    def test_lone_new_sheets_also_strip_prefix(self):
+        # 没有「旧」表的「新X」也去掉「新」字；「新」是词的一部分的不算
+        names = ["レイアウト", "新レイアウト（２ページ以降）", "新規登録", "新旧対照表", "新着一覧", "新帳票", "旧帳票"]
+        self.assertEqual(find_new_prefix_sheets(names), {
+            "新レイアウト（２ページ以降）": [],
+            "新帳票": ["旧帳票"],
+        })
+        self.assertEqual(find_new_prefix_sheets(["新", "新 ", "画面"]), {})
+        # 按去掉「新」后的名字判断：只多出括号里的说明，不标待定；多出别的字照样待定
+        self.assertEqual(find_contained_sheets(names), [])
+        self.assertEqual(find_contained_sheets(["一覧", "新一覧詳細"]), ["新一覧詳細"])
 
     def test_strip_new_prefix(self):
         self.assertEqual(strip_new_prefix("新レイアウト(介護給付費請求書1)"), "レイアウト(介護給付費請求書1)")

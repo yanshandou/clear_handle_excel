@@ -512,6 +512,18 @@ class QuickTaskTests(unittest.TestCase):
         ])
         self.assertIn("2 个新版 Sheet 已去掉「新」字", files["layout.xlsx"]["current_action"])
 
+    def test_clean_sheets_strips_new_prefix_without_old_version(self):
+        # 没有旧表时「新」字也没有意义；只改名、不删表也要用 Excel 打开保存
+        self.add_book("layout.xlsx", ["レイアウト", "新レイアウト（２ページ以降）", "新規登録"])
+        self.run_task("clean_sheets")
+
+        self.assertEqual(self.books["layout.xlsx"].saved, [
+            ["レイアウト", "レイアウト（２ページ以降）", "新規登録"],
+        ])
+        files = self.report_files()
+        self.assertEqual(files["layout.xlsx"]["deleted_backups"], [])
+        self.assertIn("1 个新版 Sheet 已去掉「新」字", files["layout.xlsx"]["current_action"])
+
     def test_new_sheet_keeps_prefix_when_old_version_is_kept(self):
         self.add_book("layout.xlsx", ["新レイアウト", "旧レイアウト", "新帳票", "旧帳票"])
         plan = {"layout.xlsx": {"delete": ["旧帳票"], "uncertain": []}}
