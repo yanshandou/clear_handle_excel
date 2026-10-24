@@ -2767,7 +2767,7 @@ button.preview-sheet-tag:active {
 
 .sheet-shared-mark {
   --mark-line: #7c3aed;
-  --mark-band: rgba(124, 58, 237, 0.22);
+  --mark-band: rgba(124, 58, 237, 0.14);
   display: inline;
   padding-bottom: 1px;
   border-bottom: 2.5px solid var(--mark-line);
@@ -2779,27 +2779,27 @@ button.preview-sheet-tag:active {
 
 .sheet-shared-mark.mark-0 {
   --mark-line: #7c3aed;
-  --mark-band: rgba(124, 58, 237, 0.22);
+  --mark-band: rgba(124, 58, 237, 0.14);
 }
 
 .sheet-shared-mark.mark-1 {
   --mark-line: #059669;
-  --mark-band: rgba(5, 150, 105, 0.22);
+  --mark-band: rgba(5, 150, 105, 0.14);
 }
 
 .sheet-shared-mark.mark-2 {
   --mark-line: #d97706;
-  --mark-band: rgba(217, 119, 6, 0.24);
+  --mark-band: rgba(217, 119, 6, 0.14);
 }
 
 .sheet-shared-mark.mark-3 {
   --mark-line: #0284c7;
-  --mark-band: rgba(2, 132, 199, 0.22);
+  --mark-band: rgba(2, 132, 199, 0.14);
 }
 
 .sheet-shared-mark.mark-4 {
   --mark-line: #db2777;
-  --mark-band: rgba(219, 39, 119, 0.22);
+  --mark-band: rgba(219, 39, 119, 0.14);
 }
 
 .uncertain-sheet-tag {
