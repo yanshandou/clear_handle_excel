@@ -278,6 +278,76 @@ function restoreAnchor(anchor) {
   if (element) window.scrollBy(0, element.getBoundingClientRect().top - anchor.top);
 }
 
+// 瀑布流分列：每张卡片放进当时最矮的一列（按实际高度算），放好后就记住，不再挪动。
+// 以前按序号轮流分到各列，截图和文字高度不一，卡片一多各列高度越差越大，后面只剩一列
+const CARD_GAP = 18;
+let columnOf = new Map();
+let columnMeta = '';
+const cardHeights = new Map();
+
+function cardHeight(id) {
+  if (cardHeights.has(id)) return cardHeights.get(id);
+  let sum = 0;
+  for (const value of cardHeights.values()) sum += value;
+  return cardHeights.size ? sum / cardHeights.size : 520;
+}
+
+function shortestColumn(heights) {
+  return heights.reduce((best, h, i) => (h < heights[best] - 1 ? i : best), 0);
+}
+
+// 已放好的卡片保持原列；列数或筛选变了、或有卡片被移出（提交后）时整体重排。返回这次新放的卡片
+function placeCards(shown, count) {
+  const meta = JSON.stringify([count, selectedFilter]);
+  const ids = new Set(shown.map(c => c.id));
+  if (meta !== columnMeta || [...columnOf.keys()].some(id => !ids.has(id))) {
+    columnOf = new Map();
+    columnMeta = meta;
+  }
+  const heights = Array(count).fill(0);
+  for (const card of shown) if (columnOf.has(card.id)) heights[columnOf.get(card.id)] += cardHeight(card.id);
+  const fresh = new Set();
+  for (const card of shown) {
+    if (columnOf.has(card.id)) continue;
+    const column = shortestColumn(heights);
+    columnOf.set(card.id, column);
+    heights[column] += cardHeight(card.id);
+    fresh.add(card.id);
+  }
+  return fresh;
+}
+
+function cardColumns(shown, count) {
+  const columns = Array.from({ length: count }, () => []);
+  for (const card of shown) columns[columnOf.get(card.id)].push(card);
+  return columns;
+}
+
+// 量出卡片真实高度，按真实高度重新给新卡片选列；有变动就把卡片节点挪过去（图片不重新加载）
+function rebalanceFresh(shown, count, fresh) {
+  const columnElements = $('cardList').querySelectorAll('.batch-waterfall > .batch-column');
+  if (columnElements.length !== count) return false;
+  const elements = new Map();
+  for (const element of $('cardList').querySelectorAll('.batch-card[data-id]')) {
+    elements.set(element.dataset.id, element);
+    cardHeights.set(element.dataset.id, element.getBoundingClientRect().height + CARD_GAP);
+  }
+  if (!fresh.size) return false;
+  const heights = Array(count).fill(0);
+  for (const card of shown) if (!fresh.has(card.id)) heights[columnOf.get(card.id)] += cardHeight(card.id);
+  let moved = false;
+  for (const card of shown) {
+    if (!fresh.has(card.id)) continue;
+    const column = shortestColumn(heights);
+    if (columnOf.get(card.id) !== column) moved = true;
+    columnOf.set(card.id, column);
+    heights[column] += cardHeight(card.id);
+  }
+  if (!moved) return false;
+  cardColumns(shown, count).forEach((column, i) => columnElements[i].append(...column.map(c => elements.get(c.id)).filter(Boolean)));
+  return true;
+}
+
 function render() {
   renderControls();
   // 只保留当前筛选下看得到的卡片的选中，批量改色不会改到看不见的卡片
@@ -323,10 +393,10 @@ function render() {
   } else {
     const columnCount = Math.max(1, Math.min(3, Math.floor((($('cardList').clientWidth || 1200) + 18) / 328)));
     // 不按颜色分组：卡片按处理顺序固定排列，改色只换颜色，位置不变
-    const columns = Array.from({ length: columnCount }, () => []);
-    shown.forEach((card, index) => columns[index % columnCount].push(card));
+    const fresh = placeCards(shown, columnCount);
+    const columns = cardColumns(shown, columnCount);
     const html = new Map(shown.map(c => [c.id, cardHtml(c)]));
-    const layout = JSON.stringify([columns.map(column => column.map(c => c.id)), batchState.busy]);
+    let layout = JSON.stringify([columns.map(column => column.map(c => c.id)), batchState.busy]);
     if (layout === layoutKey && shown.length) {
       // 卡片位置没变：只换内容有变化的卡片，不整页重画（图片不重新加载、页面不跳）
       for (const [id, value] of html) {
@@ -339,6 +409,8 @@ function render() {
       $('cardList').innerHTML = shown.length
         ? `<div class="batch-waterfall">${columns.map(column => `<div class="batch-column">${column.map(c => html.get(c.id)).join('')}</div>`).join('')}</div>`
         : `<section class="panel batch-empty"><h2>${batchState.busy ? '正在自动扫描与修复…' : '当前没有待审核卡片'}</h2><p>${batchState.busy ? '文件处理后会在这里出现修改前后对比，无需逐项放行。' : '开始全自动处理，或切换颜色筛选查看结果。'}</p></section>`;
+      // 新卡片先按估计高度放下，量出真实高度后在浏览器画出来之前挪到最矮的列，用户看不到挪动
+      if (rebalanceFresh(shown, columnCount, fresh)) layout = JSON.stringify([cardColumns(shown, columnCount).map(column => column.map(c => c.id)), batchState.busy]);
       restoreAnchor(anchor);
     }
     layoutKey = layout;
