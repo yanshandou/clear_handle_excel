@@ -117,18 +117,24 @@ class Book:
                 raise ValueError("文件含数字签名，修改会使签名失效，已跳过")
             self.styles_raw = self.zip.read("xl/styles.xml")
             root = ET.fromstring(self.styles_raw)
-            self.fills = list(root.find(tag("fills")))
-            self.fonts = list(root.find(tag("fonts")))
-            self.xfs = list(root.find(tag("cellXfs")))
-            self.dxfs = list(root.find(tag("dxfs"))) if root.find(tag("dxfs")) is not None else []
+            # findall() 始终返回列表；find() 可能返回 None，不能直接交给 list()。
+            self.fills = root.findall(f"{tag('fills')}/{tag('fill')}")
+            self.fonts = root.findall(f"{tag('fonts')}/{tag('font')}")
+            self.xfs = root.findall(f"{tag('cellXfs')}/{tag('xf')}")
+            self.dxfs = root.findall(f"{tag('dxfs')}/{tag('dxf')}")
+            for name, nodes in (("fills", self.fills), ("fonts", self.fonts), ("cellXfs", self.xfs)):
+                if not nodes:
+                    raise ValueError(f"文件缺少必要的 Excel 样式节点：{name}")
             self.shared_strings = None
             self.theme = []
             if "xl/theme/theme1.xml" in self.zip.namelist():
                 theme_root = ET.fromstring(self.zip.read("xl/theme/theme1.xml"))
                 scheme = theme_root.find(".//{http://schemas.openxmlformats.org/drawingml/2006/main}clrScheme")
+                if scheme is None:
+                    raise ValueError("主题文件缺少 clrScheme 颜色定义")
                 colors = {c.tag.rsplit("}", 1)[-1]: list(c)[0].get("val")
                           if list(c)[0].tag.endswith("}srgbClr") else list(c)[0].get("lastClr")
-                          for c in scheme}
+                          for c in scheme if len(c) > 0}
                 self.theme = [colors.get(n) for n in
                               ("lt1", "dk1", "lt2", "dk2", "accent1", "accent2", "accent3",
                                "accent4", "accent5", "accent6", "hlink", "folHlink")]
@@ -142,7 +148,7 @@ class Book:
                                          posixpath.normpath(posixpath.join("xl", target)))
             workbook = ET.fromstring(self.zip.read("xl/workbook.xml"))
             self.sheets = {s.get("name"): targets[s.get(f"{{{REL}}}id")]
-                           for s in workbook.find(tag("sheets"))
+                           for s in workbook.findall(f"{tag('sheets')}/{tag('sheet')}")
                            if s.get(f"{{{REL}}}id") in targets and
                            "/worksheets/" in targets[s.get(f"{{{REL}}}id") ]}
             self.original_counts = (len(self.fills), len(self.fonts), len(self.xfs))
