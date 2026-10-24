@@ -127,6 +127,30 @@ class ScanOnlyTests(unittest.TestCase):
         self.assertEqual(b5.Font.Color, 0)  # 字色还是标记色时照常还原
         self.assertEqual(batch._marks(), {})
 
+    def test_recheck_checks_with_original_colors_then_marks_this_rounds_problems(self):
+        """复检：先把标记色全部还原再检测，查完只给这次查出的问题重新标色"""
+        self.add_item("A5")
+        self.add_item("B5")
+        self.scan()
+        seen = {}
+        def refresh(*_, **__):
+            seen["A5"] = self.sheet.cell("A5").Interior.Pattern
+            seen["B5"] = self.sheet.cell("B5").Interior.Pattern
+            self.wf.STATE["items"]["iA5"]["status"] = "fixed"   # A5 改好了
+            self.wf.STATE["items"]["iB5"]["status"] = "pending"  # B5 还有问题
+            self.add_item("C5")                                  # 又冒出 C5
+        with patch.object(batch, "_refresh", side_effect=refresh):
+            batch._recheck_file(self.excel, self.path, [self.card("A5")])
+        none = batch.XL_PATTERN_NONE
+        self.assertEqual(seen, {"A5": none, "B5": none})  # 检测时是原来的颜色（无填充）
+        batch._sync_highlights(lambda: self.excel, self.path)
+        marked = batch._excel_color("#C0007A")
+        self.assertTrue(self.card("A5")["dismissed"])
+        self.assertEqual(self.sheet.cell("A5").Interior.Pattern, none)
+        self.assertEqual(self.sheet.cell("B5").Interior.Color, marked)
+        self.assertEqual(self.sheet.cell("C5").Interior.Color, marked)
+        self.assertEqual((self.card("C5")["color"], self.card("C5")["finalized"]), ("yellow", True))
+
     def test_merged_area_and_mixed_font_color(self):
         self.sheet.merges["$A$5"] = ["$A$5", "$B$5"]
         self.sheet.cells["$A$5"] = FakeCell("$A$5", font=None)

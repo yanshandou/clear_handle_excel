@@ -1123,9 +1123,9 @@ def _adopt_rows(excel: Any, path: str, by_row: dict[str, list[dict]]) -> None:
 
 
 def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:
-    """人工修改后复检：整份文件所有要打印的表全部重新导出检测。
-    改一格可能影响同表、甚至别的表（比如顺手改了表名、删了表），所以不只查卡片所在的表；
-    原来的问题都没了就算通过，新冒出来的问题另出新卡。"""
+    """人工修改后复检：不管改了哪里，整份文件所有要打印的表全部重新导出检测，不去找原来那一格。
+    原来的黄卡全部翻篇：这次没再查出问题的移出列表；这次查出的问题（同一格的就是原来那张卡）
+    直接作为人工待处理项显示，改好保存后再复检，直到查不出问题为止。"""
     _check_file(path)
     with wf.STATE_LOCK:
         # 整份本来就要重新检测：文件里其他已提交的黄色卡一起出结果，不用再一张张单独复检
@@ -1133,71 +1133,61 @@ def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:
         cards = cards + [c for c in _data()["cards"].values()
                          if c["id"] not in listed and c["wb_path"] == path
                          and c["color"] == "yellow" and c.get("finalized") and not c.get("dismissed")]
-        # 已提交的人工项复检没通过仍是人工项，改好后可直接再复检，不必先重新提交
-        # 按对象记：工作表改名时卡片编号会跟着换
-        handed = {id(c) for c in cards if c["color"] == "yellow" and c.get("finalized") and c.get("manual")}
+        # 全自动还没轮到的卡（按对象记：工作表改名时卡片编号会跟着换）
+        waiting = {id(c) for c in _data()["cards"].values()
+                   if c["wb_path"] == path and not c.get("dismissed") and _waiting(c)}
     started = time.perf_counter()
-    missing: list[str] = []
     if _unchanged_since_check(path):
         # 上次整份检测之后文件没改过，重新导出结果必然一样：直接用上次的检测结果，准确度不变
         wf.log_msg(f"ℹ️ {Path(path).name}：上次检测后文件没有修改，沿用上次检测结果")
         with wf.STATE_LOCK:
             carry_item_policies(wf.STATE["items"])
     else:
+        # 先把原来标的颜色全部还原再检测：检测的就是最后交出去的样子，查完再给这次的问题重新标色
+        _sync_highlights(lambda: excel, path, clear=True)
         checking: dict[str, float] = {}
-        missing = _refresh(excel, path, timing=checking) or []
+        _refresh(excel, path, timing=checking)
         wf.log_msg(f"⏱ {Path(path).name} 整份复检：{time.perf_counter() - started:.1f} 秒"
                    f"（打开 {checking.get('open', 0):.1f} 秒，导出 {int(checking.get('exports', 0))} 次 "
                    f"{checking.get('export', 0):.1f} 秒，检测 {checking.get('detect', 0):.1f} 秒）")
     with wf.STATE_LOCK:
         unresolved = [it for it in wf.STATE["items"].values() if it["wb_path"] == path
                       and it["status"] not in wf.RESOLVED_STATUSES]
+        problem_cells = {_cell(it) for it in unresolved}
         passed = 0
         for card in cards:
-            still = [it for it in unresolved if _cell(it) == _cell(card)]
-            # 定位不确定的同表问题不能据此断言原格已修复。
-            uncertain = any(it.get("location_confirmed") is False and it["sheet_name"] == card["sheet_name"]
-                            for it in unresolved)
-            card.update(color="yellow" if still or uncertain else "blue", verified=not (still or uncertain),
-                        finalized=bool(still or uncertain) and id(card) in handed,
-                        message="复检仍有问题" if still or uncertain else "人工修改复检通过，等待确认")
-            if not still and not uncertain and card["sheet_name"] in missing:
-                passed += 1
-                # 表已经不在了（删除、隐藏或改名认不出）：整份重查已包含现在所有的表，有问题会按新表另出卡
-                card.update(after_kind="fixed", message=f"工作表「{card['sheet_name']}」已不在文件里（被删除、隐藏或改名），"
-                            "整份重新检测已包含现在所有的表，这里的问题算已解决，等待确认")
-                fix_images.forget(card, "after")
+            if _cell(card) in problem_cells:
                 continue
-            if not still and not uncertain:
-                passed += 1
-                # 用刚导出的 PDF 按文字重新截图；旧坐标在人工修改、重新分页后可能指到别处，截不到就不放图
-                prior = _items_at(card)
-                sources = [p for p in wf.STATE["pages"].values()
-                           if p.get("wb_path") == path and p.get("sheet_name") == card["sheet_name"]] + prior
-                fix_images.forget(card, "after")
-                _save_shot(card, "after", _latest_shot(card, sources))
-                after = card.get("fix_images", {}).get("after")
-                for item in prior:  # 报告里的修复后截图也用这一张
-                    if after:
-                        item.setdefault("fix_images", {})["after"] = after
-                    else:
-                        fix_images.forget(item, "after")
-                card["after_kind"] = "fixed"
+            passed += 1
+            # 这一格这次没查出问题：翻篇，移出列表。报告里的修复后截图用刚导出的 PDF 按文字重新截，截不到就不放
+            prior = _items_at(card)
+            sources = [p for p in wf.STATE["pages"].values()
+                       if p.get("wb_path") == path and p.get("sheet_name") == card["sheet_name"]] + prior
+            fix_images.forget(card, "after")
+            _save_shot(card, "after", _latest_shot(card, sources))
+            after = card.get("fix_images", {}).get("after")
+            for item in prior:
+                if after:
+                    item.setdefault("fix_images", {})["after"] = after
+                else:
+                    fix_images.forget(item, "after")
+            card.update(color="blue", verified=True, finalized=True, dismissed=True, waiting=False,
+                        after_kind="fixed", message="人工修改后复检通过")
+        found = 0
         for group in _group_cells(unresolved):
             card = _card_for(group)
-            if card.get("dismissed"):
-                continue
-            if id(card) in handed:
-                message = "复检仍有问题，请继续修改并保存后再复检"
-                card.update(color="yellow", verified=False, manual=True, finalized=True, waiting=False, message=message)
-                for item in group:
-                    item.update(status="manual_review", batch_managed=True, triage_keep=False, review_reason=message)
-            else:
-                card.update(color="yellow", verified=False, manual=True, finalized=False, waiting=False,
-                            message="复检仍有问题或发现新问题，请人工处理")
+            if id(card) in waiting or (card.get("marked") and card["color"] != "yellow" and not card.get("finalized")):
+                continue  # 全自动还没轮到的，或你已标蓝 / 绿还没提交的，保留原样
+            found += 1
+            message = "复检查出的问题：请修改并保存后再复检"
+            card.update(color="yellow", verified=False, manual=True, finalized=True, waiting=False,
+                        dismissed=False, message=message)
+            for item in group:
+                item.update(status="manual_review", batch_managed=True, triage_keep=False, review_reason=message)
         wf._persist_state()
-        wf._sync_problem_counts(path, "人工复检完成")
-    wf.log_msg(f"🔁 {Path(path).name}：复检 {len(cards)} 格，通过 {passed} 格")
+        wf._sync_problem_counts(path, "人工复检完成" + (f"，还有 {found} 处问题" if found else "，没有查出问题"))
+    wf.log_msg(f"🔁 {Path(path).name}：原来 {len(cards)} 处翻篇（{passed} 处已不再有问题），"
+               + (f"这次查出 {found} 处问题，改好后再复检" if found else "这次没有查出问题，全部通过"))
 
 
 def _hand_over(path: str) -> None:
