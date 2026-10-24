@@ -200,8 +200,9 @@ function cardHtml(card, large = false) {
   const handling = handlingText(card);
   const images = ['before', 'after'].map(which => `<figure><figcaption>${labels[which]}</figcaption>${card.images?.[which]
     ? `<img ${large ? '' : 'loading="lazy"'} src="${esc(card.images[which])}" alt="${labels[which]}截图" data-preview="1" onerror="${missingHandler('截图暂不可用')}">`
-    : '<span class="batch-missing">暂无截图</span>'}</figure>`).join('');
-  const comparison = `<div class="batch-shots">${images}</div>`;
+    : '<span class="batch-missing">暂无截图</span>'}</figure>`);
+  // 左右两块斜切外框中间放 VS 徽章；截图本身保持方正，不倾斜不变形
+  const comparison = `<div class="batch-shots">${images[0]}<span class="batch-vs" aria-hidden="true">VS</span>${images[1]}</div>`;
   const visuals = large ? `<div class="batch-large-layout">${comparison}${contextHtml(card)}</div>` : comparison;
   return `<article class="batch-card" tabindex="0" role="button" aria-label="${esc(`${card.wb_name} ${card.sheet_name}!${card.cell_addr} ${REVIEW_LABELS[card.color]}，单击切换状态`)}" data-id="${esc(card.id)}" data-color="${card.color}">
     <div class="batch-card-head"><button type="button" class="batch-select" data-action="select" aria-pressed="false" title="选中 / 取消选中">✓</button><div class="batch-card-title">${link}<p class="batch-cell">${esc(card.sheet_name)}!${esc(card.cell_addr || '定位待确认')}</p></div><span class="batch-color-label">${REVIEW_LABELS[card.color]}</span></div>
