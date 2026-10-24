@@ -1086,6 +1086,37 @@ class BatchTests(unittest.TestCase):
         batch._recheck_file(self.excel, self.path, [card])
         self.refresh.assert_called_once()
 
+    def test_recheck_never_passes_cards_on_a_sheet_it_could_not_find(self):
+        card, item = self.manual_card("A5")
+        def refresh(*_, **__):
+            return ["S1"]  # 表被删除 / 隐藏 / 改名认不出来，这次没检测
+        self.refresh.side_effect = refresh
+        batch._recheck_file(self.excel, self.path, [card])
+        self.assertEqual((card["color"], card["verified"], card["finalized"]), ("yellow", False, True))
+        self.assertIn("找不到工作表「S1」", card["message"])
+        self.assertEqual(item["status"], "manual_review")
+
+    def test_renamed_sheet_moves_cards_rows_rules_and_highlights(self):
+        card, item = self.add_card("A5", color="yellow")
+        old_id, old_rid = card["id"], batch._key(self.path, "S1", 5)
+        batch._marks()[old_id] = {"path": self.path, "sheet": "S1", "addr": "A5"}
+        batch._data()["ignored"].append({"cell": [self.path, "S1", "B5"], "signatures": []})
+        batch._sheet_checks()[self.path] = {"S1": {"v": 1}}
+        self.wf.STATE["job"].update(kind="batch_recheck", options={"card_ids": [old_id]})
+        item["sheet_name"] = "新"
+        batch.rename_sheet(self.path, "S1", "新")
+        new_id = batch._key(self.path, "新", "A5")
+        self.assertIs(batch._data()["cards"][new_id], card)
+        self.assertNotIn(old_id, batch._data()["cards"])
+        self.assertEqual((card["id"], card["sheet_name"]), (new_id, "新"))
+        self.assertIs(batch._card_for([item]), card)  # 重新检测出来的同一格还是这张卡
+        self.assertEqual(batch._data()["rows"][batch._key(self.path, "新", 5)]["sheet"], "新")
+        self.assertNotIn(old_rid, batch._data()["rows"])
+        self.assertEqual(batch._marks()[new_id]["sheet"], "新")
+        self.assertEqual(batch._data()["ignored"][-1]["cell"][1], "新")
+        self.assertEqual(batch._sheet_checks()[self.path], {"新": {"v": 1}})
+        self.assertEqual(self.wf.STATE["job"]["options"]["card_ids"], [new_id])
+
     def recheck_job(self, cards, paths):
         self.wf.STATE.update(busy=True)
         self.wf.STATE["job"] = {"kind": "batch_recheck", "options": {"card_ids": [c["id"] for c in cards]},
