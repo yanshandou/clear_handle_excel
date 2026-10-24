@@ -1289,16 +1289,175 @@ button.preview-sheet-tag:active {
   transform: rotate(-2deg);
 }
 
+/* 修改前 / 修改后：游戏 VS 对决布局。左橙黄、右蓝，两块外框在相对的一边斜切，中间立体 VS 徽章。
+   只有外框是斜的（::before 描边层 + ::after 色块层用 clip-path 裁），截图本身方正不倾斜。 */
+.batch-shots {
+  gap: 12px;
+  --vs-slant: 16px;
+}
+
 .batch-shots figure {
-  border: 2px solid var(--ink);
-  border-radius: 12px;
-  background: #ffffff;
+  position: relative;
+  isolation: isolate;
+  border: none;
+  border-radius: 0;
+  background: transparent;
   box-shadow: none;
 }
 
+.batch-shots figure::before,
+.batch-shots figure::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  border-radius: 14px;
+  clip-path: var(--vs-clip);
+}
+
+.batch-shots figure::before {
+  inset: 0;
+  background: var(--ink);
+}
+
+.batch-shots figure::after {
+  inset: 2.5px;
+  border-radius: 12px;
+  background: linear-gradient(160deg, var(--vs-top) 0%, var(--vs-bot) 100%);
+  box-shadow: inset 0 -4px 0 rgba(28, 40, 88, 0.18), inset 0 3px 0 rgba(255, 255, 255, 0.45);
+}
+
+.batch-shots figure:first-of-type {
+  --vs-top: #ffe27a;
+  --vs-bot: #ffa41b;
+  --vs-clip: polygon(0 0, 100% 0, calc(100% - var(--vs-slant)) 100%, 0 100%);
+  padding: 10px calc(var(--vs-slant) + 10px) 12px 12px;
+}
+
+.batch-shots figure:last-of-type {
+  --vs-top: #8fd0ff;
+  --vs-bot: #2f80ff;
+  --vs-clip: polygon(var(--vs-slant) 0, 100% 0, 100% 100%, 0 100%);
+  padding: 10px 12px 12px calc(var(--vs-slant) + 10px);
+}
+
 .batch-shots figcaption {
-  color: var(--ink);
-  font-weight: 800;
+  margin-bottom: 7px;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.5px;
+  text-shadow:
+    1.5px 0 0 var(--ink), -1.5px 0 0 var(--ink), 0 1.5px 0 var(--ink), 0 -1.5px 0 var(--ink),
+    1px 1px 0 var(--ink), -1px -1px 0 var(--ink), 1px -1px 0 var(--ink), -1px 1px 0 var(--ink),
+    0 3px 0 var(--ink);
+}
+
+/* 右侧标题靠右，和左侧对称；斜切那一侧的内边距已给 VS 徽章留出位置 */
+.batch-shots figure:last-of-type figcaption {
+  text-align: right;
+}
+
+.batch-shots img,
+.batch-shots .batch-missing {
+  box-sizing: border-box;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.batch-shots img {
+  padding: 3px;
+}
+
+.batch-shots .batch-missing {
+  border-style: dashed;
+  color: var(--ink-3);
+  font-weight: 700;
+}
+
+.batch-shots .batch-vs {
+  display: block;
+  position: absolute;
+  z-index: 2;
+  top: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 6px 0 2px;
+  font-size: 27px;
+  font-style: italic;
+  font-weight: 900;
+  line-height: 1.05;
+  letter-spacing: -1px;
+  color: transparent;
+  background: linear-gradient(180deg, #ffffff 0%, #fff3b0 45%, #ffc21f 55%, #ff8a1f 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  filter:
+    drop-shadow(1.5px 0 0 #ff6a1f) drop-shadow(-1.5px 0 0 #ff6a1f)
+    drop-shadow(0 1.5px 0 #ff6a1f) drop-shadow(0 -1.5px 0 #ff6a1f)
+    drop-shadow(1.5px 0 0 var(--ink)) drop-shadow(-1.5px 0 0 var(--ink))
+    drop-shadow(0 1.5px 0 var(--ink)) drop-shadow(0 -1.5px 0 var(--ink))
+    drop-shadow(0 3px 0 var(--ink));
+  pointer-events: none;
+  user-select: none;
+}
+
+/* 单卡大图审核和窄屏：上下排，斜切改到相对的上下边，VS 卡在两块中间的接缝上 */
+#largeView .batch-shots {
+  gap: 0;
+}
+
+#largeView .batch-shots figure:first-of-type {
+  --vs-clip: polygon(0 0, 100% 0, 100% calc(100% - var(--vs-slant)), 0 100%);
+  padding: 10px 12px calc(var(--vs-slant) + 10px) 12px;
+}
+
+#largeView .batch-shots figure:last-of-type {
+  --vs-clip: polygon(0 var(--vs-slant), 100% 0, 100% 100%, 0 100%);
+  padding: calc(var(--vs-slant) + 8px) 12px 12px 12px;
+}
+
+#largeView .batch-shots figure:last-of-type figcaption {
+  text-align: left;
+}
+
+#largeView .batch-shots .batch-vs {
+  position: relative;
+  top: auto;
+  left: auto;
+  justify-self: center;
+  transform: none;
+  margin: -14px 0;
+  font-size: 36px;
+}
+
+@media (max-width: 700px) {
+  .batch-shots {
+    gap: 0;
+  }
+
+  .batch-shots figure:first-of-type {
+    --vs-clip: polygon(0 0, 100% 0, 100% calc(100% - var(--vs-slant)), 0 100%);
+    padding: 10px 12px calc(var(--vs-slant) + 10px) 12px;
+  }
+
+  .batch-shots figure:last-of-type {
+    --vs-clip: polygon(0 var(--vs-slant), 100% 0, 100% 100%, 0 100%);
+    padding: calc(var(--vs-slant) + 8px) 12px 12px 12px;
+  }
+
+  .batch-shots figure:last-of-type figcaption {
+    text-align: left;
+  }
+
+  .batch-shots .batch-vs {
+    position: relative;
+    top: auto;
+    left: auto;
+    justify-self: center;
+    transform: none;
+    margin: -12px 0;
+  }
 }
 
 .batch-card .batch-problem {
