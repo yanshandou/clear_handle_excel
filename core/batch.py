@@ -685,6 +685,7 @@ def _prepare_row(
     before: dict[str, str] = {}
     chosen = None
     extra = 0.0
+    scale = None
     success = False
     pdf = session.temp_pdf()
     try:
@@ -724,6 +725,11 @@ def _prepare_row(
                 break
             success = ok
             last_height = height
+            if need:
+                # 缺口是在 PDF 上量的，打印缩放 70% 时要除以 0.7 才是实际要加的行高
+                if scale is None:
+                    scale = autofix.print_scale(sheet)
+                need /= scale
             extra = max(extra + autofix.STEP_PT,
                         math.ceil(round((extra + need) / autofix.STEP_PT, 3)) * autofix.STEP_PT)
     finally:

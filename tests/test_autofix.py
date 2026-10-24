@@ -705,5 +705,17 @@ class AutofixEvaluationTests(unittest.TestCase):
         self.assertTrue(ok)
 
 
+
+class PrintScaleTests(unittest.TestCase):
+    def test_zoom_converts_pdf_gap_to_row_height(self):
+        from core import autofix
+        sheet = Mock()
+        for zoom, scale in ((70, .7), (100, 1.0), (150, 1.5), (False, 1.0), (None, 1.0), (5, .1)):
+            sheet.PageSetup.Zoom = zoom
+            self.assertAlmostEqual(autofix.print_scale(sheet), scale)
+        type(sheet).PageSetup = property(lambda _: (_ for _ in ()).throw(RuntimeError("no printer")))
+        self.assertEqual(autofix.print_scale(sheet), 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()
