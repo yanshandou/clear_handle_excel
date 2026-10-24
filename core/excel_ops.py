@@ -296,7 +296,7 @@ def close_saved_workbooks(paths: list[Path], timeout: float = USER_EXCEL_TIMEOUT
     worker = threading.Thread(target=work, name="close-saved-workbooks", daemon=True)
     worker.start()
     worker.join(timeout)
-    debug_log.event("关闭你 Excel 里已保存的文件", 文件数=len(paths), 超时=worker.is_alive(),
+    debug_log.event("🪟 关闭你 Excel 里已保存的文件", 文件数=len(paths), 超时=worker.is_alive(),
                     没保存=[Path(p).name for p in result.get("left", {})] or "-")
     if worker.is_alive():
         debug_log.dump_threads("你的 Excel 不响应")
@@ -323,7 +323,7 @@ def _close_saved_workbooks(paths: list[Path]) -> dict[Path, str]:
                 continue
             if path not in wanted:
                 continue
-            debug_log.event("  你的 Excel 里开着", 文件=path.name, 已保存=book.Saved)
+            debug_log.event("🪟 你的 Excel 里开着", 文件=path.name, 已保存=book.Saved)
             if book.Saved:
                 book.Close(SaveChanges=False)
             else:

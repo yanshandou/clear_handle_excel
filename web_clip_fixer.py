@@ -142,14 +142,6 @@ class WebHandler(BaseHTTPRequestHandler):
             debug_log.exception(err, f"GET {self.path}")
             self._send_json({"ok": False, "error": f"程序出错：{err}（详细信息已写进调试日志）"}, status=500)
 
-    def _debug_log_file(self, query: str):
-        """网页选的调试日志：只认 _debug_logs 里现有的文件名，默认最近一次任务"""
-        name = (parse_qs(query).get("name") or [""])[0]
-        files = {path.name: path for path in debug_log.task_logs()}
-        if debug_log.APP_LOG.exists():
-            files[debug_log.APP_LOG.name] = debug_log.APP_LOG
-        return files.get(name) or debug_log.latest_log()
-
     def _handle_get(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path in {"/", "/home.html"}:
@@ -219,19 +211,15 @@ class WebHandler(BaseHTTPRequestHandler):
                 filename=f"excel_progress_{datetime.now():%Y%m%d_%H%M%S}.json",
             )
         elif parsed.path == "/api/debug-log/list":
-            files = debug_log.task_logs()[:debug_log.KEEP_TASK_LOGS]
-            if debug_log.APP_LOG.exists():
-                files.append(debug_log.APP_LOG)
-            self._send_json({"logs": [{"name": path.name, "kb": max(1, path.stat().st_size // 1024)}
-                                      for path in files]})
-        elif parsed.path in {"/api/debug-log/copy", "/api/debug-log/download"}:
-            path = self._debug_log_file(parsed.query)
-            if path is None:
-                self._send_bytes("（还没有调试日志：跑过一次任务后才会有）".encode("utf-8"), "text/plain; charset=utf-8")
-            elif parsed.path.endswith("/copy"):
-                self._send_bytes(debug_log.for_copy(path).encode("utf-8"), "text/plain; charset=utf-8")
-            else:
-                self._send_bytes(path.read_bytes(), "text/plain; charset=utf-8", filename=path.name)
+            self._send_json({"tasks": debug_log.tasks()})
+        elif parsed.path == "/api/debug-log/copy":
+            # 选中的那次任务（默认最近一次），按 〰 分隔线从 log.txt 里整段挑出来
+            title, text = debug_log.task_text((parse_qs(parsed.query).get("id") or [""])[0])
+            body = debug_log.for_copy(title, text) if text else "（还没有调试日志：跑过一次任务后才会有）"
+            self._send_bytes(body.encode("utf-8"), "text/plain; charset=utf-8")
+        elif parsed.path == "/api/debug-log/download":
+            data = debug_log.LOG_PATH.read_bytes() if debug_log.LOG_PATH.exists() else b""
+            self._send_bytes(data, "text/plain; charset=utf-8", filename="log.txt")
         elif parsed.path == "/api/records":
             self._send_json(get_execution_report_snapshot())
         elif parsed.path == "/api/records/zip":
@@ -256,13 +244,13 @@ class WebHandler(BaseHTTPRequestHandler):
                 raise ValueError("请求内容不是有效的 JSON（文件可能已损坏）") from None
             if not isinstance(payload, dict):
                 raise ValueError("请求内容必须为 JSON 对象")
-            debug_log.event("网页操作", 路径=self.path, 参数=debug_log.summary(payload)[:600])
+            debug_log.event("🖱️ 网页操作", 路径=self.path, 参数=debug_log.summary(payload)[:600])
             self._handle_post(payload)
         except ConnectionError:
             # 浏览器已断开（刷新、关闭页面或离开），结果送不回去，也不必再回错误
             self._log_client_disconnect()
         except (ValueError, TypeError, UnicodeError) as err:
-            debug_log.event("网页操作被拒绝", 路径=self.path, 原因=err)
+            debug_log.event("🚫 网页操作被拒绝", 路径=self.path, 原因=err)
             if not isinstance(err, ValueError):
                 debug_log.exception(err, f"POST {self.path}")
             self._send_json({"ok": False, "error": str(err)}, status=400)

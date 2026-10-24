@@ -1118,7 +1118,7 @@ def _scan_one_workbook(
     started = time.perf_counter()
     wb = workbook if workbook is not None else open_workbook_checked(excel, str(wb_path.resolve()), **open_options)
     timing["open"] = timing.get("open", 0.0) + time.perf_counter() - started
-    debug_log.event("打开工作簿", 文件=wb_label, 秒=time.perf_counter() - started, 只读=read_only,
+    debug_log.event("📂 打开工作簿", 文件=wb_label, 秒=time.perf_counter() - started, 只读=read_only,
                     用副本=workbook is not None, 只查=entry["sheets"] if sheets_only else "全部",
                     大小KB=wb_path.stat().st_size // 1024 if wb_path.exists() else "?")
     try:
@@ -1189,10 +1189,10 @@ def _scan_one_workbook(
             started = time.perf_counter()
             pages, items = _detect_sheet_results(sheet, wb_path, s_name, pdf_path, next_seq)
             timing["detect"] = timing.get("detect", 0.0) + time.perf_counter() - started
-            debug_log.event("  检测表", 表=s_name, 复用PDF=exported is not None, 导出秒=export_seconds,
+            debug_log.event("📄 检测表", 表=s_name, 复用PDF=exported is not None, 导出秒=export_seconds,
                             检测秒=time.perf_counter() - started, 有问题的页=len(pages), 检出=len(items))
             for found in items.values():
-                debug_log.event("    检出", 类型=found["kind"], 原因=found.get("hidden_reason", ""),
+                debug_log.event("🔍 检出", 类型=found["kind"], 原因=found.get("hidden_reason", ""),
                                 位置=f"{s_name}!{found.get('cell_addr')}", 行=found.get("excel_row"),
                                 行高=found.get("row_height"), 页=found.get("page_index"),
                                 定位确认=found.get("location_confirmed"), 文字=debug_log.clip(found.get("text")),
@@ -2668,7 +2668,7 @@ def quick_task_workflow(kind: str) -> None:
                 continue
             wb_label = workbook_rel_name(wb_path, folder)
             watchdog.progress()
-            debug_log.section(f"{task_name} {workbooks.index(wb_path) + 1} / {len(workbooks)}：{wb_label}")
+            debug_log.begin(f"{task_name} {workbooks.index(wb_path) + 1} / {len(workbooks)}：{wb_label}")
             log_msg(f"正在处理: {wb_label} ...")
             update_file_progress(
                 wb_label, status="processing", current_action=f"正在执行{task_name}...", error="",
@@ -2694,7 +2694,7 @@ def quick_task_workflow(kind: str) -> None:
                     )
                 else:
                     _normalize_workbook_file(get_excel, wb_path, folder)
-                debug_log.event("完成", 文件=wb_label, 秒=time.perf_counter() - started, 导出PDF=len(exported))
+                debug_log.event("⏱ 完成", 文件=wb_label, 秒=time.perf_counter() - started, 导出PDF=len(exported))
             except Exception as err:
                 log_msg(f"❌ 处理文件出错 {wb_label}: {err}")
                 update_file_progress(

@@ -1,9 +1,14 @@
 """调试日志：公司的 Excel 不能发出去，出问题时靠这份日志远程排查。
 
-- 每个任务（全自动、只扫描、提交、复检、清除颜色、主页单独任务……）一个文件，放在程序目录的 _debug_logs/，
-  最近 KEEP_TASK_LOGS 个保留，更早的自动删除。没有任务时的记录（网页请求出错等）写到 _debug_logs/app.log。
-- 比网页实时日志详细：每步耗时、完整 traceback、Excel / COM 错误码、每个检出问题的原因、每次试算的行高、
-  写入前后的行高、标色 / 还原的每一格、程序版本和环境。网页上的实时日志照常只留最近几百行，这里不进 /api 快照。
+- 全部写进程序目录的 log.txt，每条一行（不换行），开头用 Emoji 标类型：
+  🧭 版本环境 ⚙️ Excel 📂 打开文件 📄 工作表 🔍 检出 🧪 试算 ✍️ 写入 💾 保存 🎨 标色 🧽 还原 🔎 兜底查找
+  🖱️ 网页操作 🚫 操作被拒绝 💬 网页实时日志 ⏱ 耗时 ✅ 完成 🪟 你的 Excel ❌ 异常（含调用栈和 COM 错误码）🧵 线程现场
+- 一件事牵涉多条日志时用分隔线包起来，可以嵌套（任务 > 文件 > 行）：
+  〰〰〰〰〰〰〰〰〰〰 ⬇任务 batch_scan #20261024_183012 开始⬇ 〰〰〰〰〰〰〰〰〰〰
+  〰〰〰〰〰〰〰〰〰〰 ⬆任务 batch_scan #20261024_183012 结束⬆ 〰〰〰〰〰〰〰〰〰〰
+  网页上「复制调试日志」按任务的分隔线把那一次任务整段挑出来。
+- 每行都带完整日期时间，一直往同一个 log.txt 追加；程序启动、每个任务开始和之后每小时，删掉 KEEP_HOURS 小时以前的行
+  （正在跑的任务从开始起都留着）。
 - 单元格内容只记前 TEXT_PREVIEW_CHARS 个字和总长度（clip），文件名、表名、单元格地址照常记。
 - 默认开启；环境变量 CLIP_DEBUG_LOG=0 可关闭。跑回归测试时自动不写。
 """
@@ -11,6 +16,7 @@ import functools
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -27,24 +33,27 @@ from typing import Any
 from core import build_info
 from core.common import PROJECT_ROOT
 
-DEBUG_DIR = PROJECT_ROOT / "_debug_logs"
-APP_LOG = DEBUG_DIR / "app.log"
-KEEP_TASK_LOGS = 30
-MAX_TASK_LOG_BYTES = 50 * 1024 * 1024  # 一个任务的日志写到这么大后只再记报错，防止把磁盘写满
-MAX_APP_LOG_BYTES = 5 * 1024 * 1024
-MAX_LINE_CHARS = 4000
+LOG_PATH = PROJECT_ROOT / "log.txt"
+KEEP_HOURS = 12
+PRUNE_EVERY_SECONDS = 3600
+MAX_TASK_BYTES = 50 * 1024 * 1024  # 一个任务写到这么大后只再记报错，防止把磁盘写满
+MAX_LINE_CHARS = 8000
 TEXT_PREVIEW_CHARS = 12  # 单元格内容只记这么多字，不把公司数据整段写进日志
 QUIET_DUMP_SECONDS = 180  # 任务进行中这么久没有任何新日志：记下每个线程停在哪一行（卡住时最有用）
 COPY_HEAD_BYTES = 8_000
 COPY_ERRORS_BYTES = 60_000
 COPY_TAIL_BYTES = 120_000
-ERROR_PREFIX = "!! "  # 报错块的第一行，复制时按它把报错单独挑出来
+WAVE = "〰" * 10
+ERROR_MARKS = ("❌", "🧵", "⚠️")  # 复制时这些开头的行单独挑出来
 
 _lock = threading.RLock()
+_fh: Any = None
 _task: dict[str, Any] | None = None
+_open: list[str] = []  # 还没写结束线的分隔块（任务不算在内），外层在前
 _last_write = time.monotonic()
+_last_prune = 0.0
 _quiet_dumped = False
-# 已经写过 traceback 的异常，同一个异常只写一次。不留异常对象本身（会连带留住 Excel 的 COM 对象），
+# 已经写过调用栈的异常，同一个异常只写一次。不留异常对象本身（会连带留住 Excel 的 COM 对象），
 # 只记 id 加类型和内容，id 被新异常重用时也认得出不是同一个
 _dumped: deque[tuple] = deque(maxlen=64)
 _monitor: threading.Thread | None = None
@@ -90,55 +99,86 @@ def _value(value: Any) -> str:
     return str(value)
 
 
-def _write_line(text: str, *, force: bool = False) -> None:
-    global _last_write, _quiet_dumped
+def _one_line(text: str) -> str:
+    return " ⏎ ".join(part.strip() for part in str(text).splitlines() if part.strip()) or ""
+
+
+def _emit(raw: str, *, force: bool = False) -> None:
+    """写一行。raw 已经排好（Emoji 开头或分隔线）"""
+    global _fh, _last_write, _quiet_dumped
     if not enabled():
         return
-    stamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    thread = threading.current_thread().name
-    if thread.endswith("(process_request_thread)"):
-        thread = "网页"  # 处理网页请求的线程，名字太长
-    if len(text) > MAX_LINE_CHARS:
-        text = text[:MAX_LINE_CHARS] + f"……（这一行共 {len(text)} 字，后面省略）"
-    line = f"[{stamp}] [{thread}] {text}\n"
+    if len(raw) > MAX_LINE_CHARS:
+        raw = raw[:MAX_LINE_CHARS] + f"……（这一行共 {len(raw)} 字，后面省略）"
+    line = raw + "\n"
     with _lock:
         try:
             if _task is not None:
-                if _task["bytes"] >= MAX_TASK_LOG_BYTES and not force:
-                    if not _task["full"]:
-                        _task["full"] = True
-                        _task["fh"].write(f"[{stamp}] 调试日志已到 {MAX_TASK_LOG_BYTES // 1024 // 1024} MB，之后只记报错\n")
-                    return
-                _task["fh"].write(line)
+                if _task["bytes"] >= MAX_TASK_BYTES and not force:
+                    if _task["full"]:
+                        return
+                    _task["full"] = True
+                    line = f"⚠️ 这个任务的日志已到 {MAX_TASK_BYTES // 2**20} MB，之后只记报错\n"
                 _task["bytes"] += len(line.encode("utf-8"))
-            else:
-                DEBUG_DIR.mkdir(exist_ok=True)
-                if APP_LOG.exists() and APP_LOG.stat().st_size > MAX_APP_LOG_BYTES:
-                    APP_LOG.replace(APP_LOG.with_name("app.old.log"))
-                with APP_LOG.open("a", encoding="utf-8") as fh:
-                    fh.write(line)
+            if _fh is None:
+                _fh = LOG_PATH.open("a", encoding="utf-8", buffering=1)  # 按行写入：程序崩溃时日志也在
+            _fh.write(line)
             _last_write = time.monotonic()
             _quiet_dumped = False
         except OSError:
             pass  # 写不了调试日志（磁盘满、被占用）不能影响任务本身
 
 
+def _thread() -> str:
+    name = threading.current_thread().name
+    return "网页" if name.endswith("(process_request_thread)") else name
+
+
+def _now() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
+def _line(emoji: str, text: str, *, force: bool = False) -> None:
+    stamp = _now()
+    _emit(f"{emoji} [{stamp}] [{_thread()}] {_one_line(text)}", force=force)
+
+
+def _wave(arrow: str, title: str, *, force: bool = True) -> None:
+    stamp = _now()
+    word = "开始" if arrow == "⬇" else "结束"
+    _emit(f"{WAVE} {arrow}{title} {word}{arrow} {stamp} {WAVE}", force=force)
+
+
 @_never_raise
-def write(message: str) -> None:
-    for i, part in enumerate(str(message).splitlines() or [""]):
-        _write_line(part if i == 0 else "    " + part)
+def write(message: str, emoji: str = "ℹ️") -> None:
+    _line(emoji, message)
 
 
 @_never_raise
 def event(tag: str, **fields: Any) -> None:
-    """一行结构化记录：tag key=value key=value"""
-    _write_line(tag + "".join(f" {key}={_value(value)}" for key, value in fields.items()))
+    """一行结构化记录。tag 以 Emoji 开头：「🔍 检出」→ 🔍 [时间] [线程] 检出 key=value key=value"""
+    emoji, _, rest = tag.strip().partition(" ")
+    if not rest or emoji[0].isalnum():
+        emoji, rest = "ℹ️", tag.strip()
+    _line(emoji, rest + "".join(f" {key}={_value(value)}" for key, value in fields.items()))
 
 
 @_never_raise
-def section(title: str) -> None:
-    _write_line("")
-    _write_line(f"==================== {title} ====================")
+def begin(title: str, level: int = 1) -> None:
+    """开一个分隔块（1 = 文件，2 = 文件里的一行）。同级或更深的块还开着时先写结束线，
+    中途 continue、出错跳过也不会少结束线；任务结束时全部收尾"""
+    with _lock:
+        while len(_open) >= level:
+            _wave("⬆", _open.pop())
+        _open.append(title)
+        _wave("⬇", title)
+
+
+@_never_raise
+def end(level: int = 1) -> None:
+    with _lock:
+        while len(_open) >= level:
+            _wave("⬆", _open.pop())
 
 
 def com_details(err: BaseException) -> str:
@@ -165,58 +205,70 @@ def com_details(err: BaseException) -> str:
     return "；".join(parts)
 
 
+def _frames(frames: list[traceback.FrameSummary]) -> str:
+    """调用栈写成一行：程序自己的文件只写相对路径，外层在前、出错处在后"""
+    root = str(PROJECT_ROOT)
+    parts = []
+    for frame in frames:
+        name = frame.filename
+        name = name[len(root) + 1:] if name.startswith(root) else Path(name).name
+        code = f" `{frame.line.strip()}`" if frame.line else ""
+        parts.append(f"{name}:{frame.lineno} {frame.name}{code}")
+    return " → ".join(parts)
+
+
 def _key(err: BaseException) -> tuple:
     return id(err), type(err).__name__, str(err)[:200], id(err.__traceback__)
 
 
 @_never_raise
 def exception(err: BaseException, context: str = "") -> None:
-    """完整 traceback + COM 错误码。同一个异常被几层 except 记录时只写一次"""
+    """一行写完：异常类型和内容、COM 错误码、调用栈，以及起因（except 里又出错时的前一个异常）。
+    同一个异常被几层 except 记录时只写一次"""
     if _key(err) in _dumped:
         return
     _dumped.append(_key(err))
-    lines = [f"{ERROR_PREFIX}异常{('：' + context) if context else ''} {type(err).__name__}: {err}"]
+    parts = [f"异常{('（' + context + '）') if context else ''} {type(err).__name__}: {err}"]
     details = com_details(err)
     if details:
-        lines.append(f"   COM: {details}")
-    # 前一个异常已经写过（except 里又出错）：只写这次的，不再重复前面那段
+        parts.append(f"COM: {details}")
+    parts.append("调用栈: " + _frames(traceback.extract_tb(err.__traceback__)))
     earlier = err.__cause__ or err.__context__
-    chain = earlier is None or _key(earlier) not in _dumped
-    if not chain:
-        lines.append(f"   （发生在处理上面那个 {type(earlier).__name__} 的时候）")
-    root = str(PROJECT_ROOT)
-    for chunk in traceback.format_exception(type(err), err, err.__traceback__, chain=chain):
-        for line in chunk.rstrip().splitlines():
-            if line.strip() and not line.strip().strip("~^"):
-                continue  # Python 3.11 起标出错位置的 ~~~^^^ 行，贴过来只占地方
-            lines.append("   " + line.replace(root, "<程序目录>"))
-    for line in lines:
-        _write_line(line, force=True)
+    while earlier is not None:
+        if _key(earlier) in _dumped:
+            parts.append(f"起因: 上面已记的 {type(earlier).__name__}")
+            break
+        parts.append(f"起因: {type(earlier).__name__}: {earlier} | 调用栈: "
+                     + _frames(traceback.extract_tb(earlier.__traceback__)))
+        earlier = earlier.__cause__ or earlier.__context__
+    _line("❌", " ｜ ".join(parts), force=True)
 
 
 @_never_raise
 def mirror(line: str) -> None:
-    """网页实时日志的每一行也写进调试日志；在 except 里记的报错顺带写出完整 traceback"""
-    _write_line("[日志] " + line)
+    """网页实时日志的每一行也写进调试日志；在 except 里记的报错顺带写出调用栈"""
+    _line("💬", line)
     err = sys.exc_info()[1]
     if err is not None and any(mark in line for mark in ("❌", "⚠️", "失败", "出错", "中断")):
-        exception(err, "上一行日志")
+        exception(err, "上一条日志")
 
 
 @contextmanager
 def timed(label: str, **fields: Any) -> Iterator[dict[str, Any]]:
-    """记下一步的开始、结束和耗时；出错时记下 traceback。yield 的 dict 里放的内容会写进结束那一行"""
+    """记下一步的开始、结束和耗时；出错时记下调用栈。yield 的 dict 里放的内容会写进结束那一行"""
     extra: dict[str, Any] = {}
-    event(f"▶ {label}", **fields)
+    _wave("⬇", label, force=False)
     started = time.perf_counter()
     try:
         yield extra
     except BaseException as err:
-        event(f"✖ {label} 失败", 秒=time.perf_counter() - started, **fields, **extra)
+        event(f"⏱ {label} 失败", 秒=time.perf_counter() - started, **fields, **extra)
         if isinstance(err, Exception):
             exception(err, label)
+        _wave("⬆", label)
         raise
-    event(f"◀ {label}", 秒=time.perf_counter() - started, **fields, **extra)
+    event(f"⏱ {label}", 秒=time.perf_counter() - started, **fields, **extra)
+    _wave("⬆", label, force=False)
 
 
 def _git(*args: str) -> str:
@@ -301,7 +353,7 @@ def excel_started(app: Any, role: str = "后台") -> None:
         info["Hwnd"] = int(app.Hwnd)
     except Exception:
         pass
-    event(f"Excel 已启动（{role}）", **info)
+    event(f"⚙️ Excel 已启动（{role}）", **info)
 
 
 def summary(options: dict[str, Any]) -> str:
@@ -317,13 +369,37 @@ def summary(options: dict[str, Any]) -> str:
         return str(options)[:1000]
 
 
-def _prune() -> None:
-    logs = sorted(DEBUG_DIR.glob("task_*.log"))
-    for old in logs[:-KEEP_TASK_LOGS]:
-        try:
-            old.unlink()
-        except OSError:
-            pass
+_STAMP = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+
+
+@_never_raise
+def prune(now: datetime | None = None) -> None:
+    """删掉 KEEP_HOURS 小时以前的行；正在跑的任务从开始那一行起都留着。文件按时间顺序追加，
+    找到第一行不早于界线的，前面的整段去掉"""
+    global _fh, _last_prune
+    now = now or datetime.now()
+    cutoff = now.timestamp() - KEEP_HOURS * 3600
+    with _lock:
+        _last_prune = time.monotonic()
+        if _task is not None:
+            cutoff = min(cutoff, _task["since"])
+        if not LOG_PATH.exists():
+            return
+        lines = LOG_PATH.read_bytes().decode("utf-8", errors="replace").splitlines(keepends=True)
+        keep_from = len(lines)
+        for i, line in enumerate(lines):
+            match = _STAMP.search(line[:120])
+            if match and datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S").timestamp() >= cutoff:
+                keep_from = i
+                break
+        if keep_from == 0:
+            return
+        if _fh is not None:
+            _fh.close()
+            _fh = None
+        temp = LOG_PATH.with_name("log.txt.tmp")
+        temp.write_text("".join(lines[keep_from:]), encoding="utf-8")
+        temp.replace(LOG_PATH)
 
 
 @_never_raise
@@ -335,20 +411,16 @@ def start_task(kind: str, options: dict[str, Any] | None = None, extra: dict[str
     with _lock:
         if _task is not None:
             end_task("被下一个任务替换")
-        try:
-            DEBUG_DIR.mkdir(exist_ok=True)
-            path = DEBUG_DIR / f"task_{datetime.now():%Y%m%d_%H%M%S}_{kind}.log"
-            fh = path.open("a", encoding="utf-8", buffering=1)  # 按行写入：程序崩溃时日志也在
-        except OSError:
-            return
-        _task = {"path": path, "fh": fh, "kind": kind, "started": time.perf_counter(), "bytes": 0, "full": False}
-        _prune()
-    section(f"任务 {kind}{'（继续上次任务）' if resumed else ''}")
+        prune()
+        title = f"任务 {kind} #{datetime.now():%Y%m%d_%H%M%S}"
+        _task = {"title": title, "started": time.perf_counter(), "since": int(time.time()), "bytes": 0, "full": False}
+        _wave("⬇", title)
+    write(f"任务 {kind}{'（继续上次任务）' if resumed else ''}", "🧭")
     for line in environment():
-        write(line)
+        write(line, "🧭")
     for key, value in (extra or {}).items():
-        write(f"{key}: {value}")
-    write(f"任务参数: {summary(options or {})}")
+        write(f"{key}: {value}", "🧭")
+    write(f"任务参数: {summary(options or {})}", "🧭")
     _ensure_monitor()
 
 
@@ -358,25 +430,25 @@ def end_task(status: str) -> None:
     with _lock:
         if _task is None:
             return
-        _write_line(f"任务结束：{status}，共 {time.perf_counter() - _task['started']:.1f} 秒", force=True)
-        try:
-            _task["fh"].close()
-        except OSError:
-            pass
+        end(1)
+        _line("✅" if status.startswith("completed") else "⏹", f"任务结束：{status}，共 "
+              f"{time.perf_counter() - _task['started']:.1f} 秒", force=True)
+        _wave("⬆", _task["title"])
         _task = None
 
 
 @_never_raise
 def dump_threads(reason: str) -> None:
-    """每个线程正停在哪一行：任务卡住、看门狗触发时，这能直接看出卡在哪个调用上"""
+    """每个线程正停在哪一行：任务卡住、看门狗触发时，这能直接看出卡在哪个调用上。一个线程一行"""
     names = {thread.ident: thread.name for thread in threading.enumerate()}
-    _write_line(f"{ERROR_PREFIX}线程现场：{reason}", force=True)
+    title = f"线程现场：{reason}"
+    _wave("⬇", title)
     for ident, frame in sys._current_frames().items():
-        if names.get(ident) == "debug-log-monitor":
+        name = names.get(ident, str(ident))
+        if name == "debug-log-monitor":
             continue
-        _write_line(f"   --- 线程 {names.get(ident, ident)} ---", force=True)
-        for line in "".join(traceback.format_stack(frame)).rstrip().splitlines():
-            _write_line("   " + line, force=True)
+        _line("🧵", f"线程 {name}: " + _frames(traceback.extract_stack(frame)), force=True)
+    _wave("⬆", title)
 
 
 def _watch_quiet() -> None:
@@ -386,6 +458,9 @@ def _watch_quiet() -> None:
         with _lock:
             quiet = time.monotonic() - _last_write
             due = _task is not None and not _quiet_dumped and quiet >= QUIET_DUMP_SECONDS
+            stale = time.monotonic() - _last_prune >= PRUNE_EVERY_SECONDS
+        if stale:
+            prune()
         if due:
             dump_threads(f"已经 {quiet:.0f} 秒没有新日志")
             with _lock:
@@ -406,7 +481,7 @@ def install() -> None:
 
     class _Handler(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
-            _write_line(f"[logging {record.levelname}] {record.getMessage()}", force=True)
+            _line("⚠️", f"[logging {record.levelname}] {record.getMessage()}", force=True)
             if record.exc_info and record.exc_info[1] is not None:
                 exception(record.exc_info[1], "logging")
 
@@ -419,43 +494,66 @@ def install() -> None:
         previous(args)
 
     threading.excepthook = thread_hook
-    _write_line(f"程序启动，版本 {version()}")
+    prune()
+    write(f"程序启动，版本 {version()}", "🚀")
+    _ensure_monitor()
 
 
-def task_logs() -> list[Path]:
-    return sorted(DEBUG_DIR.glob("task_*.log"), reverse=True) if DEBUG_DIR.exists() else []
+# ---- 网页上选任务、复制、下载 ----
+
+_TASK_START = re.compile(rf"^{WAVE} ⬇任务 (\S+) #(\d{{8}}_\d{{6}}) 开始⬇", re.M)
 
 
-def latest_log() -> Path | None:
-    logs = task_logs()
-    return logs[0] if logs else None
+def _read() -> str:
+    return LOG_PATH.read_bytes().decode("utf-8", errors="replace") if LOG_PATH.exists() else ""
 
 
-def for_copy(path: Path) -> str:
-    """复制到剪贴板用：开头的版本环境、全部报错块、最后一段。日志不大时原样全部给出"""
-    data = path.read_bytes()
-    budget = COPY_HEAD_BYTES + COPY_ERRORS_BYTES + COPY_TAIL_BYTES
-    text = data.decode("utf-8", errors="replace")
-    if len(data) <= budget:
-        return f"### 调试日志 {path.name}（完整）\n{text}"
-    lines = text.splitlines()
+def tasks(limit: int = 30) -> list[dict[str, Any]]:
+    """log.txt 里最近的任务，新的在前"""
+    text = _read()
+    found = list(_TASK_START.finditer(text))
+    result = []
+    for i, match in enumerate(reversed(found)):
+        if i >= limit:
+            break
+        stop = found[len(found) - i].start() if i else len(text)
+        result.append({"id": match.group(2), "kind": match.group(1),
+                       "kb": max(1, len(text[match.start():stop].encode("utf-8")) // 1024)})
+    return result
+
+
+def task_text(task_id: str | None = None) -> tuple[str, str]:
+    """(标题, 内容)：某次任务从开始线到结束线（还没结束就到文件末尾）。没给 id 就是最近一次"""
+    text = _read()
+    found = list(_TASK_START.finditer(text))
+    if task_id:
+        found = [m for m in found if m.group(2) == task_id] or found
+    if not found:
+        return "", ""
+    start = found[-1]
+    end_mark = f"{WAVE} ⬆任务 {start.group(1)} #{start.group(2)} 结束⬆"
+    stop = text.find(end_mark, start.end())
+    stop = len(text) if stop < 0 else text.find("\n", stop) + 1 or len(text)
+    return f"任务 {start.group(1)} #{start.group(2)}", text[start.start():stop]
+
+
+def for_copy(title: str, text: str) -> str:
+    """复制到剪贴板用：不长就全部；太长时只要开头的版本环境、全部报错和最后一段"""
+    data = text.encode("utf-8")
+    if len(data) <= COPY_HEAD_BYTES + COPY_ERRORS_BYTES + COPY_TAIL_BYTES:
+        return f"### 调试日志 {title}（完整）\n{text}"
     head = data[:COPY_HEAD_BYTES].decode("utf-8", errors="ignore").rsplit("\n", 1)[0]
     errors: list[str] = []
     size = 0
-    block = False
-    for line in lines:
-        is_error = ERROR_PREFIX in line[:60]
-        if is_error or (block and line.startswith("   ")):
-            block = True
+    for line in text.splitlines():
+        if line.startswith(ERROR_MARKS):
             size += len(line.encode("utf-8")) + 1
             if size > COPY_ERRORS_BYTES:
                 errors.append("……（报错太多，后面省略；完整内容请点「下载调试日志」）")
                 break
             errors.append(line)
-        else:
-            block = False
     tail = data[-COPY_TAIL_BYTES:].decode("utf-8", errors="ignore").split("\n", 1)[-1]
     return "\n".join([
-        f"### 调试日志 {path.name}（共 {len(data) // 1024} KB，太长，只复制开头、全部报错和最后一段；完整版请下载）",
+        f"### 调试日志 {title}（共 {len(data) // 1024} KB，太长，只复制开头、全部报错和最后一段；完整版请下载）",
         head, "", "### 报错汇总", *(errors or ["（没有报错）"]), "", "### 最后一段", tail,
     ])

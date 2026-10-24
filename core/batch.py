@@ -415,7 +415,7 @@ def _write_rows(excel: Any, journal: dict) -> None:
             raise ValueError(f"{where} 文件以只读方式打开，未写入")
         actual = [_row_value(book, r) for r in journal["rows"]]
         for value, r in zip(actual, journal["rows"]):
-            debug_log.event("  写入行", 动作=journal.get("action"), 位置=f"{r['sheet']} 第 {r['row']} 行",
+            debug_log.event("✍️ 写入行", 动作=journal.get("action"), 位置=f"{r['sheet']} 第 {r['row']} 行",
                             类型=r.get("kind") or "行高", 现在=value, 预期原值=r["expected"], 目标=r["target"],
                             换行=r.get("wrap") or "-")
         # 自动换行和行高一起保存；续跑时两样都已到位才算写过
@@ -437,10 +437,10 @@ def _write_rows(excel: Any, journal: dict) -> None:
                     target.RowHeight = row["target"]
             normalize_workbook_view(excel, book)
             book.Save()
-            debug_log.event("  已保存", 文件=Path(path).name,
+            debug_log.event("💾 已保存", 文件=Path(path).name,
                             写后=[round(_row_value(book, r), 2) for r in journal["rows"]])
         else:
-            debug_log.event("  目标值已在文件里（续跑），不再写", 文件=Path(path).name)
+            debug_log.event("💾 目标值已在文件里（续跑），不再写", 文件=Path(path).name)
     finally:
         book.Close(SaveChanges=False)
 
@@ -733,7 +733,7 @@ def _prepare_row(
             shots = {_key(*_cell(group[0])): autofix._evaluate(source, group, cells, probe.text, probe.printed)[1]
                      for group in groups}
             timing["evaluate"] = timing.get("evaluate", 0.0) + time.perf_counter() - started
-            debug_log.event("    试算", 次=attempt, 行高=height, 原行高=base, 通过=ok, 缺口pt=need,
+            debug_log.event("🧪 试算", 次=attempt, 行高=height, 原行高=base, 通过=ok, 缺口pt=need,
                             打印缩放=scale, 换行=wrapped or "-", 用检测时的PDF=source != pdf,
                             比对秒=time.perf_counter() - started)
             if on_attempt is not None:
@@ -882,7 +882,8 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
             wf._persist_state()
         _check_file(path)
         version = wf._file_version(Path(path))
-        debug_log.event("  处理行", 位置=f"{first['sheet_name']} 第 {first['excel_row']} 行",
+        debug_log.begin(f"行 {first['sheet_name']} 第 {first['excel_row']} 行", 2)
+        debug_log.event("🛠 处理行", 位置=f"{first['sheet_name']} 第 {first['excel_row']} 行",
                         格子=[f"{it.get('cell_addr')}:{it['kind']}/{it.get('hidden_reason', '')}" for it in items],
                         已试行数=len(attempted), 剩余候选=len(candidates))
 
@@ -1048,12 +1049,12 @@ def _commit_review(excel: Any) -> None:
             for card in peers:
                 card.update(color="yellow", conflict=True, message="同行存在不同处理意见，整行还原后交给人工")
     wf._persist_state()
-    debug_log.event("提交审核", 卡片=len(cards), **{color: sum(c["color"] == color for c in cards)
+    debug_log.event("📨 提交审核", 卡片=len(cards), **{color: sum(c["color"] == color for c in cards)
                                                       for color in ("blue", "green", "yellow")})
     for path in dict.fromkeys(c["wb_path"] for c in cards):
         if path in job["completed"]:
             continue
-        debug_log.section(f"提交 {Path(path).name}")
+        debug_log.begin(f"提交 {Path(path).name}")
         rows = []
         reverting = []
         for rid, peers in by_row.items():
@@ -1577,7 +1578,7 @@ def _sweep_leftover_marks(book: Any, path: str, missed: list[dict], kept: list[d
         try:
             spots = [rc for rc in _marked_matches(sheet, mark["value"], mark["fill"])
                      if (sheet.Name, *rc) not in keep]
-            debug_log.event("      兜底查找", 位置=f"{mark['sheet']}!{mark['addr']}", 内容=debug_log.clip(mark["value"]),
+            debug_log.event("🔎 兜底查找", 位置=f"{mark['sheet']}!{mark['addr']}", 内容=debug_log.clip(mark["value"]),
                             找到=[f"{_col_letters(c)}{r}" for r, c in spots[:5]])
             if len(spots) == 1:
                 r0, c0 = _cell_rc(mark["addr"])
@@ -1715,13 +1716,13 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
             try:
                 added[card["id"]] = _apply_cells(sheet, card, style)
                 added[card["id"]]["name"] = _mark_name(card["id"])
-                debug_log.event("    标色", 位置=f"{card['sheet_name']}!{added[card['id']]['addr']}",
+                debug_log.event("🎨 标色", 位置=f"{card['sheet_name']}!{added[card['id']]['addr']}",
                                 原色=[(c["addr"], c.get("pattern"), c.get("color"), c.get("font"))
                                       for c in added[card["id"]]["cells"][:4]],
                                 格数=len(added[card["id"]]["cells"]))
             except Exception as err:
                 failed[card["id"]] = str(err)
-                debug_log.event("    标色失败", 位置=f"{card['sheet_name']}!{card.get('cell_addr')}", 原因=err)
+                debug_log.event("❌ 标色失败", 位置=f"{card['sheet_name']}!{card.get('cell_addr')}", 原因=err)
                 debug_log.exception(err, "标色")
         with wf.STATE_LOCK:
             # 先记下原来的颜色再改、再保存：中途出错时记录还在，之后还能还原（不是标记颜色的格子不会被改）
@@ -1750,7 +1751,7 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
             step("还原颜色", i, len(remove))
             mark = marks[cid]
             found = _locate_mark(book, mark)
-            debug_log.event("    还原", 位置=f"{mark['sheet']}!{mark['addr']}", 名称=mark.get("name"),
+            debug_log.event("🧽 还原", 位置=f"{mark['sheet']}!{mark['addr']}", 名称=mark.get("name"),
                             找到=found is not None and found[0] is not None,
                             挪位=found[1] if found and found[0] is not None else "-",
                             表在=not (found is not None and found[0] is None))
@@ -1766,7 +1767,7 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                 continue
             try:
                 if not _restore_cells(sheet, mark, shift):
-                    debug_log.event("      原位置不是标记色，留给兜底查找", 位置=f"{mark['sheet']}!{mark['addr']}")
+                    debug_log.event("🔎 原位置不是标记色，留给兜底查找", 位置=f"{mark['sheet']}!{mark['addr']}")
                     missed.append(mark)
             except Exception as err:
                 wf.log_msg(f"⚠️ {Path(path).name} / {mark['sheet']}!{mark['addr']} 未能还原颜色：{err}")
@@ -2023,7 +2024,7 @@ def run() -> list[str]:
                 return False
 
             def scan(path: str) -> None:
-                debug_log.section(f"{'转回自动' if back else '扫描'} {expected.index(path) + 1} / {len(expected)}："
+                debug_log.begin(f"{'转回自动' if back else '扫描'} {expected.index(path) + 1} / {len(expected)}："
                                   f"{workbook_rel_name(Path(path), wf.STATE['folder'])}")
                 _check_file(path)
                 excel = session.app()
@@ -2067,7 +2068,7 @@ def run() -> list[str]:
                     wf._persist_state()
 
             def repair(path: str) -> None:
-                debug_log.section(f"修复 {expected.index(path) + 1} / {len(expected)}："
+                debug_log.begin(f"修复 {expected.index(path) + 1} / {len(expected)}："
                                   f"{workbook_rel_name(Path(path), wf.STATE['folder'])}")
                 _check_file(path)
                 excel = session.app()
@@ -2147,7 +2148,7 @@ def run() -> list[str]:
                         cards = [card for cid in dict.fromkeys(options["card_ids"])
                                  for card in [_data()["cards"].get(cid)]
                                  if card and card["wb_path"] == path and not card.get("dismissed")]
-                    debug_log.section(f"复检 {Path(path).name}（{len(cards)} 张卡）")
+                    debug_log.begin(f"复检 {Path(path).name}（{len(cards)} 张卡）")
                     try:
                         unsaved = close_saved_workbooks([Path(path)])
                         if Path(path) in unsaved:
@@ -2199,7 +2200,7 @@ def run() -> list[str]:
                 if Path(path) in unsaved:
                     wf.log_msg(f"⚠️ {Path(path).name}：{unsaved[Path(path)]}，请保存后继续")
                     continue
-                debug_log.section(f"清除颜色 {i} / {len(expected)}：{Path(path).name}")
+                debug_log.begin(f"清除颜色 {i} / {len(expected)}：{Path(path).name}")
                 wf.log_msg(f"🧽 正在还原（{i} / {len(expected)}）：{Path(path).name}")
                 for tries in range(2):
                     try:
