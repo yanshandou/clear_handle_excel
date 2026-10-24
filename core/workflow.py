@@ -35,7 +35,7 @@ from core.common import (
     workbook_locked,
     workbook_rel_name,
 )
-from core import fix_images, page_breaks, pdf_detector
+from core import debug_log, fix_images, page_breaks, pdf_detector
 from core.excel_watchdog import ExcelWatchdog
 from core.excel_ops import (
     CellProbe,
@@ -244,6 +244,12 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
 
 
 def run_pending_workflow() -> None:
+    with STATE_LOCK:
+        debug_log.start_task(STATE["job"]["kind"], STATE["job"]["options"],
+                             {"检测规则版本": DETECTOR_VERSION, "设置": STATE["settings"],
+                              "已完成文件数": len(STATE["job"]["completed"]),
+                              "写入日志": "有" if STATE["job"].get("pending_adjustment") else "无"},
+                             resumed=bool(STATE["job"]["completed"]) or "workbooks" in STATE["job"])
     try:
         with STATE_LOCK:
             job = STATE["job"]
@@ -312,6 +318,9 @@ def run_pending_workflow() -> None:
     finally:
         suspend_report_updates(False)
         with STATE_LOCK:
+            job = STATE["job"] or {}
+            debug_log.end_task(f"{job.get('status')}，完成 {len(job.get('completed', []))} 个，"
+                               f"出错文件 {len(job.get('file_errors', {}))} 个")
             STATE["busy"] = False
             if STATE["job"] and STATE["job"]["kind"] in {"scan", "batch_scan"}:
                 STATE["scan_progress"].update(
@@ -323,6 +332,7 @@ def run_pending_workflow() -> None:
 
 def log_msg(msg: str) -> None:
     timestamp = datetime.now().strftime("%H:%M:%S")
+    debug_log.mirror(msg)  # 调试日志里留完整的一行（网页上的会截短）
     if len(msg) > MAX_LOG_CHARS:
         msg = msg[:MAX_LOG_CHARS] + "……（太长，后面省略）"
     line = f"[{timestamp}] {msg}"
@@ -1108,6 +1118,9 @@ def _scan_one_workbook(
     started = time.perf_counter()
     wb = workbook if workbook is not None else open_workbook_checked(excel, str(wb_path.resolve()), **open_options)
     timing["open"] = timing.get("open", 0.0) + time.perf_counter() - started
+    debug_log.event("打开工作簿", 文件=wb_label, 秒=time.perf_counter() - started, 只读=read_only,
+                    用副本=workbook is not None, 只查=entry["sheets"] if sheets_only else "全部",
+                    大小KB=wb_path.stat().st_size // 1024 if wb_path.exists() else "?")
     try:
         all_names = [s.Name for s in wb.Sheets]
         deleted_bkp_list: list[str] = []
@@ -1171,10 +1184,19 @@ def _scan_one_workbook(
             except Exception as e:
                 log_msg(f"  导出 PDF 失败 [{s_name}]: {e}")
                 raise
-            timing["export"] = timing.get("export", 0.0) + time.perf_counter() - started
+            export_seconds = time.perf_counter() - started
+            timing["export"] = timing.get("export", 0.0) + export_seconds
             started = time.perf_counter()
             pages, items = _detect_sheet_results(sheet, wb_path, s_name, pdf_path, next_seq)
             timing["detect"] = timing.get("detect", 0.0) + time.perf_counter() - started
+            debug_log.event("  检测表", 表=s_name, 复用PDF=exported is not None, 导出秒=export_seconds,
+                            检测秒=time.perf_counter() - started, 有问题的页=len(pages), 检出=len(items))
+            for found in items.values():
+                debug_log.event("    检出", 类型=found["kind"], 原因=found.get("hidden_reason", ""),
+                                位置=f"{s_name}!{found.get('cell_addr')}", 行=found.get("excel_row"),
+                                行高=found.get("row_height"), 页=found.get("page_index"),
+                                定位确认=found.get("location_confirmed"), 文字=debug_log.clip(found.get("text")),
+                                显示=debug_log.clip(found.get("visible_text")) if found.get("kind") == "hidden" else "-")
             if pdfs is not None:
                 pdfs.remember_pdf(path, s_name, scan_version, pdf_path)
             next_seq += len(items)
@@ -2646,11 +2668,13 @@ def quick_task_workflow(kind: str) -> None:
                 continue
             wb_label = workbook_rel_name(wb_path, folder)
             watchdog.progress()
+            debug_log.section(f"{task_name} {workbooks.index(wb_path) + 1} / {len(workbooks)}：{wb_label}")
             log_msg(f"正在处理: {wb_label} ...")
             update_file_progress(
                 wb_label, status="processing", current_action=f"正在执行{task_name}...", error="",
             )
             exported: list[Path] = []
+            started = time.perf_counter()
             try:
                 if kind == "clean_sheets":
                     clean_plan = options.get("plan")
@@ -2670,6 +2694,7 @@ def quick_task_workflow(kind: str) -> None:
                     )
                 else:
                     _normalize_workbook_file(get_excel, wb_path, folder)
+                debug_log.event("完成", 文件=wb_label, 秒=time.perf_counter() - started, 导出PDF=len(exported))
             except Exception as err:
                 log_msg(f"❌ 处理文件出错 {wb_label}: {err}")
                 update_file_progress(

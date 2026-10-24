@@ -63,6 +63,10 @@ class ExcelWatchdog:
                 if not self._expired and time.monotonic() - self._progress >= self.timeout:
                     self._expired = True
                     expired = bool(self._processes)
+                    if expired:
+                        # 结束 Excel 之前记下任务线程停在哪一行：卡在哪个调用上一看就知道
+                        from core import debug_log
+                        debug_log.dump_threads(f"看门狗：后台 Excel {self.timeout:.0f} 秒没有进展，即将结束它")
                     for terminate, _ in self._processes:
                         try:
                             terminate()
