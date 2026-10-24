@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""按原始备份恢复 Excel 中原本有填充色的单元格。Python 3.10+，无第三方依赖。
+"""按原始备份恢复 Excel 单元格的背景色及所选字体颜色。Python 3.10+，无第三方依赖。
 
 用法：修改下面「用户配置」中的路径，然后直接运行本文件，无需命令行参数。
   python restore_excel_backgrounds.py
@@ -8,7 +8,7 @@
 按相对路径优先匹配；路径不同则仅匹配两边都唯一的同名文件。
 按工作表名称和单元格地址比较，不猜测插入/删除行列后的对应关系。
 检查单元格直接设置的填充（包括显式白色），不处理条件格式、表格样式、
-整行/整列样式产生的背景。原本没有直接填充的单元格完全不动。
+整行/整列样式产生的背景。备份原本无填充、成品新增了填充时，也恢复为无填充。
 纯白色填充与无填充视为等效，不做两者之间的转换；报告只列修复项和异常。
 直接修改 OOXML 压缩包中的样式引用，不通过 Excel/openpyxl 重存整个文件。
 合并区域只比较左上角主单元格，避免修复不可见的内部样式。
@@ -23,13 +23,18 @@ from collections import Counter, defaultdict
 from copy import deepcopy
 from datetime import datetime
 import html
+import hashlib
+import json
 import os
 from pathlib import Path
+import platform
 import posixpath
 import re
 import shutil
 import sys
 import tempfile
+import time
+import traceback
 import unicodedata
 from urllib.parse import unquote
 import xml.etree.ElementTree as ET
@@ -46,8 +51,8 @@ REPORT_ROOT = r""
 # True = 只检查并生成报告；False = 直接修复并生成报告。
 DRY_RUN = False
 # True = 同时恢复字体颜色；False = 只恢复背景色。
-# 两种模式均只处理备份中原本有背景色的单元格。
-RESTORE_FONT_COLOR = False
+# 包括原本无填充的位置；此项开启时，背景和字体颜色均以备份为准。
+RESTORE_FONT_COLOR = True
 # ========================== 用户配置结束 ==========================
 
 # 以下 http 地址是 Excel XML 格式的命名空间标识，不会访问网站或联网。
@@ -56,6 +61,36 @@ REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 SUPPORTED = {".xlsx", ".xlsm", ".xltx", ".xltm"}
 EXCEL = SUPPORTED | {".xls", ".xlsb"}
 ET.register_namespace("", NS)
+SCRIPT_VERSION = "2026.10.24.1"
+
+
+class ExecutionLog:
+    """即时写入的纯文本执行日志，可直接复制粘贴排查问题。"""
+    def __init__(self, path):
+        self.path = path
+        self.stream = path.open("w", encoding="utf-8-sig")
+
+    def write(self, event, **fields):
+        stamp = datetime.now().astimezone().isoformat(timespec="milliseconds")
+        self.stream.write(f"[{stamp}] {event} " + json.dumps(fields, ensure_ascii=False, default=str) + "\n")
+        self.stream.flush()
+
+    def exception(self, event, **fields):
+        self.write(event, **fields)
+        self.stream.write(traceback.format_exc() + "\n")
+        self.stream.flush()
+
+    def close(self):
+        self.stream.close()
+
+
+def log_event(log, event, **fields):
+    if log is not None:
+        log.write(event, **fields)
+
+
+def xml_text(node):
+    return ET.tostring(node, encoding="unicode") if node is not None else None
 
 
 def tag(name):
@@ -329,7 +364,14 @@ class Book:
         return canonical(normalized), theme, palette
 
     def restore_style(self, original, source, current, restore_font, restore_fill=True):
-        fill = original.portable(original.fill(source), self) if restore_fill else None
+        fill = None
+        if restore_fill:
+            if original.colored(source):
+                fill = original.portable(original.fill(source), self)
+            else:
+                # 原始样式可能有 fillId 但 applyFill=0；应清除填充，而不是复制隐藏颜色。
+                fill = ET.Element(tag("fill"))
+                ET.SubElement(fill, tag("patternFill"))
         font_color = original.portable(original.font_color(source), self) if restore_font else None
         cache_key = (int(current.get("s", "0")), canonical(fill), restore_font, canonical(font_color))
         if cache_key in self.xf_cache:
@@ -610,10 +652,11 @@ def thumbnail(path, preview, dry_run, stage="after"):
     path.write_text("\n".join(svg), encoding="utf-8")
 
 
-def save_book(book, updates, safety_copy, expected=None):
+def save_book(book, updates, safety_copy, expected=None, log=None):
     before_stat = book.path.stat()
     safety_copy.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(book.path, safety_copy)
+    log_event(log, "SAFETY_COPY_CREATED", target=book.path, safety_copy=safety_copy)
     handle, temp_name = tempfile.mkstemp(prefix=".restore_", suffix=book.path.suffix, dir=book.path.parent)
     os.close(handle)
     try:
@@ -636,6 +679,9 @@ def save_book(book, updates, safety_copy, expected=None):
                         if cell is None or verification.fill_key(cell) != fill_key or (
                                 verify_font and verification.font_key(cell) != font_key):
                             raise ValueError(f"保存校验失败：{sheet}!{address}，未替换成品")
+                        log_event(log, "CELL_VERIFIED", sheet=sheet, cell=address,
+                                  fill=color_description(verification, cell)[0],
+                                  font=verification.font_description(cell)[0], verify_font=verify_font)
             finally:
                 verification.close()
         book.close()
@@ -643,20 +689,25 @@ def save_book(book, updates, safety_copy, expected=None):
         if (before_stat.st_size, before_stat.st_mtime_ns) != (current_stat.st_size, current_stat.st_mtime_ns):
             raise ValueError("文件在处理过程中被其他程序修改，未替换")
         os.replace(temp_name, book.path)
+        log_event(log, "FILE_WRITTEN", target=book.path, safety_copy=safety_copy,
+                  modified_parts=sorted(updates), bytes=book.path.stat().st_size)
     finally:
         if os.path.exists(temp_name):
             os.unlink(temp_name)
 
 
-def compare(source, target, output, relative, dry_run=False, restore_font_color=False):
+def compare(source, target, output, relative, dry_run=False, restore_font_color=False, log=None):
     original = current = None
     try:
         original = Book(source)
         current = Book(target)
+        log_event(log, "WORKBOOKS_OPENED", reference=source, target=target,
+                  reference_sheets=list(original.sheets), target_sheets=list(current.sheets))
         details, notes, updates, previews, expected = [], [], {}, [], {}
         for sheet in original.sheets:
             if sheet not in current.sheets:
                 notes.append(f"缺少工作表：{sheet}")
+                log_event(log, "SHEET_SKIPPED", sheet=sheet, reason="成品缺少备份中的工作表")
                 continue
             source_root = ET.fromstring(original.zip.read(original.sheets[sheet]))
             target_root = ET.fromstring(current.zip.read(current.sheets[sheet]))
@@ -664,15 +715,25 @@ def compare(source, target, output, relative, dry_run=False, restore_font_color=
             source_merges, target_merges = original.merged_ranges(source_root), current.merged_ranges(target_root)
             conditional = original.conditional_ranges(source_root, restore_font_color) + current.conditional_ranges(target_root, restore_font_color)
             skipped_merges, skipped_conditional = [], []
+            stats = Counter()
             changes = {}
-            for address, source_cell in left.items():
-                if not original.colored(source_cell):
-                    continue
+            log_event(log, "SHEET_START", sheet=sheet, reference_cells=len(left), target_cells=len(right),
+                      reference_merges=len(source_merges), target_merges=len(target_merges))
+            # 成品新增填充可能位于备份没有保存 <c> 节点的空白位置，也必须检查。
+            for address in sorted(left.keys() | right.keys(), key=coordinates):
+                stats["inspected"] += 1
+                source_cell = left.get(address)
+                if source_cell is None:
+                    source_cell = ET.Element(tag("c"), {"r": address})
+                    stats["reference_cell_absent"] += 1
                 row, column = coordinates(address)
                 source_merge = containing_range(address, source_merges)
                 target_merge = containing_range(address, target_merges)
                 if source_merge == target_merge and (row, column) != source_merge[:2]:
                     # 合并区域内部单元格可能残留独立颜色；其直接样式不代表可见背景。
+                    stats["merged_subordinate_ignored"] += 1
+                    log_event(log, "CELL_SKIPPED", sheet=sheet, cell=address,
+                              reason="合并区域非左上角主单元格，不代表可见背景", merged_range=source_merge)
                     continue
                 target_cell = right.get(address)
                 if target_cell is None:
@@ -682,12 +743,22 @@ def compare(source, target, output, relative, dry_run=False, restore_font_color=
                     original.color_key(original.font_color(source_cell)) != current.color_key(current.font_color(target_cell))
                     and original.font_key(source_cell) != current.font_key(target_cell))
                 if not fill_diff and not font_diff:
+                    stats["unchanged_or_equivalent"] += 1
                     continue
                 if source_merge != target_merge:
                     skipped_merges.append(address)
+                    stats["merge_mismatch_skipped"] += 1
+                    log_event(log, "CELL_SKIPPED", sheet=sheet, cell=address, reason="合并区域结构不一致",
+                              reference_merge=source_merge, target_merge=target_merge,
+                              reference_fill=color_description(original, source_cell)[0],
+                              target_fill=color_description(current, target_cell)[0])
                     continue
                 if any(r1 <= row <= r2 and c1 <= column <= c2 for r1, c1, r2, c2 in conditional):
                     skipped_conditional.append(address)
+                    stats["conditional_format_skipped"] += 1
+                    log_event(log, "CELL_SKIPPED", sheet=sheet, cell=address, reason="条件格式可能覆盖可见颜色",
+                              reference_fill=color_description(original, source_cell)[0],
+                              target_fill=color_description(current, target_cell)[0])
                     continue
                 # 可解析但不同的主题/索引色上下文在恢复前明确检查。
                 new_style = current.restore_style(original, source_cell, target_cell, font_diff, fill_diff)
@@ -698,6 +769,21 @@ def compare(source, target, output, relative, dry_run=False, restore_font_color=
                                 "fill_changed": fill_diff, "font_changed": bool(font_diff),
                                 "font_before": current.font_description(target_cell),
                                 "font_after": original.font_description(source_cell) if font_diff else current.font_description(target_cell)})
+                stats["changed"] += 1
+                if fill_diff and not original.colored(source_cell):
+                    stats["new_fill_cleared"] += 1
+                log_event(log, "CELL_PLAN", sheet=sheet, cell=address,
+                          action=change_kind(details[-1]), summary=change_summary(details[-1]),
+                          reference_cell_absent=address not in left, target_cell_absent=address not in right,
+                          reference_style=source_cell.get("s", "0"), target_style=target_cell.get("s", "0"),
+                          planned_style=new_style, fill_before=before[0], fill_after=after[0],
+                          font_before=details[-1]["font_before"][0], font_after=details[-1]["font_after"][0],
+                          reference_fill_xml=xml_text(original.fill(source_cell)),
+                          target_fill_xml=xml_text(current.fill(target_cell)),
+                          reference_font_color_xml=xml_text(original.font_color(source_cell)),
+                          target_font_color_xml=xml_text(current.font_color(target_cell)),
+                          reference_xf_xml=xml_text(original.style(source_cell)),
+                          target_xf_xml=xml_text(current.style(target_cell)), dry_run=dry_run)
                 planned = deepcopy(target_cell)
                 planned.set("s", str(new_style))
                 expected.setdefault(sheet, {})[address] = (
@@ -706,6 +792,7 @@ def compare(source, target, output, relative, dry_run=False, restore_font_color=
                                       (skipped_conditional, "存在可能覆盖颜色的条件格式，需在 Excel 中核对，已跳过")):
                 if addresses:
                     notes.append(f"{sheet}：{reason}，共 {len(addresses)} 个单元格（如 {', '.join(addresses[:8])}）")
+            log_event(log, "SHEET_DONE", sheet=sheet, **dict(stats))
             if changes:
                 part = current.sheets[sheet]
                 updates[part] = patch_cells(current.zip.read(part), changes)
@@ -729,7 +816,8 @@ def compare(source, target, output, relative, dry_run=False, restore_font_color=
         if details and not dry_run:
             updates["xl/styles.xml"] = current.styles_output()
             safety = output / "before_restore" / relative
-            save_book(current, updates, safety, expected)
+            log_event(log, "SAVE_START", target=target, cells=len(details), safety_copy=safety)
+            save_book(current, updates, safety, expected, log)
             # 展示保存文件的实际样式；不把修复计划冒充已经保存的结果。
             saved = Book(target)
             try:
@@ -741,6 +829,11 @@ def compare(source, target, output, relative, dry_run=False, restore_font_color=
                             group["after"] = preview_cells(saved, cells, merges, group["bounds"])
             finally:
                 saved.close()
+        elif details:
+            log_event(log, "DRY_RUN_NO_WRITE", target=target, planned_cells=len(details))
+        for sheet in current.sheets.keys() - original.sheets.keys():
+            notes.append(f"备份缺少对应工作表，未处理成品工作表：{sheet}")
+            log_event(log, "SHEET_SKIPPED", sheet=sheet, reason="成品新增工作表在备份中不存在")
         sheet_order = {name: index for index, name in enumerate(original.sheets)}
         details.sort(key=lambda item: (sheet_order[item["sheet"]], coordinates(item["address"])))
         return details, notes, safety, previews
@@ -792,10 +885,34 @@ def main():
         raise ValueError("报告目录已存在，请重新运行以创建新的记录")
     output.mkdir(parents=True)
     (output / ".excel_background_restore_report").touch()
+    log = ExecutionLog(output / "execution.log")
+    started = time.perf_counter()
+    try:
+        log.write("RUN_START", version=SCRIPT_VERSION, script=Path(__file__).resolve(),
+                  script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                  python=sys.version, platform=platform.platform(), reference_dir=backup,
+                  target_dir=finished, report_dir=output, dry_run=DRY_RUN,
+                  restore_font_color=RESTORE_FONT_COLOR,
+                  rule="以备份为准，包括恢复成品新增填充为无填充；白色与无填充等效")
+        print(f"详细执行日志：{log.path}", flush=True)
+        return run(backup, finished, output, log)
+    except KeyboardInterrupt:
+        log.write("RUN_INTERRUPTED", message="用户中断；已完成文件和记录保留")
+        raise
+    except Exception as error:
+        log.exception("RUN_FAILED", error_type=type(error).__name__, error=str(error))
+        raise
+    finally:
+        log.write("RUN_END", elapsed_seconds=round(time.perf_counter() - started, 3))
+        log.close()
+
+
+def run(backup, finished, output, log):
     images = output / "images"
     images.mkdir()
     print("正在递归查找 Excel 文件……", flush=True)
     sources, targets = collect(backup, output), collect(finished, output)
+    log.write("SCAN_DONE", reference_files=len(sources), target_files=len(targets))
     by_relative = defaultdict(list)
     by_name = defaultdict(list)
     source_counts = Counter(p.name.casefold() for p in sources)
@@ -806,16 +923,17 @@ def main():
                 by_relative.get(source.relative_to(backup).as_posix().casefold(), [])}
     report = ["# Excel 背景色恢复报告", "", f"- 原始备份：{link(backup)}", f"- 成品文件夹：{link(finished)}",
               f"- 模式：{'仅检查，未修改文件' if DRY_RUN else '修复成品，修复前副本存放于 before_restore'}",
-              f"- 字体颜色：{'同时恢复（仅原本有背景色的单元格）' if RESTORE_FONT_COLOR else '不修改'}", "",
+              f"- 字体颜色：{'同时按备份恢复，包括原本无填充的位置' if RESTORE_FONT_COLOR else '不修改'}",
+              "- 详细执行日志：[execution.log](execution.log)", "",
               "只列需要修复或注意的文件；正常且无需处理的文件不展开记录。",
-              "按工作表名称和单元格地址对应；原本无填充不处理，纯白色与无填充视为等效。",
+              "按工作表名称和单元格地址对应；备份原本无填充时清除成品新增填充，包括备份未存储的空白格。纯白色与无填充视为等效。",
               "合并区域仅处理左上角主单元格；合并结构不同、存在颜色条件格式的差异跳过并提醒核对。",
               "表格样式、行列默认样式不在检查范围。插入/删除/重排过行列的文件请先核对位置。",
               "每张有修改的工作表生成修复前、修复后两张全表总览，两图范围及 1、2、3……编号一致。",
               "修复前展示成品的问题状态；自动修复后的图从保存文件重读，只检查模式的第二张图标为预计修复后。",
               "预览不是 Excel 截图，未模拟条件格式、行高列宽、数字格式；图案/渐变等颜色可能仅显示占位色。",
               "部分 Markdown 查看器会禁止打开本地 file 链接，可复制报告里的完整路径打开。", ""]
-    changed_files = changed_cells = failures = unmatched = unchanged_files = 0
+    changed_files = changed_cells = failures = unmatched = unchanged_files = attention_files = 0
 
     def record(lines):
         report.extend(lines)
@@ -824,31 +942,42 @@ def main():
     used = set()
     for index, source in enumerate(sources, 1):
         relative = source.relative_to(backup)
+        file_started = time.perf_counter()
         progress(index - 1, len(sources), str(relative))
+        log.write("FILE_START", index=index, total=len(sources), relative_path=relative, reference=source)
         entry = [f"## {escaped(relative)}", "", f"原始：{link(source)}", ""]
         candidates = by_relative.get(relative.as_posix().casefold(), [])
         if not candidates and source_counts[source.name.casefold()] == 1:
             candidates = [p for p in by_name.get(source.name.casefold(), []) if p not in reserved]
         if len(candidates) != 1:
             unmatched += 1
+            log.write("FILE_SKIPPED", reference=source, reason="找不到对应文件，或同名文件存在歧义",
+                      candidates=candidates, same_name_targets=by_name.get(source.name.casefold(), []))
             record(entry + ["未处理：找不到对应文件，或同名文件存在歧义。", ""])
             continue
         target = candidates[0]
         if target in used:
             unmatched += 1
+            log.write("FILE_SKIPPED", reference=source, target=target, reason="成品已匹配其他备份文件")
             record(entry + ["未处理：成品已匹配其他备份文件，避免重复覆盖。", ""])
             continue
         used.add(target)
+        log.write("FILE_MATCHED", reference=source, target=target,
+                  matching="相对路径" if target in by_relative.get(relative.as_posix().casefold(), []) else "唯一同名文件")
         entry += [f"成品：{link(target)}", ""]
         if source.suffix.lower() not in SUPPORTED:
             failures += 1
+            log.write("FILE_SKIPPED", reference=source, target=target, reason="不支持旧版 .xls/.xlsb")
             record(entry + ["未处理：旧版 .xls/.xlsb 不支持，请使用 Excel 转为 .xlsx 后比较。", ""])
             continue
         try:
-            details, notes, safety, previews = compare(source, target, output, target.relative_to(finished), DRY_RUN, RESTORE_FONT_COLOR)
+            details, notes, safety, previews = compare(source, target, output, target.relative_to(finished), DRY_RUN, RESTORE_FONT_COLOR, log)
             if not details and not notes:
                 unchanged_files += 1
+                log.write("FILE_DONE", target=target, status="无需处理，无异常", changed_cells=0,
+                          elapsed_seconds=round(time.perf_counter() - file_started, 3))
                 continue
+            attention_files += bool(notes)
             changed_files += bool(details)
             changed_cells += len(details)
             if details:
@@ -859,6 +988,8 @@ def main():
                 entry += [f"修复前副本：{link(safety)}", ""]
             if notes:
                 entry += [f"- {escaped(note)}" for note in notes] + [""]
+                for note in notes:
+                    log.write("FILE_ATTENTION", target=target, message=note)
             if details:
                 preview_map = {(preview["sheet"], address): (number, marker)
                                for number, preview in enumerate(previews, 1)
@@ -885,27 +1016,47 @@ def main():
                         entry += [f"#### {label}", ""]
                         try:
                             thumbnail(images / image_name, preview, DRY_RUN, stage)
+                            log.write("PREVIEW_CREATED", target=target, sheet=preview["sheet"],
+                                      stage=stage, label=label, path=images / image_name,
+                                      numbered_cells=preview["addresses"])
                             entry += [f"[单独打开 / 放大查看](images/{image_name})", "",
                                       f"![{label}：全表编号总览](images/{image_name})", ""]
                         except OSError as error:
+                            log.exception("PREVIEW_FAILED", target=target, sheet=preview["sheet"],
+                                          stage=stage, path=images / image_name,
+                                          error_type=type(error).__name__, error=str(error))
                             entry += [escaped(f"{label}预览生成失败：{error}"), ""]
+            log.write("FILE_DONE", target=target, changed_cells=len(details), attention_messages=len(notes),
+                      status="仅检查，未修改" if DRY_RUN else "已修复并校验" if details else "存在提醒，未修改",
+                      safety_copy=safety, elapsed_seconds=round(time.perf_counter() - file_started, 3))
         except Exception as error:
             failures += 1
+            log.exception("FILE_FAILED", reference=source, target=target,
+                          error_type=type(error).__name__, error=str(error),
+                          elapsed_seconds=round(time.perf_counter() - file_started, 3))
             entry += [f"处理失败（未确认修复）：{escaped(type(error).__name__ + ': ' + str(error))}", ""]
         # 每个文件完成后落盘，中途中断也保留已经完成的记录。
         record(entry)
     progress(len(sources), len(sources), "完成")
     print()
     extras = [p for p in targets if p not in used]
+    for path in extras:
+        log.write("TARGET_ONLY_FILE", target=path, message="成品文件未匹配到原始备份，未修改")
     report += ["## 汇总", "", f"- 备份 Excel 文件：{len(sources)}", f"- {'待恢复' if DRY_RUN else '已恢复'}：{changed_files} 个文件，{changed_cells} 个单元格",
                f"- 无需处理且无异常：{unchanged_files} 个文件（不列明细）",
+               f"- 含需注意事项：{attention_files} 个文件（可与已恢复文件重叠）",
                f"- 未匹配 / 歧义：{unmatched}；失败 / 不支持：{failures}",
                f"- 成品中未匹配文件：{len(extras)}", ""]
     report += [f"- {link(p)}" for p in extras]
     report_path = output / "report.md"
     report_path.write_text("\n".join(report), encoding="utf-8-sig")
+    log.write("RUN_SUMMARY", reference_files=len(sources), target_files=len(targets),
+              changed_files=changed_files, changed_cells=changed_cells, unchanged_files=unchanged_files,
+              attention_files=attention_files, unmatched_files=unmatched, failed_files=failures,
+              target_only_files=len(extras), dry_run=DRY_RUN, report=report_path)
     print(f"{'待恢复' if DRY_RUN else '已恢复'} {changed_files} 个文件、{changed_cells} 个单元格。")
     print(f"报告：{report_path}")
+    print(f"详细执行日志：{log.path}")
     return 1 if failures or unmatched else 0
 
 
