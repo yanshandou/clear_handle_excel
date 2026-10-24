@@ -325,7 +325,7 @@ def snapshot() -> dict:
                 result["row_height"] = {"base": row["base"], "applied": row["applied"], "saved": row["saved"],
                                         "wrap": card.get("cell_addr") in row.get("wrap", [])}
             result["adoptable"] = _adoptable(card)
-            result["highlighted"] = card["id"] in _marks()
+            result["highlighted"] = _shows_mark(_marks().get(card["id"]))
             result["images"] = {
                 which: _image_url(name) for which, name in card.get("fix_images", {}).items()
                 if fix_images.image_path(name)
@@ -335,7 +335,7 @@ def snapshot() -> dict:
                 name = context["image_file"]
                 context["image"] = _image_url(name) if fix_images.image_path(name) else ""
             cards.append(result)
-        highlighted = sum(1 for m in _marks().values() if wf.in_current_folder(m["path"]))
+        highlighted = sum(1 for m in _marks().values() if wf.in_current_folder(m["path"]) and _shows_mark(m))
         return {"cards": cards, "busy": wf.STATE["busy"], "folder": wf.STATE["folder"], "highlighted": highlighted,
                 "mode": _mode(),
                 "job": copy.deepcopy(wf.STATE["job"]), "progress": dict(wf.STATE["scan_progress"]),
@@ -1455,27 +1455,51 @@ def _locate_mark(book: Any, mark: dict) -> tuple[Any, tuple[int, int]] | None:
     return _find_sheet(book, mark["sheet"]), (0, 0)
 
 
+def _target(sheet: Any, addr: str, shift: tuple[int, int] = (0, 0)) -> Any:
+    """记录里的一格或一整块合并区域（$A$1:$C$2），按插删行列挪动的行数、列数找到现在的位置"""
+    if shift == (0, 0):
+        return sheet.Range(addr)
+    corners = [sheet.Cells(row + shift[0], col + shift[1]) for row, col in map(_cell_rc, addr.split(":"))]
+    return corners[0] if len(corners) == 1 else sheet.Range(corners[0], corners[1])
+
+
+def _restore_range(target: Any, cell: dict, mark: dict) -> bool:
+    fill, pattern = target.Interior.Color, target.Interior.Pattern
+    font = target.Font.Color if cell["font"] is not None else 0
+    if ":" in cell["addr"] and (fill is None or pattern is None or font is None):
+        # 整块记下的合并区域，现在颜色不一致了（人工改过其中几格）：一格一格看，只还原还是标记色的格子
+        return any([_restore_range(one, {**cell, "addr": one.Address}, mark) for one in target.Cells])
+    changed = False
+    if fill is not None and pattern is not None and int(fill) == mark["fill"] and int(pattern) == XL_PATTERN_SOLID:
+        changed = True
+        if cell["pattern"] == XL_PATTERN_NONE:
+            target.Interior.Pattern = XL_PATTERN_NONE
+        else:
+            target.Interior.Pattern = cell["pattern"]
+            target.Interior.Color = cell["color"]
+            target.Interior.TintAndShade = cell["tint"]
+    if cell["font"] is not None and font is not None and int(font) == mark["font"]:
+        target.Font.Color = cell["font"]
+    return changed
+
+
 def _restore_cells(sheet: Any, mark: dict, shift: tuple[int, int] = (0, 0)) -> bool:
     """只还原仍是标记颜色的格子；人工处理时自己改过颜色的不动。shift 是格子被插删行列挪动的行数、列数。
     返回这里原来是不是标记色（不是的话，标记色可能被挪到了别处）。"""
-    changed = False
-    for cell in mark["cells"]:
-        if shift == (0, 0):
-            target = sheet.Range(cell["addr"])
-        else:
-            row, col = _cell_rc(cell["addr"])
-            target = sheet.Cells(row + shift[0], col + shift[1])
-        if int(target.Interior.Color) == mark["fill"] and int(target.Interior.Pattern) == XL_PATTERN_SOLID:
-            changed = True
-            if cell["pattern"] == XL_PATTERN_NONE:
-                target.Interior.Pattern = XL_PATTERN_NONE
-            else:
-                target.Interior.Pattern = cell["pattern"]
-                target.Interior.Color = cell["color"]
-                target.Interior.TintAndShade = cell["tint"]
-        if cell["font"] is not None and target.Font.Color is not None and int(target.Font.Color) == mark["font"]:
-            target.Font.Color = cell["font"]
-    return changed
+    return any([_restore_range(_target(sheet, cell["addr"], shift), cell, mark) for cell in mark["cells"]])
+
+
+def _still_marked(book: Any, mark: dict) -> bool:
+    """上次标色有没有真的存进文件：中途被打断（看门狗结束 Excel、程序被关）时记录在、颜色没保存"""
+    found = _locate_mark(book, mark)
+    if found is None or found[0] is None or not mark["cells"]:
+        return False
+    fill = _target(found[0], mark["cells"][0]["addr"], found[1]).Interior.Color
+    return fill is None or int(fill) == mark["fill"]  # 合并区域颜色不一致：至少部分还是标记色，按已标过算
+
+
+def _shows_mark(mark: dict | None) -> bool:
+    return mark is not None and mark.get("saved") is not False
 
 
 XL_FORMULAS, XL_PART = -4123, 2
@@ -1557,6 +1581,22 @@ def _col_letters(col: int) -> str:
     return letters
 
 
+def _whole_area(area: Any) -> dict | None:
+    """合并区域里每格底色、字色都一样（绝大多数情况）时整块读一次、记一条，
+    不用一格一格跨进程读（方眼紙的合并区域常有几十格，问题格多的文件会慢很多）。颜色不一致返回 None。"""
+    try:
+        if ":" not in str(area.Address):
+            return None  # 单格照常读
+        interior = area.Interior
+        values = [interior.Pattern, interior.Color, interior.TintAndShade, area.Font.Color]
+        if any(v is None for v in values):
+            return None
+        return {"addr": str(area.Address), "pattern": int(values[0]), "color": int(values[1]),
+                "tint": float(values[2] or 0), "font": int(values[3])}
+    except Exception:
+        return None
+
+
 def _apply_cells(sheet: Any, card: dict, style: dict) -> dict:
     """记下合并区域里每一格原来的底色、字色，再标色。只改颜色，不改字体粗细大小，不影响排版和分页。
     字色混合（同一格里有几种颜色的文字）时不改字色，免得还原时丢掉原来的分段颜色。"""
@@ -1568,6 +1608,10 @@ def _apply_cells(sheet: Any, card: dict, style: dict) -> dict:
         mark["value"] = str(sheet.Range(addr).Formula)  # 兜底：格子挪了位置又找不到时按内容认
     except Exception:
         pass
+    whole = _whole_area(area)
+    if whole is not None:
+        mark["cells"].append(whole)
+        return mark
     for cell in area.Cells:
         interior, font = cell.Interior, cell.Font.Color
         mark["cells"].append({"addr": cell.Address, "pattern": int(interior.Pattern), "color": int(interior.Color),
@@ -1576,9 +1620,11 @@ def _apply_cells(sheet: Any, card: dict, style: dict) -> dict:
     return mark
 
 
-def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = False) -> None:
+def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = False,
+                     tick: Callable[[], None] | None = None) -> None:
     """让原 Excel 里的标色和卡片一致：只扫描过的文件里，黄色人工待处理的格子标色；
-    复检通过（变蓝）、提交为蓝 / 绿、或要求清除时还原原来的颜色。打开一次、保存一次。"""
+    复检通过（变蓝）、提交为蓝 / 绿、或要求清除时还原原来的颜色。打开一次、保存一次。
+    tick：每处理一格告诉看门狗还在动，问题格很多的大文件标色要好几分钟，不会被当成 Excel 卡死。"""
     with wf.STATE_LOCK:
         data, marks = _data(), _marks()
         style = data.get("highlight_files", {}).get(path)
@@ -1587,18 +1633,49 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
             c["id"] for c in cards
             if not c.get("dismissed") and c["color"] == "yellow" and c.get("manual") and _can_highlight(c)}
         have = {cid for cid, m in marks.items() if m["path"] == path}
+        # 没确认存进文件的记录（上次标色被打断，或旧版本没记这一项）：打开文件看一眼颜色还在不在
+        unsure = sorted(cid for cid in have if not marks[cid].get("saved"))
         add = [c for c in cards if c["id"] in want - have]
         remove = sorted(have - want)
-    if not add and not remove:
+    if not add and not remove and not unsure:
         return
     _check_file(path)
-    book = open_workbook_checked(excel_for(), str(Path(path).resolve()), UpdateLinks=0)
+    app = excel_for()
+    book = open_workbook_checked(app, str(Path(path).resolve()), UpdateLinks=0)
     added: dict[str, dict] = {}
     failed: dict[str, str] = {}
     deleted = 0
+    book_name, last_log = Path(path).name, time.monotonic()
+
+    def step(what: str, done: int, total: int) -> None:
+        nonlocal last_log
+        if tick is not None:
+            tick()
+        if total > 50 and time.monotonic() - last_log >= 30:
+            last_log = time.monotonic()
+            wf.log_msg(f"🎨 {book_name}：正在{what} {done} / {total} 格…")
+
     try:
+        try:
+            app.ScreenUpdating = False  # 隐藏的后台 Excel 也不用每改一格就重画
+        except Exception:
+            pass
         if book.ReadOnly:
             raise ValueError(f"{Path(path).name} 以只读方式打开，未能标色")
+        lost = []
+        for i, cid in enumerate(unsure, 1):
+            if _still_marked(book, marks[cid]):
+                marks[cid]["saved"] = True
+            else:
+                lost.append(cid)
+            step("核对上次的标色", i, len(unsure))
+        if lost:
+            with wf.STATE_LOCK:
+                for cid in lost:
+                    _delete_name(book, marks.pop(cid).get("name"))
+                remove = [cid for cid in remove if cid not in lost]
+                add += [c for c in cards if c["id"] in want and c["id"] in lost]
+            wf.log_msg(f"ℹ️ {book_name}：{len(lost)} 格上次标色没有存进文件（多半是中途被打断），这次重新标")
         sheets: dict[str, Any] = {}
 
         def sheet_of(name: str) -> Any:
@@ -1606,7 +1683,8 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                 sheets[name] = _find_sheet(book, name)
             return sheets[name]
 
-        for card in add:
+        for i, card in enumerate(add, 1):
+            step("记下原来的颜色", i, len(add))
             sheet = sheet_of(card["sheet_name"])
             if sheet is None:
                 failed[card["id"]] = f"工作表「{card['sheet_name']}」已不在文件里，可能已被删除或改名"
@@ -1618,9 +1696,12 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                 failed[card["id"]] = str(err)
         with wf.STATE_LOCK:
             # 先记下原来的颜色再改、再保存：中途出错时记录还在，之后还能还原（不是标记颜色的格子不会被改）
+            for mark in added.values():
+                mark["saved"] = False  # 保存成功后才算标上了
             marks.update(added)
             wf._persist_state()
-        for cid, mark in added.items():
+        for i, mark in enumerate(added.values(), 1):
+            step("标色", i, len(added))
             sheet = sheet_of(mark["sheet"])
             area = sheet.Range(mark["addr"]).MergeArea
             try:
@@ -1636,7 +1717,8 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                     sheet.Range(cell["addr"]).Font.Color = mark["font"]
         gone: dict[str, int] = {}
         missed: list[dict] = []  # 没在原位置找到标记色的记录，留给下面的兜底检查
-        for cid in remove:
+        for i, cid in enumerate(remove, 1):
+            step("还原颜色", i, len(remove))
             mark = marks[cid]
             found = _locate_mark(book, mark)
             _delete_name(book, mark.get("name"))
@@ -1656,13 +1738,22 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                 wf.log_msg(f"⚠️ {Path(path).name} / {mark['sheet']}!{mark['addr']} 未能还原颜色：{err}")
         if remove:
             kept = [m for cid, m in marks.items() if m["path"] == path and cid not in remove]
-            _sweep_leftover_marks(excel_for(), book, path, [marks[cid] for cid in remove], missed, kept)
+            _sweep_leftover_marks(app, book, path, [marks[cid] for cid in remove], missed, kept)
         for name, count in gone.items():
             wf.log_msg(f"ℹ️ {Path(path).name}：工作表「{name}」已不在文件里（被删除或改名），"
                        f"跳过还原 {count} 格标记颜色；如果是改名，请在新表里手动去掉标记色")
-        normalize_workbook_view(excel_for(), book)
-        book.Save()
+        if added or remove:  # 只核对了上次的标色、没有要改的：不保存，文件保持原样
+            if tick is not None:
+                tick()
+            normalize_workbook_view(app, book)
+            book.Save()
+        for mark in added.values():
+            mark["saved"] = True
     finally:
+        try:
+            app.ScreenUpdating = True
+        except Exception:
+            pass
         book.Close(SaveChanges=False)
     with wf.STATE_LOCK:
         for cid in remove:
@@ -1686,7 +1777,7 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
 def _sync_highlights_safely(session: Any, path: str) -> None:
     """提交、复检之后顺带更新标色；失败只记日志，不影响审核结果"""
     try:
-        _sync_highlights(session.app, path)
+        _sync_highlights(session.app, path, tick=session.touch)
     except Exception as err:
         wf.log_msg(f"⚠️ {Path(path).name} 未能更新 Excel 里的标记颜色：{err}")
 
@@ -1873,7 +1964,7 @@ def run() -> list[str]:
                     with wf.STATE_LOCK:
                         _data().setdefault("highlight_files", {})[path] = highlight_style(options.get("highlight"))
                     _hand_over(path)
-                    _sync_highlights(session.app, path)
+                    _sync_highlights(session.app, path, tick=session.touch)
                     _remember_handover(path)
 
             for path in expected:
@@ -2012,7 +2103,7 @@ def run() -> list[str]:
                     wf.log_msg(f"⚠️ {Path(path).name}：{unsaved[Path(path)]}，请保存后继续")
                     continue
                 try:
-                    _sync_highlights(session.app, path, clear=True)
+                    _sync_highlights(session.app, path, clear=True, tick=session.touch)
                     with wf.STATE_LOCK:
                         # 清除后不再自动标色；以后再「只扫描」才重新标
                         _data().get("highlight_files", {}).pop(path, None)
