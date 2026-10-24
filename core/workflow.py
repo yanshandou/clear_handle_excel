@@ -1002,8 +1002,8 @@ def _sheet_code(sheet: Any) -> str:
 def _follow_renamed_sheets(
     path: str, wb: Any, exportable: set[str], entry: dict[str, Any], previous: list[dict[str, Any]],
 ) -> list[str]:
-    """要检测的表按名字找不到时，用 Excel 的代码名（改表名时不变）认出改名后的表，记录全部换成新名字。
-    认不出来、或者表已删除 / 隐藏 / 不再导出的，返回这些旧表名，entry["missing"] 里也记一份。"""
+    """要检测的表按名字找不到时，用 Excel 的代码名（改表名时不变）认出改名后的表，记录全部换成新名字，
+    审核卡片也还是原来那张。认不出来、或者表已删除 / 隐藏 / 不再导出的，返回这些旧表名，entry["missing"] 里也记一份。"""
     codes = {sheet.Name: _sheet_code(sheet) for sheet in wb.Sheets}
     with STATE_LOCK:
         known = STATE.setdefault("sheet_codes", {}).get(path, {})
@@ -1134,11 +1134,14 @@ def _scan_one_workbook(
         exportable = _exportable_sheets(wb)
         missing = _follow_renamed_sheets(path, wb, {s.Name for s in exportable}, entry, previous)
         if missing:
-            # 找不到的表这次没检测：旧问题不能因为「没再检出」被当成已修好，原样保留
-            log_msg(f"  ⚠️ 找不到工作表（可能被改名、删除或隐藏），这次没有检测：{'、'.join(missing)}")
-            previous[:] = [p for p in previous if p["sheet_name"] not in missing]
+            log_msg(f"  ⚠️ 找不到工作表（可能被改名、删除或隐藏）：{'、'.join(missing)}")
             if sheets_only is not None:
+                # 只查部分表时这些表没检测：旧问题不能因为「没再检出」被当成已修好，原样保留
+                previous[:] = [p for p in previous if p["sheet_name"] not in missing]
                 entry["sheets"] = [name for name in entry["sheets"] if name not in missing]
+            else:
+                # 整份检查已包含现在所有要打印的表：表都不在了，上面的旧问题算解决；改名后认不出的表照样被检测，问题按新表出
+                missing = []
         if sheets_only is not None:
             sheets_only = set(entry["sheets"])
         sheets = [s for s in exportable if sheets_only is None or s.Name in sheets_only]

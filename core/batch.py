@@ -81,14 +81,14 @@ def _sheet_checks() -> dict[str, dict[str, Any]]:
     return _data().setdefault("sheet_checks", {})
 
 
-def _unchanged_since_check(path: str, sheets: list[str]) -> bool:
-    """这些表上次检测之后原文件没再改过（检测规则也没变）：重新导出检测的结果和上次一样"""
+def _unchanged_since_check(path: str) -> bool:
+    """上次整份检测之后原文件没再改过（检测规则也没变）：重新导出检测的结果和上次一样"""
     checks = _sheet_checks().get(path) or {}
     try:
         current = wf._file_version(Path(path))
     except OSError:
         return False
-    return checks.get("*") == current or all(checks.get(name) == current for name in sheets)
+    return checks.get("*") == current
 
 
 def rename_sheet(path: str, old: str, new: str) -> None:
@@ -580,8 +580,7 @@ def _refresh(
             # 记下这几张表是按原文件哪个版本检测的：文件没再改过时复检结果必然一样，不用重新导出
             checked = wf.STATE["checked_files"].get(path)
             if sheets is None:
-                # 有表没查到时不能说整份查过；不记，下次照常重新检测
-                _sheet_checks()[path] = {} if missing else {"*": checked}
+                _sheet_checks()[path] = {"*": checked}
             else:
                 checks = _sheet_checks().setdefault(path, {})
                 for name in missing:
@@ -1124,42 +1123,37 @@ def _adopt_rows(excel: Any, path: str, by_row: dict[str, list[dict]]) -> None:
 
 
 def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:
+    """人工修改后复检：整份文件所有要打印的表全部重新导出检测。
+    改一格可能影响同表、甚至别的表（比如顺手改了表名、删了表），所以不只查卡片所在的表；
+    原来的问题都没了就算通过，新冒出来的问题另出新卡。"""
     _check_file(path)
-    sheets = sorted({c["sheet_name"] for c in cards})
     with wf.STATE_LOCK:
-        # 整张表本来就要重新导出检测：同表其他已提交的黄色卡一起出结果，不用再一张张单独复检（每次都要重新导出）
+        # 整份本来就要重新检测：文件里其他已提交的黄色卡一起出结果，不用再一张张单独复检
         listed = {c["id"] for c in cards}
         cards = cards + [c for c in _data()["cards"].values()
-                         if c["id"] not in listed and c["wb_path"] == path and c["sheet_name"] in sheets
+                         if c["id"] not in listed and c["wb_path"] == path
                          and c["color"] == "yellow" and c.get("finalized") and not c.get("dismissed")]
         # 已提交的人工项复检没通过仍是人工项，改好后可直接再复检，不必先重新提交
         # 按对象记：工作表改名时卡片编号会跟着换
         handed = {id(c) for c in cards if c["color"] == "yellow" and c.get("finalized") and c.get("manual")}
     started = time.perf_counter()
     missing: list[str] = []
-    if _unchanged_since_check(path, sheets):
-        # 上次检测之后文件没改过，重新导出结果必然一样：直接用上次的检测结果，准确度不变
-        wf.log_msg(f"ℹ️ {Path(path).name}：上次检测后文件没有修改，沿用上次检测结果（{'、'.join(sheets)}）")
+    if _unchanged_since_check(path):
+        # 上次整份检测之后文件没改过，重新导出结果必然一样：直接用上次的检测结果，准确度不变
+        wf.log_msg(f"ℹ️ {Path(path).name}：上次检测后文件没有修改，沿用上次检测结果")
         with wf.STATE_LOCK:
             carry_item_policies(wf.STATE["items"])
     else:
         checking: dict[str, float] = {}
-        missing = _refresh(excel, path, sheets, timing=checking) or []
-        sheets = sorted({c["sheet_name"] for c in cards})  # 改名认出来的表已换成新名字
-        wf.log_msg(f"⏱ {Path(path).name} 复检 {len(sheets)} 张表：{time.perf_counter() - started:.1f} 秒"
+        missing = _refresh(excel, path, timing=checking) or []
+        wf.log_msg(f"⏱ {Path(path).name} 整份复检：{time.perf_counter() - started:.1f} 秒"
                    f"（打开 {checking.get('open', 0):.1f} 秒，导出 {int(checking.get('exports', 0))} 次 "
                    f"{checking.get('export', 0):.1f} 秒，检测 {checking.get('detect', 0):.1f} 秒）")
     with wf.STATE_LOCK:
         unresolved = [it for it in wf.STATE["items"].values() if it["wb_path"] == path
-                      and it["sheet_name"] in sheets and it["status"] not in wf.RESOLVED_STATUSES]
+                      and it["status"] not in wf.RESOLVED_STATUSES]
         passed = 0
         for card in cards:
-            if card["sheet_name"] in missing:
-                # 这张表没查到：绝不能因为「没再检出」就算通过
-                card.update(color="yellow", verified=False, finalized=id(card) in handed, waiting=False,
-                            message=f"找不到工作表「{card['sheet_name']}」（可能被改名、删除或隐藏），这次没有检测；"
-                                    "表还在的话请把名字改回来再复检，确实不需要了请标绿")
-                continue
             still = [it for it in unresolved if _cell(it) == _cell(card)]
             # 定位不确定的同表问题不能据此断言原格已修复。
             uncertain = any(it.get("location_confirmed") is False and it["sheet_name"] == card["sheet_name"]
@@ -1167,6 +1161,13 @@ def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:
             card.update(color="yellow" if still or uncertain else "blue", verified=not (still or uncertain),
                         finalized=bool(still or uncertain) and id(card) in handed,
                         message="复检仍有问题" if still or uncertain else "人工修改复检通过，等待确认")
+            if not still and not uncertain and card["sheet_name"] in missing:
+                passed += 1
+                # 表已经不在了（删除、隐藏或改名认不出）：整份重查已包含现在所有的表，有问题会按新表另出卡
+                card.update(after_kind="fixed", message=f"工作表「{card['sheet_name']}」已不在文件里（被删除、隐藏或改名），"
+                            "整份重新检测已包含现在所有的表，这里的问题算已解决，等待确认")
+                fix_images.forget(card, "after")
+                continue
             if not still and not uncertain:
                 passed += 1
                 # 用刚导出的 PDF 按文字重新截图；旧坐标在人工修改、重新分页后可能指到别处，截不到就不放图
@@ -1182,7 +1183,7 @@ def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:
                     else:
                         fix_images.forget(item, "after")
                 card["after_kind"] = "fixed"
-        for group in _group_cells([it for it in unresolved if it["sheet_name"] not in missing]):
+        for group in _group_cells(unresolved):
             card = _card_for(group)
             if card.get("dismissed"):
                 continue

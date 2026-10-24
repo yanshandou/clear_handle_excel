@@ -240,6 +240,24 @@ class IncrementalScanTests(unittest.TestCase):
                 item = self.items_by_text()["k"]
                 self.assertEqual((item["status"], item["sheet_name"]), ("pending", "S1"))
 
+    def test_full_check_counts_problems_on_a_vanished_sheet_as_solved(self):
+        """整份检查已包含现在所有的表：表不在了，上面的旧问题算解决（改名认不出时问题按新表另出）"""
+        path = self.add_book("book", ["S1", "S2"])
+        self.clips[("book", "S1")] = ["k"]
+        self.books["book"].Sheets[0].CodeName = ""
+        self.scan()
+        self.books["book"].Sheets[0].Name = "S1b"
+        self.clips[("book", "S1b")] = ["k"]
+        self.modify(path)
+        previous = [dict(it) for it in self.workflow.STATE["items"].values()]
+        entry = {"mode": "full", "sheets": None, "scanned": True}
+        self.workflow._scan_one_workbook(
+            self.excel, path, entry, previous, job=None, resumed=True, rescan_all=False,
+            delete_backups=False, used_pdf_paths=set(), read_only=True)
+        self.assertEqual(entry["missing"], ["S1"])
+        by_sheet = {(it["sheet_name"], it["status"]) for it in self.workflow.STATE["items"].values()}
+        self.assertEqual(by_sheet, {("S1", "fixed"), ("S1b", "pending")})
+
     def test_modified_file_without_open_problems_is_fully_rechecked(self):
         path = self.add_book("book", ["S1", "S2"])
         self.scan()

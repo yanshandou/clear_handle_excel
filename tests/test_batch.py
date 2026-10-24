@@ -1020,20 +1020,20 @@ class BatchTests(unittest.TestCase):
         item["status"] = status
         return card, item
 
-    def test_recheck_one_card_also_settles_other_cards_on_the_same_sheet(self):
-        """整张表本来就重新导出了：同表其他已提交的黄卡一起出结果，不用一张张再复检"""
+    def test_recheck_checks_whole_file_and_settles_its_other_cards(self):
+        """改一格可能影响别处：整份文件全部重查，文件里其他已提交的黄卡一起出结果"""
         a, item_a = self.manual_card("A5")
         b, item_b = self.manual_card("B5")
         other, item_o = self.manual_card("C5", sheet="S2")
-        def refresh(excel, path, sheets, **_):
-            self.assertEqual(sheets, ["S1"])  # 只查点了的那张表
-            item_a["status"] = item_b["status"] = item_o["status"] = "fixed"
+        def refresh(excel, path, sheets=None, **_):
+            self.assertIsNone(sheets)  # 整份
+            item_a["status"] = item_b["status"] = "fixed"
         self.refresh.side_effect = refresh
         with patch.object(batch, "_latest_shot", return_value=""):
             batch._recheck_file(self.excel, self.path, [a])
         self.assertEqual((a["color"], b["color"]), ("blue", "blue"))
         self.assertEqual(b["message"], "人工修改复检通过，等待确认")
-        self.assertEqual(other["color"], "yellow")  # 别的表没导出，不能判断
+        self.assertEqual((other["color"], other["finalized"]), ("yellow", True))  # 别的表还有问题
 
     def test_failed_recheck_keeps_card_ready_to_recheck_again(self):
         """已提交的人工项复检没过：仍是已提交的人工项，改好后直接再复检，不必先重新提交"""
@@ -1064,20 +1064,19 @@ class BatchTests(unittest.TestCase):
             self.wf.STATE["checked_files"][self.path] = version
         with patch.object(self.wf, "_scan_one_workbook", side_effect=scan):
             self.real_refresh(self.excel, self.path, ["S1"])
-            self.assertTrue(batch._unchanged_since_check(self.path, ["S1"]))
-            self.assertFalse(batch._unchanged_since_check(self.path, ["S1", "S2"]))
+            self.assertFalse(batch._unchanged_since_check(self.path))  # 只查了一张表不算整份
             # 副本上的检测不算原文件的检测
-            self.real_refresh(self.excel, self.path, ["S2"], workbook=Mock())
-            self.assertFalse(batch._unchanged_since_check(self.path, ["S2"]))
+            self.real_refresh(self.excel, self.path, workbook=Mock())
+            self.assertFalse(batch._unchanged_since_check(self.path))
             self.real_refresh(self.excel, self.path)
-            self.assertTrue(batch._unchanged_since_check(self.path, ["S1", "S2"]))
+            self.assertTrue(batch._unchanged_since_check(self.path))
         Path(self.path).write_bytes(b"edited workbook")
-        self.assertFalse(batch._unchanged_since_check(self.path, ["S1"]))
+        self.assertFalse(batch._unchanged_since_check(self.path))
 
     def test_recheck_of_unchanged_file_reuses_last_detection_without_exporting(self):
         card, item = self.manual_card("A5")
         item["status"] = "pending"
-        batch._sheet_checks()[self.path] = {"S1": self.wf._file_version(Path(self.path))}
+        batch._sheet_checks()[self.path] = {"*": self.wf._file_version(Path(self.path))}
         batch._recheck_file(self.excel, self.path, [card])
         self.refresh.assert_not_called()
         self.assertEqual((card["color"], card["finalized"]), ("yellow", True))
@@ -1086,15 +1085,16 @@ class BatchTests(unittest.TestCase):
         batch._recheck_file(self.excel, self.path, [card])
         self.refresh.assert_called_once()
 
-    def test_recheck_never_passes_cards_on_a_sheet_it_could_not_find(self):
+    def test_cards_on_a_sheet_no_longer_in_the_file_pass_with_a_clear_message(self):
+        """表被删除 / 隐藏 / 改名认不出：整份重查已包含现在所有的表，原来的问题算解决"""
         card, item = self.manual_card("A5")
         def refresh(*_, **__):
-            return ["S1"]  # 表被删除 / 隐藏 / 改名认不出来，这次没检测
+            item["status"] = "fixed"
+            return ["S1"]
         self.refresh.side_effect = refresh
         batch._recheck_file(self.excel, self.path, [card])
-        self.assertEqual((card["color"], card["verified"], card["finalized"]), ("yellow", False, True))
-        self.assertIn("找不到工作表「S1」", card["message"])
-        self.assertEqual(item["status"], "manual_review")
+        self.assertEqual((card["color"], card["verified"]), ("blue", True))
+        self.assertIn("工作表「S1」已不在文件里", card["message"])
 
     def test_renamed_sheet_moves_cards_rows_rules_and_highlights(self):
         card, item = self.add_card("A5", color="yellow")
