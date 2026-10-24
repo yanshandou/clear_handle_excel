@@ -289,6 +289,43 @@ class ScanOnlyTests(unittest.TestCase):
         self.assertEqual(batch._leftover_mark_paths([]), [self.path])
         self.assertEqual(batch._leftover_mark_paths([self.path]), [])  # 这次任务本来就会处理
 
+    def unhighlight(self, sync):
+        self.wf.STATE["job"] = {"kind": "batch_unhighlight", "options": {"paths": [self.path]},
+                                "completed": [], "pending_adjustment": None, "status": "running"}
+        session = Mock()
+        session.app.return_value = self.excel
+        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch, "ExcelWatchdog", return_value=Mock(timed_out=False)) as dog, \
+                patch.object(batch, "close_saved_workbooks", return_value={}), \
+                patch.object(batch, "_sync_highlights", side_effect=sync), \
+                patch.object(batch, "_restart_excel") as restart, \
+                patch.object(batch, "finish_execution_batch"), \
+                patch.object(batch.wf, "log_msg") as log:
+            batch.run()
+        return dog, restart, [c.args[0] for c in log.call_args_list]
+
+    def test_unhighlight_says_which_file_it_is_on_and_watches_excel(self):
+        dog, restart, messages = self.unhighlight(None)
+        self.assertEqual(dog.call_args.kwargs["timeout"], batch.UNHIGHLIGHT_STALL_SECONDS)
+        restart.assert_not_called()
+        self.assertTrue(any("正在还原（1 / 1）" in m and "book.xlsx" in m for m in messages), messages)
+        self.assertIn(self.path, self.wf.STATE["job"]["completed"])
+
+    def test_unhighlight_restarts_a_stuck_or_crashed_excel_and_tries_again(self):
+        _, restart, _ = self.unhighlight([RuntimeError("RPC サーバーを利用できません。"), None])
+        restart.assert_called_once()
+        self.assertIn(self.path, self.wf.STATE["job"]["completed"])
+
+    def test_close_saved_workbooks_gives_up_when_your_excel_does_not_answer(self):
+        from core import excel_ops
+        gate = __import__("threading").Event()
+        with patch.object(excel_ops, "_close_saved_workbooks", side_effect=lambda paths: gate.wait(5)):
+            with self.assertRaisesRegex(ValueError, "没有响应"):
+                excel_ops.close_saved_workbooks([Path(self.path)], timeout=0.1)
+        gate.set()
+        with patch.object(excel_ops, "_close_saved_workbooks", return_value={"x": "y"}):
+            self.assertEqual(excel_ops.close_saved_workbooks([Path(self.path)]), {"x": "y"})
+
     def test_marked_matches_keeps_only_cells_still_in_marker_color(self):
         fill = batch._excel_color("#C0007A")
         def cell(addr, row, col, color):
