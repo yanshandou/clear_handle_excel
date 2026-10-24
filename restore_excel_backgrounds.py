@@ -9,8 +9,11 @@
 按工作表名称和单元格地址比较，不猜测插入/删除行列后的对应关系。
 检查单元格直接设置的填充（包括显式白色），不处理条件格式、表格样式、
 整行/整列样式产生的背景。原本没有直接填充的单元格完全不动。
+纯白色填充与无填充视为等效，不做两者之间的转换；报告只列修复项和异常。
 直接修改 OOXML 压缩包中的样式引用，不通过 Excel/openpyxl 重存整个文件。
-报告的 SVG 缩略图是单元格颜色示意，并非 Excel 实际截图。
+合并区域只比较左上角主单元格，避免修复不可见的内部样式。
+每张有修改的工作表生成一张全表总览，按 1、2、3……标记修改位置。
+总览是按文件内容绘制的 SVG 预览，并非 Excel 实际截图。
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ import re
 import shutil
 import sys
 import tempfile
+import unicodedata
 from urllib.parse import unquote
 import xml.etree.ElementTree as ET
 import zipfile
@@ -72,6 +76,37 @@ def link(path, label=None):
     return f"[{escaped(label or path)}](<{Path(path).resolve().as_uri()}>)"
 
 
+def coordinates(address):
+    match = re.fullmatch(r"\$?([A-Z]+)\$?([1-9]\d*)", address)
+    if not match:
+        raise ValueError(f"无效单元格地址：{address}")
+    column = 0
+    for letter in match[1]:
+        column = column * 26 + ord(letter) - 64
+    return int(match[2]), column
+
+
+def cell_address(row, column):
+    letters = ""
+    while column:
+        column, remainder = divmod(column - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return f"{letters}{row}"
+
+
+def range_bounds(reference):
+    ends = reference.split(":")
+    start, end = coordinates(ends[0]), coordinates(ends[-1])
+    return start[0], start[1], end[0], end[1]
+
+
+def containing_range(address, ranges):
+    row, column = coordinates(address)
+    return next((bounds for bounds in ranges
+                 if bounds[0] <= row <= bounds[2] and bounds[1] <= column <= bounds[3]),
+                (row, column, row, column))
+
+
 class Book:
     def __init__(self, path):
         self.path = path
@@ -84,6 +119,8 @@ class Book:
             self.fills = list(root.find(tag("fills")))
             self.fonts = list(root.find(tag("fonts")))
             self.xfs = list(root.find(tag("cellXfs")))
+            self.dxfs = list(root.find(tag("dxfs"))) if root.find(tag("dxfs")) is not None else []
+            self.shared_strings = None
             self.theme = []
             if "xl/theme/theme1.xml" in self.zip.namelist():
                 theme_root = ET.fromstring(self.zip.read("xl/theme/theme1.xml"))
@@ -118,7 +155,43 @@ class Book:
 
     def cells(self, sheet):
         root = ET.fromstring(self.zip.read(self.sheets[sheet]))
+        return self.root_cells(root)
+
+    @staticmethod
+    def root_cells(root):
         return {c.get("r"): c for c in root.findall(f"{tag('sheetData')}/{tag('row')}/{tag('c')}")}
+
+    @staticmethod
+    def merged_ranges(root):
+        return [range_bounds(c.get("ref")) for c in root.findall(f"{tag('mergeCells')}/{tag('mergeCell')}")]
+
+    def conditional_ranges(self, root, restore_font):
+        result = []
+        for formatting in root.findall(tag("conditionalFormatting")):
+            for rule in formatting.findall(tag("cfRule")):
+                dxf = self.dxfs[int(rule.get("dxfId"))] if rule.get("dxfId") is not None else None
+                affects_display = rule.get("type") == "colorScale" or (dxf is not None and (
+                    dxf.find(tag("fill")) is not None or (restore_font and
+                    dxf.find(f"{tag('font')}/{tag('color')}") is not None)))
+                if affects_display:
+                    result.extend(range_bounds(ref) for ref in formatting.get("sqref", "").split())
+                    break
+        return result
+
+    def cell_text(self, cell):
+        if cell is None:
+            return ""
+        if cell.get("t") == "inlineStr":
+            inline = cell.find(tag("is"))
+            return "".join(t.text or "" for t in inline.iter(tag("t"))) if inline is not None else ""
+        value = cell.findtext(tag("v"), "")
+        if cell.get("t") == "s":
+            if self.shared_strings is None:
+                strings = ET.fromstring(self.zip.read("xl/sharedStrings.xml"))
+                self.shared_strings = ["".join(t.text or "" for t in item.iter(tag("t"))) for item in strings]
+            return self.shared_strings[int(value)]
+        formula = cell.find(tag("f"))
+        return value or ("=" + (formula.text or "") if formula is not None else "")
 
     def style(self, cell):
         return self.xfs[int(cell.get("s", "0"))]
@@ -172,9 +245,33 @@ class Book:
         return self.fonts[int(self.style(cell).get("fontId", "0"))].find(tag("color"))
 
     def fill_key(self, cell):
-        if not self.colored(cell):
+        # 用户将白底与无填充视为等效；仍可将误改成其他颜色的白底恢复为白色。
+        if not self.colored(cell) or self.plain_white(cell):
             return None
         return self.color_key(self.fill(cell))
+
+    def plain_white(self, cell):
+        if not self.colored(cell):
+            return False
+        pattern = self.normalized(self.fill(cell)).find(tag("patternFill"))
+        if pattern is None or pattern.get("patternType") != "solid":
+            return False
+        color = pattern.find(tag("fgColor"))
+        if color is None:
+            return False
+        rgb = color.get("rgb")
+        if "indexed" in color.attrib:
+            index = int(color.get("indexed"))
+            palette = ET.fromstring(self.styles_raw).find(f"{tag('colors')}/{tag('indexedColors')}")
+            if palette is not None:
+                rgb = palette[index].get("rgb") if index < len(palette) else None
+            elif index in {1, 9}:  # Excel 默认调色板的两项纯白色。
+                rgb = "FFFFFFFF"
+        if "theme" in color.attrib:
+            index = int(color.get("theme"))
+            rgb = self.theme[index] if index < len(self.theme) else None
+        tint = float(color.get("tint", "0"))
+        return bool(rgb) and (tint == 1 or (rgb[-6:].upper() == "FFFFFF" and tint >= 0))
 
     def color_key(self, node):
         normalized = self.normalized(node)
@@ -185,15 +282,16 @@ class Book:
                    if any("indexed" in c.attrib for c in normalized.iter()) else None)
         return canonical(normalized), theme, palette
 
-    def restore_style(self, original, source, current, restore_font):
-        fill = original.portable(original.fill(source), self)
+    def restore_style(self, original, source, current, restore_font, restore_fill=True):
+        fill = original.portable(original.fill(source), self) if restore_fill else None
         font_color = original.portable(original.font_color(source), self) if restore_font else None
         cache_key = (int(current.get("s", "0")), canonical(fill), restore_font, canonical(font_color))
         if cache_key in self.xf_cache:
             return self.xf_cache[cache_key]
         xf = deepcopy(self.style(current))
-        xf.set("fillId", str(intern(self.fills, fill)))
-        xf.set("applyFill", "1")
+        if restore_fill:
+            xf.set("fillId", str(intern(self.fills, fill)))
+            xf.set("applyFill", "1")
         if restore_font:
             font = deepcopy(self.fonts[int(xf.get("fontId", "0"))])
             for old in list(font.findall(tag("color"))):
@@ -322,22 +420,136 @@ def color_description(book, cell):
         return kind, "#EEEEEE"
     text = ", ".join(f"{k}={v}" for k, v in color.attrib.items())
     rgb = color.get("rgb")
+    # 带 tint 的基色不等于最终显示色，不能把基色画成实际颜色。
+    if float(color.get("tint", "0")) != 0:
+        return f"{kind}: {text}（预览占位色）", "#EEEEEE"
+    if "indexed" in color.attrib:
+        index = int(color.get("indexed"))
+        palette = ET.fromstring(book.styles_raw).find(f"{tag('colors')}/{tag('indexedColors')}")
+        if palette is not None and index < len(palette):
+            rgb = palette[index].get("rgb")
+        elif palette is None and index < 16:
+            rgb = ("000000", "FFFFFF", "FF0000", "00FF00", "0000FF", "FFFF00", "FF00FF", "00FFFF")[index % 8]
     return f"{kind}: {text}", "#" + rgb[-6:] if rgb else "#EEEEEE"
 
 
-def thumbnail(path, sheet, address, before, after):
+def preview_cells(book, cells, merges, bounds):
+    items, seen = [], set()
+    # 按实际存在的单元格生成，不遍历整个矩形；远处有数据时也不会产生海量空格。
+    for address in sorted(cells, key=coordinates):
+        merged = containing_range(address, merges)
+        if merged in seen:
+            continue
+        seen.add(merged)
+        owner = cell_address(merged[0], merged[1])
+        cell = cells.get(owner)
+        description, color = color_description(book, cell) if cell is not None else ("无直接填充", "#FFFFFF")
+        items.append({"bounds": merged, "address": owner, "text": book.cell_text(cell),
+                      "description": description, "color": color})
+    return items
+
+
+def overview_bounds(left, right, merges):
+    positions = [coordinates(address) for address in left.keys() | right.keys()]
+    positions += [(bounds[2], bounds[3]) for bounds in merges]
+    return 1, 1, max(p[0] for p in positions), max(p[1] for p in positions)
+
+
+def wrapped_text(value, units, maximum=2):
+    lines, line, width = [], "", 0
+    for char in str(value).replace("\r", ""):
+        size = 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+        if char == "\n" or width + size > units:
+            lines.append(line)
+            line, width = "", 0
+            if len(lines) == maximum:
+                lines[-1] = lines[-1][:-1] + "…"
+                return lines
+            if char == "\n":
+                continue
+        line += char
+        width += size
+    return lines + [line] if line or not lines else lines
+
+
+def thumbnail(path, preview, dry_run):
+    """每个工作表一张全表图，编号与报告明细对应；不把 XML 预览称作截图。"""
+    bounds = preview["bounds"]
+    columns, rows = bounds[3] - bounds[1] + 1, bounds[2] - bounds[0] + 1
+    width, margin, header = max(1120, min(2600, columns * 100 + 102)), 24, 54
+    row_height = min(44, 16000 / rows)
+    cell_width = (width - 2 * margin - header) / columns
+    top = 126
+    grid_top = top + 30
+    grid_bottom = grid_top + rows * row_height
+    positions = {}
+    for item in preview["after"]:
+        r1, c1, r2, c2 = item["bounds"]
+        positions[item["address"]] = (margin + header + (c1 - bounds[1]) * cell_width,
+                                      grid_top + (r1 - bounds[0]) * row_height,
+                                      (c2 - c1 + 1) * cell_width, (r2 - r1 + 1) * row_height)
+    markers, occupied = {}, []
+    for address in preview["addresses"]:
+        x, y, w, h = positions[address]
+        cx, cy = min(width - 16, max(margin + header + 14, x + w - 4)), max(grid_top + 14, y + 4)
+        while any(abs(cx - old_x) < 30 and abs(cy - old_y) < 30 for old_x, old_y in occupied):
+            cy += 30
+        occupied.append((cx, cy))
+        markers[address] = (cx, cy)
+    legend_top = max(grid_bottom, max(y for x, y in occupied) + 14) + 52
+    height = legend_top + 40 + len(preview["addresses"]) * 34 + 32
     esc = html.escape
-    svg = ['<svg xmlns="http://www.w3.org/2000/svg" width="620" height="150" viewBox="0 0 620 150">',
-           '<rect width="620" height="150" fill="white"/>',
-           f'<text x="14" y="23" font-size="15">{esc(sheet + "!" + address)} — 颜色示意（非截图）</text>']
-    for x, title, (description, color) in ((14, "修复前", before), (324, "恢复后", after)):
-        svg += [f'<text x="{x}" y="49" font-size="14">{title}</text>',
-                f'<rect x="{x}" y="58" width="280" height="46" fill="{color}" stroke="#64748b"/>',
-                f'<text x="{x}" y="128" font-size="11">{esc(description[:46])}</text>']
-    path.write_text("\n".join(svg + ["</svg>"]), encoding="utf-8")
+    svg = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+           '<style>text{font-family:"Microsoft YaHei","Yu Gothic",sans-serif;fill:#172033}</style>',
+           f'<rect width="{width}" height="{height}" fill="#ffffff"/>',
+           f'<text x="24" y="31" font-size="22" font-weight="bold">{esc(preview["sheet"])}：全表修改总览（{len(preview["addresses"])} 处）</text>',
+           '<text x="24" y="59" font-size="15">红框和数字对应下方明细编号；每张工作表只生成这一张图，可单独打开并放大。</text>',
+           '<text x="24" y="83" font-size="15">这是文件内容预览，不是 Excel 截图；未模拟条件格式、数字格式及实际行高列宽。</text>',
+           f'<text x="24" y="108" font-size="16">{"预计修复后（仅检查）" if dry_run else "修复后（从保存文件重新读取）"}；范围 {cell_address(bounds[0], bounds[1])}:{cell_address(bounds[2], bounds[3])}</text>',
+           f'<rect x="{margin}" y="{top}" width="{width - margin * 2}" height="{rows * row_height + 30}" fill="#f1f5f9"/>',
+           f'<rect x="{margin + header}" y="{grid_top}" width="{columns * cell_width}" height="{rows * row_height}" fill="#ffffff" stroke="#cbd5e1"/>']
+    # 宽/长工作表的标签按间距抽样，保留完整范围，不用截断来缩小图片。
+    column_step = max(1, int(24 / cell_width) + 1)
+    row_step = max(1, int(26 / row_height) + 1)
+    for column in range(bounds[1], bounds[3] + 1, column_step):
+        x = margin + header + (column - bounds[1]) * cell_width
+        letter = re.match(r"[A-Z]+", cell_address(1, column)).group()
+        svg.append(f'<text x="{x + cell_width / 2}" y="{top + 21}" font-size="14" text-anchor="middle">{letter}</text>')
+    for row in range(bounds[0], bounds[2] + 1, row_step):
+        y = grid_top + (row - bounds[0]) * row_height
+        svg.append(f'<text x="{margin + header / 2}" y="{y + min(26, row_height * .7)}" font-size="14" text-anchor="middle">{row}</text>')
+    for index, item in enumerate(preview["after"]):
+        r1, c1, r2, c2 = item["bounds"]
+        x = margin + header + (c1 - bounds[1]) * cell_width
+        y = grid_top + (r1 - bounds[0]) * row_height
+        w, h = (c2 - c1 + 1) * cell_width, (r2 - r1 + 1) * row_height
+        svg.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{esc(item["color"])}" stroke="#cbd5e1" stroke-width="0.6"><title>{esc(item["address"] + ": " + item["text"] + " / " + item["description"])}</title></rect>')
+        if w >= 24 and h >= 14:
+            font_size = min(16, max(8, min(w / 8, h * .42)))
+            clip = f"clip_{index}"
+            svg.append(f'<clipPath id="{clip}"><rect x="{x + 3}" y="{y + 2}" width="{w - 6}" height="{h - 4}"/></clipPath>')
+            for line_index, line in enumerate(wrapped_text(item["text"], max(4, int((w - 10) / (font_size * .55))))):
+                svg.append(f'<text x="{x + 5}" y="{y + font_size + 4 + line_index * (font_size + 3)}" font-size="{font_size}" clip-path="url(#{clip})">{esc(line)}</text>')
+    svg.append(f'<text x="24" y="{legend_top}" font-size="20" font-weight="bold">编号与修改明细（与报告一致）</text>')
+    for number, address in enumerate(preview["addresses"], 1):
+        x, y, w, h = positions[address]
+        # 相邻小格也给数字留出独立位置，用引线指回对应的红框。
+        cx, cy = markers[address]
+        before, after, font_changed = preview["changes"][address]
+        svg += [f'<g data-change-number="{number}" data-cell="{address}">',
+                f'<title>{number}. {address}: {esc(before[0])} → {esc(after[0])}</title>',
+                f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="none" stroke="#dc2626" stroke-width="2.5"/>',
+                f'<line x1="{x + w / 2}" y1="{y + h / 2}" x2="{cx}" y2="{cy}" stroke="#dc2626" stroke-width="1.5"/>',
+                f'<circle cx="{cx}" cy="{cy}" r="13" fill="#dc2626" stroke="white" stroke-width="2"/>',
+                f'<text x="{cx}" y="{cy + 5}" font-size="14" font-weight="bold" text-anchor="middle" style="fill:white">{number}</text>', '</g>']
+        legend_y = legend_top + 36 + (number - 1) * 34
+        legend = f'{number}. {address}：{before[0]} → {after[0]}' + ('；同时恢复字体颜色' if font_changed else '')
+        svg.append(f'<text x="24" y="{legend_y}" font-size="15">{esc(legend)}</text>')
+    svg += ['</svg>']
+    path.write_text("\n".join(svg), encoding="utf-8")
 
 
-def save_book(book, updates, safety_copy):
+def save_book(book, updates, safety_copy, expected=None):
     before_stat = book.path.stat()
     safety_copy.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(book.path, safety_copy)
@@ -353,6 +565,18 @@ def save_book(book, updates, safety_copy):
                 raise ValueError("输出文件校验失败，未替换原文件")
             for name in updates:
                 ET.fromstring(check.read(name))
+        if expected:
+            verification = Book(Path(temp_name))
+            try:
+                for sheet, wanted in expected.items():
+                    cells = verification.cells(sheet)
+                    for address, (fill_key, font_key, verify_font) in wanted.items():
+                        cell = cells.get(address)
+                        if cell is None or verification.fill_key(cell) != fill_key or (
+                                verify_font and verification.color_key(verification.font_color(cell)) != font_key):
+                            raise ValueError(f"保存校验失败：{sheet}!{address}，未替换成品")
+            finally:
+                verification.close()
         book.close()
         current_stat = book.path.stat()
         if (before_stat.st_size, before_stat.st_mtime_ns) != (current_stat.st_size, current_stat.st_mtime_ns):
@@ -368,15 +592,26 @@ def compare(source, target, output, relative, dry_run=False, restore_font_color=
     try:
         original = Book(source)
         current = Book(target)
-        details, notes, updates = [], [], {}
+        details, notes, updates, previews, expected = [], [], {}, [], {}
         for sheet in original.sheets:
             if sheet not in current.sheets:
                 notes.append(f"缺少工作表：{sheet}")
                 continue
-            left, right = original.cells(sheet), current.cells(sheet)
+            source_root = ET.fromstring(original.zip.read(original.sheets[sheet]))
+            target_root = ET.fromstring(current.zip.read(current.sheets[sheet]))
+            left, right = original.root_cells(source_root), current.root_cells(target_root)
+            source_merges, target_merges = original.merged_ranges(source_root), current.merged_ranges(target_root)
+            conditional = original.conditional_ranges(source_root, restore_font_color) + current.conditional_ranges(target_root, restore_font_color)
+            skipped_merges, skipped_conditional = [], []
             changes = {}
             for address, source_cell in left.items():
                 if not original.colored(source_cell):
+                    continue
+                row, column = coordinates(address)
+                source_merge = containing_range(address, source_merges)
+                target_merge = containing_range(address, target_merges)
+                if source_merge == target_merge and (row, column) != source_merge[:2]:
+                    # 合并区域内部单元格可能残留独立颜色；其直接样式不代表可见背景。
                     continue
                 target_cell = right.get(address)
                 if target_cell is None:
@@ -385,21 +620,60 @@ def compare(source, target, output, relative, dry_run=False, restore_font_color=
                 font_diff = restore_font_color and original.color_key(original.font_color(source_cell)) != current.color_key(current.font_color(target_cell))
                 if not fill_diff and not font_diff:
                     continue
+                if source_merge != target_merge:
+                    skipped_merges.append(address)
+                    continue
+                if any(r1 <= row <= r2 and c1 <= column <= c2 for r1, c1, r2, c2 in conditional):
+                    skipped_conditional.append(address)
+                    continue
                 # 可解析但不同的主题/索引色上下文在恢复前明确检查。
-                new_style = current.restore_style(original, source_cell, target_cell, restore_font_color)
+                new_style = current.restore_style(original, source_cell, target_cell, restore_font_color, fill_diff)
                 changes[address] = new_style
                 before = color_description(current, target_cell)
-                after = color_description(original, source_cell)
+                after = color_description(original, source_cell) if fill_diff else before
                 details.append((sheet, address, before, after, bool(font_diff)))
+                planned = deepcopy(target_cell)
+                planned.set("s", str(new_style))
+                expected.setdefault(sheet, {})[address] = (
+                    current.fill_key(planned), current.color_key(current.font_color(planned)), restore_font_color)
+            for addresses, reason in ((skipped_merges, "合并区域结构与备份不同，无法安全对应，已跳过"),
+                                      (skipped_conditional, "存在可能覆盖颜色的条件格式，需在 Excel 中核对，已跳过")):
+                if addresses:
+                    notes.append(f"{sheet}：{reason}，共 {len(addresses)} 个单元格（如 {', '.join(addresses[:8])}）")
             if changes:
                 part = current.sheets[sheet]
                 updates[part] = patch_cells(current.zip.read(part), changes)
+                group = {"sheet": sheet, "bounds": overview_bounds(left, right, source_merges + target_merges),
+                         "addresses": sorted(changes, key=coordinates),
+                         "changes": {address: (before, after, font_changed)
+                                     for name, address, before, after, font_changed in details if name == sheet}}
+                if dry_run:
+                    planned_cells = dict(right)
+                    for address, style in changes.items():
+                        cell = deepcopy(right.get(address, ET.Element(tag("c"), {"r": address})))
+                        cell.set("s", str(style))
+                        planned_cells[address] = cell
+                    group["after"] = preview_cells(current, planned_cells, target_merges, group["bounds"])
+                previews.append(group)
         safety = None
         if details and not dry_run:
             updates["xl/styles.xml"] = current.styles_output()
             safety = output / "before_restore" / relative
-            save_book(current, updates, safety)
-        return details, notes, safety
+            save_book(current, updates, safety, expected)
+            # 展示保存文件的实际样式；不把修复计划冒充已经保存的结果。
+            saved = Book(target)
+            try:
+                for sheet in {p["sheet"] for p in previews}:
+                    root = ET.fromstring(saved.zip.read(saved.sheets[sheet]))
+                    cells, merges = saved.root_cells(root), saved.merged_ranges(root)
+                    for group in previews:
+                        if group["sheet"] == sheet:
+                            group["after"] = preview_cells(saved, cells, merges, group["bounds"])
+            finally:
+                saved.close()
+        sheet_order = {name: index for index, name in enumerate(original.sheets)}
+        details.sort(key=lambda item: (sheet_order[item[0]], coordinates(item[1])))
+        return details, notes, safety, previews
     finally:
         if original is not None:
             original.close()
@@ -463,64 +737,89 @@ def main():
     report = ["# Excel 背景色恢复报告", "", f"- 原始备份：{link(backup)}", f"- 成品文件夹：{link(finished)}",
               f"- 模式：{'仅检查，未修改文件' if DRY_RUN else '修复成品，修复前副本存放于 before_restore'}",
               f"- 字体颜色：{'同时恢复（仅原本有背景色的单元格）' if RESTORE_FONT_COLOR else '不修改'}", "",
-              "按工作表名称和单元格地址对应；原本没有直接填充的单元格不处理。显式白色属于有填充。",
-              "条件格式、表格样式、行列默认样式不在检查范围。插入/删除/重排过行列的文件请先核对位置。",
-              "缩略图仅展示填充色示意，不是 Excel 截图；图案、渐变、索引色及带 tint 的主题色可能只显示占位色。",
+              "只列需要修复或注意的文件；正常且无需处理的文件不展开记录。",
+              "按工作表名称和单元格地址对应；原本无填充不处理，纯白色与无填充视为等效。",
+              "合并区域仅处理左上角主单元格；合并结构不同、存在颜色条件格式的差异跳过并提醒核对。",
+              "表格样式、行列默认样式不在检查范围。插入/删除/重排过行列的文件请先核对位置。",
+              "每张有修改的工作表只生成一张全表总览，红框及 1、2、3……编号与明细一一对应。",
+              "预览不是 Excel 截图，未模拟条件格式、行高列宽、数字格式；图案/渐变等颜色可能仅显示占位色。",
               "部分 Markdown 查看器会禁止打开本地 file 链接，可复制报告里的完整路径打开。", ""]
-    changed_files = changed_cells = failures = unmatched = 0
+    changed_files = changed_cells = failures = unmatched = unchanged_files = 0
+
+    def record(lines):
+        report.extend(lines)
+        (output / "report.md").write_text("\n".join(report), encoding="utf-8-sig")
+
     used = set()
     for index, source in enumerate(sources, 1):
         relative = source.relative_to(backup)
         progress(index - 1, len(sources), str(relative))
-        report += [f"## {escaped(relative)}", "", f"原始：{link(source)}", ""]
+        entry = [f"## {escaped(relative)}", "", f"原始：{link(source)}", ""]
         candidates = by_relative.get(relative.as_posix().casefold(), [])
         if not candidates and source_counts[source.name.casefold()] == 1:
             candidates = [p for p in by_name.get(source.name.casefold(), []) if p not in reserved]
         if len(candidates) != 1:
             unmatched += 1
-            report += ["未处理：找不到对应文件，或同名文件存在歧义。", ""]
+            record(entry + ["未处理：找不到对应文件，或同名文件存在歧义。", ""])
             continue
         target = candidates[0]
         if target in used:
             unmatched += 1
-            report += ["未处理：成品已匹配其他备份文件，避免重复覆盖。", ""]
+            record(entry + ["未处理：成品已匹配其他备份文件，避免重复覆盖。", ""])
             continue
         used.add(target)
-        report += [f"成品：{link(target)}", ""]
+        entry += [f"成品：{link(target)}", ""]
         if source.suffix.lower() not in SUPPORTED:
             failures += 1
-            report += ["未处理：旧版 .xls/.xlsb 不支持，请使用 Excel 转为 .xlsx 后比较。", ""]
+            record(entry + ["未处理：旧版 .xls/.xlsb 不支持，请使用 Excel 转为 .xlsx 后比较。", ""])
             continue
         try:
-            details, notes, safety = compare(source, target, output, target.relative_to(finished), DRY_RUN, RESTORE_FONT_COLOR)
+            details, notes, safety, previews = compare(source, target, output, target.relative_to(finished), DRY_RUN, RESTORE_FONT_COLOR)
+            if not details and not notes:
+                unchanged_files += 1
+                continue
             changed_files += bool(details)
             changed_cells += len(details)
-            report += [f"{'发现待恢复' if DRY_RUN else '已恢复'} {len(details)} 个单元格。", ""]
-            if safety:
-                report += [f"修复前副本：{link(safety)}", ""]
-            if notes:
-                report += [f"- {escaped(note)}" for note in notes] + [""]
             if details:
-                report += ["| 工作表 | 单元格 | 修复前填充 | 原始 / 恢复后填充 | 字体颜色 | 前后示意 |",
-                           "| --- | --- | --- | --- | --- | --- |"]
-                for number, (sheet, address, before, after, font_changed) in enumerate(details, 1):
+                entry += [f"{'发现待恢复' if DRY_RUN else '已恢复'} {len(details)} 个单元格。", ""]
+                if not DRY_RUN:
+                    entry += ["保存前已重新读取输出文件，校验修改位置的填充及所选字体颜色；下图修复后部分也从成品重新读取。", ""]
+            if safety:
+                entry += [f"修复前副本：{link(safety)}", ""]
+            if notes:
+                entry += [f"- {escaped(note)}" for note in notes] + [""]
+            if details:
+                preview_map = {(preview["sheet"], address): (number, marker)
+                               for number, preview in enumerate(previews, 1)
+                               for marker, address in enumerate(preview["addresses"], 1)}
+                entry += ["| 图中编号 | 工作表 | 单元格 | 修复前填充 | 原始 / 恢复后填充 | 字体颜色 | 全表总览 |",
+                           "| --- | --- | --- | --- | --- | --- | --- |"]
+                for sheet, address, before, after, font_changed in details:
+                    number, marker = preview_map[sheet, address]
                     image_name = f"{index:05d}_{number:06d}.svg"
+                    preview_link = f"[打开总览图 {number}](images/{image_name})"
+                    entry.append(f"| {marker} | {escaped(sheet)} | {address} | {escaped(before[0])} | {escaped(after[0])} | {'待恢复' if DRY_RUN and font_changed else '已恢复' if font_changed else '不变'} | {preview_link} |")
+                entry.append("")
+                for number, preview in enumerate(previews, 1):
+                    image_name = f"{index:05d}_{number:06d}.svg"
+                    entry += [f"### 全表总览 {number}：{escaped(preview['sheet'])}", "",
+                              "图中编号：" + "；".join(f"{marker} = {address}" for marker, address in enumerate(preview['addresses'], 1)), ""]
                     try:
-                        thumbnail(images / image_name, sheet, address, before, after)
-                        preview = f"![颜色示意](images/{image_name})"
+                        thumbnail(images / image_name, preview, DRY_RUN)
+                        entry += [f"[单独打开 / 放大查看](images/{image_name})", "",
+                                  f"![全表修改位置编号总览](images/{image_name})", ""]
                     except OSError as error:
-                        preview = escaped(f"缩略图生成失败：{error}")
-                    report.append(f"| {escaped(sheet)} | {address} | {escaped(before[0])} | {escaped(after[0])} | {'待恢复' if DRY_RUN and font_changed else '已恢复' if font_changed else '不变'} | {preview} |")
-                report.append("")
+                        entry += [escaped(f"预览生成失败：{error}"), ""]
         except Exception as error:
             failures += 1
-            report += [f"处理失败（未确认修复）：{escaped(type(error).__name__ + ': ' + str(error))}", ""]
+            entry += [f"处理失败（未确认修复）：{escaped(type(error).__name__ + ': ' + str(error))}", ""]
         # 每个文件完成后落盘，中途中断也保留已经完成的记录。
-        (output / "report.md").write_text("\n".join(report), encoding="utf-8-sig")
+        record(entry)
     progress(len(sources), len(sources), "完成")
     print()
     extras = [p for p in targets if p not in used]
     report += ["## 汇总", "", f"- 备份 Excel 文件：{len(sources)}", f"- {'待恢复' if DRY_RUN else '已恢复'}：{changed_files} 个文件，{changed_cells} 个单元格",
+               f"- 无需处理且无异常：{unchanged_files} 个文件（不列明细）",
                f"- 未匹配 / 歧义：{unmatched}；失败 / 不支持：{failures}",
                f"- 成品中未匹配文件：{len(extras)}", ""]
     report += [f"- {link(p)}" for p in extras]
