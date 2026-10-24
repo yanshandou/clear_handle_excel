@@ -277,8 +277,8 @@ function computeFileSheetHighlights(file) {
   return highlights;
 }
 
-// 「旧」表全部标为删除、「新」表保留时，执行后「新」表去掉开头的「新」字（与后端 _new_prefix_renames 一致）；
-// 去掉后与剩下的表重名时不改名
+// 「旧」表全部标为删除（或本来就没有「旧」表，olds 为空）、「新」表保留时，执行后「新」表去掉开头的「新」字
+// （与后端 _new_prefix_renames 一致）；去掉后与剩下的表重名时不改名
 function findNewPrefixRenames(sheets, stateOf, pairs) {
   const renamed = new Set();
   const remaining = sheets.filter(n => stateOf(n) !== 'delete');
@@ -431,6 +431,7 @@ function summarizeDecisions() {
     deletedTotal: 0,
     uncertainTotal: 0,
     keptTotal: 0,
+    renameTotal: 0,
     emptyFiles: [],
   };
   if (!previewData || !Array.isArray(previewData.files)) return summary;
@@ -448,6 +449,8 @@ function summarizeDecisions() {
     summary.uncertainTotal += fileUnc;
     if (file.sheets.length > 0 && fileDel >= file.sheets.length) {
       summary.emptyFiles.push(file.name);
+    } else {
+      summary.renameTotal += findNewPrefixRenames(file.sheets, n => getSheetState(file.name, n), file.new_old_pairs).size;
     }
   });
   return summary;
@@ -535,7 +538,8 @@ function renderPage() {
   if (phase === 'preview') {
     const stats = summarizeDecisions();
     renderSummary(stats);
-    const hasAction = stats.deletedTotal > 0; // 待定只是本次不删，不改文件
+    // 待定只是本次不删，不改文件；只去掉「新」字（没有旧表的新X）也要执行
+    const hasAction = stats.deletedTotal > 0 || stats.renameTotal > 0;
     const hasError = stats.emptyFiles.length > 0;
     execBtn.disabled = working || !hasAction || hasError || isBusyOther() || isCleanRunning();
     if (pending === 'start') {
@@ -563,7 +567,8 @@ function renderSummary(stats) {
     共 <b>${files.length}</b> 个文件：
     删除 <b class="is-deleted">${stats.deletedTotal}</b> 个 ·
     待定 <b class="is-uncertain">${stats.uncertainTotal}</b> 个（不删） ·
-    保留 <b>${stats.keptTotal}</b> 个
+    保留 <b>${stats.keptTotal}</b> 个 ·
+    去掉「新」字 <b>${stats.renameTotal}</b> 个
   `;
 }
 
@@ -594,7 +599,7 @@ function previewFileItem(file, fileIndex, extraClass = '') {
       ? '<s class="strip-new-prefix">新</s>' + renderSheetLabelHtml(
         displayName.slice(1), highlight && { ...highlight, mask: highlight.mask.slice(1) })
       : renderSheetLabelHtml(displayName, highlight);
-    const renameTip = stripNew ? `；旧版删除后改名为「${displayName.replace(/^新\s*/, '')}」` : '';
+    const renameTip = stripNew ? `；执行后去掉「新」字，改名为「${displayName.replace(/^新\s*/, '')}」` : '';
     const tip = (isDeleted
       ? '当前：删除（单击切换为「待定」，再点切换为「保留」）'
       : (isUncertain

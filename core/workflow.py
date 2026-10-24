@@ -24,7 +24,7 @@ from core.common import (
     find_backup_sheets,
     find_clean_targets,
     find_contained_sheets,
-    find_new_old_pairs,
+    find_new_prefix_sheets,
     has_review_prefix,
     is_uncertain_name,
     review_marked_name,
@@ -2326,7 +2326,7 @@ def _preview_workbook(wb_path: Path, folder: Path, get_excel: Callable[[], Any])
         default_delete = [s for s in find_clean_targets(all_names) if s not in set(uncertain)]
         contained = set(find_contained_sheets(all_names))
         entry["uncertain"] = [s for s in all_names if s in contained or s in set(uncertain)]
-        entry["new_old_pairs"] = find_new_old_pairs(all_names)  # 旧表全部删除时，新表去掉「新」字
+        entry["new_old_pairs"] = find_new_prefix_sheets(all_names)  # 旧表全部删除（或没有旧表）时，新表去掉「新」字
         if default_delete and len(default_delete) >= len(all_names):
             entry["note"] = "全部工作表均被识别为备份表，将跳过删除"
         else:
@@ -2371,7 +2371,7 @@ def _resolve_clean_targets(
 ) -> tuple[list[str], list[str], list[tuple[str, str]], bool]:
     """根据工作表列表与用户选择，返回 (待删除表, 待定表, [(原表名, 新表名)], 是否试图删空整本工作簿)
 
-    待定表只是本次不删，不再给表名或文件名加 ❓；改名只有删除旧版后去掉「新」字这一种。
+    待定表只是本次不删，不再给表名或文件名加 ❓；改名只有去掉开头「新」字这一种。
     """
     if file_plan is None:
         candidates = find_clean_targets(all_names)
@@ -2397,13 +2397,13 @@ def _resolve_clean_targets(
 def _new_prefix_renames(
     all_names: list[str], deleted: set[str], uncertain: set[str], occupied: set[str],
 ) -> list[tuple[str, str]]:
-    """「旧」表全部删除后，对应的「新」表去掉开头的「新」字（Excel 改表名时会自动更新公式与打印区域等引用）。
+    """「旧」表全部删除后（或本来就没有「旧」表），「新」表去掉开头的「新」字（Excel 改表名时会自动更新公式与打印区域等引用）。
 
     「新」表本身被删除或标为待定、还有「旧」表保留着、去掉后与现有表重名（不区分大小写）时都不改名。
     occupied 为执行后剩下的表名，改名后同步更新。
     """
     renames: list[tuple[str, str]] = []
-    for new_name, olds in find_new_old_pairs(all_names).items():
+    for new_name, olds in find_new_prefix_sheets(all_names).items():
         if new_name in deleted or new_name in uncertain or not all(o in deleted for o in olds):
             continue
         target = strip_new_prefix(new_name)
