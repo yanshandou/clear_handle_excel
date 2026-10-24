@@ -392,6 +392,23 @@ class BatchTests(unittest.TestCase):
         self.assertEqual((redetected["status"], redetected["row_height"]), ("fixed", 33.0))
         self.assertEqual(redetected["fix_images"]["after"], "a.png")
 
+    def test_all_blue_commit_still_starts_excel_to_write_an_adopted_attempt(self):
+        """全部标蓝提交、其中有「最后一次尝试」：以前不开 Excel，写行高时报 'NoneType' object has no attribute 'Workbooks'"""
+        card, _ = self.attempt_card()
+        batch.mark(card["id"], "blue")
+        self.wf.STATE.update(busy=True)
+        self.wf.STATE["job"] = {"kind": "batch_commit", "options": {"card_ids": [card["id"]]},
+                                "completed": [], "pending_adjustment": None, "status": "running"}
+        session = Mock()
+        session.app.return_value = self.excel
+        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch, "_sync_highlights_safely"), \
+                patch.object(batch, "finish_execution_batch"):
+            batch.run()
+        self.assertEqual(self.heights[5], 33.0)
+        self.assertIsNone(self.wf.STATE["job"]["pending_adjustment"])
+        self.assertTrue(card["dismissed"])
+
     def test_blue_attempt_with_disagreeing_row_peer_writes_nothing(self):
         card, _ = self.attempt_card("A5", "blue")
         peer, _ = self.attempt_card("B5", "green")

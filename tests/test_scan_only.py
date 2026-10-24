@@ -326,6 +326,24 @@ class ScanOnlyTests(unittest.TestCase):
         with patch.object(excel_ops, "_close_saved_workbooks", return_value={"x": "y"}):
             self.assertEqual(excel_ops.close_saved_workbooks([Path(self.path)]), {"x": "y"})
 
+    def test_failed_restore_keeps_the_record_and_is_retried(self):
+        """还原出错不能当成已还原、把记录删掉：那样颜色留在 Excel 里，程序再也不认得"""
+        self.add_item("A5")
+        self.scan()
+        self.card("A5").update(color="blue", dismissed=True)
+        with patch.object(batch, "_restore_cells", side_effect=RuntimeError("例外が発生しました。")), \
+                patch.object(batch.wf, "log_msg") as log:
+            batch._sync_highlights(lambda: self.excel, self.path)
+        messages = [c.args[0] for c in log.call_args_list]
+        self.assertEqual(len(batch._marks()), 1)
+        self.assertFalse(any("还原颜色 1 格" in m for m in messages), messages)
+        self.assertTrue(any("记录留着下次再试" in m for m in messages), messages)
+        with patch.object(batch.wf, "log_msg") as log:
+            batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(batch._marks(), {})
+        self.assertEqual(self.sheet.cell("A5").Interior.Pattern, batch.XL_PATTERN_NONE)
+        self.assertTrue(any("还原颜色 1 格" in c.args[0] for c in log.call_args_list))
+
     def test_marked_matches_keeps_only_cells_still_in_marker_color(self):
         fill = batch._excel_color("#C0007A")
         def cell(addr, row, col, color):
