@@ -43,6 +43,8 @@ XL_PATTERN_NONE, XL_PATTERN_SOLID = -4142, 1
 # 默认洋红底白字：业务表格几乎不用这个颜色，一眼就能看到，白字对比度约 6:1；黄色已有别人在用
 DEFAULT_HIGHLIGHT = {"fill": "#C0007A", "font": "#FFFFFF"}
 SCAN_ONLY_MESSAGE = "只扫描：已在 Excel 中标色，请人工修改并保存后复检"
+HANDOVER_MESSAGE = "转人工：自动还没处理到这一格，请人工修改并保存后复检；也可以点「转回自动」交还自动处理"
+TOUCHED_MESSAGE = "转人工后这一行的行高被改过，仍有问题：留给人工处理，自动不再改这一行"
 
 
 def _data() -> dict[str, Any]:
@@ -120,6 +122,11 @@ def rename_sheet(path: str, old: str, new: str) -> None:
     checks = _sheet_checks().get(path)
     if checks and old in checks:
         checks[new] = checks.pop(old)
+    hand = _data().get("handover", {}).get(path)
+    if hand:
+        prefix = _row_key(old, 0)[:-1]
+        hand["rows"] = {(_row_key(new, 0)[:-1] + key[len(prefix):] if key.startswith(prefix) else key): height
+                        for key, height in hand["rows"].items()}
     job = wf.STATE.get("job") or {}
     for field in ("card_ids", "commit_card_ids"):
         if isinstance(job.get("options", {}).get(field), list):
@@ -211,6 +218,11 @@ def _save_shot(card: dict, which: str, image: str) -> None:
     # 卡片 id 按单元格固定：同一格以后再出问题会新建同 id 的卡，带上代次才不会覆盖旧修复留在报告里的截图
     gen = card.get("gen")
     fix_images.save(card, which, image, key=f"batch:{card['id']}" + (f":{gen}" if gen else ""))
+
+
+def _stopping(job: dict) -> bool:
+    """点了「完成当前行后暂停」或「转人工」：做完当前这一行就停"""
+    return bool(job.get("pause_requested") or job.get("to_manual"))
 
 
 def _waiting(card: dict) -> bool:
@@ -325,6 +337,7 @@ def snapshot() -> dict:
             cards.append(result)
         highlighted = sum(1 for m in _marks().values() if wf.in_current_folder(m["path"]))
         return {"cards": cards, "busy": wf.STATE["busy"], "folder": wf.STATE["folder"], "highlighted": highlighted,
+                "mode": _mode(),
                 "job": copy.deepcopy(wf.STATE["job"]), "progress": dict(wf.STATE["scan_progress"]),
                 "logs": wf.STATE["logs"][-100:]}
 
@@ -819,7 +832,7 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
     attempted = job.setdefault("attempted_rows", [])
     copy_checked: set[str] = set()  # 用副本重新检测过的表：最后要用原文件完整复查
     while True:
-        if job.get("pause_requested"):
+        if _stopping(job):
             return
         with wf.STATE_LOCK:
             pending = [it for it in wf.STATE["items"].values() if it["wb_path"] == path
@@ -1190,6 +1203,8 @@ def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:
                 continue  # 全自动还没轮到的，或你已标蓝 / 绿还没提交的，保留原样
             found += 1
             message = "复检查出的问题：请修改并保存后再复检"
+            if _waiting(card):
+                card["handed_over"] = True  # 这次才查出来的格子，自动还没试过：「转回自动」时可以交给自动
             card.update(color="yellow", verified=False, manual=True, finalized=True, waiting=False,
                         dismissed=False, message=message)
             for item in group:
@@ -1219,8 +1234,10 @@ def _open_without_marks(excel: Any, path: str) -> Any:
     return book
 
 
-def _hand_over(path: str) -> None:
-    """只扫描：本文件检出的问题全部转人工（黄色、已提交），不试修、不改行高。
+def _hand_over(path: str, *, switch: bool = False) -> None:
+    """本文件检出的问题转人工（黄色、已提交），不试修、不改行高。
+    只扫描时全部转；全自动中途「转人工」（switch）时只转还没轮到自动的格子，
+    自动已经试过、没通过的照原样交给人工，以后「转回自动」也不再试。
     用户已经手动标成蓝 / 绿、还没提交的卡保留用户的选择。"""
     with wf.STATE_LOCK:
         pending = [it for it in wf.STATE["items"].values() if it["wb_path"] == path
@@ -1230,18 +1247,141 @@ def _hand_over(path: str) -> None:
             if card.get("marked") and card["color"] != "yellow" and not card.get("finalized"):
                 card["waiting"] = False
                 continue
+            if switch and card.get("handed_over") and card.get("finalized"):
+                continue  # 上次转人工时就交给人工、还没处理完的，原样留着
+            if switch and not _waiting(card):
+                row = _row_record(card)
+                if card["color"] == "yellow" and not (row and row["saved"]):
+                    # 没写过原文件，不用等提交还原：直接可以人工处理、复检
+                    card.update(manual=True, finalized=True, handed_over=False)
+                    for item in _items_at(card):
+                        item.update(status="manual_review", batch_managed=True, triage_keep=False,
+                                    review_reason=card["message"])
+                continue
             if any(autofix.column_width_only(it) for it in group):
                 message = autofix.COLUMN_ONLY_REASON
             elif not _can_highlight(card):
                 message = "单元格定位未确认，未在 Excel 中标色，请按截图查找后人工处理"
             else:
-                message = SCAN_ONLY_MESSAGE
+                message = HANDOVER_MESSAGE if switch else SCAN_ONLY_MESSAGE
             card.update(color="yellow", verified=False, manual=True, finalized=True, waiting=False,
-                        dismissed=False, after_kind="scan_only", message=message)
+                        dismissed=False, after_kind="handover" if switch else "scan_only", message=message,
+                        handed_over=True)
             for item in _items_at(card):
                 item.update(status="manual_review", batch_managed=True, triage_keep=False, review_reason=message)
         wf._persist_state()
-    wf._sync_problem_counts(path, "只扫描完成，全部转人工处理")
+    wf._sync_problem_counts(path, "已转人工处理" if switch else "只扫描完成，全部转人工处理")
+
+
+def _row_key(sheet: str, row: Any) -> str:
+    return f"{sheet}\0{int(row)}"
+
+
+def _remember_handover(path: str) -> None:
+    """转人工那一刻记下文件版本和每个问题行的行高：「转回自动」时据此判断人改过文件、动过哪些行"""
+    with wf.STATE_LOCK:
+        rows = {_row_key(it["sheet_name"], it["excel_row"]): float(it["row_height"])
+                for it in wf.STATE["items"].values()
+                if it["wb_path"] == path and isinstance(it.get("row_height"), (int, float))
+                and it.get("excel_row")}
+        try:
+            version = wf._file_version(Path(path))
+        except OSError:
+            version = None
+        _data().setdefault("handover", {})[path] = {"version": version, "rows": rows}
+        wf._persist_state()
+
+
+def _touched(item: dict, rows: dict[str, float]) -> bool:
+    """这一行的行高和转人工时不一样：人动过。转人工时没有记录的行（插行后的新位置等）算没动过"""
+    before = rows.get(_row_key(item["sheet_name"], item["excel_row"])) if item.get("excel_row") else None
+    now = item.get("row_height")
+    return before is not None and isinstance(now, (int, float)) and abs(now - before) >= ROW_HEIGHT_TOLERANCE
+
+
+def _back_to_auto(excel: Any, session: Any, path: str) -> None:
+    """「转回自动」时每份文件先做的事：转人工后文件改过就整份重扫（规则同复检，原来的黄卡翻篇）；
+    还没被自动试过、所在行也没被人动过的问题交回自动队列，其余留给人工；最后还原 Excel 里的标记颜色，
+    自动处理的截图和检测都按原来的颜色来。"""
+    unsaved = close_saved_workbooks([Path(path)])
+    if Path(path) in unsaved:
+        raise ValueError(f"{Path(path).name}：{unsaved[Path(path)]}，请保存后继续")
+    _check_file(path)
+    with wf.STATE_LOCK:
+        hand = _data().get("handover", {}).get(path) or {}
+        unchanged = hand.get("version") is not None and hand["version"] == wf._file_version(Path(path))
+        cards = [c for c in _data()["cards"].values() if c["wb_path"] == path and not c.get("dismissed")
+                 and c["color"] == "yellow" and c.get("finalized")]
+    if unchanged:
+        wf.log_msg(f"ℹ️ {Path(path).name}：转人工后没有修改，沿用上次检测结果")
+    else:
+        _recheck_file(excel, path, cards)
+    with wf.STATE_LOCK:
+        rows = hand.get("rows", {})
+        unresolved = [it for it in wf.STATE["items"].values() if it["wb_path"] == path
+                      and it["status"] not in wf.RESOLVED_STATUSES]
+        back = kept = 0
+        for group in _group_cells(unresolved):
+            card = _card_for(group)
+            if not card.get("handed_over") or card.get("dismissed") or (
+                    card.get("marked") and card["color"] != "yellow" and not card.get("finalized")):
+                continue  # 自动试过没通过的、你已标蓝 / 绿还没提交的，保持原样
+            if not unchanged and any(_touched(it, rows) for it in group):
+                card.update(handed_over=False, message=TOUCHED_MESSAGE)
+                kept += 1
+                continue
+            card.update(color="yellow", verified=False, manual=False, finalized=False, marked=False,
+                        waiting=True, handed_over=False, message=WAITING_MESSAGE)
+            card.pop("after_kind", None)
+            for item in group:
+                item.update(status="pending", batch_managed=True, triage_keep=False)
+            back += 1
+        wf._persist_state()
+    # 自动处理时 Excel 里不留标记色；还留给人工的格子，提交或复检后再按设置标色
+    _sync_highlights(session.app, path, clear=True)
+    wf.log_msg(f"🤖 {Path(path).name}：{back} 处交回自动处理"
+               + (f"，{kept} 处所在行转人工后被改过，留给人工" if kept else ""))
+
+
+def _handed_over_paths() -> list[str]:
+    """调用方持有 STATE_LOCK：当前文件夹里还有可交回自动的问题的文件"""
+    cards = sorted(_data()["cards"].values(), key=lambda c: c["seq"])
+    return list(dict.fromkeys(c["wb_path"] for c in cards if c.get("handed_over") and not c.get("dismissed")
+                              and wf.in_current_folder(c["wb_path"])))
+
+
+def _mode() -> dict[str, bool]:
+    """调用方持有 STATE_LOCK：现在能不能「转人工」/「转回自动」"""
+    job = wf.STATE["job"] or {}
+    auto = job.get("kind") == "batch_scan" and not job.get("options", {}).get("scan_only")
+    active = wf.STATE["busy"] or job.get("status") == "interrupted"
+    return {
+        # 全部文件扫描完才能切；暂停中也可以直接转
+        "to_manual": auto and active and job.get("phase") == "repair" and not job.get("to_manual"),
+        "to_auto": not wf.STATE["busy"] and not (auto and job.get("status") == "interrupted")
+                   and bool(_handed_over_paths()),
+    }
+
+
+def request_manual() -> bool:
+    """「转人工」：任务在跑就做完当前这一行后转；已暂停返回 True，由调用方续跑任务去做转人工"""
+    with wf.STATE_LOCK:
+        if not _mode()["to_manual"]:
+            job = wf.STATE["job"] or {}
+            if job.get("kind") == "batch_scan" and job.get("phase") != "repair" and (
+                    wf.STATE["busy"] or job.get("status") == "interrupted"):
+                raise ValueError("全部文件扫描完成后才能转人工，请稍候")
+            raise ValueError("没有正在进行的全自动处理")
+        job = wf.STATE["job"]
+        job["to_manual"] = True
+        wf._persist_state()
+        return not wf.STATE["busy"]
+
+
+def check_auto() -> None:
+    with wf.STATE_LOCK:
+        if not _mode()["to_auto"]:
+            raise ValueError("没有可以交回自动处理的问题")
 
 
 def _can_highlight(card: dict) -> bool:
@@ -1598,6 +1738,28 @@ def validate_cards(ids: Any = None, *, yellow: bool = False) -> list[str]:
         return list(dict.fromkeys(ids))
 
 
+def _switch_to_manual(session: Any, job: dict, paths: list[str]) -> None:
+    """全自动中途「转人工」：当前这一行已经做完。已修好的蓝卡原样留着审核；
+    还没轮到的格子全部转黄、在 Excel 里标色，记下转人工时的行高，之后「转回自动」时用"""
+    options = job["options"]
+    left = 0
+    for path in paths:
+        with wf.STATE_LOCK:
+            if isinstance(options.get("highlight"), dict):
+                _data().setdefault("highlight_files", {})[path] = highlight_style(options["highlight"])
+            left += sum(1 for c in _data()["cards"].values() if c["wb_path"] == path and _waiting(c)
+                        and not c.get("dismissed"))
+        _hand_over(path, switch=True)
+        _sync_highlights_safely(session, path)
+        _remember_handover(path)
+    with wf.STATE_LOCK:
+        job["completed"] = list(dict.fromkeys(job["completed"] + paths))
+        job.pop("to_manual", None)
+        job.pop("repairing", None)
+        wf._persist_state()
+    wf.log_msg(f"🙋 已转人工：{left} 处还没自动处理的问题转为黄色人工项；已修好的蓝卡保留，可随时审核")
+
+
 def run() -> list[str]:
     """由 workflow 的单一任务槽执行；不依赖浏览器心跳。"""
     job = wf.STATE["job"]
@@ -1621,15 +1783,24 @@ def run() -> list[str]:
                                     list(dict.fromkeys(_data()["cards"][cid]["wb_path"] for cid in options["card_ids"])))
                 wf._persist_state()
         if kind == "batch_scan":
+            back = bool(options.get("back_to_auto"))
             if "workbooks" not in job:
-                folder, paths = wf.list_workbooks(options["folder"])
-                with wf.STATE_LOCK:
-                    if str(folder) != wf.STATE["folder"]:
-                        # 审核卡片、忽略规则、行高记录按文件路径区分，各文件夹分开保留：切回来还能审核、还原
-                        wf.STATE.update(items={}, pages={}, checked_files={})
-                    wf.STATE.update(folder=str(folder), pdf_folder=str(folder))
-                    job["workbooks"] = [str(p) for p in paths]
-                    wf._persist_state()
+                if back:
+                    # 「转回自动」：只处理还有可交回自动的问题的文件，审核数据都在，不清空
+                    with wf.STATE_LOCK:
+                        folder = Path(wf.STATE["folder"])
+                        job["workbooks"] = _handed_over_paths()
+                        wf._persist_state()
+                    paths = [Path(p) for p in job["workbooks"]]
+                else:
+                    folder, paths = wf.list_workbooks(options["folder"])
+                    with wf.STATE_LOCK:
+                        if str(folder) != wf.STATE["folder"]:
+                            # 审核卡片、忽略规则、行高记录按文件路径区分，各文件夹分开保留：切回来还能审核、还原
+                            wf.STATE.update(items={}, pages={}, checked_files={})
+                        wf.STATE.update(folder=str(folder), pdf_folder=str(folder))
+                        job["workbooks"] = [str(p) for p in paths]
+                        wf._persist_state()
                 init_execution_batch(task_name="只扫描（全部转人工）" if scan_only else "全自动扫描与修复",
                                      folder=folder, workbooks=paths, pdf_folder=folder)
             expected = job["workbooks"]
@@ -1638,55 +1809,19 @@ def run() -> list[str]:
                     pending = job["pending_adjustment"]
                     job.setdefault("deferred_adjustments", {})[pending["path"]] = pending
                     job["pending_adjustment"] = None
-                    wf._persist_state()
-            for path in expected:
-                if path in job["completed"] and path not in job.get("deferred_adjustments", {}):
-                    continue
-                if job.get("pause_requested"):
-                    break
-                with wf.STATE_LOCK:
-                    pending = job.get("deferred_adjustments", {}).pop(path, None)
-                    if pending:
-                        job["pending_adjustment"] = pending
-                        wf._persist_state()
+                # 先把全部文件扫完，再逐行修；旧版本的任务没分两步，做完的文件当作扫过
+                scanned = job.setdefault("scanned", list(job["completed"]))
+                versions = job.setdefault("scan_versions", {})
+                wf._persist_state()
+
+            def each_file(path: str, work: Callable[[str], None]) -> bool:
+                """处理一份文件；程序出错（多半是 Excel 崩溃或卡住）重启 Excel 再试，还不行就跳过、可续跑"""
                 for tries in range(autofix.MAX_ERROR_RETRIES + 1):
                     try:
                         watchdog.progress()
-                        _check_file(path)
-                        excel = session.app()
-                        if job.get("pending_adjustment"):
-                            _finish_pending(excel)
-                        started, checking = time.perf_counter(), {}
-                        _refresh(excel, path, session=session, timing=checking)
-                        wf.log_msg(f"⏱ {Path(path).name} 整份检查：{time.perf_counter() - started:.1f} 秒"
-                                   f"（导出 {int(checking.get('exports', 0))} 次 {checking.get('export', 0):.1f} 秒，"
-                                   f"检测 {checking.get('detect', 0):.1f} 秒）")
-                        if scan_only:
-                            # 不试修、不改行高：检出的全部转人工，在原 Excel 里标色方便定位
-                            with wf.STATE_LOCK:
-                                _data().setdefault("highlight_files", {})[path] = highlight_style(options.get("highlight"))
-                            _hand_over(path)
-                            _sync_highlights(session.app, path)
-                        else:
-                            with wf.STATE_LOCK:
-                                # 全自动处理时运行中不改颜色（免得和写入行高冲突）；提交后黄色人工项再按这个颜色标
-                                if isinstance(options.get("highlight"), dict):
-                                    _data().setdefault("highlight_files", {})[path] = highlight_style(options["highlight"])
-                                elif options.get("highlight_off"):
-                                    _data().get("highlight_files", {}).pop(path, None)
-                            _repair_file(excel, session, path)
+                        work(path)
                         watchdog.progress()
-                        if job.get("pause_requested"):
-                            break
-                        with wf.STATE_LOCK:
-                            if path not in job["completed"]:
-                                job["completed"].append(path)
-                            job.get("file_errors", {}).pop(path, None)
-                            wf.STATE["scan_progress"] = {"total": len(expected), "completed": len(job["completed"]), "status": "running"}
-                            wf._persist_state()
-                        if not scan_only:
-                            wf._sync_problem_counts(path, "全自动处理完成，等待结果审核")
-                        break
+                        return True
                     except Exception as err:
                         if job.get("pending_adjustment"):
                             _park_pending(err)
@@ -1697,8 +1832,8 @@ def run() -> list[str]:
                             update_file_progress(workbook_rel_name(Path(path), wf.STATE["folder"]),
                                                  status="error", error=str(err), current_action="写入待核对，已跳过，可续跑")
                             session.close()
-                            break
-                        # 程序出错（多半是 Excel 崩溃或卡住）：重启 Excel 再试；检测类原因（ValueError）不重试
+                            return False
+                        # 检测类原因（ValueError）不重试
                         if (not isinstance(err, (ValueError, TimeoutError)) and not watchdog.timed_out
                                 and tries < autofix.MAX_ERROR_RETRIES):
                             wf.log_msg(f"⚠️ {Path(path).name} 出错，重启 Excel 后重试：{err}")
@@ -1717,11 +1852,94 @@ def run() -> list[str]:
                                              status="error", error=str(err), current_action="文件未完成，可续跑")
                         # 下一个文件用新的 Excel，避免一次崩溃拖垮后面所有文件
                         session.close()
-                        break
+                        return False
                     finally:
                         session.drop_copy(path)
+                return False
+
+            def scan(path: str) -> None:
+                _check_file(path)
+                excel = session.app()
+                if back:
+                    _back_to_auto(excel, session, path)
+                else:
+                    started, checking = time.perf_counter(), {}
+                    _refresh(excel, path, session=session, timing=checking)
+                    wf.log_msg(f"⏱ {Path(path).name} 整份检查：{time.perf_counter() - started:.1f} 秒"
+                               f"（导出 {int(checking.get('exports', 0))} 次 {checking.get('export', 0):.1f} 秒，"
+                               f"检测 {checking.get('detect', 0):.1f} 秒）")
+                if scan_only:
+                    # 不试修、不改行高：检出的全部转人工，在原 Excel 里标色方便定位
+                    with wf.STATE_LOCK:
+                        _data().setdefault("highlight_files", {})[path] = highlight_style(options.get("highlight"))
+                    _hand_over(path)
+                    _sync_highlights(session.app, path)
+                    _remember_handover(path)
+
+            for path in expected:
+                if path in scanned:
+                    continue
                 if job.get("pause_requested"):
                     break
+                if not each_file(path, scan):
+                    continue
+                with wf.STATE_LOCK:
+                    scanned.append(path)
+                    versions[path] = wf._file_version(Path(path))
+                    job.get("file_errors", {}).pop(path, None)
+                    if scan_only:
+                        job["completed"].append(path)
+                        wf.STATE["scan_progress"] = {"total": len(expected), "completed": len(job["completed"]),
+                                                     "status": "running"}
+                    wf._persist_state()
+                if not scan_only and not back:
+                    wf._sync_problem_counts(path, "扫描完成，等待自动处理")
+            if not scan_only and not job.get("pause_requested"):
+                with wf.STATE_LOCK:
+                    job["phase"] = "repair"  # 全部扫完：从这里起可以「转人工」
+                    wf._persist_state()
+
+            def repair(path: str) -> None:
+                _check_file(path)
+                excel = session.app()
+                if job.get("pending_adjustment"):
+                    _finish_pending(excel)
+                with wf.STATE_LOCK:
+                    # 全自动处理时运行中不改颜色（免得和写入行高冲突）；提交后黄色人工项再按这个颜色标
+                    if isinstance(options.get("highlight"), dict):
+                        _data().setdefault("highlight_files", {})[path] = highlight_style(options["highlight"])
+                    elif options.get("highlight_off"):
+                        _data().get("highlight_files", {}).pop(path, None)
+                    stale = job.get("repairing") == path or versions.get(path) != wf._file_version(Path(path))
+                    job["repairing"] = path
+                    wf._persist_state()
+                if stale:
+                    # 上次修到一半停下（或扫描后文件又写过）：先按现在的文件重新检测，再接着修
+                    _refresh(excel, path, session=session)
+                _repair_file(excel, session, path)
+
+            for path in expected if job.get("phase") == "repair" else []:
+                if _stopping(job):
+                    break
+                if path not in scanned or (path in job["completed"] and path not in job.get("deferred_adjustments", {})):
+                    continue
+                with wf.STATE_LOCK:
+                    pending = job.get("deferred_adjustments", {}).pop(path, None)
+                    if pending:
+                        job["pending_adjustment"] = pending
+                        wf._persist_state()
+                if not each_file(path, repair) or _stopping(job):
+                    continue
+                with wf.STATE_LOCK:
+                    if path not in job["completed"]:
+                        job["completed"].append(path)
+                    job.pop("repairing", None)
+                    job.get("file_errors", {}).pop(path, None)
+                    wf.STATE["scan_progress"] = {"total": len(expected), "completed": len(job["completed"]), "status": "running"}
+                    wf._persist_state()
+                wf._sync_problem_counts(path, "全自动处理完成，等待结果审核")
+            if job.get("to_manual") and not job.get("pause_requested"):
+                _switch_to_manual(session, job, [p for p in expected if p in scanned])
         elif kind == "batch_commit":
             if options.get("refresh_sheets") or any(c["color"] != "blue" and not c.get("dismissed")
                                                    for c in _data()["cards"].values()):
