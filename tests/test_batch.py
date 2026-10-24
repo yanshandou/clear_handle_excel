@@ -1173,6 +1173,56 @@ class BatchTests(unittest.TestCase):
         self.assertTrue(job["closing"])
         self.assertFalse(batch.enqueue_recheck([a["id"]]))  # 已在收尾：另起任务
 
+    def run_recheck(self, recheck, session):
+        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch, "close_saved_workbooks", return_value={}), \
+                patch.object(batch, "_recheck_file", side_effect=recheck), \
+                patch.object(batch, "_sync_highlights_safely"), \
+                patch.object(batch, "_restart_excel") as restart, \
+                patch.object(batch, "finish_execution_batch"), \
+                patch.object(self.wf, "log_msg") as log:
+            batch.run()
+        return restart, [c.args[0] for c in log.call_args_list]
+
+    def test_recheck_restarts_excel_when_it_crashes_and_tries_again(self):
+        """Excel 挂了（RPC サーバーを利用できません）：换新的 Excel 再查，不让后面的文件跟着全失败"""
+        a, _ = self.manual_card("A5")
+        job = self.recheck_job([a], [self.path])
+        calls = []
+        def recheck(excel, path, cards):
+            calls.append(path)
+            if len(calls) == 1:
+                raise RuntimeError("RPC サーバーを利用できません。")
+        restart, messages = self.run_recheck(recheck, Mock())
+        restart.assert_called_once()
+        self.assertEqual(calls, [self.path, self.path])
+        self.assertIn(self.path, job["completed"])
+        self.assertTrue(any("重启 Excel 后重试" in m and "出错位置" in m for m in messages), messages)
+
+    def test_recheck_gives_up_after_one_retry_and_explains_where(self):
+        a, _ = self.manual_card("A5")
+        job = self.recheck_job([a], [self.path])
+        def recheck(excel, path, cards):
+            raise RuntimeError("例外が発生しました。")
+        restart, messages = self.run_recheck(recheck, Mock())
+        restart.assert_called_once()
+        self.assertNotIn(self.path, job["completed"])
+        self.assertTrue(any("复检失败" in m and "出错位置：run 第" in m for m in messages), messages)
+
+    def test_recheck_does_not_retry_check_failures(self):
+        a, _ = self.manual_card("A5")
+        self.recheck_job([a], [self.path])
+        restart, _ = self.run_recheck(Mock(side_effect=ValueError("扫描期间文件已修改")), Mock())
+        restart.assert_not_called()
+
+    def test_highlight_update_retries_once_with_a_new_excel(self):
+        session = Mock()
+        with patch.object(batch, "_sync_highlights", side_effect=[AttributeError("Open.Close"), None]) as sync, \
+                patch.object(batch, "_restart_excel") as restart:
+            batch._sync_highlights_safely(session, self.path)
+        self.assertEqual(sync.call_count, 2)
+        restart.assert_called_once_with(session)
+
     def test_recheck_cannot_join_other_tasks(self):
         a, _ = self.manual_card("A5")
         self.wf.STATE.update(busy=True)

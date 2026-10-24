@@ -11,6 +11,7 @@ import math
 import re
 import shutil
 import time
+import traceback
 import unicodedata
 from collections.abc import Callable
 from pathlib import Path
@@ -1223,14 +1224,22 @@ def _open_without_marks(excel: Any, path: str) -> Any:
     if not marks:
         return None
     book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0, ReadOnly=True)
+    failed: list[str] = []
     try:
         for mark in marks:
-            found = _locate_mark(book, mark)
-            if found is not None and found[0] is not None:
-                _restore_cells(found[0], mark, found[1])
-    except Exception:
+            try:
+                found = _locate_mark(book, mark)
+                if found is not None and found[0] is not None:
+                    _restore_cells(found[0], mark, found[1])
+            except Exception as err:
+                # 一格还原不了（例如工作表被保护）不该让整份复检失败：照常检测，日志里说一声
+                failed.append(f"{mark['sheet']}!{mark['addr']}（{err}）")
+    except BaseException:
         book.Close(SaveChanges=False)
         raise
+    if failed:
+        wf.log_msg(f"⚠️ {Path(path).name}：{len(failed)} 格标记颜色没能在检测前去掉，带着标记色检测："
+                   + "；".join(failed[:5]) + ("……" if len(failed) > 5 else ""))
     return book
 
 
@@ -1622,9 +1631,7 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
         data, marks = _data(), _marks()
         style = data.get("highlight_files", {}).get(path)
         cards = [c for c in data["cards"].values() if c["wb_path"] == path]
-        want = set() if clear or not style else {
-            c["id"] for c in cards
-            if not c.get("dismissed") and c["color"] == "yellow" and c.get("manual") and _can_highlight(c)}
+        want = set() if clear else _wanted_marks(path)
         have = {cid for cid, m in marks.items() if m["path"] == path}
         # 没确认存进文件的记录（上次标色被打断，或旧版本没记这一项）：打开文件看一眼颜色还在不在
         unsure = sorted(cid for cid in have if not marks[cid].get("saved"))
@@ -1767,12 +1774,49 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
         wf.log_msg(f"🎨 {Path(path).name}：" + "，".join(parts))
 
 
+def _wanted_marks(path: str) -> set[str]:
+    """这份文件里现在应该标色的卡片：黄色人工待处理的。调用方持有 STATE_LOCK"""
+    data = _data()
+    if not data.get("highlight_files", {}).get(path):
+        return set()
+    return {c["id"] for c in data["cards"].values()
+            if c["wb_path"] == path and not c.get("dismissed") and c["color"] == "yellow"
+            and c.get("manual") and _can_highlight(c)}
+
+
+def _leftover_mark_paths(skip: list[str]) -> list[str]:
+    """上次没还原成的标记颜色（例如 Excel 中途崩溃）所在的文件：卡片已经不用标了、记录还在。
+    提交 / 复检时顺带把这些文件也还原，不用等这份文件下次再复检"""
+    with wf.STATE_LOCK:
+        paths = dict.fromkeys(m["path"] for m in _marks().values()
+                              if m["path"] not in skip and wf.in_current_folder(m["path"])
+                              and Path(m["path"]).exists())
+        return [p for p in paths if {cid for cid, m in _marks().items() if m["path"] == p} - _wanted_marks(p)]
+
+
+def _where(err: BaseException) -> str:
+    """出错在哪个函数哪一行（只看本程序的代码），日志里带上，下次出问题能直接定位"""
+    frames = [f for f in traceback.extract_tb(err.__traceback__) if "core" in Path(f.filename).parts]
+    return f"（出错位置：{frames[-1].name} 第 {frames[-1].lineno} 行）" if frames else ""
+
+
 def _sync_highlights_safely(session: Any, path: str) -> None:
-    """提交、复检之后顺带更新标色；失败只记日志，不影响审核结果"""
-    try:
-        _sync_highlights(session.app, path, tick=session.touch)
-    except Exception as err:
-        wf.log_msg(f"⚠️ {Path(path).name} 未能更新 Excel 里的标记颜色：{err}")
+    """提交、复检之后顺带更新标色；失败只记日志，不影响审核结果。
+    Excel 出毛病（崩溃、连不上）时换一个新的 Excel 再试一次；还是不行，记录留着，下次提交 / 复检时再还原"""
+    for tries in range(2):
+        try:
+            _sync_highlights(session.app, path, tick=session.touch)
+            return
+        except Exception as err:
+            if isinstance(err, ValueError) or tries:
+                wf.log_msg(f"⚠️ {Path(path).name} 未能更新 Excel 里的标记颜色：{err}{_where(err)}")
+                return
+            wf.log_msg(f"⚠️ {Path(path).name} 更新标记颜色出错，重启 Excel 后重试：{err}{_where(err)}")
+            try:
+                _restart_excel(session)
+            except Exception as restart_err:
+                wf.log_msg(f"❌ 无法重新启动 Excel：{restart_err}")
+                return
 
 
 def highlighted_paths() -> list[str]:
@@ -2032,6 +2076,9 @@ def run() -> list[str]:
             expected = list(dict.fromkeys(_data()["cards"][cid]["wb_path"] for cid in options["card_ids"]))
             for path in expected:
                 _sync_highlights_safely(session, path)
+            for path in _leftover_mark_paths(expected):
+                if not workbook_locked(Path(path)):  # 你正在 Excel 里改的文件不动，下次再还原
+                    _sync_highlights_safely(session, path)
         elif kind in {"batch_recheck", "batch_open"}:
             cards = [_data()["cards"][cid] for cid in options["card_ids"]]
             expected = list(dict.fromkeys(c["wb_path"] for c in cards))
@@ -2065,7 +2112,17 @@ def run() -> list[str]:
                             wf.log_msg(f"⚠️ {Path(path).name}：{unsaved[Path(path)]}，请保存后继续")
                             continue
                         if cards:
-                            _recheck_file(excel, path, cards)
+                            for tries in range(2):
+                                try:
+                                    _recheck_file(session.app(), path, cards)  # Excel 重启过就用新的
+                                    break
+                                except Exception as err:
+                                    if isinstance(err, ValueError) or tries:
+                                        raise
+                                    # 多半是后台 Excel 崩溃或出了毛病：换一个新的 Excel 再查一次，
+                                    # 不然 Excel 一挂，后面每份文件都报「RPC サーバーを利用できません」
+                                    wf.log_msg(f"⚠️ {Path(path).name} 复检出错，重启 Excel 后重试：{err}{_where(err)}")
+                                    _restart_excel(session)
                             _sync_highlights_safely(session, path)
                         with wf.STATE_LOCK:
                             job["skipped"].remove(path)
@@ -2073,7 +2130,7 @@ def run() -> list[str]:
                                 job["completed"].append(path)
                             wf._persist_state()
                     except Exception as err:
-                        wf.log_msg(f"❌ {Path(path).name} 复检失败，可继续任务：{err}")
+                        wf.log_msg(f"❌ {Path(path).name} 复检失败，可继续任务：{err}{_where(err)}")
                     finally:
                         with wf.STATE_LOCK:
                             job["current"] = None
@@ -2086,6 +2143,9 @@ def run() -> list[str]:
                                 job["workbooks"].append(path)
                             wf._persist_state()
                 expected = list(job["workbooks"])
+                for path in _leftover_mark_paths(expected):
+                    if not workbook_locked(Path(path)):  # 你正在 Excel 里改的文件不动，下次再还原
+                        _sync_highlights_safely(session, path)
         elif kind == "batch_unhighlight":
             expected = list(options["paths"])
             unsaved = close_saved_workbooks([Path(path) for path in expected])

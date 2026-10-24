@@ -271,6 +271,24 @@ class ScanOnlyTests(unittest.TestCase):
         self.matches.assert_not_called()
         self.assertFalse(any("⚠️" in c.args[0] for c in log.call_args_list))
 
+    def test_one_mark_that_cannot_be_removed_does_not_fail_the_recheck(self):
+        self.add_item("A5")
+        self.scan()
+        with patch.object(batch, "_restore_cells", side_effect=RuntimeError("例外が発生しました。")), \
+                patch.object(batch.wf, "log_msg") as log:
+            book = batch._open_without_marks(self.excel, self.path)
+        self.assertIsNotNone(book)
+        self.assertTrue(any("没能在检测前去掉" in c.args[0] and "S1!" in c.args[0] for c in log.call_args_list))
+
+    def test_colors_left_behind_after_a_crash_are_found_later(self):
+        """复检通过后 Excel 崩溃、颜色没还原：记录还在，之后提交 / 复检时顺带还原"""
+        self.add_item("A5")
+        self.scan()
+        self.assertEqual(batch._leftover_mark_paths([]), [])  # 黄卡还要标着
+        self.card("A5").update(dismissed=True, color="blue")
+        self.assertEqual(batch._leftover_mark_paths([]), [self.path])
+        self.assertEqual(batch._leftover_mark_paths([self.path]), [])  # 这次任务本来就会处理
+
     def test_marked_matches_keeps_only_cells_still_in_marker_color(self):
         fill = batch._excel_color("#C0007A")
         def cell(addr, row, col, color):
