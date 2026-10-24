@@ -1645,7 +1645,8 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
     book = open_workbook_checked(app, str(Path(path).resolve()), UpdateLinks=0)
     added: dict[str, dict] = {}
     failed: dict[str, str] = {}
-    deleted = 0
+    deleted = restored = 0
+    stuck: list[str] = []  # 还原时出错的记录，留着下次再试
     book_name, last_log = Path(path).name, time.monotonic()
 
     def step(what: str, done: int, total: int) -> None:
@@ -1721,22 +1722,24 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
         for i, cid in enumerate(remove, 1):
             step("还原颜色", i, len(remove))
             mark = marks[cid]
-            found = _locate_mark(book, mark)
-            _delete_name(book, mark.get("name"))
-            if found is None:
-                deleted += 1  # 标色的格子已被人工删掉，没有颜色要还原
-                continue
-            sheet, shift = found
-            if sheet is None:
-                # 工作表已被删除（例如精简 Sheet 或人工处理时删掉）就没有颜色要还原了，按表汇总说一次
-                gone[mark["sheet"]] = gone.get(mark["sheet"], 0) + 1
-                missed.append(mark)
-                continue
             try:
-                if not _restore_cells(sheet, mark, shift):
+                found = _locate_mark(book, mark)
+                if found is None:
+                    deleted += 1  # 标色的格子已被人工删掉，没有颜色要还原
+                elif found[0] is None:
+                    # 工作表已被删除（例如精简 Sheet 或人工处理时删掉）就没有颜色要还原了，按表汇总说一次
+                    gone[mark["sheet"]] = gone.get(mark["sheet"], 0) + 1
+                    missed.append(mark)
+                elif _restore_cells(found[0], mark, found[1]):
+                    restored += 1
+                else:
                     missed.append(mark)
             except Exception as err:
-                wf.log_msg(f"⚠️ {Path(path).name} / {mark['sheet']}!{mark['addr']} 未能还原颜色：{err}")
+                # 还原出错：记录留着（按钮上的数字还在），下次提交 / 复检 / 清除时再试，不当成已还原
+                stuck.append(cid)
+                wf.log_msg(f"⚠️ {Path(path).name} / {mark['sheet']}!{mark['addr']} 未能还原颜色，下次再试：{err}")
+                continue
+            _delete_name(book, mark.get("name"))
         if missed:
             kept = [m for cid, m in marks.items() if m["path"] == path and cid not in remove]
             _sweep_leftover_marks(book, path, missed, kept)
@@ -1758,15 +1761,18 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
         book.Close(SaveChanges=False)
     with wf.STATE_LOCK:
         for cid in remove:
-            marks.pop(cid, None)
+            if cid not in stuck:
+                marks.pop(cid, None)
         for cid, error in failed.items():
             card = data["cards"].get(cid)
             if card:
                 card["message"] = f"未能在 Excel 中标色（{error}），请按截图查找后人工处理"
         wf._persist_state()
     parts = [f"标色 {len(added)} 格"] if added else []
-    if len(remove) > sum(gone.values()) + deleted:
-        parts.append(f"还原颜色 {len(remove) - sum(gone.values()) - deleted} 格")
+    if restored:
+        parts.append(f"还原颜色 {restored} 格")  # 只算真的改回去的格子
+    if stuck:
+        parts.append(f"{len(stuck)} 格还原出错，记录留着下次再试")
     if deleted:
         parts.append(f"{deleted} 格标色的格子已被删掉，不用还原")
     if failed:
@@ -2073,7 +2079,8 @@ def run() -> list[str]:
             if job.get("to_manual") and not job.get("pause_requested"):
                 _switch_to_manual(session, job, [p for p in expected if p in scanned])
         elif kind == "batch_commit":
-            if options.get("refresh_sheets") or any(c["color"] != "blue" and not c.get("dismissed")
+            # 全是蓝卡、原文件不用改时不开 Excel；但标蓝的「最后一次尝试」要把那次的行高写进原文件，也要开
+            if options.get("refresh_sheets") or any((c["color"] != "blue" and not c.get("dismissed")) or _adopting(c)
                                                    for c in _data()["cards"].values()):
                 excel = session.app()
             _commit_review(excel)
