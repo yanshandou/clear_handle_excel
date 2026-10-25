@@ -289,8 +289,28 @@ def _excel_color(hex_color: str) -> int:
     return r + g * 256 + b * 65536
 
 
-def _same_formula(a: Any, b: Any) -> bool:
-    return _text(a.Formula) == _text(b.Formula)
+def _read_old(excel: Any, old_path: str, cells: list[dict]) -> dict[str, dict | str]:
+    """先把旧版要用的格子读出来（内容、底色、字色）就关掉：旧版和新版多半同名，
+    Excel 不能同时打开两个同名文件（第二个 Open 会返回空对象）。读不到的格子记原因"""
+    from core.excel_ops import open_workbook_checked
+
+    found: dict[str, dict | str] = {}
+    old = open_workbook_checked(excel, str(Path(old_path).resolve()), UpdateLinks=0, ReadOnly=True)
+    try:
+        sheets = {_norm(sheet.Name): sheet for sheet in old.Worksheets}
+        for item in cells:
+            key = f"{item['sheet']}!{item['addr']}"
+            try:
+                source = sheets[_norm(item["sheet"])].Range(item["addr"].split(":")[0])
+                interior = source.Interior
+                found[key] = {"formula": _text(source.Formula), "pattern": int(interior.Pattern),
+                              "color": interior.Color, "tint": interior.TintAndShade,
+                              "pattern_color": interior.PatternColor, "font": source.Font.Color}
+            except Exception as err:
+                found[key] = f"读旧版这一格出错：{err}"
+    finally:
+        old.Close(SaveChanges=False)
+    return found
 
 
 def apply_file(excel: Any, path: str, old_path: str, cells: list[dict]) -> list[dict]:
@@ -298,52 +318,50 @@ def apply_file(excel: Any, path: str, old_path: str, cells: list[dict]) -> list[
     内容还和旧版一样、底色还是标记色（期间被人改过就不动）。只改颜色，不动别的格式"""
     from core.excel_ops import normalize_workbook_view, open_workbook_checked
 
+    old = _read_old(excel, old_path, cells)
     done: list[dict] = []
-    old = open_workbook_checked(excel, str(Path(old_path).resolve()), UpdateLinks=0, ReadOnly=True)
+    book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
     try:
-        book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
-        try:
-            if book.ReadOnly:
-                raise ValueError("文件以只读方式打开（可能在别处开着），没有改")
-            old_sheets = {_norm(sheet.Name): sheet for sheet in old.Worksheets}
-            changed = False
-            for item in cells:
-                result = {**item, "status": "failed", "reason": ""}
-                done.append(result)
-                try:
-                    target = book.Worksheets(item["sheet"]).Range(item["addr"])
-                    source = old_sheets[_norm(item["sheet"])].Range(item["addr"].split(":")[0])
-                    top = target.Cells(1, 1)
-                    if not _same_formula(top, source):
-                        result["reason"] = "内容和旧版不一样了，没有改"
-                        continue
-                    color = top.Interior.Color
-                    if color is None or int(color) != _excel_color(item["fill"]):
-                        result["reason"] = "底色已经不是标记色（被人改过），没有改"
-                        continue
-                    interior, old_interior = target.Interior, source.Interior
-                    if int(old_interior.Pattern) == XL_PATTERN_NONE:
-                        interior.Pattern = XL_PATTERN_NONE
-                    else:
-                        interior.Pattern = old_interior.Pattern
-                        interior.Color = old_interior.Color
-                        interior.TintAndShade = old_interior.TintAndShade
-                        if int(old_interior.Pattern) != XL_PATTERN_SOLID:
-                            interior.PatternColor = old_interior.PatternColor
-                    old_font = source.Font.Color
-                    if old_font is not None:
-                        target.Font.Color = old_font
-                    changed = True
-                    result.update(status="ok", reason="已改回旧版的颜色")
-                except Exception as err:
-                    result["reason"] = f"改的时候出错：{err}"
-            if changed:
-                normalize_workbook_view(excel, book)
-                book.Save()
-        finally:
-            book.Close(SaveChanges=False)
+        if book.ReadOnly:
+            raise ValueError("文件以只读方式打开（可能在别处开着），没有改")
+        changed = False
+        for item in cells:
+            result = {**item, "status": "failed", "reason": ""}
+            done.append(result)
+            source = old[f"{item['sheet']}!{item['addr']}"]
+            if isinstance(source, str):
+                result["reason"] = source
+                continue
+            try:
+                target = book.Worksheets(item["sheet"]).Range(item["addr"])
+                top = target.Cells(1, 1)
+                if _text(top.Formula) != source["formula"]:
+                    result["reason"] = "内容和旧版不一样了，没有改"
+                    continue
+                color = top.Interior.Color
+                if color is None or int(color) != _excel_color(item["fill"]):
+                    result["reason"] = "底色已经不是标记色（被人改过），没有改"
+                    continue
+                interior = target.Interior
+                if source["pattern"] == XL_PATTERN_NONE:
+                    interior.Pattern = XL_PATTERN_NONE
+                else:
+                    interior.Pattern = source["pattern"]
+                    interior.Color = source["color"]
+                    interior.TintAndShade = source["tint"]
+                    if source["pattern"] != XL_PATTERN_SOLID:
+                        interior.PatternColor = source["pattern_color"]
+                if source["font"] is not None:
+                    target.Font.Color = source["font"]
+                changed = True
+                result.update(status="ok", reason="已改回旧版的颜色")
+            except Exception as err:
+                result["reason"] = f"改的时候出错：{err}"
+        if changed:
+            normalize_workbook_view(excel, book)
+            book.Save()
     finally:
-        old.Close(SaveChanges=False)
+        book.Close(SaveChanges=False)
     return done
 
 
