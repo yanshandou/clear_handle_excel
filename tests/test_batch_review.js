@@ -279,3 +279,34 @@ test('a single-color commit leaves rows mixed with other colors for later', asyn
   assert.match(p.run('globalThis.asked'), /另有 1 张黄卡和别的颜色的卡在同一行/);
   assert.equal(JSON.stringify(p.requests.at(-1).payload.card_ids), '["y2","y3"]');
 });
+
+test('cards are grouped by file in processing order, and a file box rechecks that whole file', async () => {
+  const p = page();
+  p.run(`batchState.cards = [
+      {id:'x1', seq:1, wb_path:'C:/Excel/x.xlsx', wb_name:'x.xlsx', sheet_name:'S', cell_addr:'A1', color:'yellow', finalized:true, images:{}},
+      {id:'y1', seq:2, wb_path:'C:/Excel/sub/y.xlsx', wb_name:'y.xlsx', sheet_name:'S', cell_addr:'A1', color:'blue', images:{}},
+      {id:'x2', seq:3, wb_path:'C:/Excel/x.xlsx', wb_name:'x.xlsx', sheet_name:'S', cell_addr:'A2', color:'yellow', finalized:true, images:{}},
+      {id:'x3', seq:4, wb_path:'C:/Excel/x.xlsx', wb_name:'x.xlsx', sheet_name:'S', cell_addr:'A3', color:'green', images:{}}];`);
+  assert.deepEqual(Array.from(p.run('shownCards().map(c => c.id)')), ['x1', 'x2', 'x3', 'y1']);
+  p.run(`selectedFilter = 'blue'; filterKeep = new Set();`);
+  assert.deepEqual(Array.from(p.run('shownCards().map(c => c.id)')), ['y1']);
+  p.run(`selectedFilter = 'all'; render();`);
+  const html = p.elements.get('cardList').innerHTML;
+  assert.equal((html.match(/class="batch-file"/g) || []).length, 2);
+  assert.ok(html.indexOf('x.xlsx') < html.indexOf('y.xlsx'));
+  const head = p.run(`fileHeadHtml('C:/Excel/x.xlsx')`);
+  assert.match(head, /黄 2/);
+  assert.match(head, /绿 1/);
+  assert.match(head, /共 3 格/);
+  assert.match(p.run(`fileHeadHtml('C:/Excel/sub/y.xlsx')`), /batch-file-path">sub</);
+  assert.match(p.run(`fileHeadHtml('C:/Excel/sub/y.xlsx')`), /disabled title="这个文件还没有已提交的黄色人工项"/);
+  const button = { dataset: { fileAction: 'recheck', file: 'C:/Excel/x.xlsx' } };
+  p.elements.get('cardList').listeners.click({ target: { closest(sel) { return sel === '[data-file-action]' ? button : null; } } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(p.requests.at(-1).url, '/api/batch/recheck');
+  assert.equal(JSON.stringify(p.requests.at(-1).payload.card_ids), '["x1","x2"]');
+  p.run(`toggleFileSelected('C:/Excel/x.xlsx')`);
+  assert.deepEqual(Array.from(p.run('[...selectedIds]')).sort(), ['x1', 'x2', 'x3']);
+  p.run(`toggleFileSelected('C:/Excel/x.xlsx')`);
+  assert.equal(p.run('selectedIds.size'), 0);
+});

@@ -2516,3 +2516,47 @@ input[type="checkbox"]:not(.hidden):checked::before {
 .find-marks-old .batch-error:empty {
   display: none;
 }
+
+/* ---------- /workbench 文件框：白底粗黑描边 + 硬阴影，标题栏下面一条虚线，框里是这个文件的卡片 ---------- */
+.batch-file {
+  border: var(--stroke);
+  border-radius: 20px;
+  background: #ffffff;
+  box-shadow: var(--hard);
+}
+
+.batch-file-head {
+  border-bottom: 2px dashed #cad6ea;
+}
+
+.batch-file-name .excel-link {
+  color: var(--ink);
+  font-weight: 900;
+}
+
+.batch-file-path,
+.batch-file-total {
+  color: var(--ink-3);
+}
+
+.batch-file-count {
+  border-color: var(--ink);
+  color: var(--c-ink);
+  font-weight: 800;
+}
+
+.batch-file-actions .excel-link.btn {
+  display: inline-flex;
+  align-items: center;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+/* 「选中本文件的卡」按下时：黄底深色字（和选中卡片的黄色外圈一致） */
+.batch-file-actions [data-file-action="select"][aria-pressed="true"] {
+  --b-top: var(--lime-2);
+  --b: var(--lime);
+  --b-edge: #d99a00;
+  border-color: var(--ink);
+  color: var(--ink);
+}

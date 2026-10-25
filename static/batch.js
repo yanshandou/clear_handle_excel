@@ -11,6 +11,7 @@ let pollVersion = 0;
 let renderKey = '';
 let layoutKey = '';
 let cardHtmlCache = new Map();
+let headHtmlCache = new Map();
 let lastActiveIndex = 0;
 let selectedIds = new Set();
 let selectNotice = '';
@@ -19,11 +20,23 @@ let filterKeep = new Set();
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const nextColor = (color, direction = 1) => REVIEW_COLORS[(REVIEW_COLORS.indexOf(color) + direction + 3) % 3];
-const shownCards = () => batchState.cards.filter(c => {
+// 页面按文件分组：一个文件一个框，文件按第一次出现（处理顺序）排，框里的卡片按处理顺序
+const fileKey = card => card.wb_path || card.wb_name || '';
+function fileGroups(cards) {
+  const groups = new Map();
+  for (const card of cards) {
+    const key = fileKey(card);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(card);
+  }
+  return [...groups];
+}
+// 顺序和页面上一致（先按文件、再按处理顺序），大图审核的上一处 / 下一处也按这个走
+const shownCards = () => fileGroups(batchState.cards.filter(c => {
   if (selectedFilter === 'all') return true;
   if (c.color === selectedFilter) filterKeep.add(c.id);
   return filterKeep.has(c.id);
-});
+})).flatMap(([, cards]) => cards);
 const manualCards = () => batchState.cards.filter(c => c.color === 'yellow' && c.finalized);
 
 async function post(url, payload = {}) {
@@ -258,7 +271,11 @@ function blueNote(card) {
 }
 
 function cardHtml(card, large = false) {
-  const link = excelLinkHtml(esc(card.wb_name), { file: card.wb_name, folder: batchState.folder, sheet: card.sheet_name, cell: card.cell_addr });
+  const where = `${card.sheet_name}!${card.cell_addr || '定位待确认'}`;
+  const target = { file: card.wb_name, folder: batchState.folder, sheet: card.sheet_name, cell: card.cell_addr };
+  // 文件名已经写在文件框上：小卡片只写「表!格」（点了照样打开 Excel 跳到这一格）；大图审核没有文件框，照旧写文件名
+  const title = large ? `${excelLinkHtml(esc(card.wb_name), target)}<p class="batch-cell">${esc(where)}</p>`
+    : excelLinkHtml(esc(where), target, 'batch-cell-link');
   const labels = { before: '修改前', after: card.after_kind === 'attempt' ? '最后一次尝试（未采用）' : card.after_kind === 'unchanged' ? '原样导出（未修改）' : card.after_kind === 'rechecked' ? '最新导出（本行未修改）' : ['scan_only', 'handover'].includes(card.after_kind) ? '人工修改后（复检通过后显示）' : '修改后' };
   const handling = handlingText(card);
   const images = ['before', 'after'].map(which => `<figure><figcaption>${labels[which]}</figcaption>${card.images?.[which]
@@ -268,7 +285,7 @@ function cardHtml(card, large = false) {
   const comparison = `<div class="batch-shots">${images[0]}<span class="batch-vs" aria-hidden="true">VS</span>${images[1]}</div>`;
   const visuals = large ? `<div class="batch-large-layout">${comparison}${contextHtml(card)}</div>` : comparison;
   return `<article class="batch-card" tabindex="0" role="button" aria-label="${esc(`${card.wb_name} ${card.sheet_name}!${card.cell_addr} ${REVIEW_LABELS[card.color]}，单击切换状态`)}" data-id="${esc(card.id)}" data-color="${card.color}">
-    <div class="batch-card-head"><button type="button" class="batch-select" data-action="select" aria-pressed="false" title="选中 / 取消选中">✓</button><div class="batch-card-title">${link}<p class="batch-cell">${esc(card.sheet_name)}!${esc(card.cell_addr || '定位待确认')}</p></div><span class="batch-color-label">${REVIEW_LABELS[card.color]}</span></div>
+    <div class="batch-card-head"><button type="button" class="batch-select" data-action="select" aria-pressed="false" title="选中 / 取消选中">✓</button><div class="batch-card-title">${title}</div><span class="batch-color-label">${REVIEW_LABELS[card.color]}</span></div>
     ${visuals}${problemHtml(card)}${handling ? `<p class="batch-handling">${esc(handling)}</p>` : ''}${card.text ? `<p class="batch-text">${esc(card.text)}</p>` : ''}${card.message ? `<p class="batch-message">${esc(card.message)}</p>` : ''}
     <p class="batch-state">${card.finalized ? '已提交 · 可人工处理' : '颜色标记待提交'}${card.highlighted && card.after_kind !== 'scan_only' ? ' · 已在 Excel 中标色' : ''}${card.handed_over ? ' · 自动还没试过，可转回自动' : ''}${batchState.busy ? ' · 后台任务结束后可标记' : ''}</p>
     ${card.verified ? '' : `<p class="batch-no-blue">${blueNote(card)}</p>`}
@@ -282,6 +299,13 @@ function applySelection() {
     element.classList.toggle('is-selected', selected);
     element.querySelector('.batch-select')?.setAttribute('aria-pressed', String(selected));
   }
+  const shown = shownCards();
+  for (const button of document.querySelectorAll('.batch-file [data-file-action="select"]')) {
+    const ids = shown.filter(c => fileKey(c) === button.dataset.file).map(c => c.id);
+    const all = ids.length > 0 && ids.every(id => selectedIds.has(id));
+    button.setAttribute('aria-pressed', String(all));
+    button.textContent = all ? '取消选中本文件' : '选中本文件的卡';
+  }
   renderSelectBar();
 }
 
@@ -294,6 +318,15 @@ function renderSelectBar() {
 
 function toggleSelected(id) {
   if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id);
+  selectNotice = '';
+  applySelection();
+}
+
+// 文件框上的「选中本文件的卡」：已经全选中就全部取消，否则把这个文件当前看得到的卡全部选上
+function toggleFileSelected(key) {
+  const ids = shownCards().filter(c => fileKey(c) === key).map(c => c.id);
+  const all = ids.every(id => selectedIds.has(id));
+  ids.forEach(id => all ? selectedIds.delete(id) : selectedIds.add(id));
   selectNotice = '';
   applySelection();
 }
@@ -335,7 +368,7 @@ function restoreAnchor(anchor) {
   if (element) window.scrollBy(0, element.getBoundingClientRect().top - anchor.top);
 }
 
-// 瀑布流分列：每张卡片放进当时最矮的一列（按实际高度算），放好后就记住，不再挪动。
+// 每个文件框里是一个瀑布流：卡片放进这个框里当时最矮的一列（按实际高度算），放好后就记住，不再挪动。
 // 以前按序号轮流分到各列，截图和文字高度不一，卡片一多各列高度越差越大，后面只剩一列
 const CARD_GAP = 18;
 let columnOf = new Map();
@@ -354,55 +387,89 @@ function shortestColumn(heights) {
 }
 
 // 已放好的卡片保持原列；列数或筛选变了、或有卡片被移出（提交后）时整体重排。返回这次新放的卡片
-function placeCards(shown, count) {
+function placeCards(groups, count) {
   const meta = JSON.stringify([count, selectedFilter]);
-  const ids = new Set(shown.map(c => c.id));
+  const ids = new Set(groups.flatMap(([, cards]) => cards.map(c => c.id)));
   if (meta !== columnMeta || [...columnOf.keys()].some(id => !ids.has(id))) {
     columnOf = new Map();
     columnMeta = meta;
   }
-  const heights = Array(count).fill(0);
-  for (const card of shown) if (columnOf.has(card.id)) heights[columnOf.get(card.id)] += cardHeight(card.id);
   const fresh = new Set();
-  for (const card of shown) {
-    if (columnOf.has(card.id)) continue;
-    const column = shortestColumn(heights);
-    columnOf.set(card.id, column);
-    heights[column] += cardHeight(card.id);
-    fresh.add(card.id);
+  for (const [, cards] of groups) {
+    const heights = Array(count).fill(0);
+    for (const card of cards) if (columnOf.has(card.id)) heights[columnOf.get(card.id)] += cardHeight(card.id);
+    for (const card of cards) {
+      if (columnOf.has(card.id)) continue;
+      const column = shortestColumn(heights);
+      columnOf.set(card.id, column);
+      heights[column] += cardHeight(card.id);
+      fresh.add(card.id);
+    }
   }
   return fresh;
 }
 
-function cardColumns(shown, count) {
+function cardColumns(cards, count) {
   const columns = Array.from({ length: count }, () => []);
-  for (const card of shown) columns[columnOf.get(card.id)].push(card);
+  for (const card of cards) columns[columnOf.get(card.id)].push(card);
   return columns;
 }
 
+const layoutOf = (groups, count) => JSON.stringify([groups.map(([key, cards]) => [key, cardColumns(cards, count).map(column => column.map(c => c.id))]), batchState.busy]);
+
 // 量出卡片真实高度，按真实高度重新给新卡片选列；有变动就把卡片节点挪过去（图片不重新加载）
-function rebalanceFresh(shown, count, fresh) {
-  const columnElements = $('cardList').querySelectorAll('.batch-waterfall > .batch-column');
-  if (columnElements.length !== count) return false;
+function rebalanceFresh(groups, count, fresh) {
+  const fileElements = $('cardList').querySelectorAll('.batch-file');
+  if (fileElements.length !== groups.length) return false;
   const elements = new Map();
   for (const element of $('cardList').querySelectorAll('.batch-card[data-id]')) {
     elements.set(element.dataset.id, element);
     cardHeights.set(element.dataset.id, element.getBoundingClientRect().height + CARD_GAP);
   }
   if (!fresh.size) return false;
-  const heights = Array(count).fill(0);
-  for (const card of shown) if (!fresh.has(card.id)) heights[columnOf.get(card.id)] += cardHeight(card.id);
   let moved = false;
-  for (const card of shown) {
-    if (!fresh.has(card.id)) continue;
-    const column = shortestColumn(heights);
-    if (columnOf.get(card.id) !== column) moved = true;
-    columnOf.set(card.id, column);
-    heights[column] += cardHeight(card.id);
-  }
-  if (!moved) return false;
-  cardColumns(shown, count).forEach((column, i) => columnElements[i].append(...column.map(c => elements.get(c.id)).filter(Boolean)));
-  return true;
+  groups.forEach(([, cards], index) => {
+    const columnElements = fileElements[index].querySelectorAll('.batch-waterfall > .batch-column');
+    if (columnElements.length !== count || !cards.some(c => fresh.has(c.id))) return;
+    const heights = Array(count).fill(0);
+    for (const card of cards) if (!fresh.has(card.id)) heights[columnOf.get(card.id)] += cardHeight(card.id);
+    let changed = false;
+    for (const card of cards) {
+      if (!fresh.has(card.id)) continue;
+      const column = shortestColumn(heights);
+      if (columnOf.get(card.id) !== column) changed = true;
+      columnOf.set(card.id, column);
+      heights[column] += cardHeight(card.id);
+    }
+    if (!changed) return;
+    moved = true;
+    cardColumns(cards, count).forEach((column, i) => columnElements[i].append(...column.map(c => elements.get(c.id)).filter(Boolean)));
+  });
+  return moved;
+}
+
+// 文件框的标题栏：文件名（点开 Excel）、三色数量、选中本文件、打开、复检这个文件。
+// 数量按整个文件算（不随筛选变），复检只对已提交的黄卡有效：复检本来就是整份文件重新检测
+function fileHeadHtml(key) {
+  const cards = batchState.cards.filter(c => fileKey(c) === key);
+  const first = cards[0] || {};
+  const manual = cards.filter(c => c.color === 'yellow' && c.finalized);
+  const jump = manual[0] || first;
+  const folder = String(batchState.folder || '').replace(/[\\/]+$/, '');
+  const where = String(first.wb_path || '');
+  const sub = folder && where.toLowerCase().startsWith(folder.toLowerCase())
+    ? where.slice(folder.length).replace(/^[\\/]+/, '').split(/[\\/]/).slice(0, -1).join(' / ') : '';
+  const target = { file: first.wb_name, folder: batchState.folder };
+  const counts = REVIEW_COLORS.map(color => `<span class="batch-file-count" data-color="${color}"><span class="batch-dot" aria-hidden="true"></span>${COLOR_NAMES[color]} ${cards.filter(c => c.color === color).length}</span>`).join('');
+  const busy = batchState.busy && batchState.job?.kind !== 'batch_recheck';
+  const recheck = manual.length
+    ? `<button type="button" class="btn btn-outline" data-file-action="recheck" data-file="${esc(key)}"${busy ? ' disabled' : ''} title="整份文件所有表重新检测，这个文件的 ${manual.length} 张黄卡一起出结果">🔁 复检这个文件</button>`
+    : '<button type="button" class="btn btn-outline" disabled title="这个文件还没有已提交的黄色人工项">🔁 复检这个文件</button>';
+  return `<header class="batch-file-head">
+    <div class="batch-file-title"><span class="batch-file-icon" aria-hidden="true">📄</span><div class="batch-file-name">${excelLinkHtml(esc(first.wb_name || key), target)}${sub ? `<p class="batch-file-path">${esc(sub)}</p>` : ''}</div></div>
+    <div class="batch-file-counts" aria-label="这个文件的卡片数">${counts}<span class="batch-file-total">共 ${cards.length} 格</span></div>
+    <div class="batch-file-actions"><button type="button" class="btn btn-outline" data-file-action="select" data-file="${esc(key)}" aria-pressed="false">选中本文件的卡</button>${excelLinkHtml('📂 打开文件', { ...target, sheet: jump.sheet_name, cell: jump.cell_addr }, 'btn btn-outline')}${recheck}</div>
+  </header>`;
 }
 
 function render() {
@@ -448,28 +515,37 @@ function render() {
     $('prevBtn').disabled = index <= 0;
     $('nextBtn').disabled = index >= shown.length - 1;
   } else {
-    const columnCount = Math.max(1, Math.min(3, Math.floor((($('cardList').clientWidth || 1200) + 18) / 328)));
-    // 不按颜色分组：卡片按处理顺序固定排列，改色只换颜色，位置不变
-    const fresh = placeCards(shown, columnCount);
-    const columns = cardColumns(shown, columnCount);
+    // 文件框有内边距，列宽按框里的宽度算
+    const columnCount = Math.max(1, Math.min(3, Math.floor((($('cardList').clientWidth || 1200) - 44 + 18) / 328)));
+    // 按文件分组，框里按处理顺序固定排列；改色只换颜色，卡片和文件框都不挪位置。筛选时没有卡片的文件框不显示
+    const groups = fileGroups(shown);
+    const fresh = placeCards(groups, columnCount);
     const html = new Map(shown.map(c => [c.id, cardHtml(c)]));
-    let layout = JSON.stringify([columns.map(column => column.map(c => c.id)), batchState.busy]);
+    const heads = new Map(groups.map(([key]) => [key, fileHeadHtml(key)]));
+    let layout = layoutOf(groups, columnCount);
     if (layout === layoutKey && shown.length) {
-      // 卡片位置没变：只换内容有变化的卡片，不整页重画（图片不重新加载、页面不跳）
+      // 卡片位置没变：只换内容有变化的卡片和文件标题栏，不整页重画（图片不重新加载、页面不跳）
       for (const [id, value] of html) {
         if (cardHtmlCache.get(id) === value) continue;
         const element = $('cardList').querySelector(`[data-id="${CSS.escape(id)}"]`);
         if (element) element.outerHTML = value;
       }
+      const fileElements = $('cardList').querySelectorAll('.batch-file');
+      groups.forEach(([key], index) => {
+        if (headHtmlCache.get(key) === heads.get(key)) return;
+        const head = fileElements[index]?.querySelector('.batch-file-head');
+        if (head) head.outerHTML = heads.get(key);
+      });
     } else {
       const anchor = scrollAnchor();
       $('cardList').innerHTML = shown.length
-        ? `<div class="batch-waterfall">${columns.map(column => `<div class="batch-column">${column.map(c => html.get(c.id)).join('')}</div>`).join('')}</div>`
+        ? `<div class="batch-files">${groups.map(([key, cards]) => `<section class="batch-file" data-file="${esc(key)}" aria-label="${esc(cards[0].wb_name || key)}">${heads.get(key)}<div class="batch-waterfall">${cardColumns(cards, columnCount).map(column => `<div class="batch-column">${column.map(c => html.get(c.id)).join('')}</div>`).join('')}</div></section>`).join('')}</div>`
         : `<section class="panel batch-empty"><h2>${batchState.busy ? '正在自动扫描与修复…' : '当前没有待审核卡片'}</h2><p>${batchState.busy ? '文件处理后会在这里出现修改前后对比，无需逐项放行。' : '开始全自动处理，或切换颜色筛选查看结果。'}</p></section>`;
       // 新卡片先按估计高度放下，量出真实高度后在浏览器画出来之前挪到最矮的列，用户看不到挪动
-      if (rebalanceFresh(shown, columnCount, fresh)) layout = JSON.stringify([cardColumns(shown, columnCount).map(column => column.map(c => c.id)), batchState.busy]);
+      if (rebalanceFresh(groups, columnCount, fresh)) layout = layoutOf(groups, columnCount);
       restoreAnchor(anchor);
     }
+    headHtmlCache = heads;
     layoutKey = layout;
     cardHtmlCache = html;
   }
@@ -833,6 +909,15 @@ $('filters').addEventListener('click', event => {
 });
 
 for (const id of ['cardList', 'largeCard']) $(id).addEventListener('click', event => {
+  const fileButton = event.target.closest('[data-file-action]');
+  if (fileButton) {
+    const key = fileButton.dataset.file;
+    if (fileButton.dataset.fileAction === 'select') toggleFileSelected(key);
+    else if (fileButton.dataset.fileAction === 'recheck') {
+      startJob('/api/batch/recheck', { card_ids: manualCards().filter(c => fileKey(c) === key).map(c => c.id) });
+    }
+    return;
+  }
   const card = event.target.closest('[data-id]');
   if (!card || event.target.closest('a')) return;
   const button = event.target.closest('[data-action]');

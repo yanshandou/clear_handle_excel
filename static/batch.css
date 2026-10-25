@@ -122,3 +122,20 @@
 /* 复制报错 / 日志 */
 #copyErrorBtn { margin-top: 8px; }
 .batch-log-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+/* 按文件分组：每个文件一个框，标题栏放文件名、三色数量和本文件的操作，框里是这个文件的卡片瀑布流 */
+.batch-files { display: flex; flex-direction: column; gap: 22px; }
+.batch-file { padding: 14px 18px 0; border: 2px solid #cbd5e1; border-radius: 16px; background: #fff; }
+.batch-file-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 0 0 14px; padding-bottom: 12px; border-bottom: 1px dashed #cbd5e1; }
+.batch-file-title { flex: 1 1 260px; min-width: 0; display: flex; align-items: center; gap: 10px; }
+.batch-file-icon { flex: none; font-size: 20px; }
+.batch-file-name { min-width: 0; overflow-wrap: anywhere; }
+.batch-file-name .excel-link { font-size: 15px; font-weight: 800; }
+.batch-file-path { margin: 2px 0 0; color: #475569; font-size: 12px; font-weight: 600; }
+.batch-file-counts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.batch-file-count { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border: 1.5px solid var(--c-line); border-radius: 999px; background: var(--c-bg); color: var(--c-ink); font-size: 12px; font-weight: 700; }
+.batch-file-total { color: #475569; font-size: 12px; font-weight: 700; }
+.batch-file-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.batch-file-actions .btn { font-size: 12px; padding: 6px 10px; }
+.batch-file-actions [data-file-action="select"][aria-pressed="true"] { border-color: #1e293b; background: #ffc21f; color: #1e293b; }
+.batch-card-title .batch-cell-link { font-family: Consolas, "Yu Gothic UI", monospace; }
