@@ -9,7 +9,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from core import autofix, batch, debug_log, fix_images
+from core import autofix, batch, debug_log, fix_images, mark_finder
 from core.common import (
     STATIC_DIR,
     console_print,
@@ -168,6 +168,8 @@ class WebHandler(BaseHTTPRequestHandler):
             self._serve_static_file(rel)
         elif parsed.path == "/api/batch":
             self._send_json(batch.snapshot())
+        elif parsed.path == "/api/batch/find_marks":
+            self._send_json(mark_finder.status())
         elif parsed.path.startswith("/api/batch/image/"):
             name = unquote(parsed.path.removeprefix("/api/batch/image/"))
             path = fix_images.image_path(name)
@@ -290,6 +292,9 @@ class WebHandler(BaseHTTPRequestHandler):
             self._start_job("batch_scan", options)
         elif self.path == "/api/batch/unhighlight":
             self._start_job("batch_unhighlight", {"paths": batch.highlighted_paths()})
+        elif self.path == "/api/batch/find_marks":
+            mark_finder.start(_require_folder(payload), payload.get("colors"))
+            self._send_json({"ok": True})
         elif self.path == "/api/batch/mark":
             batch.mark(payload.get("id"), payload.get("color"))
             self._send_json({"ok": True})

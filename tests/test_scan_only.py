@@ -472,8 +472,53 @@ class ScanOnlyTests(unittest.TestCase):
         dog, restart, messages = self.unhighlight(None)
         self.assertEqual(dog.call_args.kwargs["timeout"], batch.UNHIGHLIGHT_STALL_SECONDS)
         restart.assert_not_called()
-        self.assertTrue(any("正在还原（1 / 1）" in m and "book.xlsx" in m for m in messages), messages)
+        self.assertTrue(any("正在清除（1 / 1）" in m and "book.xlsx" in m for m in messages), messages)
         self.assertIn(self.path, self.wf.STATE["job"]["completed"])
+
+    def test_clear_reports_every_cell_for_the_result_window(self):
+        """清除时逐格记下结果：去掉了的、删不掉的（受保护）、旧颜色原位置已不是标记色的"""
+        self.add_item("B7", row=7)
+        self.old_scan()
+        self.sheet.cell("B7").Interior.Color = 0x123456  # 旧方式标的颜色被人改过
+        self.add_item("A5")
+        self.scan()
+        self.sheet.Range("E9").MergeArea.FormatConditions.Add(Type=2, Formula1='=N("CHE_MARK_0123abcd")=0')
+        report = {}
+        batch._sync_highlights(lambda: self.excel, self.path, clear=True, report=report)
+        cells = {c["addr"]: (c["sheet"], c["status"]) for c in report["cells"]}
+        self.assertEqual(cells, {"A5": ("S1", "ok"), "B7": ("S1", "check")})
+        self.assertEqual(report["leftovers"], 1)
+        # 删不掉的规则（工作表受保护）：记成没清掉，写原因
+        self.scan()
+        self.sheet.protected = True
+        report = {}
+        batch._sync_highlights(lambda: self.excel, self.path, clear=True, report=report)
+        self.assertEqual(sorted((c["addr"], c["status"]) for c in report["cells"]), [("A5", "failed"), ("B7", "failed")])
+        self.assertTrue(all("受保护" in c["reason"] for c in report["cells"]))
+
+    def test_unhighlight_job_keeps_results_per_file_and_logs_a_total(self):
+        def sync(*_, report, **__):
+            report["cells"] = [{"sheet": "S1", "addr": "A5", "status": "ok", "reason": "已去掉标记"},
+                               {"sheet": "S1", "addr": "B7", "status": "failed", "reason": "删不掉"}]
+            report["leftovers"] = 2
+        _, _, messages = self.unhighlight(sync)
+        result = self.wf.STATE["job"]["result"][self.path]
+        self.assertEqual((result["name"], len(result["cells"]), result["error"]), ("book.xlsx", 2, None))
+        self.assertTrue(any(m == "🧽 清除完成：1 份文件，已清除 1 格，没清掉 1 格，另清掉残留标记 2 条"
+                            for m in messages), messages)
+
+    def test_unhighlight_result_explains_a_file_still_open_in_excel(self):
+        self.wf.STATE["job"] = {"kind": "batch_unhighlight", "options": {"paths": [self.path]},
+                                "completed": [], "pending_adjustment": None, "status": "running"}
+        session = Mock()
+        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch, "ExcelWatchdog", return_value=Mock(timed_out=False)), \
+                patch.object(batch, "close_saved_workbooks", return_value={Path(self.path): "文件在 Excel 中有未保存的修改"}), \
+                patch.object(batch, "_sync_highlights") as sync, \
+                patch.object(batch, "finish_execution_batch"):
+            batch.run()
+        sync.assert_not_called()
+        self.assertIn("未保存的修改", self.wf.STATE["job"]["result"][self.path]["error"])
 
     def test_unhighlight_restarts_a_stuck_or_crashed_excel_and_tries_again(self):
         _, restart, _ = self.unhighlight([RuntimeError("RPC サーバーを利用できません。"), None])

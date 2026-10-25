@@ -2367,3 +2367,114 @@ input[type="checkbox"]:not(.hidden):checked::before {
   color: var(--c-on);
   background: linear-gradient(180deg, var(--b-top) 0%, var(--b) 100%);
 }
+
+/* ---------- 清除标记结果弹窗 ---------- */
+.app-dialog.unhighlight-dialog {
+  width: min(760px, calc(100vw - 32px));
+}
+
+.unhighlight-body {
+  margin: 8px 22px 0;
+  overflow-y: auto;
+  max-height: min(62vh, 560px);
+}
+
+.unhighlight-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.unhighlight-chip {
+  padding: 3px 10px;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.unhighlight-chip.is-ok { background: #d9f7e3; }
+.unhighlight-chip.is-check { background: #fff1c2; }
+.unhighlight-chip.is-failed { background: #ffd9df; }
+
+.unhighlight-hint {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+.unhighlight-file {
+  margin-bottom: 8px;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.unhighlight-file summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 8px 12px;
+  cursor: pointer;
+  color: var(--ink);
+}
+
+.unhighlight-file summary b {
+  overflow-wrap: anywhere;
+}
+
+.unhighlight-tally {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.unhighlight-file-error {
+  color: #a3112b;
+  font-weight: 700;
+}
+
+.unhighlight-file ul {
+  margin: 0;
+  padding: 4px 12px 10px;
+  list-style: none;
+  border-top: 1.5px dashed var(--ink-3);
+}
+
+.unhighlight-file li {
+  display: grid;
+  grid-template-columns: 1.6em minmax(7em, auto) 1fr;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.unhighlight-file li.is-check { background: #fff8de; }
+.unhighlight-file li.is-failed { background: #fff0f2; }
+
+.unhighlight-reason {
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 560px) {
+  .unhighlight-file li { grid-template-columns: 1.6em 1fr; }
+  .unhighlight-reason { grid-column: 2; }
+}
+
+.find-marks-swatch {
+  display: inline-block;
+  width: 1.6em;
+  border: 1.5px solid var(--ink);
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.5;
+  text-align: center;
+}

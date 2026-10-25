@@ -41,13 +41,66 @@ async function poll() {
     const value = await response.json();
     if (version !== pollVersion || requestBusy) return;
     celebrateFinished(batchState, value);
+    if (value.busy && value.job?.kind === 'batch_unhighlight') clearPending = true;
+    const cleared = clearPending && !value.busy && value.job?.kind === 'batch_unhighlight';
+    if (cleared) clearPending = false;
     batchState = value;
     if (!document.activeElement || document.activeElement.id !== 'folderInput') {
       if (value.folder && !$('folderInput').value) $('folderInput').value = value.folder;
       if (value.busy && value.folder) $('folderInput').value = value.folder;
     }
     render();
+    if (cleared && unhighlightResult()) showUnhighlightResult();
   } catch (error) { $('errorText').textContent = error.message; }
+}
+
+// 清除标记的结果：任务结束后弹窗，之后可点「上次清除结果」再看。
+// 清除任务很快时轮询可能一次都没看到「进行中」，所以点了清除（或继续清除任务）就先记下来
+let clearPending = false;
+function unhighlightResult() {
+  const job = batchState.job;
+  return job?.kind === 'batch_unhighlight' && job.result && Object.keys(job.result).length ? job.result : null;
+}
+
+const CLEAR_STATUS = { ok: '✅', check: '⚠️', failed: '❌' };
+function showUnhighlightResult() {
+  const files = Object.values(unhighlightResult() || {});
+  const count = { ok: 0, check: 0, failed: 0 };
+  for (const file of files) for (const cell of file.cells) count[cell.status] += 1;
+  const errors = files.filter(f => f.error).length;
+  const leftovers = files.reduce((sum, f) => sum + (f.leftovers || 0), 0);
+  const trouble = f => !!f.error || (f.leftover_failed || []).length > 0 || f.cells.some(c => c.status !== 'ok');
+  files.sort((a, b) => trouble(b) - trouble(a) || a.name.localeCompare(b.name));
+  const chips = [`<span class="unhighlight-chip is-ok">✅ 已清除 ${count.ok} 格</span>`];
+  if (count.check) chips.push(`<span class="unhighlight-chip is-check">⚠️ 需要看一下 ${count.check} 格</span>`);
+  if (count.failed) chips.push(`<span class="unhighlight-chip is-failed">❌ 没清掉 ${count.failed} 格</span>`);
+  if (errors) chips.push(`<span class="unhighlight-chip is-failed">❌ ${errors} 份文件没能处理</span>`);
+  if (leftovers) chips.push(`<span class="unhighlight-chip">🧹 另清掉残留标记 ${leftovers} 条</span>`);
+  const fileHtml = file => {
+    const own = { ok: 0, check: 0, failed: 0 };
+    for (const cell of file.cells) own[cell.status] += 1;
+    const tally = file.error ? `<span class="unhighlight-file-error">${esc(file.error)}</span>`
+      : file.cells.length ? `✅ ${own.ok}${own.check ? ` · ⚠️ ${own.check}` : ''}${own.failed ? ` · ❌ ${own.failed}` : ''}` : '没有要清的标记';
+    const rows = file.cells.map(cell => {
+      const where = `${cell.sheet}!${cell.addr}`;
+      const link = excelLinkHtml(esc(where), { file: file.name, folder: batchState.folder, sheet: cell.sheet, cell: cell.addr.split(':')[0] });
+      return `<li class="is-${cell.status}"><span aria-hidden="true">${CLEAR_STATUS[cell.status] || ''}</span>${link}<span class="unhighlight-reason">${esc(cell.reason)}</span></li>`;
+    });
+    for (const reason of file.leftover_failed || []) {
+      rows.push(`<li class="is-failed"><span aria-hidden="true">❌</span><span>残留标记</span><span class="unhighlight-reason">删不掉：${esc(reason)}</span></li>`);
+    }
+    return `<details class="unhighlight-file"${trouble(file) ? ' open' : ''}><summary><b>${esc(file.name)}</b><span class="unhighlight-tally">${tally}</span></summary>`
+      + (rows.length ? `<ul>${rows.join('')}</ul>` : '') + '</details>';
+  };
+  const tone = count.failed || errors ? 'error' : count.check ? 'warn' : 'info';
+  $('unhighlightDialog').dataset.tone = tone;
+  $('unhighlightTitle').textContent = tone === 'info' ? '标记已全部清除' : '清除结果：有格子要看一下';
+  $('unhighlightBody').innerHTML = `<p class="unhighlight-summary">${files.length} 份文件　${chips.join('')}</p>`
+    + `<p class="unhighlight-hint">点格子位置可以用 Excel 打开并跳到那一格。⚠️ 和 ❌ 的请人工看一下。</p>`
+    + `<div class="unhighlight-files">${files.map(fileHtml).join('')}</div>`;
+  if (!$('unhighlightDialog').open) $('unhighlightDialog').showModal();
+  $('unhighlightBody').scrollTop = 0;
+  $('unhighlightCloseBtn').focus(); // 不然浏览器把焦点放在第一个文件上，显示一圈焦点框
 }
 
 // 后台任务刚结束且成功：撒花。提交 / 复检时若有暂停的全自动处理会被放回来，任务种类变了也算提交完成
@@ -77,6 +130,7 @@ function renderControls() {
   for (const id of ['startBtn', 'scanOnlyBtn', 'commitBtn', 'folderInput']) $(id).disabled = busy;
   $('unhighlightBtn').disabled = busy || !batchState.highlighted;
   $('unhighlightBtn').textContent = `🧽 清除 Excel 标记颜色${batchState.highlighted ? `（${batchState.highlighted}）` : ''}`;
+  $('unhighlightResultBtn').classList.toggle('hidden', batchState.busy || !unhighlightResult());
   $('commitBtn').disabled = busy || !batchState.cards.length;
   $('largeBtn').disabled = !batchState.cards.length;
   $('largeBtn').title = batchState.cards.length ? '逐张放大查看卡片' : '有待审核卡片后可用';
@@ -459,6 +513,69 @@ try {
   if (HEX.test(saved?.fill) && HEX.test(saved?.font)) highlight = { fill: saved.fill.toUpperCase(), font: saved.font.toUpperCase() };
 } catch (_) {}
 
+// 查找残留标记色：旧版本直接改了单元格颜色、记录又丢了的，按标记色完全一致找出来，只列出、不改文件
+let findingMarks = false;
+async function findMarks() {
+  if (findingMarks) return;
+  const folder = $('folderInput').value.trim() || batchState.folder;
+  const colors = [...HIGHLIGHT_PRESETS.map(p => ({ fill: p.fill, font: p.font })), { ...highlight }];
+  $('errorText').textContent = '';
+  try { await post('/api/batch/find_marks', { folder, colors }); } catch (error) { $('errorText').textContent = error.message; return; }
+  findingMarks = true;
+  $('findMarksBtn').disabled = true;
+  $('findMarksTitle').textContent = '正在查找残留标记色…';
+  $('findMarksBody').innerHTML = '<p class="unhighlight-summary" id="findMarksProgress">准备中…</p>';
+  $('findMarksCloseBtn').textContent = '在后台继续';
+  if (!$('findMarksDialog').open) $('findMarksDialog').showModal();
+  try {
+    for (;;) {
+      const response = await fetch('/api/batch/find_marks', { cache: 'no-store' });
+      const status = await response.json();
+      if (!status.running) { showFoundMarks(status.result); break; }
+      const progress = $('findMarksProgress');
+      if (progress) progress.textContent = `正在查找 ${status.done + 1} / ${status.total}：${status.current || ''}`;
+      await new Promise(resolve => setTimeout(resolve, 800));
+    }
+  } catch (error) { $('errorText').textContent = `查找残留标记色失败：${error.message}`; }
+  finally { findingMarks = false; $('findMarksBtn').disabled = false; }
+}
+
+function showFoundMarks(result) {
+  if (!result) return;
+  const files = result.files;
+  const hits = files.flatMap(f => f.hits);
+  const both = hits.filter(h => h.match === 'both').length;
+  const recorded = hits.filter(h => h.recorded).length;
+  const unread = files.filter(f => f.error).length;
+  const chips = [`<span class="unhighlight-chip">${result.total} 份文件</span>`];
+  chips.push(`<span class="unhighlight-chip ${hits.length ? 'is-check' : 'is-ok'}">🎯 底色字色都对上 ${both} 格</span>`);
+  if (hits.length - both) chips.push(`<span class="unhighlight-chip is-check">🎨 只有底色对上 ${hits.length - both} 格</span>`);
+  if (recorded) chips.push(`<span class="unhighlight-chip is-ok">📝 程序有记录 ${recorded} 格</span>`);
+  if (unread) chips.push(`<span class="unhighlight-chip is-failed">❌ ${unread} 份文件读不了</span>`);
+  const fileHtml = file => {
+    const rows = file.hits.map(hit => {
+      const link = excelLinkHtml(esc(`${hit.sheet}!${hit.addr}`), { file: file.name, folder: result.folder, sheet: hit.sheet, cell: hit.addr.split(':')[0] });
+      const swatch = `<span class="find-marks-swatch" style="background:${esc(hit.fill)};color:${esc(hit.font || '#000000')}">Aa</span>`;
+      const note = (hit.match === 'both' ? '底色、字色都和标记色一致' : `只有底色一致（字色 ${esc(hit.font || '不是直接设置的颜色')}）`)
+        + (hit.recorded ? '；程序有记录，点「清除 Excel 标记颜色」会还原' : '');
+      return `<li class="is-${hit.recorded ? 'ok' : 'check'}">${swatch}${link}<span class="unhighlight-reason">${note}</span></li>`;
+    });
+    const tally = file.error ? `<span class="unhighlight-file-error">${esc(file.error)}</span>`
+      : `${file.hits.length} 格${file.truncated ? '（只列前 500 格）' : ''}`;
+    return `<details class="unhighlight-file"${files.length <= 5 || file.error ? ' open' : ''}><summary><b>${esc(file.name)}</b><span class="unhighlight-tally">${tally}</span></summary>`
+      + (rows.length ? `<ul>${rows.join('')}</ul>` : '') + '</details>';
+  };
+  $('findMarksTitle').textContent = hits.length ? '找到底色是标记色的格子' : '没有找到残留标记色';
+  $('findMarksDialog').dataset.tone = hits.length || unread ? 'warn' : 'info';
+  $('findMarksBody').innerHTML = `<p class="unhighlight-summary">${chips.join('')}</p>`
+    + '<p class="unhighlight-hint">只列出来，不改文件：程序不知道这些格子原来是什么颜色，也可能本来就是这个颜色。点位置用 Excel 打开看一下，需要的话手动改回去（有原始备份的话可以用备份对比脚本恢复）。</p>'
+    + `<div class="unhighlight-files">${files.map(fileHtml).join('')}</div>`;
+  $('findMarksCloseBtn').textContent = '知道了';
+  if (!$('findMarksDialog').open) $('findMarksDialog').showModal();
+  $('findMarksBody').scrollTop = 0;
+  $('findMarksCloseBtn').focus();
+}
+
 function luminance(hex) {
   const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
     .map(c => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
@@ -502,7 +619,11 @@ async function startJob(url, body = {}) {
   const keeps = batchState.job?.kind === 'batch_scan' && KEEPS_PAUSED_SCAN.has(url);
   if (batchState.job?.status === 'interrupted' && url !== '/api/resume' && !keeps
       && !(await appConfirm('这会替换上次任务的续跑点。已保存的修复和审核标记会保留，继续吗？', { okText: '继续' }))) return;
-  await action(() => post(url, body));
+  const clearing = url === '/api/batch/unhighlight' || (url === '/api/resume' && batchState.job?.kind === 'batch_unhighlight');
+  await action(async () => {
+    await post(url, body);
+    if (clearing) clearPending = true;
+  });
 }
 
 async function startBatch(extra = {}) {
@@ -524,6 +645,10 @@ $('scanOnlyBtn').addEventListener('click', async () => {
 $('unhighlightBtn').addEventListener('click', async () => {
   if (await appConfirm(`去掉当前文件夹 ${batchState.highlighted || 0} 个单元格的标记颜色？\n标记是程序加的条件格式，只删这些规则；单元格本身的颜色和表里原有的条件格式都不动。\n需要先在 Excel 里保存并关闭这些文件。之后提交、复检也不再自动标色，重新开始处理时才按设置标色。`, { title: '清除 Excel 标记颜色', okText: '去掉标记' })) await startJob('/api/batch/unhighlight');
 });
+$('unhighlightResultBtn').addEventListener('click', showUnhighlightResult);
+$('findMarksBtn').addEventListener('click', findMarks);
+$('findMarksCloseBtn').addEventListener('click', () => $('findMarksDialog').close());
+$('unhighlightCloseBtn').addEventListener('click', () => $('unhighlightDialog').close());
 $('resumeBtn').addEventListener('click', () => startJob('/api/resume'));
 $('pauseBtn').addEventListener('click', () => action(() => post('/api/batch/pause')));
 $('toManualBtn').addEventListener('click', async () => {
