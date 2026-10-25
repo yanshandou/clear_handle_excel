@@ -144,7 +144,15 @@ class MarkFinderTests(unittest.TestCase):
         old_book, book = Mock(Worksheets=[old_sheet]), Mock(ReadOnly=False)
         book.Worksheets.return_value = sheet
         excel = Mock()
-        excel.Workbooks.Open.side_effect = [old_book, book]
+        opened = []
+
+        def open_book(path, **_):
+            # 旧版和新版同名：Excel 里已经开着同名文件时 Open 返回空对象，所以旧版要先读完关掉
+            if opened and not opened[-1].Close.called:
+                return None
+            opened.append(old_book if not opened else book)
+            return opened[-1]
+        excel.Workbooks.Open.side_effect = open_book
         cells = [{"sheet": "明細", "addr": a, "fill": "#C0007A", "font": "#FFFFFF", "action": "restore"} for a in cur]
         with patch("core.excel_ops.normalize_workbook_view"):
             done = {c["addr"]: c for c in mark_finder.apply_file(excel, str(self.path), str(self.path), cells)}
