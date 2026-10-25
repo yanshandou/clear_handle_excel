@@ -581,8 +581,8 @@ function showRestorePlan(plan) {
   const fileHtml = file => {
     const rows = file.cells.map(c => `<li class="is-${c.action === 'restore' ? 'ok' : 'check'}">`
       + (c.action === 'restore' ? swatchHtml(c.old_fill, c.old_font) : '<span aria-hidden="true">⚠️</span>')
-      + `${cellLink(file, batchState.folder, c)}<span class="unhighlight-reason">${c.action === 'restore'
-        ? `改回旧版：底色 ${c.old_fill === 'none' ? '无填充' : c.old_fill === 'other' ? '主题色 / 图案（照旧版抄）' : esc(c.old_fill)}${c.old_font ? `，字色 ${esc(c.old_font)}` : ''}`
+      + `${cellLink(file, plan.folder || batchState.folder, c)}<span class="unhighlight-reason">${c.action === 'restore'
+        ? `改回旧版：底色 ${c.old_fill === 'none' ? '无填充' : c.old_fill === 'other' ? '主题色 / 图案（照旧版抄）' : esc(c.old_fill)}${c.old_font ? `，字色 ${esc(c.old_font)}` : ''}${c.old_sheet && c.old_sheet !== c.sheet ? `（旧版表名「${esc(c.old_sheet)}」）` : ''}`
         : esc(c.reason)}</span></li>`);
     const own = file.cells.filter(c => c.action === 'restore').length;
     const tally = file.error ? `<span class="unhighlight-file-error">${esc(file.error)}</span>` : `✅ ${own}${file.cells.length - own ? ` · ⚠️ ${file.cells.length - own}` : ''}`;
@@ -616,7 +616,7 @@ function showRestoreResult(applied) {
   if (errors) chips.push(`<span class="unhighlight-chip is-failed">❌ ${errors} 份文件没能处理</span>`);
   const fileHtml = file => {
     const rows = file.cells.map(c => `<li class="is-${c.status === 'ok' ? 'ok' : 'failed'}"><span aria-hidden="true">${c.status === 'ok' ? '✅' : '❌'}</span>`
-      + `${cellLink(file, batchState.folder, c)}<span class="unhighlight-reason">${esc(c.reason)}</span></li>`);
+      + `${cellLink(file, applied.folder || batchState.folder, c)}<span class="unhighlight-reason">${esc(c.reason)}</span></li>`);
     const own = file.cells.filter(c => c.status === 'ok').length;
     const tally = file.error ? `<span class="unhighlight-file-error">${esc(file.error)}</span>` : `✅ ${own}${file.cells.length - own ? ` · ❌ ${file.cells.length - own}` : ''}`;
     return `<details class="unhighlight-file"${file.error || own < file.cells.length ? ' open' : ''}><summary><b>${esc(file.name)}</b><span class="unhighlight-tally">${tally}</span></summary>`
