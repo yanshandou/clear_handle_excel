@@ -3,7 +3,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import openpyxl
 from openpyxl.styles import Font, PatternFill
@@ -74,6 +74,86 @@ class MarkFinderTests(unittest.TestCase):
         self.assertEqual(len(files["book.xlsx"]["hits"]), 3)
         self.assertIn("读不了", files["old.xls"]["error"])
         self.assertTrue(any("3 格底色是标记色" in c.args[0] for c in log.call_args_list))
+
+    def old_copy(self, edit=None):
+        """旧版文件：同样的内容，原来的颜色"""
+        old_root = self.root / "原始备份"
+        old_root.mkdir(exist_ok=True)
+        book = openpyxl.load_workbook(self.path)
+        sheet = book["明細"]
+        for addr in ("A5", "B7", "E2", "F2", "G2"):
+            sheet[addr].fill = PatternFill(fill_type=None)
+            sheet[addr].font = Font(color="FF000000")
+        paint(sheet["B7"], "DDEEFF", "123456")
+        if edit:
+            edit(sheet)
+        book.save(old_root / "book.xlsx")
+        return old_root
+
+    def plan(self, old_root):
+        hits = mark_finder.scan_file(self.path, mark_finder._styles(MAGENTA), set())
+        return {c["addr"]: c for c in mark_finder.plan_file(self.path, old_root / "book.xlsx", hits)}
+
+    def test_plan_restores_cells_whose_content_matches_the_old_version(self):
+        book = openpyxl.load_workbook(self.path)
+        book["明細"]["A5"] = "合計"
+        book["明細"]["B7"] = 12
+        book.save(self.path)
+        plan = self.plan(self.old_copy())
+        self.assertEqual((plan["A5"]["action"], plan["A5"]["old_fill"], plan["A5"]["old_font"]), ("restore", "none", "#000000"))
+        self.assertEqual((plan["B7"]["action"], plan["B7"]["old_fill"]), ("restore", "#DDEEFF"))
+        self.assertEqual(plan["E2:G2"]["action"], "restore")
+
+    def test_plan_skips_moved_or_changed_cells_and_original_marker_colors(self):
+        book = openpyxl.load_workbook(self.path)
+        book["明細"]["A5"] = "合計"
+        book["明細"]["B7"] = "x"
+        book.save(self.path)
+
+        def edit(sheet):
+            sheet["A5"] = "小計"                 # 内容不同（多半是插了行）
+            sheet["B7"] = "x"
+            sheet["B8"] = "多了一格"             # 不影响 B7：B7 有内容，只比这一格
+            sheet["H2"] = "这一行多了内容"       # E2 是空格子：这一行和旧版对不上
+            paint(sheet["B7"], "C0007A", "123456")  # 旧版本来就是这个颜色
+        plan = self.plan(self.old_copy(edit))
+        self.assertIn("内容不一样", plan["A5"]["reason"])
+        self.assertIn("本来就是这个颜色", plan["B7"]["reason"])
+        self.assertIn("这一行和旧版对不上", plan["E2:G2"]["reason"])
+        self.assertTrue(all(c["action"] == "skip" for c in plan.values()))
+
+    def test_files_are_paired_by_path_then_by_unique_name(self):
+        old = self.root / "old"
+        paths = [old / "a.xlsx", old / "x" / "b.xlsx", old / "y" / "c.xlsx", old / "z" / "c.xlsx"]
+        pairs = mark_finder._pair_files(old, paths, ["a.xlsx", "sub/b.xlsx", "c.xlsx", "d.xlsx"])
+        self.assertEqual(pairs, {"a.xlsx": paths[0], "sub/b.xlsx": paths[1], "c.xlsx": None, "d.xlsx": None})
+
+    def test_apply_copies_old_colors_only_when_still_marked_and_same_content(self):
+        marker = mark_finder._excel_color("#C0007A")
+
+        def cell(formula, pattern, color, font, tint=0):
+            return Mock(Formula=formula, Interior=Mock(Pattern=pattern, Color=color, TintAndShade=tint), Font=Mock(Color=font))
+        cur = {"A5": cell("合計", 1, marker, 0xFFFFFF), "B7": cell("x", 1, 0x123456, 0), "C9": cell("新", 1, marker, 0)}
+        old = {"A5": cell("合計", -4142, 0xFFFFFF, 0), "B7": cell("x", -4142, 0xFFFFFF, 0),
+               "C9": cell("旧", -4142, 0xFFFFFF, 0)}
+        for c in cur.values():
+            c.Cells.side_effect = lambda r, col, c=c: c
+        old_sheet, sheet = Mock(Name="明細"), Mock()
+        old_sheet.Range.side_effect = lambda a: old[a]
+        sheet.Range.side_effect = lambda a: cur[a]
+        old_book, book = Mock(Worksheets=[old_sheet]), Mock(ReadOnly=False)
+        book.Worksheets.return_value = sheet
+        excel = Mock()
+        excel.Workbooks.Open.side_effect = [old_book, book]
+        cells = [{"sheet": "明細", "addr": a, "fill": "#C0007A", "font": "#FFFFFF", "action": "restore"} for a in cur]
+        with patch("core.excel_ops.normalize_workbook_view"):
+            done = {c["addr"]: c for c in mark_finder.apply_file(excel, str(self.path), str(self.path), cells)}
+        self.assertEqual(done["A5"]["status"], "ok")
+        self.assertEqual((cur["A5"].Interior.Pattern, cur["A5"].Font.Color), (-4142, 0))
+        self.assertIn("被人改过", done["B7"]["reason"])
+        self.assertIn("内容和旧版不一样", done["C9"]["reason"])
+        self.assertEqual(cur["C9"].Interior.Color, marker)
+        book.Save.assert_called_once()
 
     def test_bad_colors_are_refused(self):
         with self.assertRaises(ValueError):
