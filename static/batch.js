@@ -513,6 +513,69 @@ try {
   if (HEX.test(saved?.fill) && HEX.test(saved?.font)) highlight = { fill: saved.fill.toUpperCase(), font: saved.font.toUpperCase() };
 } catch (_) {}
 
+// 查找残留标记色：旧版本直接改了单元格颜色、记录又丢了的，按标记色完全一致找出来，只列出、不改文件
+let findingMarks = false;
+async function findMarks() {
+  if (findingMarks) return;
+  const folder = $('folderInput').value.trim() || batchState.folder;
+  const colors = [...HIGHLIGHT_PRESETS.map(p => ({ fill: p.fill, font: p.font })), { ...highlight }];
+  $('errorText').textContent = '';
+  try { await post('/api/batch/find_marks', { folder, colors }); } catch (error) { $('errorText').textContent = error.message; return; }
+  findingMarks = true;
+  $('findMarksBtn').disabled = true;
+  $('findMarksTitle').textContent = '正在查找残留标记色…';
+  $('findMarksBody').innerHTML = '<p class="unhighlight-summary" id="findMarksProgress">准备中…</p>';
+  $('findMarksCloseBtn').textContent = '在后台继续';
+  if (!$('findMarksDialog').open) $('findMarksDialog').showModal();
+  try {
+    for (;;) {
+      const response = await fetch('/api/batch/find_marks', { cache: 'no-store' });
+      const status = await response.json();
+      if (!status.running) { showFoundMarks(status.result); break; }
+      const progress = $('findMarksProgress');
+      if (progress) progress.textContent = `正在查找 ${status.done + 1} / ${status.total}：${status.current || ''}`;
+      await new Promise(resolve => setTimeout(resolve, 800));
+    }
+  } catch (error) { $('errorText').textContent = `查找残留标记色失败：${error.message}`; }
+  finally { findingMarks = false; $('findMarksBtn').disabled = false; }
+}
+
+function showFoundMarks(result) {
+  if (!result) return;
+  const files = result.files;
+  const hits = files.flatMap(f => f.hits);
+  const both = hits.filter(h => h.match === 'both').length;
+  const recorded = hits.filter(h => h.recorded).length;
+  const unread = files.filter(f => f.error).length;
+  const chips = [`<span class="unhighlight-chip">${result.total} 份文件</span>`];
+  chips.push(`<span class="unhighlight-chip ${hits.length ? 'is-check' : 'is-ok'}">🎯 底色字色都对上 ${both} 格</span>`);
+  if (hits.length - both) chips.push(`<span class="unhighlight-chip is-check">🎨 只有底色对上 ${hits.length - both} 格</span>`);
+  if (recorded) chips.push(`<span class="unhighlight-chip is-ok">📝 程序有记录 ${recorded} 格</span>`);
+  if (unread) chips.push(`<span class="unhighlight-chip is-failed">❌ ${unread} 份文件读不了</span>`);
+  const fileHtml = file => {
+    const rows = file.hits.map(hit => {
+      const link = excelLinkHtml(esc(`${hit.sheet}!${hit.addr}`), { file: file.name, folder: result.folder, sheet: hit.sheet, cell: hit.addr.split(':')[0] });
+      const swatch = `<span class="find-marks-swatch" style="background:${esc(hit.fill)};color:${esc(hit.font || '#000000')}">Aa</span>`;
+      const note = (hit.match === 'both' ? '底色、字色都和标记色一致' : `只有底色一致（字色 ${esc(hit.font || '不是直接设置的颜色')}）`)
+        + (hit.recorded ? '；程序有记录，点「清除 Excel 标记颜色」会还原' : '');
+      return `<li class="is-${hit.recorded ? 'ok' : 'check'}">${swatch}${link}<span class="unhighlight-reason">${note}</span></li>`;
+    });
+    const tally = file.error ? `<span class="unhighlight-file-error">${esc(file.error)}</span>`
+      : `${file.hits.length} 格${file.truncated ? '（只列前 500 格）' : ''}`;
+    return `<details class="unhighlight-file"${files.length <= 5 || file.error ? ' open' : ''}><summary><b>${esc(file.name)}</b><span class="unhighlight-tally">${tally}</span></summary>`
+      + (rows.length ? `<ul>${rows.join('')}</ul>` : '') + '</details>';
+  };
+  $('findMarksTitle').textContent = hits.length ? '找到底色是标记色的格子' : '没有找到残留标记色';
+  $('findMarksDialog').dataset.tone = hits.length || unread ? 'warn' : 'info';
+  $('findMarksBody').innerHTML = `<p class="unhighlight-summary">${chips.join('')}</p>`
+    + '<p class="unhighlight-hint">只列出来，不改文件：程序不知道这些格子原来是什么颜色，也可能本来就是这个颜色。点位置用 Excel 打开看一下，需要的话手动改回去（有原始备份的话可以用备份对比脚本恢复）。</p>'
+    + `<div class="unhighlight-files">${files.map(fileHtml).join('')}</div>`;
+  $('findMarksCloseBtn').textContent = '知道了';
+  if (!$('findMarksDialog').open) $('findMarksDialog').showModal();
+  $('findMarksBody').scrollTop = 0;
+  $('findMarksCloseBtn').focus();
+}
+
 function luminance(hex) {
   const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
     .map(c => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
@@ -583,6 +646,8 @@ $('unhighlightBtn').addEventListener('click', async () => {
   if (await appConfirm(`去掉当前文件夹 ${batchState.highlighted || 0} 个单元格的标记颜色？\n标记是程序加的条件格式，只删这些规则；单元格本身的颜色和表里原有的条件格式都不动。\n需要先在 Excel 里保存并关闭这些文件。之后提交、复检也不再自动标色，重新开始处理时才按设置标色。`, { title: '清除 Excel 标记颜色', okText: '去掉标记' })) await startJob('/api/batch/unhighlight');
 });
 $('unhighlightResultBtn').addEventListener('click', showUnhighlightResult);
+$('findMarksBtn').addEventListener('click', findMarks);
+$('findMarksCloseBtn').addEventListener('click', () => $('findMarksDialog').close());
 $('unhighlightCloseBtn').addEventListener('click', () => $('unhighlightDialog').close());
 $('resumeBtn').addEventListener('click', () => startJob('/api/resume'));
 $('pauseBtn').addEventListener('click', () => action(() => post('/api/batch/pause')));
