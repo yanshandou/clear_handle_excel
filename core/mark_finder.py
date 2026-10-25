@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from core import debug_log, workflow as wf
-from core.common import workbook_rel_name
+from core.common import _original_name_of, strip_new_prefix, strip_uncertain_prefix, workbook_rel_name
 
 READABLE = {".xlsx", ".xlsm", ".xltx", ".xltm"}
 MAX_HITS_PER_FILE = 500
@@ -200,6 +200,7 @@ def _old_colors(cell: Any) -> dict:
 
 
 SIMILAR_ROWS, SIMILAR_MIN = 200, 0.6
+_HOW = {"guess": "去掉「新」/ 日期等后的表名", "code": "代码名", "content": "内容"}
 
 
 def _sheet_words(ws: Any) -> set[str]:
@@ -212,7 +213,7 @@ def _sheet_words(ws: Any) -> set[str]:
 
 def _match_sheets(current: Any, old: Any) -> dict[str, tuple[Any, str]]:
     """新版每张表 → (旧版的表, 怎么对上的)。精简 Sheet 会改表名（去掉「新」、日期后缀等），
-    旧版还是原来的名字，所以按名字对不上时再按代码名、再按内容找。
+    旧版还是原来的名字，所以按名字对不上时先猜原名（加回「新」、带日期后缀等），再按代码名、再按内容找。
     认错了也不要紧：后面逐格还要比内容，内容不一样就不改"""
     found: dict[str, tuple[Any, str]] = {}
     left = list(old.worksheets)
@@ -223,6 +224,17 @@ def _match_sheets(current: Any, old: Any) -> dict[str, tuple[Any, str]]:
             found[ws.title] = (hit, "name")
             left.remove(hit)
     rest = [ws for ws in current.worksheets if ws.title not in found]
+
+    def guess(ws: Any) -> str:
+        """猜原名：去掉开头的「新」「❓」、日期后缀、(2)、bak/旧 等，和精简 Sheet 改名的规则一样"""
+        return _original_name_of(strip_new_prefix(strip_uncertain_prefix(ws.title)))
+
+    for ws in list(rest):
+        same = [o for o in left if guess(o) == guess(ws)]
+        if guess(ws) and len(same) == 1 and sum(1 for w in rest if guess(w) == guess(ws)) == 1:
+            found[ws.title] = (same[0], "guess")
+            left.remove(same[0])
+            rest.remove(ws)
 
     def code(ws: Any) -> str:
         return _norm(ws.sheet_properties.codeName or "")
@@ -266,7 +278,7 @@ def plan_file(path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
             old_sheet, how = matched.get(hit["sheet"], (None, ""))
             if old_sheet is None:
                 names = "、".join(ws.title for ws in old.worksheets)
-                item["reason"] = f"旧版里找不到这张表（按表名、代码名、内容都对不上；旧版的表：{names}）"
+                item["reason"] = f"旧版里找不到这张表（按表名、猜原名、代码名、内容都对不上；旧版的表：{names}）"
                 continue
             item["old_sheet"] = old_sheet.title
             cell, old_cell = sheet[top], old_sheet[top]
@@ -280,7 +292,7 @@ def plan_file(path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
             else:
                 item.update(action="restore", reason="改回旧版的颜色")
             if how != "name":
-                item["reason"] += f"（旧版表名「{old_sheet.title}」，按{'代码名' if how == 'code' else '内容'}对上）"
+                item["reason"] += f"（旧版表名「{old_sheet.title}」，按{_HOW[how]}对上）"
         return plan
     finally:
         current.close()

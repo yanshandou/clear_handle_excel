@@ -122,13 +122,16 @@ class MarkFinderTests(unittest.TestCase):
         self.assertIn("这一行和旧版对不上", plan["E2:G2"]["reason"])
         self.assertTrue(all(c["action"] == "skip" for c in plan.values()))
 
-    def test_renamed_sheets_are_matched_by_code_name_then_by_content(self):
+    def test_renamed_sheets_are_matched_by_guessed_name_code_name_then_content(self):
         book = openpyxl.load_workbook(self.path)
         book["明細"]["A5"] = "合計"
         other = book.create_sheet("レイアウト")
         other.sheet_properties.codeName = "Sheet9"
         other["A1"], other["A2"] = "訪問看護計画書", "氏名"
         paint(other["A2"], "C0007A", "FFFFFF")
+        bill = book.create_sheet("請求書")
+        bill["C3"] = "金額"
+        paint(bill["C3"], "C0007A", "FFFFFF")
         book["明細"].sheet_properties.codeName = "Sheet1"
         book.save(self.path)
 
@@ -140,11 +143,16 @@ class MarkFinderTests(unittest.TestCase):
             lay.sheet_properties.codeName = "Sheet3"   # 代码名也对不上，只能按内容
             lay["A2"].fill = PatternFill(fill_type=None)
             sheet.parent.create_sheet("全然違う")["A1"] = "別の表"
+            bill = sheet.parent["請求書"]
+            bill.title = "新請求書"                  # 「新」字被去掉了：加回去就能对上
+            bill["C3"].fill = PatternFill(fill_type=None)
         plan = self.plan(self.old_copy(edit))
         self.assertEqual((plan["A5"]["action"], plan["A5"]["old_sheet"]), ("restore", "明細新"))
         self.assertIn("按代码名对上", plan["A5"]["reason"])
         self.assertEqual((plan["A2"]["action"], plan["A2"]["old_sheet"]), ("restore", "レイアウト(訪問看護計画書)"))
         self.assertIn("按内容对上", plan["A2"]["reason"])
+        self.assertEqual((plan["C3"]["action"], plan["C3"]["old_sheet"]), ("restore", "新請求書"))
+        self.assertIn("去掉「新」", plan["C3"]["reason"])
 
     def test_sheet_without_any_match_lists_old_sheet_names(self):
         def edit(sheet):
