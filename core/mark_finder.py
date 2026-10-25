@@ -105,6 +105,7 @@ def _run(folder: Path, paths: list[Path], styles: list[tuple[str, str]]) -> None
             with _LOCK:
                 _STATUS.update(done=i - 1, current=name)
             entry = {"path": str(path), "name": name, "hits": [], "error": None}
+            debug_log.begin(f"查找残留 {i} / {len(paths)}：{name}")
             if path.suffix.lower() not in READABLE:
                 entry["error"] = f"{path.suffix} 格式读不了颜色，请人工看一下"
             else:
@@ -114,6 +115,11 @@ def _run(folder: Path, paths: list[Path], styles: list[tuple[str, str]]) -> None
                 except Exception as err:
                     debug_log.exception(err, f"查找残留标记色 {name}")
                     entry["error"] = f"读取失败：{err}"
+            debug_log.event("📂 查找结果", 文件=name, 找到=len(entry["hits"]), 到上限=entry.get("truncated", False),
+                            有记录=sum(1 for h in entry["hits"] if h["recorded"]), 错误=entry["error"] or "-")
+            for hit in entry["hits"]:
+                debug_log.event("🔍 残留", 位置=f"{hit['sheet']}!{hit['addr']}", 底色=hit["fill"], 字色=hit["font"] or "-",
+                                对上=hit["match"], 有记录=hit["recorded"])
             if entry["hits"] or entry["error"]:
                 files.append(entry)
         hits = sum(len(f["hits"]) for f in files)
@@ -124,6 +130,12 @@ def _run(folder: Path, paths: list[Path], styles: list[tuple[str, str]]) -> None
             _STATUS.update(running=False, done=len(paths), current="", result={
                 "folder": str(folder), "total": len(paths), "files": files,
                 "colors": [{"fill": f"#{a}", "font": f"#{b}"} for a, b in styles]})
+
+
+def _logged(kind: str, options: dict, func: Any, *args: Any) -> None:
+    """后台线程跑的这几步也在调试日志里算一个任务，网页上能选出来复制"""
+    with debug_log.side_task(kind, options):
+        func(*args)
 
 
 def _begin(phase: str, total: int) -> None:
@@ -141,7 +153,8 @@ def start(folder: str, colors: Any) -> None:
         for key in ("result", "plan", "applied"):
             _STATUS.pop(key, None)
     wf.log_msg(f"🔍 开始查找残留标记色：{len(paths)} 份文件（只列出来，不改文件）")
-    threading.Thread(target=_run, args=(root, paths, styles), name="查找残留标记色", daemon=True).start()
+    threading.Thread(target=_logged, args=("find_marks", {"folder": str(root), "files": len(paths), "colors": styles},
+                                           _run, root, paths, styles), name="查找残留标记色", daemon=True).start()
 
 
 # ---------- 对比旧版文件夹，把找到的格子改回旧版的颜色 ----------
@@ -268,6 +281,9 @@ def plan_file(path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
     old = openpyxl.load_workbook(old_path, data_only=False)
     try:
         matched = _match_sheets(current, old)
+        debug_log.event("📄 表对应", 新版=[ws.title for ws in current.worksheets],
+                        对上={name: f"{ws.title}（{_HOW.get(how, how)}）" for name, (ws, how) in matched.items()},
+                        旧版=[ws.title for ws in old.worksheets])
         plan = []
         for hit in hits:
             item = {"sheet": hit["sheet"], "addr": hit["addr"], "fill": hit["fill"], "font": hit["font"],
@@ -293,6 +309,10 @@ def plan_file(path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
                 item.update(action="restore", reason="改回旧版的颜色")
             if how != "name":
                 item["reason"] += f"（旧版表名「{old_sheet.title}」，按{_HOW[how]}对上）"
+        for item in plan:
+            debug_log.event("🔍 对比", 位置=f"{item['sheet']}!{item['addr']}", 旧表=item.get("old_sheet", "-"),
+                            动作=item["action"], 原因=item["reason"], 标记色=item["fill"],
+                            旧底色=item.get("old_fill", "-"), 旧字色=item.get("old_font", "-"))
         return plan
     finally:
         current.close()
@@ -308,6 +328,8 @@ def _run_preview(old_root: Path, old_paths: list[Path], files: list[dict], folde
                 _STATUS.update(done=i - 1, current=file["name"])
             old_path = pairs[file["name"]]
             entry = {"path": file["path"], "name": file["name"], "old": str(old_path or ""), "cells": [], "error": None}
+            debug_log.begin(f"对比旧版 {i} / {len(files)}：{file['name']}")
+            debug_log.event("📂 配对", 文件=file["name"], 旧版=old_path or "没找到", 格子=len(file["hits"]))
             if old_path is None:
                 entry["error"] = "旧版文件夹里没找到这份文件（相对路径不同，同名的又不止一个或没有）"
             elif old_path.suffix.lower() not in READABLE:
@@ -343,7 +365,10 @@ def preview(old_folder: str) -> None:
     with _LOCK:
         _STATUS.pop("plan", None)
         _STATUS.pop("applied", None)
-    threading.Thread(target=_run_preview, args=(old_root, old_paths, files, result["folder"]), name="对比旧版", daemon=True).start()
+    threading.Thread(target=_logged, args=("compare_old", {"old_folder": str(old_root), "folder": result["folder"],
+                                                           "files": len(files)},
+                                           _run_preview, old_root, old_paths, files, result["folder"]),
+                     name="对比旧版", daemon=True).start()
 
 
 XL_PATTERN_NONE, XL_PATTERN_SOLID = -4142, 1
@@ -394,6 +419,9 @@ def apply_file(excel: Any, path: str, old_path: str, cells: list[dict]) -> list[
             result = {**item, "status": "failed", "reason": ""}
             done.append(result)
             source = old[f"{item['sheet']}!{item['addr']}"]
+            if not isinstance(source, str):
+                debug_log.event("📄 旧版这一格", 位置=f"{item['sheet']}!{item['addr']}", 内容=debug_log.clip(source["formula"]),
+                                图案=source["pattern"], 底色=source["color"], 深浅=source["tint"], 字色=source["font"])
             if isinstance(source, str):
                 result["reason"] = source
                 continue
@@ -444,6 +472,7 @@ def _run_apply(files: list[dict], folder: str = "") -> None:
                 _STATUS.update(done=i - 1, current=file["name"])
             entry = {"path": file["path"], "name": file["name"], "cells": [], "error": None}
             applied.append(entry)
+            debug_log.begin(f"改回旧版颜色 {i} / {len(files)}：{file['name']}")
             if Path(file["path"]) in unsaved:
                 entry["error"] = f"{unsaved[Path(file['path'])]}，请保存并关闭后再试"
                 continue
@@ -452,6 +481,9 @@ def _run_apply(files: list[dict], folder: str = "") -> None:
             except Exception as err:
                 debug_log.exception(err, f"改回旧版颜色 {file['name']}")
                 entry["error"] = f"没有改：{err}"
+            for cell in entry["cells"]:
+                debug_log.event("🎨 改回" if cell["status"] == "ok" else "⚠️ 没改", 位置=f"{cell['sheet']}!{cell['addr']}",
+                                结果=cell["reason"])
             ok = sum(1 for c in entry["cells"] if c["status"] == "ok")
             wf.log_msg(f"🎨 {file['name']}：改回旧版颜色 {ok} 格" + (f"，{entry['error']}" if entry["error"] else ""))
     except Exception as err:
@@ -487,7 +519,9 @@ def apply() -> None:
     with _LOCK:
         _STATUS.pop("plan", None)  # 一份清单只执行一次
     wf.log_msg(f"🎨 开始改回旧版颜色：{len(files)} 份文件，{sum(len(f['cells']) for f in files)} 格")
-    threading.Thread(target=_run_apply, args=(files, plan.get("folder", "")), name="改回旧版颜色", daemon=True).start()
+    threading.Thread(target=_logged, args=("restore_old", {"folder": plan.get("folder", ""), "files": len(files)},
+                                           _run_apply, files, plan.get("folder", "")),
+                     name="改回旧版颜色", daemon=True).start()
 
 
 def status() -> dict:

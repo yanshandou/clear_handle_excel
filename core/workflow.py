@@ -2314,8 +2314,13 @@ def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
         return excel
 
     try:
-        for wb_path in workbooks:
-            files.append(_preview_workbook(wb_path, folder, get_excel))
+        with debug_log.side_task("clean_preview", {"folder": str(folder), "files": len(workbooks)}):
+            for wb_path in workbooks:
+                entry = _preview_workbook(wb_path, folder, get_excel)
+                files.append(entry)
+                debug_log.event("📄 精简预览", 文件=entry["name"], 表数=entry["sheet_count"], 默认删除=entry["backups"],
+                                待定=entry["uncertain"], 新旧配对=entry["new_old_pairs"] or "-", 备注=entry["note"] or "-",
+                                全部表=entry["sheets"])
     finally:
         if excel is not None:
             try:

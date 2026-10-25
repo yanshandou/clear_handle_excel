@@ -150,6 +150,33 @@ class DebugLogTests(unittest.TestCase):
         self.assertNotIn("序号=1500 ", copied)
         self.assertNotIn("第一次任务", copied)
 
+    def test_side_task_is_its_own_task_or_nests_in_running_one(self):
+        with debug_log.side_task("find_marks", {"folder": "C:/x"}):
+            debug_log.begin("查找残留 1 / 1：a.xlsx")
+            debug_log.event("🔍 残留", 位置="Sheet1!B5")
+        self.assertEqual([t["kind"] for t in debug_log.tasks()], ["find_marks"])
+        self.assertIn("⬆查找残留 1 / 1：a.xlsx 结束⬆", self.path.read_text(encoding="utf-8"))
+
+        import threading
+        debug_log.start_task("batch_scan")
+        debug_log.begin("扫描 1 / 2：b.xlsx")
+
+        def other():
+            with debug_log.side_task("compare_old"):
+                debug_log.begin("对比旧版 1 / 1：c.xlsx")  # 另一个线程：不能把任务线程的块收掉
+        thread = threading.Thread(target=other)
+        thread.start()
+        thread.join()
+        debug_log.event("🔍 检出", 位置="Sheet1!A1")
+        debug_log.end_task("completed")
+        _, text = debug_log.task_text()
+        self.assertIn("compare_old（和正在跑的任务同时进行） 开始", text)
+        self.assertIn("📂 [", text)
+        lines = text.splitlines()
+        close = next(i for i, line in enumerate(lines) if "⬆扫描 1 / 2：b.xlsx" in line)
+        self.assertLess(next(i for i, line in enumerate(lines) if "检出 位置=Sheet1!A1" in line), close)
+        self.assertEqual([t["kind"] for t in debug_log.tasks()], ["batch_scan", "find_marks"])
+
     def test_without_task_lines_still_go_to_log(self):
         debug_log.event("🖱️ 网页操作", 路径="/api/clean/preview")
         self.assertIn("/api/clean/preview", self.path.read_text(encoding="utf-8"))

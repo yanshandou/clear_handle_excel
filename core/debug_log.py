@@ -168,6 +168,10 @@ def begin(title: str, level: int = 1) -> None:
     """开一个分隔块（1 = 文件，2 = 文件里的一行）。同级或更深的块还开着时先写结束线，
     中途 continue、出错跳过也不会少结束线；任务结束时全部收尾"""
     with _lock:
+        if _task is not None and _task.get("thread") != threading.get_ident():
+            # 别的线程（和后台任务同时进行的查找、预览等）：分隔块是任务线程的，这里只记一行，免得把它的块收掉
+            _line("📂", title)
+            return
         while len(_open) >= level:
             _wave("⬆", _open.pop())
         _open.append(title)
@@ -177,6 +181,8 @@ def begin(title: str, level: int = 1) -> None:
 @_never_raise
 def end(level: int = 1) -> None:
     with _lock:
+        if _task is not None and _task.get("thread") != threading.get_ident():
+            return
         while len(_open) >= level:
             _wave("⬆", _open.pop())
 
@@ -413,7 +419,7 @@ def start_task(kind: str, options: dict[str, Any] | None = None, extra: dict[str
             end_task("被下一个任务替换")
         prune()
         title = f"任务 {kind} #{datetime.now():%Y%m%d_%H%M%S}"
-        _task = {"title": title, "started": time.perf_counter(), "since": int(time.time()), "bytes": 0, "full": False}
+        _task = {"title": title, "started": time.perf_counter(), "since": int(time.time()), "thread": threading.get_ident(), "bytes": 0, "full": False}
         _wave("⬇", title)
     write(f"任务 {kind}{'（继续上次任务）' if resumed else ''}", "🧭")
     for line in environment():
@@ -430,11 +436,39 @@ def end_task(status: str) -> None:
     with _lock:
         if _task is None:
             return
-        end(1)
+        while _open:  # 不管哪个线程来结束，任务里还开着的块都收尾
+            _wave("⬆", _open.pop())
         _line("✅" if status.startswith("completed") else "⏹", f"任务结束：{status}，共 "
               f"{time.perf_counter() - _task['started']:.1f} 秒", force=True)
         _wave("⬆", _task["title"])
         _task = None
+
+
+@contextmanager
+def side_task(kind: str, options: dict[str, Any] | None = None) -> Iterator[None]:
+    """不走后台任务槽的操作（查找残留标记色、对比旧版、精简 Sheet 预览……）也当一个任务记，网页上能选、能复制。
+    后台任务正在跑时不另起（同一时间只开一个任务），在它里面用分隔线包起来"""
+    with _lock:
+        own = _task is None and enabled()
+    if own:
+        start_task(kind, options)
+    else:
+        _wave("⬇", f"{kind}（和正在跑的任务同时进行）")
+        event(f"🧭 {kind} 参数", 参数=summary(options or {}))
+    mine = _task
+    status = "completed"
+    try:
+        yield
+    except BaseException as err:
+        status = f"出错 {type(err).__name__}: {err}"
+        if isinstance(err, Exception):
+            exception(err, kind)
+        raise
+    finally:
+        if not own:
+            _wave("⬆", f"{kind}（和正在跑的任务同时进行）")
+        elif _task is mine:  # 期间开始了后台任务时，自己这段已被它收尾，不能把它的任务结束掉
+            end_task(status)
 
 
 @_never_raise
