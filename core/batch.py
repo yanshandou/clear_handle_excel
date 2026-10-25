@@ -1566,7 +1566,7 @@ def _marked_matches(sheet: Any, value: str, fill: int) -> list[tuple[int, int]]:
     return found
 
 
-def _sweep_leftover_marks(book: Any, path: str, missed: list[dict], kept: list[dict]) -> None:
+def _sweep_leftover_marks(book: Any, path: str, missed: list[dict], kept: list[dict]) -> list[dict]:
     """兜底：原位置没找到标记色的记录（多半是旧记录没有隐藏名称时被插删行列挪了位置），
     按标色时记下的格子内容在同一张表里找，找到的格子还得是标记底色、而且只有一个，才按这条记录还原；
     其他情况不乱改。只在有这种记录时才找，平常不多花时间。"""
@@ -1578,7 +1578,7 @@ def _sweep_leftover_marks(book: Any, path: str, missed: list[dict], kept: list[d
             for cell in mark["cells"]:
                 row, col = _cell_rc(cell["addr"])
                 keep.add((sheet.Name, row + dr, col + dc))
-    fixed, left = 0, []
+    fixed, left, done = 0, [], []
     for mark in missed:
         sheet = _find_sheet(book, mark["sheet"])
         if sheet is None or not mark.get("value"):
@@ -1592,6 +1592,7 @@ def _sweep_leftover_marks(book: Any, path: str, missed: list[dict], kept: list[d
                 r0, c0 = _cell_rc(mark["addr"])
                 if _restore_cells(sheet, mark, (spots[0][0] - r0, spots[0][1] - c0)):
                     fixed += 1
+                    done.append(mark)
                     continue
             if spots:
                 left.append(f"{sheet.Name}!" + "、".join(f"{_col_letters(c)}{r}" for r, c in spots[:3]))
@@ -1603,6 +1604,7 @@ def _sweep_leftover_marks(book: Any, path: str, missed: list[dict], kept: list[d
     if left:
         wf.log_msg(f"⚠️ {Path(path).name}：有 {len(left)} 处标记颜色挪了位置、对上的格子不止一个，没有自动还原，"
                    "请在 Excel 里看一下：" + "；".join(left[:20]) + ("……" if len(left) > 20 else ""))
+    return done
 
 
 def _col_letters(col: int) -> str:
@@ -1671,11 +1673,12 @@ def _drop_rules(book: Any, keep: set[str], tick: Callable[[], None] | None = Non
 
 
 def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = False,
-                     tick: Callable[[], None] | None = None) -> None:
+                     tick: Callable[[], None] | None = None, report: dict | None = None) -> None:
     """让原 Excel 里的标记和卡片一致：黄色人工待处理的格子加一条条件格式规则；
     复检通过（变蓝）、提交为蓝 / 绿、或要求清除时把规则删掉。打开一次、保存一次。
     旧版本改过单元格底色的记录照旧还原原来的颜色。
-    tick：每处理一格告诉看门狗还在动，问题格很多的大文件要好几分钟，不会被当成 Excel 卡死。"""
+    tick：每处理一格告诉看门狗还在动，问题格很多的大文件要好几分钟，不会被当成 Excel 卡死。
+    report：清除标记时传入，逐格记下去掉了没有、没去掉的原因（cells），以及清掉的残留规则条数，页面上显示结果。"""
     with wf.STATE_LOCK:
         data, marks = _data(), _marks()
         style = data.get("highlight_files", {}).get(path)
@@ -1699,6 +1702,12 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
     leftovers: dict[str, int] = {}
     stuck: list[str] = []  # 去掉 / 还原时出错的记录，留着下次再试
     book_name, last_log = Path(path).name, time.monotonic()
+
+    def note(mark: dict, status: str, reason: str) -> None:
+        """status：ok 已去掉 / check 需要人看一下 / failed 没去掉"""
+        if report is not None:
+            report.setdefault("cells", []).append(
+                {"sheet": mark["sheet"], "addr": str(mark["addr"]).replace("$", ""), "status": status, "reason": reason})
 
     def step(what: str, done: int, total: int) -> None:
         nonlocal last_log
@@ -1724,8 +1733,10 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                 stuck.append(cid)
                 wf.log_msg(f"⚠️ {book_name} / {marks[cid]['sheet']}!{marks[cid]['addr']} 未能去掉标记，下次再试："
                            f"{drop_failed[tag]}")
+                note(marks[cid], "failed", f"删不掉标记规则（{drop_failed[tag]}），工作表可能受保护")
             else:
                 unmarked += 1  # 规则被人手动删掉的也算：本来就没东西要清
+                note(marks[cid], "ok", "已去掉标记" if tag in dropped else "标记规则已被删掉（或格子已删），不用清")
             debug_log.event("🧽 去掉标记", 位置=f"{marks[cid]['sheet']}!{marks[cid]['addr']}", 标识=tag,
                             条数=dropped.get(tag, 0), 出错=drop_failed.get(tag, "-"))
         for tag, count in dropped.items():
@@ -1734,6 +1745,9 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
         if leftovers:
             debug_log.event("🧹 残留标记", 标识=list(leftovers)[:10], 条数=sum(leftovers.values()))
         left_failed = [reason for tag, reason in drop_failed.items() if tag not in ours]
+        if report is not None:
+            report["leftovers"] = sum(leftovers.values())
+            report["leftover_failed"] = left_failed[:20]
         if left_failed:
             wf.log_msg(f"⚠️ {book_name}：{len(left_failed)} 条残留标记没能去掉：" + "；".join(left_failed[:5]))
         lost = []
@@ -1810,12 +1824,14 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                                 表在=not (found is not None and found[0] is None))
                 if found is None:
                     deleted += 1  # 标色的格子已被人工删掉，没有颜色要还原
+                    note(mark, "ok", "格子已被删掉，不用还原")
                 elif found[0] is None:
                     # 工作表已被删除（例如精简 Sheet 或人工处理时删掉）就没有颜色要还原了，按表汇总说一次
                     gone[mark["sheet"]] = gone.get(mark["sheet"], 0) + 1
                     missed.append(mark)
                 elif _restore_cells(found[0], mark, found[1]):
                     restored += 1
+                    note(mark, "ok", "已还原成原来的颜色")
                 else:
                     debug_log.event("🔎 原位置不是标记色，留给兜底查找", 位置=f"{mark['sheet']}!{mark['addr']}")
                     missed.append(mark)
@@ -1823,11 +1839,19 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                 # 还原出错：记录留着（按钮上的数字还在），下次提交 / 复检 / 清除时再试，不当成已还原
                 stuck.append(cid)
                 wf.log_msg(f"⚠️ {Path(path).name} / {mark['sheet']}!{mark['addr']} 未能还原颜色，下次再试：{err}")
+                note(mark, "failed", f"还原颜色出错：{err}")
                 continue
             _delete_name(book, mark.get("name"))
         if missed:
             kept = [m for cid, m in marks.items() if m["path"] == path and cid not in remove and not _is_rule(m)]
-            _sweep_leftover_marks(book, path, missed, kept)
+            found_later = _sweep_leftover_marks(book, path, missed, kept)
+            for mark in missed:
+                if any(mark is m for m in found_later):
+                    note(mark, "ok", "格子挪了位置，按内容找到并还原了")
+                elif mark["sheet"] in gone:
+                    note(mark, "check", "工作表已不在文件里（被删除或改名）；如果是改名，请在新表里看一下有没有标记色")
+                else:
+                    note(mark, "check", "原位置已经不是标记色（可能人工改过颜色，或格子挪了位置），请看一下")
         for name, count in gone.items():
             wf.log_msg(f"ℹ️ {Path(path).name}：工作表「{name}」已不在文件里（被删除或改名），"
                        f"跳过还原 {count} 格标记颜色；如果是改名，请在新表里手动去掉标记色")
@@ -1894,6 +1918,23 @@ def _where(err: BaseException) -> str:
     """出错在哪个函数哪一行（只看本程序的代码），日志里带上，下次出问题能直接定位"""
     frames = [f for f in traceback.extract_tb(err.__traceback__) if "core" in Path(f.filename).parts]
     return f"（出错位置：{frames[-1].name} 第 {frames[-1].lineno} 行）" if frames else ""
+
+
+def _unhighlight_summary(results: dict[str, dict]) -> str:
+    cells = [c for r in results.values() for c in r["cells"]]
+    count = {status: sum(1 for c in cells if c["status"] == status) for status in ("ok", "check", "failed")}
+    parts = [f"{len(results)} 份文件", f"已清除 {count['ok']} 格"]
+    if count["check"]:
+        parts.append(f"需要看一下 {count['check']} 格")
+    if count["failed"]:
+        parts.append(f"没清掉 {count['failed']} 格")
+    errors = sum(1 for r in results.values() if r.get("error"))
+    if errors:
+        parts.append(f"{errors} 份文件没能处理")
+    leftovers = sum(r.get("leftovers", 0) for r in results.values())
+    if leftovers:
+        parts.append(f"另清掉残留标记 {leftovers} 条")
+    return "🧽 清除完成：" + "，".join(parts)
 
 
 def _sync_highlights_safely(session: Any, path: str) -> None:
@@ -2256,19 +2297,28 @@ def run() -> list[str]:
             expected = list(options["paths"])
             wf.log_msg(f"🧽 开始清除标记颜色：{len(expected)} 份文件")
             unsaved = close_saved_workbooks([Path(path) for path in expected])
+            with wf.STATE_LOCK:
+                # 每份文件的清除结果，结束后页面弹窗显示；继续上次任务时已完成的文件结果留着
+                results = job.setdefault("result", {})
             for i, path in enumerate(expected, 1):
                 if path in job["completed"]:
                     continue
+                report = {"name": workbook_rel_name(Path(path), wf.STATE["folder"]), "cells": [], "leftovers": 0,
+                          "leftover_failed": [], "error": None}
                 if Path(path) in unsaved:
                     wf.log_msg(f"⚠️ {Path(path).name}：{unsaved[Path(path)]}，请保存后继续")
+                    with wf.STATE_LOCK:
+                        results[path] = {**report, "error": f"{unsaved[Path(path)]}，请保存并关闭后再点清除"}
                     continue
                 debug_log.begin(f"清除颜色 {i} / {len(expected)}：{Path(path).name}")
-                wf.log_msg(f"🧽 正在还原（{i} / {len(expected)}）：{Path(path).name}")
+                wf.log_msg(f"🧽 正在清除（{i} / {len(expected)}）：{Path(path).name}")
                 for tries in range(2):
+                    report.update(cells=[], leftovers=0, leftover_failed=[], error=None)
                     try:
                         watchdog.progress()
-                        _sync_highlights(session.app, path, clear=True, tick=session.touch)
+                        _sync_highlights(session.app, path, clear=True, tick=session.touch, report=report)
                         with wf.STATE_LOCK:
+                            results[path] = report
                             # 清除后不再自动标色；以后再「只扫描」才重新标
                             _data().get("highlight_files", {}).pop(path, None)
                             job["completed"].append(path)
@@ -2277,10 +2327,13 @@ def run() -> list[str]:
                     except Exception as err:
                         if isinstance(err, ValueError) or tries:
                             wf.log_msg(f"❌ {Path(path).name} 清除标记颜色失败，可继续任务：{err}{_where(err)}")
+                            with wf.STATE_LOCK:
+                                results[path] = {**report, "error": f"清除失败：{err}"}
                             break
                         # 后台 Excel 卡住被结束、或崩溃了：换一个新的再试，后面的文件也用新的
                         wf.log_msg(f"⚠️ {Path(path).name} 清除标记颜色出错，重启 Excel 后重试：{err}{_where(err)}")
                         _restart_excel(session)
+            wf.log_msg(_unhighlight_summary(results))
         else:
             raise ValueError("未知批处理任务")
         finish_execution_batch("处理完成，请审核结果" if set(expected).issubset(job["completed"]) else "部分文件尚未完成，可继续任务")

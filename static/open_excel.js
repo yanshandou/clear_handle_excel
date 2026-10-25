@@ -27,6 +27,9 @@
       box.className = 'excel-open-toast';
       document.body.appendChild(box);
     }
+    // 弹窗（showModal）盖在页面最上层：提示要放进打开着的弹窗里才看得到
+    const host = document.querySelector('dialog[open]') || document.body;
+    if (box.parentElement !== host) host.appendChild(box);
     box.textContent = text;
     box.classList.toggle('is-error', !!isError);
     box.classList.add('is-visible');

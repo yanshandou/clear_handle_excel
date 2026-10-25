@@ -41,13 +41,66 @@ async function poll() {
     const value = await response.json();
     if (version !== pollVersion || requestBusy) return;
     celebrateFinished(batchState, value);
+    if (value.busy && value.job?.kind === 'batch_unhighlight') clearPending = true;
+    const cleared = clearPending && !value.busy && value.job?.kind === 'batch_unhighlight';
+    if (cleared) clearPending = false;
     batchState = value;
     if (!document.activeElement || document.activeElement.id !== 'folderInput') {
       if (value.folder && !$('folderInput').value) $('folderInput').value = value.folder;
       if (value.busy && value.folder) $('folderInput').value = value.folder;
     }
     render();
+    if (cleared && unhighlightResult()) showUnhighlightResult();
   } catch (error) { $('errorText').textContent = error.message; }
+}
+
+// 清除标记的结果：任务结束后弹窗，之后可点「上次清除结果」再看。
+// 清除任务很快时轮询可能一次都没看到「进行中」，所以点了清除（或继续清除任务）就先记下来
+let clearPending = false;
+function unhighlightResult() {
+  const job = batchState.job;
+  return job?.kind === 'batch_unhighlight' && job.result && Object.keys(job.result).length ? job.result : null;
+}
+
+const CLEAR_STATUS = { ok: '✅', check: '⚠️', failed: '❌' };
+function showUnhighlightResult() {
+  const files = Object.values(unhighlightResult() || {});
+  const count = { ok: 0, check: 0, failed: 0 };
+  for (const file of files) for (const cell of file.cells) count[cell.status] += 1;
+  const errors = files.filter(f => f.error).length;
+  const leftovers = files.reduce((sum, f) => sum + (f.leftovers || 0), 0);
+  const trouble = f => !!f.error || (f.leftover_failed || []).length > 0 || f.cells.some(c => c.status !== 'ok');
+  files.sort((a, b) => trouble(b) - trouble(a) || a.name.localeCompare(b.name));
+  const chips = [`<span class="unhighlight-chip is-ok">✅ 已清除 ${count.ok} 格</span>`];
+  if (count.check) chips.push(`<span class="unhighlight-chip is-check">⚠️ 需要看一下 ${count.check} 格</span>`);
+  if (count.failed) chips.push(`<span class="unhighlight-chip is-failed">❌ 没清掉 ${count.failed} 格</span>`);
+  if (errors) chips.push(`<span class="unhighlight-chip is-failed">❌ ${errors} 份文件没能处理</span>`);
+  if (leftovers) chips.push(`<span class="unhighlight-chip">🧹 另清掉残留标记 ${leftovers} 条</span>`);
+  const fileHtml = file => {
+    const own = { ok: 0, check: 0, failed: 0 };
+    for (const cell of file.cells) own[cell.status] += 1;
+    const tally = file.error ? `<span class="unhighlight-file-error">${esc(file.error)}</span>`
+      : file.cells.length ? `✅ ${own.ok}${own.check ? ` · ⚠️ ${own.check}` : ''}${own.failed ? ` · ❌ ${own.failed}` : ''}` : '没有要清的标记';
+    const rows = file.cells.map(cell => {
+      const where = `${cell.sheet}!${cell.addr}`;
+      const link = excelLinkHtml(esc(where), { file: file.name, folder: batchState.folder, sheet: cell.sheet, cell: cell.addr.split(':')[0] });
+      return `<li class="is-${cell.status}"><span aria-hidden="true">${CLEAR_STATUS[cell.status] || ''}</span>${link}<span class="unhighlight-reason">${esc(cell.reason)}</span></li>`;
+    });
+    for (const reason of file.leftover_failed || []) {
+      rows.push(`<li class="is-failed"><span aria-hidden="true">❌</span><span>残留标记</span><span class="unhighlight-reason">删不掉：${esc(reason)}</span></li>`);
+    }
+    return `<details class="unhighlight-file"${trouble(file) ? ' open' : ''}><summary><b>${esc(file.name)}</b><span class="unhighlight-tally">${tally}</span></summary>`
+      + (rows.length ? `<ul>${rows.join('')}</ul>` : '') + '</details>';
+  };
+  const tone = count.failed || errors ? 'error' : count.check ? 'warn' : 'info';
+  $('unhighlightDialog').dataset.tone = tone;
+  $('unhighlightTitle').textContent = tone === 'info' ? '标记已全部清除' : '清除结果：有格子要看一下';
+  $('unhighlightBody').innerHTML = `<p class="unhighlight-summary">${files.length} 份文件　${chips.join('')}</p>`
+    + `<p class="unhighlight-hint">点格子位置可以用 Excel 打开并跳到那一格。⚠️ 和 ❌ 的请人工看一下。</p>`
+    + `<div class="unhighlight-files">${files.map(fileHtml).join('')}</div>`;
+  if (!$('unhighlightDialog').open) $('unhighlightDialog').showModal();
+  $('unhighlightBody').scrollTop = 0;
+  $('unhighlightCloseBtn').focus(); // 不然浏览器把焦点放在第一个文件上，显示一圈焦点框
 }
 
 // 后台任务刚结束且成功：撒花。提交 / 复检时若有暂停的全自动处理会被放回来，任务种类变了也算提交完成
@@ -77,6 +130,7 @@ function renderControls() {
   for (const id of ['startBtn', 'scanOnlyBtn', 'commitBtn', 'folderInput']) $(id).disabled = busy;
   $('unhighlightBtn').disabled = busy || !batchState.highlighted;
   $('unhighlightBtn').textContent = `🧽 清除 Excel 标记颜色${batchState.highlighted ? `（${batchState.highlighted}）` : ''}`;
+  $('unhighlightResultBtn').classList.toggle('hidden', batchState.busy || !unhighlightResult());
   $('commitBtn').disabled = busy || !batchState.cards.length;
   $('largeBtn').disabled = !batchState.cards.length;
   $('largeBtn').title = batchState.cards.length ? '逐张放大查看卡片' : '有待审核卡片后可用';
@@ -502,7 +556,11 @@ async function startJob(url, body = {}) {
   const keeps = batchState.job?.kind === 'batch_scan' && KEEPS_PAUSED_SCAN.has(url);
   if (batchState.job?.status === 'interrupted' && url !== '/api/resume' && !keeps
       && !(await appConfirm('这会替换上次任务的续跑点。已保存的修复和审核标记会保留，继续吗？', { okText: '继续' }))) return;
-  await action(() => post(url, body));
+  const clearing = url === '/api/batch/unhighlight' || (url === '/api/resume' && batchState.job?.kind === 'batch_unhighlight');
+  await action(async () => {
+    await post(url, body);
+    if (clearing) clearPending = true;
+  });
 }
 
 async function startBatch(extra = {}) {
@@ -524,6 +582,8 @@ $('scanOnlyBtn').addEventListener('click', async () => {
 $('unhighlightBtn').addEventListener('click', async () => {
   if (await appConfirm(`去掉当前文件夹 ${batchState.highlighted || 0} 个单元格的标记颜色？\n标记是程序加的条件格式，只删这些规则；单元格本身的颜色和表里原有的条件格式都不动。\n需要先在 Excel 里保存并关闭这些文件。之后提交、复检也不再自动标色，重新开始处理时才按设置标色。`, { title: '清除 Excel 标记颜色', okText: '去掉标记' })) await startJob('/api/batch/unhighlight');
 });
+$('unhighlightResultBtn').addEventListener('click', showUnhighlightResult);
+$('unhighlightCloseBtn').addEventListener('click', () => $('unhighlightDialog').close());
 $('resumeBtn').addEventListener('click', () => startJob('/api/resume'));
 $('pauseBtn').addEventListener('click', () => action(() => post('/api/batch/pause')));
 $('toManualBtn').addEventListener('click', async () => {
