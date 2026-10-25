@@ -199,6 +199,54 @@ def _old_colors(cell: Any) -> dict:
     return {"old_fill": old_fill, "old_font": f"#{font}" if font else ""}
 
 
+SIMILAR_ROWS, SIMILAR_MIN = 200, 0.6
+
+
+def _sheet_words(ws: Any) -> set[str]:
+    """表里前几百行出现过的内容（不管位置），用来认出改过名的表"""
+    words: set[str] = set()
+    for row in ws.iter_rows(max_row=min(ws.max_row, SIMILAR_ROWS), values_only=True):
+        words.update(_text(v).strip() for v in row if _text(v).strip())
+    return words
+
+
+def _match_sheets(current: Any, old: Any) -> dict[str, tuple[Any, str]]:
+    """新版每张表 → (旧版的表, 怎么对上的)。精简 Sheet 会改表名（去掉「新」、日期后缀等），
+    旧版还是原来的名字，所以按名字对不上时再按代码名、再按内容找。
+    认错了也不要紧：后面逐格还要比内容，内容不一样就不改"""
+    found: dict[str, tuple[Any, str]] = {}
+    left = list(old.worksheets)
+    by_name = {_norm(ws.title): ws for ws in left}
+    for ws in current.worksheets:
+        hit = by_name.get(_norm(ws.title))
+        if hit is not None and hit in left:
+            found[ws.title] = (hit, "name")
+            left.remove(hit)
+    rest = [ws for ws in current.worksheets if ws.title not in found]
+
+    def code(ws: Any) -> str:
+        return _norm(ws.sheet_properties.codeName or "")
+
+    for ws in list(rest):
+        same = [o for o in left if code(ws) and code(o) == code(ws)]
+        if len(same) == 1 and sum(1 for w in rest if code(w) == code(ws)) == 1:
+            found[ws.title] = (same[0], "code")
+            left.remove(same[0])
+            rest.remove(ws)
+    if rest and left:
+        old_words = {id(o): _sheet_words(o) for o in left}
+        for ws in rest:
+            words = _sheet_words(ws)
+            scores = sorted(((len(words & old_words[id(o)]) / len(words | old_words[id(o)]), i)
+                             for i, o in enumerate(left) if words | old_words[id(o)]), reverse=True)
+            if scores and scores[0][0] >= SIMILAR_MIN and (len(scores) == 1 or scores[1][0] < scores[0][0]):
+                best = left[scores[0][1]]
+                found[ws.title] = (best, "content")
+                left.remove(best)
+                old_words.pop(id(best))
+    return found
+
+
 def plan_file(path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
     """逐格决定改不改：旧版同一张表、同一地址的格子内容一样才改回旧版的颜色。
     空格子内容一样说明不了什么（插了行、地址对不上时也是空的），还要这一整行的内容都一样。"""
@@ -207,17 +255,20 @@ def plan_file(path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
     current = openpyxl.load_workbook(path, data_only=False)
     old = openpyxl.load_workbook(old_path, data_only=False)
     try:
-        old_sheets = {_norm(ws.title): ws for ws in old.worksheets}
+        matched = _match_sheets(current, old)
         plan = []
         for hit in hits:
             item = {"sheet": hit["sheet"], "addr": hit["addr"], "fill": hit["fill"], "font": hit["font"],
                     "action": "skip", "reason": ""}
             plan.append(item)
             top = hit["addr"].split(":")[0]
-            sheet, old_sheet = current[hit["sheet"]], old_sheets.get(_norm(hit["sheet"]))
+            sheet = current[hit["sheet"]]
+            old_sheet, how = matched.get(hit["sheet"], (None, ""))
             if old_sheet is None:
-                item["reason"] = "旧版里没有这张表"
+                names = "、".join(ws.title for ws in old.worksheets)
+                item["reason"] = f"旧版里找不到这张表（按表名、代码名、内容都对不上；旧版的表：{names}）"
                 continue
+            item["old_sheet"] = old_sheet.title
             cell, old_cell = sheet[top], old_sheet[top]
             item.update(_old_colors(old_cell))
             if _text(cell.value) != _text(old_cell.value):
@@ -228,13 +279,15 @@ def plan_file(path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
                 item["reason"] = "旧版本来就是这个颜色，不是程序标的，不改"
             else:
                 item.update(action="restore", reason="改回旧版的颜色")
+            if how != "name":
+                item["reason"] += f"（旧版表名「{old_sheet.title}」，按{'代码名' if how == 'code' else '内容'}对上）"
         return plan
     finally:
         current.close()
         old.close()
 
 
-def _run_preview(old_root: Path, old_paths: list[Path], files: list[dict]) -> None:
+def _run_preview(old_root: Path, old_paths: list[Path], files: list[dict], folder: str = "") -> None:
     plan_files: list[dict] = []
     try:
         pairs = _pair_files(old_root, old_paths, [f["name"] for f in files])
@@ -259,7 +312,7 @@ def _run_preview(old_root: Path, old_paths: list[Path], files: list[dict]) -> No
     finally:
         with _LOCK:
             _STATUS.update(running=False, done=len(files), current="",
-                           plan={"old_folder": str(old_root), "files": plan_files})
+                           plan={"old_folder": str(old_root), "folder": folder, "files": plan_files})
 
 
 def preview(old_folder: str) -> None:
@@ -278,7 +331,7 @@ def preview(old_folder: str) -> None:
     with _LOCK:
         _STATUS.pop("plan", None)
         _STATUS.pop("applied", None)
-    threading.Thread(target=_run_preview, args=(old_root, old_paths, files), name="对比旧版", daemon=True).start()
+    threading.Thread(target=_run_preview, args=(old_root, old_paths, files, result["folder"]), name="对比旧版", daemon=True).start()
 
 
 XL_PATTERN_NONE, XL_PATTERN_SOLID = -4142, 1
@@ -301,7 +354,7 @@ def _read_old(excel: Any, old_path: str, cells: list[dict]) -> dict[str, dict | 
         for item in cells:
             key = f"{item['sheet']}!{item['addr']}"
             try:
-                source = sheets[_norm(item["sheet"])].Range(item["addr"].split(":")[0])
+                source = sheets[_norm(item.get("old_sheet", item["sheet"]))].Range(item["addr"].split(":")[0])
                 interior = source.Interior
                 found[key] = {"formula": _text(source.Formula), "pattern": int(interior.Pattern),
                               "color": interior.Color, "tint": interior.TintAndShade,
@@ -365,7 +418,7 @@ def apply_file(excel: Any, path: str, old_path: str, cells: list[dict]) -> list[
     return done
 
 
-def _run_apply(files: list[dict]) -> None:
+def _run_apply(files: list[dict], folder: str = "") -> None:
     from core.excel_ops import close_saved_workbooks, quit_background_excel, start_background_excel
 
     applied: list[dict] = []
@@ -402,7 +455,7 @@ def _run_apply(files: list[dict]) -> None:
         ok = sum(1 for f in applied for c in f["cells"] if c["status"] == "ok")
         wf.log_msg(f"🎨 改回旧版颜色完成：{ok} 格")
         with _LOCK:
-            _STATUS.update(running=False, done=len(files), current="", applied={"files": applied})
+            _STATUS.update(running=False, done=len(files), current="", applied={"folder": folder, "files": applied})
 
 
 def apply() -> None:
@@ -422,7 +475,7 @@ def apply() -> None:
     with _LOCK:
         _STATUS.pop("plan", None)  # 一份清单只执行一次
     wf.log_msg(f"🎨 开始改回旧版颜色：{len(files)} 份文件，{sum(len(f['cells']) for f in files)} 格")
-    threading.Thread(target=_run_apply, args=(files,), name="改回旧版颜色", daemon=True).start()
+    threading.Thread(target=_run_apply, args=(files, plan.get("folder", "")), name="改回旧版颜色", daemon=True).start()
 
 
 def status() -> dict:
