@@ -131,7 +131,11 @@ function renderControls() {
   $('unhighlightBtn').disabled = busy || !batchState.highlighted;
   $('unhighlightBtn').textContent = `🧽 清除 Excel 标记颜色${batchState.highlighted ? `（${batchState.highlighted}）` : ''}`;
   $('unhighlightResultBtn').classList.toggle('hidden', batchState.busy || !unhighlightResult());
-  $('commitBtn').disabled = busy || !batchState.cards.length;
+  const plan = commitPlan();
+  const offered = plan.cards.length + plan.skipped.length;
+  $('commitBtn').disabled = busy || !offered;
+  $('commitBtn').textContent = selectedFilter === 'all' ? `✓ 确认并处理全部标记${offered ? `（${offered}）` : ''}`
+    : `✓ 只处理${COLOR_NAMES[selectedFilter]}色标记（${offered}）`;
   $('largeBtn').disabled = !batchState.cards.length;
   $('largeBtn').title = batchState.cards.length ? '逐张放大查看卡片' : '有待审核卡片后可用';
   $('openAllBtn').disabled = busy || !manualCards().length;
@@ -710,6 +714,22 @@ $('highlightFont').addEventListener('input', event => setHighlight({ ...highligh
 // 暂停的全自动处理在提交、复检、打开文件后会放回来，不算替换续跑点
 const KEEPS_PAUSED_SCAN = new Set(['/api/batch/commit', '/api/batch/recheck', '/api/batch/open', '/api/batch/unhighlight']);
 const waitingCard = card => card.waiting ?? card.message === '等待自动处理';
+const COLOR_NAMES = { blue: '蓝', green: '绿', yellow: '黄' };
+const rowKey = card => [card.wb_path, card.sheet_name, card.excel_row, card.kind === 'pagebreak'].join('\0');
+// 和后端 commit_selection 一致：筛选某种颜色时只交这种颜色；同一行混着别的颜色、又共用行高修改的整行先不交
+function commitPlan(color = selectedFilter) {
+  const ready = batchState.cards.filter(c => !waitingCard(c));
+  if (color === 'all') return { cards: ready, skipped: [] };
+  const rows = new Map();
+  for (const card of ready) rows.set(rowKey(card), [...(rows.get(rowKey(card)) || []), card]);
+  const cards = [], skipped = [];
+  for (const peers of rows.values()) {
+    const own = peers.filter(c => c.color === color);
+    const linked = peers.some(c => c.row_height?.saved || c.page_break?.saved || (c.color === 'blue' && c.adoptable));
+    (linked && own.length < peers.length ? skipped : cards).push(...own);
+  }
+  return { cards, skipped };
+}
 
 async function startJob(url, body = {}) {
   const keeps = batchState.job?.kind === 'batch_scan' && KEEPS_PAUSED_SCAN.has(url);
@@ -759,16 +779,27 @@ $('toAutoBtn').addEventListener('click', async () => {
   await startJob('/api/batch/to_auto', $('highlightAuto').checked ? { highlight: { ...highlight } } : {});
 });
 $('commitBtn').addEventListener('click', async () => {
-  const waiting = batchState.cards.filter(waitingCard).length;
-  const cards = batchState.cards.filter(c => !waitingCard(c));
-  if (!cards.length) { $('errorText').textContent = '卡片都还没轮到自动处理，暂时没有可提交的标记'; return; }
-  const count = color => cards.filter(c => c.color === color).length;
+  const color = selectedFilter;
+  const only = color === 'all' ? '' : COLOR_NAMES[color];
+  const waiting = batchState.cards.filter(c => waitingCard(c) && (!only || c.color === color)).length;
+  const { cards, skipped } = commitPlan(color);
+  const skippedText = skipped.length ? `\n\n另有 ${skipped.length} 张${only}卡和别的颜色的卡在同一行：一行的行高是整行共用的，只提交${only}卡会连带改动同行的其他卡，这次先不提交。把同一行改成同一种颜色，或切到「全部」一起提交（同行颜色不一致时整行转黄）。` : '';
+  if (!cards.length) {
+    $('errorText').textContent = skipped.length ? skippedText.trim()
+      : waiting ? '卡片都还没轮到自动处理，暂时没有可提交的标记' : `没有${only}色卡片可提交`;
+    return;
+  }
+  const count = c => cards.filter(card => card.color === c).length;
   const unmarked = cards.filter(c => !c.marked && !c.finalized).length;
-  const message = `将提交 ${cards.length} 张卡片：\n蓝（保留修复）${count('blue')}　绿（还原并忽略）${count('green')}　黄（还原后人工）${count('yellow')}`
+  const message = (only ? `只提交 ${cards.length} 张${only}色卡片（${REVIEW_LABELS[color].split(' · ')[1]}），其他颜色这次不动。`
+                       : `将提交 ${cards.length} 张卡片：\n蓝（保留修复）${count('blue')}　绿（还原并忽略）${count('green')}　黄（还原后人工）${count('yellow')}`)
     + (cards.some(c => c.color === 'blue' && c.adoptable) ? `\n\n其中 ${cards.filter(c => c.color === 'blue' && c.adoptable).length} 张蓝色是自动检查没通过、由你看图认可的：会按最后一次尝试的行高写入原文件。` : '')
     + (unmarked ? `\n\n其中 ${unmarked} 张没有手动改过颜色，将按当前颜色处理。` : '')
+    + skippedText
     + (waiting ? `\n\n另有 ${waiting} 张还没轮到自动处理，这次不提交，继续全自动处理后再审核。` : '') + '\n\n确定提交吗？';
-  if (await appConfirm(message, { title: '确认并处理标记', okText: '提交', tone: 'info' })) await startJob('/api/batch/commit', { card_ids: cards.map(c => c.id) });
+  if (await appConfirm(message, { title: only ? `只处理${only}色标记` : '确认并处理全部标记', okText: '提交', tone: 'info' })) {
+    await startJob('/api/batch/commit', { card_ids: cards.map(c => c.id), color });
+  }
 });
 $('abandonBtn').addEventListener('click', async () => {
   if (await appConfirm('放弃上次未完成的写入？\n不会再改动这个文件，相关单元格转为黄色人工处理，请在 Excel 中核对这一行的行高。', { title: '放弃这次写入', okText: '放弃写入', tone: 'danger' })) action(() => post('/api/batch/abandon'));

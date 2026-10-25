@@ -122,6 +122,32 @@ class BatchTests(unittest.TestCase):
         self.wf.STATE["job"].update(kind="batch_commit", options={"card_ids": [c["id"] for c in cards]})
         batch._commit_review(self.excel)
 
+    def test_commit_by_color_keeps_other_colors_and_mixed_rows(self):
+        """筛选黄色只提交黄卡：别的颜色不动；同行混着蓝卡（共用已写入的行高）的整行先不交，不连带转黄"""
+        mixed_yellow, _ = self.add_card("A5", color="yellow")
+        mixed_blue, _ = self.add_card("B5", color="blue")
+        alone, _ = self.add_card("A6", color="yellow", row=6)
+        self.heights[7] = 30.0
+        other, _ = self.add_card("A7", color="green", row=7)
+        self.wf.STATE["job"].update(kind="batch_commit", options={
+            "card_ids": [mixed_yellow["id"], alone["id"]], "color": "yellow"})
+        with patch.object(batch, "_finish_pending"), patch.object(batch, "_refresh"):
+            batch._commit_review(self.excel)
+        self.assertEqual(self.wf.STATE["job"]["options"]["commit_card_ids"], [alone["id"]])
+        self.assertTrue(alone["finalized"] and alone["manual"])
+        for card, color in ((mixed_yellow, "yellow"), (mixed_blue, "blue"), (other, "green")):
+            self.assertEqual((card["color"], card.get("finalized", False), card.get("conflict", False)),
+                             (color, False, False))
+
+    def test_commit_selection_by_color_on_untouched_rows(self):
+        """行高没写入过的行，各格互不影响：只挑出这种颜色的卡"""
+        yellow, _ = self.add_card("A5", color="yellow")
+        blue, _ = self.add_card("B5", color="blue")
+        batch._data()["rows"][batch._key(self.path, "S1", 5)]["saved"] = False
+        self.assertEqual(batch.commit_selection([yellow["id"], blue["id"]], "yellow"), ([yellow["id"]], []))
+        self.assertEqual(batch.commit_selection([yellow["id"]], "blue"), ([blue["id"]], []))
+        self.assertEqual(sorted(batch.commit_selection([yellow["id"]])[0]), sorted([yellow["id"], blue["id"]]))
+
     def test_commit_skips_cards_not_yet_processed(self):
         """暂停后提交：还没轮到的卡不能被转成人工项，否则以后全自动不会再修它们"""
         done, _ = self.add_card("A5", color="blue")

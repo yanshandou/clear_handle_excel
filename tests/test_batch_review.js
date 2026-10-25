@@ -251,3 +251,31 @@ test('handed-over cards explain they were not tried and can go back to automatic
   await p.elements.get('toAutoBtn').listeners.click();
   assert.equal(p.requests.at(-1).url, '/api/batch/to_auto');
 });
+
+test('commit follows the selected filter color and names it on the button', async () => {
+  const p = page();
+  p.run(`batchState.cards.push({id:'g', seq:3, wb_name:'book.xlsx', sheet_name:'Sheet', cell_addr:'A8', excel_row:8, color:'green', images:{}});
+    appConfirm = async text => { globalThis.asked = text; return true; }; selectedFilter = 'yellow'; renderControls();`);
+  assert.equal(p.elements.get('commitBtn').textContent, '✓ 只处理黄色标记（1）');
+  await p.elements.get('commitBtn').listeners.click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(p.run('globalThis.asked'), /只提交 1 张黄色卡片/);
+  assert.equal(JSON.stringify(p.requests.at(-1).payload), '{"card_ids":["b"],"color":"yellow"}');
+  p.run(`selectedFilter = 'all'; renderControls();`);
+  assert.equal(p.elements.get('commitBtn').textContent, '✓ 确认并处理全部标记（3）');
+});
+
+test('a single-color commit leaves rows mixed with other colors for later', async () => {
+  const p = page();
+  p.run(`batchState.cards = [
+      {id:'y1', seq:1, wb_path:'b', sheet_name:'S', excel_row:5, cell_addr:'A5', color:'yellow', row_height:{saved:true}},
+      {id:'b1', seq:2, wb_path:'b', sheet_name:'S', excel_row:5, cell_addr:'B5', color:'blue', row_height:{saved:true}},
+      {id:'y2', seq:3, wb_path:'b', sheet_name:'S', excel_row:6, cell_addr:'A6', color:'yellow', row_height:{saved:true}},
+      {id:'y3', seq:4, wb_path:'b', sheet_name:'S', excel_row:7, cell_addr:'A7', color:'yellow'},
+      {id:'b3', seq:5, wb_path:'b', sheet_name:'S', excel_row:7, cell_addr:'B7', color:'blue'}];
+    appConfirm = async text => { globalThis.asked = text; return true; }; selectedFilter = 'yellow';`);
+  await p.elements.get('commitBtn').listeners.click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(p.run('globalThis.asked'), /另有 1 张黄卡和别的颜色的卡在同一行/);
+  assert.equal(JSON.stringify(p.requests.at(-1).payload.card_ids), '["y2","y3"]');
+});

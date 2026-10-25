@@ -1026,15 +1026,47 @@ def _timing_line(first: dict, total: float, timing: dict, check: float, checking
     return f"⏱ {first['wb_name']} / {first['sheet_name']} 行{first['excel_row']}：共 {total:.1f} 秒；" + "，".join(parts)
 
 
+COLOR_NAMES = {"blue": "蓝", "green": "绿", "yellow": "黄"}
+
+
+def _linked_row(rid: str, peers: list[dict]) -> bool:
+    """同一行的卡共用一次行高修改：已写入原文件、或有人工认可要写入时，整行只能一起保留或一起还原"""
+    row = _data()["rows"].get(rid)
+    return bool((row and row["saved"]) or any(_adopting(c) for c in peers))
+
+
+def commit_selection(ids: list[str], color: str | None = None) -> tuple[list[str], list[str]]:
+    """要提交的卡：按行补齐同行的卡（行高整行共用）。还没轮到自动处理的卡不提交：
+    提交会把它们转成人工项，之后再跑全自动也不会修了。
+    color 是筛选只提交一种颜色：只收这种颜色的卡；同行混着别的颜色、又共用行高修改的整行跳过，
+    不替用户把别的颜色转黄。返回 (提交的卡, 因同行混色跳过的卡)。"""
+    data = _data()
+    rows: dict[str, list[dict]] = {}
+    selected = {_rid(data["cards"][cid]) for cid in ids if not _waiting(data["cards"][cid])}
+    for card in data["cards"].values():
+        if not card.get("dismissed") and not _waiting(card) and _rid(card) in selected:
+            rows.setdefault(_rid(card), []).append(card)
+    chosen: list[str] = []
+    skipped: list[str] = []
+    for rid, peers in rows.items():
+        if not color:
+            chosen.extend(c["id"] for c in peers)
+        elif _linked_row(rid, peers) and any(c["color"] != color for c in peers):
+            skipped.extend(c["id"] for c in peers if c["color"] == color)
+        else:
+            chosen.extend(c["id"] for c in peers if c["color"] == color)
+    return chosen, skipped
+
+
 def _commit_review(excel: Any) -> None:
     job = wf.STATE["job"]
     data = _data()
     if "commit_card_ids" not in job["options"]:
-        # 还没轮到自动处理的卡不提交：提交会把它们转成人工项，之后再跑全自动也不会修了
-        cards = [data["cards"][cid] for cid in job["options"]["card_ids"] if not _waiting(data["cards"][cid])]
-        selected_rows = {_rid(c) for c in cards}
-        job["options"]["commit_card_ids"] = [c["id"] for c in data["cards"].values()
-            if not c.get("dismissed") and not _waiting(c) and _rid(c) in selected_rows]
+        job["options"]["commit_card_ids"], skipped = commit_selection(job["options"]["card_ids"],
+                                                                      job["options"].get("color"))
+        if skipped:
+            wf.log_msg(f"⏭ {len(skipped)} 张{COLOR_NAMES[job['options']['color']]}卡和其他颜色的卡在同一行，"
+                   "整行行高共用，这次不提交")
     # 提交计划固定下来；即使保存还原后、复检前退出，已收起的绿/蓝卡也仍会完成该文件的复检。
     job["options"]["card_ids"] = list(job["options"]["commit_card_ids"])
     cards = [data["cards"][cid] for cid in job["options"]["commit_card_ids"]]
@@ -1045,7 +1077,7 @@ def _commit_review(excel: Any) -> None:
     # 人工认可的加高也改整行行高：同行颜色不一致同样整行转黄
     for rid, peers in by_row.items():
         row = data["rows"].get(rid)
-        if ((row and row["saved"]) or any(_adopting(c) for c in peers)) and len({c["color"] for c in peers}) > 1:
+        if _linked_row(rid, peers) and len({c["color"] for c in peers}) > 1:
             for card in peers:
                 card.update(color="yellow", conflict=True, message="同行存在不同处理意见，整行还原后交给人工")
     wf._persist_state()
