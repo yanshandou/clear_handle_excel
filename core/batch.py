@@ -1235,8 +1235,8 @@ def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:
 
 
 def _open_without_marks(excel: Any, path: str) -> Any:
-    """复检用：只读打开原文件，在内存里把标过的颜色全部还原（不保存），检测的就是最后交出去的样子。
-    没标过颜色返回 None，照常由检测自己打开。"""
+    """复检用：只读打开原文件，在内存里把标记全部去掉（删掉我们加的条件格式规则；旧版本改过的底色还原），
+    不保存，检测的就是最后交出去的样子。没标过返回 None，照常由检测自己打开。"""
     with wf.STATE_LOCK:
         marks = [copy.deepcopy(m) for m in _marks().values() if m["path"] == path]
     if not marks:
@@ -1244,7 +1244,14 @@ def _open_without_marks(excel: Any, path: str) -> Any:
     book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0, ReadOnly=True)
     failed: list[str] = []
     try:
+        if any(_is_rule(m) for m in marks):
+            try:
+                failed += list(_drop_rules(book, set())[2].values())
+            except Exception as err:
+                failed.append(str(err))
         for mark in marks:
+            if _is_rule(mark):
+                continue
             try:
                 found = _locate_mark(book, mark)
                 if found is not None and found[0] is not None:
@@ -1256,7 +1263,7 @@ def _open_without_marks(excel: Any, path: str) -> Any:
         book.Close(SaveChanges=False)
         raise
     if failed:
-        wf.log_msg(f"⚠️ {Path(path).name}：{len(failed)} 格标记颜色没能在检测前去掉，带着标记色检测："
+        wf.log_msg(f"⚠️ {Path(path).name}：{len(failed)} 处标记没能在检测前去掉，带着标记色检测："
                    + "；".join(failed[:5]) + ("……" if len(failed) > 5 else ""))
     return book
 
@@ -1434,6 +1441,7 @@ def _find_sheet(book: Any, name: str) -> Any:
 
 
 def _mark_name(cid: str) -> str:
+    """标记的标识：新方式写在条件格式规则的公式里，旧方式是隐藏名称"""
     return f"CHE_MARK_{cid[:20]}"
 
 
@@ -1605,71 +1613,91 @@ def _col_letters(col: int) -> str:
     return letters
 
 
-def _whole_area(area: Any) -> dict | None:
-    """合并区域里每格底色、字色都一样（绝大多数情况）时整块读一次、记一条，
-    不用一格一格跨进程读（方眼紙的合并区域常有几十格，问题格多的文件会慢很多）。颜色不一致返回 None。"""
+XL_EXPRESSION = 2
+MARK_TAG = re.compile(r"CHE_MARK_[0-9A-Za-z]+")
+
+
+def _is_rule(mark: dict) -> bool:
+    """新方式的记录：问题格上加一条条件格式规则，单元格本身的颜色不动。旧记录（改单元格底色）带 cells"""
+    return "tag" in mark
+
+
+def _add_rule(area: Any, tag: str, mark: dict) -> None:
+    """给问题格（合并格整块）加一条永远成立的条件格式规则，公式里带这张卡的标识：
+    =N("CHE_MARK_…")=0，N(文字) 永远是 0。调到最前面并勾「如果为真则停止」，表里原有的条件格式也盖得住。
+    规则跟着格子走（插删行列、剪切移动），清除时按标识找，不用记原色、不用找格子。"""
+    rule = area.FormatConditions.Add(Type=XL_EXPRESSION, Formula1=f'=N("{tag}")=0')
+    rule.Interior.Color = mark["fill"]
+    rule.Font.Color = mark["font"]
+    rule.StopIfTrue = True
+    rule.SetFirstPriority()  # 最后再调顺序：先调的话，有的 Excel 版本手里的规则对象会指到别的规则上
+
+
+def _rule_tag(rule: Any) -> str | None:
     try:
-        if ":" not in str(area.Address):
-            return None  # 单格照常读
-        interior = area.Interior
-        values = [interior.Pattern, interior.Color, interior.TintAndShade, area.Font.Color]
-        if any(v is None for v in values):
-            return None
-        return {"addr": str(area.Address), "pattern": int(values[0]), "color": int(values[1]),
-                "tint": float(values[2] or 0), "font": int(values[3])}
+        formula = str(rule.Formula1)  # 色阶、数据条这类规则没有公式，读了会报错
     except Exception:
         return None
+    found = MARK_TAG.search(formula)
+    return found.group(0) if found else None
 
 
-def _apply_cells(sheet: Any, card: dict, style: dict) -> dict:
-    """记下合并区域里每一格原来的底色、字色，再标色。只改颜色，不改字体粗细大小，不影响排版和分页。
-    字色混合（同一格里有几种颜色的文字）时不改字色，免得还原时丢掉原来的分段颜色。"""
-    addr = card["cell_addr"].split(":")[0]  # 分页切开的卡片是整个合并区域（A10:H12），按左上角找合并区域
-    area = sheet.Range(addr).MergeArea
-    mark = {"path": card["wb_path"], "sheet": card["sheet_name"], "addr": addr,
-            "fill": _excel_color(style["fill"]), "font": _excel_color(style["font"]), "cells": []}
-    try:
-        mark["value"] = str(sheet.Range(addr).Formula)  # 兜底：格子挪了位置又找不到时按内容认
-    except Exception:
-        pass
-    whole = _whole_area(area)
-    if whole is not None:
-        mark["cells"].append(whole)
-        return mark
-    for cell in area.Cells:
-        interior, font = cell.Interior, cell.Font.Color
-        mark["cells"].append({"addr": cell.Address, "pattern": int(interior.Pattern), "color": int(interior.Color),
-                              "tint": float(interior.TintAndShade or 0),
-                              "font": None if font is None else int(font)})
-    return mark
+def _drop_rules(book: Any, keep: set[str], tick: Callable[[], None] | None = None
+                ) -> tuple[set[str], dict[str, int], dict[str, str]]:
+    """整份文件每张表的条件格式过一遍：公式里带我们标识、又不在 keep 里的规则删掉，原有的规则和顺序都不动。
+    复制粘贴带到别处、拆成几条的，标识一样，一起删；表改了名也照样找到。
+    返回 (还留着的标识, 删掉的标识 -> 条数, 删不掉的标识 -> 原因)。"""
+    present: set[str] = set()
+    dropped: dict[str, int] = {}
+    failed: dict[str, str] = {}
+    for sheet in book.Worksheets:
+        rules = sheet.Cells.FormatConditions
+        for i in range(int(rules.Count), 0, -1):  # 从后往前删，前面的序号不变
+            rule = rules.Item(i)
+            tag = _rule_tag(rule)
+            if tag is None:
+                continue
+            if tag in keep:
+                present.add(tag)
+                continue
+            try:
+                rule.Delete()
+                dropped[tag] = dropped.get(tag, 0) + 1
+            except Exception as err:  # 例如工作表受保护
+                failed[tag] = f"{sheet.Name}：{err}"
+        if tick is not None:
+            tick()
+    return present, dropped, failed
 
 
 def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = False,
                      tick: Callable[[], None] | None = None) -> None:
-    """让原 Excel 里的标色和卡片一致：只扫描过的文件里，黄色人工待处理的格子标色；
-    复检通过（变蓝）、提交为蓝 / 绿、或要求清除时还原原来的颜色。打开一次、保存一次。
-    tick：每处理一格告诉看门狗还在动，问题格很多的大文件标色要好几分钟，不会被当成 Excel 卡死。"""
+    """让原 Excel 里的标记和卡片一致：黄色人工待处理的格子加一条条件格式规则；
+    复检通过（变蓝）、提交为蓝 / 绿、或要求清除时把规则删掉。打开一次、保存一次。
+    旧版本改过单元格底色的记录照旧还原原来的颜色。
+    tick：每处理一格告诉看门狗还在动，问题格很多的大文件要好几分钟，不会被当成 Excel 卡死。"""
     with wf.STATE_LOCK:
         data, marks = _data(), _marks()
         style = data.get("highlight_files", {}).get(path)
         cards = [c for c in data["cards"].values() if c["wb_path"] == path]
         want = set() if clear else _wanted_marks(path)
         have = {cid for cid, m in marks.items() if m["path"] == path}
-        # 没确认存进文件的记录（上次标色被打断，或旧版本没记这一项）：打开文件看一眼颜色还在不在
+        # 没确认存进文件的记录（上次标色被打断，或旧版本没记这一项）：打开文件看一眼标记还在不在
         unsure = sorted(cid for cid in have if not marks[cid].get("saved"))
         add = [c for c in cards if c["id"] in want - have]
         remove = sorted(have - want)
     if not add and not remove and not unsure:
         return
     _check_file(path)
-    debug_log.event("🎨 同步标色", 文件=Path(path).name, 清除=clear, 要标=len(add), 要还原=len(remove),
+    debug_log.event("🎨 同步标色", 文件=Path(path).name, 清除=clear, 要标=len(add), 要去掉=len(remove),
                     待核对=len(unsure), 样式=style or "-")
     app = excel_for()
     book = open_workbook_checked(app, str(Path(path).resolve()), UpdateLinks=0)
     added: dict[str, dict] = {}
     failed: dict[str, str] = {}
-    deleted = restored = 0
-    stuck: list[str] = []  # 还原时出错的记录，留着下次再试
+    deleted = restored = unmarked = 0
+    leftovers: dict[str, int] = {}
+    stuck: list[str] = []  # 去掉 / 还原时出错的记录，留着下次再试
     book_name, last_log = Path(path).name, time.monotonic()
 
     def step(what: str, done: int, total: int) -> None:
@@ -1687,9 +1715,33 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
             pass
         if book.ReadOnly:
             raise ValueError(f"{Path(path).name} 以只读方式打开，未能标色")
+        # 条件格式规则：留下还要标的，其余带标识的全部删掉（包括崩溃留下的、复制粘贴带出去的）
+        keep = {marks[cid]["tag"] for cid in have if cid not in remove and _is_rule(marks[cid])}
+        present, dropped, drop_failed = _drop_rules(book, keep, tick)
+        ours = {marks[cid]["tag"]: cid for cid in remove if _is_rule(marks[cid])}
+        for tag, cid in ours.items():
+            if tag in drop_failed:
+                stuck.append(cid)
+                wf.log_msg(f"⚠️ {book_name} / {marks[cid]['sheet']}!{marks[cid]['addr']} 未能去掉标记，下次再试："
+                           f"{drop_failed[tag]}")
+            else:
+                unmarked += 1  # 规则被人手动删掉的也算：本来就没东西要清
+            debug_log.event("🧽 去掉标记", 位置=f"{marks[cid]['sheet']}!{marks[cid]['addr']}", 标识=tag,
+                            条数=dropped.get(tag, 0), 出错=drop_failed.get(tag, "-"))
+        for tag, count in dropped.items():
+            if tag not in ours:
+                leftovers[tag] = count
+        if leftovers:
+            debug_log.event("🧹 残留标记", 标识=list(leftovers)[:10], 条数=sum(leftovers.values()))
+        left_failed = [reason for tag, reason in drop_failed.items() if tag not in ours]
+        if left_failed:
+            wf.log_msg(f"⚠️ {book_name}：{len(left_failed)} 条残留标记没能去掉：" + "；".join(left_failed[:5]))
         lost = []
         for i, cid in enumerate(unsure, 1):
-            if _still_marked(book, marks[cid]):
+            if cid in remove and _is_rule(marks[cid]):
+                continue  # 本来就要去掉
+            still = marks[cid]["tag"] in present if _is_rule(marks[cid]) else _still_marked(book, marks[cid])
+            if still:
                 marks[cid]["saved"] = True
             else:
                 lost.append(cid)
@@ -1708,48 +1760,47 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                 sheets[name] = _find_sheet(book, name)
             return sheets[name]
 
+        areas: dict[str, Any] = {}
         for i, card in enumerate(add, 1):
-            step("记下原来的颜色", i, len(add))
+            step("找问题格", i, len(add))
             sheet = sheet_of(card["sheet_name"])
             if sheet is None:
                 failed[card["id"]] = f"工作表「{card['sheet_name']}」已不在文件里，可能已被删除或改名"
                 continue
             try:
-                added[card["id"]] = _apply_cells(sheet, card, style)
-                added[card["id"]]["name"] = _mark_name(card["id"])
-                debug_log.event("🎨 标色", 位置=f"{card['sheet_name']}!{added[card['id']]['addr']}",
-                                原色=[(c["addr"], c.get("pattern"), c.get("color"), c.get("font"))
-                                      for c in added[card["id"]]["cells"][:4]],
-                                格数=len(added[card["id"]]["cells"]))
+                # 分页切开的卡片是整个合并区域（A10:H12），按左上角找合并区域
+                areas[card["id"]] = area = sheet.Range(card["cell_addr"].split(":")[0]).MergeArea
+                added[card["id"]] = {"path": card["wb_path"], "sheet": card["sheet_name"], "addr": str(area.Address),
+                                     "tag": _mark_name(card["id"]), "fill": _excel_color(style["fill"]),
+                                     "font": _excel_color(style["font"])}
             except Exception as err:
                 failed[card["id"]] = str(err)
                 debug_log.event("❌ 标色失败", 位置=f"{card['sheet_name']}!{card.get('cell_addr')}", 原因=err)
                 debug_log.exception(err, "标色")
         with wf.STATE_LOCK:
-            # 先记下原来的颜色再改、再保存：中途出错时记录还在，之后还能还原（不是标记颜色的格子不会被改）
+            # 先记下再加规则、再保存：中途出错时记录还在，之后按标识还能删掉
             for mark in added.values():
                 mark["saved"] = False  # 保存成功后才算标上了
             marks.update(added)
             wf._persist_state()
-        for i, mark in enumerate(added.values(), 1):
+        for i, (cid, mark) in enumerate(list(added.items()), 1):
             step("标色", i, len(added))
-            sheet = sheet_of(mark["sheet"])
-            area = sheet.Range(mark["addr"]).MergeArea
             try:
-                # 隐藏名称跟着格子走：人工插删行列、改表名后，Excel 会自动更新它指向的位置，还原时按它找到格子
-                _delete_name(book, mark["name"])
-                book.Names.Add(Name=mark["name"], RefersTo=f"={_sheet_ref(sheet.Name)}!{area.Address}", Visible=False)
-            except Exception:
-                mark.pop("name", None)  # 建不了名称就只能按原地址还原
-            area.Interior.Pattern = XL_PATTERN_SOLID
-            area.Interior.Color = mark["fill"]
-            for cell in mark["cells"]:
-                if cell["font"] is not None:
-                    sheet.Range(cell["addr"]).Font.Color = mark["font"]
+                _add_rule(areas[cid], mark["tag"], mark)
+                debug_log.event("🎨 标色", 位置=f"{mark['sheet']}!{mark['addr']}", 标识=mark["tag"])
+            except Exception as err:  # 例如工作表受保护
+                failed[cid] = str(err)
+                with wf.STATE_LOCK:
+                    marks.pop(cid, None)
+                del added[cid]
+                debug_log.event("❌ 标色失败", 位置=f"{mark['sheet']}!{mark['addr']}", 原因=err)
+                debug_log.exception(err, "标色")
+        # 旧版本改过单元格底色的记录：照旧还原原来的颜色
         gone: dict[str, int] = {}
         missed: list[dict] = []  # 没在原位置找到标记色的记录，留给下面的兜底检查
-        for i, cid in enumerate(remove, 1):
-            step("还原颜色", i, len(remove))
+        old = [cid for cid in remove if not _is_rule(marks[cid])]
+        for i, cid in enumerate(old, 1):
+            step("还原颜色", i, len(old))
             mark = marks[cid]
             try:
                 found = _locate_mark(book, mark)
@@ -1775,12 +1826,12 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                 continue
             _delete_name(book, mark.get("name"))
         if missed:
-            kept = [m for cid, m in marks.items() if m["path"] == path and cid not in remove]
+            kept = [m for cid, m in marks.items() if m["path"] == path and cid not in remove and not _is_rule(m)]
             _sweep_leftover_marks(book, path, missed, kept)
         for name, count in gone.items():
             wf.log_msg(f"ℹ️ {Path(path).name}：工作表「{name}」已不在文件里（被删除或改名），"
                        f"跳过还原 {count} 格标记颜色；如果是改名，请在新表里手动去掉标记色")
-        if added or remove:  # 只核对了上次的标色、没有要改的：不保存，文件保持原样
+        if added or remove or dropped:  # 只核对了上次的标色、没有要改的：不保存，文件保持原样
             if tick is not None:
                 tick()
             normalize_workbook_view(app, book)
@@ -1803,10 +1854,14 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                 card["message"] = f"未能在 Excel 中标色（{error}），请按截图查找后人工处理"
         wf._persist_state()
     parts = [f"标色 {len(added)} 格"] if added else []
+    if unmarked:
+        parts.append(f"去掉标记 {unmarked} 格")
+    if leftovers:
+        parts.append(f"清掉残留标记 {sum(leftovers.values())} 条")
     if restored:
-        parts.append(f"还原颜色 {restored} 格")  # 只算真的改回去的格子
+        parts.append(f"还原颜色 {restored} 格")  # 只算真的改回去的格子（旧版本改过底色的）
     if stuck:
-        parts.append(f"{len(stuck)} 格还原出错，记录留着下次再试")
+        parts.append(f"{len(stuck)} 格去掉标记出错，记录留着下次再试")
     if deleted:
         parts.append(f"{deleted} 格标色的格子已被删掉，不用还原")
     if failed:
