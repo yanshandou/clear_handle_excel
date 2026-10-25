@@ -522,7 +522,7 @@ $('scanOnlyBtn').addEventListener('click', async () => {
   await startBatch({ scan_only: true, highlight: { ...highlight } });
 });
 $('unhighlightBtn').addEventListener('click', async () => {
-  if (await appConfirm(`把当前文件夹 ${batchState.highlighted || 0} 个标过颜色的单元格还原成原来的颜色？\n需要先在 Excel 里保存并关闭这些文件；你自己改过颜色的格子不动。之后提交、复检也不再自动标色，重新开始处理时才按设置标色。`, { title: '清除 Excel 标记颜色', okText: '还原颜色' })) await startJob('/api/batch/unhighlight');
+  if (await appConfirm(`去掉当前文件夹 ${batchState.highlighted || 0} 个单元格的标记颜色？\n标记是程序加的条件格式，只删这些规则；单元格本身的颜色和表里原有的条件格式都不动。\n需要先在 Excel 里保存并关闭这些文件。之后提交、复检也不再自动标色，重新开始处理时才按设置标色。`, { title: '清除 Excel 标记颜色', okText: '去掉标记' })) await startJob('/api/batch/unhighlight');
 });
 $('resumeBtn').addEventListener('click', () => startJob('/api/resume'));
 $('pauseBtn').addEventListener('click', () => action(() => post('/api/batch/pause')));
