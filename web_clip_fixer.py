@@ -337,7 +337,12 @@ class WebHandler(BaseHTTPRequestHandler):
             if action == "recheck" and batch.enqueue_recheck(ids):
                 self._send_json({"ok": True, "queued": True})
             else:
-                self._start_job(f"batch_{action}", {"card_ids": ids})
+                options = {"card_ids": ids}
+                if action == "commit" and payload.get("color") not in (None, "all"):
+                    if payload["color"] not in batch.COLOR_NAMES:
+                        raise ValueError("请选择要提交的颜色")
+                    options["color"] = payload["color"]
+                self._start_job(f"batch_{action}", options)
         elif self.path == "/api/scan":
             folder = _require_folder(payload)
             self._start_job("scan", {
