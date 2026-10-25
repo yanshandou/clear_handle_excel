@@ -295,6 +295,12 @@ class WebHandler(BaseHTTPRequestHandler):
         elif self.path == "/api/batch/find_marks":
             mark_finder.start(_require_folder(payload), payload.get("colors"))
             self._send_json({"ok": True})
+        elif self.path == "/api/batch/find_marks/preview":
+            mark_finder.preview(_require_folder(payload))
+            self._send_json({"ok": True})
+        elif self.path == "/api/batch/find_marks/apply":
+            mark_finder.apply()
+            self._send_json({"ok": True})
         elif self.path == "/api/batch/mark":
             batch.mark(payload.get("id"), payload.get("color"))
             self._send_json({"ok": True})

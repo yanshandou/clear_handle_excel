@@ -521,23 +521,115 @@ async function findMarks() {
   const colors = [...HIGHLIGHT_PRESETS.map(p => ({ fill: p.fill, font: p.font })), { ...highlight }];
   $('errorText').textContent = '';
   try { await post('/api/batch/find_marks', { folder, colors }); } catch (error) { $('errorText').textContent = error.message; return; }
+  await waitFindMarks('正在查找残留标记色…', '正在查找', status => showFoundMarks(status.result));
+}
+
+// 查找 / 对比旧版 / 改回颜色都在后台线程里做：弹窗显示进度，做完换成结果
+async function waitFindMarks(title, doing, done) {
   findingMarks = true;
   $('findMarksBtn').disabled = true;
-  $('findMarksTitle').textContent = '正在查找残留标记色…';
+  $('findMarksTitle').textContent = title;
   $('findMarksBody').innerHTML = '<p class="unhighlight-summary" id="findMarksProgress">准备中…</p>';
+  $('findMarksApplyBtn').classList.add('hidden');
   $('findMarksCloseBtn').textContent = '在后台继续';
+  $('findMarksCloseBtn').className = 'btn btn-primary';
   if (!$('findMarksDialog').open) $('findMarksDialog').showModal();
   try {
     for (;;) {
       const response = await fetch('/api/batch/find_marks', { cache: 'no-store' });
       const status = await response.json();
-      if (!status.running) { showFoundMarks(status.result); break; }
+      if (!status.running) { done(status); break; }
       const progress = $('findMarksProgress');
-      if (progress) progress.textContent = `正在查找 ${status.done + 1} / ${status.total}：${status.current || ''}`;
+      if (progress) progress.textContent = `${doing} ${Math.min(status.done + 1, status.total)} / ${status.total}：${status.current || ''}`;
       await new Promise(resolve => setTimeout(resolve, 800));
     }
-  } catch (error) { $('errorText').textContent = `查找残留标记色失败：${error.message}`; }
+  } catch (error) { $('errorText').textContent = `${doing}失败：${error.message}`; }
   finally { findingMarks = false; $('findMarksBtn').disabled = false; }
+}
+
+const OLD_FOLDER_KEY = 'clear_handle_excel.oldFolder';
+function savedOldFolder() {
+  try { return localStorage.getItem(OLD_FOLDER_KEY) || ''; } catch (_) { return ''; }
+}
+
+async function previewRestore() {
+  const old = $('oldFolderInput')?.value.trim() || '';
+  if (!old) { $('oldFolderError').textContent = '请输入旧版（原始备份）文件夹路径'; return; }
+  try { localStorage.setItem(OLD_FOLDER_KEY, old); } catch (_) {}
+  try { await post('/api/batch/find_marks/preview', { folder: old }); } catch (error) { $('oldFolderError').textContent = error.message; return; }
+  await waitFindMarks('正在对比旧版…', '正在对比', status => showRestorePlan(status.plan));
+}
+
+function swatchHtml(fill, font) {
+  if (fill === 'none') return '<span class="find-marks-swatch is-none" title="无填充">无</span>';
+  if (fill === 'other') return '<span class="find-marks-swatch is-none" title="主题色或图案，改回时照旧版原样抄">原</span>';
+  return `<span class="find-marks-swatch" style="background:${esc(fill)};color:${esc(font || '#000000')}">Aa</span>`;
+}
+
+function cellLink(file, folder, cell) {
+  return excelLinkHtml(esc(`${cell.sheet}!${cell.addr}`), { file: file.name, folder, sheet: cell.sheet, cell: cell.addr.split(':')[0] });
+}
+
+function showRestorePlan(plan) {
+  if (!plan) return;
+  const cells = plan.files.flatMap(f => f.cells);
+  const restore = cells.filter(c => c.action === 'restore').length;
+  const missing = plan.files.filter(f => f.error).length;
+  const chips = [`<span class="unhighlight-chip is-ok">✅ 会改回 ${restore} 格</span>`];
+  if (cells.length - restore) chips.push(`<span class="unhighlight-chip is-check">⚠️ 不改、请人工看 ${cells.length - restore} 格</span>`);
+  if (missing) chips.push(`<span class="unhighlight-chip is-failed">❌ ${missing} 份文件没法对比</span>`);
+  const fileHtml = file => {
+    const rows = file.cells.map(c => `<li class="is-${c.action === 'restore' ? 'ok' : 'check'}">`
+      + (c.action === 'restore' ? swatchHtml(c.old_fill, c.old_font) : '<span aria-hidden="true">⚠️</span>')
+      + `${cellLink(file, batchState.folder, c)}<span class="unhighlight-reason">${c.action === 'restore'
+        ? `改回旧版：底色 ${c.old_fill === 'none' ? '无填充' : c.old_fill === 'other' ? '主题色 / 图案（照旧版抄）' : esc(c.old_fill)}${c.old_font ? `，字色 ${esc(c.old_font)}` : ''}`
+        : esc(c.reason)}</span></li>`);
+    const own = file.cells.filter(c => c.action === 'restore').length;
+    const tally = file.error ? `<span class="unhighlight-file-error">${esc(file.error)}</span>` : `✅ ${own}${file.cells.length - own ? ` · ⚠️ ${file.cells.length - own}` : ''}`;
+    return `<details class="unhighlight-file"${plan.files.length <= 5 || file.error || own < file.cells.length ? ' open' : ''}><summary><b>${esc(file.name)}</b><span class="unhighlight-tally">${tally}</span></summary>`
+      + (rows.length ? `<ul>${rows.join('')}</ul>` : '') + '</details>';
+  };
+  $('findMarksTitle').textContent = '对比旧版：确认后才改文件';
+  $('findMarksDialog').dataset.tone = 'warn';
+  $('findMarksBody').innerHTML = `<p class="unhighlight-summary">${chips.join('')}</p>`
+    + `<p class="unhighlight-hint">旧版文件夹：${esc(plan.old_folder)}。只改同一位置内容和旧版一样的格子，只改底色和字色。请先在 Excel 里保存并关闭这些文件。</p>`
+    + `<div class="unhighlight-files">${plan.files.map(fileHtml).join('')}</div>`;
+  $('findMarksApplyBtn').textContent = `确认改回 ${restore} 格`;
+  $('findMarksApplyBtn').classList.toggle('hidden', !restore);
+  $('findMarksCloseBtn').textContent = '取消';
+  $('findMarksCloseBtn').className = 'btn btn-outline';
+  $('findMarksBody').scrollTop = 0;
+}
+
+async function applyRestore() {
+  try { await post('/api/batch/find_marks/apply'); } catch (error) { $('errorText').textContent = error.message; return; }
+  await waitFindMarks('正在改回旧版颜色…', '正在改', status => showRestoreResult(status.applied));
+}
+
+function showRestoreResult(applied) {
+  if (!applied) return;
+  const cells = applied.files.flatMap(f => f.cells);
+  const ok = cells.filter(c => c.status === 'ok').length;
+  const errors = applied.files.filter(f => f.error).length;
+  const chips = [`<span class="unhighlight-chip is-ok">✅ 已改回 ${ok} 格</span>`];
+  if (cells.length - ok) chips.push(`<span class="unhighlight-chip is-failed">❌ 没改 ${cells.length - ok} 格</span>`);
+  if (errors) chips.push(`<span class="unhighlight-chip is-failed">❌ ${errors} 份文件没能处理</span>`);
+  const fileHtml = file => {
+    const rows = file.cells.map(c => `<li class="is-${c.status === 'ok' ? 'ok' : 'failed'}"><span aria-hidden="true">${c.status === 'ok' ? '✅' : '❌'}</span>`
+      + `${cellLink(file, batchState.folder, c)}<span class="unhighlight-reason">${esc(c.reason)}</span></li>`);
+    const own = file.cells.filter(c => c.status === 'ok').length;
+    const tally = file.error ? `<span class="unhighlight-file-error">${esc(file.error)}</span>` : `✅ ${own}${file.cells.length - own ? ` · ❌ ${file.cells.length - own}` : ''}`;
+    return `<details class="unhighlight-file"${file.error || own < file.cells.length ? ' open' : ''}><summary><b>${esc(file.name)}</b><span class="unhighlight-tally">${tally}</span></summary>`
+      + (rows.length ? `<ul>${rows.join('')}</ul>` : '') + '</details>';
+  };
+  $('findMarksTitle').textContent = cells.length - ok || errors ? '改回结果：有格子没改' : '已全部改回旧版的颜色';
+  $('findMarksDialog').dataset.tone = cells.length - ok || errors ? 'warn' : 'info';
+  $('findMarksBody').innerHTML = `<p class="unhighlight-summary">${chips.join('')}</p>`
+    + `<div class="unhighlight-files">${applied.files.map(fileHtml).join('')}</div>`;
+  $('findMarksApplyBtn').classList.add('hidden');
+  $('findMarksCloseBtn').textContent = '知道了';
+  $('findMarksCloseBtn').className = 'btn btn-primary';
+  $('findMarksCloseBtn').focus();
 }
 
 function showFoundMarks(result) {
@@ -568,8 +660,12 @@ function showFoundMarks(result) {
   $('findMarksTitle').textContent = hits.length ? '找到底色是标记色的格子' : '没有找到残留标记色';
   $('findMarksDialog').dataset.tone = hits.length || unread ? 'warn' : 'info';
   $('findMarksBody').innerHTML = `<p class="unhighlight-summary">${chips.join('')}</p>`
-    + '<p class="unhighlight-hint">只列出来，不改文件：程序不知道这些格子原来是什么颜色，也可能本来就是这个颜色。点位置用 Excel 打开看一下，需要的话手动改回去（有原始备份的话可以用备份对比脚本恢复）。</p>'
+    + '<p class="unhighlight-hint">查找只列出来，不改文件：程序不知道这些格子原来是什么颜色，也可能本来就是这个颜色。点位置用 Excel 打开看一下；有原始备份的话，可以在下面对比旧版，确认后自动改回去。</p>'
+    + (hits.length ? '<div class="find-marks-old"><label for="oldFolderInput">旧版（原始备份）文件夹</label>'
+      + `<input id="oldFolderInput" class="input" type="text" placeholder="例如 D:\\原始备份" value="${esc(savedOldFolder())}">`
+      + '<button type="button" id="previewRestoreBtn" class="btn btn-outline">对比旧版，看看要改回什么</button><span id="oldFolderError" class="batch-error"></span></div>' : '')
     + `<div class="unhighlight-files">${files.map(fileHtml).join('')}</div>`;
+  $('previewRestoreBtn')?.addEventListener('click', previewRestore);
   $('findMarksCloseBtn').textContent = '知道了';
   if (!$('findMarksDialog').open) $('findMarksDialog').showModal();
   $('findMarksBody').scrollTop = 0;
@@ -648,6 +744,7 @@ $('unhighlightBtn').addEventListener('click', async () => {
 $('unhighlightResultBtn').addEventListener('click', showUnhighlightResult);
 $('findMarksBtn').addEventListener('click', findMarks);
 $('findMarksCloseBtn').addEventListener('click', () => $('findMarksDialog').close());
+$('findMarksApplyBtn').addEventListener('click', applyRestore);
 $('unhighlightCloseBtn').addEventListener('click', () => $('unhighlightDialog').close());
 $('resumeBtn').addEventListener('click', () => startJob('/api/resume'));
 $('pauseBtn').addEventListener('click', () => action(() => post('/api/batch/pause')));

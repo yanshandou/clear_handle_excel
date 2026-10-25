@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import threading
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -125,16 +126,285 @@ def _run(folder: Path, paths: list[Path], styles: list[tuple[str, str]]) -> None
                 "colors": [{"fill": f"#{a}", "font": f"#{b}"} for a, b in styles]})
 
 
+def _begin(phase: str, total: int) -> None:
+    with _LOCK:
+        if _STATUS.get("running"):
+            raise ValueError("上一步还没做完，请稍等")
+        _STATUS.update(running=True, phase=phase, total=total, done=0, current="")
+
+
 def start(folder: str, colors: Any) -> None:
     styles = _styles(colors if isinstance(colors, list) else [])
     root, paths = wf.list_workbooks(folder)
+    _begin("find", len(paths))
     with _LOCK:
-        if _STATUS.get("running"):
-            raise ValueError("正在查找，请等这次查完")
-        _STATUS.clear()
-        _STATUS.update(running=True, total=len(paths), done=0, current="", result=None)
+        for key in ("result", "plan", "applied"):
+            _STATUS.pop(key, None)
     wf.log_msg(f"🔍 开始查找残留标记色：{len(paths)} 份文件（只列出来，不改文件）")
     threading.Thread(target=_run, args=(root, paths, styles), name="查找残留标记色", daemon=True).start()
+
+
+# ---------- 对比旧版文件夹，把找到的格子改回旧版的颜色 ----------
+
+def _norm(name: str) -> str:
+    return unicodedata.normalize("NFKC", name).strip().casefold()
+
+
+def _pair_files(old_root: Path, old_paths: list[Path], names: list[str]) -> dict[str, Path | None]:
+    """新文件（相对路径）→ 旧版里的同一份文件：先按相对路径找，找不到再找两边都只有一个的同名文件"""
+    by_rel = {_norm(workbook_rel_name(p, old_root)): p for p in old_paths}
+    by_name: dict[str, list[Path]] = {}
+    for p in old_paths:
+        by_name.setdefault(_norm(p.name), []).append(p)
+    new_names: dict[str, int] = {}
+    for name in names:
+        key = _norm(Path(name).name)
+        new_names[key] = new_names.get(key, 0) + 1
+    pairs: dict[str, Path | None] = {}
+    for name in names:
+        found = by_rel.get(_norm(name))
+        if found is None:
+            key = _norm(Path(name).name)
+            same = by_name.get(key, [])
+            found = same[0] if len(same) == 1 and new_names[key] == 1 else None
+        pairs[name] = found
+    return pairs
+
+
+def _text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return str(value)
+
+
+def _row_values(sheet: Any, row: int) -> list[str]:
+    values = [_text(c.value) for c in sheet[row]] if row <= sheet.max_row else []
+    while values and values[-1] == "":
+        values.pop()
+    return values
+
+
+def _old_colors(cell: Any) -> dict:
+    """旧版格子的颜色，给页面看：none 无填充；RRGGBB；other 主题色 / 图案（写回时由 Excel 照原样抄）"""
+    fill = cell.fill
+    if fill is None or fill.patternType is None:
+        old_fill = "none"
+    elif fill.patternType == "solid" and _rgb(fill.fgColor):
+        old_fill = f"#{_rgb(fill.fgColor)}"
+    else:
+        old_fill = "other"
+    font = _rgb(cell.font.color) if cell.font is not None else None
+    return {"old_fill": old_fill, "old_font": f"#{font}" if font else ""}
+
+
+def plan_file(path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
+    """逐格决定改不改：旧版同一张表、同一地址的格子内容一样才改回旧版的颜色。
+    空格子内容一样说明不了什么（插了行、地址对不上时也是空的），还要这一整行的内容都一样。"""
+    import openpyxl
+
+    current = openpyxl.load_workbook(path, data_only=False)
+    old = openpyxl.load_workbook(old_path, data_only=False)
+    try:
+        old_sheets = {_norm(ws.title): ws for ws in old.worksheets}
+        plan = []
+        for hit in hits:
+            item = {"sheet": hit["sheet"], "addr": hit["addr"], "fill": hit["fill"], "font": hit["font"],
+                    "action": "skip", "reason": ""}
+            plan.append(item)
+            top = hit["addr"].split(":")[0]
+            sheet, old_sheet = current[hit["sheet"]], old_sheets.get(_norm(hit["sheet"]))
+            if old_sheet is None:
+                item["reason"] = "旧版里没有这张表"
+                continue
+            cell, old_cell = sheet[top], old_sheet[top]
+            item.update(_old_colors(old_cell))
+            if _text(cell.value) != _text(old_cell.value):
+                item["reason"] = "和旧版同一位置的内容不一样（可能插删过行列，或改过内容），请人工看一下"
+            elif cell.value in (None, "") and _row_values(sheet, cell.row) != _row_values(old_sheet, old_cell.row):
+                item["reason"] = "空格子，这一行和旧版对不上（可能插删过行列），请人工看一下"
+            elif item["old_fill"] == hit["fill"]:
+                item["reason"] = "旧版本来就是这个颜色，不是程序标的，不改"
+            else:
+                item.update(action="restore", reason="改回旧版的颜色")
+        return plan
+    finally:
+        current.close()
+        old.close()
+
+
+def _run_preview(old_root: Path, old_paths: list[Path], files: list[dict]) -> None:
+    plan_files: list[dict] = []
+    try:
+        pairs = _pair_files(old_root, old_paths, [f["name"] for f in files])
+        for i, file in enumerate(files, 1):
+            with _LOCK:
+                _STATUS.update(done=i - 1, current=file["name"])
+            old_path = pairs[file["name"]]
+            entry = {"path": file["path"], "name": file["name"], "old": str(old_path or ""), "cells": [], "error": None}
+            if old_path is None:
+                entry["error"] = "旧版文件夹里没找到这份文件（相对路径不同，同名的又不止一个或没有）"
+            elif old_path.suffix.lower() not in READABLE:
+                entry["error"] = f"旧版文件是 {old_path.suffix}，读不了，请人工对照"
+            else:
+                try:
+                    entry["cells"] = plan_file(Path(file["path"]), old_path, file["hits"])
+                except Exception as err:
+                    debug_log.exception(err, f"对比旧版 {file['name']}")
+                    entry["error"] = f"读取失败：{err}"
+            plan_files.append(entry)
+        restore = sum(1 for f in plan_files for c in f["cells"] if c["action"] == "restore")
+        wf.log_msg(f"🔍 对比旧版：{len(plan_files)} 份文件，{restore} 格可以改回旧版的颜色（还没改，等确认）")
+    finally:
+        with _LOCK:
+            _STATUS.update(running=False, done=len(files), current="",
+                           plan={"old_folder": str(old_root), "files": plan_files})
+
+
+def preview(old_folder: str) -> None:
+    """对比旧版文件夹，算出每个找到的格子要不要改、改成什么颜色。只读，不改文件"""
+    with _LOCK:
+        result = _STATUS.get("result")
+    if not result:
+        raise ValueError("请先查找残留标记色")
+    old_root, old_paths = wf.list_workbooks(old_folder)
+    if old_root == Path(result["folder"]).resolve():
+        raise ValueError("旧版文件夹和当前文件夹是同一个，请选原始备份的文件夹")
+    files = [f for f in result["files"] if f["hits"]]
+    if not files:
+        raise ValueError("没有找到要改回的格子")
+    _begin("preview", len(files))
+    with _LOCK:
+        _STATUS.pop("plan", None)
+        _STATUS.pop("applied", None)
+    threading.Thread(target=_run_preview, args=(old_root, old_paths, files), name="对比旧版", daemon=True).start()
+
+
+XL_PATTERN_NONE, XL_PATTERN_SOLID = -4142, 1
+
+
+def _excel_color(hex_color: str) -> int:
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+    return r + g * 256 + b * 65536
+
+
+def _same_formula(a: Any, b: Any) -> bool:
+    return _text(a.Formula) == _text(b.Formula)
+
+
+def apply_file(excel: Any, path: str, old_path: str, cells: list[dict]) -> list[dict]:
+    """用 Excel 把旧版格子的底色（含主题色、图案）和字色抄回来，保存。写之前再确认一次：
+    内容还和旧版一样、底色还是标记色（期间被人改过就不动）。只改颜色，不动别的格式"""
+    from core.excel_ops import normalize_workbook_view, open_workbook_checked
+
+    done: list[dict] = []
+    old = open_workbook_checked(excel, str(Path(old_path).resolve()), UpdateLinks=0, ReadOnly=True)
+    try:
+        book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
+        try:
+            if book.ReadOnly:
+                raise ValueError("文件以只读方式打开（可能在别处开着），没有改")
+            old_sheets = {_norm(sheet.Name): sheet for sheet in old.Worksheets}
+            changed = False
+            for item in cells:
+                result = {**item, "status": "failed", "reason": ""}
+                done.append(result)
+                try:
+                    target = book.Worksheets(item["sheet"]).Range(item["addr"])
+                    source = old_sheets[_norm(item["sheet"])].Range(item["addr"].split(":")[0])
+                    top = target.Cells(1, 1)
+                    if not _same_formula(top, source):
+                        result["reason"] = "内容和旧版不一样了，没有改"
+                        continue
+                    color = top.Interior.Color
+                    if color is None or int(color) != _excel_color(item["fill"]):
+                        result["reason"] = "底色已经不是标记色（被人改过），没有改"
+                        continue
+                    interior, old_interior = target.Interior, source.Interior
+                    if int(old_interior.Pattern) == XL_PATTERN_NONE:
+                        interior.Pattern = XL_PATTERN_NONE
+                    else:
+                        interior.Pattern = old_interior.Pattern
+                        interior.Color = old_interior.Color
+                        interior.TintAndShade = old_interior.TintAndShade
+                        if int(old_interior.Pattern) != XL_PATTERN_SOLID:
+                            interior.PatternColor = old_interior.PatternColor
+                    old_font = source.Font.Color
+                    if old_font is not None:
+                        target.Font.Color = old_font
+                    changed = True
+                    result.update(status="ok", reason="已改回旧版的颜色")
+                except Exception as err:
+                    result["reason"] = f"改的时候出错：{err}"
+            if changed:
+                normalize_workbook_view(excel, book)
+                book.Save()
+        finally:
+            book.Close(SaveChanges=False)
+    finally:
+        old.Close(SaveChanges=False)
+    return done
+
+
+def _run_apply(files: list[dict]) -> None:
+    from core.excel_ops import close_saved_workbooks, quit_background_excel, start_background_excel
+
+    applied: list[dict] = []
+    excel = None
+    wf.pythoncom.CoInitialize()
+    try:
+        unsaved = close_saved_workbooks([Path(f["path"]) for f in files])
+        excel = start_background_excel()
+        for i, file in enumerate(files, 1):
+            with _LOCK:
+                _STATUS.update(done=i - 1, current=file["name"])
+            entry = {"path": file["path"], "name": file["name"], "cells": [], "error": None}
+            applied.append(entry)
+            if Path(file["path"]) in unsaved:
+                entry["error"] = f"{unsaved[Path(file['path'])]}，请保存并关闭后再试"
+                continue
+            try:
+                entry["cells"] = apply_file(excel, file["path"], file["old"], file["cells"])
+            except Exception as err:
+                debug_log.exception(err, f"改回旧版颜色 {file['name']}")
+                entry["error"] = f"没有改：{err}"
+            ok = sum(1 for c in entry["cells"] if c["status"] == "ok")
+            wf.log_msg(f"🎨 {file['name']}：改回旧版颜色 {ok} 格" + (f"，{entry['error']}" if entry["error"] else ""))
+    except Exception as err:
+        debug_log.exception(err, "改回旧版颜色")
+        wf.log_msg(f"❌ 改回旧版颜色失败：{err}")
+        applied.append({"path": "", "name": "（全部）", "cells": [], "error": str(err)})
+    finally:
+        try:
+            quit_background_excel(excel)
+        except Exception:
+            pass
+        wf.pythoncom.CoUninitialize()
+        ok = sum(1 for f in applied for c in f["cells"] if c["status"] == "ok")
+        wf.log_msg(f"🎨 改回旧版颜色完成：{ok} 格")
+        with _LOCK:
+            _STATUS.update(running=False, done=len(files), current="", applied={"files": applied})
+
+
+def apply() -> None:
+    """按预览清单改文件（清单在服务端，页面只是确认）"""
+    with _LOCK:
+        plan = _STATUS.get("plan")
+    if not plan:
+        raise ValueError("请先对比旧版，看过清单再确认")
+    with wf.STATE_LOCK:
+        if wf.STATE.get("busy"):
+            raise ValueError("后台任务正在执行，等它结束再改")
+    files = [{**f, "cells": [c for c in f["cells"] if c["action"] == "restore"]} for f in plan["files"] if not f["error"]]
+    files = [f for f in files if f["cells"]]
+    if not files:
+        raise ValueError("清单里没有可以改回的格子")
+    _begin("apply", len(files))
+    with _LOCK:
+        _STATUS.pop("plan", None)  # 一份清单只执行一次
+    wf.log_msg(f"🎨 开始改回旧版颜色：{len(files)} 份文件，{sum(len(f['cells']) for f in files)} 格")
+    threading.Thread(target=_run_apply, args=(files,), name="改回旧版颜色", daemon=True).start()
 
 
 def status() -> dict:

@@ -2478,3 +2478,41 @@ input[type="checkbox"]:not(.hidden):checked::before {
   line-height: 1.5;
   text-align: center;
 }
+
+.find-marks-swatch.is-none {
+  background: #ffffff;
+  color: var(--ink-2);
+}
+
+.find-marks-old {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 2px dashed var(--ink-3);
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.find-marks-old input {
+  flex: 1 1 220px;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+  font: inherit;
+  font-weight: 500;
+}
+
+.find-marks-old .batch-error {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.find-marks-old .batch-error:empty {
+  display: none;
+}
