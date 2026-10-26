@@ -215,7 +215,7 @@ function renderPendingNotice() {
   const name = String(pending.path || '').split(/[\\/]/).pop();
   const rows = (pending.rows || []).map(r => `${r.sheet} 第 ${r.row} 行`).join('、');
   const resume = batchState.job.status === 'interrupted' ? '点「继续上次任务」重新核对并写入；' : '';
-  $('pendingNotice').textContent = `上次写入没有完成：${name}（${rows}）。${resume}如果你在 Excel 里改过这一行，或不想再自动改它，点「放弃这次写入」：文件不再改动，这几格转为黄色人工处理，之后可以继续处理其他文件。`;
+  $('pendingNotice').textContent = `上次写入没有完成：${name}（${rows}）。${resume}如果你在 Excel 里改过这一行，或不想再自动改它，点「放弃这次写入」：文件不再改动，这几格转为黄色人工处理。其他文件不受影响，可以照常提交、复检。`;
 }
 
 // 图片取不到时换成文字占位（整页图连同红框一起换掉）

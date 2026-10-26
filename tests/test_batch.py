@@ -303,10 +303,13 @@ class BatchTests(unittest.TestCase):
     def test_user_modified_height_is_not_overwritten(self):
         card, _ = self.add_card(color="yellow")
         self.heights[5] = 36
-        with self.assertRaisesRegex(ValueError, "行高已被"):
-            self.commit([card])
+        self.commit([card])
         self.assertEqual(self.heights[5], 36)
-        self.assertIsNotNone(self.wf.STATE["job"]["pending_adjustment"])
+        job = self.wf.STATE["job"]
+        self.assertIn(self.path, job["deferred_adjustments"])
+        self.assertIn("行高已被", card["message"])
+        self.assertNotIn(self.path, job["completed"])
+        self.assertEqual(card["color"], "yellow")
         self.assertFalse(card["finalized"])
 
     def test_resume_after_save_does_not_apply_adjustment_twice(self):
@@ -340,8 +343,8 @@ class BatchTests(unittest.TestCase):
         a, _ = self.add_card("A5", "yellow")
         b, _ = self.add_card("A6", "yellow", row=6)
         self.heights[6] = 90
-        with self.assertRaises(ValueError):
-            self.commit([a, b])
+        self.commit([a, b])
+        self.assertIn(self.path, self.wf.STATE["job"]["deferred_adjustments"])
         self.assertEqual(self.heights, {5: 24.0, 6: 90})
         self.book.Save.assert_not_called()
 
@@ -1408,10 +1411,11 @@ class BatchTests(unittest.TestCase):
     def test_abandon_unblocks_tool_after_user_changed_height(self):
         card, item = self.add_card(color="yellow")
         self.heights[5] = 36
-        with self.assertRaisesRegex(ValueError, "放弃这次写入"):
-            self.commit([card])
+        self.commit([card])
+        self.assertIn("放弃这次写入", card["message"])
         self.wf.STATE.update(busy=False)
         self.wf.STATE["job"]["status"] = "interrupted"
+        batch._show_deferred_pending()
         batch.abandon_pending()
         self.assertIsNone(self.wf.STATE["job"]["pending_adjustment"])
         self.assertEqual(self.heights[5], 36)
@@ -1419,6 +1423,50 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(item["status"], "manual_review")
         self.assertFalse(next(iter(batch._data()["rows"].values()))["saved"])
         self.assertTrue(self.wf.queue_job("batch_scan", {"folder": str(self.root)}))
+
+    def test_unsettled_file_does_not_block_committing_other_files(self):
+        """一份文件行高被人工改过、还原核对不通过：只跳过这份，别的文件的绿卡照常提交"""
+        stuck, _ = self.add_card(color="green")
+        self.heights[5] = 36
+        other = str(self.root / "other.xlsx")
+        Path(other).write_bytes(b"workbook")
+        green, item = self.add_card("A6", color="green", row=6)
+        green["wb_path"] = item["wb_path"] = other
+        batch._data()["rows"].pop(batch._key(self.path, "S1", 6))
+        self.commit([stuck, green])
+        job = self.wf.STATE["job"]
+        self.assertEqual(job["completed"], [other])
+        self.assertTrue(green["dismissed"] and green["finalized"])
+        self.assertEqual((stuck["color"], stuck["finalized"]), ("green", False))
+        self.assertEqual(self.heights[5], 36)
+        self.assertIsNone(job["pending_adjustment"])
+        self.assertEqual(set(job["deferred_adjustments"]), {self.path})
+
+    def test_review_tasks_start_while_another_file_has_unsettled_write(self):
+        pending = {"path": self.path, "action": "restore", "rows": [], "cards": []}
+        job = self.wf.STATE["job"]
+        job.update(kind="batch_commit", status="interrupted", pending_adjustment=pending)
+        self.wf.STATE["busy"] = False
+        with self.assertRaisesRegex(ValueError, "写入尚未结算"):
+            self.wf.queue_job("batch_scan", {"folder": str(self.root)})
+        self.assertTrue(self.wf.queue_job("batch_commit", {"card_ids": []}))
+        new = self.wf.STATE["job"]
+        self.assertIsNot(new, job)
+        self.assertIsNone(new["pending_adjustment"])
+        self.assertEqual(new["deferred_adjustments"], {self.path: pending})
+
+    def test_resume_with_failing_write_still_commits_other_files(self):
+        pending = {"path": self.path, "action": "restore", "rows": [], "cards": []}
+        job = self.wf.STATE["job"]
+        job.update(kind="batch_commit", options={"card_ids": []}, pending_adjustment=pending)
+        session = Mock()
+        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch, "_finish_pending", side_effect=ValueError("行高已被其他操作修改")), \
+                patch.object(batch, "_commit_review") as commit, patch.object(batch, "finish_execution_batch"):
+            batch.run()
+        commit.assert_called_once()
+        self.assertIs(job["pending_adjustment"], pending)  # 结束后照旧显示「继续 / 放弃这次写入」
+        self.assertEqual(job.get("deferred_adjustments"), {})
 
     def test_abandon_requires_a_pending_write(self):
         self.wf.STATE["busy"] = False
