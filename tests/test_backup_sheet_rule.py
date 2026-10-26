@@ -1,6 +1,7 @@
 import unittest
 
 from core.common import (
+    copy_series_sheets,
     find_backup_sheets,
     find_clean_targets,
     find_contained_sheets,
@@ -122,11 +123,22 @@ class FindBackupSheetsTests(unittest.TestCase):
     def test_copy_suffix_variants_require_original(self):
         names = [
             "変更履歴", "個別支援計画書_様式１（基本情報）",
-            "個別支援計画書_様式１（基本情報）(2)_20221005", "個別支援計画書_様式１（基本情報）(2)",
-            "個別支援計画書_様式１（基本情報）（３）", "一覧(2)",
+            "個別支援計画書_様式１（基本情報）(2)_20221005", "個別支援計画書_様式１（基本情報）（２）", "一覧(2)",
         ]
         # 「一覧(2)」没有原表「一覧」，保留
-        self.assertEqual(find_backup_sheets(names), names[2:5])
+        self.assertEqual(find_backup_sheets(names), names[2:4])
+
+    def test_numbered_series_is_kept(self):
+        # 3.3.帳票仕様書_緊急連絡カード.xls：同一原表的 (2)～(6) 是定義書的多个画面，全部保留
+        series = ["帳票入力画面定義書 (2)", "帳票入力画面定義書 (3)", "帳票入力画面定義書（４）", "❓帳票入力画面定義書 (5)"]
+        names = ["帳票レイアウト定義書", "帳票入力画面定義書", *series, "一覧", "一覧 (2)", "一覧 (2)_20221005"]
+        self.assertEqual(copy_series_sheets(names), set(series))
+        # 只有一张 (2) 的仍是备份；后面接日期的不算编号
+        self.assertEqual(find_backup_sheets(names), ["一覧 (2)", "一覧 (2)_20221005"])
+        self.assertEqual(find_clean_targets(names), ["一覧 (2)", "一覧 (2)_20221005"])
+        self.assertEqual(find_contained_sheets(names), [])
+        # 没有原表的编号不算一组，也不是备份
+        self.assertEqual(copy_series_sheets(["画面 (2)", "画面 (3)"]), set())
 
     def test_mmdd_suffix_requires_valid_date_and_original(self):
         names = [

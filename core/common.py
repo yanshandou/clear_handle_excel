@@ -121,15 +121,35 @@ def _original_name_of(backup_name: str) -> str:
     return _comparable_name(text)
 
 
+def copy_series_sheets(sheet_names: list[str]) -> set[str]:
+    """一组带编号的同名表：同一原表有 2 张以上只多了「(n)」后缀的表，如 帳票入力画面定義書 与 (2)…(6)。
+    用户 2026-10-26 说明：这种连续编号往往是同一定義書的多个画面，全部都要保留（导出 PDF 也要导出）。
+    只有一张「(2)」的仍按复制出来的备份处理；「(2)_20221005」这类后面接了日期的不算编号。
+    """
+    originals = {_comparable_name(name) for name in sheet_names}
+    groups: dict[str, list[str]] = {}
+    for name in sheet_names:
+        text = unicodedata.normalize("NFKC", strip_uncertain_prefix(name))
+        if not EXCEL_COPY_SUFFIX_PATTERN.search(text):
+            continue
+        base = _comparable_name(EXCEL_COPY_SUFFIX_PATTERN.sub("", text))
+        if base and base in originals:
+            groups.setdefault(base, []).append(name)
+    return {name for names in groups.values() if len(names) >= 2 for name in names}
+
+
 def find_backup_sheets(sheet_names: list[str]) -> list[str]:
     """找出工作簿中的备份表：名称带备份标记，且去掉标记后能在同一工作簿找到对应的原表。
 
     找不到原表时（如只有 基本情報_20241003 而没有 基本情報），带标记的表就是当前在用的版本，
     保留不删，导出 PDF 时也照常导出。若同一名称有多个日期版本、都找不到原表，
     只保留日期最新的一个（如 20170113要介護度別状況調査表），更早的日期版本视为备份。
+    同一原表有 2 张以上「(n)」编号的表（一组连续编号）是正式的多页内容，不算备份，见 copy_series_sheets。
     """
     candidates = [name for name in sheet_names if has_backup_marker(name)]
     originals = {_comparable_name(name) for name in sheet_names if name not in candidates}
+    series = copy_series_sheets(sheet_names)
+    candidates = [name for name in candidates if name not in series]
     backups: set[str] = set()
     dated_without_original: dict[str, list[tuple[str, str]]] = {}
     for name in candidates:

@@ -21,6 +21,7 @@ from core.common import (
     as_bbox,
     col_index_to_letters,
     console_print,
+    copy_series_sheets,
     find_backup_sheets,
     find_clean_targets,
     find_contained_sheets,
@@ -2320,6 +2321,7 @@ def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
                 files.append(entry)
                 debug_log.event("📄 精简预览", 文件=entry["name"], 表数=entry["sheet_count"], 默认删除=entry["backups"],
                                 待定=entry["uncertain"], 新旧配对=entry["new_old_pairs"] or "-", 备注=entry["note"] or "-",
+                                编号组保留=[n for n in entry["sheets"] if n in copy_series_sheets(entry["sheets"])] or "-",
                                 全部表=entry["sheets"])
     finally:
         if excel is not None:
