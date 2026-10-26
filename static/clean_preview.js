@@ -135,9 +135,14 @@ function cardBodyHtml(name, sheetIndex) {
   let similar = '';
   if (info && info.similar) {
     const other = escapeHtml(stripUncertainEmoji(info.similar.match));
-    similar = info.similar.identical
-      ? `🟰 与「${other}」内容完全相同`
-      : `≈ 与「${other}」约 ${Math.round(info.similar.ratio * 100)}% 相同，可能是新旧版本`;
+    if (info.similar.identical) {
+      similar = `🟰 与「${other}」内容完全相同`;
+    } else if (info.similar.same_cells) {
+      // 复制工作表后只换了截图、挪了红框：文字一样，图片/图形不一样
+      similar = `≈ 与「${other}」文字相同，但${escapeHtml((info.similar.diff || ['图片']).join('、'))}不同，可能是新旧版本`;
+    } else {
+      similar = `≈ 与「${other}」约 ${Math.round(info.similar.ratio * 100)}% 相同，可能是新旧版本`;
+    }
   }
   const st = states[name] || 'keep';
   const meta = [];

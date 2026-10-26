@@ -13,6 +13,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from core import debug_log
 from core.common import PROJECT_ROOT, XL_SHEET_VISIBLE, normalize_used_values, workbook_rel_name
 from core.excel_ops import pythoncom, quit_background_excel, start_background_excel
 from core.pdf_detector import fitz
@@ -28,6 +29,8 @@ CACHE_KEY_RE = re.compile(r"^[0-9a-f]{16}$")
 IMAGE_NAME_RE = re.compile(r"^\d{1,4}\.(?:png|pdf)$")
 SIMILARITY_MIN_RATIO = 0.5  # 低于这个相似度不提示；新旧版本之间通常只改了一部分内容
 SIMILARITY_MAX_CELLS = 500_000  # 已用区域超过这么多单元格时跳过比对，避免读取过慢
+SIMILARITY_MAX_SHAPES = 2000  # 图形太多时不逐个读取，只比较数量
+PREVIEW_CACHE_VERSION = 2  # 比对规则变了就加 1，旧缓存里的比对结果作废（2：图片、图形、批注也要相同）
 
 _render_locks: dict[str, threading.Lock] = {}
 _render_locks_guard = threading.Lock()
@@ -66,7 +69,7 @@ def workbook_preview_info(folder_str: str, file_name: str) -> dict[str, Any]:
 
 def _cache_key(wb_path: Path) -> str:
     stat = wb_path.stat()
-    raw = f"{wb_path.resolve()}|{stat.st_mtime_ns}|{stat.st_size}"
+    raw = f"{wb_path.resolve()}|{stat.st_mtime_ns}|{stat.st_size}|v{PREVIEW_CACHE_VERSION}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -121,10 +124,68 @@ def read_sheet_content(sheet: Any) -> dict[str, Any] | None:
     return {"cells": cells, "rows": rows}
 
 
+def _shape_text(shape: Any) -> str:
+    try:
+        if shape.TextFrame2.HasText:
+            return " ".join(str(shape.TextFrame2.TextRange.Text).split())
+    except Exception:
+        pass
+    return ""
+
+
+def read_sheet_objects(sheet: Any) -> list[str] | None:
+    """工作表上的图片、图形（红框、箭头、文本框……）和批注，各自变成一行「类型|左|上|宽|高|文字」，排好序返回。
+    复制工作表后只换了截图、挪了红框时，单元格完全一样，只有这里不同。读不到时返回 None（不参与比较）"""
+    try:
+        shapes = sheet.Shapes
+        count = shapes.Count
+    except Exception:
+        return None
+    items: list[str] = []
+    if count > SIMILARITY_MAX_SHAPES:
+        items.append(f"图形数量|{count}")
+    else:
+        try:
+            for shape in shapes:
+                box = "|".join(str(round(float(getattr(shape, attr)))) for attr in ("Left", "Top", "Width", "Height"))
+                items.append(f"图形|{shape.Type}|{box}|{_shape_text(shape)}")
+        except Exception:
+            return None
+    try:
+        for comment in sheet.Comments:
+            items.append(f"批注|{comment.Parent.Address}|{' '.join(str(comment.Text()).split())}")
+    except Exception:
+        pass
+    return sorted(items)
+
+
+def pdf_image_digests(pdf_path: Path) -> list[str] | None:
+    """导出的 PDF 里每张图片的像素指纹（全部页）。Excel 读不到图片本身，图形位置一样、只换了截图时靠它分辨"""
+    try:
+        digests = []
+        with fitz.open(pdf_path) as doc:
+            for page in doc:
+                for img in page.get_images(full=True):
+                    pix = fitz.Pixmap(doc, img[0])
+                    digests.append(f"{pix.width}x{pix.height}:{hashlib.md5(pix.samples).hexdigest()}")
+        return sorted(digests)
+    except Exception:
+        return None
+
+
+def _same_extra(a: dict[str, Any], b: dict[str, Any], key: str) -> bool:
+    """图形/图片：两边都读到了才比较，读不到的一边不算不同（不让偶尔读取失败把真正的副本判成不同）"""
+    if a.get(key) is None or b.get(key) is None:
+        return True
+    return a[key] == b[key]
+
+
 def find_similar_sheets(contents: dict[str, dict[str, Any] | None]) -> dict[str, dict[str, Any]]:
     """两两比较工作表内容，给每个表找出最相似的另一个表
 
-    完全相同：每个单元格的位置和值都一样。
+    完全相同：每个单元格的位置和值都一样，图片、图形、批注也一样（objects / images 键，可省略）。
+    单元格一样、只有图片或图形不同时（复制工作表后换了截图、挪了红框），相似度记 99%，
+    并带 same_cells=True、diff=["图形"/"图片"]，页面上提示「文字相同，图片/图形不同」。
     相似度取两种算法的较大值：
     - 按单元格：同一位置值相同的单元格数 ÷ 两表有内容的单元格位置总数（改了几个单元格时准确）
     - 按行：2×内容相同的行数 ÷ 两表行数之和（插入或删除几行、后面整体错位时准确）
@@ -138,13 +199,18 @@ def find_similar_sheets(contents: dict[str, dict[str, Any] | None]) -> dict[str,
         for other in names:
             if other == name:
                 continue
-            identical = contents[name]["cells"] == contents[other]["cells"]
+            a, b = contents[name], contents[other]
+            same_cells = a["cells"] == b["cells"]
+            diff = [label for key, label in (("objects", "图形"), ("images", "图片")) if not _same_extra(a, b, key)]
+            identical = same_cells and not diff
             if identical:
                 ratio = 1.0
+            elif same_cells:
+                ratio = 0.99
             else:
                 cells_a, cells_b = contents[name]["cells"], contents[other]["cells"]
-                same_cells = sum(1 for pos, value in cells_a.items() if cells_b.get(pos) == value)
-                cell_ratio = same_cells / len(cells_a.keys() | cells_b.keys())
+                same_count = sum(1 for pos, value in cells_a.items() if cells_b.get(pos) == value)
+                cell_ratio = same_count / len(cells_a.keys() | cells_b.keys())
                 common = sum((counters[name] & counters[other]).values())
                 total = len(contents[name]["rows"]) + len(contents[other]["rows"])
                 ratio = min(max(cell_ratio, 2 * common / total), 0.99)
@@ -152,9 +218,27 @@ def find_similar_sheets(contents: dict[str, dict[str, Any] | None]) -> dict[str,
                 continue
             if best is None or (identical, ratio) > (best["identical"], best["ratio"]):
                 best = {"match": other, "ratio": round(ratio, 2), "identical": identical}
+                if same_cells and diff:
+                    best.update(same_cells=True, diff=diff)
         if best is not None:
             result[name] = best
     return result
+
+
+def _log_similar(file_name: str, sheet_name: str, content: dict[str, Any] | None, similar: dict[str, Any] | None) -> None:
+    def count(key: str) -> Any:
+        return "读不到" if not content or content.get(key) is None else len(content[key])
+
+    if similar is None:
+        result = "-"
+    elif similar["identical"]:
+        result = "完全相同"
+    elif similar.get("same_cells"):
+        result = f"文字相同但{'、'.join(similar['diff'])}不同"
+    else:
+        result = f"约{round(similar['ratio'] * 100)}%"
+    debug_log.event("🟰 预览比对", 文件=file_name, 表=sheet_name, 最相似=similar["match"] if similar else "-",
+                    结果=result, 图形批注数=count("objects"), 图片数=count("images"))
 
 
 def _content_clip(page: Any) -> Any:
@@ -224,33 +308,40 @@ def render_workbook_previews(folder_str: str, file_name: str) -> dict[str, Any]:
         shutil.rmtree(staging, ignore_errors=True)
         staging.mkdir(parents=True)
 
-        sheets: list[dict[str, Any]] = []
-        pythoncom.CoInitialize()
-        excel = None
-        wb = None
-        try:
-            excel = start_background_excel()
-            wb = excel.Workbooks.Open(str(wb_path.resolve()), ReadOnly=True, UpdateLinks=0)
-            contents: dict[str, dict[str, Any] | None] = {}
-            for idx, sheet in enumerate(list(wb.Sheets)):
-                contents[sheet.Name] = read_sheet_content(sheet)
-                sheets.append(_render_sheet(sheet, staging / f"{idx}.pdf", staging / f"{idx}.png"))
-            similar = find_similar_sheets(contents)
-            for entry in sheets:
-                entry["similar"] = similar.get(entry["name"])
-        except Exception:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
-        finally:
+        with debug_log.side_task("clean_render", {"file": file_name}):
+            sheets: list[dict[str, Any]] = []
+            pythoncom.CoInitialize()
+            excel = None
+            wb = None
             try:
-                if wb is not None:
-                    wb.Close(SaveChanges=False)
+                excel = start_background_excel()
+                wb = excel.Workbooks.Open(str(wb_path.resolve()), ReadOnly=True, UpdateLinks=0)
+                contents: dict[str, dict[str, Any] | None] = {}
+                for idx, sheet in enumerate(list(wb.Sheets)):
+                    content = read_sheet_content(sheet)
+                    entry = _render_sheet(sheet, staging / f"{idx}.pdf", staging / f"{idx}.png")
+                    if content is not None:
+                        content["objects"] = read_sheet_objects(sheet)
+                        content["images"] = pdf_image_digests(staging / entry["pdf"]) if entry["pdf"] else None
+                    contents[sheet.Name] = content
+                    sheets.append(entry)
+                similar = find_similar_sheets(contents)
+                for entry in sheets:
+                    entry["similar"] = similar.get(entry["name"])
+                    _log_similar(file_name, entry["name"], contents.get(entry["name"]), entry["similar"])
+            except Exception:
+                shutil.rmtree(staging, ignore_errors=True)
+                raise
             finally:
                 try:
-                    if excel is not None:
-                        quit_background_excel(excel)
+                    if wb is not None:
+                        wb.Close(SaveChanges=False)
                 finally:
-                    pythoncom.CoUninitialize()
+                    try:
+                        if excel is not None:
+                            quit_background_excel(excel)
+                    finally:
+                        pythoncom.CoUninitialize()
 
         manifest = {"sheets": sheets}
         (staging / MANIFEST_NAME).write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")

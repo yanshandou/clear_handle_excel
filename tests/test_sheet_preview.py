@@ -5,7 +5,9 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from core import excel_ops, sheet_preview
-from core.sheet_preview import find_similar_sheets, preview_image_path, read_sheet_content
+from core.sheet_preview import (
+    find_similar_sheets, pdf_image_digests, preview_image_path, read_sheet_content, read_sheet_objects,
+)
 
 
 def fake_sheet(values, row=1, column=1, rows=None, columns=None):
@@ -34,6 +36,47 @@ class ReadSheetContentTests(unittest.TestCase):
         self.assertIsNone(read_sheet_content(fake_sheet("a", rows=10_000, columns=100)))
 
 
+class ReadSheetObjectsTests(unittest.TestCase):
+    def test_reads_shape_position_size_text_and_comments(self):
+        box = SimpleNamespace(Type=1, Left=50.4, Top=60.6, Width=80, Height=20,
+                        TextFrame2=SimpleNamespace(HasText=True, TextRange=SimpleNamespace(Text=" (4)\r")))
+        picture = SimpleNamespace(Type=13, Left=10, Top=20, Width=300, Height=200,
+                            TextFrame2=SimpleNamespace(HasText=False))
+        comment = SimpleNamespace(Parent=SimpleNamespace(Address="$B$2"), Text=lambda: "メモ")
+
+        class Shapes(list):
+            Count = 2
+
+        sheet = SimpleNamespace(Shapes=Shapes([box, picture]), Comments=[comment])
+        self.assertEqual(read_sheet_objects(sheet), sorted([
+            "图形|1|50|61|80|20|(4)", "图形|13|10|20|300|200|", "批注|$B$2|メモ",
+        ]))
+
+    def test_unreadable_shapes_return_none(self):
+        self.assertIsNone(read_sheet_objects(SimpleNamespace()))
+
+
+class PdfImageDigestsTests(unittest.TestCase):
+    def test_same_picture_same_digest_and_different_picture_differs(self):
+        fitz = sheet_preview.fitz
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for idx, color in enumerate([(255, 0, 0), (255, 0, 0), (0, 0, 255)]):
+                pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 8, 8), False)
+                pix.set_rect(pix.irect, color)
+                doc = fitz.open()
+                doc.new_page().insert_image(fitz.Rect(0, 0, 80, 80), pixmap=pix)
+                path = Path(tmp) / f"{idx}.pdf"
+                doc.save(path)
+                doc.close()
+                paths.append(path)
+            digests = [pdf_image_digests(p) for p in paths]
+            self.assertEqual(len(digests[0]), 1)
+            self.assertEqual(digests[0], digests[1])
+            self.assertNotEqual(digests[0], digests[2])
+            self.assertIsNone(pdf_image_digests(Path(tmp) / "missing.pdf"))
+
+
 class FindSimilarSheetsTests(unittest.TestCase):
     def content(self, rows, offset=1):
         cells = {}
@@ -48,6 +91,35 @@ class FindSimilarSheetsTests(unittest.TestCase):
         result = find_similar_sheets({"一覧": self.content(rows), "一覧(2)": self.content(rows)})
         self.assertEqual(result["一覧"], {"match": "一覧(2)", "ratio": 1.0, "identical": True})
         self.assertEqual(result["一覧(2)"]["match"], "一覧")
+
+    def test_same_cells_but_different_pictures_or_shapes_are_not_identical(self):
+        rows = ["a\t1", "b\t2"]
+        base = {**self.content(rows), "objects": ["图形|13|10|20|300|200|"], "images": ["800x600:aaa"]}
+        new_picture = {**self.content(rows), "objects": ["图形|13|10|20|300|200|"], "images": ["800x600:bbb"]}
+        moved_box = {**self.content(rows), "objects": ["图形|1|50|60|80|20|(4)"], "images": ["800x600:aaa"]}
+        result = find_similar_sheets({"定義書 (2)": base, "定義書 (3)": new_picture})
+        self.assertEqual(result["定義書 (2)"], {
+            "match": "定義書 (3)", "ratio": 0.99, "identical": False, "same_cells": True, "diff": ["图片"],
+        })
+        result = find_similar_sheets({"A": base, "B": moved_box})
+        self.assertFalse(result["A"]["identical"])
+        self.assertEqual(result["A"]["diff"], ["图形"])
+
+    def test_true_copy_with_same_objects_is_identical_and_preferred(self):
+        rows = ["a\t1", "b\t2"]
+        base = {**self.content(rows), "objects": ["图形|13|10|20|300|200|"], "images": ["x"]}
+        result = find_similar_sheets({
+            "A": base, "B": {**base, "images": ["y"]}, "C": dict(base),
+        })
+        self.assertEqual(result["A"], {"match": "C", "ratio": 1.0, "identical": True})
+
+    def test_unreadable_objects_do_not_count_as_different(self):
+        rows = ["a\t1"]
+        result = find_similar_sheets({
+            "A": {**self.content(rows), "objects": None, "images": ["x"]},
+            "B": {**self.content(rows), "objects": ["图形|1|0|0|1|1|"], "images": ["x"]},
+        })
+        self.assertTrue(result["A"]["identical"])
 
     def test_inserted_row_is_similar_but_not_identical(self):
         base = [f"row{i}" for i in range(20)]
