@@ -78,7 +78,7 @@ async function poll() {
     const response = await fetch('/api/batch', { cache: 'no-store' });
     if (!response.ok) throw new Error(`无法读取进度：HTTP ${response.status}`);
     const value = await response.json();
-    if (version !== pollVersion || requestBusy) return;
+    if (version !== pollVersion || requestBusy || colorSaving) return;
     celebrateFinished(batchState, value);
     if (value.busy && value.job?.kind === 'batch_unhighlight') clearPending = true;
     const cleared = clearPending && !value.busy && value.job?.kind === 'batch_unhighlight';
@@ -166,6 +166,8 @@ function celebrateFinished(before, after) {
 async function action(work) {
   if (requestBusy) return;
   requestBusy = true;
+  // 刚点的颜色还在保存：等保存完再提交、复检，按你最后选的颜色来
+  while (colorSaving) await new Promise(resolve => setTimeout(resolve, 50));
   ++pollVersion;
   $('errorText').textContent = '';
   renderControls();
@@ -625,11 +627,33 @@ function moveCard(delta) {
   render();
 }
 
-async function changeColor(id, direction = 1) {
+// 单击换色马上在页面上变，后台按顺序保存最后选的颜色：连点两下（双击）也能 黄→蓝→绿，不会因为上一次还没保存完被吞掉
+const colorQueue = new Map();
+let colorSaving = false;
+function changeColor(id, direction = 1) {
   const card = batchState.cards.find(c => c.id === id);
   if (requestBusy || !card || !canMark(card)) return;
-  const color = nextColor(card.color, direction);
-  await action(() => post('/api/batch/mark', { id, color }));
+  card.color = nextColor(card.color, direction);
+  colorQueue.set(id, card.color);
+  render();
+  saveColors();
+}
+async function saveColors() {
+  if (colorSaving) return;
+  colorSaving = true;
+  ++pollVersion;
+  $('errorText').textContent = '';
+  try {
+    while (colorQueue.size) {
+      const [id, color] = colorQueue.entries().next().value;
+      colorQueue.delete(id);
+      try { await post('/api/batch/mark', { id, color }); }
+      catch (error) { $('errorText').textContent = error.message; }
+    }
+  } finally {
+    colorSaving = false;
+    await poll();
+  }
 }
 
 // 只扫描时 Excel 里的标记颜色：预设 + 自定义，记在本机浏览器
