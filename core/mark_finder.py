@@ -2,11 +2,13 @@
 
 旧版本直接改单元格的底色和字色，记录丢了以后程序认不出、也不知道原来的颜色，所以这里只列出来，不改文件。
 新版本的标记是条件格式规则，公式里带标识，点「清除」就能按标识删掉，不用这里找。
-用 openpyxl 只读文件内容，不开 Excel（文件在 Excel 里开着也能读）；.xls / .xlsb 读不了，列为需要人工看。
+.xlsx 等用 openpyxl 只读文件内容，不开 Excel（文件在 Excel 里开着也能读）；
+.xls / .xlsb openpyxl 读不了，改在后台隐藏的 Excel 里只读打开来读颜色（慢一些）。
 """
 
 from __future__ import annotations
 
+import tempfile
 import threading
 import unicodedata
 from pathlib import Path
@@ -16,6 +18,7 @@ from core import debug_log, workflow as wf
 from core.common import _original_name_of, strip_new_prefix, strip_uncertain_prefix, workbook_rel_name
 
 READABLE = {".xlsx", ".xlsm", ".xltx", ".xltm"}
+EXCEL_READABLE = {".xls", ".xlsb"}  # openpyxl 读不了，用 Excel 读
 MAX_HITS_PER_FILE = 500
 
 _LOCK = threading.Lock()
@@ -97,8 +100,116 @@ def scan_file(path: Path, styles: list[tuple[str, str]], recorded: set[tuple[str
     return hits
 
 
+XL_SOLID = 1
+XL_EXCEL8 = 56  # .xls
+
+
+def _hex_of(color: Any) -> str | None:
+    """Excel 的颜色数（BGR）→ RRGGBB；None 表示这块区域里颜色不一样"""
+    if color is None:
+        return None
+    value = int(color)
+    return f"{value & 0xFF:02X}{value >> 8 & 0xFF:02X}{value >> 16 & 0xFF:02X}"
+
+
+def xls_saved_colors(excel: Any, styles: list[tuple[str, str]]) -> dict[tuple[str, str], tuple[str, str]]:
+    """.xls 只能存 56 种颜色：标记色存进 .xls 时会被 Excel 换成最接近的那一种，再打开读到的就不是原来的颜色。
+    这里把标记色写进一个临时 .xls、存好再打开，读出 Excel 实际换成的颜色。返回 原来的 → 存进 .xls 后的"""
+    with tempfile.TemporaryDirectory() as folder:
+        path = str(Path(folder) / "colors.xls")
+        book = excel.Workbooks.Add()
+        try:
+            try:
+                book.CheckCompatibility = False  # 不弹「兼容性检查器」
+            except Exception:
+                pass
+            sheet = book.Worksheets(1)
+            for row, (fill, font) in enumerate(styles, 1):
+                cell = sheet.Cells(row, 1)
+                cell.Value = "Aa"
+                cell.Interior.Color = int(_excel_color(f"#{fill}"))
+                cell.Font.Color = int(_excel_color(f"#{font}"))
+            book.SaveAs(path, FileFormat=XL_EXCEL8)
+        finally:
+            book.Close(SaveChanges=False)
+        book = excel.Workbooks.Open(path, ReadOnly=True)
+        try:
+            sheet = book.Worksheets(1)
+            saved = {}
+            for row, pair in enumerate(styles, 1):
+                cell = sheet.Cells(row, 1)
+                saved[pair] = (_hex_of(cell.Interior.Color) or pair[0], _hex_of(cell.Font.Color) or pair[1])
+            return saved
+        finally:
+            book.Close(SaveChanges=False)
+
+
+def _same_color_blocks(used: Any) -> Any:
+    """把已用区域切成一块块颜色一样的区域：整块颜色一样时 Interior.Color 直接给颜色，
+    不一样时给 None，就对半切开再看。大部分表只有少数几种底色，比逐格读快得多"""
+    stack = [used]
+    while stack:
+        area = stack.pop()
+        color = area.Interior.Color
+        if color is not None:
+            yield area, _hex_of(color)
+            continue
+        rows, cols = area.Rows.Count, area.Columns.Count
+        if rows > 1:
+            half = rows // 2
+            stack.append(area.Offset(half, 0).Resize(rows - half, cols))
+            stack.append(area.Resize(half, cols))
+        elif cols > 1:
+            half = cols // 2
+            stack.append(area.Offset(0, half).Resize(rows, cols - half))
+            stack.append(area.Resize(rows, half))
+
+
+def scan_file_excel(excel: Any, path: Path, styles: list[tuple[str, str]], recorded: set[tuple[str, str]],
+                    saved: dict[tuple[str, str], tuple[str, str]]) -> list[dict]:
+    """.xls / .xlsb：在后台 Excel 里只读打开来找，规则和 scan_file 一样（合并区域算一格）。
+    .xls 里的标记色可能已经被换成 56 色里最接近的那种（saved），这种也算，标 approx"""
+    from core.excel_ops import open_workbook_checked
+
+    fills: dict[str, tuple[str, bool]] = {}
+    for fill, font in styles:
+        fills.setdefault(fill, (font, False))
+        if path.suffix.lower() == ".xls":
+            near_fill, near_font = saved.get((fill, font), (fill, font))
+            fills.setdefault(near_fill, (near_font, near_fill != fill))
+    hits: list[dict] = []
+    book = open_workbook_checked(excel, str(path.resolve()), UpdateLinks=0, ReadOnly=True)
+    try:
+        for sheet in book.Worksheets:
+            name, seen = sheet.Name, set()
+            for area, color in _same_color_blocks(sheet.UsedRange):
+                if color not in fills:
+                    continue
+                font_want, approx = fills[color]
+                for cell in area.Cells:
+                    if int(cell.Interior.Pattern) != XL_SOLID:
+                        continue
+                    key = cell.MergeArea.Address(False, False) if cell.MergeCells else cell.Address(False, False)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    top = key.split(":")[0]
+                    font = _hex_of(sheet.Range(top).Font.Color)
+                    hit = {"sheet": name, "addr": key, "fill": f"#{color}", "font": f"#{font}" if font else "",
+                           "match": "both" if font == font_want else "fill", "recorded": (name, top) in recorded}
+                    if approx:
+                        hit["approx"] = True
+                    hits.append(hit)
+                    if len(hits) >= MAX_HITS_PER_FILE:
+                        return hits
+    finally:
+        book.Close(SaveChanges=False)
+    return hits
+
+
 def _run(folder: Path, paths: list[Path], styles: list[tuple[str, str]]) -> None:
     files: list[dict] = []
+    excel, saved, com = None, None, False
     try:
         for i, path in enumerate(paths, 1):
             name = workbook_rel_name(path, folder)
@@ -106,7 +217,28 @@ def _run(folder: Path, paths: list[Path], styles: list[tuple[str, str]]) -> None
                 _STATUS.update(done=i - 1, current=name)
             entry = {"path": str(path), "name": name, "hits": [], "error": None}
             debug_log.begin(f"查找残留 {i} / {len(paths)}：{name}")
-            if path.suffix.lower() not in READABLE:
+            if path.suffix.lower() in EXCEL_READABLE:
+                try:
+                    if saved is None:  # 第一份 .xls 时才开 Excel；开不了的话后面的也不再试
+                        from core.excel_ops import start_background_excel
+                        saved = {}
+                        wf.pythoncom.CoInitialize()
+                        com = True
+                        excel = start_background_excel()
+                        try:
+                            saved = xls_saved_colors(excel, styles)
+                        except Exception as err:
+                            debug_log.exception(err, "试存 .xls 标记色")
+                        debug_log.event("🎨 .xls 里的标记色", 换成={f"#{a}/#{b}": f"#{c}/#{d}"
+                                                                    for (a, b), (c, d) in saved.items()} or "没试出来")
+                    if excel is None:
+                        raise RuntimeError("后台 Excel 没能启动")
+                    entry["hits"] = scan_file_excel(excel, path, styles, _recorded(str(path)), saved or {})
+                    entry["truncated"] = len(entry["hits"]) >= MAX_HITS_PER_FILE
+                except Exception as err:
+                    debug_log.exception(err, f"查找残留标记色（用 Excel 读）{name}")
+                    entry["error"] = f"用 Excel 读取失败：{err}"
+            elif path.suffix.lower() not in READABLE:
                 entry["error"] = f"{path.suffix} 格式读不了颜色，请人工看一下"
             else:
                 try:
@@ -119,13 +251,21 @@ def _run(folder: Path, paths: list[Path], styles: list[tuple[str, str]]) -> None
                             有记录=sum(1 for h in entry["hits"] if h["recorded"]), 错误=entry["error"] or "-")
             for hit in entry["hits"]:
                 debug_log.event("🔍 残留", 位置=f"{hit['sheet']}!{hit['addr']}", 底色=hit["fill"], 字色=hit["font"] or "-",
-                                对上=hit["match"], 有记录=hit["recorded"])
+                                对上=hit["match"], 有记录=hit["recorded"], xls近似色=hit.get("approx", False))
             if entry["hits"] or entry["error"]:
                 files.append(entry)
         hits = sum(len(f["hits"]) for f in files)
         wf.log_msg(f"🔍 查找残留标记色：{len(paths)} 份文件，{hits} 格底色是标记色"
                    + (f"，{sum(1 for f in files if f['error'])} 份文件读不了" if any(f["error"] for f in files) else ""))
     finally:
+        if excel is not None:
+            try:
+                from core.excel_ops import quit_background_excel
+                quit_background_excel(excel)
+            except Exception:
+                pass
+        if com:
+            wf.pythoncom.CoUninitialize()
         with _LOCK:
             _STATUS.update(running=False, done=len(paths), current="", result={
                 "folder": str(folder), "total": len(paths), "files": files,
@@ -330,7 +470,9 @@ def _run_preview(old_root: Path, old_paths: list[Path], files: list[dict], folde
             entry = {"path": file["path"], "name": file["name"], "old": str(old_path or ""), "cells": [], "error": None}
             debug_log.begin(f"对比旧版 {i} / {len(files)}：{file['name']}")
             debug_log.event("📂 配对", 文件=file["name"], 旧版=old_path or "没找到", 格子=len(file["hits"]))
-            if old_path is None:
+            if Path(file["path"]).suffix.lower() not in READABLE:
+                entry["error"] = f"{Path(file['path']).suffix} 文件还不能自动对比旧版，请对照上面的位置人工改回"
+            elif old_path is None:
                 entry["error"] = "旧版文件夹里没找到这份文件（相对路径不同，同名的又不止一个或没有）"
             elif old_path.suffix.lower() not in READABLE:
                 entry["error"] = f"旧版文件是 {old_path.suffix}，读不了，请人工对照"

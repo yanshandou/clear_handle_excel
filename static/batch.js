@@ -756,6 +756,7 @@ function showFoundMarks(result) {
       const link = excelLinkHtml(esc(`${hit.sheet}!${hit.addr}`), { file: file.name, folder: result.folder, sheet: hit.sheet, cell: hit.addr.split(':')[0] });
       const swatch = `<span class="find-marks-swatch" style="background:${esc(hit.fill)};color:${esc(hit.font || '#000000')}">Aa</span>`;
       const note = (hit.match === 'both' ? '底色、字色都和标记色一致' : `只有底色一致（字色 ${esc(hit.font || '不是直接设置的颜色')}）`)
+        + (hit.approx ? '；.xls 只能存 56 种颜色，标记色存进去后变成了这个最接近的颜色' : '')
         + (hit.recorded ? '；程序有记录，点「清除 Excel 标记颜色」会还原' : '');
       return `<li class="is-${hit.recorded ? 'ok' : 'check'}">${swatch}${link}<span class="unhighlight-reason">${note}</span></li>`;
     });
