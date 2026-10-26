@@ -1498,11 +1498,12 @@ button.preview-sheet-tag:active {
 
 .batch-card .batch-text {
   color: var(--ink-2);
-  border-left-color: var(--purple);
+  border-left-color: var(--c);
 }
 
 .batch-card .batch-no-blue {
   border-radius: 10px;
+  border-color: color-mix(in srgb, var(--c) 55%, #ffffff);
   color: var(--ink-3);
 }
 
