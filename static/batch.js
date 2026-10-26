@@ -112,7 +112,7 @@ function showUnhighlightResult() {
     for (const reason of file.leftover_failed || []) {
       rows.push(`<li class="is-failed"><span aria-hidden="true">❌</span><span>残留标记</span><span class="unhighlight-reason">删不掉：${esc(reason)}</span></li>`);
     }
-    return `<details class="unhighlight-file"${trouble(file) ? ' open' : ''}><summary><b>${esc(file.name)}</b><span class="unhighlight-tally">${tally}</span></summary>`
+    return `<details class="unhighlight-file"${trouble(file) ? ' open' : ''}><summary><b>${fileNameLink(file, batchState.folder)}</b><span class="unhighlight-tally">${tally}</span></summary>`
       + (rows.length ? `<ul>${rows.join('')}</ul>` : '') + '</details>';
   };
   const tone = count.failed || errors ? 'error' : count.check ? 'warn' : 'info';
@@ -668,6 +668,11 @@ function swatchHtml(fill, font) {
   return `<span class="find-marks-swatch" style="background:${esc(fill)};color:${esc(font || '#000000')}">Aa</span>`;
 }
 
+// 结果弹窗里每份文件的标题：文件名也能点，读不了的文件（例如 .xls）也能直接用 Excel 打开看
+function fileNameLink(file, folder) {
+  return excelLinkHtml(esc(file.name), { file: file.name, folder });
+}
+
 function cellLink(file, folder, cell) {
   return excelLinkHtml(esc(`${cell.sheet}!${cell.addr}`), { file: file.name, folder, sheet: cell.sheet, cell: cell.addr.split(':')[0] });
 }
@@ -688,7 +693,7 @@ function showRestorePlan(plan) {
         : esc(c.reason)}</span></li>`);
     const own = file.cells.filter(c => c.action === 'restore').length;
     const tally = file.error ? `<span class="unhighlight-file-error">${esc(file.error)}</span>` : `✅ ${own}${file.cells.length - own ? ` · ⚠️ ${file.cells.length - own}` : ''}`;
-    return `<details class="unhighlight-file"${plan.files.length <= 5 || file.error || own < file.cells.length ? ' open' : ''}><summary><b>${esc(file.name)}</b><span class="unhighlight-tally">${tally}</span></summary>`
+    return `<details class="unhighlight-file"${plan.files.length <= 5 || file.error || own < file.cells.length ? ' open' : ''}><summary><b>${fileNameLink(file, plan.folder || batchState.folder)}</b><span class="unhighlight-tally">${tally}</span></summary>`
       + (rows.length ? `<ul>${rows.join('')}</ul>` : '') + '</details>';
   };
   $('findMarksTitle').textContent = '对比旧版：确认后才改文件';
@@ -721,7 +726,7 @@ function showRestoreResult(applied) {
       + `${cellLink(file, applied.folder || batchState.folder, c)}<span class="unhighlight-reason">${esc(c.reason)}</span></li>`);
     const own = file.cells.filter(c => c.status === 'ok').length;
     const tally = file.error ? `<span class="unhighlight-file-error">${esc(file.error)}</span>` : `✅ ${own}${file.cells.length - own ? ` · ❌ ${file.cells.length - own}` : ''}`;
-    return `<details class="unhighlight-file"${file.error || own < file.cells.length ? ' open' : ''}><summary><b>${esc(file.name)}</b><span class="unhighlight-tally">${tally}</span></summary>`
+    return `<details class="unhighlight-file"${file.error || own < file.cells.length ? ' open' : ''}><summary><b>${fileNameLink(file, applied.folder || batchState.folder)}</b><span class="unhighlight-tally">${tally}</span></summary>`
       + (rows.length ? `<ul>${rows.join('')}</ul>` : '') + '</details>';
   };
   $('findMarksTitle').textContent = cells.length - ok || errors ? '改回结果：有格子没改' : '已全部改回旧版的颜色';
@@ -756,13 +761,13 @@ function showFoundMarks(result) {
     });
     const tally = file.error ? `<span class="unhighlight-file-error">${esc(file.error)}</span>`
       : `${file.hits.length} 格${file.truncated ? '（只列前 500 格）' : ''}`;
-    return `<details class="unhighlight-file"${files.length <= 5 || file.error ? ' open' : ''}><summary><b>${esc(file.name)}</b><span class="unhighlight-tally">${tally}</span></summary>`
+    return `<details class="unhighlight-file"${files.length <= 5 || file.error ? ' open' : ''}><summary><b>${fileNameLink(file, result.folder)}</b><span class="unhighlight-tally">${tally}</span></summary>`
       + (rows.length ? `<ul>${rows.join('')}</ul>` : '') + '</details>';
   };
   $('findMarksTitle').textContent = hits.length ? '找到底色是标记色的格子' : '没有找到残留标记色';
   $('findMarksDialog').dataset.tone = hits.length || unread ? 'warn' : 'info';
   $('findMarksBody').innerHTML = `<p class="unhighlight-summary">${chips.join('')}</p>`
-    + '<p class="unhighlight-hint">查找只列出来，不改文件：程序不知道这些格子原来是什么颜色，也可能本来就是这个颜色。点位置用 Excel 打开看一下；有原始备份的话，可以在下面对比旧版，确认后自动改回去。</p>'
+    + '<p class="unhighlight-hint">查找只列出来，不改文件：程序不知道这些格子原来是什么颜色，也可能本来就是这个颜色。点文件名或位置用 Excel 打开看一下；有原始备份的话，可以在下面对比旧版，确认后自动改回去。</p>'
     + (hits.length ? '<div class="find-marks-old"><label for="oldFolderInput">旧版（原始备份）文件夹</label>'
       + `<input id="oldFolderInput" class="input" type="text" placeholder="例如 D:\\原始备份" value="${esc(savedOldFolder())}">`
       + '<button type="button" id="previewRestoreBtn" class="btn btn-outline">对比旧版，看看要改回什么</button><span id="oldFolderError" class="batch-error"></span></div>' : '')
