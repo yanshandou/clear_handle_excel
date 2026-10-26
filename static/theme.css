@@ -1270,7 +1270,7 @@ button.preview-sheet-tag:active {
 
 .batch-card.is-selected {
   border-color: var(--ink);
-  box-shadow: 0 0 0 4px var(--lime), 5px 5px 0 4px var(--ink);
+  box-shadow: 0 0 0 4px var(--c), 5px 5px 0 4px var(--ink);
 }
 
 #largeView .batch-card::before {
