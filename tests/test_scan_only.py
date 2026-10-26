@@ -348,6 +348,43 @@ class ScanOnlyTests(unittest.TestCase):
         self.assertIn("共享工作簿", self.card("A5")["message"])
         self.assertTrue(any("1 格未能标色（这是共享工作簿" in c.args[0] for c in log.call_args_list))
 
+    def test_add_falls_back_to_raw_invoke_when_excel_says_param_not_optional(self):
+        """用户机器上 FormatConditions.Add(Type=, Formula1=) 每格都报 0x8002000F：改用底层 Invoke 只传三个参数"""
+        error = RuntimeError(-2147352567, "例外が発生しました。", (0, None, None, None, 0, -2147352561), None)
+        real_area = FakeArea
+        calls = []
+
+        class Ole:
+            def __init__(self, rules):
+                self.rules = rules
+
+            def GetIDsOfNames(self, name):
+                return 7
+
+            def Invoke(self, dispid, lcid, flags, result, *args):
+                calls.append(args)
+                return FakeRules.Add(self.rules, Type=args[0], Formula1=args[2])
+
+        class PickyArea(real_area):
+            def __init__(self, sheet, members):
+                super().__init__(sheet, members)
+                rules = self.FormatConditions
+                rules._oleobj_ = Ole(rules)
+                rules.Add = Mock(side_effect=error)
+
+        patch.object(batch, "_raw_add", False).start()
+        patch("win32com.client.Dispatch", side_effect=lambda obj: obj, create=True).start()
+        with patch(f"{__name__}.FakeArea", PickyArea):
+            self.add_item("A5")
+            self.add_item("B7", row=7)
+            self.scan()
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][:2], (2, 1))
+        self.assertTrue(calls[0][2].startswith('=N("CHE_MARK_'))
+        self.assertIsNotNone(self.sheet.shown("A5"))
+        self.assertIsNotNone(self.sheet.shown("B7"))
+        self.assertTrue(batch._raw_add)
+
     def test_grouped_sheets_are_ungrouped_before_marking(self):
         """文件保存时几张表组合着（同时选中）：先只选中第一张可见的表，再标色"""
         self.sheet.Visible = -1
