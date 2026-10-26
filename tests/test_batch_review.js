@@ -310,3 +310,24 @@ test('cards are grouped by file in processing order, and a file box rechecks tha
   p.run(`toggleFileSelected('C:/Excel/x.xlsx')`);
   assert.equal(p.run('selectedIds.size'), 0);
 });
+
+test('auto adjust asks for the plan first, then starts only after confirming', async () => {
+  const p = page();
+  assert.match(p.run(`cardHtml(batchState.cards[1])`), /data-action="auto"/);
+  assert.doesNotMatch(p.run(`cardHtml(batchState.cards[0])`), /data-action="auto"/);
+  p.run(`post = async (url, payload) => { requests.push({url, payload});
+    return url.endsWith('auto_plan') ? {ok:true, run:['b'], extra:[], skip:[]} : {ok:true}; }`);
+  await p.run(`autoAdjust(['b'], '自动调整这一格')`);
+  assert.deepEqual(p.requests.map(r => r.url), ['/api/batch/auto_plan', '/api/batch/auto_adjust']);
+  assert.equal(JSON.stringify(p.requests[1].payload.card_ids), '["b"]');
+});
+
+test('auto adjust does not start when nothing can be adjusted', async () => {
+  const p = page();
+  p.run(`alerts = []; appAlert = async (m) => { alerts.push(m); };`);
+  p.run(`post = async (url, payload) => { requests.push({url, payload});
+    return {ok:true, run:[], extra:[], skip:[{id:'b', reason:'列宽不够'}]}; }`);
+  await p.run(`autoAdjust(['b'], '自动调整这一格')`);
+  assert.deepEqual(p.requests.map(r => r.url), ['/api/batch/auto_plan']);
+  assert.match(p.run('alerts[0]'), /列宽不够/);
+});

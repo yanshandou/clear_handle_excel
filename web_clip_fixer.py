@@ -328,6 +328,11 @@ class WebHandler(BaseHTTPRequestHandler):
             else:
                 options["highlight_off"] = True
             self._start_job("batch_scan", options)
+        elif self.path == "/api/batch/auto_plan":
+            # 「🤖 自动调整」先问一下：哪些交给自动、同行连带哪些、哪些跳过和原因，网页确认框里列出来
+            self._send_json({"ok": True, **batch.auto_adjust_plan(payload.get("card_ids"))})
+        elif self.path == "/api/batch/auto_adjust":
+            self._start_job("batch_scan", batch.start_auto_adjust(payload.get("card_ids")))
         elif self.path == "/api/batch/abandon":
             batch.abandon_pending()
             self._send_json({"ok": True})
