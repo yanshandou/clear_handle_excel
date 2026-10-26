@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core import reporter
+from core import batch, reporter
 
 
 class FindRecordedWorkbookTests(unittest.TestCase):
@@ -72,6 +72,38 @@ class FindWorkbookTests(unittest.TestCase):
                 reporter.find_workbook(name, [str(self.folder)])
         with self.assertRaises(ValueError):
             reporter.find_workbook("sub/a.xlsx", [])
+
+
+class StillNeedsTests(unittest.TestCase):
+    """扫描 / 复检进行中点文件名：做完的文件放行，没轮到和正在处理的拦下"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.a, self.b, self.c = (str(Path(self.tmp.name) / n) for n in ("a.xlsx", "b.xlsx", "c.xlsx"))
+
+    def test_scan_lets_finished_and_unrelated_files_open(self):
+        job = {"kind": "batch_scan", "workbooks": [self.a, self.b], "completed": [self.a]}
+        self.assertFalse(batch.still_needs(job, Path(self.a)))
+        self.assertTrue(batch.still_needs(job, Path(self.b)))
+        self.assertFalse(batch.still_needs(job, Path(self.c)))
+
+    def test_scan_blocks_when_finishing_touches_finished_files(self):
+        job = {"kind": "batch_scan", "workbooks": [self.a], "completed": [self.a], "to_manual": True}
+        self.assertTrue(batch.still_needs(job, Path(self.a)))
+        job = {"kind": "batch_scan", "workbooks": [self.a], "completed": [self.a],
+               "deferred_adjustments": {self.a: {}}}
+        self.assertTrue(batch.still_needs(job, Path(self.a)))
+
+    def test_recheck_blocks_current_and_queued_again(self):
+        job = {"kind": "batch_recheck", "workbooks": [self.a, self.b], "completed": [self.a], "current": self.b}
+        self.assertFalse(batch.still_needs(job, Path(self.a)))
+        self.assertTrue(batch.still_needs(job, Path(self.b)))
+        job["again"] = [self.a]
+        self.assertTrue(batch.still_needs(job, Path(self.a)))
+
+    def test_other_tasks_still_block(self):
+        self.assertTrue(batch.still_needs({"kind": "batch_commit", "completed": []}, Path(self.a)))
 
 
 if __name__ == "__main__":

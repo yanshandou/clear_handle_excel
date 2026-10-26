@@ -226,6 +226,24 @@ def _stopping(job: dict) -> bool:
     return bool(job.get("pause_requested") or job.get("to_manual"))
 
 
+def still_needs(job: dict, path: Path) -> bool:
+    """正在跑的扫描 / 复检任务之后还会不会打开这份文件（网页上点文件名时判断能不能放用户打开）。
+
+    还没轮到、正在处理的文件要等：用户在 Excel 里开着，后台轮到它时会因为文件被占用跳过。
+    已经做完、后面不再碰的文件，和不在这次任务里的文件，可以打开。调用方持有 STATE_LOCK。"""
+    kind = job.get("kind")
+    if kind not in {"batch_scan", "batch_recheck"} or "workbooks" not in job:
+        return True  # 提交、清除标色等任务：每份文件做什么不好判断，照旧等它结束
+    target = path.resolve()
+    mine = [p for p in job["workbooks"] if Path(p).resolve() == target]
+    if not mine:
+        return False
+    if kind == "batch_scan" and (job.get("to_manual") or any(p in job.get("deferred_adjustments", {}) for p in mine)):
+        return True  # 转人工收尾时要给全部文件标色；有没结算的写入也还要回来
+    return not all(p in job.get("completed", []) and p != job.get("current") and p not in job.get("again", [])
+                   for p in mine)
+
+
 def _waiting(card: dict) -> bool:
     """还没轮到自动处理的卡（旧数据没有 waiting 字段，按说明文字判断）"""
     return bool(card.get("waiting", card.get("message") == WAITING_MESSAGE))
