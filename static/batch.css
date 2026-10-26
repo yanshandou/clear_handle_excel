@@ -147,3 +147,4 @@
 .batch-file-actions .btn { font-size: 12px; padding: 6px 10px; }
 .batch-file-actions [data-file-action="select"][aria-pressed="true"] { border-color: #1e293b; background: #ffc21f; color: #1e293b; }
 .batch-card-title .batch-cell-link { font-family: Consolas, "Yu Gothic UI", monospace; }
+.batch-card .batch-auto-off { margin-top: 6px; padding: 6px 10px; border-radius: 8px; background: #fff4d6; color: #7a4a00; font-size: 12px; font-weight: 700; }

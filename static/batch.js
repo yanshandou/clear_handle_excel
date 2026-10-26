@@ -324,7 +324,8 @@ function cardHtml(card, large = false) {
     ${visuals}${problemHtml(card)}${handling ? `<p class="batch-handling">${esc(handling)}</p>` : ''}${card.text?.trim() ? `<p class="batch-text">${esc(card.text)}</p>` : ''}${card.message ? `<p class="batch-message">${esc(card.message)}</p>` : ''}
     <p class="batch-state">${card.finalized ? '已提交 · 可人工处理' : '颜色标记待提交'}${card.highlighted && card.after_kind !== 'scan_only' ? ' · 已在 Excel 中标色' : ''}${card.handed_over ? ' · 自动还没试过，可转回自动' : ''}${canMark(card) ? '' : ' · 后台处理完这个文件后可标记'}</p>
     ${card.verified ? '' : `<p class="batch-no-blue">${blueNote(card)}</p>`}
-    <div class="batch-card-footer"><button class="btn btn-outline" data-action="large"><span class="batch-icon-enlarge" aria-hidden="true"></span>大图审核</button>${card.color === 'yellow' && card.finalized ? `<button class="btn btn-outline" data-action="recheck" title="只重新检测这一格（只导出它所在的那一页），同文件其他黄卡不动；整份重查请用文件框上的「复检这个文件」">🎯 单项复检</button><button class="btn btn-outline" data-action="auto"${canAuto([card]) ? '' : ' disabled'} title="让程序自动加高这一格所在的行（同一行的黄卡一起），同文件其他黄卡不动${batchState.busy ? '；正在自动调整时会排到后面接着做' : ''}">🤖 自动调整</button>` : ''}</div></article>`;
+    ${card.auto_skip ? `<p class="batch-auto-off">🙅 不能自动调整：${esc(card.auto_skip)}</p>` : ''}
+    <div class="batch-card-footer"><button class="btn btn-outline" data-action="large"><span class="batch-icon-enlarge" aria-hidden="true"></span>大图审核</button>${card.color === 'yellow' && card.finalized ? `<button class="btn btn-outline" data-action="recheck" title="只重新检测这一格（只导出它所在的那一页），同文件其他黄卡不动；整份重查请用文件框上的「复检这个文件」">🎯 单项复检</button>${card.auto_skip ? '' : `<button class="btn btn-outline" data-action="auto"${canAuto([card]) ? '' : ' disabled'} title="让程序自动加高这一格所在的行（同一行的黄卡一起），同文件其他黄卡不动${batchState.busy ? '；正在自动调整时会排到后面接着做' : ''}">🤖 自动调整</button>`}` : ''}</div></article>`;
 }
 
 // 选中状态不进卡片 HTML：勾选只改类名，不重画卡片、不重新加载图片
@@ -513,7 +514,12 @@ function fileHeadHtml(key) {
   const recheck = manual.length
     ? `<button type="button" class="btn btn-outline" data-file-action="recheck" data-file="${esc(key)}"${busy ? ' disabled' : ''} title="整份文件所有表重新检测，这个文件的 ${manual.length} 张黄卡一起出结果">🔁 复检这个文件</button>`
     : '<button type="button" class="btn btn-outline" disabled title="这个文件还没有已提交的黄色人工项">🔁 复检这个文件</button>';
-  const auto = `<button type="button" class="btn btn-outline" data-file-action="auto" data-file="${esc(key)}"${!manual.length || !canAuto(manual) ? ' disabled' : ''} title="${manual.length ? `让程序自动加高这个文件的 ${manual.length} 张黄卡（能自动的才调整，确认框里会列出跳过的和原因）` : '这个文件还没有已提交的黄色人工项'}">🤖 自动调整这个文件</button>`;
+  // 自动试过没修好、文件没改过的黄卡不算：一张都不能自动时按钮不可点
+  const autoable = manual.filter(c => !c.auto_skip);
+  const autoTitle = !manual.length ? '这个文件还没有已提交的黄色人工项'
+    : !autoable.length ? `这个文件的 ${manual.length} 张黄卡都不能交给自动（卡片上写了原因），请人工处理`
+    : `让程序自动加高这个文件的 ${autoable.length} 张黄卡（能自动的才调整，确认框里会列出跳过的和原因）`;
+  const auto = `<button type="button" class="btn btn-outline" data-file-action="auto" data-file="${esc(key)}"${!autoable.length || !canAuto(autoable) ? ' disabled' : ''} title="${autoTitle}">🤖 自动调整这个文件${autoable.length && autoable.length < manual.length ? `（${autoable.length} 张）` : ''}</button>`;
   const queue = autoQueueBadge(key).match(/data-queue="(\w+)"/)?.[1];
   return `<header class="batch-file-head"${batchState.busy ? ` data-open="${blocked ? 'blocked' : 'ready'}"` : ''}${queue ? ` data-queue="${queue}"` : ''}>
     <div class="batch-file-title"><span class="batch-file-icon" aria-hidden="true">📄</span><div class="batch-file-name">${excelLinkHtml(esc(first.wb_name || key), target)}${sub ? `<p class="batch-file-path">${esc(sub)}</p>` : ''}</div></div>${autoQueueBadge(key)}${openState}
@@ -1004,7 +1010,7 @@ for (const id of ['cardList', 'largeCard']) $(id).addEventListener('click', even
     else if (fileButton.dataset.fileAction === 'recheck') {
       startJob('/api/batch/recheck', { card_ids: manualCards().filter(c => fileKey(c) === key).map(c => c.id) });
     } else if (fileButton.dataset.fileAction === 'auto') {
-      autoAdjust(manualCards().filter(c => fileKey(c) === key).map(c => c.id), '自动调整这个文件');
+      autoAdjust(manualCards().filter(c => fileKey(c) === key && !c.auto_skip).map(c => c.id), '自动调整这个文件');
     }
     return;
   }
