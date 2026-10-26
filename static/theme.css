@@ -488,21 +488,21 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 }
 
 /* 提示条：Combat Arms 击杀播报风（位置照旧在底部居中，只换样子）
-   - 半透明的深灰毛边笔刷当底（不要太浓），不放图标和血迹
-   - 粗斜体白字 + 黑描边；出错时黄字。笔刷叠在浅色页面上约 #4a4a4e，白字对比度 > 8:1、黄字 > 6:1
+   - 底是一笔毛笔水墨：黑色笔毛一根根横扫，起笔有墨团、收笔散开飞白，不是实心满铺；不放图标和血迹
+   - 粗斜体白字 + 黑描边；出错时黄字。字落在飞白空隙上也靠黑描边看得清
    - 出现时「砸」进来；纯装饰，没有边框和按钮样的东西，不挡点击 */
 .excel-open-toast {
   display: flex;
   align-items: center;
   min-height: 50px;
-  padding: 10px 40px;
+  padding: 12px 44px;
   border: 0;
   border-radius: 0;
   background: none;
   box-shadow: none;
   color: #fff;
   font-family: Impact, "Bahnschrift SemiBold", Bahnschrift, "Arial Black", "Microsoft YaHei UI", "Microsoft YaHei", "Yu Gothic UI", Meiryo, sans-serif;
-  font-size: 20px;
+  font-size: 18px;
   font-style: italic;
   font-weight: 700;
   letter-spacing: 0.5px;
@@ -512,14 +512,13 @@ input[type="checkbox"]:not(.hidden):focus-visible {
     0 0 6px rgba(0, 0, 0, 0.9);
 }
 
-/* 底：毛边笔刷，整体调淡 */
+/* 底：毛笔水墨一笔 */
 .excel-open-toast::before {
   content: "";
   position: absolute;
-  inset: -4px -14px;
+  inset: -10px -22px;
   z-index: -1;
   background: url("/static/icons/ca/brush.svg") center / 100% 100% no-repeat;
-  opacity: 0.72;
 }
 
 .excel-open-toast.is-error {
