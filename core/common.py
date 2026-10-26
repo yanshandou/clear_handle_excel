@@ -9,8 +9,8 @@ from typing import Any
 
 # 日期：20220929，或用同一种分隔符隔开的 2018-02-26 / 2018.02.26 / 2018/02/26（括号由比对原表时忽略）
 DATE_PATTERN = re.compile(r"(?<!\d)((?:19|20)\d{2})([-/.]?)(\d{2})\2(\d{2})(?!\d)")
-# 独立出现的英文备份标记（前后不是字母），如 _bak、Sheet1-BAK、一覧_old；Bakery、Threshold 不算
-BACKUP_WORD_PATTERN = re.compile(r"(?<![a-z])(?:bak|backup|old|copy)(?![a-z])", re.IGNORECASE)
+# 独立出现的英文备份标记（前后不是字母），如 _bak、Sheet1-BAK、一覧_old、写真管理bk；Bakery、Threshold、Bkup 不算
+BACKUP_WORD_PATTERN = re.compile(r"(?<![a-z])(?:bak|backup|bk|old|copy)(?![a-z])", re.IGNORECASE)
 # 日文/中文备份标记；「旧」不含「新旧」「復旧」（如 新旧対照表、障害復旧手順 是正式资料）
 BRACKET_GROUP_PATTERN = re.compile(r"\([^()]*\)|\[[^\[\]]*\]|【[^【】]*】|「[^「」]*」|『[^『』]*』")
 NEW_PREFIX = "新"
@@ -93,7 +93,7 @@ def has_backup_marker(sheet_name: str) -> bool:
     只是候选条件，是否真的是备份表见 find_backup_sheets。
     """
     return bool(
-        BACKUP_WORD_PATTERN.search(sheet_name)
+        BACKUP_WORD_PATTERN.search(unicodedata.normalize("NFKC", sheet_name))
         or BACKUP_TEXT_PATTERN.search(sheet_name)
         or EXCEL_COPY_SUFFIX_PATTERN.search(unicodedata.normalize("NFKC", sheet_name))
         or _latest_date_in(sheet_name) is not None
