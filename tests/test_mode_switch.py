@@ -241,6 +241,17 @@ class ModeSwitchTests(unittest.TestCase):
         Path(self.paths[0]).write_bytes(b"edited by hand, longer")
         self.assertEqual(batch.auto_adjust_plan([cards["C7"]["id"]])["run"], [cards["C7"]["id"]])
 
+    def test_snapshot_hides_auto_button_for_cells_auto_already_failed(self):
+        cards = self.scanned_only()
+        shown = {c["id"]: c for c in batch.snapshot()["cards"]}
+        self.assertEqual(shown[cards["A5"]["id"]]["auto_skip"], "")
+        self.assertIn("文件之后没改过", shown[cards["C7"]["id"]]["auto_skip"])
+        self.assertIn("###", shown[cards["D9"]["id"]]["auto_skip"])
+        self.assertNotIn("auto_skip", shown[cards["E11"]["id"]])  # 没提交的卡本来就没有自动调整按钮
+        Path(self.paths[0]).write_bytes(b"edited by you, a longer file")
+        shown = {c["id"]: c for c in batch.snapshot()["cards"]}
+        self.assertEqual(shown[cards["C7"]["id"]]["auto_skip"], "")  # 你改过文件：按钮回来
+
     def test_auto_adjust_refuses_when_nothing_can_run(self):
         cards = self.scanned_only()
         with self.assertRaisesRegex(ValueError, "都不能自动调整"):

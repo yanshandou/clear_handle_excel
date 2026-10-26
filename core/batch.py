@@ -369,6 +369,9 @@ def _image_url(name: str) -> str:
 def snapshot() -> dict:
     with wf.STATE_LOCK:
         cards = []
+        by_cell: dict[tuple[str, str, str], list[dict]] = {}
+        for item in wf.STATE["items"].values():
+            by_cell.setdefault(_cell(item), []).append(item)
         for card in sorted(_data()["cards"].values(), key=lambda c: c["seq"]):
             if card.get("dismissed") or not wf.in_current_folder(card["wb_path"]):
                 continue
@@ -382,6 +385,9 @@ def snapshot() -> dict:
                 result["row_height"] = {"base": row["base"], "applied": row["applied"], "saved": row["saved"],
                                         "wrap": card.get("cell_addr") in row.get("wrap", [])}
             result["adoptable"] = _adoptable(card)
+            if card["color"] == "yellow" and card.get("finalized"):
+                # 自动试过没修好（文件没改过）等不能交给自动的黄卡：页面上不给「🤖 自动调整」按钮，写明原因
+                result["auto_skip"] = _auto_skip_reason(card, by_cell.get(_cell(card), []))
             result["highlighted"] = _shows_mark(_marks().get(card["id"]))
             result["images"] = {
                 which: _image_url(name) for which, name in card.get("fix_images", {}).items()
@@ -1760,11 +1766,11 @@ def _auto_retry_blocked(card: dict) -> bool:
     return done == current if done is not None else _unchanged_since_check(path)
 
 
-def _auto_skip_reason(card: dict) -> str:
+def _auto_skip_reason(card: dict, items: list[dict] | None = None) -> str:
     """「🤖 自动调整」时这一格为什么不能交给自动；能交给自动返回空字符串。调用方持有 STATE_LOCK"""
     if card["color"] != "yellow" or not card.get("finalized"):
         return "颜色标记还没提交，请先提交黄色标记"
-    items = _items_at(card)
+    items = _items_at(card) if items is None else items
     if card.get("message") == TOUCHED_MESSAGE:
         return "这一行的行高被你改过，自动不再改这一行"
     if any(autofix.column_width_only(it) for it in items):
