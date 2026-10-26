@@ -35,6 +35,9 @@
     if (box.parentElement !== host) host.appendChild(box);
     box.textContent = text;
     box.classList.toggle('is-error', !!isError);
+    // 每条新提示都重新「砸」进来一次（像游戏里每次击杀都重播播报）
+    box.classList.remove('is-visible');
+    void box.offsetWidth;
     box.classList.add('is-visible');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => box.classList.remove('is-visible'), isError ? 6000 : 2500);
