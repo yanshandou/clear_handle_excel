@@ -3,6 +3,28 @@
 (function () {
   const opening = new Set(); // 列表每次刷新都会重建元素，不能靠元素上的 class 防连点
 
+  // 点过的链接（结果弹窗里标「✓ 已打开」，最后点的那个加框）：弹窗每次都重建，按文件 / 表 / 格记住；
+  // 存 sessionStorage，刷新页面也还在，关掉浏览器就清空
+  const VISITED_KEY = 'clear_handle_excel.openedLinks';
+  const linkKey = t => [t.folder, t.file, t.sheet, t.cell].map(v => v || '').join('\0');
+  let visited = new Set();
+  let lastKey = '';
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(VISITED_KEY) || '{}');
+    visited = new Set(saved.keys || []);
+    lastKey = saved.last || '';
+  } catch (_) {}
+  function markVisited(link) {
+    const key = linkKey(link.dataset);
+    visited.add(key);
+    lastKey = key;
+    document.querySelectorAll('.excel-link.is-last').forEach(el => el.classList.remove('is-last'));
+    document.querySelectorAll('.excel-link').forEach(el => {
+      if (linkKey(el.dataset) === key) el.classList.add('is-visited', 'is-last');
+    });
+    try { sessionStorage.setItem(VISITED_KEY, JSON.stringify({ keys: [...visited].slice(-500), last: lastKey })); } catch (_) {}
+  }
+
   function escapeAttr(value) {
     return String(value ?? '').replace(/[&<>"']/g, ch => (
       { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -16,7 +38,9 @@
       .map(key => ` data-${key}="${escapeAttr(target[key])}"`).join('');
     const where = target.sheet ? `并跳到 ${target.sheet}${target.cell ? `!${target.cell}` : ''}` : '';
     const title = target.blocked ? `暂时不能打开：${target.blocked}` : `点击在 Excel 中打开${where}`;
-    return `<a href="#" class="excel-link ${target.blocked ? 'is-blocked ' : ''}${extraClass}"${data}`
+    const key = linkKey(target);
+    const seen = visited.has(key) ? `is-visited ${key === lastKey ? 'is-last ' : ''}` : '';
+    return `<a href="#" class="excel-link ${target.blocked ? 'is-blocked ' : ''}${seen}${extraClass}"${data}`
       + `${target.record ? ' data-record="1"' : ''}${target.blocked ? ' aria-disabled="true"' : ''}`
       + ` title="${escapeAttr(title)}">${labelHtml}</a>`;
   };
@@ -98,6 +122,9 @@
     e.preventDefault();
     e.stopPropagation();
     if (link.dataset.blocked) toast(`暂时不能打开：${link.dataset.blocked}`, true);
-    else openExcel(link);
+    else {
+      markVisited(link);
+      openExcel(link);
+    }
   }, true);
 })();

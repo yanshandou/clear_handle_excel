@@ -2518,6 +2518,35 @@ input[type="checkbox"]:not(.hidden):checked::before {
   overflow-wrap: anywhere;
 }
 
+/* 点过的文件 / 格子：淡蓝底 +「✓ 已打开」，最后点的那个再加蓝框（只改颜色和边框，不挪位置） */
+.unhighlight-files .excel-link.is-visited::after {
+  content: "✓ 已打开";
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--purple-ink);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 800;
+  vertical-align: 1px;
+}
+
+.unhighlight-file:has(> summary .excel-link.is-visited),
+.unhighlight-file li:has(.excel-link.is-visited) {
+  background: var(--purple-soft);
+}
+
+.unhighlight-file:has(> summary .excel-link.is-last) {
+  border-color: var(--purple);
+  box-shadow: 0 0 0 3px var(--purple-2);
+}
+
+.unhighlight-file li:has(.excel-link.is-last) {
+  box-shadow: inset 0 0 0 2px var(--purple);
+  border-radius: 6px;
+}
+
 @media (max-width: 560px) {
   .unhighlight-file li { grid-template-columns: 1.6em 1fr; }
   .unhighlight-reason { grid-column: 2; }

@@ -258,10 +258,11 @@ class FakeRange:
     def MergeArea(self):
         area = next(a for a in self.sheet.merged if (self.row, self.col) in a)
         first, last = min(area), max(area)
-        return Mock(Address=lambda *a: f"{col_name(first[1])}{first[0]}:{col_name(last[1])}{last[0]}")
+        return Mock(Address=f"${col_name(first[1])}${first[0]}:${col_name(last[1])}${last[0]}")
 
-    def Address(self, *args):
-        return f"{col_name(self.col)}{self.row}"
+    @property
+    def Address(self):  # pywin32 里 Address 是属性，返回带 $ 的字符串
+        return f"${col_name(self.col)}${self.row}"
 
 
 class FakeSheet:

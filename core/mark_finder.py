@@ -189,7 +189,8 @@ def scan_file_excel(excel: Any, path: Path, styles: list[tuple[str, str]], recor
                 for cell in area.Cells:
                     if int(cell.Interior.Pattern) != XL_SOLID:
                         continue
-                    key = cell.MergeArea.Address(False, False) if cell.MergeCells else cell.Address(False, False)
+                    # Address 在 pywin32 里是属性（带 $ 的字符串），不能带参数调用
+                    key = str((cell.MergeArea if cell.MergeCells else cell).Address).replace("$", "")
                     if key in seen:
                         continue
                     seen.add(key)
