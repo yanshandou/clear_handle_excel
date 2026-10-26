@@ -1533,6 +1533,48 @@ button.preview-sheet-tag:active {
   }
 }
 
+/* 还没有修改后的图：只放一张修改前图，占满整行、四角圆角、不斜切不放 VS，图放大一些方便判断。
+   这张图既是 first-of-type 也是 last-of-type，用 :only-of-type 盖过左右两块和窄屏 / 大图审核的规则 */
+.batch-shots.is-single {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+}
+
+.batch-shots.is-single figure:only-of-type,
+#largeView .batch-shots.is-single figure:only-of-type {
+  --vs-top: #ffe27a;
+  --vs-bot: #ffa41b;
+  --vs-clip: none;
+  --vs-r1: 1; --vs-r2: 1; --vs-r3: 1; --vs-r4: 1;
+  padding: 10px 12px 12px;
+}
+
+.batch-shots.is-single figure:only-of-type figcaption,
+#largeView .batch-shots.is-single figure:only-of-type figcaption {
+  padding: 0;
+  text-align: left;
+}
+
+.batch-card .batch-shots .batch-after-note {
+  margin: 6px 0 0;
+  padding: 4px 10px;
+  border: 1.5px dashed color-mix(in srgb, var(--ink) 35%, transparent);
+  border-radius: 8px;
+  color: var(--ink-2, #334155);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+#cardList .batch-shots.is-single img,
+#cardList .batch-shots.is-single .batch-missing {
+  height: 200px;
+}
+
+#largeView .batch-shots.is-single img {
+  max-height: 62vh;
+}
+
 .batch-card .batch-problem {
   background: #fff0e6;
   color: #a33a00;
