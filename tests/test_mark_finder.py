@@ -62,7 +62,8 @@ class MarkFinderTests(unittest.TestCase):
         self.assertEqual({h["addr"] for h in hits if h["recorded"]}, {"A5"})
 
     def test_background_run_reports_each_file_and_unreadable_formats(self):
-        with patch.object(self.wf, "log_msg") as log:
+        with patch.object(self.wf, "log_msg") as log, \
+                patch("core.excel_ops.start_background_excel", side_effect=RuntimeError("没有 Excel")):
             mark_finder.start(str(self.folder), MAGENTA)
             for _ in range(100):
                 if not mark_finder.status()["running"]:
@@ -72,7 +73,7 @@ class MarkFinderTests(unittest.TestCase):
         self.assertEqual(result["total"], 2)
         files = {f["name"]: f for f in result["files"]}
         self.assertEqual(len(files["book.xlsx"]["hits"]), 3)
-        self.assertIn("读不了", files["old.xls"]["error"])
+        self.assertIn("用 Excel 读取失败", files["old.xls"]["error"])
         self.assertTrue(any("3 格底色是标记色" in c.args[0] for c in log.call_args_list))
 
     def old_copy(self, edit=None):
@@ -209,6 +210,118 @@ class MarkFinderTests(unittest.TestCase):
     def test_bad_colors_are_refused(self):
         with self.assertRaises(ValueError):
             mark_finder._styles([{"fill": "red", "font": "#FFFFFF"}])
+
+
+def bgr(hex_color):
+    return mark_finder._excel_color("#" + hex_color)
+
+
+def col_name(col):
+    return "ABCDEFGHIJ"[col - 1]
+
+
+class FakeRange:
+    """Excel Range 替身：整块颜色一样时 Interior.Color 给颜色，不一样给 None（和真 Excel 一样）"""
+    def __init__(self, sheet, row, col, rows=1, cols=1):
+        self.sheet, self.row, self.col, self.n_rows, self.n_cols = sheet, row, col, rows, cols
+        self.Rows, self.Columns = Mock(Count=rows), Mock(Count=cols)
+        sheet.calls += 1
+
+    def _cells(self):
+        return [(r, c) for r in range(self.row, self.row + self.n_rows) for c in range(self.col, self.col + self.n_cols)]
+
+    @property
+    def Interior(self):
+        colors = {self.sheet.fill.get(rc, (bgr("FFFFFF"), -4142))[0] for rc in self._cells()}
+        pattern = self.sheet.fill.get((self.row, self.col), (0, -4142))[1]
+        return Mock(Color=colors.pop() if len(colors) == 1 else None, Pattern=pattern)
+
+    @property
+    def Font(self):
+        return Mock(Color=self.sheet.font.get((self.row, self.col), 0))
+
+    def Offset(self, rows, cols):
+        return FakeRange(self.sheet, self.row + rows, self.col + cols, self.n_rows, self.n_cols)
+
+    def Resize(self, rows, cols):
+        return FakeRange(self.sheet, self.row, self.col, rows, cols)
+
+    @property
+    def Cells(self):
+        return [FakeRange(self.sheet, r, c) for r, c in self._cells()]
+
+    @property
+    def MergeCells(self):
+        return any((self.row, self.col) in area for area in self.sheet.merged)
+
+    @property
+    def MergeArea(self):
+        area = next(a for a in self.sheet.merged if (self.row, self.col) in a)
+        first, last = min(area), max(area)
+        return Mock(Address=lambda *a: f"{col_name(first[1])}{first[0]}:{col_name(last[1])}{last[0]}")
+
+    def Address(self, *args):
+        return f"{col_name(self.col)}{self.row}"
+
+
+class FakeSheet:
+    def __init__(self, name, rows, cols):
+        self.Name, self.rows, self.cols = name, rows, cols
+        self.fill, self.font, self.merged, self.calls = {}, {}, [], 0
+
+    def paint(self, row, col, fill, font=None):
+        self.fill[(row, col)] = (bgr(fill), 1)
+        if font:
+            self.font[(row, col)] = bgr(font)
+
+    @property
+    def UsedRange(self):
+        return FakeRange(self, 1, 1, self.rows, self.cols)
+
+    def Range(self, addr):
+        return FakeRange(self, int(addr[1:]), "ABCDEFGHIJ".index(addr[0]) + 1)
+
+
+class ExcelReadTests(unittest.TestCase):
+    """.xls / .xlsb 用后台 Excel 读颜色"""
+    def scan(self, sheet, suffix=".xls", saved=None, recorded=()):
+        book = Mock(Worksheets=[sheet])
+        excel = Mock()
+        excel.Workbooks.Open.return_value = book
+        hits = mark_finder.scan_file_excel(excel, Path("C:/x/book" + suffix), mark_finder._styles(MAGENTA),
+                                           set(recorded), saved or {})
+        self.assertEqual(excel.Workbooks.Open.call_args.kwargs["ReadOnly"], True)
+        book.Close.assert_called_once_with(SaveChanges=False)
+        return {h["addr"]: h for h in hits}
+
+    def test_marker_cells_are_found_merged_area_once(self):
+        sheet = FakeSheet("明細", 40, 8)
+        sheet.paint(5, 1, "C0007A", "FFFFFF")      # A5 底色字色都对上
+        sheet.paint(7, 2, "C0007A", "123456")      # B7 只有底色
+        sheet.paint(9, 3, "C0007B", "FFFFFF")      # 差一点不算
+        sheet.paint(3, 4, "FFFF00")                # 别的颜色
+        sheet.merged.append({(2, c) for c in (5, 6, 7)})
+        for c in (5, 6, 7):
+            sheet.paint(2, c, "000000", "FFFF00")  # E2:G2 合并区域算一格
+        hits = self.scan(sheet, recorded=[("明細", "A5")])
+        self.assertEqual({a: h["match"] for a, h in hits.items()}, {"A5": "both", "B7": "fill", "E2:G2": "both"})
+        self.assertEqual(hits["B7"]["font"], "#123456")
+        self.assertTrue(hits["A5"]["recorded"])
+        self.assertLess(sheet.calls, 40 * 8)  # 对半切开找，不是逐格读
+
+    def test_xls_color_replaced_by_palette_color_still_counts(self):
+        sheet = FakeSheet("表", 10, 3)
+        sheet.paint(4, 2, "993366", "FFFFFF")      # 存进 .xls 后标记色被换成了 56 色里的这一种
+        saved = {("C0007A", "FFFFFF"): ("993366", "FFFFFF")}
+        hits = self.scan(sheet, saved=saved)
+        self.assertEqual(hits["B4"]["match"], "both")
+        self.assertTrue(hits["B4"]["approx"])
+        self.assertEqual(self.scan(sheet, ".xlsb", saved=saved), {})  # .xlsb 不会换色
+
+    def test_blank_sheet_is_one_call(self):
+        sheet = FakeSheet("空", 500, 10)
+        self.assertEqual(self.scan(sheet), {})
+        self.assertLessEqual(sheet.calls, 2)
 
 
 if __name__ == "__main__":
