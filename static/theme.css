@@ -488,15 +488,14 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 }
 
 /* 提示条：Combat Arms 击杀播报风（位置照旧在底部居中，只换样子）
-   - 黑色毛边笔刷当底，上沿露出两团红色血迹；左边红血迹里一个金色图标（普通 = 准星，出错 = 骷髅）
-   - 粗斜体白字 + 黑描边；出错时黄字。字都压在纯黑笔刷上，对比度 > 15:1
+   - 半透明的深灰毛边笔刷当底（不要太浓），不放图标和血迹
+   - 粗斜体白字 + 黑描边；出错时黄字。笔刷叠在浅色页面上约 #4a4a4e，白字对比度 > 8:1、黄字 > 6:1
    - 出现时「砸」进来；纯装饰，没有边框和按钮样的东西，不挡点击 */
 .excel-open-toast {
-  --ca-emblem: url("/static/icons/ca/crosshair.svg");
   display: flex;
   align-items: center;
-  min-height: 54px;
-  padding: 12px 40px 12px 76px;
+  min-height: 50px;
+  padding: 10px 40px;
   border: 0;
   border-radius: 0;
   background: none;
@@ -511,39 +510,19 @@ input[type="checkbox"]:not(.hidden):focus-visible {
   text-shadow:
     2px 2px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000,
     0 0 6px rgba(0, 0, 0, 0.9);
-  filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.35));
 }
 
-/* 底：黑笔刷在上，两团红血迹在下面、从上沿露出来 */
+/* 底：毛边笔刷，整体调淡 */
 .excel-open-toast::before {
   content: "";
   position: absolute;
-  inset: -22px -14px -4px -18px;
+  inset: -4px -14px;
   z-index: -1;
-  background:
-    url("/static/icons/ca/brush.svg") center bottom / 100% calc(100% - 18px) no-repeat,
-    url("/static/icons/ca/splatter.svg") right 14% top 0 / 96px 60px no-repeat,
-    url("/static/icons/ca/splatter.svg") left 42% top 4px / 130px 52px no-repeat,
-    url("/static/icons/ca/splatter.svg") right 2% bottom 0 / 54px 40px no-repeat;
-}
-
-/* 左边图标：红血迹 + 金色准星 / 骷髅，比笔刷大一圈、溢出上下沿 */
-.excel-open-toast::after {
-  content: "";
-  position: absolute;
-  left: -18px;
-  top: 50%;
-  width: 90px;
-  height: 90px;
-  margin-top: -47px;
-  z-index: -1;
-  background:
-    var(--ca-emblem) center / 42px 42px no-repeat,
-    url("/static/icons/ca/splatter.svg") center / contain no-repeat;
+  background: url("/static/icons/ca/brush.svg") center / 100% 100% no-repeat;
+  opacity: 0.72;
 }
 
 .excel-open-toast.is-error {
-  --ca-emblem: url("/static/icons/ca/skull.svg");
   background: none;
   color: #ffd21f;
 }
