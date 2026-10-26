@@ -332,7 +332,11 @@ class WebHandler(BaseHTTPRequestHandler):
             # 「🤖 自动调整」先问一下：哪些交给自动、同行连带哪些、哪些跳过和原因，网页确认框里列出来
             self._send_json({"ok": True, **batch.auto_adjust_plan(payload.get("card_ids"))})
         elif self.path == "/api/batch/auto_adjust":
-            self._start_job("batch_scan", batch.start_auto_adjust(payload.get("card_ids")))
+            # 自动调整正在跑：排进同一个任务，当前文件做完接着做
+            if batch.enqueue_auto_adjust(payload.get("card_ids")):
+                self._send_json({"ok": True, "queued": True})
+            else:
+                self._start_job("batch_scan", batch.start_auto_adjust(payload.get("card_ids")))
         elif self.path == "/api/batch/abandon":
             batch.abandon_pending()
             self._send_json({"ok": True})

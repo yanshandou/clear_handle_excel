@@ -331,3 +331,32 @@ test('auto adjust does not start when nothing can be adjusted', async () => {
   assert.deepEqual(p.requests.map(r => r.url), ['/api/batch/auto_plan']);
   assert.match(p.run('alerts[0]'), /列宽不够/);
 });
+
+test('while auto adjust runs, other files can change color and queue auto adjust', () => {
+  const p = page();
+  p.run(`batchState.cards[0].wb_path = 'A.xlsx'; batchState.cards[1].wb_path = 'B.xlsx';
+    batchState.busy = true; batchState.open_blocked = {'A.xlsx': '后台正在处理这份文件，处理完才能打开'};
+    batchState.job = {kind: 'batch_scan', options: {picked: true}, workbooks: ['A.xlsx'], completed: []};`);
+  assert.equal(p.run(`canMark(batchState.cards[0])`), false);
+  assert.equal(p.run(`canMark(batchState.cards[1])`), true);
+  assert.equal(p.run(`canAuto([batchState.cards[1]])`), true);
+  assert.equal(p.run(`canAuto([batchState.cards[0], batchState.cards[1]])`), false);
+  p.run(`batchState.job.closing = true`);
+  assert.equal(p.run(`canAuto([batchState.cards[1]])`), false);
+  // 提交等其他任务：照旧全部等它结束
+  p.run(`batchState.job = {kind: 'batch_commit', options: {}, workbooks: ['A.xlsx']}`);
+  assert.equal(p.run(`canMark(batchState.cards[1])`), false);
+  p.run(`batchState.busy = false`);
+  assert.equal(p.run(`canMark(batchState.cards[0]) && canAuto([batchState.cards[0]])`), true);
+});
+
+test('file box says which files are queued for auto adjust', () => {
+  const p = page();
+  p.run(`batchState.busy = true; batchState.job = {kind: 'batch_scan', options: {picked: true},
+    workbooks: ['A.xlsx', 'B.xlsx', 'C.xlsx', 'D.xlsx'], completed: ['A.xlsx'], file_errors: {'B.xlsx': 'x'}, repairing: 'C.xlsx'};`);
+  assert.match(p.run(`autoQueueBadge('A.xlsx')`), /自动调整完成/);
+  assert.match(p.run(`autoQueueBadge('B.xlsx')`), /出错/);
+  assert.match(p.run(`autoQueueBadge('C.xlsx')`), /正在自动调整/);
+  assert.match(p.run(`autoQueueBadge('D.xlsx')`), /排队等自动调整 · 前面还有 1 个文件/);
+  assert.equal(p.run(`autoQueueBadge('E.xlsx')`), '');
+});

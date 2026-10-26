@@ -2650,6 +2650,19 @@ input[type="checkbox"]:not(.hidden):checked::before {
   opacity: 0.6;
 }
 
+/* 「🤖 自动调整」排队中 / 正在调整的文件：不变黑白，换成琥珀色 / 蓝色虚线框，一眼看出在排队 */
+.batch-file:has(> .batch-file-head[data-queue="waiting"]),
+.batch-file:has(> .batch-file-head[data-queue="running"]) {
+  filter: none;
+  background: #fffaf0;
+  border-color: #b7791f;
+}
+
+.batch-file:has(> .batch-file-head[data-queue="running"]) {
+  background: #f3f7ff;
+  border-color: #1d4ed8;
+}
+
 .excel-link.is-blocked,
 .excel-link.is-blocked:hover,
 .batch-file-name .excel-link.is-blocked,

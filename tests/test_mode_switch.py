@@ -300,6 +300,99 @@ class ModeSwitchTests(unittest.TestCase):
         self.assertEqual(batch._data()["auto_versions"][self.paths[0]],
                          self.wf._file_version(Path(self.paths[0])))
 
+    def test_colors_can_change_while_auto_adjust_runs_except_files_it_still_needs(self):
+        cards = self.scanned_only()
+        other, _ = self.add(self.paths[1], "A3", 3)
+        batch._hand_over(self.paths[1])
+        self.wf.STATE["busy"] = True
+        self.wf.STATE["job"] = {"kind": "batch_scan", "options": {"picked": True, "back_to_auto": True, "card_ids": []},
+                                "completed": [], "scanned": [], "pending_adjustment": None, "status": "running",
+                                "workbooks": [self.paths[0]]}
+        batch.mark(other["id"], "green")  # 不在这次任务里的文件：照常改
+        self.assertEqual(other["color"], "green")
+        with self.assertRaisesRegex(ValueError, "才能改颜色"):
+            batch.mark(cards["A5"]["id"], "green")
+        with self.assertRaisesRegex(ValueError, "a.xlsx"):
+            batch.mark_many([other["id"], cards["A5"]["id"]], "yellow")
+        self.assertEqual(other["color"], "green")  # 一张不行就全部不改
+        self.wf.STATE["job"]["completed"] = [self.paths[0]]
+        batch.mark(cards["A5"]["id"], "green")  # 做完的文件也能改了
+        # 提交等其他任务照旧等它结束
+        self.wf.STATE["job"] = {"kind": "batch_commit", "options": {"card_ids": []}, "completed": [],
+                                "workbooks": [self.paths[0]]}
+        with self.assertRaisesRegex(ValueError, "结束或暂停后再审核"):
+            batch.mark(other["id"], "yellow")
+
+    def test_auto_adjust_clicked_during_a_running_one_is_queued_into_it(self):
+        cards = self.scanned_only()
+        other, item = self.add(self.paths[1], "A3", 3)
+        item.update(page_index=0, bbox=[0, 0, 1, 1])
+        batch._hand_over(self.paths[1])
+        self.assertFalse(batch.enqueue_auto_adjust([other["id"]]))  # 没有在跑的：另起任务
+        options = batch.start_auto_adjust([cards["A5"]["id"]])
+        self.wf.STATE["busy"] = True
+        self.wf.STATE["job"] = self.job = {"kind": "batch_scan", "options": options, "completed": [],
+                                           "pending_adjustment": None, "status": "running"}
+        order = []
+
+        def back(excel, session, path, picked=False):
+            order.append(("back", path))
+            if path == self.paths[0]:
+                # 第一个文件还在跑：同一文件不能再排，另一个文件排进来
+                with self.assertRaisesRegex(ValueError, "再点自动调整"):
+                    batch.enqueue_auto_adjust([cards["C7"]["id"]])
+                self.assertTrue(batch.enqueue_auto_adjust([other["id"]]))
+                self.assertTrue(other["auto_pick"])
+
+        with patch.object(batch, "_back_to_auto", side_effect=back), patch.object(batch, "_refresh"), \
+                patch.object(batch, "_repair_file", side_effect=lambda e, s, path: order.append(("fix", path))), \
+                patch.object(batch, "_sync_highlights_safely"), patch.object(batch, "add_to_execution_batch") as add:
+            self.assertEqual(batch.run(), self.paths)
+        self.assertEqual(order, [("back", self.paths[0]), ("fix", self.paths[0]),
+                                 ("back", self.paths[1]), ("fix", self.paths[1])])
+        add.assert_called_once_with(Path(self.wf.STATE["folder"]), [Path(self.paths[1])])
+        self.assertEqual(self.job["completed"], self.paths)
+        self.assertIn(other["id"], self.job["options"]["card_ids"])
+        # 收尾后再点就另起任务
+        self.assertTrue(self.job["closing"])
+        self.assertFalse(batch.enqueue_auto_adjust([other["id"]]))
+
+    def test_finished_file_can_be_queued_again_and_failed_file_is_not_retried_forever(self):
+        cards = self.scanned_only()
+        options = batch.start_auto_adjust([cards["A5"]["id"]])
+        self.wf.STATE["busy"] = True
+        self.wf.STATE["job"] = self.job = {"kind": "batch_scan", "options": options, "completed": [],
+                                           "pending_adjustment": None, "status": "running"}
+        order = []
+        other, item = self.add(self.paths[1], "A3", 3)
+        item.update(page_index=0, bbox=[0, 0, 1, 1])
+        batch._hand_over(self.paths[1])
+
+        def back(excel, session, path, picked=False):
+            order.append(("back", path))
+            if path == self.paths[1]:
+                raise ValueError("文件被占用")
+
+        def repair(excel, session, path):
+            order.append(("fix", path))
+            if order.count(("fix", self.paths[0])) == 1:
+                # 第一个文件修完前把第二个文件排进来；第二个出错跳过，不会一直重试
+                self.assertTrue(batch.enqueue_auto_adjust([other["id"]]))
+
+        with patch.object(batch, "_back_to_auto", side_effect=back), patch.object(batch, "_refresh"), \
+                patch.object(batch, "_repair_file", side_effect=repair), patch.object(batch, "_finish_picked"), \
+                patch.object(batch, "_sync_highlights_safely"), patch.object(batch, "add_to_execution_batch"):
+            batch.run()
+        self.assertEqual(order, [("back", self.paths[0]), ("fix", self.paths[0]), ("back", self.paths[1])])
+        self.assertEqual(self.job["completed"], [self.paths[0]])
+        # 做完的文件可以再排：从做完里拿出来重新做
+        self.job.update(closing=False)
+        with patch.object(batch, "add_to_execution_batch"):
+            self.assertTrue(batch.enqueue_auto_adjust([cards["A5"]["id"]]))
+        self.assertNotIn(self.paths[0], self.job["completed"])
+        self.assertNotIn(self.paths[0], self.job["scanned"])
+        self.assertEqual(self.job["rounds"][self.paths[0]], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
