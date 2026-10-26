@@ -21,6 +21,24 @@
       + ` title="${escapeAttr(title)}">${labelHtml}</a>`;
   };
 
+  // 水墨背景：5 张长短不同的图（宽/高比），挑形状最接近的那张，再拉到刚好盖住文字
+  const INK_RATIOS = [1.86, 2.3, 2.61, 3.16, 3.05];
+  function fitInk(box) {
+    const cs = getComputedStyle(box);
+    const textW = box.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const textH = box.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    const h = Math.max(96, textH * 2.4);
+    const w = Math.max(textW / 0.62, h * INK_RATIOS[0]);  // 中间约六成是浓墨，字放在那里
+    const want = w / h;
+    let best = 0;
+    INK_RATIOS.forEach((r, i) => {
+      if (Math.abs(Math.log(r / want)) < Math.abs(Math.log(INK_RATIOS[best] / want))) best = i;
+    });
+    box.style.setProperty('--ink-img', `url("/static/icons/ca/ink_${best + 1}.png")`);
+    box.style.setProperty('--ink-w', `${Math.round(w)}px`);
+    box.style.setProperty('--ink-h', `${Math.round(h)}px`);
+  }
+
   let toastTimer = null;
   function toast(text, isError) {
     let box = document.getElementById('excelOpenToast');
@@ -35,9 +53,9 @@
     if (box.parentElement !== host) host.appendChild(box);
     box.textContent = text;
     box.classList.toggle('is-error', !!isError);
-    // 每条新提示都重新「砸」进来一次（像游戏里每次击杀都重播播报）
+    // 每条新提示都重新从小变大淡入一次（像游戏里每次击杀都重播播报）
     box.classList.remove('is-visible');
-    void box.offsetWidth;
+    fitInk(box);
     box.classList.add('is-visible');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => box.classList.remove('is-visible'), isError ? 6000 : 2500);
