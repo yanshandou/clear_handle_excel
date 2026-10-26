@@ -87,8 +87,31 @@ class FakeCells:
         return self.sheet.cell(f"{chr(64 + col)}{row}")
 
 
+class FakeTab:
+    """工作表标签颜色：ColorIndex -4142 表示没颜色，设 Color 后有颜色"""
+    def __init__(self):
+        object.__setattr__(self, "ColorIndex", -4142)
+        object.__setattr__(self, "Color", 16777215)
+        object.__setattr__(self, "ThemeColor", 0)
+        object.__setattr__(self, "TintAndShade", 0.0)
+
+    def __setattr__(self, name, value):
+        object.__setattr__(self, name, value)
+        if name == "Color":
+            object.__setattr__(self, "ColorIndex", 46)
+            object.__setattr__(self, "ThemeColor", 0)
+        elif name == "ThemeColor":  # 主题色：Color 跟着变成主题里的颜色
+            object.__setattr__(self, "ColorIndex", 46)
+            object.__setattr__(self, "Color", 0x100000 + value)
+        elif name == "ColorIndex" and value == -4142:
+            object.__setattr__(self, "Color", 16777215)
+            object.__setattr__(self, "ThemeColor", 0)
+
+
 class FakeSheet:
     def __init__(self):
+        self.Tab = FakeTab()
+        self.CodeName = "Sheet1"
         self.cells = {}
         self.merges = {}
         self.rules = []
@@ -781,6 +804,88 @@ class ScanOnlyTests(unittest.TestCase):
             batch._sync_highlights(lambda: self.excel, self.path)
         self.assertFalse(any("⚠️" in c.args[0] for c in log.call_args_list))
         self.assertEqual(batch._marks(), {})
+
+    ORANGE = batch._excel_color(batch.TAB_HIGHLIGHT)
+
+    def two_sheets(self):
+        """S1 有问题格，S2 没有；S1 标签原来是主题色"""
+        other = FakeSheet()
+        other.Name, other.CodeName = "S2", "Sheet2"
+        self.sheet.Tab.ThemeColor, self.sheet.Tab.TintAndShade = 5, 0.4
+        self.use_named_sheets([self.sheet, other])
+        return other
+
+    def test_sheet_tab_turns_orange_only_where_problems_are_and_comes_back(self):
+        other = self.two_sheets()
+        self.add_item("A5")
+        self.add_item("B7", row=7)
+        self.scan()
+        self.assertEqual(self.sheet.Tab.Color, self.ORANGE)
+        self.assertEqual(other.Tab.ColorIndex, -4142)  # 没问题的表不动
+        self.assertEqual(batch._tabs()[self.path]["Sheet1"]["theme"], 5)
+        # 还剩一格没改好：标签还是橙黄色
+        self.card("A5").update(color="blue", verified=True)
+        batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(self.sheet.Tab.Color, self.ORANGE)
+        # 全改好：改回原来的主题色
+        self.card("B7").update(color="blue", verified=True)
+        batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual((self.sheet.Tab.ThemeColor, self.sheet.Tab.TintAndShade), (5, 0.4))
+        self.assertNotEqual(self.sheet.Tab.Color, self.ORANGE)
+        self.assertEqual(batch._tabs(), {})
+
+    def test_sheet_tab_without_color_is_cleared_and_user_color_is_kept(self):
+        self.add_item("A5")
+        self.scan()
+        self.assertEqual(self.sheet.Tab.Color, self.ORANGE)
+        self.card("A5").update(color="blue", verified=True)
+        batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(self.sheet.Tab.ColorIndex, -4142)
+        # 再标一次，这次人工处理时自己把标签改成了红色：不覆盖
+        self.card("A5").update(color="yellow", verified=False)
+        self.scan()
+        self.sheet.Tab.Color = 0x0000FF
+        self.card("A5").update(color="blue", verified=True)
+        batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(self.sheet.Tab.Color, 0x0000FF)
+        self.assertEqual(batch._tabs(), {})
+
+    def test_renamed_sheet_tab_is_found_by_code_name(self):
+        self.add_item("A5")
+        self.scan()
+        self.sheet.Name = "改名後"
+        self.card("A5").update(color="blue", dismissed=True)
+        batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(self.sheet.Tab.ColorIndex, -4142)
+        self.assertEqual(batch._tabs(), {})
+
+    def test_sheet_tab_left_orange_after_a_crash_is_restored_later(self):
+        """标记都去掉了、标签还没改回去（上次中途崩溃）：提交 / 复检时顺带改回，清除标记也能清"""
+        self.add_item("A5")
+        self.scan()
+        self.card("A5").update(color="blue", dismissed=True)
+        batch._marks().clear()
+        self.sheet.rules.clear()
+        self.assertEqual(batch._leftover_mark_paths([]), [self.path])
+        self.assertEqual(batch.highlighted_paths(), [self.path])
+        self.assertEqual(batch.snapshot()["tab_marks"], 1)
+        report = {}
+        batch._sync_highlights(lambda: self.excel, self.path, clear=True, report=report)
+        self.assertEqual(self.sheet.Tab.ColorIndex, -4142)
+        self.assertEqual(report["tabs"], [{"sheet": "S1", "status": "ok", "reason": "已改回原来的标签颜色"}])
+        self.assertEqual(batch._leftover_mark_paths([]), [])
+
+    def test_sheet_tab_that_cannot_be_read_is_skipped_without_reopening(self):
+        self.sheet.Tab = None  # 读标签颜色报错
+        self.add_item("A5")
+        self.scan()
+        self.assertIsNotNone(self.sheet.shown("A5"))  # 单元格照常标色
+        opened = self.excel.Workbooks.Open.call_count
+        batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(self.excel.Workbooks.Open.call_count, opened)  # 不为标签反复打开
+        self.card("A5").update(color="blue", dismissed=True)
+        batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(batch._tabs(), {})
 
     def test_sheet_name_with_extra_spaces_is_still_found(self):
         self.sheet.Name = "S1\u3000"

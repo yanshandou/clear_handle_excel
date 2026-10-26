@@ -84,23 +84,31 @@ function showUnhighlightResult() {
   for (const file of files) for (const cell of file.cells) count[cell.status] += 1;
   const errors = files.filter(f => f.error).length;
   const leftovers = files.reduce((sum, f) => sum + (f.leftovers || 0), 0);
-  const trouble = f => !!f.error || (f.leftover_failed || []).length > 0 || f.cells.some(c => c.status !== 'ok');
+  const tabs = f => f.tabs || [];
+  const trouble = f => !!f.error || (f.leftover_failed || []).length > 0 || f.cells.some(c => c.status !== 'ok')
+    || tabs(f).some(t => t.status !== 'ok');
   files.sort((a, b) => trouble(b) - trouble(a) || a.name.localeCompare(b.name));
   const chips = [`<span class="unhighlight-chip is-ok">✅ 已清除 ${count.ok} 格</span>`];
   if (count.check) chips.push(`<span class="unhighlight-chip is-check">⚠️ 需要看一下 ${count.check} 格</span>`);
   if (count.failed) chips.push(`<span class="unhighlight-chip is-failed">❌ 没清掉 ${count.failed} 格</span>`);
   if (errors) chips.push(`<span class="unhighlight-chip is-failed">❌ ${errors} 份文件没能处理</span>`);
   if (leftovers) chips.push(`<span class="unhighlight-chip">🧹 另清掉残留标记 ${leftovers} 条</span>`);
+  const tabCount = files.reduce((sum, f) => sum + tabs(f).length, 0);
+  if (tabCount) chips.push(`<span class="unhighlight-chip">🏷️ 工作表标签 ${tabCount} 张</span>`);
   const fileHtml = file => {
     const own = { ok: 0, check: 0, failed: 0 };
     for (const cell of file.cells) own[cell.status] += 1;
     const tally = file.error ? `<span class="unhighlight-file-error">${esc(file.error)}</span>`
-      : file.cells.length ? `✅ ${own.ok}${own.check ? ` · ⚠️ ${own.check}` : ''}${own.failed ? ` · ❌ ${own.failed}` : ''}` : '没有要清的标记';
+      : file.cells.length || tabs(file).length ? `✅ ${own.ok}${own.check ? ` · ⚠️ ${own.check}` : ''}${own.failed ? ` · ❌ ${own.failed}` : ''}` : '没有要清的标记';
     const rows = file.cells.map(cell => {
       const where = `${cell.sheet}!${cell.addr}`;
       const link = excelLinkHtml(esc(where), { file: file.name, folder: batchState.folder, sheet: cell.sheet, cell: cell.addr.split(':')[0] });
       return `<li class="is-${cell.status}"><span aria-hidden="true">${CLEAR_STATUS[cell.status] || ''}</span>${link}<span class="unhighlight-reason">${esc(cell.reason)}</span></li>`;
     });
+    for (const tab of tabs(file)) {
+      const link = excelLinkHtml(esc(`🏷️ ${tab.sheet}`), { file: file.name, folder: batchState.folder, sheet: tab.sheet });
+      rows.push(`<li class="is-${tab.status}"><span aria-hidden="true">${CLEAR_STATUS[tab.status] || ''}</span>${link}<span class="unhighlight-reason">工作表标签：${esc(tab.reason)}</span></li>`);
+    }
     for (const reason of file.leftover_failed || []) {
       rows.push(`<li class="is-failed"><span aria-hidden="true">❌</span><span>残留标记</span><span class="unhighlight-reason">删不掉：${esc(reason)}</span></li>`);
     }
@@ -143,7 +151,7 @@ async function action(work) {
 function renderControls() {
   const busy = batchState.busy || requestBusy;
   for (const id of ['startBtn', 'scanOnlyBtn', 'commitBtn', 'folderInput']) $(id).disabled = busy;
-  $('unhighlightBtn').disabled = busy || !batchState.highlighted;
+  $('unhighlightBtn').disabled = busy || !(batchState.highlighted || batchState.tab_marks);
   $('unhighlightBtn').textContent = `🧽 清除 Excel 标记颜色${batchState.highlighted ? `（${batchState.highlighted}）` : ''}`;
   $('unhighlightResultBtn').classList.toggle('hidden', batchState.busy || !unhighlightResult());
   const plan = commitPlan();
@@ -842,7 +850,7 @@ $('scanOnlyBtn').addEventListener('click', async () => {
   await startBatch({ scan_only: true, highlight: { ...highlight } });
 });
 $('unhighlightBtn').addEventListener('click', async () => {
-  if (await appConfirm(`去掉当前文件夹 ${batchState.highlighted || 0} 个单元格的标记颜色？\n标记是程序加的条件格式，只删这些规则；单元格本身的颜色和表里原有的条件格式都不动。\n需要先在 Excel 里保存并关闭这些文件。之后提交、复检也不再自动标色，重新开始处理时才按设置标色。`, { title: '清除 Excel 标记颜色', okText: '去掉标记' })) await startJob('/api/batch/unhighlight');
+  if (await appConfirm(`去掉当前文件夹 ${batchState.highlighted || 0} 个单元格的标记颜色？\n标记是程序加的条件格式，只删这些规则；单元格本身的颜色和表里原有的条件格式都不动。标成橙黄色的工作表标签改回原来的颜色。\n需要先在 Excel 里保存并关闭这些文件。之后提交、复检也不再自动标色，重新开始处理时才按设置标色。`, { title: '清除 Excel 标记颜色', okText: '去掉标记' })) await startJob('/api/batch/unhighlight');
 });
 $('unhighlightResultBtn').addEventListener('click', showUnhighlightResult);
 $('findMarksBtn').addEventListener('click', findMarks);
