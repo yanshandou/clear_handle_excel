@@ -47,6 +47,7 @@ DEFAULT_HIGHLIGHT = {"fill": "#C0007A", "font": "#FFFFFF"}
 SCAN_ONLY_MESSAGE = "只扫描：已在 Excel 中标色，请人工修改并保存后复检"
 HANDOVER_MESSAGE = "转人工：自动还没处理到这一格，请人工修改并保存后复检；也可以点「转回自动」交还自动处理"
 TOUCHED_MESSAGE = "转人工后这一行的行高被改过，仍有问题：留给人工处理，自动不再改这一行"
+PICKED_MESSAGE = "等待自动调整（你选的格子）"
 
 
 def _data() -> dict[str, Any]:
@@ -453,6 +454,22 @@ def _check_file(path: str) -> None:
         raise ValueError(f"文件仍在 Excel 中打开，请保存并关闭后继续：{p.name}" + STALE_LOCK_HINT)
 
 
+def _version_or_none(path: str) -> Any:
+    try:
+        return wf._file_version(Path(path))
+    except OSError:
+        return None
+
+
+def _followed_own_save(path: str, before: Any) -> None:
+    """程序自己保存了文件（写行高、标色）：自动处理完时记下的版本跟着更新，不算你改过文件，
+    自动没修好的格子也就不会因此被「自动调整」重试"""
+    with wf.STATE_LOCK:
+        versions = _data().get("auto_versions", {})
+        if before is not None and versions.get(path) == before:
+            versions[path] = _version_or_none(path)
+
+
 def _row_value(book: Any, row: dict) -> float:
     """写入日志里一行现在的值：行高；插分页的行是 1（上方有手动分页）/ 0（没有）"""
     target = book.Sheets(row["sheet"]).Rows(row["row"])
@@ -493,7 +510,9 @@ def _write_rows(excel: Any, journal: dict) -> None:
                 else:
                     target.RowHeight = row["target"]
             normalize_workbook_view(excel, book)
+            before = _version_or_none(path)
             book.Save()
+            _followed_own_save(path, before)
             debug_log.event("💾 已保存", 文件=Path(path).name,
                             写后=[round(_row_value(book, r), 2) for r in journal["rows"]])
         else:
@@ -1597,10 +1616,11 @@ def _touched(item: dict, rows: dict[str, float]) -> bool:
     return before is not None and isinstance(now, (int, float)) and abs(now - before) >= ROW_HEIGHT_TOLERANCE
 
 
-def _back_to_auto(excel: Any, session: Any, path: str) -> None:
+def _back_to_auto(excel: Any, session: Any, path: str, *, picked: bool = False) -> None:
     """「转回自动」时每份文件先做的事：转人工后文件改过就整份重扫（规则同复检，原来的黄卡翻篇）；
     还没被自动试过、所在行也没被人动过的问题交回自动队列，其余留给人工；最后还原 Excel 里的标记颜色，
-    自动处理的截图和检测都按原来的颜色来。"""
+    自动处理的截图和检测都按原来的颜色来。
+    picked：「🤖 自动调整」只交回你选的格子（卡片上 auto_pick）和同一行的格子，其余黄卡和它们的标色都不动。"""
     unsaved = close_saved_workbooks([Path(path)])
     if Path(path) in unsaved:
         raise ValueError(f"{Path(path).name}：{unsaved[Path(path)]}，请保存后继续")
@@ -1618,26 +1638,39 @@ def _back_to_auto(excel: Any, session: Any, path: str) -> None:
         rows = hand.get("rows", {})
         unresolved = [it for it in wf.STATE["items"].values() if it["wb_path"] == path
                       and it["status"] not in wf.RESOLVED_STATUSES]
+        # 复检可能查出同一行新的格子：一行共用行高，要一起交给自动，不然这一行会被当成人工行跳过
+        picked_rows = {_rid(c) for c in _data()["cards"].values() if c["wb_path"] == path and c.get("auto_pick")}
         back = kept = 0
         for group in _group_cells(unresolved):
             card = _card_for(group)
-            if not card.get("handed_over") or card.get("dismissed") or (
+            chosen = (card.get("auto_pick") or _rid(card) in picked_rows) if picked else card.get("handed_over")
+            if not chosen or card.get("dismissed") or (
                     card.get("marked") and card["color"] != "yellow" and not card.get("finalized")):
-                continue  # 自动试过没通过的、你已标蓝 / 绿还没提交的，保持原样
+                continue  # 自动试过没通过的、你已标蓝 / 绿还没提交的、这次没选的，保持原样
             if not unchanged and any(_touched(it, rows) for it in group):
                 card.update(handed_over=False, message=TOUCHED_MESSAGE)
                 kept += 1
                 continue
             card.update(color="yellow", verified=False, manual=False, finalized=False, marked=False,
-                        waiting=True, handed_over=False, message=WAITING_MESSAGE)
+                        waiting=True, handed_over=False, message=PICKED_MESSAGE if picked else WAITING_MESSAGE)
             card.pop("after_kind", None)
             for item in group:
                 item.update(status="pending", batch_managed=True, triage_keep=False)
             back += 1
+            if picked:
+                given = wf.STATE["job"].setdefault("picked_back", [])
+                if card["id"] not in given:
+                    given.append(card["id"])
+            debug_log.event("🤖 交给自动", 位置=f"{card['sheet_name']}!{card.get('cell_addr')}",
+                            行=card.get("excel_row"), 你选的=bool(card.get("auto_pick")))
+        for card in _data()["cards"].values():
+            if card["wb_path"] == path:
+                card.pop("auto_pick", None)
         wf._persist_state()
-    # 自动处理时 Excel 里不留标记色；还留给人工的格子，提交或复检后再按设置标色
-    _sync_highlights(session.app, path, clear=True)
-    wf.log_msg(f"🤖 {Path(path).name}：{back} 处交回自动处理"
+    # 自动处理时 Excel 里不留标记色；还留给人工的格子，提交或复检后再按设置标色。
+    # 只调整选中的格子时，只去掉交给自动的这些格子的标色，没选的黄卡照旧标着
+    _sync_highlights(session.app, path, clear=not picked)
+    wf.log_msg(f"🤖 {Path(path).name}：{back} 处{'交给自动调整' if picked else '交回自动处理'}"
                + (f"，{kept} 处所在行转人工后被改过，留给人工" if kept else ""))
 
 
@@ -1680,6 +1713,126 @@ def check_auto() -> None:
     with wf.STATE_LOCK:
         if not _mode()["to_auto"]:
             raise ValueError("没有可以交回自动处理的问题")
+
+
+def _auto_retry_blocked(card: dict) -> bool:
+    """自动试过没通过的格子：文件之后没改过就不再试（同样的算法，结果也一样）。调用方持有 STATE_LOCK"""
+    path = card["wb_path"]
+    try:
+        current = wf._file_version(Path(path))
+    except OSError:
+        return False
+    done = _data().get("auto_versions", {}).get(path)
+    # 旧版本没记自动处理完时的文件版本：按上次整份检测之后有没有改过判断
+    return done == current if done is not None else _unchanged_since_check(path)
+
+
+def _auto_skip_reason(card: dict) -> str:
+    """「🤖 自动调整」时这一格为什么不能交给自动；能交给自动返回空字符串。调用方持有 STATE_LOCK"""
+    if card["color"] != "yellow" or not card.get("finalized"):
+        return "颜色标记还没提交，请先提交黄色标记"
+    items = _items_at(card)
+    if card.get("message") == TOUCHED_MESSAGE:
+        return "这一行的行高被你改过，自动不再改这一行"
+    if any(autofix.column_width_only(it) for it in items):
+        return "列宽不够（显示 ###），加高修不好，请人工加宽列"
+    if not _can_highlight(card):
+        return "单元格位置没确认，不能自动加高"
+    if not _is_break(card) and items and autofix.review_only_reason(items):
+        return "PDF 里找不到这段文字，不能确认要不要加高"
+    if not card.get("handed_over") and _auto_retry_blocked(card):
+        return "自动试过没通过，文件之后没改过，再试结果也一样"
+    return ""
+
+
+def auto_adjust_plan(ids: Any) -> dict:
+    """「🤖 自动调整」选中的黄卡：run 交给自动；extra 是同一行连带一起调整的黄卡（一行共用行高）；
+    skip 是跳过的格子和原因。同一行有不能自动的格子时整行跳过（自动加高会连带改到它）。"""
+    with wf.STATE_LOCK:
+        if wf.STATE["busy"]:
+            raise ValueError("后台任务执行中，请结束或暂停后再自动调整")
+        cards = {c["id"]: c for c in _data()["cards"].values()
+                 if not c.get("dismissed") and wf.in_current_folder(c["wb_path"])}
+        if not isinstance(ids, list) or not ids or any(not isinstance(cid, str) or cid not in cards for cid in ids):
+            raise ValueError("请选择当前文件夹的有效审核卡片")
+        ids = list(dict.fromkeys(ids))
+        by_row: dict[str, list[dict]] = {}
+        for card in cards.values():
+            by_row.setdefault(_rid(card), []).append(card)
+        run: list[str] = []
+        extra: list[str] = []
+        skip: dict[str, str] = {}
+        for cid in ids:
+            if cid in run or cid in extra or cid in skip:
+                continue
+            card = cards[cid]
+            reason = _auto_skip_reason(card)
+            peers = [c for c in by_row[_rid(card)] if c["id"] != cid]
+            if not reason:
+                for peer in peers:
+                    if peer["color"] != "yellow" or not peer.get("finalized"):
+                        reason = "同一行还有标了颜色、没提交的格子，请先提交"
+                    elif autofix.review_only_reason(_items_at(peer)) and not _is_break(peer):
+                        reason = "同一行有 PDF 里找不到的格子，整行不能自动加高"
+                    elif peer.get("message") == TOUCHED_MESSAGE:
+                        reason = "这一行的行高被你改过，自动不再改这一行"
+                    if reason:
+                        break
+            if reason:
+                skip[cid] = reason
+                continue
+            run.append(cid)
+            for peer in peers:
+                if peer["id"] in ids:
+                    run.append(peer["id"])
+                elif not any(autofix.column_width_only(it) for it in _items_at(peer)):
+                    extra.append(peer["id"])
+        order = {cid: cards[cid]["seq"] for cid in cards}
+        return {"run": sorted(dict.fromkeys(run), key=order.get),
+                "extra": sorted(dict.fromkeys(extra), key=order.get),
+                "skip": [{"id": cid, "reason": why} for cid, why in skip.items()]}
+
+
+def _finish_picked(path: str) -> None:
+    """「🤖 自动调整」做完一份文件：这次交给自动、没修好、也没写过原文件的黄卡直接算已提交，可以马上人工处理、复检，
+    不用再提交一次黄色（修好的蓝卡照旧等你审核提交）"""
+    with wf.STATE_LOCK:
+        given = set(wf.STATE["job"].get("picked_back", []))
+        left = 0
+        for card in _data()["cards"].values():
+            if (card["id"] not in given or card["wb_path"] != path or card.get("dismissed") or card["color"] != "yellow"
+                    or card.get("finalized") or card.get("marked") or _waiting(card)):
+                continue
+            row = _row_record(card)
+            if row and row["saved"]:
+                continue
+            card.update(manual=True, finalized=True)
+            for item in _items_at(card):
+                item.update(status="manual_review", batch_managed=True, triage_keep=False,
+                            review_reason=card["message"])
+            left += 1
+            debug_log.event("🤖 自动没修好", 位置=f"{card['sheet_name']}!{card.get('cell_addr')}", 原因=card["message"])
+        wf._persist_state()
+    if left:
+        wf.log_msg(f"🙋 {Path(path).name}：{left} 处自动没修好，仍是黄色人工项，可以直接人工处理、复检")
+
+
+def start_auto_adjust(ids: Any) -> dict:
+    """「🤖 自动调整」：给要交给自动的卡打上 auto_pick，返回 batch_scan（转回自动）任务的参数"""
+    plan = auto_adjust_plan(ids)
+    picked = plan["run"] + plan["extra"]
+    if not picked:
+        raise ValueError("选中的格子都不能自动调整：" + "；".join(dict.fromkeys(s["reason"] for s in plan["skip"])))
+    with wf.STATE_LOCK:
+        for card in _data()["cards"].values():
+            card.pop("auto_pick", None)  # 上次没跑起来留下的
+        for cid in picked:
+            _data()["cards"][cid]["auto_pick"] = True
+        wf._persist_state()
+        folder = wf.STATE["folder"]
+    debug_log.event("🖱️ 自动调整", 选中=len(ids), 交给自动=len(plan["run"]), 同行连带=len(plan["extra"]),
+                    跳过=[f"{s['id'][:6]}:{s['reason']}" for s in plan["skip"]])
+    return {"folder": folder, "back_to_auto": True, "picked": True, "card_ids": picked}
 
 
 def _can_highlight(card: dict) -> bool:
@@ -2354,7 +2507,9 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
             if tick is not None:
                 tick()
             normalize_workbook_view(app, book)
+            before = _version_or_none(path)
             book.Save()
+            _followed_own_save(path, before)
         for mark in added.values():
             mark["saved"] = True
     finally:
@@ -2583,12 +2738,18 @@ def run() -> list[str]:
                 wf._persist_state()
         if kind == "batch_scan":
             back = bool(options.get("back_to_auto"))
+            picked = back and bool(options.get("picked"))
             if "workbooks" not in job:
                 if back:
-                    # 「转回自动」：只处理还有可交回自动的问题的文件，审核数据都在，不清空
+                    # 「转回自动」：只处理还有可交回自动的问题的文件，审核数据都在，不清空。
+                    # 「🤖 自动调整」只处理选中的格子所在的文件
                     with wf.STATE_LOCK:
                         folder = Path(wf.STATE["folder"])
-                        job["workbooks"] = _handed_over_paths()
+                        cards = _data()["cards"]
+                        job["workbooks"] = (list(dict.fromkeys(
+                            cards[cid]["wb_path"] for cid in sorted(
+                                (cid for cid in options["card_ids"] if cid in cards), key=lambda cid: cards[cid]["seq"])))
+                            if picked else _handed_over_paths())
                         wf._persist_state()
                     paths = [Path(p) for p in job["workbooks"]]
                 else:
@@ -2600,7 +2761,8 @@ def run() -> list[str]:
                         wf.STATE.update(folder=str(folder), pdf_folder=str(folder))
                         job["workbooks"] = [str(p) for p in paths]
                         wf._persist_state()
-                init_execution_batch(task_name="只扫描（全部转人工）" if scan_only else "全自动扫描与修复",
+                init_execution_batch(task_name="只扫描（全部转人工）" if scan_only else
+                                     "自动调整选中的格子" if picked else "全自动扫描与修复",
                                      folder=folder, workbooks=paths, pdf_folder=folder)
             expected = job["workbooks"]
             with wf.STATE_LOCK:
@@ -2657,11 +2819,14 @@ def run() -> list[str]:
                 return False
 
             def scan(path: str) -> None:
-                debug_log.begin(f"{'转回自动' if back else '扫描'} {expected.index(path) + 1} / {len(expected)}："
+                debug_log.begin(f"{'自动调整' if picked else '转回自动' if back else '扫描'} "
+                                  f"{expected.index(path) + 1} / {len(expected)}："
                                   f"{workbook_rel_name(Path(path), wf.STATE['folder'])}")
                 _check_file(path)
                 excel = session.app()
-                if back:
+                if picked:
+                    _back_to_auto(excel, session, path, picked=True)
+                elif back:
                     _back_to_auto(excel, session, path)
                 else:
                     started, checking = time.perf_counter(), {}
@@ -2738,9 +2903,15 @@ def run() -> list[str]:
                         job["completed"].append(path)
                     job.pop("repairing", None)
                     job.get("file_errors", {}).pop(path, None)
+                    # 记下自动处理完这份文件时的版本：之后文件没改过，自动没修好的格子再点「自动调整」也不重试
+                    _data().setdefault("auto_versions", {})[path] = _version_or_none(path)
                     wf.STATE["scan_progress"] = {"total": len(expected), "completed": len(job["completed"]), "status": "running"}
                     wf._persist_state()
-                wf._sync_problem_counts(path, "全自动处理完成，等待结果审核")
+                if picked:
+                    _finish_picked(path)
+                    # 自动没修好的格子马上在 Excel 里标回颜色（没选的黄卡本来就标着）
+                    _sync_highlights_safely(session, path)
+                wf._sync_problem_counts(path, "自动调整完成，等待结果审核" if picked else "全自动处理完成，等待结果审核")
             if job.get("to_manual") and not job.get("pause_requested"):
                 _switch_to_manual(session, job, [p for p in expected if p in scanned])
         elif kind == "batch_commit":

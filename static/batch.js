@@ -134,7 +134,8 @@ function celebrateFinished(before, after) {
   if (after.job?.kind === kind && after.job?.status !== 'completed') return;
   const left = after.cards.length;
   const title = kind === 'batch_scan' && before.job.options?.scan_only ? '扫描完成！'
-    : kind === 'batch_scan' && before.job.to_manual ? '已转人工！' : FINISH_TITLES[kind];
+    : kind === 'batch_scan' && before.job.to_manual ? '已转人工！'
+    : kind === 'batch_scan' && before.job.options?.picked ? '自动调整完成！' : FINISH_TITLES[kind];
   window.gameFx?.celebrate(title, left ? `还有 ${left} 张卡片待审核` : '全部卡片都处理完了');
 }
 
@@ -299,7 +300,7 @@ function cardHtml(card, large = false) {
     ${visuals}${problemHtml(card)}${handling ? `<p class="batch-handling">${esc(handling)}</p>` : ''}${card.text ? `<p class="batch-text">${esc(card.text)}</p>` : ''}${card.message ? `<p class="batch-message">${esc(card.message)}</p>` : ''}
     <p class="batch-state">${card.finalized ? '已提交 · 可人工处理' : '颜色标记待提交'}${card.highlighted && card.after_kind !== 'scan_only' ? ' · 已在 Excel 中标色' : ''}${card.handed_over ? ' · 自动还没试过，可转回自动' : ''}${batchState.busy ? ' · 后台任务结束后可标记' : ''}</p>
     ${card.verified ? '' : `<p class="batch-no-blue">${blueNote(card)}</p>`}
-    <div class="batch-card-footer"><button class="btn btn-outline" data-action="large"><span class="batch-icon-enlarge" aria-hidden="true"></span>大图审核</button>${card.color === 'yellow' && card.finalized ? '<button class="btn btn-outline" data-action="recheck" title="只重新检测这一格（只导出它所在的那一页），同文件其他黄卡不动；整份重查请用文件框上的「复检这个文件」">🎯 单项复检</button>' : ''}</div></article>`;
+    <div class="batch-card-footer"><button class="btn btn-outline" data-action="large"><span class="batch-icon-enlarge" aria-hidden="true"></span>大图审核</button>${card.color === 'yellow' && card.finalized ? `<button class="btn btn-outline" data-action="recheck" title="只重新检测这一格（只导出它所在的那一页），同文件其他黄卡不动；整份重查请用文件框上的「复检这个文件」">🎯 单项复检</button><button class="btn btn-outline" data-action="auto"${batchState.busy ? ' disabled' : ''} title="让程序自动加高这一格所在的行（同一行的黄卡一起），同文件其他黄卡不动">🤖 自动调整</button>` : ''}</div></article>`;
 }
 
 // 选中状态不进卡片 HTML：勾选只改类名，不重画卡片、不重新加载图片
@@ -324,6 +325,9 @@ function renderSelectBar() {
   $('selectBar').classList.toggle('hidden', largeMode || !batchState.cards.length);
   $('selectCount').textContent = (selectedIds.size ? `已选 ${selectedIds.size} 张` : '未选择卡片') + (selectNotice ? ` · ${selectNotice}` : '');
   for (const button of $('selectBar').querySelectorAll('[data-set-color]')) button.disabled = busy || !selectedIds.size;
+  const picked = manualCards().filter(c => selectedIds.has(c.id)).length;
+  $('autoSelectedBtn').disabled = busy || !picked;
+  $('autoSelectedBtn').textContent = `🤖 自动调整选中${picked ? `（${picked}）` : ''}`;
 }
 
 function toggleSelected(id) {
@@ -480,10 +484,11 @@ function fileHeadHtml(key) {
   const recheck = manual.length
     ? `<button type="button" class="btn btn-outline" data-file-action="recheck" data-file="${esc(key)}"${busy ? ' disabled' : ''} title="整份文件所有表重新检测，这个文件的 ${manual.length} 张黄卡一起出结果">🔁 复检这个文件</button>`
     : '<button type="button" class="btn btn-outline" disabled title="这个文件还没有已提交的黄色人工项">🔁 复检这个文件</button>';
+  const auto = `<button type="button" class="btn btn-outline" data-file-action="auto" data-file="${esc(key)}"${!manual.length || batchState.busy ? ' disabled' : ''} title="${manual.length ? `让程序自动加高这个文件的 ${manual.length} 张黄卡（能自动的才调整，确认框里会列出跳过的和原因）` : '这个文件还没有已提交的黄色人工项'}">🤖 自动调整这个文件</button>`;
   return `<header class="batch-file-head"${batchState.busy ? ` data-open="${blocked ? 'blocked' : 'ready'}"` : ''}>
     <div class="batch-file-title"><span class="batch-file-icon" aria-hidden="true">📄</span><div class="batch-file-name">${excelLinkHtml(esc(first.wb_name || key), target)}${sub ? `<p class="batch-file-path">${esc(sub)}</p>` : ''}</div></div>${openState}
     <div class="batch-file-counts" aria-label="这个文件的卡片数">${counts}<span class="batch-file-total">共 ${cards.length} 格</span></div>
-    <div class="batch-file-actions"><button type="button" class="btn btn-outline" data-file-action="select" data-file="${esc(key)}" aria-pressed="false">选中本文件的卡</button>${excelLinkHtml('📂 打开文件', { ...target, sheet: jump.sheet_name, cell: jump.cell_addr }, 'btn btn-outline')}${recheck}</div>
+    <div class="batch-file-actions"><button type="button" class="btn btn-outline" data-file-action="select" data-file="${esc(key)}" aria-pressed="false">选中本文件的卡</button>${excelLinkHtml('📂 打开文件', { ...target, sheet: jump.sheet_name, cell: jump.cell_addr }, 'btn btn-outline')}${recheck}${auto}</div>
   </header>`;
 }
 
@@ -503,7 +508,9 @@ function render() {
   // 已完成只算本任务列表里的文件（去重），不会超过总数
   const completed = own ? job.workbooks.filter(path => done.has(path)).length : Math.min(p.completed || 0, total);
   const label = batchState.busy ? (own && job.kind !== 'batch_scan' ? `正在${REVIEW_JOB_NAMES[job.kind] || '处理'}`
-    : job?.to_manual ? '做完当前这一行后转人工' : scanning && job.options?.back_to_auto ? '正在准备转回自动（改过的文件重新检测）'
+    : job?.to_manual ? '做完当前这一行后转人工' : scanning && job.options?.picked ? '正在准备自动调整（改过的文件重新检测）'
+    : job?.options?.picked ? '正在自动调整你选的格子'
+    : scanning && job.options?.back_to_auto ? '正在准备转回自动（改过的文件重新检测）'
     : scanning ? '正在扫描（全部扫完后开始修，之后可以转人工）'
     : job?.options?.scan_only ? '正在扫描' : '正在自动处理')
     : job?.status === 'interrupted' ? '已暂停或部分文件未完成' : '当前进度';
@@ -833,6 +840,33 @@ async function startJob(url, body = {}) {
   });
 }
 
+// 「🤖 自动调整」：卡片、文件框、多选三个入口都走这里。先问后端哪些能自动、同行连带哪些、哪些跳过，确认后再开始
+const cardWhere = id => {
+  const card = batchState.cards.find(c => c.id === id);
+  return card ? `${card.wb_name} ${card.sheet_name}!${card.cell_addr || '?'}` : id;
+};
+async function autoAdjust(ids, title) {
+  if (batchState.busy || requestBusy || !ids.length) return;
+  let plan;
+  try { plan = await post('/api/batch/auto_plan', { card_ids: ids }); }
+  catch (error) { $('errorText').textContent = error.message; return; }
+  const total = plan.run.length + plan.extra.length;
+  const skipped = plan.skip.length
+    ? `\n\n跳过 ${plan.skip.length} 格：\n` + plan.skip.slice(0, 8).map(s => `· ${cardWhere(s.id)}：${s.reason}`).join('\n')
+      + (plan.skip.length > 8 ? `\n· ……还有 ${plan.skip.length - 8} 格` : '')
+    : '';
+  if (!total) { await appAlert(`选中的格子都不能自动调整。${skipped}`, { title }); return; }
+  const files = new Set([...plan.run, ...plan.extra].map(id => batchState.cards.find(c => c.id === id)?.wb_path)).size;
+  const message = `让程序自动加高 ${total} 格（${files} 个文件）。`
+    + (plan.extra.length ? `\n其中 ${plan.extra.length} 格是和你选的格子在同一行的黄卡：一行的行高共用，一起调整。` : '')
+    + skipped
+    + '\n\n请先在 Excel 里保存并关闭这些文件。扫描后改过的文件先整份重新检测。'
+    + '\n这些格子的标记颜色会先去掉，没选的黄卡照旧标着。修好的变蓝等你审核；没修好的仍是黄色，重新标色。'
+    + '\n\n确定开始自动调整吗？';
+  if (!(await appConfirm(message, { title, okText: '开始自动调整', tone: 'info' }))) return;
+  await startJob('/api/batch/auto_adjust', { card_ids: ids });
+}
+
 async function startBatch(extra = {}) {
   const folder = $('folderInput').value.trim();
   if (!folder) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
@@ -917,6 +951,7 @@ $('selectBar').addEventListener('click', event => {
   const button = event.target.closest('button');
   if (button?.dataset.select) selectShown(button.dataset.select);
   else if (button?.dataset.setColor) changeSelectedColor(button.dataset.setColor);
+  else if (button?.id === 'autoSelectedBtn') autoAdjust(manualCards().filter(c => selectedIds.has(c.id)).map(c => c.id), '自动调整选中的格子');
 });
 $('filters').addEventListener('click', event => {
   const button = event.target.closest('[data-filter]');
@@ -930,6 +965,8 @@ for (const id of ['cardList', 'largeCard']) $(id).addEventListener('click', even
     if (fileButton.dataset.fileAction === 'select') toggleFileSelected(key);
     else if (fileButton.dataset.fileAction === 'recheck') {
       startJob('/api/batch/recheck', { card_ids: manualCards().filter(c => fileKey(c) === key).map(c => c.id) });
+    } else if (fileButton.dataset.fileAction === 'auto') {
+      autoAdjust(manualCards().filter(c => fileKey(c) === key).map(c => c.id), '自动调整这个文件');
     }
     return;
   }
@@ -939,6 +976,7 @@ for (const id of ['cardList', 'largeCard']) $(id).addEventListener('click', even
   if (button?.dataset.action === 'select') toggleSelected(card.dataset.id);
   else if (button?.dataset.action === 'large') openLarge(card.dataset.id);
   else if (button?.dataset.action === 'recheck') startJob('/api/batch/recheck', { card_ids: [card.dataset.id], single: true });
+  else if (button?.dataset.action === 'auto') autoAdjust([card.dataset.id], '自动调整这一格');
   else changeColor(card.dataset.id);
 });
 

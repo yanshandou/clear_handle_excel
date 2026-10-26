@@ -202,6 +202,104 @@ class ModeSwitchTests(unittest.TestCase):
                          {batch._row_key("新", 5): 18.0, batch._row_key("S10", 5): 20.0})
 
 
+    def scanned_only(self):
+        """只扫描后的状态：A5、B5 同一行，C7 自动试过没通过，D9 是 ###，E11 你标了黄还没提交"""
+        self.job.update(phase="repair", scanned=list(self.paths), status="completed")
+        self.wf.STATE["busy"] = False
+        cards = {}
+        for addr, row in (("A5", 5), ("B5", 5), ("C7", 7), ("E11", 11)):
+            cards[addr], _ = self.add(self.paths[0], addr, row)
+        cards["D9"], item = self.add(self.paths[0], "D9", 9)
+        item["hidden_reason"] = batch.autofix.REASON_HASH
+        for card in cards.values():
+            self.wf.STATE["items"][card["item_ids"][0]].update(page_index=0, bbox=[0, 0, 1, 1])
+        batch._hand_over(self.paths[0])
+        batch._remember_handover(self.paths[0])
+        cards["C7"].update(handed_over=False, message="自动试修未通过")
+        cards["E11"].update(finalized=False, marked=True)
+        batch._data()["auto_versions"] = {self.paths[0]: self.wf._file_version(Path(self.paths[0]))}
+        return cards
+
+    def test_auto_adjust_plan_takes_whole_row_and_explains_skips(self):
+        cards = self.scanned_only()
+        plan = batch.auto_adjust_plan([cards[a]["id"] for a in ("A5", "C7", "D9", "E11")])
+        self.assertEqual(plan["run"], [cards["A5"]["id"]])
+        self.assertEqual(plan["extra"], [cards["B5"]["id"]])  # 同一行共用行高，一起调整
+        reasons = {s["id"]: s["reason"] for s in plan["skip"]}
+        self.assertIn("文件之后没改过", reasons[cards["C7"]["id"]])
+        self.assertIn("###", reasons[cards["D9"]["id"]])
+        self.assertIn("先提交", reasons[cards["E11"]["id"]])
+
+    def test_auto_failed_cell_is_retried_only_after_file_changes(self):
+        cards = self.scanned_only()
+        self.assertEqual(batch.auto_adjust_plan([cards["C7"]["id"]])["run"], [])
+        # 程序自己保存（标色、写行高）不算你改过
+        before = self.wf._file_version(Path(self.paths[0]))
+        Path(self.paths[0]).write_bytes(b"saved by program")
+        batch._followed_own_save(self.paths[0], before)
+        self.assertEqual(batch.auto_adjust_plan([cards["C7"]["id"]])["run"], [])
+        Path(self.paths[0]).write_bytes(b"edited by hand, longer")
+        self.assertEqual(batch.auto_adjust_plan([cards["C7"]["id"]])["run"], [cards["C7"]["id"]])
+
+    def test_auto_adjust_refuses_when_nothing_can_run(self):
+        cards = self.scanned_only()
+        with self.assertRaisesRegex(ValueError, "都不能自动调整"):
+            batch.start_auto_adjust([cards["D9"]["id"]])
+        self.wf.STATE["busy"] = True
+        with self.assertRaisesRegex(ValueError, "后台任务执行中"):
+            batch.auto_adjust_plan([cards["A5"]["id"]])
+
+    def test_picked_back_to_auto_only_takes_chosen_cells_and_keeps_other_marks(self):
+        cards = self.scanned_only()
+        options = batch.start_auto_adjust([cards["A5"]["id"]])
+        self.assertEqual(options["card_ids"], [cards["A5"]["id"], cards["B5"]["id"]])
+        self.wf.STATE["job"] = {"kind": "batch_scan", "options": options, "completed": [], "status": "running"}
+        with patch.object(batch, "close_saved_workbooks", return_value={}), patch.object(batch, "_recheck_file"):
+            batch._back_to_auto(Mock(), self.session, self.paths[0], picked=True)
+        for addr in ("A5", "B5"):
+            self.assertEqual((cards[addr]["waiting"], cards[addr]["manual"], cards[addr]["message"]),
+                             (True, False, batch.PICKED_MESSAGE))
+            self.assertNotIn("auto_pick", cards[addr])
+        for addr in ("C7", "D9"):
+            self.assertEqual((cards[addr]["manual"], cards[addr]["finalized"]), (True, True))
+        self.assertTrue(cards["D9"]["handed_over"])  # 没选的照旧可以以后再转回自动
+        self.assertFalse(self.sync.call_args.kwargs["clear"])  # 只去掉交给自动的格子的标色
+        self.assertEqual(self.wf.STATE["job"]["picked_back"], [cards["A5"]["id"], cards["B5"]["id"]])
+
+    def test_auto_adjust_job_runs_only_picked_files_and_finalizes_failures(self):
+        cards = self.scanned_only()
+        other, _ = self.add(self.paths[1], "A3", 3)
+        batch._hand_over(self.paths[1])
+        options = batch.start_auto_adjust([cards["A5"]["id"]])
+        self.wf.STATE["busy"] = True
+        self.wf.STATE["job"] = self.job = {"kind": "batch_scan", "options": options, "completed": [],
+                                           "pending_adjustment": None, "status": "running"}
+        order = []
+
+        def back(excel, session, path, picked=False):
+            order.append(("back", path, picked))
+            for addr in ("A5", "B5"):
+                cards[addr].update(waiting=True, manual=False, finalized=False)
+            self.job["picked_back"] = [cards["A5"]["id"], cards["B5"]["id"]]
+
+        def repair(excel, session, path):
+            order.append(("fix", path))
+            cards["A5"].update(color="blue", verified=True, waiting=False)
+            cards["B5"].update(color="yellow", manual=True, waiting=False, message="自动试修未通过")
+
+        with patch.object(batch, "_back_to_auto", side_effect=back), patch.object(batch, "_refresh"), \
+                patch.object(batch, "_repair_file", side_effect=repair), \
+                patch.object(batch, "_sync_highlights_safely") as sync:
+            self.assertEqual(batch.run(), [self.paths[0]])
+        self.assertEqual(order, [("back", self.paths[0], True), ("fix", self.paths[0])])
+        self.assertEqual((cards["A5"]["color"], cards["A5"].get("finalized")), ("blue", False))
+        # 没修好、没写过文件：直接算已提交，可以马上人工处理、复检
+        self.assertEqual((cards["B5"]["color"], cards["B5"]["finalized"]), ("yellow", True))
+        self.assertEqual(other["finalized"], True)
+        sync.assert_called_once_with(self.session, self.paths[0])
+        self.assertEqual(batch._data()["auto_versions"][self.paths[0]],
+                         self.wf._file_version(Path(self.paths[0])))
+
 
 if __name__ == "__main__":
     unittest.main()
