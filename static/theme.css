@@ -2552,12 +2552,18 @@ input[type="checkbox"]:not(.hidden):checked::before {
   text-decoration: none;
 }
 
-/* 后台还要处理这份文件：文件框换成灰底虚线框，文件名和「打开文件」变灰、禁止光标（原因写在标题栏和鼠标提示里） */
+/* 后台还要处理这份文件：整个文件框（连同卡片和截图）变成黑白、灰底虚线框，一眼看出现在不能打开；
+   文件名和「打开文件」变灰、禁止光标（原因写在标题栏和鼠标提示里） */
 .batch-file:has(> .batch-file-head[data-open="blocked"]) {
   border-style: dashed;
   border-color: #7d89a8;
-  background: #f6f8fb;
+  background: #eceff4;
   box-shadow: none;
+  filter: grayscale(1);
+}
+
+.batch-file:has(> .batch-file-head[data-open="blocked"]) .batch-waterfall {
+  opacity: 0.6;
 }
 
 .excel-link.is-blocked,
