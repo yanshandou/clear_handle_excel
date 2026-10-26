@@ -1104,6 +1104,85 @@ class BatchTests(unittest.TestCase):
         self.assertTrue(card["dismissed"])
         self.assertEqual(batch.validate_cards([new_card["id"]], yellow=True), [new_card["id"]])
 
+    def single_recheck(self, card, found=(), span=True):
+        """单项复检：这一格在第 2 页（第 4 行上方有分页），只导出这一页"""
+        sheet = Mock(Name="S1")
+        sheet.PageSetup.Pages.Count = 2 if span else 5
+        exported, detected = [], []
+        def detect(*_, **kwargs):
+            detected.append(kwargs)
+            return {}, {f"n{i}": item for i, item in enumerate(found)}
+        with patch.object(batch, "_current_area", return_value=(sheet, (5, 1, 5, 1))), \
+                patch.object(batch.page_breaks, "read_breaks", return_value={"h": [(4, False)], "v": []}), \
+                patch.object(self.wf, "_export_sheet_pdf", side_effect=lambda s, pdf, pages=None: exported.append(pages)), \
+                patch.object(self.wf, "_detect_sheet_results", side_effect=detect), \
+                patch.object(batch, "_latest_shot", return_value=""):
+            batch._recheck_cell(self.excel, self.path, card)
+        return exported, detected
+
+    def test_single_recheck_only_exports_the_cells_page_and_leaves_other_cards(self):
+        a, item_a = self.manual_card("A5")
+        b, item_b = self.manual_card("B5")
+        exported, detected = self.single_recheck(a)
+        self.assertEqual(exported, [(2, 2)])
+        self.assertEqual((detected[0]["page_span"], detected[0]["area"]), ((2, 2), (4, (1 << 20) - 1, 1, (1 << 14) - 1)))
+        self.assertTrue(a["dismissed"])
+        self.assertEqual(item_a["status"], "fixed")
+        self.refresh.assert_not_called()  # 不整份重查
+        self.assertEqual((b["color"], b["dismissed"], item_b["status"]), ("yellow", False, "manual_review"))
+        self.book.Close.assert_called_once_with(SaveChanges=False)
+
+    def test_single_recheck_only_counts_problems_in_this_cell(self):
+        a, item_a = self.manual_card("A5")
+        self.single_recheck(a, found=[{"kind": "hidden", "cell_addr": "B7", "text": "别处"}])
+        self.assertTrue(a["dismissed"])  # 别处的问题不管
+        b, _ = self.manual_card("B5")
+        self.single_recheck(b, found=[{"kind": "clip", "cell_addr": "D9", "text": "别的字", "location_confirmed": False}])
+        self.assertTrue(b["dismissed"])
+        c, item_c = self.manual_card("C5")
+        self.single_recheck(c, found=[{"kind": "clip", "cell_addr": "D9", "text": "C", "location_confirmed": False}])
+        self.assertFalse(c["dismissed"])  # 认不准是哪一格、文字对得上的切字算这一格的
+        self.assertEqual((c["color"], c["finalized"], item_c["status"]), ("yellow", True, "manual_review"))
+        self.assertTrue(c["message"].startswith(batch.SINGLE_FAIL_MESSAGE))
+        self.assertEqual(batch.validate_cards([c["id"]], yellow=True), [c["id"]])
+
+    def test_single_recheck_exports_the_whole_sheet_when_page_is_unclear(self):
+        a, _ = self.manual_card("A5")
+        exported, detected = self.single_recheck(a, span=False)  # 页数和分页对不上
+        self.assertEqual(exported, [None])
+        self.assertIsNone(detected[0]["page_span"])
+
+    def test_single_recheck_of_unchanged_file_keeps_the_card(self):
+        a, _ = self.manual_card("A5")
+        batch._sheet_checks()[self.path] = {"*": self.wf._file_version(Path(self.path))}
+        batch._recheck_cell(self.excel, self.path, a)
+        self.excel.Workbooks.Open.assert_not_called()
+        self.assertEqual((a["color"], a["dismissed"]), ("yellow", False))
+
+    def test_single_recheck_follows_the_mark_rule_to_the_cells_new_place(self):
+        a, _ = self.manual_card("A5")
+        batch._marks()[a["id"]] = {"path": self.path, "sheet": "S1", "addr": "A5", "tag": batch._mark_name(a["id"])}
+        sheet = Mock(Name="S1")
+        area = Mock(Row=8, Column=1, Worksheet=sheet)  # 上面插了 3 行
+        area.Rows.Count = area.Columns.Count = 1
+        rule = Mock(Formula1=f'=N("{batch._mark_name(a["id"])}")=0')
+        rule.AppliesTo.Areas.return_value.Cells.return_value.MergeArea = area
+        sheet.Cells.FormatConditions.Count = 1
+        sheet.Cells.FormatConditions.Item.return_value = rule
+        book = Mock(Worksheets=[sheet])
+        book.Sheets.return_value = sheet
+        self.assertEqual(batch._current_area(book, self.path, a), (sheet, (8, 1, 8, 1)))
+
+    def test_page_span_covers_the_rows_between_breaks(self):
+        sheet = Mock()
+        sheet.PageSetup.Pages.Count = 3
+        breaks = {"h": [(10, False), (20, True)], "v": []}
+        self.assertEqual(batch._page_span(sheet, breaks, (12, 2, 12, 2)), ((2, 2), (10, 19, 1, (1 << 14) - 1)))
+        self.assertEqual(batch._page_span(sheet, breaks, (9, 1, 11, 1))[0], (1, 2))  # 合并格跨两页
+        self.assertIsNone(batch._page_span(sheet, None, (12, 2, 12, 2)))
+        sheet.PageSetup.Pages.Count = 4  # 有空白页被跳过等：页码算不准
+        self.assertIsNone(batch._page_span(sheet, breaks, (12, 2, 12, 2)))
+
     def test_refresh_remembers_which_file_version_each_sheet_was_checked_at(self):
         version = self.wf._file_version(Path(self.path))
         def scan(*_, **kwargs):
@@ -1215,6 +1294,42 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(set(job["completed"]), {self.path, second})
         self.assertTrue(job["closing"])
         self.assertFalse(batch.enqueue_recheck([a["id"]]))  # 已在收尾：另起任务
+
+    def test_card_recheck_runs_single_cell_check_and_file_recheck_runs_whole_file(self):
+        a, _ = self.manual_card("A5")
+        b, _ = self.manual_card("B5")
+        job = self.recheck_job([a], [self.path])
+        job["options"] = batch.recheck_options([a["id"]], single=True)
+        self.assertEqual(job["options"]["full_paths"], [])
+        session = Mock()
+        session.app.return_value = self.excel
+        calls = []
+        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch, "close_saved_workbooks", return_value={}), \
+                patch.object(batch, "_recheck_file", side_effect=lambda e, p, cards: calls.append(("file", len(cards)))), \
+                patch.object(batch, "_recheck_cell", side_effect=lambda e, p, card: calls.append(("cell", card["id"]))), \
+                patch.object(batch, "_sync_highlights_safely"), \
+                patch.object(batch, "finish_execution_batch"):
+            batch.run()
+            self.assertEqual(calls, [("cell", a["id"])])
+            calls.clear()
+            job = self.recheck_job([b], [self.path])
+            job["options"] = batch.recheck_options([b["id"]])
+            batch.run()
+            self.assertEqual(calls, [("file", 1)])
+
+    def test_single_recheck_clicked_after_file_recheck_only_checks_that_cell(self):
+        a, _ = self.manual_card("A5")
+        job = self.recheck_job([a], [self.path])
+        job["options"] = batch.recheck_options([a["id"]])
+        job.update(completed=[self.path], skipped=[], again=[], current=None)
+        self.assertTrue(batch.enqueue_recheck([a["id"]], single=True))
+        self.assertFalse(batch._full_recheck(job["options"], self.path))
+        self.assertTrue(batch.enqueue_recheck([a["id"]]))  # 再点整份
+        self.assertTrue(batch._full_recheck(job["options"], self.path))
+        self.assertTrue(batch.enqueue_recheck([a["id"]], single=True))  # 整份还在排队：整份已包含这一格
+        self.assertTrue(batch._full_recheck(job["options"], self.path))
+        self.assertTrue(batch._full_recheck({"card_ids": []}, self.path))  # 旧任务都是整份
 
     def run_recheck(self, recheck, session):
         with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
