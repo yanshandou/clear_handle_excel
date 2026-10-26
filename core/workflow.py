@@ -197,9 +197,15 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
     with STATE_LOCK:
         if STATE["busy"]:
             return False
+        unsettled = {}
         if (kind != "resume" and STATE.get("job") and STATE["job"]["kind"].startswith("batch_")
                 and (STATE["job"].get("pending_adjustment") or STATE["job"].get("deferred_adjustments"))):
-            raise ValueError("上次文件写入尚未结算，请先继续上次任务，不能替换其写入日志")
+            if kind not in BATCH_REVIEW_KINDS:
+                raise ValueError("上次文件写入尚未结算，请先点「继续上次任务」或「放弃这次写入」，不能替换其写入日志")
+            # 审核提交 / 复检 / 打开 / 清除颜色：没写完的那份文件跳过，日志带到新任务里，仍可继续或放弃
+            unsettled = dict(STATE["job"].get("deferred_adjustments") or {})
+            if STATE["job"].get("pending_adjustment"):
+                unsettled[STATE["job"]["pending_adjustment"]["path"]] = STATE["job"]["pending_adjustment"]
         if kind in {"review_recheck", "review_open"} and not current_review_queue():
             raise ValueError("当前文件夹没有挂起的稍后人工复检")
         if kind in {"fix", "manual_open", "recheck"}:
@@ -226,6 +232,11 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
                 paused = old_job.get("paused_scan") if old_job["kind"] != "batch_scan" else old_job
                 if paused:
                     STATE["job"]["paused_scan"] = paused
+            if unsettled:
+                # 日志挪到新任务（暂停的全自动处理收起来时也一样），只留一份，免得同一份日志被结算两次
+                old_job["pending_adjustment"] = None
+                old_job.pop("deferred_adjustments", None)
+                STATE["job"]["deferred_adjustments"] = unsettled
             if kind == "scan":
                 STATE["scan_progress"] = {"total": 0, "completed": 0, "status": "running"}
             if kind == "fix":
@@ -302,8 +313,10 @@ def run_pending_workflow() -> None:
             )
             expected = options["selected_ids"]
         with STATE_LOCK:
+            # 还有没写完的文件时保持「可继续」，页面上才有「继续上次任务」重新核对写入
             job["status"] = (
-                "completed" if set(expected).issubset(job["completed"]) else "interrupted"
+                "completed" if set(expected).issubset(job["completed"])
+                and not job.get("pending_adjustment") and not job.get("deferred_adjustments") else "interrupted"
             )
         if job["status"] == "interrupted":
             interrupt_execution_batch("部分文件处理失败，可点击继续上次任务重试")

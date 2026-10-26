@@ -591,10 +591,22 @@ def _park_pending(error: Exception) -> None:
         job["pending_adjustment"] = None
         for cid in pending["cards"]:
             card = _data()["cards"].get(cid)
-            if card:
+            if card and pending["action"] == "fix":
                 card.update(color="yellow", verified=False, waiting=False,
                             message=f"文件写入状态待核对，已跳过并保留恢复日志：{error}")
+            elif card:
+                # 提交时的还原 / 采用：颜色是你标的，不替你改，等你继续或放弃这次写入
+                card["message"] = f"文件写入待核对，这份文件先不处理：{error}"
         wf._persist_state()
+
+
+def _unsettled(job: dict, path: str) -> bool:
+    """这份文件还有没写完的修改（写入核对没通过）：提交 / 复检 / 清除颜色先跳过它，不挡别的文件"""
+    if path not in job.get("deferred_adjustments", {}):
+        return False
+    wf.log_msg(f"⏸ {Path(path).name} 上次写入还没完成，这次先跳过；点「继续上次任务」重新核对写入，"
+               "或点「放弃这次写入」转人工后再处理")
+    return True
 
 
 def _show_deferred_pending() -> None:
@@ -1153,14 +1165,15 @@ def _commit_review(excel: Any) -> None:
     # 人工认可的加高也改整行行高：同行颜色不一致同样整行转黄
     for rid, peers in by_row.items():
         row = data["rows"].get(rid)
-        if _linked_row(rid, peers) and len({c["color"] for c in peers}) > 1:
+        if (_linked_row(rid, peers) and len({c["color"] for c in peers}) > 1
+                and peers[0]["wb_path"] not in job.get("deferred_adjustments", {})):
             for card in peers:
                 card.update(color="yellow", conflict=True, message="同行存在不同处理意见，整行还原后交给人工")
     wf._persist_state()
     debug_log.event("📨 提交审核", 卡片=len(cards), **{color: sum(c["color"] == color for c in cards)
                                                       for color in ("blue", "green", "yellow")})
     for path in dict.fromkeys(c["wb_path"] for c in cards):
-        if path in job["completed"]:
+        if path in job["completed"] or _unsettled(job, path):
             continue
         debug_log.begin(f"提交 {Path(path).name}")
         rows = []
@@ -1173,13 +1186,21 @@ def _commit_review(excel: Any) -> None:
                          "expected": row["applied"], "target": row["base"],
                          "wrap": {addr: False for addr in row.get("wrap", [])}})
             reverting.extend(c["id"] for c in peers)
-        if rows:
-            job["options"].setdefault("refresh_sheets", {})[path] = sorted({r["sheet"] for r in rows})
-            job["pending_adjustment"] = {"action": "restore", "path": path,
-                                         "version": wf._file_version(Path(path)), "rows": rows, "cards": reverting}
-            wf._persist_state()
-            _finish_pending(excel)
-        _adopt_rows(excel, path, by_row)
+        try:
+            if rows:
+                job["options"].setdefault("refresh_sheets", {})[path] = sorted({r["sheet"] for r in rows})
+                job["pending_adjustment"] = {"action": "restore", "path": path,
+                                             "version": wf._file_version(Path(path)), "rows": rows, "cards": reverting}
+                wf._persist_state()
+                _finish_pending(excel)
+            _adopt_rows(excel, path, by_row)
+        except Exception as err:
+            if not job.get("pending_adjustment"):
+                raise
+            # 这份文件的行高核对不通过（多半在 Excel 里改过）：留着写入日志，先提交其他文件
+            _park_pending(err)
+            wf.log_msg(f"❌ {Path(path).name} 写入未结算，已跳过，继续提交其他文件：{err}")
+            continue
         with wf.STATE_LOCK:
             for card in [c for c in cards if c["wb_path"] == path]:
                 card["finalized"] = True
@@ -2604,6 +2625,8 @@ def _unhighlight_summary(results: dict[str, dict]) -> str:
 def _sync_highlights_safely(session: Any, path: str) -> None:
     """提交、复检之后顺带更新标色；失败只记日志，不影响审核结果。
     Excel 出毛病（崩溃、连不上）时换一个新的 Excel 再试一次；还是不行，记录留着，下次提交 / 复检时再还原"""
+    if path in (wf.STATE["job"] or {}).get("deferred_adjustments", {}):
+        return  # 上次写入还没结算：保存标色会改动文件，之后就核对不了，等继续或放弃后再标
     for tries in range(2):
         try:
             _sync_highlights(session.app, path, tick=session.touch)
@@ -2729,7 +2752,14 @@ def run() -> list[str]:
     try:
         excel = session.app() if job.get("pending_adjustment") and kind != "batch_scan" else None
         if excel is not None:
-            _finish_pending(excel)
+            try:
+                _finish_pending(excel)
+            except Exception as err:
+                # 核对还是不通过：只把这份文件放一边，其他文件照常做
+                path = job["pending_adjustment"]["path"]
+                _park_pending(err)
+                wf.log_msg(f"❌ {Path(path).name} 写入未结算，已跳过，继续其他文件：{err}")
+                session.close()
         if kind != "batch_scan" and "workbooks" not in job:
             # 审核提交 / 复检 / 打开 / 清除颜色也记下本次涉及的文件，网页按本任务显示进度
             with wf.STATE_LOCK:
@@ -2949,6 +2979,8 @@ def run() -> list[str]:
                             job["closing"], job["current"] = True, None  # 之后再点复检另起任务，不会漏掉
                             break
                         job["skipped"].append(path)
+                        if _unsettled(job, path):
+                            continue
                         job["current"] = path
                         cards = [card for cid in dict.fromkeys(options["card_ids"])
                                  for card in [_data()["cards"].get(cid)]
@@ -3013,6 +3045,10 @@ def run() -> list[str]:
                     continue
                 report = {"name": workbook_rel_name(Path(path), wf.STATE["folder"]), "cells": [], "leftovers": 0,
                           "leftover_failed": [], "error": None}
+                if _unsettled(job, path):
+                    with wf.STATE_LOCK:
+                        results[path] = {**report, "error": "上次写入还没完成，请先继续上次任务或放弃这次写入"}
+                    continue
                 if Path(path) in unsaved:
                     wf.log_msg(f"⚠️ {Path(path).name}：{unsaved[Path(path)]}，请保存后继续")
                     with wf.STATE_LOCK:
