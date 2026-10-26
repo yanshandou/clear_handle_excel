@@ -22,6 +22,8 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;
 const nextColor = (color, direction = 1) => REVIEW_COLORS[(REVIEW_COLORS.indexOf(color) + direction + 3) % 3];
 // 页面按文件分组：一个文件一个框，文件按第一次出现（处理顺序）排，框里的卡片按处理顺序
 const fileKey = card => card.wb_path || card.wb_name || '';
+// 后台任务在跑时这份文件能不能点开 Excel：不能时是原因（后端按任务进度算），能打开是空字符串
+const openBlocked = card => (batchState.open_blocked || {})[card.wb_path] || '';
 function fileGroups(cards) {
   const groups = new Map();
   for (const card of cards) {
@@ -272,7 +274,7 @@ function blueNote(card) {
 
 function cardHtml(card, large = false) {
   const where = `${card.sheet_name}!${card.cell_addr || '定位待确认'}`;
-  const target = { file: card.wb_name, folder: batchState.folder, sheet: card.sheet_name, cell: card.cell_addr };
+  const target = { file: card.wb_name, folder: batchState.folder, sheet: card.sheet_name, cell: card.cell_addr, blocked: openBlocked(card) };
   // 文件名已经写在文件框上：小卡片只写「表!格」（点了照样打开 Excel 跳到这一格）；大图审核没有文件框，照旧写文件名
   const title = large ? `${excelLinkHtml(esc(card.wb_name), target)}<p class="batch-cell">${esc(where)}</p>`
     : excelLinkHtml(esc(where), target, 'batch-cell-link');
@@ -459,14 +461,19 @@ function fileHeadHtml(key) {
   const where = String(first.wb_path || '');
   const sub = folder && where.toLowerCase().startsWith(folder.toLowerCase())
     ? where.slice(folder.length).replace(/^[\\/]+/, '').split(/[\\/]/).slice(0, -1).join(' / ') : '';
-  const target = { file: first.wb_name, folder: batchState.folder };
+  const blocked = openBlocked(first);
+  const target = { file: first.wb_name, folder: batchState.folder, blocked };
+  // 后台任务在跑时，标题栏写明这份文件现在能不能打开（不能时文件名和「打开文件」变灰）
+  const openState = !batchState.busy ? ''
+    : blocked ? `<span class="batch-file-open" data-open="blocked" title="${esc(blocked)}">🔒 暂不能打开 · ${esc(blocked)}</span>`
+    : '<span class="batch-file-open" data-open="ready" title="后台不会再处理这份文件，现在可以在 Excel 中打开">✅ 已处理完，可以打开</span>';
   const counts = REVIEW_COLORS.map(color => `<span class="batch-file-count" data-color="${color}"><span class="batch-dot" aria-hidden="true"></span>${COLOR_NAMES[color]} ${cards.filter(c => c.color === color).length}</span>`).join('');
   const busy = batchState.busy && batchState.job?.kind !== 'batch_recheck';
   const recheck = manual.length
     ? `<button type="button" class="btn btn-outline" data-file-action="recheck" data-file="${esc(key)}"${busy ? ' disabled' : ''} title="整份文件所有表重新检测，这个文件的 ${manual.length} 张黄卡一起出结果">🔁 复检这个文件</button>`
     : '<button type="button" class="btn btn-outline" disabled title="这个文件还没有已提交的黄色人工项">🔁 复检这个文件</button>';
-  return `<header class="batch-file-head">
-    <div class="batch-file-title"><span class="batch-file-icon" aria-hidden="true">📄</span><div class="batch-file-name">${excelLinkHtml(esc(first.wb_name || key), target)}${sub ? `<p class="batch-file-path">${esc(sub)}</p>` : ''}</div></div>
+  return `<header class="batch-file-head"${batchState.busy ? ` data-open="${blocked ? 'blocked' : 'ready'}"` : ''}>
+    <div class="batch-file-title"><span class="batch-file-icon" aria-hidden="true">📄</span><div class="batch-file-name">${excelLinkHtml(esc(first.wb_name || key), target)}${sub ? `<p class="batch-file-path">${esc(sub)}</p>` : ''}</div></div>${openState}
     <div class="batch-file-counts" aria-label="这个文件的卡片数">${counts}<span class="batch-file-total">共 ${cards.length} 格</span></div>
     <div class="batch-file-actions"><button type="button" class="btn btn-outline" data-file-action="select" data-file="${esc(key)}" aria-pressed="false">选中本文件的卡</button>${excelLinkHtml('📂 打开文件', { ...target, sheet: jump.sheet_name, cell: jump.cell_addr }, 'btn btn-outline')}${recheck}</div>
   </header>`;
@@ -499,7 +506,7 @@ function render() {
   // 筛选按钮用对应颜色的边框、底色和圆点；选中时整块填色
   const filterHtml = ['all', ...REVIEW_COLORS].map(color => `<button type="button" class="batch-filter" data-filter="${color}" aria-pressed="${selectedFilter === color}"><span class="batch-dot" aria-hidden="true"></span>${color === 'all' ? '全部' : REVIEW_LABELS[color]}<span class="batch-count">${color === 'all' ? batchState.cards.length : counts[color]}</span></button>`).join('');
   if ($('filters').innerHTML !== filterHtml) $('filters').innerHTML = filterHtml;
-  const key = JSON.stringify([batchState.cards, selectedFilter, largeMode, activeCardId, batchState.busy]);
+  const key = JSON.stringify([batchState.cards, selectedFilter, largeMode, activeCardId, batchState.busy, batchState.open_blocked]);
   if (renderKey === key) { applySelection(); return; }
   renderKey = key;
   $('cardList').classList.toggle('hidden', largeMode);

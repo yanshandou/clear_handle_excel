@@ -226,6 +226,52 @@ def _stopping(job: dict) -> bool:
     return bool(job.get("pause_requested") or job.get("to_manual"))
 
 
+def open_block_reason(job: dict, path: Path) -> str:
+    """后台任务在跑时，网页上点这份文件能不能在 Excel 打开：能打开返回空字符串，不能就返回原因（页面上直接显示）。
+
+    还没轮到、正在处理的文件要等：用户在 Excel 里开着，后台轮到它时会因为文件被占用跳过。
+    已经做完、后面不再碰的文件，和不在这次任务里的文件，可以打开。调用方持有 STATE_LOCK。"""
+    kind = job.get("kind")
+    if kind not in {"batch_scan", "batch_recheck"} or "workbooks" not in job:
+        # 提交、清除标色、精简 Sheet、导出 PDF 等任务：每份文件做什么不好判断，照旧等它结束
+        return "后台任务正在处理文件，结束后才能打开"
+    target = path.resolve()
+    mine = [p for p in job["workbooks"] if Path(p).resolve() == target]
+    if not mine:
+        return ""
+    completed = job.get("completed", [])
+    if kind == "batch_recheck":
+        if any(p == job.get("current") for p in mine):
+            return "正在复检这份文件，查完才能打开"
+        if any(p in job.get("again", []) for p in mine):
+            return "这份文件查完还要再复检一遍，查完才能打开"
+        return "" if all(p in completed for p in mine) else "这份文件在排队等复检，查完才能打开"
+    if job.get("to_manual"):
+        return "正在转人工，要给这份文件标色，标完才能打开"
+    if any(p in job.get("deferred_adjustments", {}) for p in mine):
+        return "这份文件还有没写完的修改，后台还要回来处理"
+    if all(p in completed for p in mine):
+        return ""
+    scanned = job.get("scanned", [])
+    repairing = job.get("phase") == "repair" and not job.get("options", {}).get("scan_only")
+    pending = [p for p in job["workbooks"] if p not in (completed if repairing else scanned)]
+    current = (job.get("repairing") if repairing else None) or (pending[0] if pending else None)
+    if current in mine:
+        return "后台正在处理这份文件，处理完才能打开"
+    if all(p in scanned for p in mine):
+        return "已扫描，还要等自动修复，修完才能打开"
+    return "还没轮到这份文件，处理完才能打开"
+
+
+def _open_blocked(paths: list[str]) -> dict[str, str]:
+    """页面上各文件现在能不能点开 Excel：只列不能打开的，值是原因。调用方持有 STATE_LOCK。"""
+    job = wf.STATE.get("job") or {}
+    kind = job.get("kind") or ""
+    if not wf.STATE.get("busy") or not (kind.startswith("batch_") or kind in wf.QUICK_TASK_NAMES):
+        return {}
+    return {path: reason for path in dict.fromkeys(paths) if (reason := open_block_reason(job, Path(path)))}
+
+
 def _waiting(card: dict) -> bool:
     """还没轮到自动处理的卡（旧数据没有 waiting 字段，按说明文字判断）"""
     return bool(card.get("waiting", card.get("message") == WAITING_MESSAGE))
@@ -338,7 +384,7 @@ def snapshot() -> dict:
             cards.append(result)
         highlighted = sum(1 for m in _marks().values() if wf.in_current_folder(m["path"]) and _shows_mark(m))
         return {"cards": cards, "busy": wf.STATE["busy"], "folder": wf.STATE["folder"], "highlighted": highlighted,
-                "mode": _mode(),
+                "mode": _mode(), "open_blocked": _open_blocked([c["wb_path"] for c in cards]),
                 "job": copy.deepcopy(wf.STATE["job"]), "progress": dict(wf.STATE["scan_progress"]),
                 "logs": wf.STATE["logs"][-100:]}
 

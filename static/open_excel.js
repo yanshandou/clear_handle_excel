@@ -8,14 +8,17 @@
       { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
   }
 
-  // labelHtml 需已转义；target: { file, sheet, cell, folder, record }
+  // labelHtml 需已转义；target: { file, sheet, cell, folder, record, blocked }
+  // blocked：后台还要处理这份文件时不能打开的原因，链接变灰、鼠标移上去显示原因，点了只提示不打开
   window.excelLinkHtml = function (labelHtml, target, extraClass = '') {
-    const data = ['file', 'sheet', 'cell', 'folder']
+    const data = ['file', 'sheet', 'cell', 'folder', 'blocked']
       .filter(key => target[key])
       .map(key => ` data-${key}="${escapeAttr(target[key])}"`).join('');
     const where = target.sheet ? `并跳到 ${target.sheet}${target.cell ? `!${target.cell}` : ''}` : '';
-    return `<a href="#" class="excel-link ${extraClass}"${data}${target.record ? ' data-record="1"' : ''}`
-      + ` title="${escapeAttr(`点击在 Excel 中打开${where}`)}">${labelHtml}</a>`;
+    const title = target.blocked ? `暂时不能打开：${target.blocked}` : `点击在 Excel 中打开${where}`;
+    return `<a href="#" class="excel-link ${target.blocked ? 'is-blocked ' : ''}${extraClass}"${data}`
+      + `${target.record ? ' data-record="1"' : ''}${target.blocked ? ' aria-disabled="true"' : ''}`
+      + ` title="${escapeAttr(title)}">${labelHtml}</a>`;
   };
 
   let toastTimer = null;
@@ -72,6 +75,7 @@
     if (!link) return;
     e.preventDefault();
     e.stopPropagation();
-    openExcel(link);
+    if (link.dataset.blocked) toast(`暂时不能打开：${link.dataset.blocked}`, true);
+    else openExcel(link);
   }, true);
 })();

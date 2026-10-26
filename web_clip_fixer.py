@@ -414,9 +414,6 @@ class WebHandler(BaseHTTPRequestHandler):
             if not isinstance(file_name, str) or not file_name or not isinstance(sheet, str) or not isinstance(cell, str):
                 raise ValueError("需要有效的文件名")
             with STATE_LOCK:
-                job = STATE["job"] or {}
-                if STATE["busy"] and (job.get("kind") in QUICK_TASK_NAMES or job.get("kind", "").startswith("batch_")):
-                    raise ValueError("后台任务正在处理文件，请等它结束或暂停后再打开")
                 workbench_folder = STATE.get("folder", "")
             if payload.get("record") is True:
                 wb_path = find_recorded_workbook(file_name)
@@ -425,6 +422,14 @@ class WebHandler(BaseHTTPRequestHandler):
                 wb_path = find_workbook(file_name, [
                     folder if isinstance(folder, str) else "", workbench_folder, EXECUTION_STATE.get("folder", ""),
                 ])
+            with STATE_LOCK:
+                job = STATE["job"] or {}
+                kind = job.get("kind", "")
+                # 扫描 / 复检中：已经做完、后面不再碰的文件可以打开，只拦还没轮到和正在处理的
+                if STATE["busy"] and (kind in QUICK_TASK_NAMES or kind.startswith("batch_")):
+                    reason = batch.open_block_reason(job, wb_path)
+                    if reason:
+                        raise ValueError(reason)
             try:
                 autofix.wait_for_writes(15)  # 后台正在保存这个文件时别同时打开
             except ValueError:
