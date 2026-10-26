@@ -135,6 +135,11 @@
 .batch-file-open { display: inline-flex; align-items: center; max-width: 100%; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; overflow-wrap: anywhere; }
 .batch-file-open[data-open="blocked"] { border: 1.5px dashed #7d89a8; background: #eef2f8; color: #4f5b7d; }
 .batch-file-open[data-open="ready"] { border: 1.5px solid #35a514; background: #e6f8dc; color: #1d6409; }
+.batch-file-queue { display: inline-flex; align-items: center; max-width: 100%; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; overflow-wrap: anywhere; }
+.batch-file-queue[data-queue="waiting"] { border: 1.5px solid #b7791f; background: #fff4d6; color: #7a4a00; }
+.batch-file-queue[data-queue="running"] { border: 1.5px solid #1d4ed8; background: #e0eaff; color: #1e3a8a; }
+.batch-file-queue[data-queue="done"] { border: 1.5px solid #35a514; background: #e6f8dc; color: #1d6409; }
+.batch-file-queue[data-queue="error"] { border: 1.5px solid #b91c1c; background: #fde8e8; color: #8a1414; }
 .batch-file-counts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .batch-file-count { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border: 1.5px solid var(--c-line); border-radius: 999px; background: var(--c-bg); color: var(--c-ink); font-size: 12px; font-weight: 700; }
 .batch-file-total { color: #475569; font-size: 12px; font-weight: 700; }

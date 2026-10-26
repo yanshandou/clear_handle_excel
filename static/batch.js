@@ -33,6 +33,20 @@ const autoQueueOpen = () => {
   return !!(batchState.busy && job?.kind === 'batch_scan' && job.options?.picked && Array.isArray(job.workbooks)
     && !job.closing && !job.pause_requested && !job.to_manual);
 };
+// 「🤖 自动调整」任务里这份文件到哪一步了：文件框上显示，排队的写明前面还有几个文件
+function autoQueueBadge(path) {
+  const job = batchState.job;
+  if (!batchState.busy || job?.kind !== 'batch_scan' || !job.options?.picked || !job.workbooks?.includes(path)) return '';
+  const done = new Set(job.completed || []);
+  const failed = job.file_errors || {};
+  if (done.has(path)) return '<span class="batch-file-queue" data-queue="done">✅ 自动调整完成</span>';
+  if (failed[path]) return `<span class="batch-file-queue" data-queue="error" title="${esc(failed[path])}">⚠️ 自动调整出错，已跳过</span>`;
+  const waiting = job.workbooks.filter(p => !done.has(p) && !failed[p]);
+  const current = waiting.includes(job.repairing) ? job.repairing : waiting[0];
+  if (path === current) return '<span class="batch-file-queue" data-queue="running">🤖 正在自动调整</span>';
+  const ahead = waiting.filter(p => p !== current).indexOf(path) + 1;
+  return `<span class="batch-file-queue" data-queue="waiting">⏳ 排队等自动调整 · 前面还有 ${ahead} 个文件</span>`;
+}
 const canAuto = cards => !batchState.busy || (autoQueueOpen() && cards.every(c => !openBlocked(c)));
 function fileGroups(cards) {
   const groups = new Map();
@@ -500,8 +514,9 @@ function fileHeadHtml(key) {
     ? `<button type="button" class="btn btn-outline" data-file-action="recheck" data-file="${esc(key)}"${busy ? ' disabled' : ''} title="整份文件所有表重新检测，这个文件的 ${manual.length} 张黄卡一起出结果">🔁 复检这个文件</button>`
     : '<button type="button" class="btn btn-outline" disabled title="这个文件还没有已提交的黄色人工项">🔁 复检这个文件</button>';
   const auto = `<button type="button" class="btn btn-outline" data-file-action="auto" data-file="${esc(key)}"${!manual.length || !canAuto(manual) ? ' disabled' : ''} title="${manual.length ? `让程序自动加高这个文件的 ${manual.length} 张黄卡（能自动的才调整，确认框里会列出跳过的和原因）` : '这个文件还没有已提交的黄色人工项'}">🤖 自动调整这个文件</button>`;
-  return `<header class="batch-file-head"${batchState.busy ? ` data-open="${blocked ? 'blocked' : 'ready'}"` : ''}>
-    <div class="batch-file-title"><span class="batch-file-icon" aria-hidden="true">📄</span><div class="batch-file-name">${excelLinkHtml(esc(first.wb_name || key), target)}${sub ? `<p class="batch-file-path">${esc(sub)}</p>` : ''}</div></div>${openState}
+  const queue = autoQueueBadge(key).match(/data-queue="(\w+)"/)?.[1];
+  return `<header class="batch-file-head"${batchState.busy ? ` data-open="${blocked ? 'blocked' : 'ready'}"` : ''}${queue ? ` data-queue="${queue}"` : ''}>
+    <div class="batch-file-title"><span class="batch-file-icon" aria-hidden="true">📄</span><div class="batch-file-name">${excelLinkHtml(esc(first.wb_name || key), target)}${sub ? `<p class="batch-file-path">${esc(sub)}</p>` : ''}</div></div>${autoQueueBadge(key)}${openState}
     <div class="batch-file-counts" aria-label="这个文件的卡片数">${counts}<span class="batch-file-total">共 ${cards.length} 格</span></div>
     <div class="batch-file-actions"><button type="button" class="btn btn-outline" data-file-action="select" data-file="${esc(key)}" aria-pressed="false">选中本文件的卡</button>${excelLinkHtml('📂 打开文件', { ...target, sheet: jump.sheet_name, cell: jump.cell_addr }, 'btn btn-outline')}${recheck}${auto}</div>
   </header>`;
@@ -536,7 +551,8 @@ function render() {
   // 筛选按钮用对应颜色的边框、底色和圆点；选中时整块填色
   const filterHtml = ['all', ...REVIEW_COLORS].map(color => `<button type="button" class="batch-filter" data-filter="${color}" aria-pressed="${selectedFilter === color}"><span class="batch-dot" aria-hidden="true"></span>${color === 'all' ? '全部' : REVIEW_LABELS[color]}<span class="batch-count">${color === 'all' ? batchState.cards.length : counts[color]}</span></button>`).join('');
   if ($('filters').innerHTML !== filterHtml) $('filters').innerHTML = filterHtml;
-  const key = JSON.stringify([batchState.cards, selectedFilter, largeMode, activeCardId, batchState.busy, batchState.open_blocked, markWhileBusy(), autoQueueOpen()]);
+  const key = JSON.stringify([batchState.cards, selectedFilter, largeMode, activeCardId, batchState.busy, batchState.open_blocked, markWhileBusy(), autoQueueOpen(),
+    [batchState.job?.workbooks, batchState.job?.completed, batchState.job?.repairing, batchState.job?.file_errors]]);
   if (renderKey === key) { applySelection(); return; }
   renderKey = key;
   $('cardList').classList.toggle('hidden', largeMode);

@@ -1894,6 +1894,7 @@ def enqueue_auto_adjust(ids: Any) -> bool:
                     job[done].remove(path)
             if path not in job["workbooks"]:
                 job["workbooks"].append(path)
+            job.get("file_errors", {}).pop(path, None)  # 出错跳过的文件重新排队：网页上不再显示出错
             rounds[path] = rounds.get(path, 0) + 1
         wf._persist_state()
         folder = Path(wf.STATE["folder"])

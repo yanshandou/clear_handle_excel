@@ -349,3 +349,14 @@ test('while auto adjust runs, other files can change color and queue auto adjust
   p.run(`batchState.busy = false`);
   assert.equal(p.run(`canMark(batchState.cards[0]) && canAuto([batchState.cards[0]])`), true);
 });
+
+test('file box says which files are queued for auto adjust', () => {
+  const p = page();
+  p.run(`batchState.busy = true; batchState.job = {kind: 'batch_scan', options: {picked: true},
+    workbooks: ['A.xlsx', 'B.xlsx', 'C.xlsx', 'D.xlsx'], completed: ['A.xlsx'], file_errors: {'B.xlsx': 'x'}, repairing: 'C.xlsx'};`);
+  assert.match(p.run(`autoQueueBadge('A.xlsx')`), /自动调整完成/);
+  assert.match(p.run(`autoQueueBadge('B.xlsx')`), /出错/);
+  assert.match(p.run(`autoQueueBadge('C.xlsx')`), /正在自动调整/);
+  assert.match(p.run(`autoQueueBadge('D.xlsx')`), /排队等自动调整 · 前面还有 1 个文件/);
+  assert.equal(p.run(`autoQueueBadge('E.xlsx')`), '');
+});
