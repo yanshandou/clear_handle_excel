@@ -74,36 +74,54 @@ class FindWorkbookTests(unittest.TestCase):
             reporter.find_workbook("sub/a.xlsx", [])
 
 
-class StillNeedsTests(unittest.TestCase):
-    """扫描 / 复检进行中点文件名：做完的文件放行，没轮到和正在处理的拦下"""
+class OpenBlockReasonTests(unittest.TestCase):
+    """扫描 / 复检进行中点文件名：做完的文件放行，没轮到和正在处理的拦下并说明原因"""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.a, self.b, self.c = (str(Path(self.tmp.name) / n) for n in ("a.xlsx", "b.xlsx", "c.xlsx"))
 
-    def test_scan_lets_finished_and_unrelated_files_open(self):
-        job = {"kind": "batch_scan", "workbooks": [self.a, self.b], "completed": [self.a]}
-        self.assertFalse(batch.still_needs(job, Path(self.a)))
-        self.assertTrue(batch.still_needs(job, Path(self.b)))
-        self.assertFalse(batch.still_needs(job, Path(self.c)))
+    def reason(self, job, path):
+        return batch.open_block_reason(job, Path(path))
+
+    def test_scan_only_lets_finished_and_unrelated_files_open(self):
+        job = {"kind": "batch_scan", "options": {"scan_only": True}, "workbooks": [self.a, self.b, self.c],
+               "scanned": [self.a], "completed": [self.a]}
+        self.assertEqual(self.reason(job, self.a), "")
+        self.assertIn("正在处理", self.reason(job, self.b))
+        self.assertIn("还没轮到", self.reason(job, self.c))
+        self.assertEqual(self.reason(job, Path(self.tmp.name) / "other.xlsx"), "")
+
+    def test_full_auto_scanned_file_waits_for_repair(self):
+        job = {"kind": "batch_scan", "options": {}, "workbooks": [self.a, self.b, self.c],
+               "scanned": [self.a], "completed": []}
+        self.assertIn("还要等自动修复", self.reason(job, self.a))
+        self.assertIn("正在处理", self.reason(job, self.b))
+        job.update(phase="repair", scanned=[self.a, self.b, self.c], completed=[self.a], repairing=self.b)
+        self.assertEqual(self.reason(job, self.a), "")
+        self.assertIn("正在处理", self.reason(job, self.b))
+        self.assertIn("还要等自动修复", self.reason(job, self.c))
 
     def test_scan_blocks_when_finishing_touches_finished_files(self):
         job = {"kind": "batch_scan", "workbooks": [self.a], "completed": [self.a], "to_manual": True}
-        self.assertTrue(batch.still_needs(job, Path(self.a)))
+        self.assertIn("转人工", self.reason(job, self.a))
         job = {"kind": "batch_scan", "workbooks": [self.a], "completed": [self.a],
                "deferred_adjustments": {self.a: {}}}
-        self.assertTrue(batch.still_needs(job, Path(self.a)))
+        self.assertIn("没写完", self.reason(job, self.a))
 
-    def test_recheck_blocks_current_and_queued_again(self):
-        job = {"kind": "batch_recheck", "workbooks": [self.a, self.b], "completed": [self.a], "current": self.b}
-        self.assertFalse(batch.still_needs(job, Path(self.a)))
-        self.assertTrue(batch.still_needs(job, Path(self.b)))
+    def test_recheck_blocks_current_queued_and_again(self):
+        job = {"kind": "batch_recheck", "workbooks": [self.a, self.b, self.c], "completed": [self.a],
+               "current": self.b}
+        self.assertEqual(self.reason(job, self.a), "")
+        self.assertIn("正在复检", self.reason(job, self.b))
+        self.assertIn("排队", self.reason(job, self.c))
         job["again"] = [self.a]
-        self.assertTrue(batch.still_needs(job, Path(self.a)))
+        self.assertIn("再复检", self.reason(job, self.a))
 
     def test_other_tasks_still_block(self):
-        self.assertTrue(batch.still_needs({"kind": "batch_commit", "completed": []}, Path(self.a)))
+        self.assertTrue(self.reason({"kind": "batch_commit", "completed": []}, self.a))
+        self.assertTrue(self.reason({"kind": "clean_sheets"}, self.a))
 
 
 if __name__ == "__main__":

@@ -132,6 +132,9 @@
 .batch-file-name { min-width: 0; overflow-wrap: anywhere; }
 .batch-file-name .excel-link { font-size: 15px; font-weight: 800; }
 .batch-file-path { margin: 2px 0 0; color: #475569; font-size: 12px; font-weight: 600; }
+.batch-file-open { display: inline-flex; align-items: center; max-width: 100%; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; overflow-wrap: anywhere; }
+.batch-file-open[data-open="blocked"] { border: 1.5px dashed #7d89a8; background: #eef2f8; color: #4f5b7d; }
+.batch-file-open[data-open="ready"] { border: 1.5px solid #35a514; background: #e6f8dc; color: #1d6409; }
 .batch-file-counts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .batch-file-count { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border: 1.5px solid var(--c-line); border-radius: 999px; background: var(--c-bg); color: var(--c-ink); font-size: 12px; font-weight: 700; }
 .batch-file-total { color: #475569; font-size: 12px; font-weight: 700; }

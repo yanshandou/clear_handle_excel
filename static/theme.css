@@ -2552,6 +2552,38 @@ input[type="checkbox"]:not(.hidden):checked::before {
   text-decoration: none;
 }
 
+/* 后台还要处理这份文件：文件框换成灰底虚线框，文件名和「打开文件」变灰、禁止光标（原因写在标题栏和鼠标提示里） */
+.batch-file:has(> .batch-file-head[data-open="blocked"]) {
+  border-style: dashed;
+  border-color: #7d89a8;
+  background: #f6f8fb;
+  box-shadow: none;
+}
+
+.excel-link.is-blocked,
+.excel-link.is-blocked:hover,
+.batch-file-name .excel-link.is-blocked,
+.batch-card-title .excel-link.is-blocked {
+  color: #5b6478;
+  text-decoration: none;
+  cursor: not-allowed;
+}
+
+.batch-file-actions .excel-link.btn.is-blocked,
+.batch-file-actions .excel-link.btn.is-blocked:hover {
+  --b-top: #eef2f8;
+  --b: #e3e9f2;
+  --b-edge: #e3e9f2;
+  color: #4f5b7d;
+  background: linear-gradient(180deg, var(--b-top) 0%, var(--b) 100%);
+  border-style: dashed;
+  border-color: #7d89a8;
+  text-shadow: none;
+  filter: grayscale(1);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
 /* 「选中本文件的卡」按下时：黄底深色字（和选中卡片的黄色外圈一致） */
 .batch-file-actions [data-file-action="select"][aria-pressed="true"] {
   --b-top: var(--lime-2);

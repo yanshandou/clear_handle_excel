@@ -425,11 +425,11 @@ class WebHandler(BaseHTTPRequestHandler):
             with STATE_LOCK:
                 job = STATE["job"] or {}
                 kind = job.get("kind", "")
-                if STATE["busy"] and kind in QUICK_TASK_NAMES:
-                    raise ValueError("后台任务正在处理文件，请等它结束或暂停后再打开")
                 # 扫描 / 复检中：已经做完、后面不再碰的文件可以打开，只拦还没轮到和正在处理的
-                if STATE["busy"] and kind.startswith("batch_") and batch.still_needs(job, wb_path):
-                    raise ValueError("后台还要处理这份文件（还没轮到或正在处理），请等它处理完，或暂停后再打开")
+                if STATE["busy"] and (kind in QUICK_TASK_NAMES or kind.startswith("batch_")):
+                    reason = batch.open_block_reason(job, wb_path)
+                    if reason:
+                        raise ValueError(reason)
             try:
                 autofix.wait_for_writes(15)  # 后台正在保存这个文件时别同时打开
             except ValueError:

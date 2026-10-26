@@ -2156,6 +2156,14 @@ input[type="text"] {
   text-decoration: underline solid;
 }
 
+/* 后台还要处理这份文件：变灰、禁止光标，鼠标移上去 title 显示原因 */
+.excel-link.is-blocked,
+.excel-link.is-blocked:hover {
+  color: #6b7280;
+  text-decoration: none;
+  cursor: not-allowed;
+}
+
 .excel-link.opening {
   opacity: 0.55;
   cursor: progress;
