@@ -489,7 +489,7 @@ input[type="checkbox"]:not(.hidden):focus-visible {
 
 /* 提示条：Combat Arms 击杀播报风（位置照旧在底部居中，只换样子）
    - 底是用户给的 5 张透明水墨喷溅图（static/icons/ca/ink_1–5.png），open_excel.js 按文字长短挑一张、拉到盖住文字
-   - 大号粗斜体白字 + 黑描边；出错时黄字。字可以超出背景（背景只是装饰），靠黑描边保证看得清
+   - 大号斜体白字（普通字重）+ 黑描边；出错时黄字。字可以超出背景（背景只是装饰），靠黑描边保证看得清
    - 出现时从小变大淡入；纯装饰，没有边框和按钮样的东西，不挡点击 */
 .excel-open-toast {
   display: flex;
@@ -502,22 +502,20 @@ input[type="checkbox"]:not(.hidden):focus-visible {
   background: none;
   box-shadow: none;
   color: #fff;
-  font-family: Impact, "Bahnschrift SemiBold", Bahnschrift, "Arial Black", "Microsoft YaHei UI", "Microsoft YaHei", "Yu Gothic UI", Meiryo, sans-serif;
+  font-family: Bahnschrift, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "Yu Gothic UI", Meiryo, sans-serif;
   /* left: 50% 时盒子默认最多只有半屏宽，会提早折行：按文字本身的宽度来 */
   width: max-content;
   max-width: min(960px, calc(100vw - 32px));
   text-wrap: balance;
   font-size: 26px;
   font-style: italic;
-  font-weight: 900;
+  font-weight: 400;
   letter-spacing: 1px;
   line-height: 1.25;
-  /* 系统中文字体最粗只到 Bold：再描一圈同色边加粗，外面一圈黑边 */
-  -webkit-text-stroke: 1.2px currentColor;
+  /* 普通字重（加粗后笔画会糊到一起），外面一圈细黑边 */
   text-shadow:
-    3px 3px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000,
-    0 2px 0 #000, 0 -2px 0 #000, 2px 0 0 #000, -2px 0 0 #000,
-    0 0 8px rgba(0, 0, 0, 0.9);
+    2px 2px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000,
+    0 0 6px rgba(0, 0, 0, 0.9);
 }
 
 .excel-open-toast::before {
