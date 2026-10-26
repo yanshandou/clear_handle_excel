@@ -37,6 +37,10 @@ VERSION_PATTERN = re.compile(r"(?<![a-z])v(?:er)?\.?\d+(?:\.\d+)*(?![a-z])", re.
 UNCERTAIN_EMOJI = "❓"
 NAME_SEPARATOR_PATTERN = re.compile(r"[\s_\-・.,、。()\[\]【】「」『』❓]+")
 EXCEL_EXTENSIONS = {".xlsx", ".xlsm", ".xls"}
+# 灰色标签：RGB 最大差值、平均亮度的范围（0D0D0D～F2F2F2 都算，纯黑 000000、纯白 FFFFFF 不算）
+GRAY_TAB_MAX_SPREAD = 20
+GRAY_TAB_MIN = 0x0C
+GRAY_TAB_MAX = 0xF3
 EXCLUDE_PDF_SHEETS = {"変更履歴"}  # 不导出为 PDF 的 Sheet 名集合
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RECORD_PATH = PROJECT_ROOT / "record.md"
@@ -164,6 +168,19 @@ def find_backup_sheets(sheet_names: list[str]) -> list[str]:
         newest = max(date for date, _ in versions)
         backups.update(name for date, name in versions if date < newest)
     return [name for name in candidates if name in backups]
+
+
+def is_gray_tab_color(hex_color: str | None) -> bool:
+    """工作表标签颜色是不是灰色（用户 2026-10-26：灰色标签的表不用看名字，默认删除）。
+
+    红绿蓝三个值相差不超过 GRAY_TAB_MAX_SPREAD 算灰；纯白、纯黑和非常接近的不算。
+    Excel 颜色面板「白色，背景 1，深色 5%～50%」「黑色，文字 1，浅色 5%～50%」都在范围内，
+    「蓝灰，文字 2」（44546A）偏色太大不算，我们标问题表用的橙黄 FFC000 当然也不算。
+    """
+    if not hex_color or not re.fullmatch(r"[0-9A-Fa-f]{6}", hex_color):
+        return False
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+    return max(r, g, b) - min(r, g, b) <= GRAY_TAB_MAX_SPREAD and GRAY_TAB_MIN <= (r + g + b) / 3 <= GRAY_TAB_MAX
 
 
 def is_auto_generated_sheet(sheet_name: str) -> bool:
