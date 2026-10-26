@@ -1,5 +1,5 @@
 // Sheet 预览确认窗口：从精简 Sheet 页面的卡片打开，每个工作表显示第 1 页预览图，
-// 单击切换「保留 / 删除 / 待定」并与精简 Sheet 页面同步；标记完成后返回精简 Sheet 页面统一执行
+// 单击切换「保留 / 删除 / 待定」、单击表名改名，并与精简 Sheet 页面同步；标记完成后返回精简 Sheet 页面统一执行
 const CLEAN_KIND = 'clean_sheets';
 const SYNC_CHANNEL = 'clear_handle_excel.clean';
 const SIZE_STORAGE_KEY = 'clear_handle_excel.previewSize';
@@ -11,6 +11,7 @@ const fileName = params.get('file') || '';
 let fileInfo = null; // { name, sheets, backups, uncertain, note }
 let defaults = {};
 let states = {}; // { [sheetName]: 'keep' | 'delete' | 'uncertain' }
+let renames = {}; // { [原表名]: 新表名 }：执行时和删除一起改名
 let renders = null; // { key, sheets: [{ name, image, pages, hidden, note }] }
 let renderError = '';
 let phase = 'loading'; // loading | ready
@@ -55,24 +56,34 @@ function broadcast(message) {
   if (channel) channel.postMessage({ folder, file: fileName, ...message });
 }
 
+function broadcastStates() {
+  broadcast({ type: 'states', states, renames });
+}
+
 function locked() {
   return phase !== 'ready';
 }
 
 function cycleState(sheetIndex) {
   if (locked()) return;
+  // 正在改名时点了别的卡片：这一下只用来结束输入（blur 先确认改名），不切换那张卡片
+  if (editingIndex >= 0 || performance.now() - renameBlurAt < 400) return;
+  delete document.getElementById('pvHint').dataset.sticky;
   const name = fileInfo.sheets[sheetIndex];
   if (name === undefined) return;
   states[name] = NEXT_SHEET_STATE[states[name]] || 'keep';
-  broadcast({ type: 'states', states });
+  broadcastStates();
   fileInfo.sheets.forEach((_, idx) => updateCard(idx)); // 旧表状态会影响新表是否去掉「新」字
   renderActionBar();
 }
 
 function resetStates() {
   if (locked()) return;
+  if (editingIndex >= 0) finishRename(false);
+  delete document.getElementById('pvHint').dataset.sticky;
   states = { ...defaults };
-  broadcast({ type: 'states', states });
+  renames = {};
+  broadcastStates();
   fileInfo.sheets.forEach((_, idx) => updateCard(idx));
   renderActionBar();
 }
@@ -89,12 +100,12 @@ function counts() {
    页面渲染：卡片尺寸固定，预览图加载前后、切换状态时卡片都不移动
    ========================================== */
 // 「旧」表全部标为删除（或本来就没有「旧」表，olds 为空）、「新」表保留时，执行后「新」表去掉开头的「新」字
-// （与后端 _new_prefix_renames 一致）；去掉后与剩下的表重名时不改名
-function findNewPrefixRenames(sheets, stateOf, pairs) {
+// （与后端 _new_prefix_renames 一致）；去掉后与剩下的表重名时不改名；手动改过名的表不再自动去「新」
+function findNewPrefixRenames(sheets, stateOf, pairs, custom = {}) {
   const renamed = new Set();
-  const remaining = sheets.filter(n => stateOf(n) !== 'delete');
+  const remaining = sheets.filter(n => stateOf(n) !== 'delete').flatMap(n => (custom[n] ? [n, custom[n]] : [n]));
   Object.entries(pairs || {}).forEach(([newName, olds]) => {
-    if (stateOf(newName) !== 'keep' || !olds.every(o => stateOf(o) === 'delete')) return;
+    if (custom[newName] || stateOf(newName) !== 'keep' || !olds.every(o => stateOf(o) === 'delete')) return;
     const target = newName.replace(/^新\s*/, '');
     if (!target || target === newName) return;
     const taken = remaining.some(n => n !== newName && n.toLowerCase() === target.toLowerCase());
@@ -110,9 +121,121 @@ function renderInfoForSheet(name) {
 
 function cardNameHtml(name) {
   const display = stripUncertainEmoji(name);
-  const renamed = findNewPrefixRenames(fileInfo.sheets, n => states[n] || 'keep', fileInfo.new_old_pairs);
-  if (!renamed.has(name)) return escapeHtml(display);
-  return `<s class="strip-new-prefix" title="执行后去掉「新」字">新</s>${escapeHtml(display.slice(1))}`;
+  let html;
+  if (renames[name]) {
+    html = `<span class="sheet-renamed-mark" aria-hidden="true">✏️</span>${escapeHtml(renames[name])}`;
+  } else {
+    const renamed = findNewPrefixRenames(fileInfo.sheets, n => states[n] || 'keep', fileInfo.new_old_pairs, renames);
+    html = renamed.has(name)
+      ? `<s class="strip-new-prefix">新</s>${escapeHtml(display.slice(1))}`
+      : escapeHtml(display);
+  }
+  return `<span class="pv-name-text" onclick="startRename(event, ${fileInfo.sheets.indexOf(name)})">${html}</span>`;
+}
+
+function cardNameTitle(name) {
+  if (renames[name]) {
+    return `原名「${name}」，确认执行时改名为「${renames[name]}」（单击表名修改；清空或改回原名就是撤销）`;
+  }
+  return `${name}（单击表名可以改名，确认执行时一起改）`;
+}
+
+/* ==========================================
+   单击表名就地改名：只换掉名字那一格，卡片尺寸不变；回车/点别处确认，Esc 取消
+   ========================================== */
+const SHEET_NAME_MAX = 31;
+const SHEET_NAME_BAD_CHARS = [':', '\\', '/', '?', '*', '[', ']'];
+
+// 与后端 sheet_name_error 一致；另外检查和本文件执行后剩下的表重名（不区分大小写）
+function sheetNameError(name, sheetName) {
+  if (!name.trim()) return '名字不能为空';
+  if (name.length > SHEET_NAME_MAX) return `最多 ${SHEET_NAME_MAX} 个字（现在 ${name.length} 个）`;
+  const bad = SHEET_NAME_BAD_CHARS.filter(c => name.includes(c));
+  if (bad.length) return `不能包含 ${bad.join(' ')}`;
+  if (name.startsWith("'") || name.endsWith("'")) return "开头和结尾不能是 '";
+  if (name.toLowerCase() === 'history') return 'History 是 Excel 保留的名字';
+  const lower = name.toLowerCase();
+  const clash = fileInfo.sheets.find(other => other !== sheetName && (states[other] || 'keep') !== 'delete' &&
+    (other.toLowerCase() === lower || (renames[other] || '').toLowerCase() === lower));
+  if (clash) return `和工作表「${renames[clash] && renames[clash].toLowerCase() === lower ? renames[clash] : clash}」重名`;
+  return '';
+}
+
+let editingIndex = -1;
+let renameBlurAt = -Infinity;
+
+function startRename(event, sheetIndex) {
+  event.stopPropagation(); // 单击表名只改名，不切换保留/删除/待定
+  if (locked() || editingIndex >= 0) return;
+  const name = fileInfo.sheets[sheetIndex];
+  const box = document.querySelector(`#pvCard${sheetIndex} .pv-card-name`);
+  if (name === undefined || !box) return;
+  editingIndex = sheetIndex;
+  box.classList.add('is-editing');
+  box.innerHTML = `<input class="pv-name-input" type="text" maxlength="${SHEET_NAME_MAX}" spellcheck="false"
+    value="${escapeHtml(renames[name] || stripUncertainEmoji(name))}" aria-label="新的工作表名">`;
+  const input = box.querySelector('input');
+  input.addEventListener('click', e => e.stopPropagation());
+  input.addEventListener('keydown', e => {
+    e.stopPropagation(); // 空格、回车不能冒泡到卡片去切换状态
+    if (e.key === 'Enter') { e.preventDefault(); finishRename(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finishRename(false); }
+  });
+  input.addEventListener('input', () => {
+    const error = sheetNameError(input.value.trim(), name);
+    input.classList.toggle('is-invalid', Boolean(error) && input.value.trim() !== '');
+    setRenameHint(error && input.value.trim() !== '' ? `⚠️ ${error}` : '回车确认，Esc 取消；清空或改回原名就是撤销改名');
+  });
+  input.addEventListener('blur', () => {
+    if (editingIndex === sheetIndex) renameBlurAt = performance.now();
+    finishRename(true);
+  });
+  input.focus({ preventScroll: true });
+  input.select();
+  setRenameHint('回车确认，Esc 取消；清空或改回原名就是撤销改名');
+}
+
+function finishRename(commit) {
+  if (editingIndex < 0) return;
+  const idx = editingIndex;
+  const name = fileInfo.sheets[idx];
+  const input = document.querySelector(`#pvCard${idx} .pv-name-input`);
+  const value = input ? input.value.trim() : '';
+  if (commit) {
+    if (!value || value === stripUncertainEmoji(name) || value === name) {
+      delete renames[name];
+    } else {
+      const error = sheetNameError(value, name);
+      if (error) {
+        // 点别处时不合规的名字直接放弃，回车时留在输入框里让用户改
+        if (document.activeElement === input) {
+          input.classList.add('is-invalid');
+          setRenameHint(`⚠️ ${error}`);
+          return;
+        }
+        setRenameHint(`⚠️ 没有改名：${error}`, true);
+        commit = false;
+      } else {
+        renames[name] = value;
+      }
+    }
+  }
+  editingIndex = -1;
+  fileInfo.sheets.forEach((_, i) => updateCard(i)); // 改名会影响别的表能否去掉「新」字
+  if (commit) {
+    broadcastStates();
+    setRenameHint('');
+  } else if (!document.getElementById('pvHint').dataset.sticky) {
+    setRenameHint('');
+  }
+  renderActionBar();
+}
+
+function setRenameHint(text, sticky = false) {
+  const hint = document.getElementById('pvHint');
+  hint.textContent = text;
+  if (sticky) hint.dataset.sticky = '1';
+  else delete hint.dataset.sticky;
 }
 
 function cardBodyHtml(name, sheetIndex) {
@@ -152,7 +275,7 @@ function cardBodyHtml(name, sheetIndex) {
   return `
     <span class="pv-thumb">${preview}${excel}</span>
     <span class="pv-card-foot">
-      <span class="pv-card-name" title="${escapeHtml(name)}">${cardNameHtml(name)}</span>
+      <span class="pv-card-name" title="${escapeHtml(cardNameTitle(name))}">${cardNameHtml(name)}</span>
       <span class="pv-card-meta">${escapeHtml(meta.join(' · '))}</span>
       <span class="preview-sheet-tag is-${st}">${STATE_LABEL[st]}</span>
     </span>
@@ -175,7 +298,11 @@ function updateCard(idx) {
   if (!card) return;
   const name = fileInfo.sheets[idx];
   card.className = `pv-card is-${states[name] || 'keep'}`;
-  card.querySelector('.pv-card-name').innerHTML = cardNameHtml(name);
+  if (idx === editingIndex) return; // 正在输入新名字，不打断
+  const nameBox = card.querySelector('.pv-card-name');
+  nameBox.classList.remove('is-editing');
+  nameBox.innerHTML = cardNameHtml(name);
+  nameBox.title = cardNameTitle(name);
   card.querySelector('.pv-card-foot .preview-sheet-tag').outerHTML =
     `<span class="preview-sheet-tag is-${states[name] || 'keep'}">${STATE_LABEL[states[name] || 'keep']}</span>`;
 }
@@ -189,12 +316,14 @@ function renderActionBar() {
   document.getElementById('pvResetBtn').disabled = locked();
   document.getElementById('pvGrid').classList.toggle('is-locked', locked());
 
+  const renameCount = Object.keys(renames).filter(n => (states[n] || 'keep') !== 'delete').length;
   document.getElementById('pvSummary').innerHTML = `
     共 <b>${fileInfo.sheets.length}</b> 个工作表：
     删除 <b class="is-deleted">${c.delete}</b> 个 ·
     待定 <b class="is-uncertain">${c.uncertain}</b> 个 ·
-    保留 <b>${c.keep}</b> 个`;
+    保留 <b>${c.keep}</b> 个` + (renameCount ? ` · 改名 <b>${renameCount}</b> 个` : '');
 
+  if (editingIndex >= 0 || hint.dataset.sticky) return; // 改名的提示还在显示
   const allDeleted = c.delete >= fileInfo.sheets.length;
   // 全部标为删除时也可以返回，精简 Sheet 页面同样会提示并禁止执行
   hint.textContent = allDeleted ? '⚠️ 不能将所有工作表全部标为删除，请至少保留 1 个' : '';
@@ -232,6 +361,12 @@ if (channel) {
       fileInfo.sheets.forEach(name => {
         if (['keep', 'delete', 'uncertain'].includes(msg.states[name])) states[name] = msg.states[name];
       });
+      if (msg.renames && typeof msg.renames === 'object') {
+        renames = {};
+        fileInfo.sheets.forEach(name => {
+          if (typeof msg.renames[name] === 'string' && msg.renames[name]) renames[name] = msg.renames[name];
+        });
+      }
       fileInfo.sheets.forEach((_, idx) => updateCard(idx));
       renderActionBar();
     } else if (msg.type === 'rescanned') {
@@ -256,7 +391,8 @@ async function postAction(path, payload) {
 }
 
 function returnToClean() {
-  if (fileInfo && phase === 'ready') broadcast({ type: 'states', states });
+  if (editingIndex >= 0) finishRename(true);
+  if (fileInfo && phase === 'ready') broadcastStates();
   broadcast({ type: 'return' }); // 精简 Sheet 页面滚到来源卡片并让边框发亮
   try {
     if (window.opener && !window.opener.closed) window.opener.focus();

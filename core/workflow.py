@@ -2395,7 +2395,38 @@ def validate_clean_plan(plan: Any) -> dict[str, dict[str, list[str]]]:
         if set(del_dedup) & set(unc_dedup):
             raise ValueError(f"{wb_name} 中同一工作表不能同时勾选删除和标记待定")
         normalized[wb_name] = {"delete": del_dedup, "uncertain": unc_dedup}
+        rename = item.get("rename", {})
+        if not isinstance(rename, dict) or any(
+            not isinstance(k, str) or not k or not isinstance(v, str) for k, v in rename.items()
+        ):
+            raise ValueError("工作表改名格式无效")
+        for old_name, new_name in rename.items():
+            error = sheet_name_error(new_name)
+            if error:
+                raise ValueError(f"{wb_name}「{old_name}」改名无效：{error}")
+        if rename:
+            normalized[wb_name]["rename"] = {k: v for k, v in rename.items() if v != k}
     return normalized
+
+
+SHEET_NAME_MAX = 31
+SHEET_NAME_BAD_CHARS = ':\\/?*[]'
+
+
+def sheet_name_error(name: str) -> str:
+    """Excel 工作表名规则：不能为空、最多 31 个字、不能含 : \\ / ? * [ ]、首尾不能是 '、不能叫 History。返回错误说明，合法时为空"""
+    if not name.strip():
+        return "名字不能为空"
+    if len(name) > SHEET_NAME_MAX:
+        return f"最多 {SHEET_NAME_MAX} 个字（现在 {len(name)} 个）"
+    bad = [c for c in SHEET_NAME_BAD_CHARS if c in name]
+    if bad:
+        return f"不能包含 {' '.join(bad)}"
+    if name.startswith("'") or name.endswith("'"):
+        return "开头和结尾不能是 '"
+    if name.casefold() == "history":
+        return "History 是 Excel 保留的名字"
+    return ""
 
 
 def validate_clean_files(files: Any) -> list[str]:
@@ -2410,7 +2441,8 @@ def _resolve_clean_targets(
 ) -> tuple[list[str], list[str], list[tuple[str, str]], bool]:
     """根据工作表列表与用户选择，返回 (待删除表, 待定表, [(原表名, 新表名)], 是否试图删空整本工作簿)
 
-    待定表只是本次不删，不再给表名或文件名加 ❓；改名只有去掉开头「新」字这一种。
+    待定表只是本次不删，不再给表名或文件名加 ❓。改名有两种：用户在预览窗口手动改的名字（排在前面），
+    和去掉开头「新」字（用户手动改过名的表不再自动去「新」）。
     """
     if file_plan is None:
         candidates = find_clean_targets(all_names)
@@ -2429,8 +2461,41 @@ def _resolve_clean_targets(
         return [], [], [], True
 
     occupied = {s for s in all_names if s not in set(to_delete)}
-    renames = _new_prefix_renames(all_names, set(to_delete), set(uncertain_sel), occupied)
+    custom = (file_plan or {}).get("rename") or {}
+    renames = _custom_renames(all_names, set(to_delete), custom, occupied)
+    renames += _new_prefix_renames(all_names, set(to_delete), set(uncertain_sel) | set(custom), occupied)
     return to_delete, uncertain_sel, renames, False
+
+
+def _custom_renames(
+    all_names: list[str], deleted: set[str], custom: dict[str, str], occupied: set[str],
+) -> list[tuple[str, str]]:
+    """用户在预览窗口单击表名改的名字。表已不在、表被删除、新名字不合规或与剩下的表重名（不区分大小写）时不改。
+
+    occupied 为执行后剩下的表名，改名后同步更新；原表名也算占用，避免 A→B、B→C 这种要讲顺序的连环改名。
+    """
+    renames: list[tuple[str, str]] = []
+    for old_name, new_name in custom.items():
+        if old_name not in all_names or new_name == old_name:
+            if old_name not in all_names:
+                debug_log.event("⚠️ 改表名跳过", 原名=old_name, 新名=new_name, 原因="工作表已不在文件里")
+                log_msg(f"  ⚠️ 工作表「{old_name}」已不在文件里，没有改名")
+            continue
+        if old_name in deleted:
+            debug_log.event("ℹ️ 改表名跳过", 原名=old_name, 新名=new_name, 原因="这张表标成了删除")
+            continue
+        reason = sheet_name_error(new_name)
+        taken = {n.casefold() for n in occupied if n != old_name}
+        if not reason and new_name.casefold() in taken:
+            reason = "与现有工作表重名"
+        if reason:
+            debug_log.event("⚠️ 改表名跳过", 原名=old_name, 新名=new_name, 原因=reason)
+            log_msg(f"  ⚠️ 「{old_name}」不能改名为「{new_name}」：{reason}，保持原名")
+            continue
+        occupied.discard(old_name)
+        occupied.add(new_name)
+        renames.append((old_name, new_name))
+    return renames
 
 
 def _new_prefix_renames(
@@ -2439,6 +2504,7 @@ def _new_prefix_renames(
     """「旧」表全部删除后（或本来就没有「旧」表），「新」表去掉开头的「新」字（Excel 改表名时会自动更新公式与打印区域等引用）。
 
     「新」表本身被删除或标为待定、还有「旧」表保留着、去掉后与现有表重名（不区分大小写）时都不改名。
+    用户手动改过名的「新」表跟待定一起传进 uncertain，不再自动去「新」。
     occupied 为执行后剩下的表名，改名后同步更新。
     """
     renames: list[tuple[str, str]] = []
@@ -2486,13 +2552,15 @@ def _sync_renamed_workbook_in_state(
 
 
 def _format_clean_action(
-    deleted_list: list[str], uncertain_list: list[str], new_prefix_removed: int = 0,
+    deleted_list: list[str], uncertain_list: list[str], new_prefix_removed: int = 0, custom_renamed: int = 0,
 ) -> str:
     parts: list[str] = []
     if deleted_list:
         parts.append(f"已删除 {len(deleted_list)} 个备份 Sheet")
     if new_prefix_removed:
         parts.append(f"{new_prefix_removed} 个新版 Sheet 已去掉「新」字")
+    if custom_renamed:
+        parts.append(f"{custom_renamed} 个 Sheet 已改名")
     if uncertain_list:
         parts.append(f"{len(uncertain_list)} 个待定 Sheet 未删除")
     if not parts:
@@ -2558,9 +2626,18 @@ def _clean_backup_sheets(
             for name in to_delete:
                 wb.Sheets(name).Delete()
             deleted = list(dict.fromkeys(deleted + to_delete))
-            rename_map = dict(renames)
+            custom = (file_plan or {}).get("rename") or {}
             for old_name, new_name in renames:
-                wb.Sheets(old_name).Name = new_name
+                try:
+                    wb.Sheets(old_name).Name = new_name
+                except Exception as err:
+                    # 只是改名失败（例如 Excel 认为重名），删表照常保存
+                    debug_log.exception(err, f"改表名 {old_name} → {new_name}")
+                    log_msg(f"  ⚠️ 「{old_name}」改名为「{new_name}」失败，保持原名: {err}")
+                    continue
+                rename_map[old_name] = new_name
+                kind_text = "手动改名" if custom.get(old_name) == new_name else "去掉「新」字"
+                debug_log.event("✏️ 改表名", 文件=wb_label, 原名=old_name, 新名=new_name, 方式=kind_text)
                 log_msg(f"  已改名: {old_name} → {new_name}")
             final_names = [rename_map.get(s, s) for s in all_names]
             final_uncertain = [rename_map.get(s, s) for s in uncertain_sel]
@@ -2569,7 +2646,8 @@ def _clean_backup_sheets(
                 wb_label, deleted_backups=deleted, uncertain_sheets=final_uncertain,
             )
             wb.Save()
-            action = _format_clean_action(deleted, final_uncertain, len(renames))
+            custom_done = sum(custom.get(o) == n for o, n in rename_map.items())
+            action = _format_clean_action(deleted, final_uncertain, len(rename_map) - custom_done, custom_done)
             log_msg(f"  {action}")
     finally:
         wb.Close(SaveChanges=False)
