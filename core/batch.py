@@ -1660,7 +1660,7 @@ def _add_rule(area: Any, tag: str, mark: dict) -> None:
     """给问题格（合并格整块）加一条永远成立的条件格式规则，公式里带这张卡的标识：
     =N("CHE_MARK_…")=0，N(文字) 永远是 0。调到最前面并勾「如果为真则停止」，表里原有的条件格式也盖得住。
     规则跟着格子走（插删行列、剪切移动），清除时按标识找，不用记原色、不用找格子。"""
-    rule = area.FormatConditions.Add(Type=XL_EXPRESSION, Formula1=f'=N("{tag}")=0')
+    rule = _new_rule(area.FormatConditions, f'=N("{tag}")=0')
     rule.Interior.Color = mark["fill"]
     rule.Font.Color = mark["font"]
     rule.StopIfTrue = True
@@ -1701,6 +1701,35 @@ def _ungroup_sheets(book: Any) -> bool:
     except Exception as err:
         debug_log.exception(err, "解除工作表组合")
     return False
+
+
+DISP_E_PARAMNOTOPTIONAL = -2147352561
+_raw_add = False  # 这台机器上用普通写法加规则会报「参数不能省略」，之后直接用底层调用
+
+
+def _param_not_optional(err: Exception) -> bool:
+    info = getattr(err, "excepinfo", None) or (err.args[2] if len(getattr(err, "args", ())) > 2 else None)
+    return bool(info) and len(info) > 5 and info[5] == DISP_E_PARAMNOTOPTIONAL
+
+
+def _new_rule(rules: Any, formula: str) -> Any:
+    """加一条公式型条件格式规则。
+    有的 Excel 上 pywin32 按类型库帮忙补上没写的参数（Formula2、String、ScopeType…），Excel 不认，
+    回「例外が発生しました」（scode 0x8002000F 参数不能省略）。这时改用底层 Invoke，只传 Type、Operator、Formula1 三个参数，
+    和 VBA 里 .Add Type:=xlExpression, Formula1:=… 一样。Operator 对公式型规则没用，传 xlBetween(1) 占位"""
+    global _raw_add
+    ole = getattr(rules, "_oleobj_", None)
+    if not _raw_add or ole is None:
+        try:
+            return rules.Add(Type=XL_EXPRESSION, Formula1=formula)
+        except Exception as err:
+            if ole is None or not _param_not_optional(err):
+                raise
+            debug_log.event("🔧 加规则改用底层调用", 原因=err)
+            _raw_add = True
+    import win32com.client
+    dispid = ole.GetIDsOfNames("Add")
+    return win32com.client.Dispatch(ole.Invoke(dispid, 0, 1, True, XL_EXPRESSION, 1, formula))  # 1 = DISPATCH_METHOD
 
 
 def _rule_tag(rule: Any) -> str | None:
