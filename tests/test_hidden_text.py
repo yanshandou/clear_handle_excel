@@ -57,6 +57,20 @@ class HiddenTextTests(unittest.TestCase):
 
                     self.assertEqual(detect([(46, 26, source)], build), [])
 
+    def test_same_text_in_column_reports_the_row_that_is_cut(self):
+        """C130～C133 文字一样，只有最上面的 C130 第二行没印出来：报 C130，不能把它算到 C133 头上"""
+        cells = [(row, 3, "DataSendAll") for row in (130, 131, 132, 133)]
+
+        def build(page):
+            add_text(page, 50, 100, "DataSend")
+            for top in (140, 180, 220):
+                add_text(page, 50, top, "DataSend")
+                add_text(page, 50, top + 12, "All")
+
+        results = detect(cells, build)
+        self.assertEqual([(r["row"], r["reason"]) for r in results], [(130, REASON_TRUNCATED)])
+        self.assertLess(results[0]["bbox"][1], 110)
+
     def test_dash_and_wave_dash_variants_match_pdf_text(self):
         # Excel 存「－」「～」，PDF 读出来可能是「−」「〜」（Shift_JIS 的码位差异）
         for source, pdf_text in (("-", "\u2212"), ("－", "\u2212"), ("1～3", "1\u301c3")):
