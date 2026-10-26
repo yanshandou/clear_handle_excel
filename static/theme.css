@@ -1145,9 +1145,13 @@ button.preview-sheet-tag:active {
 .pv-card.is-delete { border-color: var(--red); }
 .pv-card.is-uncertain { border-color: #f0b400; }
 
+/* 悬停阴影跟随状态颜色：保留蓝、删除红、待定黄 */
 .pv-card:hover {
   box-shadow: 3px 3px 0 var(--purple);
 }
+
+.pv-card.is-delete:hover { box-shadow: 3px 3px 0 var(--red); }
+.pv-card.is-uncertain:hover { box-shadow: 3px 3px 0 #f0b400; }
 
 .pv-thumb {
   border: 2px solid var(--ink);

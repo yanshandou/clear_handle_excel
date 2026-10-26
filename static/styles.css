@@ -3174,6 +3174,14 @@ button.preview-sheet-tag:active {
   box-shadow: 0 4px 14px rgba(15, 29, 70, 0.14);
 }
 
+.pv-card.is-delete:hover {
+  box-shadow: 0 4px 14px rgba(239, 68, 68, 0.3);
+}
+
+.pv-card.is-uncertain:hover {
+  box-shadow: 0 4px 14px rgba(245, 158, 11, 0.32);
+}
+
 .pv-grid.is-locked .pv-card {
   cursor: default;
 }
