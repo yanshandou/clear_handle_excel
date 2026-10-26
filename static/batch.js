@@ -307,6 +307,14 @@ function blueNote(card) {
   return '三种颜色均可自由选择。标蓝表示你认可当前结果；没有可采用的试修方案时，提交只按人工确认放行，不额外修改 Excel。';
 }
 
+// 没有修改后图时，在单图下面说明原因
+function afterNote(card) {
+  if (['scan_only', 'handover'].includes(card.after_kind)) return '还没有修改后的图：人工修改后复检通过再显示';
+  if (waitingCard(card)) return '还没有修改后的图：自动处理到这一格后显示';
+  if (card.after_kind === 'attempt') return '最后一次尝试没有截到图，原文件未修改';
+  return card.after_kind ? '没有截到修改后的图，可点击表名在 Excel 中核对' : '还没有修改后的图';
+}
+
 function cardHtml(card, large = false) {
   const where = `${card.sheet_name}!${card.cell_addr || '定位待确认'}`;
   const target = { file: card.wb_name, folder: batchState.folder, sheet: card.sheet_name, cell: card.cell_addr, blocked: openBlocked(card) };
@@ -315,11 +323,14 @@ function cardHtml(card, large = false) {
     : excelLinkHtml(esc(where), target, 'batch-cell-link');
   const labels = { before: '修改前', after: card.after_kind === 'attempt' ? '最后一次尝试（未采用）' : card.after_kind === 'unchanged' ? '原样导出（未修改）' : card.after_kind === 'rechecked' ? '最新导出（本行未修改）' : ['scan_only', 'handover'].includes(card.after_kind) ? '人工修改后（复检通过后显示）' : '修改后' };
   const handling = handlingText(card);
-  const images = ['before', 'after'].map(which => `<figure><figcaption>${labels[which]}</figcaption>${card.images?.[which]
+  const shot = which => `<figure><figcaption>${labels[which]}</figcaption>${card.images?.[which]
     ? `<img ${large ? '' : 'loading="lazy"'} src="${esc(card.images[which])}" alt="${labels[which]}截图" data-preview="1" onerror="${missingHandler('截图暂不可用')}">`
-    : '<span class="batch-missing">暂无截图</span>'}</figure>`);
-  // 左右两块斜切外框中间放 VS 徽章；截图本身保持方正，不倾斜不变形
-  const comparison = `<div class="batch-shots">${images[0]}<span class="batch-vs" aria-hidden="true">VS</span>${images[1]}</div>`;
+    : '<span class="batch-missing">暂无截图</span>'}</figure>`;
+  // 还没有修改后的图（只扫描、转人工、等自动处理、截图失败）：不放空的 VS 右半边，只放一张大一点的修改前图，并写明修改后图什么时候会有
+  const comparison = card.images?.after
+    // 左右两块斜切外框中间放 VS 徽章；截图本身保持方正，不倾斜不变形
+    ? `<div class="batch-shots">${shot('before')}<span class="batch-vs" aria-hidden="true">VS</span>${shot('after')}</div>`
+    : `<div class="batch-shots is-single">${shot('before')}<p class="batch-after-note">${esc(afterNote(card))}</p></div>`;
   const visuals = large ? `<div class="batch-large-layout">${comparison}${contextHtml(card)}</div>` : comparison;
   return `<article class="batch-card" tabindex="0" role="button" aria-label="${esc(`${card.wb_name} ${card.sheet_name}!${card.cell_addr} ${REVIEW_LABELS[card.color]}，单击切换状态`)}" data-id="${esc(card.id)}" data-color="${card.color}">
     <div class="batch-card-head"><button type="button" class="batch-select" data-action="select" aria-pressed="false" title="选中 / 取消选中">✓</button><div class="batch-card-title">${title}</div><span class="batch-color-label">${REVIEW_LABELS[card.color]}</span></div>

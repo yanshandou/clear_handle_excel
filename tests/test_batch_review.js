@@ -74,6 +74,25 @@ test('small and large cards contain only the before and after images', () => {
   }
 });
 
+test('cards without an after image show only one larger before image', () => {
+  const p = page();
+  p.run(`Object.assign(batchState.cards[1], {after_kind:'scan_only', images:{before:'/b.png'}})`);
+  for (const large of [false, true]) {
+    const html = p.run(`cardHtml(batchState.cards[1], ${large})`);
+    assert.equal((html.match(/<figure>/g) || []).length, 1);
+    assert.match(html, /batch-shots is-single/);
+    assert.match(html, /<figcaption>修改前<\/figcaption>/);
+    assert.doesNotMatch(html, /batch-vs|暂无截图/);
+    assert.match(html, /人工修改后复检通过再显示/);
+  }
+  p.run(`Object.assign(batchState.cards[1], {after_kind:undefined, waiting:true})`);
+  assert.match(p.run(`cardHtml(batchState.cards[1])`), /自动处理到这一格后显示/);
+  p.run(`batchState.cards[1].images.after = '/a.png'`);
+  const both = p.run(`cardHtml(batchState.cards[1])`);
+  assert.equal((both.match(/<figure>/g) || []).length, 2);
+  assert.doesNotMatch(both, /is-single/);
+});
+
 test('single-card navigation preserves card identity when changing colors', () => {
   const p = page();
   p.run(`openLarge('a'); moveCard(1);`);
@@ -246,7 +265,7 @@ test('handed-over cards explain they were not tried and can go back to automatic
   const html = p.run(`cardHtml(batchState.cards[1])`);
   assert.match(html, /转人工时自动还没处理到这一格/);
   assert.match(html, /可转回自动/);
-  assert.match(html, /人工修改后（复检通过后显示）/);
+  assert.match(html, /人工修改后复检通过再显示/);
   p.run(`batchState.mode = {to_auto: true}`);
   await p.elements.get('toAutoBtn').listeners.click();
   assert.equal(p.requests.at(-1).url, '/api/batch/to_auto');
