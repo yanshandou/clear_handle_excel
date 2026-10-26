@@ -334,10 +334,11 @@ class WebHandler(BaseHTTPRequestHandler):
         elif self.path in {"/api/batch/commit", "/api/batch/recheck", "/api/batch/open"}:
             action = self.path.rsplit("/", 1)[1]
             ids = batch.validate_cards(payload.get("card_ids"), yellow=action != "commit")
-            if action == "recheck" and batch.enqueue_recheck(ids):
+            single = payload.get("single") is True
+            if action == "recheck" and batch.enqueue_recheck(ids, single=single):
                 self._send_json({"ok": True, "queued": True})
             else:
-                options = {"card_ids": ids}
+                options = batch.recheck_options(ids, single=single) if action == "recheck" else {"card_ids": ids}
                 if action == "commit" and payload.get("color") not in (None, "all"):
                     if payload["color"] not in batch.COLOR_NAMES:
                         raise ValueError("请选择要提交的颜色")

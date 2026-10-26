@@ -10,6 +10,7 @@ import hashlib
 import math
 import re
 import shutil
+import tempfile
 import time
 import traceback
 import unicodedata
@@ -1322,6 +1323,176 @@ def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:
                + (f"这次查出 {found} 处问题，改好后再复检" if found else "这次没有查出问题，全部通过"))
 
 
+SINGLE_PASS_MESSAGE = "人工修改后单项复检通过（只查了这一格）"
+SINGLE_FAIL_MESSAGE = "单项复检仍有问题：请修改并保存后再复检"
+
+
+def _sheet_now(book: Any, path: str, name: str) -> Any:
+    """按表名找工作表；改过名的按 Excel 代码名认出来。找不到返回 None"""
+    sheet = _find_sheet(book, name)
+    if sheet is not None:
+        return sheet
+    with wf.STATE_LOCK:
+        code = (wf.STATE.get("sheet_codes", {}).get(path) or {}).get(name)
+    for candidate in book.Worksheets if code else []:
+        try:
+            if candidate.CodeName == code:
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
+def _current_area(book: Any, path: str, card: dict) -> tuple[Any, tuple[int, int, int, int]]:
+    """单项复检：这一格现在在哪。标色规则跟着格子走（插删行列后也找得到），旧方式按隐藏名称，
+    都没有就按原来的表名和地址。返回 (工作表, (首行, 首列, 末行, 末列))，合并格按整块。
+    要在去掉标记之前调用：去掉后规则就找不到了。"""
+    with wf.STATE_LOCK:
+        mark = copy.deepcopy(_marks().get(card["id"]))
+    target = None
+    if mark and _is_rule(mark):
+        home = _sheet_now(book, path, card["sheet_name"])
+        for sheet in [home] + [s for s in book.Worksheets if home is None or s.Name != home.Name]:
+            if sheet is None:
+                continue
+            rules = sheet.Cells.FormatConditions
+            for i in range(1, int(rules.Count) + 1):
+                rule = rules.Item(i)
+                if _rule_tag(rule) == mark["tag"]:
+                    target = rule.AppliesTo.Areas(1).Cells(1, 1)
+                    break
+            if target is not None:
+                break
+    elif mark:
+        found = _locate_mark(book, mark)
+        if found is None:
+            raise ValueError("这一格已被删除，请点「复检这个文件」整份重查")
+        if found[0] is not None:
+            target = _target(found[0], mark["addr"], found[1])
+    if target is None:
+        sheet = _sheet_now(book, path, card["sheet_name"])
+        if sheet is None:
+            raise ValueError(f"找不到工作表「{card['sheet_name']}」（可能被删除、隐藏或改名），请点「复检这个文件」整份重查")
+        target = sheet.Range(card["cell_addr"])
+    area = target.MergeArea
+    top, left = int(area.Row), int(area.Column)
+    return area.Worksheet, (top, left, top + int(area.Rows.Count) - 1, left + int(area.Columns.Count) - 1)
+
+
+def _page_span(sheet: Any, breaks: dict | None, box: tuple[int, int, int, int]
+               ) -> tuple[tuple[int, int], tuple[int, int, int, int]] | None:
+    """这一格打印在哪几页：((第一页, 最后一页)（从 1 起）, 这几页上的格子 (首行, 末行, 首列, 末列))。
+    分页读不到、页数和分页对不上（空白页被跳过、多块打印区域等）返回 None，由调用方导出整张表"""
+    if breaks is None:
+        return None
+    try:
+        pages = int(sheet.PageSetup.Pages.Count)
+    except Exception:
+        return None
+    top, left, bottom, right = box
+    first = page_breaks.page_index(sheet, breaks, top, left, pages)
+    last = page_breaks.page_index(sheet, breaks, bottom, right, pages)
+    if first is None or last is None:
+        return None
+    rows, cols = [r for r, _ in breaks["h"]], list(breaks["v"])
+    area = (max([r for r in rows if r <= top], default=1), min([r for r in rows if r > bottom], default=1 << 20) - 1,
+            max([c for c in cols if c <= left], default=1), min([c for c in cols if c > right], default=1 << 14) - 1)
+    return (min(first, last) + 1, max(first, last) + 1), area
+
+
+def _cut_by_break(sheet: Any, breaks: dict | None, box: tuple[int, int, int, int]) -> bool:
+    """多行合并格被自动分页切开（和整份检测的 find_cut_blocks 同一标准：手动分页、没字、不打印的不算）"""
+    top, left, bottom, _ = box
+    if breaks is None or bottom <= top or not any(top < r <= bottom and not manual for r, manual in breaks["h"]):
+        return False
+    try:
+        text = str(sheet.Cells(top, left).MergeArea.Cells(1, 1).Text or "").strip()
+    except Exception:
+        return False
+    return bool(normalize_text(text)) and CellProbe(sheet).printed(top, left) is not False
+
+
+def _recheck_cell(excel: Any, path: str, card: dict) -> None:
+    """单项复检：只看这一格修好没有，同文件其他黄卡、别处有没有出新问题都不管（整份重查用「复检这个文件」）。
+    分页和导出整张表时一样，只导出这一格所在的那一页（算不准第几页就导出这一张表），只拿这一格的检测结果：
+    通过就翻篇（变蓝移出列表、去掉标记色），没过照旧是黄色人工项，可以接着改、接着复检。"""
+    _check_file(path)
+    label = f"{card['sheet_name']}!{card['cell_addr']}"
+    if _unchanged_since_check(path):
+        # 上次整份检测之后文件没改过：这一格的结果就是卡片现在的样子
+        wf.log_msg(f"ℹ️ {Path(path).name} {label}：上次检测后文件没有修改，结果不变，仍需人工处理")
+        return
+    with wf.STATE_LOCK:
+        marks = [copy.deepcopy(m) for m in _marks().values() if m["path"] == path]
+    started = time.perf_counter()
+    timing: dict[str, Any] = {}
+    pdf = Path(tempfile.gettempdir()) / f"~单项复检_{uuid4().hex}.pdf"
+    book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0, ReadOnly=True)
+    try:
+        timing["open"] = time.perf_counter() - started
+        sheet, box = _current_area(book, path, card)
+        if marks:
+            _strip_marks(book, path, marks)  # 检测的是最后交出去的样子，不保存
+        top, left, bottom, right = box
+        now = f"{sheet.Name}!{_col_letters(left)}{top}"
+        breaks = page_breaks.read_breaks(sheet)
+        span = _page_span(sheet, breaks, box)
+        clock = time.perf_counter()
+        wf._export_sheet_pdf(sheet, pdf, span[0] if span else None)
+        timing["export"] = time.perf_counter() - clock
+        clock = time.perf_counter()
+        _, found = wf._detect_sheet_results(sheet, Path(path), sheet.Name, pdf, 0,
+                                            page_span=span[0] if span else None, area=span[1] if span else None)
+        text = normalize_text(card.get("text", ""))
+
+        def mine(item: dict) -> bool:
+            row, col = _cell_rc(item.get("cell_addr") or "A1")
+            if top <= row <= bottom and left <= col <= right:
+                return True
+            # 认不准是哪一格的切字，文字对得上就算这一格的，宁可多改一次也不放过
+            clip = normalize_text(item.get("text", ""))
+            return (item.get("kind") == "clip" and item.get("location_confirmed") is False
+                    and bool(clip) and clip in text)
+
+        problems = [it for it in found.values() if mine(it)]
+        if span and _cut_by_break(sheet, breaks, box):
+            problems.append({"kind": "pagebreak", "text": card.get("text", "")})
+        timing["detect"] = time.perf_counter() - clock
+        shot = "" if problems else _latest_shot(card, [{"pdf_path": str(pdf)}])
+    finally:
+        book.Close(SaveChanges=False)
+        pdf.unlink(missing_ok=True)
+    pages = f"第 {span[0][0]}" + (f"–{span[0][1]}" if span[0][1] != span[0][0] else "") + " 页" if span else "整张表"
+    wf.log_msg(f"⏱ {Path(path).name} {label} 单项复检：{time.perf_counter() - started:.1f} 秒"
+               f"（打开 {timing['open']:.1f} 秒，导出{pages} {timing['export']:.1f} 秒，检测 {timing['detect']:.1f} 秒）")
+    debug_log.event("🎯 单项复检", 位置=label, 现在=now, 导出=pages, 问题=[p["kind"] for p in problems] or "-")
+    moved = "" if now == label else f"（这一格现在在 {now}）"
+    with wf.STATE_LOCK:
+        if problems:
+            card.update(color="yellow", verified=False, manual=True, finalized=True, waiting=False,
+                        dismissed=False, message=SINGLE_FAIL_MESSAGE + moved)
+            _remember_problems(card, problems)
+            for item in _items_at(card):
+                item.update(status="manual_review", batch_managed=True, triage_keep=False,
+                            review_reason=card["message"])
+        else:
+            fix_images.forget(card, "after")
+            _save_shot(card, "after", shot)
+            after = card.get("fix_images", {}).get("after")
+            for item in _items_at(card):
+                item.update(status="fixed", batch_managed=True, triage_keep=False)
+                if after:
+                    item.setdefault("fix_images", {})["after"] = after
+                else:
+                    fix_images.forget(item, "after")
+            card.update(color="blue", verified=True, finalized=True, dismissed=True, waiting=False,
+                        after_kind="fixed", message=SINGLE_PASS_MESSAGE)
+        wf._persist_state()
+    wf._sync_problem_counts(path, "单项复检完成")
+    wf.log_msg(f"🎯 {Path(path).name} {label}{moved}："
+               + ("仍有问题，改好后再复检" if problems else "这一格已没有问题，通过"))
+
+
 def _open_without_marks(excel: Any, path: str) -> Any:
     """复检用：只读打开原文件，在内存里把标记全部去掉（删掉我们加的条件格式规则；旧版本改过的底色还原），
     不保存，检测的就是最后交出去的样子。没标过返回 None，照常由检测自己打开。"""
@@ -1330,30 +1501,35 @@ def _open_without_marks(excel: Any, path: str) -> Any:
     if not marks:
         return None
     book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0, ReadOnly=True)
-    failed: list[str] = []
     try:
-        if any(_is_rule(m) for m in marks):
-            try:
-                failed += list(_drop_rules(book, set())[2].values())
-            except Exception as err:
-                failed.append(str(err))
-        for mark in marks:
-            if _is_rule(mark):
-                continue
-            try:
-                found = _locate_mark(book, mark)
-                if found is not None and found[0] is not None:
-                    _restore_cells(found[0], mark, found[1])
-            except Exception as err:
-                # 一格还原不了（例如工作表被保护）不该让整份复检失败：照常检测，日志里说一声
-                failed.append(f"{mark['sheet']}!{mark['addr']}（{err}）")
+        _strip_marks(book, path, marks)
     except BaseException:
         book.Close(SaveChanges=False)
         raise
+    return book
+
+
+def _strip_marks(book: Any, path: str, marks: list[dict]) -> None:
+    """在内存里去掉这份文件的标记（不保存）：删我们加的条件格式规则，旧版本改过的底色还原"""
+    failed: list[str] = []
+    if any(_is_rule(m) for m in marks):
+        try:
+            failed += list(_drop_rules(book, set())[2].values())
+        except Exception as err:
+            failed.append(str(err))
+    for mark in marks:
+        if _is_rule(mark):
+            continue
+        try:
+            found = _locate_mark(book, mark)
+            if found is not None and found[0] is not None:
+                _restore_cells(found[0], mark, found[1])
+        except Exception as err:
+            # 一格还原不了（例如工作表被保护）不该让整份复检失败：照常检测，日志里说一声
+            failed.append(f"{mark['sheet']}!{mark['addr']}（{err}）")
     if failed:
         wf.log_msg(f"⚠️ {Path(path).name}：{len(failed)} 处标记没能在检测前去掉，带着标记色检测："
                    + "；".join(failed[:5]) + ("……" if len(failed) > 5 else ""))
-    return book
 
 
 def _hand_over(path: str, *, switch: bool = False) -> None:
@@ -2298,7 +2474,19 @@ def highlighted_paths() -> list[str]:
         return paths
 
 
-def enqueue_recheck(ids: list[str]) -> bool:
+def recheck_options(ids: list[str], *, single: bool = False) -> dict:
+    """复检任务的参数。full_paths 里的文件整份重查；卡片上的「单项复检」（single）只查点的那几格"""
+    with wf.STATE_LOCK:
+        paths = [] if single else list(dict.fromkeys(_data()["cards"][cid]["wb_path"] for cid in ids))
+    return {"card_ids": ids, "full_paths": paths}
+
+
+def _full_recheck(options: dict, path: str) -> bool:
+    # 旧版本留下的任务没有 full_paths：那时的复检都是整份重查
+    return "full_paths" not in options or path in options["full_paths"]
+
+
+def enqueue_recheck(ids: list[str], *, single: bool = False) -> bool:
     """复检任务正在跑时把新点的复检排进同一个任务（同一个后台 Excel 接着查），不用等它结束再点。
     没有在跑的复检任务、或它已经查完准备收尾时返回 False，由调用方另起任务。"""
     with wf.STATE_LOCK:
@@ -2306,8 +2494,17 @@ def enqueue_recheck(ids: list[str]) -> bool:
         if not wf.STATE.get("busy") or job.get("kind") != "batch_recheck" or job.get("closing"):
             return False
         cards = _data()["cards"]
-        job["options"]["card_ids"] = list(dict.fromkeys(job["options"]["card_ids"] + ids))
+        options = job["options"]
+        options["card_ids"] = list(dict.fromkeys(options["card_ids"] + ids))
         for path in dict.fromkeys(cards[cid]["wb_path"] for cid in ids):
+            if "full_paths" in options:
+                queued = (path in job["workbooks"] and path != job.get("current")
+                          and path not in job.get("completed", []) and path not in job.get("skipped", []))
+                if not single and path not in options["full_paths"]:
+                    options["full_paths"].append(path)
+                elif single and not queued and path in options["full_paths"]:
+                    # 这份文件整份查过或正在查，现在只要再查这一格；还在排队等整份查的，整份查已包含这一格
+                    options["full_paths"].remove(path)
             if path == job.get("current"):
                 # 正在查的文件又点了复检（多半是刚又改过）：查完再查一遍，没改过的话第二遍不会重新导出
                 if path not in job.setdefault("again", []):
@@ -2593,9 +2790,15 @@ def run() -> list[str]:
                             continue
                         if cards:
                             session.touch()
+                            full = _full_recheck(options, path)
                             for tries in range(2):
                                 try:
-                                    _recheck_file(session.app(), path, cards)  # Excel 重启过就用新的
+                                    if full:
+                                        _recheck_file(session.app(), path, cards)  # Excel 重启过就用新的
+                                    else:
+                                        for card in cards:
+                                            if not card.get("dismissed"):
+                                                _recheck_cell(session.app(), path, card)
                                     break
                                 except Exception as err:
                                     if isinstance(err, ValueError) or tries:

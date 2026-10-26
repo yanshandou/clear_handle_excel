@@ -457,8 +457,11 @@ def update_item_row(item_id: str, new_row: int) -> bool:
 def _detect_sheet_results(
     sheet: Any, wb_path: Path, sheet_name: str, pdf_path: Path, start_seq: int,
     *, confirm_locations: bool = True,
+    page_span: tuple[int, int] | None = None, area: tuple[int, int, int, int] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """从当前 PDF 构建新快照；不沿用旧文字、坐标或问题状态。"""
+    """从当前 PDF 构建新快照；不沿用旧文字、坐标或问题状态。
+    单格复检时 PDF 只导出了 page_span 这几页（从 1 起），area=(首行, 末行, 首列, 末列) 是这几页上的格子：
+    只拿这些格子去对，别页同样文字的格子不会抢走这几页的文字；分页切开按整张表算，这里不查，由调用方判断。"""
     pages: dict[str, Any] = {}
     items: dict[str, Any] = {}
     sheet_snapshot = extract_sheet_snapshot(sheet)
@@ -469,7 +472,8 @@ def _detect_sheet_results(
             raise ValueError(f"导出的 PDF 没有页面: {pdf_path}")
         text_spans = collect_text_spans(doc)
         probe = CellProbe(sheet)
-        cells = [cell for cell in snapshot_cells(sheet_snapshot) if probe.printed(cell[0], cell[1]) is not False]
+        cells = [cell for cell in snapshot_cells(sheet_snapshot) if probe.printed(cell[0], cell[1]) is not False
+                 and (area is None or (area[0] <= cell[0] <= area[1] and area[2] <= cell[1] <= area[3]))]
         pieces = collect_text_pieces(doc)
         anchors = build_anchors(cells, pieces)
 
@@ -517,7 +521,7 @@ def _detect_sheet_results(
                     "status": "pending", "iterations": 0,
                 }
 
-        _confirm_clip_cells(sheet, pdf_path, items, candidates, probe, allow_export=confirm_locations)
+        _confirm_clip_cells(sheet, pdf_path, items, candidates, probe, allow_export=confirm_locations, pages=page_span)
 
         # 隐藏截断：单元格完整内容在 PDF 里没显示全（外观上看不出来）
         hidden = find_hidden_cells(cells, pieces, probe.text, probe.printed)
@@ -544,7 +548,7 @@ def _detect_sheet_results(
             }
 
         # 分页切开合并单元格：自动分页落在多行合并区域中间（PDF 上不一定看得出缺字，按 Excel 的分页判断）
-        breaks = page_breaks.read_breaks(sheet)
+        breaks = page_breaks.read_breaks(sheet) if page_span is None else None
         for block in page_breaks.find_cut_blocks(sheet, breaks, probe.printed) if breaks is not None else []:
             image, page_index, bbox = page_breaks.shot_around(
                 sheet, breaks, doc, block["break_row"], block["left"], block["text"], pieces)
@@ -574,7 +578,7 @@ DETECTOR_VERSION = 14
 def _confirm_clip_cells(
     sheet: Any, pdf_path: Path, items: dict[str, Any],
     candidates: dict[str, list[tuple[int, int]]], probe: CellProbe,
-    *, allow_export: bool = True,
+    *, allow_export: bool = True, pages: tuple[int, int] | None = None,
 ) -> None:
     """切字项逐一确认是哪一格：只有一个候选格子时直接确定；有多个时把候选格子的字体
     改成各不相同的颜色（不保存工作簿）再导出一次 PDF，读切字的颜色就知道是哪一格。
@@ -596,7 +600,7 @@ def _confirm_clip_cells(
     temp_pdf = pdf_path.with_name(f"~定位_{uuid4().hex}.pdf")
     originals = set_font_colors(sheet, {rc: excel_color(tag_color(i)) for i, rc in enumerate(tagged, start=1)})
     try:
-        _export_sheet_pdf(sheet, temp_pdf)
+        _export_sheet_pdf(sheet, temp_pdf, pages)  # 和检测用的 PDF 同样几页，页码才对得上
         with fitz.open(temp_pdf) as doc:
             found = colored_span_cells(
                 doc,
@@ -1048,7 +1052,9 @@ def _follow_renamed_sheets(
     return missing
 
 
-def _export_sheet_pdf(sheet: Any, pdf_path: Path) -> None:
+def _export_sheet_pdf(sheet: Any, pdf_path: Path, pages: tuple[int, int] | None = None) -> None:
+    """pages=(第一页, 最后一页)（从 1 起）：只导出这几页，分页和导出整张表时完全一样"""
+    span = {"From": pages[0], "To": pages[1]} if pages else {}
     sheet.ExportAsFixedFormat(
         Type=XL_TYPE_PDF,
         Filename=str(pdf_path.resolve()),
@@ -1056,6 +1062,7 @@ def _export_sheet_pdf(sheet: Any, pdf_path: Path) -> None:
         IncludeDocProperties=True,
         IgnorePrintAreas=False,
         OpenAfterPublish=False,
+        **span,
     )
 
 
