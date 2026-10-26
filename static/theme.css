@@ -487,12 +487,61 @@ input[type="checkbox"]:not(.hidden):focus-visible {
   color: var(--purple);
 }
 
+/* 提示条：Combat Arms 击杀播报风（位置照旧在底部居中，只换样子）
+   - 底是用户给的 5 张透明水墨喷溅图（static/icons/ca/ink_1–5.png），open_excel.js 按文字长短挑一张、拉到盖住文字
+   - 大号斜体白字（普通字重）+ 黑描边；出错时黄字。字可以超出背景（背景只是装饰），靠黑描边保证看得清
+   - 出现时从小变大淡入；纯装饰，没有边框和按钮样的东西，不挡点击 */
 .excel-open-toast {
-  border-radius: 12px;
-  background: var(--ink);
-  color: var(--lime);
-  border: 2px solid var(--ink);
-  box-shadow: 4px 4px 0 var(--purple);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 12px 20px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  color: #fff;
+  font-family: Bahnschrift, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "Yu Gothic UI", Meiryo, sans-serif;
+  /* left: 50% 时盒子默认最多只有半屏宽，会提早折行：按文字本身的宽度来 */
+  width: max-content;
+  max-width: min(960px, calc(100vw - 32px));
+  text-wrap: balance;
+  font-size: 26px;
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: 1px;
+  line-height: 1.25;
+  /* 普通字重（加粗后笔画会糊到一起），外面一圈细黑边 */
+  text-shadow:
+    2px 2px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000,
+    0 0 6px rgba(0, 0, 0, 0.9);
+}
+
+.excel-open-toast::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: calc(50% - 4px);
+  z-index: -1;
+  width: var(--ink-w, 300px);
+  height: var(--ink-h, 96px);
+  margin: calc(var(--ink-h, 96px) / -2) 0 0 calc(var(--ink-w, 300px) / -2);
+  background: var(--ink-img, url("/static/icons/ca/ink_3.png")) center / 100% 100% no-repeat;
+}
+
+.excel-open-toast.is-error {
+  background: none;
+  color: #ffd21f;
+}
+
+.excel-open-toast.is-visible {
+  animation: ca-pop 0.36s cubic-bezier(.2, .9, .3, 1.12) both;
+}
+
+@keyframes ca-pop {
+  0% { opacity: 0; transform: translate(-50%, 0) scale(0.35); }
+  100% { opacity: 1; transform: translate(-50%, 0) scale(1); }
 }
 
 /* ---------- 日志控制台：黑底荧光字 ---------- */
@@ -2300,7 +2349,8 @@ input[type="checkbox"]:not(.hidden):checked::before {
   .task-dialog[open],
   .app-dialog[open],
   .fx-banner,
-  .fx-star {
+  .fx-star,
+  .excel-open-toast.is-visible {
     animation: none;
   }
 }
