@@ -1667,6 +1667,42 @@ def _add_rule(area: Any, tag: str, mark: dict) -> None:
     rule.SetFirstPriority()  # 最后再调顺序：先调的话，有的 Excel 版本手里的规则对象会指到别的规则上
 
 
+def _mark_blocker(book: Any, sheet: Any) -> str | None:
+    """标色出错时查一下 Excel 为什么不让加条件格式：工作表受保护、共享工作簿、几张表被同时选中（组合）。
+    这几种情况 Excel 只回一个空的「例外が発生しました」，看不出原因。都不是时返回 None"""
+    def flag(obj: Any, name: str) -> bool:
+        try:
+            return getattr(obj, name) is True
+        except Exception:
+            return False
+
+    if sheet is not None and flag(sheet, "ProtectContents"):
+        return "工作表受保护（校閲 → シート保護の解除 后再试）"
+    if flag(book, "MultiUserEditing"):
+        return "这是共享工作簿（ブックの共有），Excel 不允许加条件格式；取消共享后再试"
+    try:
+        if int(book.Windows(1).SelectedSheets.Count) > 1:
+            return "几张工作表被同时选中（组合 / グループ），Excel 不允许加条件格式"
+    except Exception:
+        pass
+    return None
+
+
+def _ungroup_sheets(book: Any) -> bool:
+    """文件保存时几张表是组合状态（同时选中）的话，打开后加条件格式会失败：只选中第一张可见的表，解除组合。
+    返回是否解除了"""
+    try:
+        if int(book.Windows(1).SelectedSheets.Count) <= 1:
+            return False
+        for sheet in book.Worksheets:
+            if sheet.Visible == -1:  # xlSheetVisible
+                sheet.Select()
+                return True
+    except Exception as err:
+        debug_log.exception(err, "解除工作表组合")
+    return False
+
+
 def _rule_tag(rule: Any) -> str | None:
     try:
         formula = str(rule.Formula1)  # 色阶、数据条这类规则没有公式，读了会报错
@@ -1807,6 +1843,17 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
             return sheets[name]
 
         areas: dict[str, Any] = {}
+        if add and _ungroup_sheets(book):
+            wf.log_msg(f"ℹ️ {book_name}：文件里几张工作表是组合状态（同时选中），已解除组合再标色")
+        blockers: dict[str, str | None] = {}
+
+        def why(name: str, err: Exception) -> str:
+            """出错原因：能查出来的（受保护、共享工作簿、组合）直接说，查不出来的照抄 Excel 的报错"""
+            if name not in blockers:
+                blockers[name] = _mark_blocker(book, sheet_of(name))
+                debug_log.event("🔎 标色出错原因", 工作表=name, 原因=blockers[name] or "查不出，见上面的异常")
+            return blockers[name] or str(err)
+
         for i, card in enumerate(add, 1):
             step("找问题格", i, len(add))
             sheet = sheet_of(card["sheet_name"])
@@ -1820,7 +1867,7 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                                      "tag": _mark_name(card["id"]), "fill": _excel_color(style["fill"]),
                                      "font": _excel_color(style["font"])}
             except Exception as err:
-                failed[card["id"]] = str(err)
+                failed[card["id"]] = why(card["sheet_name"], err)
                 debug_log.event("❌ 标色失败", 位置=f"{card['sheet_name']}!{card.get('cell_addr')}", 原因=err)
                 debug_log.exception(err, "标色")
         with wf.STATE_LOCK:
@@ -1835,7 +1882,7 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                 _add_rule(areas[cid], mark["tag"], mark)
                 debug_log.event("🎨 标色", 位置=f"{mark['sheet']}!{mark['addr']}", 标识=mark["tag"])
             except Exception as err:  # 例如工作表受保护
-                failed[cid] = str(err)
+                failed[cid] = why(mark["sheet"], err)
                 with wf.STATE_LOCK:
                     marks.pop(cid, None)
                 del added[cid]
@@ -1921,7 +1968,8 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
     if deleted:
         parts.append(f"{deleted} 格标色的格子已被删掉，不用还原")
     if failed:
-        parts.append(f"{len(failed)} 格未能标色（工作表受保护等）")
+        reasons = sorted(set(failed.values()))
+        parts.append(f"{len(failed)} 格未能标色（{'；'.join(reasons[:3])}{'……' if len(reasons) > 3 else ''}）")
     if parts:
         wf.log_msg(f"🎨 {Path(path).name}：" + "，".join(parts))
 

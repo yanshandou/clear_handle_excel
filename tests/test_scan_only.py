@@ -49,7 +49,7 @@ class FakeRules:
 
     def Add(self, Type, Formula1):
         assert Type == 2  # xlExpression
-        if self.sheet.protected:
+        if self.sheet.protected or self.sheet.blocked:
             raise RuntimeError("例外が発生しました。")
         rule = FakeRule(self.sheet, list(self.cells), Formula1)
         self.sheet.rules.append(rule)
@@ -93,7 +93,12 @@ class FakeSheet:
         self.merges = {}
         self.rules = []
         self.protected = False
+        self.blocked = False  # 共享工作簿等：不受保护也加不了条件格式
         self.Cells = FakeCells(self)
+
+    @property
+    def ProtectContents(self):
+        return self.protected
 
     def cell(self, addr):
         key = "$" + addr[0] + "$" + addr[1:] if not addr.startswith("$") else addr
@@ -330,7 +335,30 @@ class ScanOnlyTests(unittest.TestCase):
         self.add_item("A5")
         self.scan()
         self.assertIn("未能在 Excel 中标色", self.card("A5")["message"])
+        self.assertIn("工作表受保护", self.card("A5")["message"])
         self.assertEqual(batch._marks(), {})
+
+    def test_shared_workbook_cannot_be_marked_and_says_so(self):
+        """共享工作簿：Excel 只回一个空的「例外が発生しました」，卡片和日志要说清楚是共享工作簿"""
+        self.book.MultiUserEditing = True
+        self.sheet.blocked = True  # 工作表没保护，但 Excel 不让加条件格式
+        self.add_item("A5")
+        with patch.object(batch.wf, "log_msg") as log:
+            self.scan()
+        self.assertIn("共享工作簿", self.card("A5")["message"])
+        self.assertTrue(any("1 格未能标色（这是共享工作簿" in c.args[0] for c in log.call_args_list))
+
+    def test_grouped_sheets_are_ungrouped_before_marking(self):
+        """文件保存时几张表组合着（同时选中）：先只选中第一张可见的表，再标色"""
+        self.sheet.Visible = -1
+        self.sheet.Select = Mock()
+        self.book.Windows.return_value.SelectedSheets.Count = 2
+        self.add_item("A5")
+        with patch.object(batch.wf, "log_msg") as log:
+            self.scan()
+        self.sheet.Select.assert_called_once()
+        self.assertTrue(any("已解除组合" in c.args[0] for c in log.call_args_list))
+        self.assertIsNotNone(self.sheet.shown("A5"))
 
     def test_restore_follows_cells_moved_by_inserted_rows(self):
         """人工在上面插了 2 行：标色的 A5 跑到 A7，按标色时建的隐藏名称找到 A7 还原，不动现在的 A5"""
