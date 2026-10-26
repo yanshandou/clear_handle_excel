@@ -27,8 +27,9 @@
     const cs = getComputedStyle(box);
     const textW = box.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
     const textH = box.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-    const h = Math.max(96, textH * 2.4);
-    const w = Math.max(textW / 0.62, h * INK_RATIOS[0]);  // 中间约六成是浓墨，字放在那里
+    // 背景只是装饰：不必完全包住字，大致托在字下面就行
+    const h = Math.max(110, Math.min(textH * 2, textH + 60));
+    const w = Math.max(textW * 1.15, h * INK_RATIOS[0]);
     const want = w / h;
     let best = 0;
     INK_RATIOS.forEach((r, i) => {
