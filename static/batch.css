@@ -62,7 +62,7 @@
 .batch-card .batch-problem { margin-top: 12px; padding: 8px 10px; border-radius: 8px; background: #fff4e5; color: #9a3412; }
 .batch-card .batch-handling { padding: 8px 10px; border-radius: 8px; background: #ffffffb3; color: #1e3a8a; }
 .batch-card .batch-text { padding-left: 10px; border-left: 3px solid #cbd5e1; color: #334155; }
-.batch-card .batch-no-blue { margin-top: 6px; padding: 6px 10px; border: 1px dashed var(--review-blue-line); border-radius: 8px; background: #ffffffb3; color: #475569; font-size: 12px; }
+.batch-card .batch-no-blue { margin-top: 6px; padding: 6px 10px; border: 1px dashed var(--c-line); border-radius: 8px; background: #ffffffb3; color: #475569; font-size: 12px; }
 .batch-card .batch-message, .batch-card .batch-state { margin-top: 4px; color: #64748b; font-size: 12px; }
 .batch-missing { display: grid; min-height: 90px; place-items: center; color: #64748b; font-size: 12px; }
 /* 瀑布流里的截图框固定高度（图按比例缩在框里）：截图懒加载前后卡片高度不变，分列才能按真实高度排平 */
