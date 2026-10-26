@@ -30,7 +30,7 @@ from core.hidden_text import (
     REASON_CLIPPED, REASON_TRUNCATED, collect_text_pieces, is_excel_error, locate_text, normalize_text,
 )
 from core.pdf_detector import fitz, render_crop_base64
-from core.reporter import finish_execution_batch, init_execution_batch, update_file_progress
+from core.reporter import add_to_execution_batch, finish_execution_batch, init_execution_batch, update_file_progress
 
 COLORS = ("blue", "green", "yellow")
 KIND_LABELS = {"hidden": "隐藏截断", "clip": "压线", "pagebreak": "分页切开"}
@@ -401,13 +401,25 @@ def snapshot() -> dict:
                 "logs": wf.STATE["logs"][-100:]}
 
 
+def _mark_block_reason(path: str) -> str:
+    """后台任务在跑时这份文件的卡能不能改颜色：能改返回空字符串。调用方持有 STATE_LOCK。
+    改颜色只写记录、不碰 Excel：自动处理 / 复检时，不在这次任务里的文件、已经做完的文件都能改；
+    还没轮到和正在处理的文件要等（后台还要读它们的卡）。提交、清除标色等任务照旧等它结束"""
+    if not wf.STATE["busy"]:
+        return ""
+    job = wf.STATE.get("job") or {}
+    if job.get("kind") not in {"batch_scan", "batch_recheck"} or "workbooks" not in job:
+        return "任务执行中，请结束或暂停后再审核"
+    return open_block_reason(job, Path(path)).replace("才能打开", "才能改颜色")
+
+
 def mark(cid: str, color: str) -> None:
     with wf.STATE_LOCK:
-        if wf.STATE["busy"]:
-            raise ValueError("任务执行中，请结束或暂停后再审核")
         card = _data()["cards"].get(cid) if isinstance(cid, str) else None
         if color not in COLORS or card is None or card.get("dismissed") or not wf.in_current_folder(card["wb_path"]):
             raise ValueError("请选择当前文件夹的有效卡片及颜色")
+        if reason := _mark_block_reason(card["wb_path"]):
+            raise ValueError(reason)
         previous = copy.deepcopy(card)
         card.update(color=color, finalized=False, marked=True, waiting=False)
         try:
@@ -421,8 +433,6 @@ def mark(cid: str, color: str) -> None:
 def mark_many(ids: Any, color: str) -> dict:
     """批量改色，只写一次数据库；三色均由用户自由选择。"""
     with wf.STATE_LOCK:
-        if wf.STATE["busy"]:
-            raise ValueError("任务执行中，请结束或暂停后再审核")
         if color not in COLORS or not isinstance(ids, list) or not ids:
             raise ValueError("请选择卡片及颜色")
         cards = _data()["cards"]
@@ -431,6 +441,8 @@ def mark_many(ids: Any, color: str) -> dict:
             card = cards.get(cid) if isinstance(cid, str) else None
             if card is None or card.get("dismissed") or not wf.in_current_folder(card["wb_path"]):
                 raise ValueError("选中的卡片已失效，请刷新页面后重新选择")
+            if reason := _mark_block_reason(card["wb_path"]):
+                raise ValueError(f"{card['wb_name']}：{reason}（请先取消选中这个文件的卡）")
             targets.append(card)
         changed = targets
         previous = [copy.deepcopy(c) for c in changed]
@@ -1770,13 +1782,18 @@ def auto_adjust_plan(ids: Any) -> dict:
     """「🤖 自动调整」选中的黄卡：run 交给自动；extra 是同一行连带一起调整的黄卡（一行共用行高）；
     skip 是跳过的格子和原因。同一行有不能自动的格子时整行跳过（自动加高会连带改到它）。"""
     with wf.STATE_LOCK:
-        if wf.STATE["busy"]:
+        if wf.STATE["busy"] and not _auto_queue_open():
             raise ValueError("后台任务执行中，请结束或暂停后再自动调整")
         cards = {c["id"]: c for c in _data()["cards"].values()
                  if not c.get("dismissed") and wf.in_current_folder(c["wb_path"])}
         if not isinstance(ids, list) or not ids or any(not isinstance(cid, str) or cid not in cards for cid in ids):
             raise ValueError("请选择当前文件夹的有效审核卡片")
         ids = list(dict.fromkeys(ids))
+        if wf.STATE["busy"]:
+            # 自动调整在跑：排进去的文件不能是还没做完的（它的卡后台还要读、还要改）
+            for path in dict.fromkeys(cards[cid]["wb_path"] for cid in ids):
+                if reason := open_block_reason(wf.STATE["job"], Path(path)):
+                    raise ValueError(f"{Path(path).name}：{reason.replace('才能打开', '再点自动调整')}")
         by_row: dict[str, list[dict]] = {}
         for card in cards.values():
             by_row.setdefault(_rid(card), []).append(card)
@@ -1836,6 +1853,55 @@ def _finish_picked(path: str) -> None:
         wf._persist_state()
     if left:
         wf.log_msg(f"🙋 {Path(path).name}：{left} 处自动没修好，仍是黄色人工项，可以直接人工处理、复检")
+
+
+def _auto_queue_open() -> bool:
+    """调用方持有 STATE_LOCK：正在跑「🤖 自动调整」，还能把别的文件排进去接着做"""
+    job = wf.STATE.get("job") or {}
+    return bool(wf.STATE["busy"] and job.get("kind") == "batch_scan" and job.get("options", {}).get("picked")
+                and "workbooks" in job and not job.get("closing") and not job.get("pause_requested")
+                and not job.get("to_manual"))
+
+
+def enqueue_auto_adjust(ids: Any) -> bool:
+    """「🤖 自动调整」正在跑时又点了别的文件的自动调整：排进同一个任务，当前文件做完接着做，不用等它结束。
+    没有在跑的自动调整（或它已经在收尾）返回 False，由调用方另起任务"""
+    with wf.STATE_LOCK:
+        if not _auto_queue_open():
+            return False
+    plan = auto_adjust_plan(ids)
+    picked = plan["run"] + plan["extra"]
+    if not picked:
+        raise ValueError("选中的格子都不能自动调整：" + "；".join(dict.fromkeys(s["reason"] for s in plan["skip"])))
+    with wf.STATE_LOCK:
+        if not _auto_queue_open():
+            raise ValueError("自动调整正在收尾，请过几秒再点")
+        job = wf.STATE["job"]
+        cards = _data()["cards"]
+        paths = list(dict.fromkeys(cards[cid]["wb_path"] for cid in sorted(picked, key=lambda cid: cards[cid]["seq"])))
+        for path in paths:
+            if reason := open_block_reason(job, Path(path)):
+                raise ValueError(f"{Path(path).name}：{reason.replace('才能打开', '再点自动调整')}")
+        for cid in picked:
+            cards[cid]["auto_pick"] = True
+        options = job["options"]
+        options["card_ids"] = list(dict.fromkeys(options["card_ids"] + picked))
+        rounds = job.setdefault("rounds", {})
+        for path in paths:
+            # 这次任务里已经做完的文件：重新排队，再交一次你新选的格子
+            for done in ("scanned", "completed"):
+                if path in job.get(done, []):
+                    job[done].remove(path)
+            if path not in job["workbooks"]:
+                job["workbooks"].append(path)
+            rounds[path] = rounds.get(path, 0) + 1
+        wf._persist_state()
+        folder = Path(wf.STATE["folder"])
+    add_to_execution_batch(folder, [Path(p) for p in paths])
+    debug_log.event("🖱️ 自动调整排队", 选中=len(ids), 交给自动=len(plan["run"]), 同行连带=len(plan["extra"]),
+                    跳过=[f"{s['id'][:6]}:{s['reason']}" for s in plan["skip"]])
+    wf.log_msg(f"🤖 已排队自动调整：{'、'.join(Path(p).name for p in paths)}（{len(picked)} 格），前面的文件做完接着做")
+    return True
 
 
 def start_auto_adjust(ids: Any) -> dict:
@@ -2803,6 +2869,7 @@ def run() -> list[str]:
                 # 先把全部文件扫完，再逐行修；旧版本的任务没分两步，做完的文件当作扫过
                 scanned = job.setdefault("scanned", list(job["completed"]))
                 versions = job.setdefault("scan_versions", {})
+                job["closing"] = False  # 暂停后继续：又可以往里排自动调整
                 wf._persist_state()
 
             def each_file(path: str, work: Callable[[str], None]) -> bool:
@@ -2872,28 +2939,40 @@ def run() -> list[str]:
                     _sync_highlights(session.app, path, tick=session.touch)
                     _remember_handover(path)
 
-            for path in expected:
-                if path in scanned:
-                    continue
-                if job.get("pause_requested"):
-                    break
-                if not each_file(path, scan):
-                    continue
-                with wf.STATE_LOCK:
-                    scanned.append(path)
-                    versions[path] = wf._file_version(Path(path))
-                    job.get("file_errors", {}).pop(path, None)
-                    if scan_only:
-                        job["completed"].append(path)
-                        wf.STATE["scan_progress"] = {"total": len(expected), "completed": len(job["completed"]),
-                                                     "status": "running"}
-                    wf._persist_state()
-                if not scan_only and not back:
-                    wf._sync_problem_counts(path, "扫描完成，等待自动处理")
-            if not scan_only and not job.get("pause_requested"):
-                with wf.STATE_LOCK:
-                    job["phase"] = "repair"  # 全部扫完：从这里起可以「转人工」
-                    wf._persist_state()
+            # 「🤖 自动调整」运行中还能排进新的文件（enqueue_auto_adjust），做完一轮再看有没有新排进来的。
+            # 每份文件每轮（排一次队算一轮）只试一次，出错跳过的不在这次任务里反复重试
+            tried: set[tuple[str, str, int]] = set()
+
+            def first_try(step: str, path: str) -> bool:
+                key = (step, path, job.get("rounds", {}).get(path, 0))
+                if key in tried:
+                    return False
+                tried.add(key)
+                return True
+
+            def scan_all() -> None:
+                for path in list(expected):
+                    if path in scanned:
+                        continue
+                    if job.get("pause_requested"):
+                        break
+                    if not first_try("scan", path) or not each_file(path, scan):
+                        continue
+                    with wf.STATE_LOCK:
+                        scanned.append(path)
+                        versions[path] = wf._file_version(Path(path))
+                        job.get("file_errors", {}).pop(path, None)
+                        if scan_only:
+                            job["completed"].append(path)
+                            wf.STATE["scan_progress"] = {"total": len(expected), "completed": len(job["completed"]),
+                                                         "status": "running"}
+                        wf._persist_state()
+                    if not scan_only and not back:
+                        wf._sync_problem_counts(path, "扫描完成，等待自动处理")
+                if not scan_only and not job.get("pause_requested"):
+                    with wf.STATE_LOCK:
+                        job["phase"] = "repair"  # 全部扫完：从这里起可以「转人工」
+                        wf._persist_state()
 
             def repair(path: str) -> None:
                 debug_log.begin(f"修复 {expected.index(path) + 1} / {len(expected)}："
@@ -2916,32 +2995,48 @@ def run() -> list[str]:
                     _refresh(excel, path, session=session)
                 _repair_file(excel, session, path)
 
-            for path in expected if job.get("phase") == "repair" else []:
-                if _stopping(job):
-                    break
-                if path not in scanned or (path in job["completed"] and path not in job.get("deferred_adjustments", {})):
-                    continue
-                with wf.STATE_LOCK:
-                    pending = job.get("deferred_adjustments", {}).pop(path, None)
-                    if pending:
-                        job["pending_adjustment"] = pending
+            def repair_all() -> None:
+                for path in list(expected) if job.get("phase") == "repair" else []:
+                    if _stopping(job):
+                        break
+                    if path not in scanned or (path in job["completed"] and path not in job.get("deferred_adjustments", {})):
+                        continue
+                    if not first_try("repair", path):
+                        continue
+                    with wf.STATE_LOCK:
+                        pending = job.get("deferred_adjustments", {}).pop(path, None)
+                        if pending:
+                            job["pending_adjustment"] = pending
+                            wf._persist_state()
+                    if not each_file(path, repair) or _stopping(job):
+                        continue
+                    with wf.STATE_LOCK:
+                        if path not in job["completed"]:
+                            job["completed"].append(path)
+                        job.pop("repairing", None)
+                        job.get("file_errors", {}).pop(path, None)
+                        # 记下自动处理完这份文件时的版本：之后文件没改过，自动没修好的格子再点「自动调整」也不重试
+                        _data().setdefault("auto_versions", {})[path] = _version_or_none(path)
+                        wf.STATE["scan_progress"] = {"total": len(expected), "completed": len(job["completed"]), "status": "running"}
                         wf._persist_state()
-                if not each_file(path, repair) or _stopping(job):
-                    continue
+                    if picked:
+                        _finish_picked(path)
+                        # 自动没修好的格子马上在 Excel 里标回颜色（没选的黄卡本来就标着）
+                        _sync_highlights_safely(session, path)
+                    wf._sync_problem_counts(path, "自动调整完成，等待结果审核" if picked else "全自动处理完成，等待结果审核")
+
+            while True:
+                scan_all()
+                repair_all()
                 with wf.STATE_LOCK:
-                    if path not in job["completed"]:
-                        job["completed"].append(path)
-                    job.pop("repairing", None)
-                    job.get("file_errors", {}).pop(path, None)
-                    # 记下自动处理完这份文件时的版本：之后文件没改过，自动没修好的格子再点「自动调整」也不重试
-                    _data().setdefault("auto_versions", {})[path] = _version_or_none(path)
-                    wf.STATE["scan_progress"] = {"total": len(expected), "completed": len(job["completed"]), "status": "running"}
-                    wf._persist_state()
-                if picked:
-                    _finish_picked(path)
-                    # 自动没修好的格子马上在 Excel 里标回颜色（没选的黄卡本来就标着）
-                    _sync_highlights_safely(session, path)
-                wf._sync_problem_counts(path, "自动调整完成，等待结果审核" if picked else "全自动处理完成，等待结果审核")
+                    more = picked and not _stopping(job) and any(
+                        p not in job["completed"]
+                        and ("repair" if p in scanned else "scan", p, job.get("rounds", {}).get(p, 0)) not in tried
+                        for p in expected)
+                    if not more:
+                        job["closing"] = picked  # 之后再点自动调整另起任务，不会漏掉
+                        wf._persist_state()
+                        break
             if job.get("to_manual") and not job.get("pause_requested"):
                 _switch_to_manual(session, job, [p for p in expected if p in scanned])
         elif kind == "batch_commit":

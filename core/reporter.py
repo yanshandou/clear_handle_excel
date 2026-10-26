@@ -248,43 +248,60 @@ def init_execution_batch(
         if task_name not in steps:
             steps.append(task_name)
 
-        next_index = max((int(f.get("index", 0)) for f in EXECUTION_STATE["files"].values()), default=0) + 1
-        batch: list[str] = []
-        for wb_path in workbooks:
-            wb_name = workbook_rel_name(wb_path, folder)
-            batch.append(wb_name)
-            existing = EXECUTION_STATE["files"].get(wb_name)
-            if existing is not None:
-                existing["status"] = "pending"
-                existing["path"] = str(wb_path)
-                existing["current_action"] = "排队等待处理..."
-                existing["error"] = ""
-                existing["updated_at"] = _time_str()
-            else:
-                EXECUTION_STATE["files"][wb_name] = {
-                    "index": next_index,
-                    "name": wb_name,
-                    "path": str(wb_path),
-                    "status": "pending",  # pending | processing | needs_fix | done | error
-                    "current_action": "排队等待处理...",
-                    "all_sheets": [],
-                    "deleted_backups": [],
-                    "uncertain_sheets": [],
-                    "renamed_to": "",
-                    "exported_pdfs": 0,
-                    "clip_detected": 0,
-                    "clip_fixed": 0,
-                    "clip_unfixed": 0,
-                    "normalized_a1": False,
-                    "updated_at": _time_str(),
-                    "error": "",
-                }
-                next_index += 1
         # 进度只按这一步要处理的文件算；报告里仍列出这个文件夹做过的全部文件
-        EXECUTION_STATE["batch"] = batch
+        EXECUTION_STATE["batch"] = _queue_files_unlocked(folder, workbooks)
 
         _recompute_counters_unlocked()
         _persist_and_write_markdown_unlocked()
+
+
+def add_to_execution_batch(folder: Path, workbooks: list[Path]) -> None:
+    """正在跑的任务又排进来几份文件（「🤖 自动调整」排队）：加进本批次，进度和报告跟着算"""
+    if _updates_suspended():
+        return
+    with REPORT_LOCK:
+        batch = EXECUTION_STATE.setdefault("batch", [])
+        batch.extend(name for name in _queue_files_unlocked(folder, workbooks) if name not in batch)
+        EXECUTION_STATE["status"] = "running"
+        _recompute_counters_unlocked()
+        _persist_and_write_markdown_unlocked()
+
+
+def _queue_files_unlocked(folder: Path, workbooks: list[Path]) -> list[str]:
+    """把这些文件记成排队等待处理（已有记录的沿用），返回它们在报告里的名字。调用方持有 REPORT_LOCK"""
+    next_index = max((int(f.get("index", 0)) for f in EXECUTION_STATE["files"].values()), default=0) + 1
+    batch: list[str] = []
+    for wb_path in workbooks:
+        wb_name = workbook_rel_name(wb_path, folder)
+        batch.append(wb_name)
+        existing = EXECUTION_STATE["files"].get(wb_name)
+        if existing is not None:
+            existing["status"] = "pending"
+            existing["path"] = str(wb_path)
+            existing["current_action"] = "排队等待处理..."
+            existing["error"] = ""
+            existing["updated_at"] = _time_str()
+        else:
+            EXECUTION_STATE["files"][wb_name] = {
+                "index": next_index,
+                "name": wb_name,
+                "path": str(wb_path),
+                "status": "pending",  # pending | processing | needs_fix | done | error
+                "current_action": "排队等待处理...",
+                "all_sheets": [],
+                "deleted_backups": [],
+                "uncertain_sheets": [],
+                "renamed_to": "",
+                "exported_pdfs": 0,
+                "clip_detected": 0,
+                "clip_fixed": 0,
+                "clip_unfixed": 0,
+                "normalized_a1": False,
+                "updated_at": _time_str(),
+                "error": "",
+            }
+            next_index += 1
+    return batch
 
 
 def update_file_progress(
