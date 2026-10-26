@@ -57,6 +57,11 @@ def _marks() -> dict[str, dict]:
     return _data().setdefault("highlights", {})
 
 
+def _tabs() -> dict[str, dict[str, dict]]:
+    """标成橙黄色的工作表标签：文件 -> {代码名（没有时用 "name:" + 表名）: 原来的标签颜色}，表里的标记全去掉后还原"""
+    return _data().setdefault("tab_marks", {})
+
+
 def highlight_style(value: Any) -> dict[str, str]:
     """页面传来的 {"fill": "#RRGGBB", "font": "#RRGGBB"}；缺了或格式不对用默认颜色"""
     style = dict(DEFAULT_HIGHLIGHT)
@@ -120,6 +125,9 @@ def rename_sheet(path: str, old: str, new: str) -> None:
         if mark["path"] == path and mark["sheet"] == old:
             mark["sheet"] = new
             marks[moved.get(cid, cid)] = marks.pop(cid)
+    for tab in _tabs().get(path, {}).values():
+        if tab["sheet"] == old:
+            tab["sheet"] = new
     checks = _sheet_checks().get(path)
     if checks and old in checks:
         checks[new] = checks.pop(old)
@@ -383,7 +391,9 @@ def snapshot() -> dict:
                 context["image"] = _image_url(name) if fix_images.image_path(name) else ""
             cards.append(result)
         highlighted = sum(1 for m in _marks().values() if wf.in_current_folder(m["path"]) and _shows_mark(m))
+        tabs = sum(len(t) for p, t in _tabs().items() if wf.in_current_folder(p))
         return {"cards": cards, "busy": wf.STATE["busy"], "folder": wf.STATE["folder"], "highlighted": highlighted,
+                "tab_marks": tabs,
                 "mode": _mode(), "open_blocked": _open_blocked([c["wb_path"] for c in cards]),
                 "job": copy.deepcopy(wf.STATE["job"]), "progress": dict(wf.STATE["scan_progress"]),
                 "logs": wf.STATE["logs"][-100:]}
@@ -1787,10 +1797,11 @@ def _rule_tag(rule: Any) -> str | None:
     return found.group(0) if found else None
 
 
-def _drop_rules(book: Any, keep: set[str], tick: Callable[[], None] | None = None
-                ) -> tuple[set[str], dict[str, int], dict[str, str]]:
+def _drop_rules(book: Any, keep: set[str], tick: Callable[[], None] | None = None,
+                holders: dict[str, Any] | None = None) -> tuple[set[str], dict[str, int], dict[str, str]]:
     """整份文件每张表的条件格式过一遍：公式里带我们标识、又不在 keep 里的规则删掉，原有的规则和顺序都不动。
     复制粘贴带到别处、拆成几条的，标识一样，一起删；表改了名也照样找到。
+    holders：传入时记下还留着标记的工作表（标签键 -> 工作表），用来给工作表标签标色。
     返回 (还留着的标识, 删掉的标识 -> 条数, 删不掉的标识 -> 原因)。"""
     present: set[str] = set()
     dropped: dict[str, int] = {}
@@ -1804,6 +1815,8 @@ def _drop_rules(book: Any, keep: set[str], tick: Callable[[], None] | None = Non
                 continue
             if tag in keep:
                 present.add(tag)
+                if holders is not None:
+                    holders[_tab_key(sheet)] = sheet
                 continue
             try:
                 rule.Delete()
@@ -1813,6 +1826,147 @@ def _drop_rules(book: Any, keep: set[str], tick: Callable[[], None] | None = Non
         if tick is not None:
             tick()
     return present, dropped, failed
+
+
+# 有问题格的工作表，标签标成橙黄色（Excel 标准色「オレンジ」#FFC000），多张表时一眼看出哪张要改
+TAB_HIGHLIGHT = "#FFC000"
+XL_COLOR_INDEX_NONE = -4142
+
+
+def _tab_key(sheet: Any) -> str:
+    """认工作表用的键：优先用代码名（改表名也不变），读不到代码名时用表名"""
+    try:
+        code = str(sheet.CodeName or "")
+    except Exception:
+        code = ""
+    return code or f"name:{sheet.Name}"
+
+
+def _sheet_by_tab_key(book: Any, key: str, name: str) -> Any:
+    if not key.startswith("name:"):
+        for sheet in book.Worksheets:
+            try:
+                if str(sheet.CodeName or "") == key:
+                    return sheet
+            except Exception:
+                continue
+    return _find_sheet(book, name)
+
+
+def _read_tab(sheet: Any) -> dict:
+    """记下工作表标签原来的颜色：没颜色 / 主题色（ThemeColor + TintAndShade）/ 普通颜色"""
+    tab = sheet.Tab
+    index = int(tab.ColorIndex)
+    record: dict[str, Any] = {"index": index}
+    if index == XL_COLOR_INDEX_NONE:
+        return record
+    record["color"] = int(tab.Color)
+    try:
+        theme = int(tab.ThemeColor)  # 不是主题色时有的版本会报错
+    except Exception:
+        theme = 0
+    record["theme"] = theme if theme > 0 else None
+    try:
+        record["tint"] = float(tab.TintAndShade)
+    except Exception:
+        record["tint"] = 0.0
+    return record
+
+
+def _tab_is_ours(sheet: Any) -> bool:
+    tab = sheet.Tab
+    return int(tab.ColorIndex) != XL_COLOR_INDEX_NONE and int(tab.Color) == _excel_color(TAB_HIGHLIGHT)
+
+
+def _restore_tab(sheet: Any, record: dict) -> None:
+    tab = sheet.Tab
+    if record["index"] == XL_COLOR_INDEX_NONE:
+        tab.ColorIndex = XL_COLOR_INDEX_NONE
+    elif record.get("theme"):
+        tab.ThemeColor = record["theme"]
+        tab.TintAndShade = record.get("tint", 0.0)
+    else:
+        tab.Color = record["color"]
+        if record.get("tint"):
+            tab.TintAndShade = record["tint"]
+
+
+def _tabs_stale(path: str, sheets: set[str]) -> bool:
+    """标过色的工作表标签和这次还要标的工作表（按标记记录里的表名）对不上：要打开文件改标签。调用方持有 STATE_LOCK"""
+    return {t["sheet"] for t in _tabs().get(path, {}).values()} != sheets
+
+
+def _sync_tabs(book: Any, path: str, holders: dict[str, Any], report: dict | None = None) -> dict[str, int]:
+    """工作表标签和标记保持一致：表里还有标记的标成橙黄色（先记下原来的颜色），标记全去掉的改回原来的颜色。
+    标签已经不是橙黄色（有人改过，或上次标完没保存）的不覆盖，只删记录。改不了的（工作簿结构受保护等）记日志，
+    要还原的记录留着下次再试。返回 {"marked": 新标的张数, "restored": 改回的张数, "failed": 出错的张数}"""
+    book_name = Path(path).name
+    count = {"marked": 0, "restored": 0, "failed": 0}
+    with wf.STATE_LOCK:
+        records = _tabs().setdefault(path, {})
+        for key, sheet in holders.items():
+            if key in records:
+                records[key]["sheet"] = str(sheet.Name)
+    for key, sheet in holders.items():
+        name = str(sheet.Name)
+        if key not in records:
+            try:
+                if _tab_is_ours(sheet):
+                    # 已经是橙黄色却没有记录（例如旧状态文件丢了）：原色不知道，还原时当作原来没颜色
+                    original = {"index": XL_COLOR_INDEX_NONE, "guessed": True}
+                else:
+                    original = _read_tab(sheet)
+            except Exception as err:
+                # 读不了标签颜色就不改：也记一笔，下次不用为它再打开文件，还原时直接跳过
+                original = {"index": XL_COLOR_INDEX_NONE, "skip": True}
+                count["failed"] += 1
+                wf.log_msg(f"⚠️ {book_name} / 工作表「{name}」读不了标签颜色，不标橙黄色：{err}")
+                debug_log.exception(err, "读工作表标签颜色")
+            with wf.STATE_LOCK:
+                records[key] = {"sheet": name, **original}
+                wf._persist_state()  # 先记下原色再改：中途崩溃时下次还能改回去
+        if records[key].get("skip"):
+            continue
+        try:
+            if not _tab_is_ours(sheet):
+                sheet.Tab.Color = _excel_color(TAB_HIGHLIGHT)
+                count["marked"] += 1
+                debug_log.event("🏷️ 工作表标签标橙黄", 文件=book_name, 工作表=name, 原色=records[key])
+        except Exception as err:
+            count["failed"] += 1
+            wf.log_msg(f"⚠️ {book_name} / 工作表「{name}」的标签未能标成橙黄色：{err}")
+            debug_log.exception(err, "工作表标签标色")
+    for key in [k for k in records if k not in holders]:
+        record = records[key]
+        status = "ok"
+        try:
+            sheet = None if record.get("skip") else _sheet_by_tab_key(book, key, record["sheet"])
+            if record.get("skip"):
+                reason = "当时没能标色，不用还原"
+            elif sheet is None:
+                reason = "工作表已不在文件里，不用还原"
+            elif _tab_is_ours(sheet):
+                _restore_tab(sheet, record)
+                count["restored"] += 1
+                reason = "已改回原来的标签颜色"
+            else:
+                reason = "标签已经不是橙黄色（有人改过，或上次标完没保存），不覆盖"
+            debug_log.event("🏷️ 还原工作表标签", 文件=book_name, 工作表=record["sheet"], 结果=reason, 原色=record)
+        except Exception as err:
+            count["failed"] += 1
+            status, reason = "failed", f"还原标签颜色出错，下次再试：{err}"
+            wf.log_msg(f"⚠️ {book_name} / 工作表「{record['sheet']}」的标签{reason}")
+            debug_log.exception(err, "还原工作表标签")
+        if report is not None and not record.get("skip"):
+            report.setdefault("tabs", []).append({"sheet": record["sheet"], "status": status, "reason": reason})
+        if status == "ok":
+            with wf.STATE_LOCK:
+                records.pop(key, None)
+    with wf.STATE_LOCK:
+        if not records:
+            _tabs().pop(path, None)
+        wf._persist_state()
+    return count
 
 
 def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = False,
@@ -1832,17 +1986,20 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
         unsure = sorted(cid for cid in have if not marks[cid].get("saved"))
         add = [c for c in cards if c["id"] in want - have]
         remove = sorted(have - want)
-    if not add and not remove and not unsure:
+        tabs_stale = _tabs_stale(path, {marks[cid]["sheet"] for cid in have if cid not in remove}
+                                 | {c["sheet_name"] for c in add})
+    if not add and not remove and not unsure and not tabs_stale:
         return
     _check_file(path)
     debug_log.event("🎨 同步标色", 文件=Path(path).name, 清除=clear, 要标=len(add), 要去掉=len(remove),
-                    待核对=len(unsure), 样式=style or "-")
+                    待核对=len(unsure), 标签要核对=tabs_stale, 样式=style or "-")
     app = excel_for()
     book = open_workbook_checked(app, str(Path(path).resolve()), UpdateLinks=0)
     added: dict[str, dict] = {}
     failed: dict[str, str] = {}
     deleted = restored = unmarked = 0
     leftovers: dict[str, int] = {}
+    tabs = {"marked": 0, "restored": 0, "failed": 0}
     stuck: list[str] = []  # 去掉 / 还原时出错的记录，留着下次再试
     book_name, last_log = Path(path).name, time.monotonic()
 
@@ -1869,7 +2026,8 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
             raise ValueError(f"{Path(path).name} 以只读方式打开，未能标色")
         # 条件格式规则：留下还要标的，其余带标识的全部删掉（包括崩溃留下的、复制粘贴带出去的）
         keep = {marks[cid]["tag"] for cid in have if cid not in remove and _is_rule(marks[cid])}
-        present, dropped, drop_failed = _drop_rules(book, keep, tick)
+        holders: dict[str, Any] = {}  # 还留着标记的工作表，标签要标橙黄色
+        present, dropped, drop_failed = _drop_rules(book, keep, tick, holders)
         ours = {marks[cid]["tag"]: cid for cid in remove if _is_rule(marks[cid])}
         for tag, cid in ours.items():
             if tag in drop_failed:
@@ -2009,7 +2167,14 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
         for name, count in gone.items():
             wf.log_msg(f"ℹ️ {Path(path).name}：工作表「{name}」已不在文件里（被删除或改名），"
                        f"跳过还原 {count} 格标记颜色；如果是改名，请在新表里手动去掉标记色")
-        if added or remove or dropped:  # 只核对了上次的标色、没有要改的：不保存，文件保持原样
+        for cid, mark in marks.items():
+            # 这次新标的，和旧版本改底色、还留着的标记（新方式还留着的在 _drop_rules 里已经找到）
+            if mark["path"] == path and cid not in remove and (cid in added or not _is_rule(mark)):
+                sheet = sheet_of(mark["sheet"])
+                if sheet is not None:
+                    holders.setdefault(_tab_key(sheet), sheet)
+        tabs = _sync_tabs(book, path, holders, report)
+        if added or remove or dropped or tabs["marked"] or tabs["restored"]:  # 只核对、没有要改的：不保存
             if tick is not None:
                 tick()
             normalize_workbook_view(app, book)
@@ -2036,6 +2201,12 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
         parts.append(f"去掉标记 {unmarked} 格")
     if leftovers:
         parts.append(f"清掉残留标记 {sum(leftovers.values())} 条")
+    if tabs["marked"]:
+        parts.append(f"{tabs['marked']} 张工作表标签标成橙黄色")
+    if tabs["restored"]:
+        parts.append(f"{tabs['restored']} 张工作表标签改回原来的颜色")
+    if tabs["failed"]:
+        parts.append(f"{tabs['failed']} 张工作表标签没改成（见上面的提示）")
     if restored:
         parts.append(f"还原颜色 {restored} 格")  # 只算真的改回去的格子（旧版本改过底色的）
     if stuck:
@@ -2066,7 +2237,11 @@ def _leftover_mark_paths(skip: list[str]) -> list[str]:
         paths = dict.fromkeys(m["path"] for m in _marks().values()
                               if m["path"] not in skip and wf.in_current_folder(m["path"])
                               and Path(m["path"]).exists())
-        return [p for p in paths if {cid for cid, m in _marks().items() if m["path"] == p} - _wanted_marks(p)]
+        found = [p for p in paths if {cid for cid, m in _marks().items() if m["path"] == p} - _wanted_marks(p)]
+        # 标记都去掉了、工作表标签还没改回去的（上次改标签时出错或中途崩溃）
+        found += [p for p in _tabs() if p not in skip and p not in found and wf.in_current_folder(p)
+                  and Path(p).exists() and not any(m["path"] == p for m in _marks().values())]
+        return found
 
 
 def _where(err: BaseException) -> str:
@@ -2086,6 +2261,9 @@ def _unhighlight_summary(results: dict[str, dict]) -> str:
     errors = sum(1 for r in results.values() if r.get("error"))
     if errors:
         parts.append(f"{errors} 份文件没能处理")
+    tabs = sum(1 for r in results.values() for t in r.get("tabs", []) if t["status"] == "ok")
+    if tabs:
+        parts.append(f"工作表标签已处理 {tabs} 张")
     leftovers = sum(r.get("leftovers", 0) for r in results.values())
     if leftovers:
         parts.append(f"另清掉残留标记 {leftovers} 条")
@@ -2113,7 +2291,8 @@ def _sync_highlights_safely(session: Any, path: str) -> None:
 
 def highlighted_paths() -> list[str]:
     with wf.STATE_LOCK:
-        paths = list(dict.fromkeys(m["path"] for m in _marks().values() if wf.in_current_folder(m["path"])))
+        paths = list(dict.fromkeys([m["path"] for m in _marks().values() if wf.in_current_folder(m["path"])]
+                                   + [p for p in _tabs() if wf.in_current_folder(p)]))
         if not paths:
             raise ValueError("当前文件夹没有标过颜色的单元格")
         return paths
@@ -2468,7 +2647,7 @@ def run() -> list[str]:
                 debug_log.begin(f"清除颜色 {i} / {len(expected)}：{Path(path).name}")
                 wf.log_msg(f"🧽 正在清除（{i} / {len(expected)}）：{Path(path).name}")
                 for tries in range(2):
-                    report.update(cells=[], leftovers=0, leftover_failed=[], error=None)
+                    report.update(cells=[], tabs=[], leftovers=0, leftover_failed=[], error=None)
                     try:
                         watchdog.progress()
                         _sync_highlights(session.app, path, clear=True, tick=session.touch, report=report)
