@@ -13,6 +13,7 @@ from core.common import (
     XL_WORKSHEET,
     col_index_to_letters,
     find_backup_sheets,
+    is_gray_tab_color,
     normalize_used_values,
 )
 from core import debug_log
@@ -414,18 +415,121 @@ def _read_xlsx_sheet_names(workbook_path: Path) -> list[str]:
     return names
 
 
+XL_COLOR_INDEX_NONE = -4142  # Tab.ColorIndex：没设标签颜色
+_XML_REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+_XML_PKG_REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+_XML_DRAWING_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+# 主题色编号 → theme1.xml 里 clrScheme 的子元素（Excel 把前两对的深浅对调了）
+_THEME_SLOTS = ("lt1", "dk1", "lt2", "dk2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6",
+                "hlink", "folHlink")
+_SHEET_HEAD_BYTES = 4096  # sheetPr（含 tabColor）在工作表 XML 的最开头，只读开头这一段
+
+
+def _theme_colors(archive: zipfile.ZipFile) -> dict[str, str]:
+    try:
+        root = ElementTree.fromstring(archive.read("xl/theme/theme1.xml"))
+    except (KeyError, ElementTree.ParseError):
+        return {}
+    scheme = root.find(f".//{_XML_DRAWING_NS}clrScheme")
+    colors: dict[str, str] = {}
+    for slot in (scheme if scheme is not None else []):
+        tag = slot.tag.replace(_XML_DRAWING_NS, "")
+        for child in slot:
+            value = child.get("lastClr") or child.get("val")
+            if value and re.fullmatch(r"[0-9A-Fa-f]{6}", value):
+                colors[tag] = value.upper()
+    return colors
+
+
+def _apply_tint(hex_color: str, tint: float) -> str:
+    """Excel 的 tint：按 HLS 亮度变深（负数）或变浅（正数）"""
+    import colorsys
+    r, g, b = (int(hex_color[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    h, l, s = colorsys.rgb_to_hls(r, g, b)
+    l = l * (1 + tint) if tint < 0 else l * (1 - tint) + tint
+    return "".join(f"{round(v * 255):02X}" for v in colorsys.hls_to_rgb(h, l, s))
+
+
+def _tab_color_hex(element: Any, theme: dict[str, str]) -> str | None:
+    """<tabColor rgb=… / theme=… tint=… / indexed=…> 换算成 RRGGBB；auto 或认不出时返回 None"""
+    if element.get("rgb"):
+        value = element.get("rgb")[-6:]
+    elif element.get("theme") is not None:
+        idx = int(element.get("theme"))
+        value = theme.get(_THEME_SLOTS[idx]) if 0 <= idx < len(_THEME_SLOTS) else None
+    elif element.get("indexed") is not None:
+        from openpyxl.styles.colors import COLOR_INDEX
+        idx = int(element.get("indexed"))
+        value = COLOR_INDEX[idx][-6:] if 0 <= idx < len(COLOR_INDEX) else None
+    else:
+        value = None
+    if not value or not re.fullmatch(r"[0-9A-Fa-f]{6}", value):
+        return None
+    tint = float(element.get("tint") or 0)
+    return _apply_tint(value.upper(), tint) if tint else value.upper()
+
+
+def _read_xlsx_tab_colors(workbook_path: Path) -> dict[str, str]:
+    """各工作表标签颜色 {表名: RRGGBB}（没设颜色的不列出）。只读每个工作表 XML 的开头，不加载内容"""
+    colors: dict[str, str] = {}
+    with zipfile.ZipFile(workbook_path) as archive:
+        book = ElementTree.fromstring(archive.read("xl/workbook.xml"))
+        ns = book.tag[: book.tag.index("}") + 1] if book.tag.startswith("{") else ""
+        rels = ElementTree.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+        targets = {rel.get("Id"): rel.get("Target") for rel in rels.findall(f"{_XML_PKG_REL_NS}Relationship")}
+        theme = _theme_colors(archive)
+        for sheet in book.iter(f"{ns}sheet"):
+            target = targets.get(sheet.get(f"{_XML_REL_NS}id")) or ""
+            part = target.lstrip("/") if target.startswith("/") else f"xl/{target}"
+            try:
+                with archive.open(part) as fh:
+                    head = fh.read(_SHEET_HEAD_BYTES).decode("utf-8", "ignore")
+            except KeyError:
+                continue
+            m = re.search(r"<(?:\w+:)?tabColor\b[^>]*/?>", head)
+            if not m:
+                continue
+            element = ElementTree.fromstring(re.sub(r"<(?:\w+:)?tabColor", "<tabColor", m.group(0).rstrip("/>") + "/>"))
+            hex_color = _tab_color_hex(element, theme)
+            if hex_color:
+                colors[sheet.get("name")] = hex_color
+    return colors
+
+
+def _excel_tab_colors(wb: Any) -> dict[str, str]:
+    """Excel 打开的工作簿各表标签颜色 {表名: RRGGBB}（Tab.Color 已经是换算好的颜色，BGR 整数）"""
+    colors: dict[str, str] = {}
+    for sh in wb.Sheets:
+        try:
+            if int(sh.Tab.ColorIndex) == XL_COLOR_INDEX_NONE:
+                continue
+            bgr = int(sh.Tab.Color)
+        except Exception:
+            continue
+        colors[sh.Name] = f"{bgr & 0xFF:02X}{(bgr >> 8) & 0xFF:02X}{(bgr >> 16) & 0xFF:02X}"
+    return colors
+
+
+def gray_tab_sheet_names(wb: Any) -> set[str]:
+    """标签是灰色的工作表：不看名字，精简 Sheet 默认删除，导出 PDF 也跳过（用户 2026-10-26）"""
+    return {name for name, color in _excel_tab_colors(wb).items() if is_gray_tab_color(color)}
+
+
 def scan_workbook_sheets(
-    workbook_path: Path, get_excel: Callable[[], Any] | None = None
+    workbook_path: Path, get_excel: Callable[[], Any] | None = None, tab_colors: dict[str, str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """扫描工作簿中的所有 Sheet 名与其中的备份 Sheet 名（支持 .xlsx/.xlsm/.xls）
 
     .xls 需要用 Excel 打开；批量扫描时传入 get_excel 复用同一个 Excel 进程，避免每个文件都重启 Excel。
+    传入 tab_colors（空字典）时顺便填入各表标签颜色 {表名: RRGGBB}，读不到颜色不影响扫描。
     """
     if workbook_path.suffix.lower() == ".xls":
         if get_excel is not None:
             wb = get_excel().Workbooks.Open(str(workbook_path.resolve()), ReadOnly=True, UpdateLinks=0)
             try:
                 all_sheets = [sh.Name for sh in wb.Sheets]
+                if tab_colors is not None:
+                    tab_colors.update(_excel_tab_colors(wb))
             finally:
                 wb.Close(SaveChanges=False)
             return all_sheets, find_backup_sheets(all_sheets)
@@ -436,6 +540,8 @@ def scan_workbook_sheets(
         try:
             wb = excel.Workbooks.Open(str(workbook_path.resolve()), ReadOnly=True, UpdateLinks=0)
             all_sheets = [sh.Name for sh in wb.Sheets]
+            if tab_colors is not None:
+                tab_colors.update(_excel_tab_colors(wb))
             return all_sheets, find_backup_sheets(all_sheets)
         finally:
             if wb is not None:
@@ -452,6 +558,11 @@ def scan_workbook_sheets(
             all_sheets = list(workbook.sheetnames)
         finally:
             workbook.close()
+    if tab_colors is not None:
+        try:
+            tab_colors.update(_read_xlsx_tab_colors(workbook_path))
+        except Exception as err:
+            debug_log.event("⚠️ 读取标签颜色失败", 文件=workbook_path.name, 原因=f"{type(err).__name__}: {err}")
     return all_sheets, find_backup_sheets(all_sheets)
 
 
@@ -478,7 +589,7 @@ def adjust_row_heights_against_clipping(wb: Any, extra_points: float = 6.0) -> N
     不破坏单行表头或方眼紙格子，只针对【包含非空文本且原本行高 >= 22 磅的多行文本行】
     增加安全余量（默认 +6.0 磅），并通过自定义属性保证幂等性。
     """
-    backup_names = set(find_backup_sheets([sheet.Name for sheet in wb.Sheets]))
+    backup_names = set(find_backup_sheets([sheet.Name for sheet in wb.Sheets])) | gray_tab_sheet_names(wb)
     for sheet in wb.Sheets:
         if sheet.Visible != XL_SHEET_VISIBLE or sheet.Type != XL_WORKSHEET:
             continue

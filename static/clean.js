@@ -76,7 +76,7 @@ function isValidYmdDate(yyyymmdd) {
 
 function hasBackupMarker(sheetName) {
   const text = String(sheetName ?? '').normalize('NFKC');
-  if (/(?<![a-z])(?:bak|backup|old|copy)(?![a-z])/i.test(text)) return true;
+  if (/(?<![a-z])(?:bak|backup|bk|old|copy)(?![a-z])/i.test(text)) return true;
   if (/バックアップ|备份|コピー|副本|(?<![新復])旧/.test(text)) return true;
   if (/\s*\(\d+\)[\s_\-・.]*$/.test(text)) return true;
   if (hasMmddSuffix(text)) return true;
@@ -148,7 +148,7 @@ function analyzeSheetName(displayName, { stripBackup = false, stripVersion = tru
     applyStrip(DATE_RE, m => isValidYmdDate(m[1] + m[3] + m[4]), true);
     applyStrip(/\s*\(\d+\)[\s_\-・.]*$/g, null, true);
     applyStrip(/copy\s+of|の?コピー|的?副本/gi, null, true);
-    applyStrip(/(?<![a-z])(?:bak|backup|old|copy)(?![a-z])/gi, null, true);
+    applyStrip(/(?<![a-z])(?:bak|backup|bk|old|copy)(?![a-z])/gi, null, true);
     applyStrip(/バックアップ|备份|コピー|副本|(?<![新復])旧/g, null, true);
     applyStrip(/(?<!\d)(\d{2})(\d{2})[\s_\-・.]*$/g, m => isValidYmdDate(`2000${m[1]}${m[2]}`), true);
   }
@@ -651,7 +651,8 @@ function previewFileItem(file, fileIndex, extraClass = '') {
       ? '当前：删除（单击切换为「待定」，再点切换为「保留」）'
       : (isUncertain
         ? '当前：待定，本次不删，等确认后再处理（单击切换为「保留」）'
-        : '当前：保留（单击切换为「删除」）')) + renameTip;
+        : '当前：保留（单击切换为「删除」）')) + renameTip
+      + ((file.gray_tabs || []).includes(name) ? '；Excel 里标签是灰色，不看名字默认删除' : '');
     if (processed) {
       return `<span class="preview-sheet-tag is-${st} is-processed" title="已在预览窗口处理，重新扫描后更新">${labelHtml}</span>`;
     }

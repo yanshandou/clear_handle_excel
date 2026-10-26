@@ -23,6 +23,7 @@ from core.common import (
     console_print,
     copy_series_sheets,
     find_backup_sheets,
+    is_gray_tab_color,
     find_clean_targets,
     find_contained_sheets,
     find_new_prefix_sheets,
@@ -42,6 +43,7 @@ from core.excel_ops import (
     CellProbe,
     close_saved_workbooks,
     extract_sheet_snapshot,
+    gray_tab_sheet_names,
     mark_review_cells,
     open_workbooks_for_review,
     restore_review_cells,
@@ -999,9 +1001,13 @@ def list_workbooks(folder_str: str) -> tuple[Path, list[Path]]:
 
 
 def _exportable_sheets(wb: Any) -> list[Any]:
-    """可见、且不是変更履歴或备份表的工作表才导出 PDF（备份表按整个工作簿判断）"""
+    """可见、且不是変更履歴、备份表或灰色标签的工作表才导出 PDF（备份表按整个工作簿判断）"""
     sheets = list(wb.Sheets)
     backup_names = set(find_backup_sheets([sheet.Name for sheet in sheets]))
+    gray = gray_tab_sheet_names(wb)
+    if gray:
+        debug_log.event("🩶 跳过灰色标签", 文件=getattr(wb, "Name", "?"), 表=sorted(gray))
+    backup_names |= gray
     return [
         sheet for sheet in sheets
         if sheet.Name not in EXCLUDE_PDF_SHEETS
@@ -2328,6 +2334,7 @@ def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
                 files.append(entry)
                 debug_log.event("📄 精简预览", 文件=entry["name"], 表数=entry["sheet_count"], 默认删除=entry["backups"],
                                 待定=entry["uncertain"], 新旧配对=entry["new_old_pairs"] or "-", 备注=entry["note"] or "-",
+                                灰色标签=entry["gray_tabs"] or "-",
                                 编号组保留=[n for n in entry["sheets"] if n in copy_series_sheets(entry["sheets"])] or "-",
                                 全部表=entry["sheets"])
     finally:
@@ -2349,22 +2356,28 @@ def _preview_workbook(wb_path: Path, folder: Path, get_excel: Callable[[], Any])
         "backups": [],
         "uncertain": [],
         "new_old_pairs": {},
+        "gray_tabs": [],
         "note": "",
     }
+    tab_colors: dict[str, str] = {}
     try:
         if wb_path.suffix.lower() == ".xls":
-            all_names, _ = scan_workbook_sheets(wb_path, get_excel)
+            all_names, _ = scan_workbook_sheets(wb_path, get_excel, tab_colors=tab_colors)
         else:
-            all_names, _ = scan_workbook_sheets(wb_path)
+            all_names, _ = scan_workbook_sheets(wb_path, tab_colors=tab_colors)
     except Exception as err:
         entry["note"] = f"无法读取: {err}"
     else:
         entry["sheet_count"] = len(all_names)
         entry["sheets"] = all_names  # 保持工作簿中的原有顺序，便于对照保留、删除与待定
         uncertain = [s for s in all_names if is_uncertain_name(s)]
-        default_delete = [s for s in find_clean_targets(all_names) if s not in set(uncertain)]
+        # 灰色标签的表不看名字，默认删除（用户 2026-10-26）
+        gray = {s for s in all_names if is_gray_tab_color(tab_colors.get(s))}
+        entry["gray_tabs"] = [s for s in all_names if s in gray]
+        name_targets = set(find_clean_targets(all_names))
+        default_delete = [s for s in all_names if (s in name_targets and s not in set(uncertain)) or s in gray]
         contained = set(find_contained_sheets(all_names))
-        entry["uncertain"] = [s for s in all_names if s in contained or s in set(uncertain)]
+        entry["uncertain"] = [s for s in all_names if (s in contained or s in set(uncertain)) and s not in gray]
         entry["new_old_pairs"] = find_new_prefix_sheets(all_names)  # 旧表全部删除（或没有旧表）时，新表去掉「新」字
         if default_delete and len(default_delete) >= len(all_names):
             entry["note"] = "全部工作表均被识别为备份表，将跳过删除"

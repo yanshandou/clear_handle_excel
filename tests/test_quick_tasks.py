@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 from contextlib import contextmanager
+from types import SimpleNamespace
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -20,7 +21,15 @@ class FakeSheet:
         self.book = book
         self.Name = name
         self.Visible = visible
+        self.tab_color = None  # 标签颜色 RRGGBB；None = 没设
         self.ExportAsFixedFormat = Mock(side_effect=self._export)
+
+    @property
+    def Tab(self):
+        if self.tab_color is None:
+            return SimpleNamespace(ColorIndex=-4142, Color=16777215)
+        r, g, b = (int(self.tab_color[i:i + 2], 16) for i in (0, 2, 4))
+        return SimpleNamespace(ColorIndex=1, Color=r | (g << 8) | (b << 16))
 
     def _export(self, **kwargs):
         if self.book.fail_export:
@@ -119,12 +128,14 @@ class QuickTaskTests(unittest.TestCase):
         self.books[name] = FakeWorkbook(name, sheets, hidden, self.events)
         return path
 
-    def read_sheet_names(self, path, get_excel=None):
+    def read_sheet_names(self, path, get_excel=None, tab_colors=None):
         """模拟 openpyxl 只读读取工作表名；.xls 通过传入的共享 Excel 打开"""
         if get_excel is not None:
             book = get_excel().Workbooks.Open(str(path), ReadOnly=True)
             names = [sheet.Name for sheet in book.sheets]
             book.Close(SaveChanges=False)
+            if tab_colors is not None:
+                tab_colors.update({s.Name: s.tab_color for s in book.sheets if s.tab_color})
             return names, self.workflow.find_backup_sheets(names)
         p = Path(path)
         try:
@@ -135,6 +146,8 @@ class QuickTaskTests(unittest.TestCase):
         if book is None:
             raise ValueError("文件已损坏")
         names = [sheet.Name for sheet in book.sheets]
+        if tab_colors is not None:
+            tab_colors.update({s.Name: s.tab_color for s in book.sheets if s.tab_color})
         return names, self.workflow.find_backup_sheets(names)
 
     def run_task(self, kind):
@@ -585,6 +598,25 @@ class QuickTaskTests(unittest.TestCase):
         self.assertTrue((self.folder / "01_画面" / "spec_Main.pdf").exists())
         self.assertTrue((self.folder / "02_帳票" / "spec_Report.pdf").exists())
         self.assertTrue((self.folder / "02_帳票" / "spec_Draft.pdf").exists())
+
+    def test_gray_tab_sheets_default_to_delete_and_skip_pdf(self):
+        # 灰色标签的表不看名字：精简 Sheet 默认删除，导出 PDF 也跳过（用户 2026-10-26）；橙黄问题标签不算
+        book = self.add_book("spec.xlsx", ["Main", "Main詳細", "20161101サービスコード選択(削除)", "Report"])
+        sheets = {s.Name: s for s in self.books["spec.xlsx"].sheets}
+        sheets["Main詳細"].tab_color = "A6A6A6"
+        sheets["20161101サービスコード選択(削除)"].tab_color = "808080"
+        sheets["Report"].tab_color = "FFC000"
+        files = {f["name"]: f for f in self.workflow.preview_backup_sheets(str(self.folder))["files"]}
+        self.assertEqual(files["spec.xlsx"]["backups"], ["Main詳細", "20161101サービスコード選択(削除)"])
+        self.assertEqual(files["spec.xlsx"]["gray_tabs"], ["Main詳細", "20161101サービスコード選択(削除)"])
+        self.assertEqual(files["spec.xlsx"]["uncertain"], [])  # 灰色优先于「名称包含 → 待定」
+
+        self.run_task("export_pdf")
+        self.assertTrue((self.folder / "spec_Main.pdf").exists())
+        self.assertTrue((self.folder / "spec_Report.pdf").exists())
+        self.assertFalse((self.folder / "spec_Main詳細.pdf").exists())
+        self.assertEqual(sorted(p.name for p in self.folder.glob("*.pdf")), ["spec_Main.pdf", "spec_Report.pdf"])
+        self.assertTrue(book.exists())
 
     def test_clean_sheets_leaves_existing_question_marks_untouched(self):
         # 以前加过 ❓ 的文件与表：不再自动去掉，也不再改名

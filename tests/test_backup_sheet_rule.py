@@ -111,6 +111,14 @@ class FindBackupSheetsTests(unittest.TestCase):
         ]), ["20181213計画実績設定_v2.4", "20180529計画実績設定"])
         self.assertEqual(find_backup_sheets(["ＡＢＣ一覧", "abc一覧_BAK"]), ["abc一覧_BAK"])
 
+    def test_bk_suffix_means_backup(self):
+        # TBOKG2000_写真管理.xlsx：bk 是备份的意思（用户 2026-10-26），有原表时默认删除；全角、前缀、带分隔符都算
+        for backup in ["写真管理bk", "写真管理_BK", "写真管理-bk", "写真管理ｂｋ", "BK写真管理", "写真管理(bk)"]:
+            self.assertEqual(find_clean_targets(["変更履歴", "写真管理", backup]), [backup])
+        # 没有原表、bk 是单词的一部分（Bkup、SBK、Bookmark）都不算
+        self.assertEqual(find_backup_sheets(["写真管理bk"]), [])
+        self.assertEqual(find_backup_sheets(["一覧", "Bkup一覧", "設定", "SBK設定"]), [])
+
     def test_every_marker_requires_its_original(self):
         names = [
             "機能設計", "機能設計（バックアップ）", "旧機能設計", "Copy of 機能設計", "機能設計_old",
