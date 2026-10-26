@@ -313,6 +313,26 @@ class _Matcher:
         return best or None
 
 
+def _order_same_text(records: dict[tuple[int, int], dict[str, Any]]) -> None:
+    """同一列里文字一样的几格，按先到先得配到的片段不一定是自己那一格：
+    例如 C130～C133 都是「全営業所分データ送信」，只有 C130 行高不够、只印出「全営業所分データ送」，
+    先配的 C130 会拿走 C131 的完整片段，最后剩下的 C130 那段被算到 C133 头上，标色标错行。
+    同一列上下顺序和 PDF 里的上下顺序一致：按行号排格子、按（页, 上边, 左边）排片段，一一重新对应。
+    片段完整还是只有开头（kind）跟着片段走"""
+    groups: dict[tuple[str, int], list[tuple[int, int]]] = {}
+    for key, rec in records.items():
+        if rec["kind"] in ("full", "prefix") and rec["chain"]:
+            groups.setdefault((normalize_text(rec["cell"]["text"]), key[1]), []).append(key)
+    for keys in groups.values():
+        if len(keys) < 2:
+            continue
+        keys.sort()
+        found = [(records[k]["kind"], records[k]["chain"]) for k in keys]
+        found.sort(key=lambda kc: (kc[1][0][0].page, kc[1][0][0].bbox[1], kc[1][0][0].bbox[0]))
+        for key, (kind, chain) in zip(keys, found):
+            records[key]["kind"], records[key]["chain"] = kind, chain
+
+
 def _border_between(upper: Piece, lower: Piece) -> bool:
     """两行之间隔着一条横跨两行的边框线：下一行属于下面的格子，不是这格换行接下来的部分。
     否则这格最后一行没打印出来时，会拿下一格开头一样的字（如「空」）当作已显示，漏报隐藏截断。"""
@@ -476,6 +496,8 @@ def find_hidden_cells(
             record(cell, "prefix", chain)
         elif not _symbols_only(cell["text"]):
             results.append(_result(cell, "", REASON_MISSING, None, None))
+
+    _order_same_text(records)
 
     # 片段可能在后面被换给别的格子，全部配完后再按最终占用的片段出结果
     for rec in records.values():
