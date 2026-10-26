@@ -8,6 +8,7 @@ let pending = null; // scan | start：请求已发出、后台尚未确认完成
 let pendingSince = 0;
 let previewData = null;
 let sheetDecisions = {}; // { [fileName]: { [sheetName]: 'keep' | 'delete' | 'uncertain' } }
+let sheetRenames = {}; // { [fileName]: { [原表名]: 新表名 } }：在预览窗口单击表名改的，执行时一起改
 let processedFiles = new Set(); // 已在预览窗口单独执行过的文件：卡片原地锁定，执行时跳过，重新扫描后才更新
 let previewFromFile = null; // 最近一次打开预览窗口的文件：卡片边框发亮，从预览窗口返回时滚过去、闪完去掉
 let pollSeq = 0;
@@ -278,12 +279,12 @@ function computeFileSheetHighlights(file) {
 }
 
 // 「旧」表全部标为删除（或本来就没有「旧」表，olds 为空）、「新」表保留时，执行后「新」表去掉开头的「新」字
-// （与后端 _new_prefix_renames 一致）；去掉后与剩下的表重名时不改名
-function findNewPrefixRenames(sheets, stateOf, pairs) {
+// （与后端 _new_prefix_renames 一致）；去掉后与剩下的表重名时不改名；手动改过名的表不再自动去「新」
+function findNewPrefixRenames(sheets, stateOf, pairs, custom = {}) {
   const renamed = new Set();
-  const remaining = sheets.filter(n => stateOf(n) !== 'delete');
+  const remaining = sheets.filter(n => stateOf(n) !== 'delete').flatMap(n => (custom[n] ? [n, custom[n]] : [n]));
   Object.entries(pairs || {}).forEach(([newName, olds]) => {
-    if (stateOf(newName) !== 'keep' || !olds.every(o => stateOf(o) === 'delete')) return;
+    if (custom[newName] || stateOf(newName) !== 'keep' || !olds.every(o => stateOf(o) === 'delete')) return;
     const target = newName.replace(/^新\s*/, '');
     if (!target || target === newName) return;
     const taken = remaining.some(n => n !== newName && n.toLowerCase() === target.toLowerCase());
@@ -318,6 +319,7 @@ function renderSheetLabelHtml(displayName, highlight) {
 
 function initSheetDecisions() {
   sheetDecisions = {};
+  sheetRenames = {};
   processedFiles = new Set();
   if (!previewData || !Array.isArray(previewData.files)) return;
   previewData.files.forEach(file => {
@@ -338,6 +340,16 @@ const NEXT_SHEET_STATE = {
   delete: 'uncertain',
   uncertain: 'keep',
 };
+
+function getSheetRenames(fileName) {
+  return sheetRenames[fileName] || {};
+}
+
+// 执行时真正要改的名字：标为删除的表不改名
+function activeRenames(file) {
+  const map = getSheetRenames(file.name);
+  return Object.keys(map).filter(n => file.sheets.includes(n) && getSheetState(file.name, n) !== 'delete');
+}
 
 function getSheetState(fileName, sheetName) {
   return (sheetDecisions[fileName] && sheetDecisions[fileName][sheetName]) || 'keep';
@@ -374,6 +386,7 @@ function broadcastStates(fileName) {
   if (!syncChannel || !previewData) return;
   syncChannel.postMessage({
     type: 'states', folder: previewData.folder, file: fileName, states: sheetDecisions[fileName] || {},
+    renames: getSheetRenames(fileName),
   });
 }
 
@@ -423,6 +436,13 @@ if (syncChannel) {
       file.sheets.forEach(name => {
         if (['keep', 'delete', 'uncertain'].includes(msg.states[name])) map[name] = msg.states[name];
       });
+      if (msg.renames && typeof msg.renames === 'object') {
+        const renames = {};
+        file.sheets.forEach(name => {
+          if (typeof msg.renames[name] === 'string' && msg.renames[name]) renames[name] = msg.renames[name];
+        });
+        sheetRenames[file.name] = renames;
+      }
       renderPreview();
       renderPage();
     } else if (msg.type === 'return') {
@@ -442,6 +462,7 @@ function summarizeDecisions() {
     uncertainTotal: 0,
     keptTotal: 0,
     renameTotal: 0,
+    customRenameTotal: 0,
     emptyFiles: [],
   };
   if (!previewData || !Array.isArray(previewData.files)) return summary;
@@ -460,7 +481,9 @@ function summarizeDecisions() {
     if (file.sheets.length > 0 && fileDel >= file.sheets.length) {
       summary.emptyFiles.push(file.name);
     } else {
-      summary.renameTotal += findNewPrefixRenames(file.sheets, n => getSheetState(file.name, n), file.new_old_pairs).size;
+      summary.renameTotal += findNewPrefixRenames(
+        file.sheets, n => getSheetState(file.name, n), file.new_old_pairs, getSheetRenames(file.name)).size;
+      summary.customRenameTotal += activeRenames(file).length;
     }
   });
   return summary;
@@ -479,6 +502,10 @@ function buildCleanPlan() {
       else if (st === 'uncertain') unc.push(name);
     });
     plan[file.name] = { delete: del, uncertain: unc };
+    const renames = activeRenames(file);
+    if (renames.length) {
+      plan[file.name].rename = Object.fromEntries(renames.map(n => [n, getSheetRenames(file.name)[n]]));
+    }
   });
   return plan;
 }
@@ -548,8 +575,8 @@ function renderPage() {
   if (phase === 'preview') {
     const stats = summarizeDecisions();
     renderSummary(stats);
-    // 待定只是本次不删，不改文件；只去掉「新」字（没有旧表的新X）也要执行
-    const hasAction = stats.deletedTotal > 0 || stats.renameTotal > 0;
+    // 待定只是本次不删，不改文件；只去掉「新」字（没有旧表的新X）或只改名也要执行
+    const hasAction = stats.deletedTotal > 0 || stats.renameTotal > 0 || stats.customRenameTotal > 0;
     const hasError = stats.emptyFiles.length > 0;
     execBtn.disabled = working || !hasAction || hasError || isBusyOther() || isCleanRunning();
     if (pending === 'start') {
@@ -558,7 +585,10 @@ function renderPage() {
       execBtn.textContent = '⚠️ 请至少保留 1 个工作表';
       hint.textContent = `「${stats.emptyFiles[0]}」不能将所有工作表全部标为删除`;
     } else if (stats.deletedTotal > 0) {
-      execBtn.textContent = `🧹 删除 ${stats.deletedTotal} 个工作表`;
+      execBtn.textContent = `🧹 删除 ${stats.deletedTotal} 个工作表` +
+        (stats.customRenameTotal ? `，改名 ${stats.customRenameTotal} 个` : '');
+    } else if (stats.customRenameTotal > 0) {
+      execBtn.textContent = `✏️ 改名 ${stats.customRenameTotal} 个工作表`;
     } else {
       execBtn.textContent = '没有标记删除的工作表';
     }
@@ -578,8 +608,8 @@ function renderSummary(stats) {
     删除 <b class="is-deleted">${stats.deletedTotal}</b> 个 ·
     待定 <b class="is-uncertain">${stats.uncertainTotal}</b> 个（不删） ·
     保留 <b>${stats.keptTotal}</b> 个 ·
-    去掉「新」字 <b>${stats.renameTotal}</b> 个
-  `;
+    去掉「新」字 <b>${stats.renameTotal}</b> 个` + (stats.customRenameTotal ? ` ·
+    改名 <b>${stats.customRenameTotal}</b> 个` : '');
 }
 
 // 按工作簿中的原有顺序列出全部工作表，单击标签循环切换「保留 / 删除 / 待定」
@@ -595,7 +625,8 @@ function previewFileItem(file, fileIndex, extraClass = '') {
   const processed = processedFiles.has(file.name);
   const allDeleted = !processed && file.sheets.length > 0 && delCount >= file.sheets.length;
   const highlights = computeFileSheetHighlights(file);
-  const newRenames = findNewPrefixRenames(file.sheets, n => getSheetState(file.name, n), file.new_old_pairs);
+  const customRenames = getSheetRenames(file.name);
+  const newRenames = findNewPrefixRenames(file.sheets, n => getSheetState(file.name, n), file.new_old_pairs, customRenames);
 
   const tags = file.sheets.map((name, sheetIndex) => {
     const st = getSheetState(file.name, name);
@@ -605,11 +636,17 @@ function previewFileItem(file, fileIndex, extraClass = '') {
     const highlight = highlights[sheetIndex];
     // 删除线只划掉「新」字，标签宽度不变，切换旧表状态时卡片不会跳动
     const stripNew = newRenames.has(name);
-    const labelHtml = stripNew
-      ? '<s class="strip-new-prefix">新</s>' + renderSheetLabelHtml(
-        displayName.slice(1), highlight && { ...highlight, mask: highlight.mask.slice(1) })
-      : renderSheetLabelHtml(displayName, highlight);
-    const renameTip = stripNew ? `；执行后去掉「新」字，改名为「${displayName.replace(/^新\s*/, '')}」` : '';
+    const customName = customRenames[name];
+    // 手动改的名字直接显示新名字；标签宽度只在预览窗口改名、返回后变一次，单击切换状态时不变
+    const labelHtml = customName
+      ? `<span class="sheet-renamed-mark" aria-hidden="true">✏️</span>${escapeHtml(customName)}`
+      : (stripNew
+        ? '<s class="strip-new-prefix">新</s>' + renderSheetLabelHtml(
+          displayName.slice(1), highlight && { ...highlight, mask: highlight.mask.slice(1) })
+        : renderSheetLabelHtml(displayName, highlight));
+    const renameTip = customName
+      ? (isDeleted ? `；在预览里改过名（${customName}），标为删除时不改名` : `；原名「${displayName}」，执行时改名为「${customName}」`)
+      : (stripNew ? `；执行后去掉「新」字，改名为「${displayName.replace(/^新\s*/, '')}」` : '');
     const tip = (isDeleted
       ? '当前：删除（单击切换为「待定」，再点切换为「保留」）'
       : (isUncertain

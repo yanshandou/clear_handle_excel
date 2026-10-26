@@ -3291,6 +3291,51 @@ button.preview-sheet-tag:active {
   opacity: 0.6;
 }
 
+/* 预览卡片单击表名改名：只有文字可点（右边空白处照常切换状态），输入框和文字同高，卡片不变高 */
+.pv-name-text {
+  cursor: text;
+  border-bottom: 1px dashed transparent;
+}
+
+.pv-name-text:hover {
+  border-bottom-color: currentColor;
+}
+
+.pv-card-name.is-editing {
+  overflow: visible;
+}
+
+/* 选择器加一层 .pv-card-name，压过通用 input[type="text"] 的大内边距和 min-width: 300px */
+.pv-card-name .pv-name-input,
+.pv-card-name .pv-name-input:focus {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 1.6em;
+  margin: -2px 0;
+  padding: 0 4px;
+  font: inherit;
+  color: inherit;
+  border: 2px solid #2563eb;
+  border-radius: 6px;
+  background: #ffffff;
+  box-shadow: none;
+  outline: none;
+  transition: none;
+}
+
+.pv-card-name .pv-name-input.is-invalid,
+.pv-card-name .pv-name-input.is-invalid:focus {
+  border-color: #dc2626;
+  background: #fef2f2;
+}
+
+.sheet-renamed-mark {
+  margin-right: 2px;
+  font-size: 0.9em;
+}
+
 /* 旧版删除后去掉的「新」字：只加删除线，不改变标签宽度 */
 .strip-new-prefix {
   text-decoration-thickness: 2px;

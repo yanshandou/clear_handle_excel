@@ -618,6 +618,54 @@ class QuickTaskTests(unittest.TestCase):
             })
             self.assertEqual((status, json.loads(body)["ok"]), (200, True))
 
+    def run_plan(self, plan):
+        self.assertTrue(
+            self.workflow.queue_job("clean_sheets", {"folder": str(self.folder), "plan": plan})
+        )
+        self.workflow.run_pending_workflow()
+
+    def test_clean_sheets_applies_custom_sheet_renames(self):
+        self.add_book("a.xlsx", ["振込データ提出先選択", "Main", "Main_20250101", "Sub"])
+        self.workflow.STATE["pages"]["p1"] = {
+            "wb_path": str(self.folder / "a.xlsx"), "wb_name": "a.xlsx", "sheet_name": "振込データ提出先選択",
+        }
+        self.run_plan({"a.xlsx": {
+            "delete": ["Main_20250101"], "uncertain": [],
+            "rename": {"振込データ提出先選択": "提出先選択", "Main_20250101": "删掉的表不改名"},
+        }})
+        self.assertEqual(self.books["a.xlsx"].saved, [["提出先選択", "Main", "Sub"]])
+        files = self.report_files()
+        self.assertIn("1 个 Sheet 已改名", files["a.xlsx"]["current_action"])
+        # 工作台记录跟着新名字
+        self.assertEqual(self.workflow.STATE["pages"]["p1"]["sheet_name"], "提出先選択")
+
+    def test_clean_sheets_rename_only_opens_excel_and_skips_duplicates(self):
+        self.add_book("a.xlsx", ["Main", "Sub", "Other"])
+        self.run_plan({"a.xlsx": {
+            "delete": [], "uncertain": ["Other"],
+            # 待定的表也能改名；改成现有表名（不区分大小写）的不改
+            "rename": {"Other": "其他", "Sub": "main"},
+        }})
+        self.assertEqual(self.books["a.xlsx"].saved, [["Main", "Sub", "其他"]])
+
+    def test_custom_rename_replaces_new_prefix_rename(self):
+        self.add_book("a.xlsx", ["新レイアウト", "旧レイアウト"])
+        self.run_plan({"a.xlsx": {
+            "delete": ["旧レイアウト"], "uncertain": [], "rename": {"新レイアウト": "レイアウト v2"},
+        }})
+        self.assertEqual(self.books["a.xlsx"].saved, [["レイアウト v2"]])
+        action = self.report_files()["a.xlsx"]["current_action"]
+        self.assertIn("1 个 Sheet 已改名", action)
+        self.assertNotIn("去掉「新」字", action)
+
+    def test_validate_clean_plan_checks_excel_sheet_name_rules(self):
+        for bad in ["", "a/b", "x" * 32, "'abc", "History", "[1]"]:
+            with self.assertRaises(ValueError, msg=bad):
+                self.workflow.validate_clean_plan({"a.xlsx": {"delete": [], "uncertain": [], "rename": {"S": bad}}})
+        plan = self.workflow.validate_clean_plan(
+            {"a.xlsx": {"delete": [], "uncertain": [], "rename": {"S": "新しい名前（２）", "T": "T"}}})
+        self.assertEqual(plan["a.xlsx"]["rename"], {"S": "新しい名前（２）"})
+
 
 if __name__ == "__main__":
     unittest.main()
