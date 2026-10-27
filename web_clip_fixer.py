@@ -283,6 +283,12 @@ class WebHandler(BaseHTTPRequestHandler):
     def _handle_post(self, payload: dict) -> None:
         if self.path == "/api/batch/start":
             options = {"folder": _require_folder(payload)}
+            minutes = payload.get("scan_limit_minutes")
+            if minutes is not None:
+                # 单个文件扫描的时间上限（分钟），不给就自动估算
+                if isinstance(minutes, bool) or minutes not in batch.SCAN_LIMIT_CHOICES:
+                    raise ValueError("单个文件的扫描上限只能选自动或 3、5、10、15 分钟")
+                options["scan_limit_minutes"] = minutes
             if payload.get("scan_only") is True:
                 options.update(scan_only=True, highlight=batch.highlight_style(payload.get("highlight")))
             elif payload.get("highlight") is not None:
@@ -376,6 +382,9 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
         elif self.path == "/api/batch/followups/cancel":
             self._send_json({"ok": True, "cancelled": batch.cancel_followups()})
+        elif self.path == "/api/batch/slow_files/clear":
+            batch.clear_slow_files()
+            self._send_json({"ok": True})
         elif self.path == "/api/scan":
             folder = _require_folder(payload)
             self._start_job("scan", {

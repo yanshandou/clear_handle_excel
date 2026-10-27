@@ -25,7 +25,7 @@ from core.excel_ops import (
     CellProbe, close_saved_workbooks, extract_sheet_snapshot, normalize_workbook_view,
     open_workbooks_for_review, snapshot_cells, open_workbook_checked,
 )
-from core.excel_watchdog import ExcelWatchdog
+from core.excel_watchdog import ExcelWatchdog, idle_timeout
 from core.hidden_text import (
     REASON_CLIPPED, REASON_TRUNCATED, collect_text_pieces, is_excel_error, locate_text, normalize_text,
 )
@@ -406,6 +406,9 @@ def snapshot() -> dict:
                 "tab_marks": tabs,
                 "mode": _mode(), "open_blocked": _open_blocked([c["wb_path"] for c in cards]),
                 "followups": copy.deepcopy(_data().get("followups") or []),
+                "scan_eta": _scan_eta(wf.STATE["job"]) if wf.STATE["job"] else None,
+                "slow_files": [{"path": p, "name": Path(p).name, **info} for p, info in _data().get("slow_files", {}).items()
+                               if wf.in_current_folder(p)],
                 "job": copy.deepcopy(wf.STATE["job"]), "progress": dict(wf.STATE["scan_progress"]),
                 "logs": wf.STATE["logs"][-100:]}
 
@@ -1874,6 +1877,110 @@ def _auto_queue_open() -> bool:
                 and not job.get("to_manual"))
 
 
+SCAN_LIMIT_FLOOR = 180  # 自动上限最少 3 分钟
+SCAN_LIMIT_FIRST = 600  # 扫完的文件不到 2 份、还估不准时先给 10 分钟
+SCAN_LIMIT_MARGIN = 5  # 自动上限 = 估计时间的 5 倍
+SCAN_LIMIT_CHOICES = (3, 5, 10, 15)  # 网页上可选的固定分钟数
+
+
+def _scan_size(job: dict, path: str) -> int:
+    """文件大小（估算扫描时间用），每份只查一次，记在任务里"""
+    sizes = job.setdefault("sizes", {})
+    if path not in sizes:
+        try:
+            sizes[path] = Path(path).stat().st_size
+        except OSError:
+            sizes[path] = 0
+    return sizes[path]
+
+
+def _scan_model(job: dict) -> tuple[float, float] | None:
+    """按这次已扫完文件的耗时估算扫描速度：(平均每份秒数, 每字节秒数)；一份都没扫完时返回 None"""
+    done = job.get("scan_seconds") or {}
+    if not done:
+        return None
+    total = sum(done.values())
+    sizes = sum(_scan_size(job, p) for p in done)
+    return total / len(done), (total / sizes if sizes else 0.0)
+
+
+def _expected_scan_seconds(job: dict, path: str, model: tuple[float, float]) -> float:
+    """这份文件大概要扫多久：一半按平均每份的时间，一半按文件大小折算（大文件慢）"""
+    average, rate = model
+    return (average + (rate * _scan_size(job, path) if rate else average)) / 2
+
+
+def _scan_limit(job: dict, path: str) -> float:
+    """这份文件最多扫多久（秒），超过就跳过、转人工。网页上选了分钟数就按它；自动时按估计时间的 5 倍，
+    最少 3 分钟，最多不超过看门狗的无进展上限（默认 15 分钟）；扫完的不到 2 份时先给 10 分钟"""
+    minutes = job["options"].get("scan_limit_minutes")
+    if minutes:
+        return minutes * 60.0
+    model = _scan_model(job) if len(job.get("scan_seconds") or {}) >= 2 else None
+    limit = (SCAN_LIMIT_FIRST if model is None
+             else max(SCAN_LIMIT_FLOOR, SCAN_LIMIT_MARGIN * _expected_scan_seconds(job, path, model)))
+    return min(limit, idle_timeout())
+
+
+def _minutes(seconds: float) -> str:
+    return f"{round(seconds / 60, 1):g} 分钟"
+
+
+def _skip_slow_file(job: dict, path: str, limit: float) -> None:
+    """扫描超过时间上限：这份文件跳过、这次任务里不再处理（继续上次任务也不重试），
+    记下卡在哪张表，页面上提示人工检查；之后这份文件扫描通过就不再提示"""
+    with wf.STATE_LOCK:
+        now = wf.SCAN_NOW if wf.SCAN_NOW.get("path") == path else {}
+        sheet = now.get("sheet") or ""
+        job.setdefault("slow_seconds", {})[path] = round(time.time() - now["started"] if now else limit)
+        _data().setdefault("slow_files", {})[path] = {"sheet": sheet, "limit": round(limit),
+                                                      "at": time.strftime("%Y-%m-%d %H:%M")}
+        for done in ("scanned", "completed"):
+            if path not in job.setdefault(done, []):
+                job[done].append(path)
+        job.get("file_errors", {}).pop(path, None)
+        wf.STATE["scan_progress"] = {"total": len(job["workbooks"]), "completed": len(job["completed"]),
+                                     "status": "running"}
+        wf._persist_state()
+    message = f"扫描超过 {_minutes(limit)}" + (f"，卡在表「{sheet}」" if sheet else "") + "，已跳过，请人工检查"
+    wf.log_msg(f"⏱ {Path(path).name}：{message}")
+    debug_log.event("⏱ 扫描超时跳过", 文件=Path(path).name, 表=sheet, 上限秒=round(limit))
+    update_file_progress(workbook_rel_name(Path(path), wf.STATE["folder"]), status="error", error=message,
+                         current_action="扫描超时，已跳过")
+
+
+def clear_slow_files() -> None:
+    """页面上「知道了」：不再提示当前文件夹扫描超时跳过的文件"""
+    with wf.STATE_LOCK:
+        slow = _data().get("slow_files", {})
+        for path in [p for p in slow if wf.in_current_folder(p)]:
+            del slow[path]
+        wf._persist_state()
+
+
+def _scan_eta(job: dict) -> dict | None:
+    """调用方持有 STATE_LOCK：扫描时的已用 / 预计剩余时间（秒）和当前文件的进度。剩余按这次已扫完文件的耗时、
+    文件大小估算，一份都没扫完时不估；全自动的修复阶段、转回自动、自动调整不算"""
+    if (not wf.STATE["busy"] or job.get("kind") != "batch_scan" or job["options"].get("back_to_auto")
+            or job.get("phase") == "repair" or "workbooks" not in job):
+        return None
+    finished = set(job.get("scanned", [])) | set(job.get("completed", []))
+    pending = [p for p in job["workbooks"] if p not in finished]
+    now = wf.SCAN_NOW if wf.SCAN_NOW.get("path") in pending else {}
+    running = max(0.0, time.time() - now["started"]) if now else 0.0
+    model = _scan_model(job)
+    limit = job.get("scan_limit") or {}
+    return {
+        "elapsed": round(sum((job.get("scan_seconds") or {}).values())
+                         + sum((job.get("slow_seconds") or {}).values()) + running),
+        "remaining": None if model is None
+        else round(max(0.0, sum(_expected_scan_seconds(job, p, model) for p in pending) - running)),
+        "current": {"name": Path(now["path"]).name, "sheet": now.get("sheet", ""),
+                    "index": now.get("index", 0), "total": now.get("total", 0), "seconds": round(running),
+                    "limit": limit.get("seconds") if limit.get("path") == now["path"] else None} if now else None,
+    }
+
+
 def _auto_queue_paths(job: dict) -> set[str]:
     """调用方持有 STATE_LOCK：「只扫描」时排队等自动调整的文件"""
     cards = _data()["cards"]
@@ -2965,6 +3072,7 @@ def run() -> list[str]:
     # 每种任务都看着后台 Excel：它在看不见的地方卡住（弹了没人能点的框等）时结束它，不让任务永远卡着。
     # 清除颜色每改一格都报进度，卡 5 分钟就算卡住；检测类一张大表导出可能要很久，按默认时长
     watchdog = ExcelWatchdog(lambda: wf.log_msg(
+        "⏱ 这份文件扫描超过时间上限，已结束本任务专用 Excel，跳过这份文件" if watchdog.deadline_hit else
         "⚠️ 后台 Excel 长时间无进展，已结束本任务专用 Excel，当前文件将记录错误并重试或跳过"),
         timeout=UNHIGHLIGHT_STALL_SECONDS if kind == "batch_unhighlight" else None)
     session.watchdog = watchdog
@@ -3047,6 +3155,11 @@ def run() -> list[str]:
                                                  status="error", error=str(err), current_action="写入待核对，已跳过，可续跑")
                             session.close()
                             return False
+                        if watchdog.deadline_hit:
+                            # 扫描超过时间上限：不重试，这份文件跳过、转人工，下一份用新的 Excel
+                            _skip_slow_file(job, path, (job.get("scan_limit") or {}).get("seconds") or 0)
+                            session.close()
+                            return False
                         # 检测类原因（ValueError）不重试
                         if (not isinstance(err, (ValueError, TimeoutError)) and not watchdog.timed_out
                                 and tries < autofix.MAX_ERROR_RETRIES):
@@ -3082,8 +3195,19 @@ def run() -> list[str]:
                 elif back:
                     _back_to_auto(excel, session, path)
                 else:
+                    # 只给检测（只读打开原文件）设上限：超时结束 Excel 不会弄坏文件；之后标色要写文件，不在上限内
+                    with wf.STATE_LOCK:
+                        limit = _scan_limit(job, path)
+                        job["scan_limit"] = {"path": path, "seconds": round(limit)}
                     started, checking = time.perf_counter(), {}
-                    _refresh(excel, path, session=session, timing=checking)
+                    watchdog.deadline(limit)
+                    try:
+                        _refresh(excel, path, session=session, timing=checking)
+                    finally:
+                        watchdog.deadline(None)
+                    with wf.STATE_LOCK:
+                        job.setdefault("scan_seconds", {})[path] = round(time.perf_counter() - started, 1)
+                        _data().get("slow_files", {}).pop(path, None)  # 以前超时跳过的，这次扫完了
                     wf.log_msg(f"⏱ {Path(path).name} 整份检查：{time.perf_counter() - started:.1f} 秒"
                                f"（导出 {int(checking.get('exports', 0))} 次 {checking.get('export', 0):.1f} 秒，"
                                f"检测 {checking.get('detect', 0):.1f} 秒）")

@@ -139,6 +139,9 @@ STATE: dict[str, Any] = {
     "batch_review": {"cards": {}, "rows": {}, "ignored": []},
 }
 
+# 后台现在在检查哪份文件、第几张表（只放内存）：工作台据此显示当前文件用了多久，扫描超时跳过时写明卡在哪张表
+SCAN_NOW: dict[str, Any] = {}
+
 _saved_state = load_snapshot("workflow")
 if _saved_state is not None:
     STATE.update(_saved_state)
@@ -1155,6 +1158,9 @@ def _scan_one_workbook(
         + (f"（只查有问题的工作表：{'、'.join(entry['sheets'])}）" if sheets_only else " ...")
     )
     update_file_progress(wb_label, status="processing", current_action="正在打开工作簿...", error="")
+    with STATE_LOCK:
+        SCAN_NOW.clear()
+        SCAN_NOW.update(path=path, sheet="", index=0, total=0, started=time.time())
     open_options = {"UpdateLinks": 0}
     if read_only:
         open_options["ReadOnly"] = True
@@ -1212,8 +1218,10 @@ def _scan_one_workbook(
             next_seq = max((it["seq"] for it in STATE["items"].values()), default=0) + 1
         file_pages: dict[str, Any] = {}
         file_items: dict[str, Any] = {}
-        for sheet in sheets:
+        for index, sheet in enumerate(sheets, 1):
             s_name = sheet.Name
+            with STATE_LOCK:
+                SCAN_NOW.update(sheet=s_name, index=index, total=len(sheets))
             update_file_progress(wb_label, current_action=f"正在导出并检测 [{s_name}]...")
             pdf_path = unique_pdf_path(wb_path.parent, file_stem, sanitize_filename(s_name), used_pdf_paths)
             started = time.perf_counter()

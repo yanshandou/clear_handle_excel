@@ -452,6 +452,22 @@ test('queued rechecks and commits are listed with start-now and cancel', () => {
   assert.match(p.elements.get('followupText').textContent, /上一个任务暂停了，这些还没做/);
 });
 
+test('scan shows elapsed and remaining time, the current file, and files skipped for being slow', () => {
+  const p = page();
+  assert.equal(p.run(`duration(42)`), '42 秒');
+  assert.equal(p.run(`duration(200)`), '3 分 20 秒');
+  assert.equal(p.run(`duration(3720)`), '1 小时 2 分');
+  assert.equal(p.run(`etaText(null)`), '');
+  assert.equal(p.run(`etaText({elapsed: 30, remaining: null})`), ' · 已用 30 秒 · 扫完第一个文件后估算剩余时间');
+  assert.match(p.run(`etaText({elapsed: 600, remaining: 480})`), /^ · 已用 10 分 · 预计还要约 8 分（\d\d:\d\d 左右扫完）$/);
+  p.run(`renderScanNow({name: 'a.xlsx', sheet: 'レイアウト', index: 2, total: 5, seconds: 75, limit: 600})`);
+  assert.equal(p.elements.get('scanNow').textContent,
+    '正在检查 a.xlsx：第 2 / 5 张表「レイアウト」 · 这份已用 1 分 15 秒（上限 10 分，超过就跳过、留给人工）');
+  p.run(`batchState.slow_files = [{path: 'C:/Excel/a.xlsx', name: 'a.xlsx', sheet: 'レイアウト', limit: 600}]; renderSlowFiles();`);
+  assert.equal(p.elements.get('slowText').innerHTML,
+    '⏱ 1 个文件扫描超时，已跳过，请人工检查：<a>a.xlsx</a>（超过 10 分，卡在表「レイアウト」）');
+});
+
 test('open all during a background task opens finished files and lists the rest', async () => {
   const p = page();
   p.run(`batchState.busy = true; batchState.job = {kind: 'batch_scan', options: {scan_only: true}, workbooks: [], completed: []};

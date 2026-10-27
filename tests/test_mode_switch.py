@@ -3,6 +3,7 @@ import importlib
 import json
 import tempfile
 import threading
+import time
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -587,6 +588,71 @@ class ModeSwitchTests(unittest.TestCase):
         self.assertIn("才能打开", result["waiting"][0]["reason"])
         self.assertEqual(result["errors"], [])
 
+    def test_file_over_the_scan_limit_is_skipped_for_manual_check(self):
+        first, second = self.scan_only_job()
+        watchdog = Mock(deadline_hit=False, timed_out=False)
+        limits = []
+
+        def refresh(excel, path, *a, **k):
+            limits.append(self.job["scan_limit"]["seconds"])
+            if path == self.paths[0]:
+                # 卡在第二张表：看门狗到点结束 Excel，COM 调用报错
+                self.wf.SCAN_NOW.update(path=path, sheet="レイアウト", index=2, total=5, started=time.time() - 600)
+                watchdog.deadline_hit = True
+                raise RuntimeError("RPC サーバーを利用できません。")
+            watchdog.deadline_hit = False
+
+        with patch.object(batch, "ExcelWatchdog", return_value=watchdog), \
+                patch.object(batch, "_refresh", side_effect=refresh), patch.object(batch, "_hand_over") as hand:
+            self.assertEqual(batch.run(), self.paths)
+        self.assertEqual(limits, [batch.SCAN_LIMIT_FIRST, batch.SCAN_LIMIT_FIRST])  # 还没扫完 2 份：先给 10 分钟
+        watchdog.deadline.assert_any_call(batch.SCAN_LIMIT_FIRST)
+        # 超时的文件不重试、不转黄卡，算这次做完（继续上次任务也不再卡在它上面）
+        hand.assert_called_once_with(self.paths[1])
+        self.assertEqual(self.job["completed"], self.paths)
+        self.assertNotIn(self.paths[0], self.job.get("file_errors", {}))
+        self.assertEqual(first["color"], "yellow")
+        slow = batch.snapshot()["slow_files"]
+        self.assertEqual([(s["name"], s["sheet"], s["limit"]) for s in slow], [("a.xlsx", "レイアウト", 600)])
+        self.assertTrue(any("扫描超过 10 分钟，卡在表「レイアウト」" in line for line in self.wf.STATE["logs"]))
+        batch.clear_slow_files()
+        self.assertEqual(batch.snapshot()["slow_files"], [])
+
+    def test_successful_scan_clears_an_old_slow_file_notice(self):
+        self.scan_only_job()
+        batch._data()["slow_files"] = {self.paths[0]: {"sheet": "S1", "limit": 180, "at": ""}}
+        with patch.object(batch, "_refresh"):
+            batch.run()
+        self.assertEqual(batch._data()["slow_files"], {})
+        self.assertEqual(set(self.job["scan_seconds"]), set(self.paths))
+
+    def test_scan_limit_is_estimated_from_files_already_scanned(self):
+        job = {"options": {}, "scan_seconds": {self.paths[0]: 20.0}}
+        self.assertEqual(batch._scan_limit(job, self.paths[1]), batch.SCAN_LIMIT_FIRST)  # 只扫完 1 份：估不准
+        job["scan_seconds"][self.paths[1]] = 40.0  # 两份一样大，平均 30 秒
+        self.assertEqual(batch._scan_limit(job, self.paths[0]), batch.SCAN_LIMIT_FLOOR)  # 5 倍才 150 秒：最少 3 分钟
+        job["scan_seconds"] = {self.paths[0]: 100.0, self.paths[1]: 140.0}
+        self.assertEqual(batch._scan_limit(job, self.paths[0]), 600)  # 平均 120 秒 × 5
+        job["scan_seconds"] = {self.paths[0]: 400.0, self.paths[1]: 400.0}
+        self.assertEqual(batch._scan_limit(job, self.paths[0]), 900)  # 最多和看门狗的无进展上限一样
+        job["options"]["scan_limit_minutes"] = 5
+        self.assertEqual(batch._scan_limit(job, self.paths[0]), 300)  # 网页上选了固定分钟数
+
+    def test_scan_eta_uses_finished_files_and_the_current_one(self):
+        self.job.update(options={"folder": str(self.root), "scan_only": True}, scan_seconds={self.paths[0]: 10.0},
+                        scanned=[self.paths[0]], completed=[self.paths[0]],
+                        scan_limit={"path": self.paths[1], "seconds": 180})
+        self.wf.SCAN_NOW.clear()
+        self.wf.SCAN_NOW.update(path=self.paths[1], sheet="S2", index=3, total=8, started=time.time() - 4)
+        eta = batch.snapshot()["scan_eta"]
+        self.assertEqual((eta["elapsed"], eta["remaining"]), (14, 6))  # 两份一样大：这份估计 10 秒，已用 4 秒
+        self.assertEqual(eta["current"], {"name": "b.xlsx", "sheet": "S2", "index": 3, "total": 8, "seconds": 4,
+                                          "limit": 180})
+        self.job["scan_seconds"] = {}
+        self.assertIsNone(batch.snapshot()["scan_eta"]["remaining"])  # 一份都没扫完：不估
+        self.job["phase"] = "repair"
+        self.assertIsNone(batch.snapshot()["scan_eta"])  # 全自动的修复阶段不算扫描
+
     def test_web_queues_recheck_and_commit_and_opens_ready_files_during_a_task(self):
         import web_clip_fixer
 
@@ -616,6 +682,7 @@ class ModeSwitchTests(unittest.TestCase):
         self.assertEqual((opened["opened"], [w["name"] for w in opened["waiting"]]), (["a.xlsx"], ["b.xlsx"]))
         self.assertIn("后台可能还在忙", post("/api/batch/followups/start", {})["error"])
         self.assertEqual(post("/api/batch/followups/cancel", {}), {"ok": True, "cancelled": 2})
+        self.assertIn("扫描上限", post("/api/batch/start", {"folder": str(self.root), "scan_limit_minutes": 7})["error"])
 
 
 if __name__ == "__main__":

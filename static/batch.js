@@ -234,7 +234,7 @@ async function action(work) {
 
 function renderControls() {
   const busy = batchState.busy || requestBusy;
-  for (const id of ['startBtn', 'scanOnlyBtn', 'commitBtn', 'folderInput']) $(id).disabled = busy;
+  for (const id of ['startBtn', 'scanOnlyBtn', 'commitBtn', 'folderInput', 'scanLimit']) $(id).disabled = busy;
   $('unhighlightBtn').disabled = busy || !(batchState.highlighted || batchState.tab_marks);
   $('unhighlightBtn').textContent = `🧽 清除 Excel 标记颜色${batchState.highlighted ? `（${batchState.highlighted}）` : ''}`;
   $('unhighlightResultBtn').classList.toggle('hidden', batchState.busy || !unhighlightResult());
@@ -311,6 +311,41 @@ function renderPendingNotice() {
   const rows = (pending.rows || []).map(r => `${r.sheet} 第 ${r.row} 行`).join('、');
   const resume = batchState.job.status === 'interrupted' ? '点「继续上次任务」重新核对并写入；' : '';
   $('pendingNotice').textContent = `上次写入没有完成：${name}（${rows}）。${resume}如果你在 Excel 里改过这一行，或不想再自动改它，点「放弃这次写入」：文件不再改动，这几格转为黄色人工处理。其他文件不受影响，可以照常提交、复检。`;
+}
+
+// 秒数写成「3 分 20 秒」「1 小时 5 分」
+function duration(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s} 秒`;
+  if (s < 3600) return `${Math.floor(s / 60)} 分${s % 60 ? ` ${s % 60} 秒` : ''}`;
+  return `${Math.floor(s / 3600)} 小时${Math.floor(s % 3600 / 60) ? ` ${Math.floor(s % 3600 / 60)} 分` : ''}`;
+}
+// 扫描时进度后面接上已用和预计剩余时间（按这次已扫完文件的耗时和文件大小估算）
+function etaText(eta) {
+  if (!eta) return '';
+  if (eta.remaining == null) return ` · 已用 ${duration(eta.elapsed)} · 扫完第一个文件后估算剩余时间`;
+  const done = new Date(Date.now() + eta.remaining * 1000);
+  const clock = `${String(done.getHours()).padStart(2, '0')}:${String(done.getMinutes()).padStart(2, '0')}`;
+  return ` · 已用 ${duration(eta.elapsed)} · 预计还要约 ${duration(eta.remaining)}（${clock} 左右扫完）`;
+}
+// 正在检查的文件：第几张表、这份用了多久、超过多久会跳过
+function renderScanNow(current) {
+  $('scanNow').classList.toggle('hidden', !current);
+  if (!current) return;
+  const where = current.total ? `第 ${current.index} / ${current.total} 张表「${current.sheet}」` : '正在打开';
+  $('scanNow').textContent = `正在检查 ${current.name}：${where} · 这份已用 ${duration(current.seconds)}`
+    + (current.limit ? `（上限 ${duration(current.limit)}，超过就跳过、留给人工）` : '');
+}
+// 扫描超时跳过的文件：写明卡在哪张表，点文件名用 Excel 打开人工检查
+function renderSlowFiles() {
+  const slow = batchState.slow_files || [];
+  $('slowNotice').classList.toggle('hidden', !slow.length);
+  if (!slow.length) return;
+  const files = slow.map(f => `${excelLinkHtml(esc(f.name), { file: f.name, folder: batchState.folder, blocked: openBlocked({ wb_path: f.path }) })}`
+    + `（超过 ${duration(f.limit)}${f.sheet ? `，卡在表「${esc(f.sheet)}」` : ''}）`).join('、');
+  const html = `⏱ ${slow.length} 个文件扫描超时，已跳过，请人工检查：${files}`;
+  if ($('slowText').innerHTML !== html) $('slowText').innerHTML = html;
+  $('slowClearBtn').disabled = requestBusy;
 }
 
 // 排在当前任务后面的复检 / 提交：写明排了什么、什么时候做；暂停时留着的可以现在开始，都可以取消
@@ -673,7 +708,9 @@ function render() {
     : scanning ? '正在扫描（全部扫完后开始修，之后可以转人工）'
     : job?.options?.scan_only ? (job.auto_queue?.length ? '正在扫描（扫完后接着自动调整排队的文件）' : '正在扫描') : '正在自动处理')
     : job?.status === 'interrupted' ? '已暂停或部分文件未完成' : '当前进度';
-  $('progressText').textContent = `${label}：${completed} / ${total} 个文件 · 待审核 ${batchState.cards.length} 个单元格`;
+  $('progressText').textContent = `${label}：${completed} / ${total} 个文件 · 待审核 ${batchState.cards.length} 个单元格${etaText(batchState.scan_eta)}`;
+  renderScanNow(batchState.scan_eta?.current);
+  renderSlowFiles();
   $('progressFill').style.width = `${total ? Math.round(completed * 100 / total) : 0}%`;
   $('logBox').textContent = batchState.logs.join('\n') || '等待操作…';
   const counts = Object.fromEntries(REVIEW_COLORS.map(c => [c, batchState.cards.filter(card => card.color === c).length]));
@@ -1081,10 +1118,17 @@ async function startBatch(extra = {}) {
   const unsent = batchState.cards.filter(c => !c.finalized).length;
   if (unsent && batchState.folder && folder !== batchState.folder
       && !(await appConfirm(`当前文件夹还有 ${unsent} 张卡片没有提交审核。\n审核记录会保留，以后对原文件夹重新开始全自动处理即可继续审核。\n\n确定换到新文件夹吗？`, { title: '换文件夹', okText: '换到新文件夹' }))) return;
-  await startJob('/api/batch/start', { folder, ...extra }).then(() => {
+  const limit = Number($('scanLimit').value);  // 空 = 自动估算
+  await startJob('/api/batch/start', { folder, ...extra, ...(limit ? { scan_limit_minutes: limit } : {}) }).then(() => {
     if (batchState.busy) { try { localStorage.setItem('clear_handle_excel.lastFolder', folder); } catch (_) {} }
   });
 }
+const SCAN_LIMIT_KEY = 'clear_handle_excel.scanLimit';
+try { $('scanLimit').value = localStorage.getItem(SCAN_LIMIT_KEY) || ''; } catch (_) {}
+$('scanLimit').addEventListener('change', event => {
+  try { localStorage.setItem(SCAN_LIMIT_KEY, event.target.value); } catch (_) {}
+});
+$('slowClearBtn').addEventListener('click', () => action(() => post('/api/batch/slow_files/clear')));
 $('startBtn').addEventListener('click', () => startBatch($('highlightAuto').checked ? { highlight: { ...highlight } } : {}));
 $('scanOnlyBtn').addEventListener('click', async () => {
   if (!$('folderInput').value.trim()) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
