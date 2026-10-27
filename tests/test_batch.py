@@ -45,6 +45,7 @@ class BatchTests(unittest.TestCase):
         self.real_refresh = batch._refresh
         self.refresh = patch.object(batch, "_refresh").start()
         self.addCleanup(patch.stopall)
+        self.addCleanup(reporter.flush_execution_report)
 
     def test_empty_open_keeps_write_journal_and_original_height(self):
         card, _ = self.add_card()
@@ -121,6 +122,311 @@ class BatchTests(unittest.TestCase):
     def commit(self, cards):
         self.wf.STATE["job"].update(kind="batch_commit", options={"card_ids": [c["id"] for c in cards]})
         batch._commit_review(self.excel)
+
+    def column_card(self, address="C5", row=5):
+        from core.hidden_text import REASON_HASH
+        card, item = self.add_card(address, row=row)
+        item.update(hidden_reason=REASON_HASH, status="pending")
+        batch._data()["rows"].pop(batch._rid(card), None)
+        batch._card_for([item])
+        return card, item
+
+    def column_widths(self, widths):
+        class Column:
+            def __init__(self, col):
+                self.col = col
+            @property
+            def ColumnWidth(self):
+                return widths[self.col]
+            @ColumnWidth.setter
+            def ColumnWidth(self, value):
+                widths[self.col] = value
+        self.book.Sheets.return_value.Columns.side_effect = Column
+
+    def widen_column(self, card, item, widths, targets):
+        chosen = {"base_cols": {str(col): widths[col] for col in targets},
+                  "target_cols": {str(col): width for col, width in targets.items()}, "after": "", "pdf": None}
+        with patch.object(batch, "_prepare_column", return_value=chosen):
+            batch._repair_column(self.excel, Mock(), self.path, [item], card,
+                                 self.wf._file_version(Path(self.path)), {})
+
+    def test_column_write_failure_preserves_journal_and_stops_other_repairs(self):
+        card, _ = self.column_card("A5")
+        _, other = self.add_card("B5")
+        other["status"] = "pending"
+        batch._data()["rows"].clear()
+        batch.set_fix_error_types(list(batch.autofix.FIXABLE_ERROR_TYPES))
+        with patch.object(batch, "_prepare_column", return_value={
+            "base_cols": {"1": 8.0}, "target_cols": {"1": 11.0}, "after": "", "pdf": None,
+        }), patch.object(batch, "_prepare_row") as prepare, \
+                patch.object(batch, "_write_rows", side_effect=ValueError("injected write conflict")):
+            with self.assertRaisesRegex(ValueError, "injected write conflict"):
+                batch._repair_file(self.excel, Mock(), self.path)
+        prepare.assert_not_called()
+        pending = self.wf.STATE["job"]["pending_adjustment"]
+        self.assertEqual(pending["cards"], [card["id"]])
+        self.assertEqual(pending["rows"][0]["kind"], "col")
+        self.assertEqual(pending["rows"][0]["cols_target"], {"1": 11.0})
+
+    def check_shared_column_review(self, colors, merged=False):
+        first, first_item = self.column_card("B5:D5" if merged else "C5")
+        second, second_item = self.column_card("C6:E6" if merged else "C6", row=6)
+        widths = {col: 8.0 for col in ([2, 3, 4, 5] if merged else [3])}
+        self.column_widths(widths)
+        self.widen_column(first, first_item, widths, {col: 11.3 for col in ([2, 3, 4] if merged else [3])})
+        self.widen_column(second, second_item, widths, {col: 15.3 for col in ([3, 4, 5] if merged else [3])})
+        shared = batch._data()["rows"][batch._col_key(self.path, "S1", 3)]
+        self.assertEqual((shared["base"], shared["applied"]), (8.0, 15.3))
+        self.assertEqual(set(shared["cards"]), {first["id"], second["id"]})
+        first["color"], second["color"] = colors
+        self.assertEqual(set(batch.commit_selection([first["id"]])[0]), {first["id"], second["id"]})
+        expected = dict(widths) if colors == ("blue", "blue") else dict.fromkeys(widths, 8.0)
+        self.commit([first])
+        self.assertEqual(widths, expected)
+        self.assertNotIn(self.path, self.wf.STATE["job"].get("deferred_adjustments", {}))
+        self.assertTrue(all(not r["saved"] for r in batch._data()["rows"].values()))
+        if len(set(colors)) > 1:
+            self.assertTrue(all(c["color"] == "yellow" and c["column_conflict"] for c in (first, second)))
+
+    def test_shared_column_all_green_restores_original_width(self):
+        self.check_shared_column_review(("green", "green"))
+
+    def test_shared_column_all_blue_accepts_latest_width(self):
+        self.check_shared_column_review(("blue", "blue"))
+
+    def test_shared_column_green_blue_restores_and_hands_over(self):
+        self.check_shared_column_review(("green", "blue"))
+
+    def test_shared_column_blue_green_restores_and_hands_over(self):
+        self.check_shared_column_review(("blue", "green"))
+
+    def test_overlapping_merged_columns_restore_together(self):
+        self.check_shared_column_review(("green", "green"), merged=True)
+
+    def test_overlapping_merged_columns_mixed_colors_restore_together(self):
+        self.check_shared_column_review(("blue", "green"), merged=True)
+
+    def test_overlapping_merged_columns_all_blue_keep_latest_widths(self):
+        self.check_shared_column_review(("blue", "blue"), merged=True)
+
+    def test_color_filtered_commit_skips_shared_columns_with_mixed_colors(self):
+        first, item = self.column_card()
+        second, second_item = self.column_card("C6", row=6)
+        widths = {3: 8.0}
+        self.column_widths(widths)
+        self.widen_column(first, item, widths, {3: 11.0})
+        self.widen_column(second, second_item, widths, {3: 15.0})
+        first["color"] = "green"
+        self.assertEqual(batch.commit_selection([first["id"]], "green"), ([], [first["id"]]))
+        self.assertEqual(batch.commit_selection([second["id"]], "blue"), ([], [second["id"]]))
+
+    def test_row_height_and_column_width_on_same_row_have_independent_reviews(self):
+        column, item = self.column_card()
+        height, _ = self.add_card("B5", color="green")
+        widths = {3: 8.0}
+        self.column_widths(widths)
+        self.widen_column(column, item, widths, {3: 11.0})
+        self.assertEqual(batch.commit_selection([height["id"]], "green"), ([height["id"]], []))
+        self.commit([column, height])
+        self.assertEqual(widths[3], 11.0)
+        self.assertEqual(self.heights[5], 15.0)
+        self.assertEqual((column["color"], height["color"]), ("blue", "green"))
+
+    def test_accepted_column_width_becomes_the_base_of_the_next_repair(self):
+        card, item = self.column_card()
+        widths = {3: 8.0}
+        self.column_widths(widths)
+        self.widen_column(card, item, widths, {3: 11.0})
+        self.commit([card])
+        self.assertFalse(batch._data()["rows"][batch._col_key(self.path, "S1", 3)]["saved"])
+        self.wf.STATE["job"] = {"kind": "batch_scan", "options": {}, "completed": [], "pending_adjustment": None}
+        new, new_item = self.column_card()
+        self.widen_column(new, new_item, widths, {3: 15.0})
+        new["color"] = "green"
+        self.commit([new])
+        self.assertEqual(widths[3], 11.0)
+
+    def test_new_card_does_not_restore_a_previously_accepted_width(self):
+        card, item = self.column_card()
+        widths = {3: 8.0}
+        self.column_widths(widths)
+        self.widen_column(card, item, widths, {3: 11.0})
+        self.commit([card])
+        self.wf.STATE["job"] = {"kind": "batch_commit", "options": {}, "completed": [], "pending_adjustment": None}
+        new, _ = self.column_card()
+        new["color"] = "green"
+        self.commit([new])
+        self.assertEqual(widths[3], 11.0)
+
+    def test_column_resume_checks_each_width_without_summing_rounding_errors(self):
+        widths = dict.fromkeys(range(1, 9), 10.1)
+        self.column_widths(widths)
+        row = {"kind": "col", "sheet": "S1", "row": 5, "expected": 64.0, "target": 80.0,
+               "cols_expected": {str(c): 8.0 for c in widths}, "cols_target": {str(c): 10.0 for c in widths}}
+        batch._write_rows(self.excel, {"path": self.path, "version": {"old": True}, "rows": [row]})
+        self.book.Save.assert_not_called()
+        self.assertEqual(set(widths.values()), {10.1})
+
+    def test_column_write_preserves_external_width_edits(self):
+        self.column_widths({3: 12.0})
+        row = {"kind": "col", "sheet": "S1", "row": 5, "expected": 8.0, "target": 15.0,
+               "cols_expected": {"3": 8.0}, "cols_target": {"3": 15.0}}
+        with self.assertRaisesRegex(ValueError, "列宽已被其他操作修改"):
+            batch._write_rows(self.excel, {"path": self.path,
+                "version": self.wf._file_version(Path(self.path)), "rows": [row]})
+        self.book.Save.assert_not_called()
+
+    def test_renaming_sheet_keeps_column_and_height_records_and_updates_journals(self):
+        column, item = self.column_card()
+        height, _ = self.add_card("B5", color="green")
+        widths = {3: 8.0}
+        self.column_widths(widths)
+        self.widen_column(column, item, widths, {3: 11.0})
+        old_col_id = column["col_ids"][0]
+        journal = {"path": self.path, "cards": [column["id"], height["id"]],
+                   "rows": [{"id": old_col_id, "sheet": "S1"}, {"id": batch._rid(height), "sheet": "S1"}]}
+        self.wf.STATE["job"].update(pending_adjustment=journal,
+                                    deferred_adjustments={self.path: copy.deepcopy(journal)})
+        batch.rename_sheet(self.path, "S1", "Renamed")
+        new_col_id = batch._col_key(self.path, "Renamed", 3)
+        self.assertEqual(len(batch._data()["rows"]), 2)
+        self.assertEqual(column["col_ids"], [new_col_id])
+        for pending in [journal, self.wf.STATE["job"]["deferred_adjustments"][self.path]]:
+            self.assertEqual(pending["cards"], [column["id"], height["id"]])
+            self.assertEqual([r["id"] for r in pending["rows"]], [new_col_id, batch._rid(height)])
+            self.assertTrue(all(r["sheet"] == "Renamed" for r in pending["rows"]))
+        self.wf.STATE["job"].update(pending_adjustment=None, deferred_adjustments={})
+        column["color"] = "green"
+        self.commit([column, height])
+        self.assertEqual(widths[3], 8.0)
+        self.assertEqual(self.heights[5], 15.0)
+
+    def test_legacy_overlapping_column_records_migrate_and_restore_original_width(self):
+        first, _ = self.column_card()
+        second, _ = self.column_card("C6", row=6)
+        for card, base, applied in ((first, 8.0, 11.0), (second, 11.0, 15.0)):
+            rid = batch._col_rid(card)
+            batch._data()["rows"][rid] = {"id": rid, "kind": "col", "path": self.path, "sheet": "S1",
+                "row": card["excel_row"], "cell_addr": card["cell_addr"], "base": base, "applied": applied,
+                "base_cols": {"3": base}, "applied_cols": {"3": applied}, "saved": True, "wrap": []}
+            card["color"] = "green"
+        widths = {3: 15.0}
+        self.column_widths(widths)
+        self.commit([first])
+        self.assertEqual(widths[3], 8.0)
+        self.assertEqual(len(batch._data()["rows"]), 1)
+        self.assertEqual(first["col_ids"], second["col_ids"])
+
+    def test_legacy_column_pending_write_migrates_and_resumes(self):
+        card, _ = self.column_card()
+        rid = batch._col_rid(card)
+        batch._data()["rows"][rid] = {"id": rid, "kind": "col", "path": self.path, "sheet": "S1",
+            "row": 5, "cell_addr": "C5", "base": 16.0, "applied": 22.0,
+            "base_cols": {"3": 8.0, "4": 8.0}, "applied_cols": {"3": 11.0, "4": 11.0},
+            "saved": False, "wrap": []}
+        pending = {"action": "fix", "path": self.path, "version": self.wf._file_version(Path(self.path)),
+                   "cards": [card["id"]], "rows": [{"id": rid, "kind": "col", "sheet": "S1", "row": 5,
+                       "expected": 16.0, "target": 22.0, "cols_expected": {"3": 8.0, "4": 8.0},
+                       "cols_target": {"3": 11.0, "4": 11.0}}]}
+        self.wf.STATE["job"]["pending_adjustment"] = pending
+        widths = {3: 8.0, 4: 8.0}
+        self.column_widths(widths)
+        batch._finish_pending(self.excel)
+        self.assertEqual(widths, {3: 11.0, 4: 11.0})
+        self.assertIsNone(self.wf.STATE["job"]["pending_adjustment"])
+        self.assertEqual(len(card["col_ids"]), 2)
+        self.assertTrue(all(r["saved"] for r in batch._data()["rows"].values()))
+        self.assertEqual(card["color"], "blue")
+
+    def test_abandoning_column_write_keeps_width_and_explains_what_to_check(self):
+        card, item = self.column_card()
+        widths = {3: 8.0}
+        self.column_widths(widths)
+        with patch.object(batch, "_write_rows", side_effect=ValueError("injected")):
+            with self.assertRaises(ValueError):
+                self.widen_column(card, item, widths, {3: 11.0})
+        batch.abandon_pending()
+        self.assertEqual(widths[3], 8.0)
+        self.assertIn("列宽", card["message"])
+        self.assertNotIn("行高", card["message"])
+        self.assertFalse(batch._data()["rows"][card["col_ids"][0]]["saved"])
+        self.assertEqual((card["color"], card["manual"]), ("yellow", True))
+
+    def test_old_reviewed_cards_do_not_block_accepting_a_new_column_adjustment(self):
+        first, item = self.column_card()
+        widths = {3: 8.0}
+        self.column_widths(widths)
+        self.widen_column(first, item, widths, {3: 11.0})
+        first["color"] = "green"
+        self.commit([first])
+        second, second_item = self.column_card("C6", row=6)
+        self.wf.STATE["job"] = {"kind": "batch_scan", "options": {}, "completed": [], "pending_adjustment": None}
+        self.widen_column(second, second_item, widths, {3: 15.0})
+        self.commit([second])
+        self.assertEqual(widths[3], 15.0)
+        self.assertFalse(batch._data()["rows"][second["col_ids"][0]]["saved"])
+
+    def test_marked_column_is_not_widened_again_before_review_is_submitted(self):
+        first, item = self.column_card()
+        second, other_item = self.column_card("C6", row=6)
+        widths = {3: 8.0}
+        self.column_widths(widths)
+        self.widen_column(first, item, widths, {3: 11.0})
+        first.update(color="green", marked=True)
+        with self.assertRaisesRegex(ValueError, "已有人工审核意见"):
+            self.widen_column(second, other_item, widths, {3: 15.0})
+        self.assertEqual(widths[3], 11.0)
+        self.assertIsNone(self.wf.STATE["job"]["pending_adjustment"])
+
+    def test_manual_column_card_does_not_block_other_cells_on_the_same_row(self):
+        column, _ = self.column_card()
+        _, item = self.add_card("B5")
+        column.update(manual=True, finalized=True)
+        item["status"] = "pending"
+        batch._data()["rows"].clear()
+        with patch.object(batch, "_prepare_column") as prepare_column, \
+                patch.object(batch, "_prepare_row", return_value=(24.0, None, {})) as prepare_row:
+            batch._repair_file(self.excel, Mock(), self.path)
+        prepare_column.assert_not_called()
+        self.assertEqual([it["cell_addr"] for it in prepare_row.call_args.args[2]], ["B5"])
+
+    def test_legacy_overlapping_restore_journal_resumes_as_one_column_write(self):
+        first, _ = self.column_card()
+        second, _ = self.column_card("C6", row=6)
+        rows = []
+        for card, base, applied in ((first, 8.0, 11.0), (second, 11.0, 15.0)):
+            rid = batch._col_rid(card)
+            batch._data()["rows"][rid] = {"id": rid, "kind": "col", "path": self.path, "sheet": "S1",
+                "row": card["excel_row"], "cell_addr": card["cell_addr"], "base": base, "applied": applied,
+                "base_cols": {"3": base}, "applied_cols": {"3": applied}, "saved": True, "wrap": []}
+            rows.append({"id": rid, "kind": "col", "sheet": "S1", "row": card["excel_row"],
+                         "expected": applied, "target": base,
+                         "cols_expected": {"3": applied}, "cols_target": {"3": base}})
+            card["color"] = "green"
+        pending = {"action": "restore", "path": self.path, "version": self.wf._file_version(Path(self.path)),
+                   "cards": [first["id"], second["id"]], "rows": rows}
+        self.wf.STATE["job"]["pending_adjustment"] = pending
+        widths = {3: 15.0}
+        self.column_widths(widths)
+        batch._finish_pending(self.excel)
+        self.assertEqual(widths[3], 8.0)
+        self.assertEqual(len(pending["rows"]), 1)
+        self.assertIsNone(self.wf.STATE["job"]["pending_adjustment"])
+
+    def test_restored_column_history_does_not_hide_a_later_height_record(self):
+        from core.hidden_text import REASON_TRUNCATED
+        card, item = self.column_card()
+        widths = {3: 8.0}
+        self.column_widths(widths)
+        self.widen_column(card, item, widths, {3: 11.0})
+        card["color"] = "yellow"
+        self.commit([card])
+        item.update(hidden_reason=REASON_TRUNCATED, status="pending")
+        batch._card_for([item])
+        self.assertFalse(batch._column_card(card))
+        record = {"id": batch._rid(card), "base": 24.0, "applied": 30.0, "saved": True}
+        batch._data()["rows"][record["id"]] = record
+        self.assertIs(batch._row_record(card), record)
 
     def test_commit_by_color_keeps_other_colors_and_mixed_rows(self):
         """筛选黄色只提交黄卡：别的颜色不动；同行混着蓝卡（共用已写入的行高）的整行先不交，不连带转黄"""
@@ -1615,7 +1921,7 @@ class BatchTests(unittest.TestCase):
         item.update(text="上記以外、\n空", visible_text="上記以外、", hidden_reason="后面的文字没显示")
         card.pop("problems")
         result = batch.snapshot()["cards"][0]
-        self.assertEqual(result["problems"], [{"kind": "hidden", "label": "隐藏截断",
+        self.assertEqual(result["problems"], [{"kind": "hidden", "error_type": "text_truncated", "label": "隐藏截断",
                                                "reason": "后面的文字没显示", "missing": "空"}])
         self.assertEqual(result["row_height"], {"base": 15.0, "applied": 24.0, "saved": True, "wrap": False})
         clip = {**item, "id": "clip", "kind": "clip", "cell_addr": "B5"}

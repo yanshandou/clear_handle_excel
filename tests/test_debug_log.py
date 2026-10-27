@@ -122,6 +122,17 @@ class DebugLogTests(unittest.TestCase):
         self.assertIn("⬇任务 batch_scan", self.lines()[0])
         self.assertIn("任务里", self.lines()[-1])
 
+    def test_prune_preserves_crlf_without_adding_blank_lines(self):
+        now = datetime(2026, 10, 27, 12, 0)
+        old = (now - timedelta(hours=13)).strftime("%Y-%m-%d %H:%M:%S.000")
+        recent = (now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S.000")
+        kept = f"💬 [{recent}] [任务] 不久前\r\n".encode("utf-8")
+        self.path.write_bytes(f"💬 [{old}] [任务] 很早\r\n".encode("utf-8") + kept)
+        debug_log.prune(now)
+        self.assertEqual(self.path.read_bytes(), kept)
+        debug_log.prune(now + timedelta(minutes=1))
+        self.assertEqual(self.path.read_bytes(), kept)
+
     def test_copy_picks_one_task_and_trims_big_ones(self):
         debug_log.start_task("clean_sheets")
         debug_log.write("第一次任务")

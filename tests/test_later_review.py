@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from core import excel_ops, fix_images, storage
+from core import common, excel_ops, fix_images, storage
 from core.common import REVIEW_PREFIX, strip_review_prefix, workbook_rel_name
 
 
@@ -91,6 +91,7 @@ class LaterReviewTests(unittest.TestCase):
             checked_files={str(self.wb_path): self.workflow._file_version(self.wb_path)},
             review_queue={},
         )
+        self.addCleanup(reporter.flush_execution_report)
 
     def group(self, row):
         self.autofix.sync_groups()
@@ -152,9 +153,26 @@ class LaterReviewTests(unittest.TestCase):
         self.defer(5)
         lock = self.wb_path.with_name("~$" + self.wb_path.name)
         lock.write_bytes(b"")
-        self.assertFalse(self.workflow.mark_review_file(self.excel, str(self.wb_path)))
+        with patch.object(common, "_held_open", return_value=True) as held_open:
+            self.assertFalse(self.workflow.mark_review_file(self.excel, str(self.wb_path)))
+        held_open.assert_called_once_with(self.wb_path)
+        self.excel.Workbooks.Open.assert_not_called()
+        self.assertTrue(lock.exists())
         self.assertEqual(self.saves, 0)
         self.assertIn("正在 Excel 中打开", self.workflow.STATE["review_queue"][str(self.wb_path)]["error"])
+        lock.unlink()
+        self.assertTrue(self.workflow.mark_review_file(self.excel, str(self.wb_path)))
+        self.assertEqual(self.saves, 1)
+
+    def test_stale_lock_does_not_block_marking(self):
+        self.defer(5)
+        lock = self.wb_path.with_name("~$" + self.wb_path.name)
+        lock.write_bytes(b"")
+        with patch.object(common, "_held_open", return_value=False):
+            self.assertTrue(self.workflow.mark_review_file(self.excel, str(self.wb_path)))
+        self.assertFalse(lock.exists())
+        self.assertEqual(self.saves, 1)
+        self.assertTrue(self.marked_path().exists())
 
     def test_restore_only_fixed_cells_then_drop_prefix_when_file_is_clean(self):
         self.defer(5)

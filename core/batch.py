@@ -55,7 +55,7 @@ def _data() -> dict[str, Any]:
 
 
 def fix_error_types(value: Any = None, *, require_non_empty: bool = False) -> list[str]:
-    """当前自动修复要处理的错误类型（从 4 种可自动修复类型中选择；### 与 PDF 未匹配文字固定转人工）"""
+    """当前自动修复要处理的错误类型；PDF 未匹配文字固定转人工。"""
     if value is None:
         saved = _data().get("fix_error_types")
         selected = (list(autofix.FIXABLE_ERROR_TYPES) if not isinstance(saved, list)
@@ -137,10 +137,11 @@ def _unchanged_since_check(path: str) -> bool:
 
 
 def rename_sheet(path: str, old: str, new: str) -> None:
-    """工作表被人改了名（复检时按 Excel 代码名认出来）：审核卡片、行高记录、忽略规则、标色记录都换成新表名。
-    卡片和行高记录的编号由表名算出，一起换成新编号。调用方持有 STATE_LOCK。"""
+    """工作表改名时迁移审核卡片、修改记录和未完成的写入日志。调用方持有 STATE_LOCK。"""
+    _upgrade_column_records()
     data = _data()
     moved: dict[str, str] = {}
+    moved_rows: dict[str, str] = {}
     for cid, card in list(data["cards"].items()):
         if card["wb_path"] == path and card["sheet_name"] == old:
             card["sheet_name"] = new
@@ -150,9 +151,17 @@ def rename_sheet(path: str, old: str, new: str) -> None:
     for rid, row in list(data["rows"].items()):
         if row["path"] == path and row["sheet"] == old:
             row["sheet"] = new
-            row["id"] = (_key(path, new, int(row["row"]), "break") if row.get("kind") == "break"
-                         else _key(path, new, int(row["row"])))
+            row["id"] = (_col_key(path, new, row["col"]) if row.get("kind") == "col" else
+                         _key(path, new, int(row["row"]), "break") if row.get("kind") == "break" else
+                         _key(path, new, int(row["row"])))
+            moved_rows[rid] = row["id"]
             data["rows"][row["id"]] = data["rows"].pop(rid)
+    for card in data["cards"].values():
+        if "col_ids" in card:
+            card["col_ids"] = [moved_rows.get(rid, rid) for rid in card["col_ids"]]
+    for record in data["rows"].values():
+        if "cards" in record:
+            record["cards"] = [moved.get(cid, cid) for cid in record["cards"]]
     for rule in data.get("ignored", []):
         if rule["cell"][0] == path and rule["cell"][1] == old:
             rule["cell"][1] = new
@@ -176,6 +185,19 @@ def rename_sheet(path: str, old: str, new: str) -> None:
     for field in ("card_ids", "commit_card_ids"):
         if isinstance(job.get("options", {}).get(field), list):
             job["options"][field] = [moved.get(cid, cid) for cid in job["options"][field]]
+    if "attempted_rows" in job:
+        job["attempted_rows"] = [moved_rows.get(rid, rid) for rid in job["attempted_rows"]]
+    for journal in [job.get("pending_adjustment"), *job.get("deferred_adjustments", {}).values()]:
+        if not journal or journal["path"] != path:
+            continue
+        journal["cards"] = [moved.get(cid, cid) for cid in journal["cards"]]
+        for row in journal["rows"]:
+            row["id"] = moved_rows.get(row["id"], row["id"])
+            if row["sheet"] == old:
+                row["sheet"] = new
+    refresh = job.get("options", {}).get("refresh_sheets", {})
+    if path in refresh:
+        refresh[path] = [new if name == old else name for name in refresh[path]]
 
 
 def _key(*parts: Any) -> str:
@@ -274,12 +296,118 @@ def _unchecked_fix_reason(card: dict, items: list[dict] | None = None, enabled: 
 
 
 def _col_rid(card: dict) -> str:
+    """旧版按单元格记录的列宽编号，仅用于迁移。"""
     return _key(card["wb_path"], card["sheet_name"], card.get("cell_addr", ""), "col")
 
 
-def _row_record(card: dict) -> dict | None:
+def _col_key(path: str, sheet: str, col: int) -> str:
+    return _key(path, sheet, int(col), "col")
+
+
+def _upgrade_column_records() -> None:
+    """把旧版单元格列宽记录拆成共享的单列记录，同时迁移未完成的写入日志。持有 STATE_LOCK。"""
+    data = _data()
+    legacy = [r for r in data["rows"].values() if r.get("kind") == "col" and "col" not in r]
+    if not legacy:
+        return
+    legacy_ids = {r["id"] for r in legacy}
+    records = {rid: copy.deepcopy(r) for rid, r in data["rows"].items() if rid not in legacy_ids}
+    job = wf.STATE.get("job") or {}
+    journals = [job.get("pending_adjustment"), *job.get("deferred_adjustments", {}).values()]
+    pending_fixes = {r["id"] for journal in journals if journal and journal["action"] == "fix"
+                     for r in journal["rows"]}
+    moved: dict[str, list[str]] = {}
+    links: dict[str, list[str]] = {}
+    for old in legacy:
+        cid = _key(old["path"], old["sheet"], old.get("cell_addr", ""))
+        card = data["cards"].get(cid) or {}
+        saved = old["saved"] and not (card.get("dismissed") and card.get("color") == "blue")
+        ids = moved[old["id"]] = []
+        for col, base in old["base_cols"].items():
+            rid = _col_key(old["path"], old["sheet"], int(col))
+            applied = old["applied_cols"][col]
+            previous = records.get(rid)
+            if previous and previous["saved"] and (saved or old["id"] in pending_fixes):
+                if abs(previous["applied"] - base) < COL_WIDTH_TOLERANCE:
+                    previous["applied"] = applied
+                elif abs(applied - previous["base"]) < COL_WIDTH_TOLERANCE:
+                    previous["base"] = base
+                else:
+                    raise ValueError("旧列宽记录存在不连续的修改，请先核对原文件；恢复日志已保留")
+                previous["cards"] = list(dict.fromkeys([*previous["cards"], cid]))
+            elif not previous or not previous["saved"]:
+                records[rid] = {"id": rid, "kind": "col", "path": old["path"], "sheet": old["sheet"],
+                                "row": old["row"], "col": int(col), "base": base, "applied": applied,
+                                "saved": saved, "cards": [cid], "wrap": []}
+            ids.append(rid)
+        links[cid] = ids
+    migrated = []
+    for journal in journals:
+        if not journal:
+            continue
+        rows = []
+        restored = set()
+        for row in journal["rows"]:
+            if row["id"] not in moved:
+                rows.append(row)
+                continue
+            for rid in moved[row["id"]]:
+                col = str(records[rid]["col"])
+                if journal["action"] == "restore":
+                    if rid in restored:
+                        continue
+                    restored.add(rid)
+                    expected, target = records[rid]["applied"], records[rid]["base"]
+                else:
+                    expected, target = row["cols_expected"][col], row["cols_target"][col]
+                rows.append({**row, "id": rid, "expected": expected, "target": target,
+                             "cols_expected": {col: expected}, "cols_target": {col: target}})
+        migrated.append((journal, rows))
+    data["rows"] = records
+    for cid, ids in links.items():
+        if cid in data["cards"]:
+            data["cards"][cid]["col_ids"] = ids
+    for journal, rows in migrated:
+        journal["rows"] = rows
+    if "attempted_rows" in job:
+        job["attempted_rows"] = [new for rid in job["attempted_rows"] for new in moved.get(rid, [rid])]
+    wf._persist_state()
+
+
+def _column_records(card: dict) -> list[dict]:
     rows = _data()["rows"]
-    return rows.get(_col_rid(card)) or rows.get(_rid(card))
+    ids = card.get("col_ids") or [_col_rid(card)]
+    return [rows[rid] for rid in ids if rid in rows and rows[rid].get("kind") == "col"
+            and ("col" not in rows[rid] or card["id"] in rows[rid].get("cards", []))]
+
+
+def _column_card(card: dict) -> bool:
+    types = card.get("error_types")
+    columns = _column_records(card)
+    return (any(r["saved"] for r in columns) or autofix.ERROR_TYPE_HASH_OVERFLOW in (types or [])
+            or bool(columns and not types))
+
+
+def _saved_column_ids(card: dict) -> list[str]:
+    ids = []
+    for record in _column_records(card):
+        if not record["saved"]:
+            continue
+        if "col" in record:
+            ids.append(record["id"])
+        else:
+            ids.extend(_col_key(record["path"], record["sheet"], int(col)) for col in record["applied_cols"])
+    return ids
+
+
+def _row_record(card: dict) -> dict | None:
+    columns = _column_records(card) if _column_card(card) else []
+    if columns:
+        return {"kind": "col", "base": sum(r["base"] for r in columns),
+                "applied": sum(r["applied"] for r in columns), "saved": any(r["saved"] for r in columns),
+                "applied_cols": {str(r["col"]): r["applied"] for r in columns if "col" in r}
+                or columns[0].get("applied_cols", {})}
+    return None if _column_card(card) else _data()["rows"].get(_rid(card))
 
 
 def _latest_shot(card: dict, items: list[dict]) -> str:
@@ -463,7 +591,8 @@ def snapshot() -> dict:
                 result["page_break"] = {"row": row["row"], "saved": row["saved"], "applied": row["applied"] >= .5}
             elif row is not None and row.get("kind") == "col":
                 result["col_width"] = {"base": row["base"], "applied": row["applied"], "saved": row["saved"],
-                                       "cols": list((row.get("applied_cols") or {}).keys())}
+                                       "cols": list((row.get("applied_cols") or {}).keys()),
+                                       "ids": _saved_column_ids(card)}
             elif row is not None:
                 result["row_height"] = {"base": row["base"], "applied": row["applied"], "saved": row["saved"],
                                         "wrap": card.get("cell_addr") in row.get("wrap", [])}
@@ -604,10 +733,23 @@ def _cols_match(book: Any, row: dict, field: str) -> bool:
     )
 
 
+def _value_matches(book: Any, value: float, row: dict, field: str) -> bool:
+    if row.get("kind") == "col":
+        return _cols_match(book, row, "cols_" + field)
+    return abs(value - row[field]) < ROW_HEIGHT_TOLERANCE
+
+
+def _adjustment_where(row: dict) -> str:
+    if row.get("kind") == "col":
+        cols = row.get("cols_target") or row.get("cols_expected") or {str(row["col"]): None}
+        return f"{row['sheet']} 第 {'、'.join(cols)} 列"
+    return f"{row['sheet']} 第 {row['row']} 行"
+
+
 def _write_rows(excel: Any, journal: dict) -> None:
-    """先核对所有行，再写；续跑时目标行高已保存则只补数据库提交。"""
+    """先核对所有修改，再写；续跑时目标值已保存则只补数据库提交。"""
     path = journal["path"]
-    where = f"{Path(path).name}（" + "、".join(f"{r['sheet']} 第 {r['row']} 行" for r in journal["rows"]) + "）"
+    where = f"{Path(path).name}（" + "、".join(map(_adjustment_where, journal["rows"])) + "）"
     _check_file(path)
     book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
     try:
@@ -615,20 +757,21 @@ def _write_rows(excel: Any, journal: dict) -> None:
             raise ValueError(f"{where} 文件以只读方式打开，未写入")
         actual = [_row_value(book, r) for r in journal["rows"]]
         for value, r in zip(actual, journal["rows"]):
-            debug_log.event("✍️ 写入行", 动作=journal.get("action"), 位置=f"{r['sheet']} 第 {r['row']} 行",
+            debug_log.event("✍️ 写入行", 动作=journal.get("action"), 位置=_adjustment_where(r),
                             类型=r.get("kind") or "行高", 现在=value, 预期原值=r["expected"], 目标=r["target"],
                             换行=r.get("wrap") or "-")
         # 自动换行和行高一起保存；续跑时两样都已到位才算写过
         wraps = [(r["sheet"], addr, on) for r in journal["rows"] for addr, on in (r.get("wrap") or {}).items()]
-        at_target = (all(abs(h - r["target"]) < ROW_HEIGHT_TOLERANCE and _cols_match(book, r, "cols_target")
+        at_target = (all(_value_matches(book, h, r, "target")
                          for h, r in zip(actual, journal["rows"]))
                      and all(bool(book.Sheets(sh).Range(addr).MergeArea.WrapText) == on for sh, addr, on in wraps))
         if wf._file_version(Path(path)) != journal["version"] and not at_target:
             raise ValueError(f"{where} 文件在准备后被修改，已停止写入；核对后可继续任务，或点「放弃这次写入」")
         if not at_target:
-            if any(abs(h - r["expected"]) >= ROW_HEIGHT_TOLERANCE or not _cols_match(book, r, "cols_expected")
-                   for h, r in zip(actual, journal["rows"])):
-                raise ValueError(f"{where} 行高已被其他操作修改，未覆盖人工修改；可点「放弃这次写入」转人工处理")
+            changed = [r for h, r in zip(actual, journal["rows"]) if not _value_matches(book, h, r, "expected")]
+            if changed:
+                kind = "列宽" if changed[0].get("kind") == "col" else "分页" if changed[0].get("kind") == "break" else "行高"
+                raise ValueError(f"{where} {kind}已被其他操作修改，未覆盖人工修改；可点「放弃这次写入」转人工处理")
             for sheet, addr, on in wraps:
                 book.Sheets(sheet).Range(addr).MergeArea.WrapText = on
             for row in journal["rows"]:
@@ -661,6 +804,8 @@ def _wrapped(pending: dict, card: dict) -> list[str]:
 
 
 def _finish_pending(excel: Any) -> None:
+    with wf.STATE_LOCK:
+        _upgrade_column_records()
     job = wf.STATE["job"]
     pending = job.get("pending_adjustment")
     if not pending:
@@ -775,8 +920,9 @@ def abandon_pending() -> None:
             card = data["cards"].get(cid)
             if card is None:
                 continue
+            target = "相关列的列宽" if any(r.get("kind") == "col" for r in pending["rows"]) else "这一行的行高"
             card.update(color="yellow", verified=False, manual=True, finalized=True, dismissed=False, waiting=False,
-                        message="已放弃未完成的自动写入，请在 Excel 中核对这一行的行高，保存后复检")
+                        message=f"已放弃未完成的自动写入，请在 Excel 中核对{target}，保存后复检")
             for item in _items_at(card):
                 item.update(status="manual_review", batch_managed=True, triage_keep=False,
                             review_reason=card["message"])
@@ -857,9 +1003,13 @@ def _refresh(
                                 message="最新导出仍有问题" + ("，已保留你的标记" if keep else "，需重新处理"))
             elif existing and not existing.get("dismissed") and not existing.get("manual") and not existing.get("marked"):
                 row = _row_record(existing)
-                if row and row["saved"] and abs(row["applied"] - row["base"]) >= ROW_HEIGHT_TOLERANCE:
+                changed = (any(abs(r["applied"] - r["base"]) >= COL_WIDTH_TOLERANCE
+                               for r in _column_records(existing)) if row and row.get("kind") == "col" else
+                           bool(row and abs(row["applied"] - row["base"]) >= ROW_HEIGHT_TOLERANCE))
+                if row and row["saved"] and changed:
                     existing.update(color="blue", verified=True, after_kind="fixed", waiting=False,
-                                    message=("已插入分页" if _is_break(existing) else "已加高")
+                                    message=("已插入分页" if _is_break(existing) else
+                                             "已加宽列" if row.get("kind") == "col" else "已加高")
                                     + "并保存，最新导出已通过检查，等待审核")
                     after = next(((it.get("fix_images") or {}).get("after") for it in group
                                   if (it.get("fix_images") or {}).get("after")), None)
@@ -872,6 +1022,8 @@ def _refresh(
                     existing.update(color="blue", verified=True, after_kind="rechecked", waiting=False,
                                     message="未插入分页：其他行调整后重新导出，已不再被分页切开，等待审核"
                                     if _is_break(existing) else
+                                    "本格未单独调整列宽：其他单元格调整后重新导出，已完整显示，等待审核"
+                                    if _column_card(existing) else
                                     "本行行高未修改：其他行调整后重新导出，这一格已完整显示，等待审核")
         wf._persist_state()
     return missing
@@ -1005,9 +1157,8 @@ def _cell_columns(sheet: Any, addr: str) -> tuple[int, list[int]]:
     try:
         area = sheet.Range(addr).MergeArea
         c0, cnt = int(area.Column), int(area.Columns.Count)
-        if not isinstance(c0, bool) and not isinstance(cnt, bool) and isinstance(c0, int) and isinstance(cnt, int):
-            if c0 >= 1 and cnt >= 1:
-                first_col, col_count = c0, cnt
+        if c0 >= 1 and cnt >= 1:
+            first_col, col_count = c0, cnt
     except Exception:
         pass
     return row, list(range(first_col, first_col + col_count))
@@ -1027,7 +1178,7 @@ def _prepare_column(session: Any, path: str, items: list[dict], timing: dict[str
             base_cols[str(c)] = round(float(w), 2)
     except Exception:
         raise ValueError(autofix.COLUMN_ONLY_REASON) from None
-    autofix.validate_print_targets(sheet, items)
+    autofix.validate_print_targets(sheet, items, action="未调整列宽")
     step = max(0.5, round(STEP_COL_WIDTH / len(cols), 2))
     margin = max(0.3, round(1.0 / len(cols), 2))
     pdf = session.temp_pdf()
@@ -1037,7 +1188,7 @@ def _prepare_column(session: Any, path: str, items: list[dict], timing: dict[str
             for c in cols:
                 sheet.Columns(c).ColumnWidth = target_cols[str(c)]
             try:
-                disp = str(sheet.Cells(row, cols[0]).Text or "").strip()
+                disp = str(sheet.Range(item["cell_addr"]).MergeArea.Cells(1, 1).Text or "").strip()
             except Exception:
                 disp = ""
             if len(disp) >= 3 and set(disp) == {"#"} and attempt < autofix.MAX_ATTEMPTS:
@@ -1074,26 +1225,40 @@ def _repair_column(
     chosen = _prepare_column(session, path, items, timing)
     timing["prepare"] = timing.get("prepare", 0.0) + time.perf_counter() - started
     item = items[0]
-    col_rid = _col_rid(card)
-    base_sum = round(sum(chosen["base_cols"].values()), 2)
-    target_sum = round(sum(chosen["target_cols"].values()), 2)
     with wf.STATE_LOCK:
+        _upgrade_column_records()
+        for col, base in chosen["base_cols"].items():
+            record = _data()["rows"].get(_col_key(path, item["sheet_name"], int(col)))
+            if record and record["saved"] and abs(record["applied"] - base) >= COL_WIDTH_TOLERANCE:
+                raise ValueError("列宽已被其他操作修改，未覆盖人工修改，请核对后复检")
+            if record and record["saved"] and any(
+                (peer.get("marked") or peer.get("manual")) and not peer.get("dismissed")
+                for cid in record["cards"] if (peer := _data()["cards"].get(cid))
+            ):
+                raise ValueError("该列已有人工审核意见，未再次调整列宽，请先提交审核")
         fix_images.forget(card, "after")
         _save_shot(card, "after", chosen["after"])
-        _data()["rows"][col_rid] = {
-            "id": col_rid, "kind": "col", "path": path, "sheet": item["sheet_name"],
-            "row": int(item["excel_row"]), "cell_addr": card.get("cell_addr", ""),
-            "base": base_sum, "applied": target_sum,
-            "base_cols": chosen["base_cols"], "applied_cols": chosen["target_cols"],
-            "saved": False, "wrap": [],
-        }
+        rows = []
+        col_ids = []
+        for col, base in chosen["base_cols"].items():
+            rid = _col_key(path, item["sheet_name"], int(col))
+            record = _data()["rows"].get(rid)
+            if not record or not record["saved"]:
+                record = _data()["rows"][rid] = {
+                    "id": rid, "kind": "col", "path": path, "sheet": item["sheet_name"],
+                    "row": int(item["excel_row"]), "col": int(col), "base": base,
+                    "applied": base, "saved": False, "cards": [], "wrap": [],
+                }
+            if card["id"] not in record["cards"]:
+                record["cards"].append(card["id"])
+            col_ids.append(rid)
+            rows.append({"id": rid, "kind": "col", "sheet": item["sheet_name"], "row": int(item["excel_row"]),
+                         "expected": base, "target": chosen["target_cols"][col],
+                         "cols_expected": {col: base}, "cols_target": {col: chosen["target_cols"][col]}})
+        card["col_ids"] = col_ids
         wf.STATE["job"]["pending_adjustment"] = {
             "action": "fix", "path": path, "version": version, "cards": [card["id"]],
-            "rows": [{
-                "id": col_rid, "kind": "col", "sheet": item["sheet_name"], "row": int(item["excel_row"]),
-                "expected": base_sum, "target": target_sum,
-                "cols_expected": chosen["base_cols"], "cols_target": chosen["target_cols"],
-            }],
+            "rows": rows,
         }
         wf._persist_state()
     started = time.perf_counter()
@@ -1191,12 +1356,17 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
             pending = [it for it in wf.STATE["items"].values() if it["wb_path"] == path
                        and it["status"] not in wf.RESOLVED_STATUSES]
             manual_rows = {_rid(c) for c in _data()["cards"].values()
-                           if c["wb_path"] == path and (c.get("manual") or c.get("marked")) and not c.get("dismissed")}
+                           if c["wb_path"] == path and (c.get("manual") or c.get("marked"))
+                           and not c.get("dismissed") and not _column_card(c)}
+            manual_cells = {_cell(c) for c in _data()["cards"].values()
+                            if c["wb_path"] == path and (c.get("manual") or c.get("marked"))
+                            and not c.get("dismissed") and _column_card(c)}
             manual_rows.update(r["id"] for r in _data()["rows"].values()
                                if r["path"] == path and r["saved"]
                                and any(not c.get("dismissed") and c["wb_path"] == path and _rid(c) == r["id"]
                                        for c in _data()["cards"].values()))
-            candidates = [it for it in pending if _rid(it) not in attempted and _rid(it) not in manual_rows]
+            candidates = [it for it in pending if _rid(it) not in attempted and _rid(it) not in manual_rows
+                          and _cell(it) not in manual_cells]
             sheets = sorted(copy_checked) if not candidates else []
             copy_checked.difference_update(sheets)
         if sheets:
@@ -1218,7 +1388,7 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
             # 从上往下处理；同一行先插分页（合并区域整块挪到下一页后，里面的格子常常就不缺字了）
             first = min(candidates, key=lambda it: (it["sheet_name"], int(it["excel_row"]), not _is_break(it), it["seq"]))
             rid = _rid(first)
-            items = [it for it in pending if _rid(it) == rid]
+            items = [it for it in pending if _rid(it) == rid and _cell(it) not in manual_cells]
             cards = [_card_for(group) for group in _group_cells(items)]
             wf._persist_state()
         _check_file(path)
@@ -1278,6 +1448,8 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                         workbook = _repair_column(excel, session, path, group, card, version, timing)
                         version = wf._file_version(Path(path))
                     except ValueError as err:
+                        if job.get("pending_adjustment"):
+                            raise
                         with wf.STATE_LOCK:
                             card.update(color="yellow", verified=False, manual=True, waiting=False, message=str(err))
                             wf.log_msg(f"⚠️ {first['wb_name']} / {first['sheet_name']} 行{first['excel_row']}：{err}")
@@ -1418,23 +1590,52 @@ def _linked_row(rid: str, peers: list[dict]) -> bool:
     return bool((row and row["saved"]) or any(_adopting(c) for c in peers))
 
 
+def _review_groups(cards: list[dict]) -> list[tuple[list[dict], str]]:
+    """审核联动范围：行高按行、列宽按共享列；重叠合并区域通过共同的卡片连成一组。"""
+    parents = {c["id"]: c["id"] for c in cards}
+
+    def root(cid: str) -> str:
+        while parents[cid] != cid:
+            parents[cid] = parents[parents[cid]]
+            cid = parents[cid]
+        return cid
+
+    resources: dict[tuple[str, str], list[dict]] = {}
+    for card in cards:
+        if _column_card(card):
+            for row in _column_records(card):
+                if row["saved"]:
+                    resources.setdefault(("col", row["id"]), []).append(card)
+        else:
+            resources.setdefault(("row", _rid(card)), []).append(card)
+    for peers in resources.values():
+        first = root(peers[0]["id"])
+        for card in peers[1:]:
+            parents[root(card["id"])] = first
+    groups: dict[str, list[dict]] = {}
+    scopes: dict[str, str] = {}
+    for card in cards:
+        groups.setdefault(root(card["id"]), []).append(card)
+    for (kind, rid), peers in resources.items():
+        if kind == "col" or _linked_row(rid, peers):
+            scopes[root(peers[0]["id"])] = "列宽" if kind == "col" else "行高"
+    return [(peers, scopes.get(cid, "")) for cid, peers in groups.items()]
+
+
 def commit_selection(ids: list[str], color: str | None = None) -> tuple[list[str], list[str]]:
-    """要提交的卡：按行补齐同行的卡（行高整行共用）。还没轮到自动处理的卡不提交：
-    提交会把它们转成人工项，之后再跑全自动也不会修了。
-    color 是筛选只提交一种颜色：只收这种颜色的卡；同行混着别的颜色、又共用行高修改的整行跳过，
-    不替用户把别的颜色转黄。返回 (提交的卡, 因同行混色跳过的卡)。"""
+    """按共享行高 / 列宽补齐提交范围；按颜色提交时跳过有不同意见的联动组。"""
+    _upgrade_column_records()
     data = _data()
-    rows: dict[str, list[dict]] = {}
-    selected = {_rid(data["cards"][cid]) for cid in ids if not _waiting(data["cards"][cid])}
-    for card in data["cards"].values():
-        if not card.get("dismissed") and not _waiting(card) and _rid(card) in selected:
-            rows.setdefault(_rid(card), []).append(card)
+    selected = set(ids)
+    ready = [c for c in data["cards"].values() if not c.get("dismissed") and not _waiting(c)]
     chosen: list[str] = []
     skipped: list[str] = []
-    for rid, peers in rows.items():
+    for peers, scope in _review_groups(ready):
+        if not any(c["id"] in selected for c in peers):
+            continue
         if not color:
             chosen.extend(c["id"] for c in peers)
-        elif _linked_row(rid, peers) and any(c["color"] != color for c in peers):
+        elif scope and any(c["color"] != color for c in peers):
             skipped.extend(c["id"] for c in peers if c["color"] == color)
         else:
             chosen.extend(c["id"] for c in peers if c["color"] == color)
@@ -1448,22 +1649,23 @@ def _commit_review(excel: Any) -> None:
         job["options"]["commit_card_ids"], skipped = commit_selection(job["options"]["card_ids"],
                                                                       job["options"].get("color"))
         if skipped:
-            wf.log_msg(f"⏭ {len(skipped)} 张{COLOR_NAMES[job['options']['color']]}卡和其他颜色的卡在同一行，"
-                   "整行行高共用，这次不提交")
+            wf.log_msg(f"⏭ {len(skipped)} 张{COLOR_NAMES[job['options']['color']]}卡与其他颜色共用行高或列宽，这次不提交")
     # 提交计划固定下来；即使保存还原后、复检前退出，已收起的绿/蓝卡也仍会完成该文件的复检。
     job["options"]["card_ids"] = list(job["options"]["commit_card_ids"])
     cards = [data["cards"][cid] for cid in job["options"]["commit_card_ids"]]
     by_row: dict[str, list[dict]] = {}
     for card in cards:
-        by_row.setdefault(_rid(card), []).append(card)
+        if not _column_card(card):
+            by_row.setdefault(_rid(card), []).append(card)
     # 只在仍有自动修改需要还原时检查同行冲突；已经忽略的格子不因后来复检重新入队。
     # 人工认可的加高也改整行行高：同行颜色不一致同样整行转黄
-    for rid, peers in by_row.items():
-        row = data["rows"].get(rid)
-        if (_linked_row(rid, peers) and len({c["color"] for c in peers}) > 1
+    for peers, scope in _review_groups(cards):
+        if (scope and len({c["color"] for c in peers}) > 1
                 and peers[0]["wb_path"] not in job.get("deferred_adjustments", {})):
             for card in peers:
-                card.update(color="yellow", conflict=True, message="同行存在不同处理意见，整行还原后交给人工")
+                card.update(color="yellow", conflict=True, column_conflict=scope == "列宽",
+                            message=("同列存在不同处理意见，相关列还原后交给人工" if scope == "列宽" else
+                                     "同行存在不同处理意见，整行还原后交给人工"))
     wf._persist_state()
     debug_log.event("📨 提交审核", 卡片=len(cards), **{color: sum(c["color"] == color for c in cards)
                                                       for color in ("blue", "green", "yellow")})
@@ -1473,17 +1675,17 @@ def _commit_review(excel: Any) -> None:
         debug_log.begin(f"提交 {Path(path).name}")
         rows = []
         reverting = []
+        columns = {r["id"]: r for c in cards for r in _column_records(c) if r["path"] == path}
+        for rid, record in columns.items():
+            peers = [c for c in cards if rid in c.get("col_ids", [])]
+            if not record["saved"] or all(c["color"] == "blue" for c in peers):
+                continue
+            col = str(record["col"])
+            rows.append({"id": rid, "kind": "col", "sheet": record["sheet"], "row": record["row"],
+                         "expected": record["applied"], "target": record["base"],
+                         "cols_expected": {col: record["applied"]}, "cols_target": {col: record["base"]}})
+            reverting.extend(c["id"] for c in peers)
         for rid, peers in by_row.items():
-            for card in peers:
-                col_row = data["rows"].get(_col_rid(card))
-                if col_row and col_row["path"] == path and col_row["saved"] and card["color"] != "blue":
-                    rows.append({
-                        "id": col_row["id"], "kind": "col", "sheet": col_row["sheet"], "row": col_row["row"],
-                        "expected": col_row["applied"], "target": col_row["base"],
-                        "cols_expected": col_row["applied_cols"], "cols_target": col_row["base_cols"],
-                        "wrap": {},
-                    })
-                    reverting.append(card["id"])
             row = data["rows"].get(rid)
             if not row or row["path"] != path or not row["saved"] or all(c["color"] == "blue" for c in peers):
                 continue
@@ -1495,7 +1697,8 @@ def _commit_review(excel: Any) -> None:
             if rows:
                 job["options"].setdefault("refresh_sheets", {})[path] = sorted({r["sheet"] for r in rows})
                 job["pending_adjustment"] = {"action": "restore", "path": path,
-                                             "version": wf._file_version(Path(path)), "rows": rows, "cards": reverting}
+                                             "version": wf._file_version(Path(path)), "rows": rows,
+                                             "cards": list(dict.fromkeys(reverting))}
                 wf._persist_state()
                 _finish_pending(excel)
             _adopt_rows(excel, path, by_row)
@@ -1523,7 +1726,9 @@ def _commit_review(excel: Any) -> None:
                 card["dismissed"] = card["color"] != "yellow"
                 card["manual"] = card["color"] == "yellow"
                 if card["manual"]:
-                    card.update(verified=False, message=("同行存在不同处理意见，整行已还原；" if card.get("conflict") else "")
+                    conflict = ("同列存在不同处理意见，相关列已还原；" if card.get("column_conflict") else
+                                "同行存在不同处理意见，整行已还原；") if card.get("conflict") else ""
+                    card.update(verified=False, message=conflict
                                 + "自动修改已还原，请在 Excel 中修改并保存后复检")
                 for item in _items_at(card):
                     item.update(batch_managed=True, triage_keep=False)
@@ -1561,6 +1766,11 @@ def _commit_review(excel: Any) -> None:
                 row = data["rows"].get(rid)
                 if row and row["path"] == path and all(c.get("dismissed") and c["color"] == "blue" for c in peers):
                     row["saved"] = False  # 已正式接受的历史修改不再属于可还原的待审核修改。
+            for rid, record in columns.items():
+                peers = [data["cards"][cid] for cid in record["cards"] if cid in data["cards"]
+                         and rid in data["cards"][cid].get("col_ids", [])]
+                if peers and all(c.get("dismissed") and c["color"] == "blue" for c in peers):
+                    record["saved"] = False
             job["completed"].append(path)
             wf._persist_state()
 
@@ -2072,9 +2282,9 @@ def _auto_skip_reason(card: dict, items: list[dict] | None = None, enabled: set[
     if card.get("message") == TOUCHED_MESSAGE:
         return "这一行的行高被你改过，自动不再改这一行"
     if not _can_highlight(card):
-        return "单元格位置没确认，不能自动加高"
+        return "单元格位置没确认，不能自动调整"
     if not _is_break(card) and items and autofix.review_only_reason(items):
-        return "PDF 里找不到这段文字，不能确认要不要加高"
+        return "PDF 里找不到这段文字，不能确认要不要自动调整"
     if unchecked := _unchecked_fix_reason(card, items, enabled):
         return unchecked
     if not card.get("handed_over") and _auto_retry_blocked(card):

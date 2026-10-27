@@ -43,6 +43,7 @@ class ModeSwitchTests(unittest.TestCase):
         patch.object(self.wf, "_sync_problem_counts").start()
         self.sync = patch.object(batch, "_sync_highlights").start()
         self.addCleanup(patch.stopall)
+        self.addCleanup(reporter.flush_execution_report)
 
     def add(self, path, address, row, *, color="yellow", waiting=True, status="pending", height=18.0, **card):
         iid = f"{Path(path).stem}{address}"

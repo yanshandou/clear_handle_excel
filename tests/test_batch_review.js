@@ -295,8 +295,42 @@ test('a single-color commit leaves rows mixed with other colors for later', asyn
     appConfirm = async text => { globalThis.asked = text; return true; }; selectedFilter = 'yellow';`);
   await p.elements.get('commitBtn').listeners.click();
   await new Promise(resolve => setImmediate(resolve));
-  assert.match(p.run('globalThis.asked'), /另有 1 张黄卡和别的颜色的卡在同一行/);
+  assert.match(p.run('globalThis.asked'), /另有 1 张黄卡和别的颜色的卡共用行高或列宽/);
   assert.equal(JSON.stringify(p.requests.at(-1).payload.card_ids), '["y2","y3"]');
+});
+
+test('a single-color commit skips columns shared across different rows', () => {
+  const p = page();
+  p.run(`batchState.cards = [
+    {id:'g', color:'green', wb_path:'b', sheet_name:'S', excel_row:5,
+      col_width:{saved:true, ids:['B','C','D']}},
+    {id:'b', color:'blue', wb_path:'b', sheet_name:'S', excel_row:9,
+      col_width:{saved:true, ids:['C','D','E']}},
+    {id:'free', color:'green', wb_path:'b', sheet_name:'S', excel_row:10,
+      col_width:{saved:true, ids:['F']}}];`);
+  assert.equal(p.run(`commitPlan('green').cards.map(c => c.id).join()`), 'free');
+  assert.equal(p.run(`commitPlan('green').skipped.map(c => c.id).join()`), 'g');
+  assert.equal(p.run(`commitPlan('all').cards.length`), 3);
+});
+
+test('column review follows transitive overlaps of merged areas', () => {
+  const p = page();
+  p.run(`batchState.cards = [
+    {id:'a', color:'green', col_width:{saved:true, ids:['B','C']}},
+    {id:'b', color:'green', col_width:{saved:true, ids:['C','D']}},
+    {id:'c', color:'blue', col_width:{saved:true, ids:['D','E']}}];`);
+  assert.equal(p.run(`commitPlan('green').cards.length`), 0);
+  assert.equal(p.run(`commitPlan('green').skipped.map(c => c.id).join()`), 'a,b');
+});
+
+test('column and row height reviews on the same row are independent', () => {
+  const p = page();
+  p.run(`batchState.cards = [
+    {id:'col', color:'blue', wb_path:'b', sheet_name:'S', excel_row:5,
+      error_types:['hash_overflow'], col_width:{saved:true, ids:['C']}},
+    {id:'row', color:'green', wb_path:'b', sheet_name:'S', excel_row:5, row_height:{saved:true}}];`);
+  assert.equal(p.run(`commitPlan('green').cards.map(c => c.id).join()`), 'row');
+  assert.equal(p.run(`commitPlan('green').skipped.length`), 0);
 });
 
 test('cards are grouped by file in processing order, and a file box rechecks that whole file', async () => {

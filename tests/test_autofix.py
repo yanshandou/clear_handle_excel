@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from core import fix_images, storage
+from core import common, fix_images, storage
 
 
 class FakeRow:
@@ -460,11 +460,29 @@ class AutofixTests(unittest.TestCase):
         self.autofix.choose(gid, 3)
         lock = self.wb_path.with_name("~$book.xlsx")
         lock.write_bytes(b"")
-        self.assertFalse(self.autofix._apply(self.session, str(self.wb_path), [gid]))
+        # 空锁文件可能是残留；同时模拟工作簿确实被 Excel 占用。
+        with patch.object(common, "_held_open", return_value=True) as held_open, \
+                patch.object(self.session, "app") as app:
+            self.assertFalse(self.autofix._apply(self.session, str(self.wb_path), [gid]))
+        held_open.assert_called_once_with(self.wb_path)
+        app.assert_not_called()
+        self.assertTrue(lock.exists())
         self.assertEqual(self.real_heights, {5: 15.0})
         self.assertIn("关闭后自动写入", self.group()["message"])
         lock.unlink()
         self.assertTrue(self.autofix._apply(self.session, str(self.wb_path), [gid]))
+
+    def test_stale_lock_does_not_block_writing(self):
+        gid = self.group()["id"]
+        self.autofix._preview(self.session, gid)
+        self.autofix.choose(gid, 3)
+        lock = self.wb_path.with_name("~$book.xlsx")
+        lock.write_bytes(b"")
+        with patch.object(common, "_held_open", return_value=False):
+            self.assertTrue(self.autofix._apply(self.session, str(self.wb_path), [gid]))
+        self.assertFalse(lock.exists())
+        self.assertEqual(self.real_heights, {5: 24.0})
+        self.assertTrue(self.books[-1].saved)
 
     def test_background_task_or_manual_pauses_preview(self):
         gid = self.group()["id"]

@@ -177,28 +177,28 @@ def review_only_reason(items: list[dict[str, Any]]) -> str:
     return ""
 
 
-COLUMN_ONLY_REASON = "列宽不够，数字显示成 ###；加高行高修不好，未调整行高，请人工加宽列或标绿忽略"
+COLUMN_ONLY_REASON = "自动加宽未通过，未调整列宽，请人工核对数字格式、日期或列宽，也可标绿忽略"
 
 
 def column_width_only(item: dict[str, Any]) -> bool:
-    """### 是列宽问题，加高怎么试都不会通过，不用白白导出八九次"""
+    """### 单独走列宽试算，不用行高试算。"""
     return item_error_type(item) == ERROR_TYPE_HASH_OVERFLOW
 
 
-def validate_print_targets(sheet: Any, items: list[dict[str, Any]]) -> None:
-    """在副本上改行高之前重新核对隐藏属性，不能用加高让隐藏内容重新出现。"""
+def validate_print_targets(sheet: Any, items: list[dict[str, Any]], *, action: str = "未调整行高") -> None:
+    """在副本上调整之前重新核对隐藏属性，不能让作者隐藏的内容重新出现。"""
     probe = CellProbe(sheet)
     for item in items:
         match = re.fullmatch(r"([A-Za-z]+)([1-9]\d*)", item.get("cell_addr") or "")
         if match is None:
-            raise ValueError("单元格地址无法确认，未调整行高，请人工核对")
+            raise ValueError(f"单元格地址无法确认，{action}，请人工核对")
         col = 0
         for char in match[1].upper():
             col = col * 26 + ord(char) - ord('A') + 1
         printable = probe.printed(int(match[2]), col)
         if printable is not True:
             reason = "单元格已隐藏或不在打印区域内" if printable is False else "无法读取单元格的隐藏属性或打印区域"
-            raise ValueError(f"{reason}，未调整行高，请人工核对")
+            raise ValueError(f"{reason}，{action}，请人工核对")
 
 
 def _attempt(height: float, ok: bool, image: str) -> dict[str, Any]:

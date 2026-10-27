@@ -404,7 +404,8 @@ def prune(now: datetime | None = None) -> None:
             _fh.close()
             _fh = None
         temp = LOG_PATH.with_name("log.txt.tmp")
-        temp.write_text("".join(lines[keep_from:]), encoding="utf-8")
+        # read_bytes 保留了原来的 CRLF；Windows 写入时不能再把 LF 转成 CRLF，否则会多出空行。
+        temp.write_text("".join(lines[keep_from:]), encoding="utf-8", newline="")
         temp.replace(LOG_PATH)
 
 

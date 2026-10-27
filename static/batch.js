@@ -412,7 +412,7 @@ function handlingText(card) {
   if (brk?.saved && brk.applied) return `处理：在第 ${brk.row} 行上方插入分页，整块移到下一页，已保存`;
   if (brk && !brk.applied && card.finalized) return '处理：已去掉插入的分页';
   const col = card.col_width;
-  if (col?.saved && Math.abs(col.applied - col.base) >= 0.05) return `处理：${card.cell_addr} 所在列宽 ${pt(col.base).replace('pt', '')} → ${pt(col.applied).replace('pt', '')}（+${pt(col.applied - col.base).replace('pt', '')}），已保存`;
+  if (col?.saved && Math.abs(col.applied - col.base) >= 0.05) return `处理：${card.cell_addr} ${col.cols?.length > 1 ? '涉及列宽合计' : '所在列宽'} ${pt(col.base).replace('pt', '')} → ${pt(col.applied).replace('pt', '')}（+${pt(col.applied - col.base).replace('pt', '')}），已保存`;
   if (col && !col.saved && Math.abs(col.applied - col.base) < 0.05 && card.finalized) return `处理：已还原为原列宽 ${pt(col.base).replace('pt', '')}`;
   if (card.kind === 'pagebreak' && card.after_kind === 'rechecked') return '处理：未插入分页（其他行调整后重新导出已不再被切开）';
   if (card.after_kind === 'handover') return '处理：转人工时自动还没处理到这一格，原文件未修改';
@@ -420,7 +420,9 @@ function handlingText(card) {
   if (card.after_kind === 'unchanged') return '处理：原样导出已完整显示，未修改行高';
   if (row?.saved && Math.abs(row.applied - row.base) >= 0.05) return `处理：${row.wrap ? `${card.cell_addr} 开启自动换行，` : ''}第 ${card.excel_row} 行行高 ${pt(row.base)} → ${pt(row.applied)}（+${pt(row.applied - row.base)}），已保存`;
   if (row && !row.saved && Math.abs(row.applied - row.base) < 0.05 && card.finalized) return `处理：已还原为原行高 ${pt(row.base)}${row.wrap ? '，并取消自动换行' : ''}`;
-  if (card.after_kind === 'rechecked') return '处理：本行行高未修改（其他行调整后重新导出已完整显示）';
+  if (card.after_kind === 'rechecked') return card.error_types?.includes('hash_overflow')
+    ? '处理：本格未单独调整列宽（其他单元格调整后重新导出已完整显示）'
+    : '处理：本行行高未修改（其他行调整后重新导出已完整显示）';
   return '';
 }
 
@@ -1091,7 +1093,7 @@ const KEEPS_PAUSED_SCAN = new Set(['/api/batch/commit', '/api/batch/recheck', '/
 const waitingCard = card => card.waiting ?? card.message === '等待自动处理';
 const COLOR_NAMES = { blue: '蓝', green: '绿', yellow: '黄' };
 const rowKey = card => [card.wb_path, card.sheet_name, card.excel_row, card.kind === 'pagebreak'].join('\0');
-// 和后端 commit_selection 一致：筛选某种颜色时只交这种颜色；同一行混着别的颜色、又共用行高修改的整行先不交。
+// 和后端 commit_selection 一致：共用行高或列宽的卡一起审核，按颜色提交时跳过混色组。
 // 后台在跑时排队提交：后台还要处理的文件里的卡（held）这次不交
 function commitPlan(color = selectedFilter) {
   const unsettled = batchState.cards.filter(c => !waitingCard(c));
@@ -1099,12 +1101,34 @@ function commitPlan(color = selectedFilter) {
     ? unsettled.filter(c => openBlocked(c) && (color === 'all' || c.color === color)) : [];
   const ready = unsettled.filter(c => !held.includes(c));
   if (color === 'all') return { cards: ready, skipped: [], held };
-  const rows = new Map();
-  for (const card of ready) rows.set(rowKey(card), [...(rows.get(rowKey(card)) || []), card]);
+  const parents = new Map(ready.map(c => [c.id, c.id]));
+  const root = id => {
+    while (parents.get(id) !== id) {
+      parents.set(id, parents.get(parents.get(id)));
+      id = parents.get(id);
+    }
+    return id;
+  };
+  const resources = new Map();
+  for (const card of ready) {
+    const keys = card.col_width || card.error_types?.includes('hash_overflow')
+      ? (card.col_width?.ids || []).map(id => `col:${id}`) : [`row:${rowKey(card)}`];
+    for (const key of keys) {
+      if (resources.has(key)) parents.set(root(card.id), root(resources.get(key)));
+      else resources.set(key, card.id);
+    }
+  }
+  const groups = new Map();
+  for (const card of ready) {
+    const key = root(card.id);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(card);
+  }
   const cards = [], skipped = [];
-  for (const peers of rows.values()) {
+  for (const peers of groups.values()) {
     const own = peers.filter(c => c.color === color);
-    const linked = peers.some(c => c.row_height?.saved || c.page_break?.saved || (c.color === 'blue' && c.adoptable));
+    const linked = peers.some(c => c.col_width?.ids?.length || c.row_height?.saved
+      || c.page_break?.saved || (c.color === 'blue' && c.adoptable));
     (linked && own.length < peers.length ? skipped : cards).push(...own);
   }
   return { cards, skipped, held };
@@ -1220,7 +1244,7 @@ $('commitBtn').addEventListener('click', async () => {
   const waiting = batchState.cards.filter(c => waitingCard(c) && (!only || c.color === color)).length;
   const { cards, skipped, held } = commitPlan(color);
   const queue = batchState.busy;
-  const skippedText = skipped.length ? `\n\n另有 ${skipped.length} 张${only}卡和别的颜色的卡在同一行：一行的行高是整行共用的，只提交${only}卡会连带改动同行的其他卡，这次先不提交。把同一行改成同一种颜色，或切到「全部」一起提交（同行颜色不一致时整行转黄）。` : '';
+  const skippedText = skipped.length ? `\n\n另有 ${skipped.length} 张${only}卡和别的颜色的卡共用行高或列宽，这次先不提交。把相关卡片改成同一种颜色，或切到「全部」一起提交（意见不一致时还原相关修改并转黄）。` : '';
   const heldText = held.length ? `\n\n另有 ${held.length} 张在后台还要处理的文件里，这次不提交，后台处理完再提交。` : '';
   if (!cards.length) {
     $('errorText').textContent = skipped.length ? skippedText.trim() : held.length ? heldText.trim()
