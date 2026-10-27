@@ -1,6 +1,10 @@
+import http.client
 import importlib
+import json
 import tempfile
+import threading
 import unittest
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -494,6 +498,124 @@ class ModeSwitchTests(unittest.TestCase):
         back.assert_not_called()
         self.assertEqual(self.job["auto_queue"], [first["id"]])
         self.assertTrue(self.job["options"]["scan_only"])
+
+    def handed_over_cards(self):
+        """两个文件各一张已提交的黄卡（只扫描转人工后的样子）"""
+        cards = self.scan_only_job()
+        for path in self.paths:
+            batch._hand_over(path)
+        return cards
+
+    def test_recheck_and_commit_clicked_during_another_task_are_queued_behind_it(self):
+        first, second = self.handed_over_cards()
+        self.wf.STATE["busy"] = False
+        self.assertFalse(batch.enqueue_followup("batch_recheck", [first["id"]]))  # 后台空着：调用方直接开始
+        self.wf.STATE["busy"] = True
+        self.job["completed"] = [self.paths[0]]  # 第一个文件扫完，第二个还在扫
+        with self.assertRaisesRegex(ValueError, "b.xlsx：.*再点复检"):
+            batch.enqueue_followup("batch_recheck", [second["id"]])
+        self.assertTrue(batch.enqueue_followup("batch_recheck", [first["id"]]))
+        self.assertTrue(batch.enqueue_followup("batch_recheck", [first["id"]], single=True))  # 和上一个复检合并
+        self.assertTrue(batch.enqueue_followup("batch_commit", [first["id"]], color="yellow"))
+        self.assertTrue(batch.enqueue_followup("batch_recheck", [first["id"]], single=True))  # 隔着提交：另排
+        self.assertEqual(batch._data()["followups"], [
+            {"kind": "batch_recheck", "card_ids": [first["id"]], "full_paths": [self.paths[0]]},
+            {"kind": "batch_commit", "card_ids": [first["id"]], "color": "yellow"},
+            {"kind": "batch_recheck", "card_ids": [first["id"]], "full_paths": []},
+        ])
+        self.assertEqual(len(batch.snapshot()["followups"]), 3)
+        # 别的页面的任务（精简 Sheet 等）不排
+        self.job["kind"] = "clean_sheets"
+        with self.assertRaisesRegex(ValueError, "后台正在精简 Sheet.*结束后才能提交"):
+            batch.enqueue_followup("batch_commit", [first["id"]])
+        self.assertEqual(batch.cancel_followups(), 3)
+        self.assertEqual(batch.snapshot()["followups"], [])
+
+    def run_with_followups(self, followups, *, paused=False):
+        """跑一次任务（batch.run 换成只记下任务种类），结束后看排队的复检 / 提交怎么接着开始"""
+        batch._data()["followups"] = followups
+        ran = []
+
+        def fake_run():
+            job = self.wf.STATE["job"]
+            ran.append((job["kind"], dict(job["options"])))
+            if paused and len(ran) == 1:
+                job["pause_requested"] = True
+                return list(job["workbooks"])  # 暂停：文件没做完，任务停在「可继续」
+            return []
+
+        with patch.object(batch, "run", side_effect=fake_run), \
+                patch.object(self.wf, "interrupt_execution_batch"), patch.object(self.wf, "suspend_report_updates"):
+            self.wf.run_pending_workflow()
+        return ran
+
+    def test_queued_followups_start_in_order_when_the_task_ends(self):
+        first, second = self.handed_over_cards()
+        second.update(color="blue", finalized=False, marked=True)  # 排队后又改成蓝：复检不再查它
+        ran = self.run_with_followups([
+            {"kind": "batch_recheck", "card_ids": [second["id"]], "full_paths": [self.paths[1]]},
+            {"kind": "batch_recheck", "card_ids": [first["id"]], "full_paths": [self.paths[0], self.paths[1]]},
+            {"kind": "batch_commit", "card_ids": [second["id"]], "color": None},
+        ])
+        self.assertEqual([kind for kind, _ in ran], ["batch_scan", "batch_recheck", "batch_commit"])
+        self.assertEqual(ran[1][1], {"card_ids": [first["id"]], "full_paths": [self.paths[0]]})
+        self.assertEqual(ran[2][1], {"card_ids": [second["id"]]})  # 提交按到时的颜色
+        self.assertEqual(batch._data()["followups"], [])
+        self.assertFalse(self.wf.STATE["busy"])
+        self.assertTrue(any("已经没有要复检的卡" in line for line in self.wf.STATE["logs"]))
+
+    def test_followups_wait_when_you_pause_and_can_start_now(self):
+        first, _ = self.handed_over_cards()
+        queued = [{"kind": "batch_recheck", "card_ids": [first["id"]], "full_paths": [self.paths[0]]}]
+        ran = self.run_with_followups(list(queued), paused=True)
+        self.assertEqual([kind for kind, _ in ran], ["batch_scan"])
+        self.assertEqual(batch._data()["followups"], queued)  # 暂停了：留着，页面上可以现在开始或取消
+        with self.wf.STATE_LOCK:
+            self.assertTrue(batch.start_followup({}))  # 「现在开始」
+        self.assertEqual((self.wf.STATE["job"]["kind"], self.wf.STATE["busy"]), ("batch_recheck", True))
+        self.assertEqual(self.wf.STATE["job"]["paused_scan"]["kind"], "batch_scan")  # 暂停的扫描收起来，之后还能继续
+
+    def test_open_all_during_a_task_opens_finished_files_and_lists_the_rest(self):
+        first, second = self.handed_over_cards()
+        self.job["completed"] = [self.paths[0]]
+        with patch.object(batch, "open_workbooks_for_review", return_value={}) as opener, \
+                patch.object(batch.autofix, "wait_for_writes"):
+            result = batch.open_ready([first["id"], second["id"]])
+        opener.assert_called_once_with([(Path(self.paths[0]), "S1", "A5", 5)])
+        self.assertEqual(result["opened"], ["a.xlsx"])
+        self.assertEqual([w["name"] for w in result["waiting"]], ["b.xlsx"])
+        self.assertIn("才能打开", result["waiting"][0]["reason"])
+        self.assertEqual(result["errors"], [])
+
+    def test_web_queues_recheck_and_commit_and_opens_ready_files_during_a_task(self):
+        import web_clip_fixer
+
+        first, second = self.handed_over_cards()
+        self.job["completed"] = [self.paths[0]]
+        importlib.reload(web_clip_fixer)  # 换成本测试的 STATE
+        server = ThreadingHTTPServer(("127.0.0.1", 0), web_clip_fixer.WebHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        def post(path, payload):
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            try:
+                connection.request("POST", path, json.dumps(payload), {"Content-Type": "application/json"})
+                return json.loads(connection.getresponse().read())
+            finally:
+                connection.close()
+
+        self.assertEqual(post("/api/batch/recheck", {"card_ids": [first["id"]]}), {"ok": True, "queued": True})
+        self.assertEqual(post("/api/batch/commit", {"card_ids": [first["id"]], "color": "yellow"}),
+                         {"ok": True, "queued": True})
+        self.assertIn("再点复检", post("/api/batch/recheck", {"card_ids": [second["id"]]})["error"])
+        with patch.object(batch, "open_workbooks_for_review", return_value={}), \
+                patch.object(batch.autofix, "wait_for_writes"):
+            opened = post("/api/batch/open", {"card_ids": [first["id"], second["id"]]})
+        self.assertEqual((opened["opened"], [w["name"] for w in opened["waiting"]]), (["a.xlsx"], ["b.xlsx"]))
+        self.assertIn("后台可能还在忙", post("/api/batch/followups/start", {})["error"])
+        self.assertEqual(post("/api/batch/followups/cancel", {}), {"ok": True, "cancelled": 2})
 
 
 if __name__ == "__main__":

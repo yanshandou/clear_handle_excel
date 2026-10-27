@@ -259,6 +259,7 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
 
 def run_pending_workflow() -> None:
     with STATE_LOCK:
+        ran = STATE["job"]  # 结束时可能换成放回来的暂停任务：排队的复检 / 提交按这次跑的任务决定做不做
         debug_log.start_task(STATE["job"]["kind"], STATE["job"]["options"],
                              {"检测规则版本": DETECTOR_VERSION, "设置": STATE["settings"],
                               "已完成文件数": len(STATE["job"]["completed"]),
@@ -349,6 +350,16 @@ def run_pending_workflow() -> None:
                     completed=len(STATE["job"]["completed"]), status=STATE["job"]["status"],
                 )
             _persist_state()
+            followup = False
+            if ran["kind"].startswith("batch_"):
+                # 工作台上排在后面的复检 / 提交：同一把锁里接着开始，中间不会让别的操作插进来
+                from core import batch
+                try:
+                    followup = batch.start_followup(ran)
+                except Exception as err:
+                    log_msg(f"❌ 排队的复检 / 提交没能开始：{err}")
+        if followup:
+            run_pending_workflow()
 
 
 def log_msg(msg: str) -> None:

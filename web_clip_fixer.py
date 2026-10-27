@@ -344,15 +344,38 @@ class WebHandler(BaseHTTPRequestHandler):
             action = self.path.rsplit("/", 1)[1]
             ids = batch.validate_cards(payload.get("card_ids"), yellow=action != "commit")
             single = payload.get("single") is True
+            color = None
+            if action == "commit" and payload.get("color") not in (None, "all"):
+                if payload["color"] not in batch.COLOR_NAMES:
+                    raise ValueError("请选择要提交的颜色")
+                color = payload["color"]
             if action == "recheck" and batch.enqueue_recheck(ids, single=single):
+                self._send_json({"ok": True, "queued": True})
+            elif action == "open" and STATE["busy"]:
+                # 后台在跑：处理完的文件马上打开，还要等的列出来
+                self._send_json({"ok": True, **batch.open_ready(ids)})
+            elif action != "open" and batch.enqueue_followup(f"batch_{action}", ids, single=single, color=color):
+                # 后台在跑别的任务：排到它后面，结束后接着复检 / 提交
                 self._send_json({"ok": True, "queued": True})
             else:
                 options = batch.recheck_options(ids, single=single) if action == "recheck" else {"card_ids": ids}
-                if action == "commit" and payload.get("color") not in (None, "all"):
-                    if payload["color"] not in batch.COLOR_NAMES:
-                        raise ValueError("请选择要提交的颜色")
-                    options["color"] = payload["color"]
+                if color:
+                    options["color"] = color
                 self._start_job(f"batch_{action}", options)
+        elif self.path == "/api/batch/followups/start":
+            # 暂停时留着的排队复检 / 提交：现在就开始
+            autofix.release_excel()
+            try:
+                with STATE_LOCK:
+                    started = batch.start_followup({})
+            finally:
+                autofix.resume_after_release()
+            if not started:
+                raise ValueError("没有可以开始的排队复检 / 提交（后台可能还在忙）")
+            threading.Thread(target=run_pending_workflow, name="任务", daemon=True).start()
+            self._send_json({"ok": True})
+        elif self.path == "/api/batch/followups/cancel":
+            self._send_json({"ok": True, "cancelled": batch.cancel_followups()})
         elif self.path == "/api/scan":
             folder = _require_folder(payload)
             self._start_job("scan", {

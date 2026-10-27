@@ -405,6 +405,7 @@ def snapshot() -> dict:
         return {"cards": cards, "busy": wf.STATE["busy"], "folder": wf.STATE["folder"], "highlighted": highlighted,
                 "tab_marks": tabs,
                 "mode": _mode(), "open_blocked": _open_blocked([c["wb_path"] for c in cards]),
+                "followups": copy.deepcopy(_data().get("followups") or []),
                 "job": copy.deepcopy(wf.STATE["job"]), "progress": dict(wf.STATE["scan_progress"]),
                 "logs": wf.STATE["logs"][-100:]}
 
@@ -2813,6 +2814,111 @@ def enqueue_recheck(ids: list[str], *, single: bool = False) -> bool:
         wf._persist_state()
     wf.log_msg(f"➕ 已加入复检队列：{len(ids)} 格，当前文件查完后接着查")
     return True
+
+
+FOLLOWUP_NAMES = {"batch_recheck": "复检", "batch_commit": "提交"}
+
+
+def enqueue_followup(kind: str, ids: list[str], *, single: bool = False, color: str | None = None) -> bool:
+    """后台在跑别的批处理任务时点了复检 / 提交：排到它后面，当前任务结束后接着做（start_followup）。
+    后台空着返回 False，由调用方直接开始。自动处理 / 复检还要处理的文件不能排：它的卡后台还要读、还要改"""
+    verb = FOLLOWUP_NAMES[kind]
+    with wf.STATE_LOCK:
+        if not wf.STATE["busy"]:
+            return False
+        job = wf.STATE.get("job") or {}
+        if not job.get("kind", "").startswith("batch_"):
+            raise ValueError(f"后台正在{wf.QUICK_TASK_NAMES.get(job.get('kind'), '处理别的任务')}，结束后才能{verb}")
+        cards = _data()["cards"]
+        paths = list(dict.fromkeys(cards[cid]["wb_path"] for cid in ids))
+        if job["kind"] in {"batch_scan", "batch_recheck"} and "workbooks" in job:
+            for path in paths:
+                if reason := open_block_reason(job, Path(path)):
+                    raise ValueError(f"{Path(path).name}：{reason.replace('才能打开', f'再点{verb}')}")
+        queue = _data().setdefault("followups", [])
+        if queue and queue[-1]["kind"] == kind and queue[-1].get("color") == color:
+            entry = queue[-1]  # 和排在最后的同一种合并；中间隔着别的就另排，先后顺序不变
+        else:
+            entry = ({"kind": kind, "card_ids": [], "full_paths": []} if kind == "batch_recheck"
+                     else {"kind": kind, "card_ids": [], "color": color})
+            queue.append(entry)
+        entry["card_ids"] = list(dict.fromkeys(entry["card_ids"] + ids))
+        if kind == "batch_recheck" and not single:
+            entry["full_paths"] = list(dict.fromkeys(entry["full_paths"] + paths))
+        wf._persist_state()
+    debug_log.event(f"🖱️ {verb}排队", 格子=len(ids), 文件=len(paths))
+    wf.log_msg(f"⏳ 已排队{verb}：{'、'.join(Path(p).name for p in paths)}（{len(ids)} 格），当前任务结束后接着{verb}")
+    return True
+
+
+def start_followup(ran: dict) -> bool:
+    """调用方持有 STATE_LOCK，后台刚空下来：排在后面的复检 / 提交接着开始，卡和颜色按现在的算。
+    ran 是刚结束的任务：你点了暂停的先不做，页面上可以「现在开始」或取消；网页「现在开始」时传空字典"""
+    queue = _data().get("followups") or []
+    if wf.STATE["busy"] or ran.get("pause_requested") or not queue:
+        return False
+    started = False
+    while queue and not started:
+        entry = queue.pop(0)
+        verb = FOLLOWUP_NAMES[entry["kind"]]
+        cards = _data()["cards"]
+        # 排队后又提交 / 复检过、换了文件夹的卡不算；复检只查还是已提交黄卡的
+        ids = [cid for cid in entry["card_ids"] if (card := cards.get(cid)) and not card.get("dismissed")
+               and wf.in_current_folder(card["wb_path"])
+               and (entry["kind"] != "batch_recheck" or (card["color"] == "yellow" and card.get("finalized")))]
+        if not ids:
+            wf.log_msg(f"ℹ️ 排队的{verb}已经没有要{verb}的卡（可能已经提交或复检过），跳过")
+            continue
+        if entry["kind"] == "batch_recheck":
+            mine = {cards[cid]["wb_path"] for cid in ids}
+            options = {"card_ids": ids, "full_paths": [p for p in entry["full_paths"] if p in mine]}
+        else:
+            options = {"card_ids": ids, **({"color": entry["color"]} if entry.get("color") else {})}
+        try:
+            started = wf.queue_job(entry["kind"], options)
+        except ValueError as err:
+            wf.log_msg(f"⚠️ 排队的{verb}没能开始，已跳过：{err}")
+            continue
+        if started:
+            wf.log_msg(f"▶️ 开始排队的{verb}：{len({cards[cid]['wb_path'] for cid in ids})} 个文件（{len(ids)} 格）")
+    wf._persist_state()
+    return started
+
+
+def cancel_followups() -> int:
+    """取消还没开始的排队复检 / 提交，返回取消了几项"""
+    with wf.STATE_LOCK:
+        queue = _data().pop("followups", None) or []
+        wf._persist_state()
+    if queue:
+        wf.log_msg(f"🚫 已取消 {len(queue)} 项排队的复检 / 提交")
+    return len(queue)
+
+
+def open_ready(ids: list[str]) -> dict:
+    """后台在跑时「打开全部人工待处理文件」：后台不再碰的文件马上在可见 Excel 打开、跳到第一处黄格，
+    还要等的文件列出原因，不排队（等它的话还不如做完一份开一份）"""
+    with wf.STATE_LOCK:
+        cards = sorted((_data()["cards"][cid] for cid in ids), key=lambda c: c["seq"])
+        first = {}
+        for card in cards:
+            first.setdefault(card["wb_path"], card)
+        job = wf.STATE.get("job") or {}
+        busy = wf.STATE["busy"]
+        waiting = {path: reason for path in first if busy and (reason := open_block_reason(job, Path(path)))}
+    targets = [(Path(path), c["sheet_name"], c["cell_addr"], c["excel_row"]) for path, c in first.items()
+               if path not in waiting]
+    if targets:
+        try:
+            autofix.wait_for_writes(15)  # 后台正在保存的文件别同时打开
+        except ValueError:
+            raise ValueError("后台正在保存 Excel，请几秒后再点") from None
+    errors = open_workbooks_for_review(targets) if targets else {}
+    for path, error in errors.items():
+        wf.log_msg(f"⚠️ {path.name}：{error}")
+    return {"opened": [Path(p).name for p, *_ in targets if p not in errors],
+            "waiting": [{"name": Path(p).name, "reason": why} for p, why in waiting.items()],
+            "errors": [{"name": p.name, "reason": str(e)} for p, e in errors.items()]}
 
 
 def validate_cards(ids: Any = None, *, yellow: bool = False) -> list[str]:
