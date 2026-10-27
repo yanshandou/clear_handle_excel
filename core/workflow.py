@@ -139,6 +139,9 @@ STATE: dict[str, Any] = {
     "batch_review": {"cards": {}, "rows": {}, "ignored": []},
 }
 
+# 后台现在在检查哪份文件、第几张表（只放内存）：工作台据此显示当前文件用了多久，扫描超时跳过时写明卡在哪张表
+SCAN_NOW: dict[str, Any] = {}
+
 _saved_state = load_snapshot("workflow")
 if _saved_state is not None:
     STATE.update(_saved_state)
@@ -259,6 +262,7 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
 
 def run_pending_workflow() -> None:
     with STATE_LOCK:
+        ran = STATE["job"]  # 结束时可能换成放回来的暂停任务：排队的复检 / 提交按这次跑的任务决定做不做
         debug_log.start_task(STATE["job"]["kind"], STATE["job"]["options"],
                              {"检测规则版本": DETECTOR_VERSION, "设置": STATE["settings"],
                               "已完成文件数": len(STATE["job"]["completed"]),
@@ -324,8 +328,13 @@ def run_pending_workflow() -> None:
             with STATE_LOCK:
                 STATE["job"] = job.pop("paused_scan")
                 STATE["job"]["status"] = "interrupted"
-            log_msg("ℹ️ 审核操作已完成；全自动处理仍处于暂停，可点「继续上次任务」")
-            interrupt_execution_batch("全自动处理已暂停，可点击继续上次任务")
+            if job["kind"] == "batch_scan":
+                # 「只扫描」时排队的自动调整做完了；扫描出错没扫完的文件还能接着扫
+                log_msg("ℹ️ 自动调整已完成；只扫描还有文件没扫完，可点「继续上次任务」接着扫")
+                interrupt_execution_batch("只扫描还有文件没扫完，可点击继续上次任务")
+            else:
+                log_msg("ℹ️ 审核操作已完成；全自动处理仍处于暂停，可点「继续上次任务」")
+                interrupt_execution_batch("全自动处理已暂停，可点击继续上次任务")
     except Exception as err:
         with STATE_LOCK:
             STATE["job"]["status"] = "interrupted"
@@ -344,6 +353,16 @@ def run_pending_workflow() -> None:
                     completed=len(STATE["job"]["completed"]), status=STATE["job"]["status"],
                 )
             _persist_state()
+            followup = False
+            if ran["kind"].startswith("batch_"):
+                # 工作台上排在后面的复检 / 提交：同一把锁里接着开始，中间不会让别的操作插进来
+                from core import batch
+                try:
+                    followup = batch.start_followup(ran)
+                except Exception as err:
+                    log_msg(f"❌ 排队的复检 / 提交没能开始：{err}")
+        if followup:
+            run_pending_workflow()
 
 
 def log_msg(msg: str) -> None:
@@ -1139,6 +1158,9 @@ def _scan_one_workbook(
         + (f"（只查有问题的工作表：{'、'.join(entry['sheets'])}）" if sheets_only else " ...")
     )
     update_file_progress(wb_label, status="processing", current_action="正在打开工作簿...", error="")
+    with STATE_LOCK:
+        SCAN_NOW.clear()
+        SCAN_NOW.update(path=path, sheet="", index=0, total=0, started=time.time())
     open_options = {"UpdateLinks": 0}
     if read_only:
         open_options["ReadOnly"] = True
@@ -1196,8 +1218,10 @@ def _scan_one_workbook(
             next_seq = max((it["seq"] for it in STATE["items"].values()), default=0) + 1
         file_pages: dict[str, Any] = {}
         file_items: dict[str, Any] = {}
-        for sheet in sheets:
+        for index, sheet in enumerate(sheets, 1):
             s_name = sheet.Name
+            with STATE_LOCK:
+                SCAN_NOW.update(sheet=s_name, index=index, total=len(sheets))
             update_file_progress(wb_label, current_action=f"正在导出并检测 [{s_name}]...")
             pdf_path = unique_pdf_path(wb_path.parent, file_stem, sanitize_filename(s_name), used_pdf_paths)
             started = time.perf_counter()

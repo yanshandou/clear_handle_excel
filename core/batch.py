@@ -25,7 +25,7 @@ from core.excel_ops import (
     CellProbe, close_saved_workbooks, extract_sheet_snapshot, normalize_workbook_view,
     open_workbooks_for_review, snapshot_cells, open_workbook_checked,
 )
-from core.excel_watchdog import ExcelWatchdog
+from core.excel_watchdog import ExcelWatchdog, idle_timeout
 from core.hidden_text import (
     REASON_CLIPPED, REASON_TRUNCATED, collect_text_pieces, is_excel_error, locate_text, normalize_text,
 )
@@ -260,6 +260,8 @@ def open_block_reason(job: dict, path: Path) -> str:
         return "正在转人工，要给这份文件标色，标完才能打开"
     if any(p in job.get("deferred_adjustments", {}) for p in mine):
         return "这份文件还有没写完的修改，后台还要回来处理"
+    if job.get("options", {}).get("scan_only") and any(Path(p).resolve() == target for p in _auto_queue_paths(job)):
+        return "排队等自动调整（全部文件扫完后开始），调整完才能打开"
     if all(p in completed for p in mine):
         return ""
     scanned = job.get("scanned", [])
@@ -403,6 +405,10 @@ def snapshot() -> dict:
         return {"cards": cards, "busy": wf.STATE["busy"], "folder": wf.STATE["folder"], "highlighted": highlighted,
                 "tab_marks": tabs,
                 "mode": _mode(), "open_blocked": _open_blocked([c["wb_path"] for c in cards]),
+                "followups": copy.deepcopy(_data().get("followups") or []),
+                "scan_eta": _scan_eta(wf.STATE["job"]) if wf.STATE["job"] else None,
+                "slow_files": [{"path": p, "name": Path(p).name, **info} for p, info in _data().get("slow_files", {}).items()
+                               if wf.in_current_folder(p)],
                 "job": copy.deepcopy(wf.STATE["job"]), "progress": dict(wf.STATE["scan_progress"]),
                 "logs": wf.STATE["logs"][-100:]}
 
@@ -1862,11 +1868,148 @@ def _finish_picked(path: str) -> None:
 
 
 def _auto_queue_open() -> bool:
-    """调用方持有 STATE_LOCK：正在跑「🤖 自动调整」，还能把别的文件排进去接着做"""
+    """调用方持有 STATE_LOCK：正在跑「🤖 自动调整」，还能把别的文件排进去接着做；
+    「只扫描」还没扫完时也能排，全部扫完后本任务接着自动调整（_queued_auto_to_picked）"""
     job = wf.STATE.get("job") or {}
-    return bool(wf.STATE["busy"] and job.get("kind") == "batch_scan" and job.get("options", {}).get("picked")
+    options = job.get("options", {})
+    return bool(wf.STATE["busy"] and job.get("kind") == "batch_scan" and (options.get("picked") or options.get("scan_only"))
                 and "workbooks" in job and not job.get("closing") and not job.get("pause_requested")
                 and not job.get("to_manual"))
+
+
+SCAN_LIMIT_FLOOR = 180  # 自动上限最少 3 分钟
+SCAN_LIMIT_FIRST = 600  # 扫完的文件不到 2 份、还估不准时先给 10 分钟
+SCAN_LIMIT_MARGIN = 5  # 自动上限 = 估计时间的 5 倍
+SCAN_LIMIT_CHOICES = (3, 5, 10, 15)  # 网页上可选的固定分钟数
+
+
+def _scan_size(job: dict, path: str) -> int:
+    """文件大小（估算扫描时间用），每份只查一次，记在任务里"""
+    sizes = job.setdefault("sizes", {})
+    if path not in sizes:
+        try:
+            sizes[path] = Path(path).stat().st_size
+        except OSError:
+            sizes[path] = 0
+    return sizes[path]
+
+
+def _scan_model(job: dict) -> tuple[float, float] | None:
+    """按这次已扫完文件的耗时估算扫描速度：(平均每份秒数, 每字节秒数)；一份都没扫完时返回 None"""
+    done = job.get("scan_seconds") or {}
+    if not done:
+        return None
+    total = sum(done.values())
+    sizes = sum(_scan_size(job, p) for p in done)
+    return total / len(done), (total / sizes if sizes else 0.0)
+
+
+def _expected_scan_seconds(job: dict, path: str, model: tuple[float, float]) -> float:
+    """这份文件大概要扫多久：一半按平均每份的时间，一半按文件大小折算（大文件慢）"""
+    average, rate = model
+    return (average + (rate * _scan_size(job, path) if rate else average)) / 2
+
+
+def _scan_limit(job: dict, path: str) -> float:
+    """这份文件最多扫多久（秒），超过就跳过、转人工。网页上选了分钟数就按它；自动时按估计时间的 5 倍，
+    最少 3 分钟，最多不超过看门狗的无进展上限（默认 15 分钟）；扫完的不到 2 份时先给 10 分钟"""
+    minutes = job["options"].get("scan_limit_minutes")
+    if minutes:
+        return minutes * 60.0
+    model = _scan_model(job) if len(job.get("scan_seconds") or {}) >= 2 else None
+    limit = (SCAN_LIMIT_FIRST if model is None
+             else max(SCAN_LIMIT_FLOOR, SCAN_LIMIT_MARGIN * _expected_scan_seconds(job, path, model)))
+    return min(limit, idle_timeout())
+
+
+def _minutes(seconds: float) -> str:
+    return f"{round(seconds / 60, 1):g} 分钟"
+
+
+def _skip_slow_file(job: dict, path: str, limit: float) -> None:
+    """扫描超过时间上限：这份文件跳过、这次任务里不再处理（继续上次任务也不重试），
+    记下卡在哪张表，页面上提示人工检查；之后这份文件扫描通过就不再提示"""
+    with wf.STATE_LOCK:
+        now = wf.SCAN_NOW if wf.SCAN_NOW.get("path") == path else {}
+        sheet = now.get("sheet") or ""
+        job.setdefault("slow_seconds", {})[path] = round(time.time() - now["started"] if now else limit)
+        _data().setdefault("slow_files", {})[path] = {"sheet": sheet, "limit": round(limit),
+                                                      "at": time.strftime("%Y-%m-%d %H:%M")}
+        for done in ("scanned", "completed"):
+            if path not in job.setdefault(done, []):
+                job[done].append(path)
+        job.get("file_errors", {}).pop(path, None)
+        wf.STATE["scan_progress"] = {"total": len(job["workbooks"]), "completed": len(job["completed"]),
+                                     "status": "running"}
+        wf._persist_state()
+    message = f"扫描超过 {_minutes(limit)}" + (f"，卡在表「{sheet}」" if sheet else "") + "，已跳过，请人工检查"
+    wf.log_msg(f"⏱ {Path(path).name}：{message}")
+    debug_log.event("⏱ 扫描超时跳过", 文件=Path(path).name, 表=sheet, 上限秒=round(limit))
+    update_file_progress(workbook_rel_name(Path(path), wf.STATE["folder"]), status="error", error=message,
+                         current_action="扫描超时，已跳过")
+
+
+def clear_slow_files() -> None:
+    """页面上「知道了」：不再提示当前文件夹扫描超时跳过的文件"""
+    with wf.STATE_LOCK:
+        slow = _data().get("slow_files", {})
+        for path in [p for p in slow if wf.in_current_folder(p)]:
+            del slow[path]
+        wf._persist_state()
+
+
+def _scan_eta(job: dict) -> dict | None:
+    """调用方持有 STATE_LOCK：扫描时的已用 / 预计剩余时间（秒）和当前文件的进度。剩余按这次已扫完文件的耗时、
+    文件大小估算，一份都没扫完时不估；全自动的修复阶段、转回自动、自动调整不算"""
+    if (not wf.STATE["busy"] or job.get("kind") != "batch_scan" or job["options"].get("back_to_auto")
+            or job.get("phase") == "repair" or "workbooks" not in job):
+        return None
+    finished = set(job.get("scanned", [])) | set(job.get("completed", []))
+    pending = [p for p in job["workbooks"] if p not in finished]
+    now = wf.SCAN_NOW if wf.SCAN_NOW.get("path") in pending else {}
+    running = max(0.0, time.time() - now["started"]) if now else 0.0
+    model = _scan_model(job)
+    limit = job.get("scan_limit") or {}
+    return {
+        "elapsed": round(sum((job.get("scan_seconds") or {}).values())
+                         + sum((job.get("slow_seconds") or {}).values()) + running),
+        "remaining": None if model is None
+        else round(max(0.0, sum(_expected_scan_seconds(job, p, model) for p in pending) - running)),
+        "current": {"name": Path(now["path"]).name, "sheet": now.get("sheet", ""),
+                    "index": now.get("index", 0), "total": now.get("total", 0), "seconds": round(running),
+                    "limit": limit.get("seconds") if limit.get("path") == now["path"] else None} if now else None,
+    }
+
+
+def _auto_queue_paths(job: dict) -> set[str]:
+    """调用方持有 STATE_LOCK：「只扫描」时排队等自动调整的文件"""
+    cards = _data()["cards"]
+    return {cards[cid]["wb_path"] for cid in job.get("auto_queue", []) if cid in cards}
+
+
+def _queued_auto_to_picked(job: dict) -> bool:
+    """调用方持有 STATE_LOCK：「只扫描」全部扫完，扫描中排队的「🤖 自动调整」本任务接着做：
+    任务就地改成自动调整选中的格子（和点「🤖 自动调整」另起的任务一样）。
+    有文件扫描出错没扫完时，扫描任务先收起来，自动调整做完放回，仍可「继续上次任务」接着扫"""
+    cards = _data()["cards"]
+    ids = [cid for cid in job.pop("auto_queue", []) if cid in cards and not cards[cid].get("dismissed")]
+    if not ids:
+        return False
+    if not set(job["workbooks"]).issubset(job["completed"]):
+        job["paused_scan"] = copy.deepcopy({k: v for k, v in job.items() if k != "paused_scan"})
+    paths = list(dict.fromkeys(cards[cid]["wb_path"] for cid in sorted(ids, key=lambda cid: cards[cid]["seq"])))
+    options = job["options"]
+    folder = options["folder"]
+    options.clear()  # 原地改：run 里的 options 还指着它
+    options.update(folder=folder, back_to_auto=True, picked=True, card_ids=ids)
+    for key in ("phase", "repairing", "picked_back", "closing"):
+        job.pop(key, None)
+    job.update(workbooks=paths, completed=[], scanned=[], scan_versions={}, rounds={}, file_errors={})
+    wf.STATE["scan_progress"] = {"total": len(paths), "completed": 0, "status": "running"}
+    wf._persist_state()
+    debug_log.event("🤖 扫完接着自动调整", 文件=len(paths), 格子=len(ids))
+    wf.log_msg(f"🤖 全部文件扫描完成，接着自动调整排队的 {len(paths)} 个文件（{len(ids)} 格）")
+    return True
 
 
 def enqueue_auto_adjust(ids: Any) -> bool:
@@ -1890,6 +2033,14 @@ def enqueue_auto_adjust(ids: Any) -> bool:
                 raise ValueError(f"{Path(path).name}：{reason.replace('才能打开', '再点自动调整')}")
         for cid in picked:
             cards[cid]["auto_pick"] = True
+        if job["options"].get("scan_only"):
+            # 「只扫描」还没扫完：先记下，全部扫完后本任务接着自动调整
+            job["auto_queue"] = list(dict.fromkeys(job.get("auto_queue", []) + picked))
+            wf._persist_state()
+            debug_log.event("🖱️ 自动调整排队（扫完再做）", 选中=len(ids), 交给自动=len(plan["run"]),
+                            同行连带=len(plan["extra"]), 跳过=[f"{s['id'][:6]}:{s['reason']}" for s in plan["skip"]])
+            wf.log_msg(f"🤖 已排队自动调整：{'、'.join(Path(p).name for p in paths)}（{len(picked)} 格），全部文件扫完后接着做")
+            return True
         options = job["options"]
         options["card_ids"] = list(dict.fromkeys(options["card_ids"] + picked))
         rounds = job.setdefault("rounds", {})
@@ -2772,6 +2923,111 @@ def enqueue_recheck(ids: list[str], *, single: bool = False) -> bool:
     return True
 
 
+FOLLOWUP_NAMES = {"batch_recheck": "复检", "batch_commit": "提交"}
+
+
+def enqueue_followup(kind: str, ids: list[str], *, single: bool = False, color: str | None = None) -> bool:
+    """后台在跑别的批处理任务时点了复检 / 提交：排到它后面，当前任务结束后接着做（start_followup）。
+    后台空着返回 False，由调用方直接开始。自动处理 / 复检还要处理的文件不能排：它的卡后台还要读、还要改"""
+    verb = FOLLOWUP_NAMES[kind]
+    with wf.STATE_LOCK:
+        if not wf.STATE["busy"]:
+            return False
+        job = wf.STATE.get("job") or {}
+        if not job.get("kind", "").startswith("batch_"):
+            raise ValueError(f"后台正在{wf.QUICK_TASK_NAMES.get(job.get('kind'), '处理别的任务')}，结束后才能{verb}")
+        cards = _data()["cards"]
+        paths = list(dict.fromkeys(cards[cid]["wb_path"] for cid in ids))
+        if job["kind"] in {"batch_scan", "batch_recheck"} and "workbooks" in job:
+            for path in paths:
+                if reason := open_block_reason(job, Path(path)):
+                    raise ValueError(f"{Path(path).name}：{reason.replace('才能打开', f'再点{verb}')}")
+        queue = _data().setdefault("followups", [])
+        if queue and queue[-1]["kind"] == kind and queue[-1].get("color") == color:
+            entry = queue[-1]  # 和排在最后的同一种合并；中间隔着别的就另排，先后顺序不变
+        else:
+            entry = ({"kind": kind, "card_ids": [], "full_paths": []} if kind == "batch_recheck"
+                     else {"kind": kind, "card_ids": [], "color": color})
+            queue.append(entry)
+        entry["card_ids"] = list(dict.fromkeys(entry["card_ids"] + ids))
+        if kind == "batch_recheck" and not single:
+            entry["full_paths"] = list(dict.fromkeys(entry["full_paths"] + paths))
+        wf._persist_state()
+    debug_log.event(f"🖱️ {verb}排队", 格子=len(ids), 文件=len(paths))
+    wf.log_msg(f"⏳ 已排队{verb}：{'、'.join(Path(p).name for p in paths)}（{len(ids)} 格），当前任务结束后接着{verb}")
+    return True
+
+
+def start_followup(ran: dict) -> bool:
+    """调用方持有 STATE_LOCK，后台刚空下来：排在后面的复检 / 提交接着开始，卡和颜色按现在的算。
+    ran 是刚结束的任务：你点了暂停的先不做，页面上可以「现在开始」或取消；网页「现在开始」时传空字典"""
+    queue = _data().get("followups") or []
+    if wf.STATE["busy"] or ran.get("pause_requested") or not queue:
+        return False
+    started = False
+    while queue and not started:
+        entry = queue.pop(0)
+        verb = FOLLOWUP_NAMES[entry["kind"]]
+        cards = _data()["cards"]
+        # 排队后又提交 / 复检过、换了文件夹的卡不算；复检只查还是已提交黄卡的
+        ids = [cid for cid in entry["card_ids"] if (card := cards.get(cid)) and not card.get("dismissed")
+               and wf.in_current_folder(card["wb_path"])
+               and (entry["kind"] != "batch_recheck" or (card["color"] == "yellow" and card.get("finalized")))]
+        if not ids:
+            wf.log_msg(f"ℹ️ 排队的{verb}已经没有要{verb}的卡（可能已经提交或复检过），跳过")
+            continue
+        if entry["kind"] == "batch_recheck":
+            mine = {cards[cid]["wb_path"] for cid in ids}
+            options = {"card_ids": ids, "full_paths": [p for p in entry["full_paths"] if p in mine]}
+        else:
+            options = {"card_ids": ids, **({"color": entry["color"]} if entry.get("color") else {})}
+        try:
+            started = wf.queue_job(entry["kind"], options)
+        except ValueError as err:
+            wf.log_msg(f"⚠️ 排队的{verb}没能开始，已跳过：{err}")
+            continue
+        if started:
+            wf.log_msg(f"▶️ 开始排队的{verb}：{len({cards[cid]['wb_path'] for cid in ids})} 个文件（{len(ids)} 格）")
+    wf._persist_state()
+    return started
+
+
+def cancel_followups() -> int:
+    """取消还没开始的排队复检 / 提交，返回取消了几项"""
+    with wf.STATE_LOCK:
+        queue = _data().pop("followups", None) or []
+        wf._persist_state()
+    if queue:
+        wf.log_msg(f"🚫 已取消 {len(queue)} 项排队的复检 / 提交")
+    return len(queue)
+
+
+def open_ready(ids: list[str]) -> dict:
+    """后台在跑时「打开全部人工待处理文件」：后台不再碰的文件马上在可见 Excel 打开、跳到第一处黄格，
+    还要等的文件列出原因，不排队（等它的话还不如做完一份开一份）"""
+    with wf.STATE_LOCK:
+        cards = sorted((_data()["cards"][cid] for cid in ids), key=lambda c: c["seq"])
+        first = {}
+        for card in cards:
+            first.setdefault(card["wb_path"], card)
+        job = wf.STATE.get("job") or {}
+        busy = wf.STATE["busy"]
+        waiting = {path: reason for path in first if busy and (reason := open_block_reason(job, Path(path)))}
+    targets = [(Path(path), c["sheet_name"], c["cell_addr"], c["excel_row"]) for path, c in first.items()
+               if path not in waiting]
+    if targets:
+        try:
+            autofix.wait_for_writes(15)  # 后台正在保存的文件别同时打开
+        except ValueError:
+            raise ValueError("后台正在保存 Excel，请几秒后再点") from None
+    errors = open_workbooks_for_review(targets) if targets else {}
+    for path, error in errors.items():
+        wf.log_msg(f"⚠️ {path.name}：{error}")
+    return {"opened": [Path(p).name for p, *_ in targets if p not in errors],
+            "waiting": [{"name": Path(p).name, "reason": why} for p, why in waiting.items()],
+            "errors": [{"name": p.name, "reason": str(e)} for p, e in errors.items()]}
+
+
 def validate_cards(ids: Any = None, *, yellow: bool = False) -> list[str]:
     with wf.STATE_LOCK:
         available = {c["id"]: c for c in _data()["cards"].values()
@@ -2816,6 +3072,7 @@ def run() -> list[str]:
     # 每种任务都看着后台 Excel：它在看不见的地方卡住（弹了没人能点的框等）时结束它，不让任务永远卡着。
     # 清除颜色每改一格都报进度，卡 5 分钟就算卡住；检测类一张大表导出可能要很久，按默认时长
     watchdog = ExcelWatchdog(lambda: wf.log_msg(
+        "⏱ 这份文件扫描超过时间上限，已结束本任务专用 Excel，跳过这份文件" if watchdog.deadline_hit else
         "⚠️ 后台 Excel 长时间无进展，已结束本任务专用 Excel，当前文件将记录错误并重试或跳过"),
         timeout=UNHIGHLIGHT_STALL_SECONDS if kind == "batch_unhighlight" else None)
     session.watchdog = watchdog
@@ -2898,6 +3155,11 @@ def run() -> list[str]:
                                                  status="error", error=str(err), current_action="写入待核对，已跳过，可续跑")
                             session.close()
                             return False
+                        if watchdog.deadline_hit:
+                            # 扫描超过时间上限：不重试，这份文件跳过、转人工，下一份用新的 Excel
+                            _skip_slow_file(job, path, (job.get("scan_limit") or {}).get("seconds") or 0)
+                            session.close()
+                            return False
                         # 检测类原因（ValueError）不重试
                         if (not isinstance(err, (ValueError, TimeoutError)) and not watchdog.timed_out
                                 and tries < autofix.MAX_ERROR_RETRIES):
@@ -2933,8 +3195,19 @@ def run() -> list[str]:
                 elif back:
                     _back_to_auto(excel, session, path)
                 else:
+                    # 只给检测（只读打开原文件）设上限：超时结束 Excel 不会弄坏文件；之后标色要写文件，不在上限内
+                    with wf.STATE_LOCK:
+                        limit = _scan_limit(job, path)
+                        job["scan_limit"] = {"path": path, "seconds": round(limit)}
                     started, checking = time.perf_counter(), {}
-                    _refresh(excel, path, session=session, timing=checking)
+                    watchdog.deadline(limit)
+                    try:
+                        _refresh(excel, path, session=session, timing=checking)
+                    finally:
+                        watchdog.deadline(None)
+                    with wf.STATE_LOCK:
+                        job.setdefault("scan_seconds", {})[path] = round(time.perf_counter() - started, 1)
+                        _data().get("slow_files", {}).pop(path, None)  # 以前超时跳过的，这次扫完了
                     wf.log_msg(f"⏱ {Path(path).name} 整份检查：{time.perf_counter() - started:.1f} 秒"
                                f"（导出 {int(checking.get('exports', 0))} 次 {checking.get('export', 0):.1f} 秒，"
                                f"检测 {checking.get('detect', 0):.1f} 秒）")
@@ -3040,8 +3313,14 @@ def run() -> list[str]:
                         p not in job["completed"]
                         and ("repair" if p in scanned else "scan", p, job.get("rounds", {}).get(p, 0)) not in tried
                         for p in expected)
+                    if scan_only and not job.get("pause_requested") and _queued_auto_to_picked(job):
+                        # 只扫描时排队的「🤖 自动调整」：全部扫完，本任务接着按自动调整做
+                        scan_only, back, picked = False, True, True
+                        expected, scanned, versions = job["workbooks"], job["scanned"], job["scan_versions"]
+                        tried.clear()
+                        more = True
                     if not more:
-                        job["closing"] = picked  # 之后再点自动调整另起任务，不会漏掉
+                        job["closing"] = picked or scan_only  # 之后再点自动调整另起任务，不会漏掉
                         wf._persist_state()
                         break
             if job.get("to_manual") and not job.get("pause_requested"):

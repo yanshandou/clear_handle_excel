@@ -116,6 +116,7 @@
 /* 放大图标用 CSS 画（▣ 在日文 Windows 字体里显示不全） */
 .batch-icon-enlarge { flex: none; position: relative; display: inline-block; width: 12px; height: 12px; box-sizing: border-box; border: 2px solid currentColor; border-radius: 2px; }
 .batch-icon-enlarge::after { content: ""; position: absolute; inset: 2px; background: currentColor; border-radius: 1px; }
+.batch-scan-now { margin: 6px 0 0; font-size: 13px; color: var(--text-main); opacity: .85; overflow-wrap: anywhere; }
 .batch-pending { margin: 10px 0 0; padding: 10px 14px; border: 1px solid #f3c969; border-radius: 10px; background: #fff8e6; color: #7a4a00; font-size: 13px; line-height: 1.7; }
 /* 不可用的按钮也要看得清字，只是变淡一些 */
 .batch-tools .btn:disabled { opacity: .7; }

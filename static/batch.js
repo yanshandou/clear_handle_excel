@@ -27,15 +27,72 @@ const openBlocked = card => (batchState.open_blocked || {})[card.wb_path] || '';
 // 自动处理 / 复检在跑时：不在这次任务里的文件、已经做完的文件可以改颜色（只写记录，不碰 Excel）
 const markWhileBusy = () => ['batch_scan', 'batch_recheck'].includes(batchState.job?.kind) && Array.isArray(batchState.job?.workbooks);
 const canMark = card => !batchState.busy || (markWhileBusy() && !openBlocked(card));
-// 「🤖 自动调整」在跑时还能把别的文件排进去，做完当前文件接着做
+// 「🤖 自动调整」在跑时还能把别的文件排进去，做完当前文件接着做；
+// 「只扫描」还没扫完时也能排，全部文件扫完后同一个任务接着自动调整
 const autoQueueOpen = () => {
   const job = batchState.job;
-  return !!(batchState.busy && job?.kind === 'batch_scan' && job.options?.picked && Array.isArray(job.workbooks)
-    && !job.closing && !job.pause_requested && !job.to_manual);
+  return !!(batchState.busy && job?.kind === 'batch_scan' && (job.options?.picked || job.options?.scan_only)
+    && Array.isArray(job.workbooks) && !job.closing && !job.pause_requested && !job.to_manual);
 };
+// 后台在跑的任务叫什么：按钮不可点时写进提示
+function busyJobName() {
+  const job = batchState.job || {};
+  if (job.kind !== 'batch_scan') return REVIEW_JOB_NAMES[job.kind] || '处理别的任务';
+  return job.to_manual ? '转人工' : job.options?.picked ? '自动调整' : job.options?.scan_only ? '只扫描'
+    : job.options?.back_to_auto ? '转回自动' : '全自动处理';
+}
+// 「🤖 自动调整」现在为什么点不了：能点返回空字符串，不能点时按钮提示写明原因
+function autoBlockReason(cards) {
+  if (!batchState.busy) return '';
+  const job = batchState.job || {};
+  if (!autoQueueOpen()) {
+    return job.pause_requested ? '正在暂停，停下后才能自动调整'
+      : job.closing ? `${busyJobName()}正在收尾，结束后才能自动调整`
+      : `后台正在${busyJobName()}，结束后才能自动调整`;
+  }
+  const blocked = cards.find(c => openBlocked(c));
+  return blocked ? `${blocked.wb_name}：${openBlocked(blocked).replace('才能打开', '再点自动调整')}` : '';
+}
+// 后台在跑时点了会怎样：写进可点的自动调整按钮提示
+const autoQueueNote = () => !batchState.busy ? ''
+  : batchState.job?.options?.scan_only ? '；现在正在扫描：先排队，全部文件扫完后接着做' : '；正在自动调整，会排到后面接着做';
+// 复检 / 提交：后台在跑别的批处理任务时排到它后面，结束后接着做；自动处理 / 复检还要处理的文件不能排
+// （和后端 enqueue_followup 一致）。能点返回空字符串，不能点时按钮提示写明原因
+function queueBlockReason(cards, verb) {
+  if (!batchState.busy) return '';
+  if (!batchState.job?.kind?.startsWith('batch_')) return `后台正在${busyJobName()}，结束后才能${verb}`;
+  const blocked = markWhileBusy() && cards.find(c => openBlocked(c));
+  return blocked ? `${blocked.wb_name}：${openBlocked(blocked).replace('才能打开', `再点${verb}`)}` : '';
+}
+// 复检进行中再点复检：并进正在跑的复检，不用排到后面
+const recheckJoins = () => batchState.busy && batchState.job?.kind === 'batch_recheck' && !batchState.job.closing;
+const recheckBlockReason = cards => recheckJoins() ? '' : queueBlockReason(cards, '复检');
+// 可点的复检 / 提交按钮提示里写明会排队
+function queueNote(verb) {
+  if (!batchState.busy) return '';
+  if (verb === '复检' && recheckJoins()) return '；复检进行中：排进去，当前文件查完接着查';
+  return `；后台正在${busyJobName()}：先排队，结束后接着${verb}`;
+}
+// 「统一复检黄色项」：后台还要处理的文件这次不排，其余照常
+const recheckAllCards = () => recheckJoins() ? manualCards() : manualCards().filter(c => !queueBlockReason([c], '复检'));
+const FOLLOWUP_NAMES = { batch_recheck: '复检', batch_commit: '提交' };
+// 文件框上：这份文件有排在当前任务后面的复检 / 提交
+function followupBadge(path) {
+  const kinds = (batchState.followups || []).filter(entry => {
+    const ids = new Set(entry.card_ids);
+    return batchState.cards.some(c => fileKey(c) === path && ids.has(c.id));
+  }).map(entry => FOLLOWUP_NAMES[entry.kind]);
+  if (!kinds.length) return '';
+  return `<span class="batch-file-queue" data-queue="waiting">⏳ 排队等${[...new Set(kinds)].join('、')} · ${batchState.busy ? '当前任务结束后开始' : '上一个任务暂停了，还没开始'}</span>`;
+}
 // 「🤖 自动调整」任务里这份文件到哪一步了：文件框上显示，排队的写明前面还有几个文件
 function autoQueueBadge(path) {
   const job = batchState.job;
+  if (batchState.busy && job?.kind === 'batch_scan' && job.options?.scan_only) {
+    const queued = new Set(job.auto_queue || []);
+    return batchState.cards.some(c => fileKey(c) === path && queued.has(c.id))
+      ? '<span class="batch-file-queue" data-queue="waiting">⏳ 排队等自动调整 · 全部文件扫完后开始</span>' : '';
+  }
   if (!batchState.busy || job?.kind !== 'batch_scan' || !job.options?.picked || !job.workbooks?.includes(path)) return '';
   const done = new Set(job.completed || []);
   const failed = job.file_errors || {};
@@ -47,7 +104,7 @@ function autoQueueBadge(path) {
   const ahead = waiting.filter(p => p !== current).indexOf(path) + 1;
   return `<span class="batch-file-queue" data-queue="waiting">⏳ 排队等自动调整 · 前面还有 ${ahead} 个文件</span>`;
 }
-const canAuto = cards => !batchState.busy || (autoQueueOpen() && cards.every(c => !openBlocked(c)));
+const canAuto = cards => !autoBlockReason(cards);
 function fileGroups(cards) {
   const groups = new Map();
   for (const card of cards) {
@@ -177,21 +234,32 @@ async function action(work) {
 
 function renderControls() {
   const busy = batchState.busy || requestBusy;
-  for (const id of ['startBtn', 'scanOnlyBtn', 'commitBtn', 'folderInput']) $(id).disabled = busy;
+  for (const id of ['startBtn', 'scanOnlyBtn', 'commitBtn', 'folderInput', 'scanLimit']) $(id).disabled = busy;
   $('unhighlightBtn').disabled = busy || !(batchState.highlighted || batchState.tab_marks);
   $('unhighlightBtn').textContent = `🧽 清除 Excel 标记颜色${batchState.highlighted ? `（${batchState.highlighted}）` : ''}`;
   $('unhighlightResultBtn').classList.toggle('hidden', batchState.busy || !unhighlightResult());
   const plan = commitPlan();
   const offered = plan.cards.length + plan.skipped.length;
-  $('commitBtn').disabled = busy || !offered;
+  // 后台在跑别的批处理任务时提交先排队；后台还要处理的文件里的卡这次不交
+  const commitBlock = queueBlockReason([], '提交');
+  $('commitBtn').disabled = requestBusy || !offered || !!commitBlock;
+  $('commitBtn').title = commitBlock ? `现在不能点：${commitBlock}`
+    : batchState.busy ? `后台正在${busyJobName()}：先排队，结束后接着提交，卡片按那时的颜色处理`
+      + (plan.held.length ? `；后台还要处理的文件里的 ${plan.held.length} 张这次不交` : '') : '';
   $('commitBtn').textContent = selectedFilter === 'all' ? `✓ 确认并处理全部标记${offered ? `（${offered}）` : ''}`
     : `✓ 只处理${COLOR_NAMES[selectedFilter]}色标记（${offered}）`;
   $('largeBtn').disabled = !batchState.cards.length;
   $('largeBtn').title = batchState.cards.length ? '逐张放大查看卡片' : '有待审核卡片后可用';
-  $('openAllBtn').disabled = busy || !manualCards().length;
-  // 复检进行中还能接着点复检：排进同一个任务，不用等它结束
-  const rechecking = batchState.busy && batchState.job?.kind === 'batch_recheck';
-  $('recheckAllBtn').disabled = (busy && !rechecking) || requestBusy || !manualCards().length;
+  $('openAllBtn').disabled = requestBusy || !manualCards().length;
+  $('openAllBtn').title = batchState.busy ? '后台在跑：处理完的文件马上打开，还要等的列出来' : '';
+  // 复检进行中还能接着点复检：排进同一个任务；后台在跑别的批处理任务时排到它后面
+  const manual = manualCards(), recheckAll = recheckAllCards();
+  const held = new Set(manual.filter(c => !recheckAll.includes(c)).map(fileKey)).size;
+  $('recheckAllBtn').disabled = requestBusy || !recheckAll.length;
+  $('recheckAllBtn').title = !manual.length ? '还没有已提交的黄色人工项'
+    : !recheckAll.length ? `现在不能点：${recheckBlockReason(manual)}`
+    : `整份重新检测有黄卡的 ${new Set(recheckAll.map(fileKey)).size} 个文件`
+      + (held ? `（后台还要处理的 ${held} 个文件这次不排）` : '') + queueNote('复检');
   $('pauseBtn').classList.toggle('hidden', !batchState.busy || batchState.job?.kind !== 'batch_scan');
   $('pauseBtn').disabled = requestBusy || !!batchState.job?.pause_requested;
   $('toManualBtn').classList.toggle('hidden', !batchState.mode?.to_manual);
@@ -203,6 +271,7 @@ function renderControls() {
   $('abandonBtn').classList.toggle('hidden', batchState.busy || !batchState.job?.pending_adjustment);
   $('abandonBtn').disabled = requestBusy;
   renderPendingNotice();
+  renderFollowups();
   renderSelectBar();
   $('statusText').textContent = batchState.busy ? '⏳ 后台处理中' : batchState.job?.status === 'interrupted' ? '⏸ 可继续任务' : '就绪';
 }
@@ -242,6 +311,57 @@ function renderPendingNotice() {
   const rows = (pending.rows || []).map(r => `${r.sheet} 第 ${r.row} 行`).join('、');
   const resume = batchState.job.status === 'interrupted' ? '点「继续上次任务」重新核对并写入；' : '';
   $('pendingNotice').textContent = `上次写入没有完成：${name}（${rows}）。${resume}如果你在 Excel 里改过这一行，或不想再自动改它，点「放弃这次写入」：文件不再改动，这几格转为黄色人工处理。其他文件不受影响，可以照常提交、复检。`;
+}
+
+// 秒数写成「3 分 20 秒」「1 小时 5 分」
+function duration(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s} 秒`;
+  if (s < 3600) return `${Math.floor(s / 60)} 分${s % 60 ? ` ${s % 60} 秒` : ''}`;
+  return `${Math.floor(s / 3600)} 小时${Math.floor(s % 3600 / 60) ? ` ${Math.floor(s % 3600 / 60)} 分` : ''}`;
+}
+// 扫描时进度后面接上已用和预计剩余时间（按这次已扫完文件的耗时和文件大小估算）
+function etaText(eta) {
+  if (!eta) return '';
+  if (eta.remaining == null) return ` · 已用 ${duration(eta.elapsed)} · 扫完第一个文件后估算剩余时间`;
+  const done = new Date(Date.now() + eta.remaining * 1000);
+  const clock = `${String(done.getHours()).padStart(2, '0')}:${String(done.getMinutes()).padStart(2, '0')}`;
+  return ` · 已用 ${duration(eta.elapsed)} · 预计还要约 ${duration(eta.remaining)}（${clock} 左右扫完）`;
+}
+// 正在检查的文件：第几张表、这份用了多久、超过多久会跳过
+function renderScanNow(current) {
+  $('scanNow').classList.toggle('hidden', !current);
+  if (!current) return;
+  const where = current.total ? `第 ${current.index} / ${current.total} 张表「${current.sheet}」` : '正在打开';
+  $('scanNow').textContent = `正在检查 ${current.name}：${where} · 这份已用 ${duration(current.seconds)}`
+    + (current.limit ? `（上限 ${duration(current.limit)}，超过就跳过、留给人工）` : '');
+}
+// 扫描超时跳过的文件：写明卡在哪张表，点文件名用 Excel 打开人工检查
+function renderSlowFiles() {
+  const slow = batchState.slow_files || [];
+  $('slowNotice').classList.toggle('hidden', !slow.length);
+  if (!slow.length) return;
+  const files = slow.map(f => `${excelLinkHtml(esc(f.name), { file: f.name, folder: batchState.folder, blocked: openBlocked({ wb_path: f.path }) })}`
+    + `（超过 ${duration(f.limit)}${f.sheet ? `，卡在表「${esc(f.sheet)}」` : ''}）`).join('、');
+  const html = `⏱ ${slow.length} 个文件扫描超时，已跳过，请人工检查：${files}`;
+  if ($('slowText').innerHTML !== html) $('slowText').innerHTML = html;
+  $('slowClearBtn').disabled = requestBusy;
+}
+
+// 排在当前任务后面的复检 / 提交：写明排了什么、什么时候做；暂停时留着的可以现在开始，都可以取消
+function renderFollowups() {
+  const queue = batchState.followups || [];
+  $('followupNotice').classList.toggle('hidden', !queue.length);
+  if (!queue.length) return;
+  const files = ids => new Set(batchState.cards.filter(c => ids.includes(c.id)).map(fileKey)).size;
+  const parts = queue.map(entry => entry.kind === 'batch_recheck'
+    ? `复检 ${files(entry.card_ids)} 个文件（${entry.card_ids.length} 格）`
+    : `提交${entry.color ? `${COLOR_NAMES[entry.color]}色` : ''} ${entry.card_ids.length} 张卡`);
+  $('followupText').textContent = `⏳ 排队中：${parts.join(' → ')}。`
+    + (batchState.busy ? `后台正在${busyJobName()}，结束后按顺序接着做。` : '上一个任务暂停了，这些还没做：可以现在开始，或取消排队。');
+  $('followupStartBtn').classList.toggle('hidden', batchState.busy);
+  $('followupStartBtn').disabled = requestBusy;
+  $('followupCancelBtn').disabled = requestBusy;
 }
 
 // 图片取不到时换成文字占位（整页图连同红框一起换掉）
@@ -315,6 +435,22 @@ function afterNote(card) {
   return card.after_kind ? '没有截到修改后的图，可点击表名在 Excel 中核对' : '还没有修改后的图';
 }
 
+// 卡片上的「🎯 单项复检」：后台在跑时排队，不可点时提示写明原因
+function recheckButtonHtml(card) {
+  const blocked = recheckBlockReason([card]);
+  const title = blocked ? `现在不能点：${blocked}`
+    : `只重新检测这一格（只导出它所在的那一页），同文件其他黄卡不动；整份重查请用文件框上的「复检这个文件」${queueNote('复检')}`;
+  return `<button class="btn btn-outline" data-action="recheck"${blocked ? ' disabled' : ''} title="${esc(title)}">🎯 单项复检</button>`;
+}
+
+// 卡片上的「🤖 自动调整」：不可点时提示写明原因
+function autoButtonHtml(card) {
+  const blocked = autoBlockReason([card]);
+  const title = blocked ? `现在不能点：${blocked}`
+    : `让程序自动加高这一格所在的行（同一行的黄卡一起），同文件其他黄卡不动${autoQueueNote()}`;
+  return `<button class="btn btn-outline" data-action="auto"${blocked ? ' disabled' : ''} title="${esc(title)}">🤖 自动调整</button>`;
+}
+
 function cardHtml(card, large = false) {
   const where = `${card.sheet_name}!${card.cell_addr || '定位待确认'}`;
   const target = { file: card.wb_name, folder: batchState.folder, sheet: card.sheet_name, cell: card.cell_addr, blocked: openBlocked(card) };
@@ -338,7 +474,7 @@ function cardHtml(card, large = false) {
     <p class="batch-state">${card.finalized ? '已提交 · 可人工处理' : '颜色标记待提交'}${card.highlighted && card.after_kind !== 'scan_only' ? ' · 已在 Excel 中标色' : ''}${card.handed_over ? ' · 自动还没试过，可转回自动' : ''}${canMark(card) ? '' : ' · 后台处理完这个文件后可标记'}</p>
     ${card.verified ? '' : `<p class="batch-no-blue">${blueNote(card)}</p>`}
     ${card.auto_skip ? `<p class="batch-auto-off">🙅 不能自动调整：${esc(card.auto_skip)}</p>` : ''}
-    <div class="batch-card-footer"><button class="btn btn-outline" data-action="large"><span class="batch-icon-enlarge" aria-hidden="true"></span>大图审核</button>${card.color === 'yellow' && card.finalized ? `<button class="btn btn-outline" data-action="recheck" title="只重新检测这一格（只导出它所在的那一页），同文件其他黄卡不动；整份重查请用文件框上的「复检这个文件」">🎯 单项复检</button>${card.auto_skip ? '' : `<button class="btn btn-outline" data-action="auto"${canAuto([card]) ? '' : ' disabled'} title="让程序自动加高这一格所在的行（同一行的黄卡一起），同文件其他黄卡不动${batchState.busy ? '；正在自动调整时会排到后面接着做' : ''}">🤖 自动调整</button>`}` : ''}</div></article>`;
+    <div class="batch-card-footer"><button class="btn btn-outline" data-action="large"><span class="batch-icon-enlarge" aria-hidden="true"></span>大图审核</button>${card.color === 'yellow' && card.finalized ? `${recheckButtonHtml(card)}${card.auto_skip ? '' : autoButtonHtml(card)}` : ''}</div></article>`;
 }
 
 // 选中状态不进卡片 HTML：勾选只改类名，不重画卡片、不重新加载图片
@@ -368,8 +504,12 @@ function renderSelectBar() {
   }
   const pickedCards = manualCards().filter(c => selectedIds.has(c.id));
   const picked = pickedCards.length;
-  $('autoSelectedBtn').disabled = requestBusy || !picked || !canAuto(pickedCards);
+  const autoBlock = picked ? autoBlockReason(pickedCards) : '';
+  $('autoSelectedBtn').disabled = requestBusy || !picked || !!autoBlock;
   $('autoSelectedBtn').textContent = `🤖 自动调整选中${picked ? `（${picked}）` : ''}`;
+  $('autoSelectedBtn').title = !picked ? '先选中已提交的黄卡（同一行的黄卡一起调整），确认框里会列出跳过的和原因'
+    : autoBlock ? `现在不能点：${autoBlock}`
+    : `让程序自动加高选中的 ${picked} 张黄卡（同一行的黄卡一起），确认框里会列出跳过的和原因${autoQueueNote()}`;
 }
 
 function toggleSelected(id) {
@@ -523,19 +663,24 @@ function fileHeadHtml(key) {
     : blocked ? `<span class="batch-file-open" data-open="blocked" title="${esc(blocked)}">🔒 暂不能打开 · ${esc(blocked)}</span>`
     : '<span class="batch-file-open" data-open="ready" title="后台不会再处理这份文件，现在可以在 Excel 中打开">✅ 已处理完，可以打开</span>';
   const counts = REVIEW_COLORS.map(color => `<span class="batch-file-count" data-color="${color}"><span class="batch-dot" aria-hidden="true"></span>${COLOR_NAMES[color]} ${cards.filter(c => c.color === color).length}</span>`).join('');
-  const busy = batchState.busy && batchState.job?.kind !== 'batch_recheck';
+  const recheckBlock = manual.length ? recheckBlockReason(manual) : '';
+  const recheckTitle = recheckBlock ? `现在不能点：${recheckBlock}`
+    : `整份文件所有表重新检测，这个文件的 ${manual.length} 张黄卡一起出结果${queueNote('复检')}`;
   const recheck = manual.length
-    ? `<button type="button" class="btn btn-outline" data-file-action="recheck" data-file="${esc(key)}"${busy ? ' disabled' : ''} title="整份文件所有表重新检测，这个文件的 ${manual.length} 张黄卡一起出结果">🔁 复检这个文件</button>`
+    ? `<button type="button" class="btn btn-outline" data-file-action="recheck" data-file="${esc(key)}"${recheckBlock ? ' disabled' : ''} title="${esc(recheckTitle)}">🔁 复检这个文件</button>`
     : '<button type="button" class="btn btn-outline" disabled title="这个文件还没有已提交的黄色人工项">🔁 复检这个文件</button>';
   // 自动试过没修好、文件没改过的黄卡不算：一张都不能自动时按钮不可点
   const autoable = manual.filter(c => !c.auto_skip);
+  const autoBlock = autoable.length ? autoBlockReason(autoable) : '';
   const autoTitle = !manual.length ? '这个文件还没有已提交的黄色人工项'
     : !autoable.length ? `这个文件的 ${manual.length} 张黄卡都不能交给自动（卡片上写了原因），请人工处理`
-    : `让程序自动加高这个文件的 ${autoable.length} 张黄卡（能自动的才调整，确认框里会列出跳过的和原因）`;
-  const auto = `<button type="button" class="btn btn-outline" data-file-action="auto" data-file="${esc(key)}"${!autoable.length || !canAuto(autoable) ? ' disabled' : ''} title="${autoTitle}">🤖 自动调整这个文件${autoable.length && autoable.length < manual.length ? `（${autoable.length} 张）` : ''}</button>`;
-  const queue = autoQueueBadge(key).match(/data-queue="(\w+)"/)?.[1];
+    : autoBlock ? `现在不能点：${autoBlock}`
+    : `让程序自动加高这个文件的 ${autoable.length} 张黄卡（能自动的才调整，确认框里会列出跳过的和原因）${autoQueueNote()}`;
+  const auto = `<button type="button" class="btn btn-outline" data-file-action="auto" data-file="${esc(key)}"${!autoable.length || autoBlock ? ' disabled' : ''} title="${esc(autoTitle)}">🤖 自动调整这个文件${autoable.length && autoable.length < manual.length ? `（${autoable.length} 张）` : ''}</button>`;
+  const badges = autoQueueBadge(key) + followupBadge(key);
+  const queue = badges.match(/data-queue="(\w+)"/)?.[1];
   return `<header class="batch-file-head"${batchState.busy ? ` data-open="${blocked ? 'blocked' : 'ready'}"` : ''}${queue ? ` data-queue="${queue}"` : ''}>
-    <div class="batch-file-title"><span class="batch-file-icon" aria-hidden="true">📄</span><div class="batch-file-name">${excelLinkHtml(esc(first.wb_name || key), target)}${sub ? `<p class="batch-file-path">${esc(sub)}</p>` : ''}</div></div>${autoQueueBadge(key)}${openState}
+    <div class="batch-file-title"><span class="batch-file-icon" aria-hidden="true">📄</span><div class="batch-file-name">${excelLinkHtml(esc(first.wb_name || key), target)}${sub ? `<p class="batch-file-path">${esc(sub)}</p>` : ''}</div></div>${badges}${openState}
     <div class="batch-file-counts" aria-label="这个文件的卡片数">${counts}<span class="batch-file-total">共 ${cards.length} 格</span></div>
     <div class="batch-file-actions"><button type="button" class="btn btn-outline" data-file-action="select" data-file="${esc(key)}" aria-pressed="false">选中本文件的卡</button>${excelLinkHtml('📂 打开文件', { ...target, sheet: jump.sheet_name, cell: jump.cell_addr }, 'btn btn-outline')}${recheck}${auto}</div>
   </header>`;
@@ -561,9 +706,11 @@ function render() {
     : job?.options?.picked ? '正在自动调整你选的格子'
     : scanning && job.options?.back_to_auto ? '正在准备转回自动（改过的文件重新检测）'
     : scanning ? '正在扫描（全部扫完后开始修，之后可以转人工）'
-    : job?.options?.scan_only ? '正在扫描' : '正在自动处理')
+    : job?.options?.scan_only ? (job.auto_queue?.length ? '正在扫描（扫完后接着自动调整排队的文件）' : '正在扫描') : '正在自动处理')
     : job?.status === 'interrupted' ? '已暂停或部分文件未完成' : '当前进度';
-  $('progressText').textContent = `${label}：${completed} / ${total} 个文件 · 待审核 ${batchState.cards.length} 个单元格`;
+  $('progressText').textContent = `${label}：${completed} / ${total} 个文件 · 待审核 ${batchState.cards.length} 个单元格${etaText(batchState.scan_eta)}`;
+  renderScanNow(batchState.scan_eta?.current);
+  renderSlowFiles();
   $('progressFill').style.width = `${total ? Math.round(completed * 100 / total) : 0}%`;
   $('logBox').textContent = batchState.logs.join('\n') || '等待操作…';
   const counts = Object.fromEntries(REVIEW_COLORS.map(c => [c, batchState.cards.filter(card => card.color === c).length]));
@@ -571,7 +718,8 @@ function render() {
   const filterHtml = ['all', ...REVIEW_COLORS].map(color => `<button type="button" class="batch-filter" data-filter="${color}" aria-pressed="${selectedFilter === color}"><span class="batch-dot" aria-hidden="true"></span>${color === 'all' ? '全部' : REVIEW_LABELS[color]}<span class="batch-count">${color === 'all' ? batchState.cards.length : counts[color]}</span></button>`).join('');
   if ($('filters').innerHTML !== filterHtml) $('filters').innerHTML = filterHtml;
   const key = JSON.stringify([batchState.cards, selectedFilter, largeMode, activeCardId, batchState.busy, batchState.open_blocked, markWhileBusy(), autoQueueOpen(),
-    [batchState.job?.workbooks, batchState.job?.completed, batchState.job?.repairing, batchState.job?.file_errors]]);
+    [batchState.job?.workbooks, batchState.job?.completed, batchState.job?.repairing, batchState.job?.file_errors, batchState.job?.auto_queue,
+      batchState.job?.kind, batchState.job?.closing, batchState.followups]]);
   if (renderKey === key) { applySelection(); return; }
   renderKey = key;
   $('cardList').classList.toggle('hidden', largeMode);
@@ -891,10 +1039,14 @@ const KEEPS_PAUSED_SCAN = new Set(['/api/batch/commit', '/api/batch/recheck', '/
 const waitingCard = card => card.waiting ?? card.message === '等待自动处理';
 const COLOR_NAMES = { blue: '蓝', green: '绿', yellow: '黄' };
 const rowKey = card => [card.wb_path, card.sheet_name, card.excel_row, card.kind === 'pagebreak'].join('\0');
-// 和后端 commit_selection 一致：筛选某种颜色时只交这种颜色；同一行混着别的颜色、又共用行高修改的整行先不交
+// 和后端 commit_selection 一致：筛选某种颜色时只交这种颜色；同一行混着别的颜色、又共用行高修改的整行先不交。
+// 后台在跑时排队提交：后台还要处理的文件里的卡（held）这次不交
 function commitPlan(color = selectedFilter) {
-  const ready = batchState.cards.filter(c => !waitingCard(c));
-  if (color === 'all') return { cards: ready, skipped: [] };
+  const unsettled = batchState.cards.filter(c => !waitingCard(c));
+  const held = batchState.busy && markWhileBusy()
+    ? unsettled.filter(c => openBlocked(c) && (color === 'all' || c.color === color)) : [];
+  const ready = unsettled.filter(c => !held.includes(c));
+  if (color === 'all') return { cards: ready, skipped: [], held };
   const rows = new Map();
   for (const card of ready) rows.set(rowKey(card), [...(rows.get(rowKey(card)) || []), card]);
   const cards = [], skipped = [];
@@ -903,7 +1055,7 @@ function commitPlan(color = selectedFilter) {
     const linked = peers.some(c => c.row_height?.saved || c.page_break?.saved || (c.color === 'blue' && c.adoptable));
     (linked && own.length < peers.length ? skipped : cards).push(...own);
   }
-  return { cards, skipped };
+  return { cards, skipped, held };
 }
 
 async function startJob(url, body = {}) {
@@ -922,8 +1074,21 @@ const cardWhere = id => {
   const card = batchState.cards.find(c => c.id === id);
   return card ? `${card.wb_name} ${card.sheet_name}!${card.cell_addr || '?'}` : id;
 };
+// 后台在跑时「打开全部人工待处理文件」：处理完的文件马上打开，还要等的列出原因（不排队）
+async function openReady() {
+  let result;
+  await action(async () => { result = await post('/api/batch/open', { card_ids: manualCards().map(c => c.id) }); });
+  if (!result?.opened || (!result.waiting.length && !result.errors.length)) return;  // 后台刚好空了就照常开了打开任务
+  const list = items => items.map(item => `· ${item.name}：${item.reason}`).join('\n');
+  const parts = [result.opened.length ? `已打开 ${result.opened.length} 个文件：${result.opened.join('、')}` : '现在还没有可以打开的文件。'];
+  if (result.waiting.length) parts.push(`还要等后台处理的 ${result.waiting.length} 个文件，处理完再打开（文件框上的文件名可以单独点）：\n${list(result.waiting)}`);
+  if (result.errors.length) parts.push(`打不开的 ${result.errors.length} 个文件：\n${list(result.errors)}`);
+  await appAlert(parts.join('\n\n'), { title: '打开人工待处理文件' });
+}
+
 async function autoAdjust(ids, title) {
   const queue = batchState.busy;
+  const afterScan = queue && batchState.job?.options?.scan_only;
   if (requestBusy || !ids.length || !canAuto(batchState.cards.filter(c => ids.includes(c.id)))) return;
   let plan;
   try { plan = await post('/api/batch/auto_plan', { card_ids: ids }); }
@@ -940,7 +1105,8 @@ async function autoAdjust(ids, title) {
     + skipped
     + '\n\n请先在 Excel 里保存并关闭这些文件。扫描后改过的文件先整份重新检测。'
     + '\n这些格子的标记颜色会先去掉，没选的黄卡照旧标着。修好的变蓝等你审核；没修好的仍是黄色，重新标色。'
-    + (queue ? '\n\n现在有自动调整正在跑：这些会排在后面，前面的文件做完接着做。' : '')
+    + (afterScan ? '\n\n现在正在扫描：这些先排队，全部文件扫完后接着自动调整，排队的文件调整完才能打开。'
+      : queue ? '\n\n现在有自动调整正在跑：这些会排在后面，前面的文件做完接着做。' : '')
     + `\n\n确定${queue ? '排队' : '开始'}自动调整吗？`;
   if (!(await appConfirm(message, { title, okText: queue ? '排队自动调整' : '开始自动调整', tone: 'info' }))) return;
   await startJob('/api/batch/auto_adjust', { card_ids: ids });
@@ -952,10 +1118,17 @@ async function startBatch(extra = {}) {
   const unsent = batchState.cards.filter(c => !c.finalized).length;
   if (unsent && batchState.folder && folder !== batchState.folder
       && !(await appConfirm(`当前文件夹还有 ${unsent} 张卡片没有提交审核。\n审核记录会保留，以后对原文件夹重新开始全自动处理即可继续审核。\n\n确定换到新文件夹吗？`, { title: '换文件夹', okText: '换到新文件夹' }))) return;
-  await startJob('/api/batch/start', { folder, ...extra }).then(() => {
+  const limit = Number($('scanLimit').value);  // 空 = 自动估算
+  await startJob('/api/batch/start', { folder, ...extra, ...(limit ? { scan_limit_minutes: limit } : {}) }).then(() => {
     if (batchState.busy) { try { localStorage.setItem('clear_handle_excel.lastFolder', folder); } catch (_) {} }
   });
 }
+const SCAN_LIMIT_KEY = 'clear_handle_excel.scanLimit';
+try { $('scanLimit').value = localStorage.getItem(SCAN_LIMIT_KEY) || ''; } catch (_) {}
+$('scanLimit').addEventListener('change', event => {
+  try { localStorage.setItem(SCAN_LIMIT_KEY, event.target.value); } catch (_) {}
+});
+$('slowClearBtn').addEventListener('click', () => action(() => post('/api/batch/slow_files/clear')));
 $('startBtn').addEventListener('click', () => startBatch($('highlightAuto').checked ? { highlight: { ...highlight } } : {}));
 $('scanOnlyBtn').addEventListener('click', async () => {
   if (!$('folderInput').value.trim()) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
@@ -986,10 +1159,12 @@ $('commitBtn').addEventListener('click', async () => {
   const color = selectedFilter;
   const only = color === 'all' ? '' : COLOR_NAMES[color];
   const waiting = batchState.cards.filter(c => waitingCard(c) && (!only || c.color === color)).length;
-  const { cards, skipped } = commitPlan(color);
+  const { cards, skipped, held } = commitPlan(color);
+  const queue = batchState.busy;
   const skippedText = skipped.length ? `\n\n另有 ${skipped.length} 张${only}卡和别的颜色的卡在同一行：一行的行高是整行共用的，只提交${only}卡会连带改动同行的其他卡，这次先不提交。把同一行改成同一种颜色，或切到「全部」一起提交（同行颜色不一致时整行转黄）。` : '';
+  const heldText = held.length ? `\n\n另有 ${held.length} 张在后台还要处理的文件里，这次不提交，后台处理完再提交。` : '';
   if (!cards.length) {
-    $('errorText').textContent = skipped.length ? skippedText.trim()
+    $('errorText').textContent = skipped.length ? skippedText.trim() : held.length ? heldText.trim()
       : waiting ? '卡片都还没轮到自动处理，暂时没有可提交的标记' : `没有${only}色卡片可提交`;
     return;
   }
@@ -999,9 +1174,11 @@ $('commitBtn').addEventListener('click', async () => {
                        : `将提交 ${cards.length} 张卡片：\n蓝（保留修复）${count('blue')}　绿（还原并忽略）${count('green')}　黄（还原后人工）${count('yellow')}`)
     + (cards.some(c => c.color === 'blue' && c.adoptable) ? `\n\n其中 ${cards.filter(c => c.color === 'blue' && c.adoptable).length} 张蓝色是自动检查没通过、由你看图认可的：会按最后一次尝试的行高写入原文件。` : '')
     + (unmarked ? `\n\n其中 ${unmarked} 张没有手动改过颜色，将按当前颜色处理。` : '')
-    + skippedText
-    + (waiting ? `\n\n另有 ${waiting} 张还没轮到自动处理，这次不提交，继续全自动处理后再审核。` : '') + '\n\n确定提交吗？';
-  if (await appConfirm(message, { title: only ? `只处理${only}色标记` : '确认并处理全部标记', okText: '提交', tone: 'info' })) {
+    + skippedText + heldText
+    + (waiting ? `\n\n另有 ${waiting} 张还没轮到自动处理，这次不提交，继续全自动处理后再审核。` : '')
+    + (queue ? `\n\n后台正在${busyJobName()}：先排队，结束后接着提交。到时这些卡按那时的颜色处理，排队期间还可以改颜色。` : '')
+    + `\n\n确定${queue ? '排队' : ''}提交吗？`;
+  if (await appConfirm(message, { title: only ? `只处理${only}色标记` : '确认并处理全部标记', okText: queue ? '排队提交' : '提交', tone: 'info' })) {
     await startJob('/api/batch/commit', { card_ids: cards.map(c => c.id), color });
   }
 });
@@ -1020,8 +1197,14 @@ $('copyLogErrorsBtn').addEventListener('click', event => copyText(errorLogLines(
 // 报错文字在很多地方被设置/清空，统一盯着它显示或隐藏复制按钮
 new MutationObserver(renderCopyErrorBtn).observe($('errorText'), { childList: true, characterData: true, subtree: true });
 new MutationObserver(renderCopyErrorBtn).observe($('pendingNotice'), { attributes: true, attributeFilter: ['class'] });
-$('openAllBtn').addEventListener('click', () => startJob('/api/batch/open', { card_ids: manualCards().map(c => c.id) }));
-$('recheckAllBtn').addEventListener('click', () => startJob('/api/batch/recheck', { card_ids: manualCards().map(c => c.id) }));
+$('openAllBtn').addEventListener('click', () => batchState.busy ? openReady() : startJob('/api/batch/open', { card_ids: manualCards().map(c => c.id) }));
+$('recheckAllBtn').addEventListener('click', () => startJob('/api/batch/recheck', { card_ids: recheckAllCards().map(c => c.id) }));
+$('followupStartBtn').addEventListener('click', () => action(() => post('/api/batch/followups/start')));
+$('followupCancelBtn').addEventListener('click', async () => {
+  if (await appConfirm('取消还没开始的排队复检 / 提交？卡片的颜色和标记都不变，之后可以再点。', { title: '取消排队', okText: '取消排队' })) {
+    await action(() => post('/api/batch/followups/cancel'));
+  }
+});
 $('largeBtn').addEventListener('click', () => openLarge());
 $('closeLargeBtn').addEventListener('click', () => { largeMode = false; layoutKey = ''; render(); });
 $('prevBtn').addEventListener('click', () => moveCard(-1));

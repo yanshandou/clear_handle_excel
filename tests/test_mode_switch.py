@@ -1,6 +1,11 @@
+import http.client
 import importlib
+import json
 import tempfile
+import threading
+import time
 import unittest
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -403,6 +408,281 @@ class ModeSwitchTests(unittest.TestCase):
         self.assertNotIn(self.paths[0], self.job["completed"])
         self.assertNotIn(self.paths[0], self.job["scanned"])
         self.assertEqual(self.job["rounds"][self.paths[0]], 1)
+
+    def scan_only_job(self):
+        """「只扫描」正在跑：两个文件各一处问题，扫到时转成黄色人工项"""
+        self.job["options"] = {"folder": str(self.root), "scan_only": True, "highlight": dict(batch.DEFAULT_HIGHLIGHT)}
+        cards = []
+        for path, addr in ((self.paths[0], "A5"), (self.paths[1], "A3")):
+            card, item = self.add(path, addr, int(addr[1:]))
+            item.update(page_index=0, bbox=[0, 0, 1, 1])
+            cards.append(card)
+        return cards
+
+    def test_auto_adjust_clicked_during_scan_only_runs_after_all_files_are_scanned(self):
+        first, second = self.scan_only_job()
+        order = []
+
+        def refresh(excel, path, *a, **k):
+            order.append(("scan", path))
+            if path == self.paths[1]:
+                # 扫第二个文件时：扫完的第一个文件可以排队，正在扫的不行
+                with self.assertRaisesRegex(ValueError, "再点自动调整"):
+                    batch.enqueue_auto_adjust([second["id"]])
+                self.assertTrue(batch.enqueue_auto_adjust([first["id"]]))
+                self.assertTrue(first["auto_pick"])
+                # 排队的文件后台还要读、还要改：先不能打开、不能改颜色
+                self.assertIn("排队等自动调整", batch.open_block_reason(self.job, Path(self.paths[0])))
+                with self.assertRaisesRegex(ValueError, "才能改颜色"):
+                    batch.mark(first["id"], "green")
+
+        with patch.object(batch, "_refresh", side_effect=refresh), \
+                patch.object(batch, "_back_to_auto", side_effect=lambda e, s, path, picked=False:
+                             order.append(("back", path, picked))), \
+                patch.object(batch, "_repair_file", side_effect=lambda e, s, path: order.append(("fix", path))), \
+                patch.object(batch, "_finish_picked"), patch.object(batch, "_sync_highlights_safely"):
+            self.assertEqual(batch.run(), [self.paths[0]])
+        # 两个文件都扫完，才接着自动调整排队的文件
+        self.assertEqual(order, [("scan", self.paths[0]), ("scan", self.paths[1]),
+                                 ("back", self.paths[0], True), ("fix", self.paths[0])])
+        self.assertEqual(second["color"], "yellow")  # 没排队的照旧留给人工
+        # 同一个任务就地改成自动调整；全部扫完了，没有要放回的扫描任务
+        self.assertEqual(self.job["options"], {"folder": str(self.root), "back_to_auto": True, "picked": True,
+                                               "card_ids": [first["id"]]})
+        self.assertEqual((self.job["workbooks"], self.job["completed"]), ([self.paths[0]], [self.paths[0]]))
+        self.assertNotIn("auto_queue", self.job)
+        self.assertNotIn("paused_scan", self.job)
+        self.assertTrue(self.job["closing"])
+
+    def test_scan_only_without_queue_finishes_as_before(self):
+        self.scan_only_job()
+        with patch.object(batch, "_refresh"), patch.object(batch, "_back_to_auto") as back:
+            self.assertEqual(batch.run(), self.paths)
+        back.assert_not_called()
+        self.assertTrue(self.job["options"]["scan_only"])
+        self.assertEqual(self.job["completed"], self.paths)
+        self.assertTrue(self.job["closing"])  # 收尾时再点自动调整另起任务
+        self.assertFalse(batch.enqueue_auto_adjust([]))
+
+    def test_unscanned_files_can_still_be_resumed_after_queued_auto_adjust(self):
+        first, _ = self.scan_only_job()
+
+        def refresh(excel, path, *a, **k):
+            if path == self.paths[1]:
+                self.assertTrue(batch.enqueue_auto_adjust([first["id"]]))
+                raise ValueError("文件被占用")
+
+        with patch.object(batch, "_refresh", side_effect=refresh), patch.object(batch, "_back_to_auto"), \
+                patch.object(batch, "_repair_file"), patch.object(batch, "_finish_picked"), \
+                patch.object(batch, "_sync_highlights_safely"), \
+                patch.object(self.wf, "interrupt_execution_batch") as interrupt:
+            self.wf.run_pending_workflow()
+        # 自动调整做完：没扫完的「只扫描」放回来，可以「继续上次任务」接着扫出错的文件
+        job = self.wf.STATE["job"]
+        self.assertEqual((job["status"], job["options"]["scan_only"]), ("interrupted", True))
+        self.assertEqual(job["completed"], [self.paths[0]])
+        self.assertIn(self.paths[1], job["file_errors"])
+        self.assertNotIn("auto_queue", job)
+        self.assertIn("继续上次任务", interrupt.call_args.args[0])
+        self.assertEqual(batch._data()["auto_versions"][self.paths[0]], self.wf._file_version(Path(self.paths[0])))
+
+    def test_pause_during_scan_only_keeps_the_queue_for_resume(self):
+        first, _ = self.scan_only_job()
+
+        def refresh(excel, path, *a, **k):
+            if path == self.paths[1]:
+                self.assertTrue(batch.enqueue_auto_adjust([first["id"]]))
+                self.job["pause_requested"] = True
+
+        with patch.object(batch, "_refresh", side_effect=refresh), patch.object(batch, "_back_to_auto") as back:
+            batch.run()
+        back.assert_not_called()
+        self.assertEqual(self.job["auto_queue"], [first["id"]])
+        self.assertTrue(self.job["options"]["scan_only"])
+
+    def handed_over_cards(self):
+        """两个文件各一张已提交的黄卡（只扫描转人工后的样子）"""
+        cards = self.scan_only_job()
+        for path in self.paths:
+            batch._hand_over(path)
+        return cards
+
+    def test_recheck_and_commit_clicked_during_another_task_are_queued_behind_it(self):
+        first, second = self.handed_over_cards()
+        self.wf.STATE["busy"] = False
+        self.assertFalse(batch.enqueue_followup("batch_recheck", [first["id"]]))  # 后台空着：调用方直接开始
+        self.wf.STATE["busy"] = True
+        self.job["completed"] = [self.paths[0]]  # 第一个文件扫完，第二个还在扫
+        with self.assertRaisesRegex(ValueError, "b.xlsx：.*再点复检"):
+            batch.enqueue_followup("batch_recheck", [second["id"]])
+        self.assertTrue(batch.enqueue_followup("batch_recheck", [first["id"]]))
+        self.assertTrue(batch.enqueue_followup("batch_recheck", [first["id"]], single=True))  # 和上一个复检合并
+        self.assertTrue(batch.enqueue_followup("batch_commit", [first["id"]], color="yellow"))
+        self.assertTrue(batch.enqueue_followup("batch_recheck", [first["id"]], single=True))  # 隔着提交：另排
+        self.assertEqual(batch._data()["followups"], [
+            {"kind": "batch_recheck", "card_ids": [first["id"]], "full_paths": [self.paths[0]]},
+            {"kind": "batch_commit", "card_ids": [first["id"]], "color": "yellow"},
+            {"kind": "batch_recheck", "card_ids": [first["id"]], "full_paths": []},
+        ])
+        self.assertEqual(len(batch.snapshot()["followups"]), 3)
+        # 别的页面的任务（精简 Sheet 等）不排
+        self.job["kind"] = "clean_sheets"
+        with self.assertRaisesRegex(ValueError, "后台正在精简 Sheet.*结束后才能提交"):
+            batch.enqueue_followup("batch_commit", [first["id"]])
+        self.assertEqual(batch.cancel_followups(), 3)
+        self.assertEqual(batch.snapshot()["followups"], [])
+
+    def run_with_followups(self, followups, *, paused=False):
+        """跑一次任务（batch.run 换成只记下任务种类），结束后看排队的复检 / 提交怎么接着开始"""
+        batch._data()["followups"] = followups
+        ran = []
+
+        def fake_run():
+            job = self.wf.STATE["job"]
+            ran.append((job["kind"], dict(job["options"])))
+            if paused and len(ran) == 1:
+                job["pause_requested"] = True
+                return list(job["workbooks"])  # 暂停：文件没做完，任务停在「可继续」
+            return []
+
+        with patch.object(batch, "run", side_effect=fake_run), \
+                patch.object(self.wf, "interrupt_execution_batch"), patch.object(self.wf, "suspend_report_updates"):
+            self.wf.run_pending_workflow()
+        return ran
+
+    def test_queued_followups_start_in_order_when_the_task_ends(self):
+        first, second = self.handed_over_cards()
+        second.update(color="blue", finalized=False, marked=True)  # 排队后又改成蓝：复检不再查它
+        ran = self.run_with_followups([
+            {"kind": "batch_recheck", "card_ids": [second["id"]], "full_paths": [self.paths[1]]},
+            {"kind": "batch_recheck", "card_ids": [first["id"]], "full_paths": [self.paths[0], self.paths[1]]},
+            {"kind": "batch_commit", "card_ids": [second["id"]], "color": None},
+        ])
+        self.assertEqual([kind for kind, _ in ran], ["batch_scan", "batch_recheck", "batch_commit"])
+        self.assertEqual(ran[1][1], {"card_ids": [first["id"]], "full_paths": [self.paths[0]]})
+        self.assertEqual(ran[2][1], {"card_ids": [second["id"]]})  # 提交按到时的颜色
+        self.assertEqual(batch._data()["followups"], [])
+        self.assertFalse(self.wf.STATE["busy"])
+        self.assertTrue(any("已经没有要复检的卡" in line for line in self.wf.STATE["logs"]))
+
+    def test_followups_wait_when_you_pause_and_can_start_now(self):
+        first, _ = self.handed_over_cards()
+        queued = [{"kind": "batch_recheck", "card_ids": [first["id"]], "full_paths": [self.paths[0]]}]
+        ran = self.run_with_followups(list(queued), paused=True)
+        self.assertEqual([kind for kind, _ in ran], ["batch_scan"])
+        self.assertEqual(batch._data()["followups"], queued)  # 暂停了：留着，页面上可以现在开始或取消
+        with self.wf.STATE_LOCK:
+            self.assertTrue(batch.start_followup({}))  # 「现在开始」
+        self.assertEqual((self.wf.STATE["job"]["kind"], self.wf.STATE["busy"]), ("batch_recheck", True))
+        self.assertEqual(self.wf.STATE["job"]["paused_scan"]["kind"], "batch_scan")  # 暂停的扫描收起来，之后还能继续
+
+    def test_open_all_during_a_task_opens_finished_files_and_lists_the_rest(self):
+        first, second = self.handed_over_cards()
+        self.job["completed"] = [self.paths[0]]
+        with patch.object(batch, "open_workbooks_for_review", return_value={}) as opener, \
+                patch.object(batch.autofix, "wait_for_writes"):
+            result = batch.open_ready([first["id"], second["id"]])
+        opener.assert_called_once_with([(Path(self.paths[0]), "S1", "A5", 5)])
+        self.assertEqual(result["opened"], ["a.xlsx"])
+        self.assertEqual([w["name"] for w in result["waiting"]], ["b.xlsx"])
+        self.assertIn("才能打开", result["waiting"][0]["reason"])
+        self.assertEqual(result["errors"], [])
+
+    def test_file_over_the_scan_limit_is_skipped_for_manual_check(self):
+        first, second = self.scan_only_job()
+        watchdog = Mock(deadline_hit=False, timed_out=False)
+        limits = []
+
+        def refresh(excel, path, *a, **k):
+            limits.append(self.job["scan_limit"]["seconds"])
+            if path == self.paths[0]:
+                # 卡在第二张表：看门狗到点结束 Excel，COM 调用报错
+                self.wf.SCAN_NOW.update(path=path, sheet="レイアウト", index=2, total=5, started=time.time() - 600)
+                watchdog.deadline_hit = True
+                raise RuntimeError("RPC サーバーを利用できません。")
+            watchdog.deadline_hit = False
+
+        with patch.object(batch, "ExcelWatchdog", return_value=watchdog), \
+                patch.object(batch, "_refresh", side_effect=refresh), patch.object(batch, "_hand_over") as hand:
+            self.assertEqual(batch.run(), self.paths)
+        self.assertEqual(limits, [batch.SCAN_LIMIT_FIRST, batch.SCAN_LIMIT_FIRST])  # 还没扫完 2 份：先给 10 分钟
+        watchdog.deadline.assert_any_call(batch.SCAN_LIMIT_FIRST)
+        # 超时的文件不重试、不转黄卡，算这次做完（继续上次任务也不再卡在它上面）
+        hand.assert_called_once_with(self.paths[1])
+        self.assertEqual(self.job["completed"], self.paths)
+        self.assertNotIn(self.paths[0], self.job.get("file_errors", {}))
+        self.assertEqual(first["color"], "yellow")
+        slow = batch.snapshot()["slow_files"]
+        self.assertEqual([(s["name"], s["sheet"], s["limit"]) for s in slow], [("a.xlsx", "レイアウト", 600)])
+        self.assertTrue(any("扫描超过 10 分钟，卡在表「レイアウト」" in line for line in self.wf.STATE["logs"]))
+        batch.clear_slow_files()
+        self.assertEqual(batch.snapshot()["slow_files"], [])
+
+    def test_successful_scan_clears_an_old_slow_file_notice(self):
+        self.scan_only_job()
+        batch._data()["slow_files"] = {self.paths[0]: {"sheet": "S1", "limit": 180, "at": ""}}
+        with patch.object(batch, "_refresh"):
+            batch.run()
+        self.assertEqual(batch._data()["slow_files"], {})
+        self.assertEqual(set(self.job["scan_seconds"]), set(self.paths))
+
+    def test_scan_limit_is_estimated_from_files_already_scanned(self):
+        job = {"options": {}, "scan_seconds": {self.paths[0]: 20.0}}
+        self.assertEqual(batch._scan_limit(job, self.paths[1]), batch.SCAN_LIMIT_FIRST)  # 只扫完 1 份：估不准
+        job["scan_seconds"][self.paths[1]] = 40.0  # 两份一样大，平均 30 秒
+        self.assertEqual(batch._scan_limit(job, self.paths[0]), batch.SCAN_LIMIT_FLOOR)  # 5 倍才 150 秒：最少 3 分钟
+        job["scan_seconds"] = {self.paths[0]: 100.0, self.paths[1]: 140.0}
+        self.assertEqual(batch._scan_limit(job, self.paths[0]), 600)  # 平均 120 秒 × 5
+        job["scan_seconds"] = {self.paths[0]: 400.0, self.paths[1]: 400.0}
+        self.assertEqual(batch._scan_limit(job, self.paths[0]), 900)  # 最多和看门狗的无进展上限一样
+        job["options"]["scan_limit_minutes"] = 5
+        self.assertEqual(batch._scan_limit(job, self.paths[0]), 300)  # 网页上选了固定分钟数
+
+    def test_scan_eta_uses_finished_files_and_the_current_one(self):
+        self.job.update(options={"folder": str(self.root), "scan_only": True}, scan_seconds={self.paths[0]: 10.0},
+                        scanned=[self.paths[0]], completed=[self.paths[0]],
+                        scan_limit={"path": self.paths[1], "seconds": 180})
+        self.wf.SCAN_NOW.clear()
+        self.wf.SCAN_NOW.update(path=self.paths[1], sheet="S2", index=3, total=8, started=time.time() - 4)
+        eta = batch.snapshot()["scan_eta"]
+        self.assertEqual((eta["elapsed"], eta["remaining"]), (14, 6))  # 两份一样大：这份估计 10 秒，已用 4 秒
+        self.assertEqual(eta["current"], {"name": "b.xlsx", "sheet": "S2", "index": 3, "total": 8, "seconds": 4,
+                                          "limit": 180})
+        self.job["scan_seconds"] = {}
+        self.assertIsNone(batch.snapshot()["scan_eta"]["remaining"])  # 一份都没扫完：不估
+        self.job["phase"] = "repair"
+        self.assertIsNone(batch.snapshot()["scan_eta"])  # 全自动的修复阶段不算扫描
+
+    def test_web_queues_recheck_and_commit_and_opens_ready_files_during_a_task(self):
+        import web_clip_fixer
+
+        first, second = self.handed_over_cards()
+        self.job["completed"] = [self.paths[0]]
+        importlib.reload(web_clip_fixer)  # 换成本测试的 STATE
+        server = ThreadingHTTPServer(("127.0.0.1", 0), web_clip_fixer.WebHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        def post(path, payload):
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            try:
+                connection.request("POST", path, json.dumps(payload), {"Content-Type": "application/json"})
+                return json.loads(connection.getresponse().read())
+            finally:
+                connection.close()
+
+        self.assertEqual(post("/api/batch/recheck", {"card_ids": [first["id"]]}), {"ok": True, "queued": True})
+        self.assertEqual(post("/api/batch/commit", {"card_ids": [first["id"]], "color": "yellow"}),
+                         {"ok": True, "queued": True})
+        self.assertIn("再点复检", post("/api/batch/recheck", {"card_ids": [second["id"]]})["error"])
+        with patch.object(batch, "open_workbooks_for_review", return_value={}), \
+                patch.object(batch.autofix, "wait_for_writes"):
+            opened = post("/api/batch/open", {"card_ids": [first["id"], second["id"]]})
+        self.assertEqual((opened["opened"], [w["name"] for w in opened["waiting"]]), (["a.xlsx"], ["b.xlsx"]))
+        self.assertIn("后台可能还在忙", post("/api/batch/followups/start", {})["error"])
+        self.assertEqual(post("/api/batch/followups/cancel", {}), {"ok": True, "cancelled": 2})
+        self.assertIn("扫描上限", post("/api/batch/start", {"folder": str(self.root), "scan_limit_minutes": 7})["error"])
 
 
 if __name__ == "__main__":

@@ -34,6 +34,8 @@ class ExcelWatchdog:
         self._stop = threading.Event()
         self._progress = time.monotonic()
         self._expired = False
+        self._deadline: float | None = None
+        self._deadline_hit = False
         self._processes: list[tuple[Callable[[], None], Callable[[], None]]] = []
         self._thread = threading.Thread(target=self._run, name="excel-watchdog", daemon=True)
 
@@ -44,6 +46,22 @@ class ExcelWatchdog:
         with self._lock:
             self._progress = time.monotonic()
             self._expired = False
+            self._deadline_hit = False  # 开始下一件事了：上一份文件超时已经处理过
+
+    def deadline(self, seconds: float | None) -> None:
+        """一份文件扫描的时间上限：从现在起超过 seconds 秒，不管有没有进展都结束 Excel（deadline_hit 为真）。
+        None 取消上限，但保留 deadline_hit，调用方在异常处理里还要看是不是超时"""
+        with self._lock:
+            if seconds is None:
+                self._deadline = None
+            else:
+                self._deadline = time.monotonic() + seconds
+                self._deadline_hit = False
+
+    @property
+    def deadline_hit(self) -> bool:
+        with self._lock:
+            return self._deadline_hit
 
     @property
     def timed_out(self) -> bool:
@@ -60,13 +78,18 @@ class ExcelWatchdog:
         while not self._stop.wait(min(1.0, self.timeout / 4)):
             expired = False
             with self._lock:
-                if not self._expired and time.monotonic() - self._progress >= self.timeout:
+                now = time.monotonic()
+                overdue = self._deadline is not None and now >= self._deadline
+                if not self._expired and (overdue or now - self._progress >= self.timeout):
                     self._expired = True
+                    if overdue:
+                        self._deadline, self._deadline_hit = None, True
                     expired = bool(self._processes)
                     if expired:
                         # 结束 Excel 之前记下任务线程停在哪一行：卡在哪个调用上一看就知道
                         from core import debug_log
-                        debug_log.dump_threads(f"看门狗：后台 Excel {self.timeout:.0f} 秒没有进展，即将结束它")
+                        debug_log.dump_threads("看门狗：这份文件扫描超过时间上限，即将结束后台 Excel" if overdue
+                                               else f"看门狗：后台 Excel {self.timeout:.0f} 秒没有进展，即将结束它")
                     for terminate, _ in self._processes:
                         try:
                             terminate()

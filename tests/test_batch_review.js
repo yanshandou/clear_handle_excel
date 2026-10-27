@@ -379,3 +379,103 @@ test('file box says which files are queued for auto adjust', () => {
   assert.match(p.run(`autoQueueBadge('D.xlsx')`), /排队等自动调整 · 前面还有 1 个文件/);
   assert.equal(p.run(`autoQueueBadge('E.xlsx')`), '');
 });
+
+test('while scan only runs, scanned files can queue auto adjust until all files are scanned', () => {
+  const p = page();
+  p.run(`batchState.cards[0].wb_path = 'A.xlsx'; batchState.cards[1].wb_path = 'B.xlsx';
+    batchState.cards[0].color = 'yellow'; batchState.cards[0].finalized = true;
+    batchState.busy = true; batchState.open_blocked = {'A.xlsx': '后台正在处理这份文件，处理完才能打开'};
+    batchState.job = {kind: 'batch_scan', options: {scan_only: true}, workbooks: ['B.xlsx', 'A.xlsx'], completed: ['B.xlsx']};`);
+  assert.equal(p.run(`canAuto([batchState.cards[1]])`), true);
+  assert.match(p.run(`autoButtonHtml(batchState.cards[1])`), /现在正在扫描：先排队，全部文件扫完后接着做/);
+  // 还在扫的文件：按钮不可点，提示写明原因
+  assert.equal(p.run(`canAuto([batchState.cards[0]])`), false);
+  assert.match(p.run(`autoButtonHtml(batchState.cards[0])`), /disabled title="现在不能点：book.xlsx：后台正在处理这份文件，处理完再点自动调整"/);
+  // 排上队的文件框写明扫完后开始
+  p.run(`batchState.job.auto_queue = ['b']`);
+  assert.match(p.run(`autoQueueBadge('B.xlsx')`), /排队等自动调整 · 全部文件扫完后开始/);
+  assert.equal(p.run(`autoQueueBadge('A.xlsx')`), '');
+  // 收尾、暂停、别的任务：都写明为什么不能点
+  p.run(`batchState.job.closing = true`);
+  assert.equal(p.run(`autoBlockReason([batchState.cards[1]])`), '只扫描正在收尾，结束后才能自动调整');
+  p.run(`batchState.job.closing = false; batchState.job.pause_requested = true`);
+  assert.equal(p.run(`autoBlockReason([batchState.cards[1]])`), '正在暂停，停下后才能自动调整');
+  p.run(`batchState.job = {kind: 'batch_scan', options: {}, workbooks: ['A.xlsx'], completed: []}`);
+  assert.equal(p.run(`autoBlockReason([batchState.cards[1]])`), '后台正在全自动处理，结束后才能自动调整');
+  p.run(`batchState.job = {kind: 'batch_commit', options: {}, workbooks: ['A.xlsx'], completed: []}`);
+  assert.equal(p.run(`autoBlockReason([batchState.cards[1]])`), '后台正在提交审核，结束后才能自动调整');
+  assert.match(p.run(`fileHeadHtml('B.xlsx')`), /disabled title="现在不能点：后台正在提交审核，结束后才能自动调整"/);
+});
+
+test('recheck and commit queue behind other background tasks, except files the task still needs', () => {
+  const p = page();
+  p.run(`batchState.cards[0].wb_path = 'A.xlsx'; batchState.cards[1].wb_path = 'B.xlsx';
+    batchState.cards[0].color = 'yellow'; batchState.cards[0].finalized = true;
+    batchState.busy = true; batchState.open_blocked = {'A.xlsx': '后台正在处理这份文件，处理完才能打开'};
+    batchState.job = {kind: 'batch_scan', options: {scan_only: true}, workbooks: ['B.xlsx', 'A.xlsx'], completed: ['B.xlsx']};`);
+  // 扫完的文件：复检可以点，提示写明先排队
+  assert.match(p.run(`fileHeadHtml('B.xlsx')`), /data-file-action="recheck" data-file="B.xlsx" title="[^"]*；后台正在只扫描：先排队，结束后接着复检"/);
+  assert.match(p.run(`recheckButtonHtml(batchState.cards[1])`), /^<button[^>]*data-action="recheck" title=/);
+  // 还在扫的文件：不能排，写明原因
+  assert.match(p.run(`recheckButtonHtml(batchState.cards[0])`), /disabled title="现在不能点：book.xlsx：后台正在处理这份文件，处理完再点复检"/);
+  assert.equal(p.run(`recheckAllCards().map(c => c.id).join()`), 'b');
+  // 提交：还在扫的文件里的卡这次不交
+  assert.equal(p.run(`commitPlan('all').cards.map(c => c.id).join()`), 'b');
+  assert.equal(p.run(`commitPlan('all').held.map(c => c.id).join()`), 'a');
+  assert.equal(p.run(`queueBlockReason([], '提交')`), '');
+  assert.equal(p.run(`queueNote('提交')`), '；后台正在只扫描：先排队，结束后接着提交');
+  // 复检正在跑：并进去，不用排到后面
+  p.run(`batchState.job = {kind: 'batch_recheck', options: {}, workbooks: ['A.xlsx'], completed: []}`);
+  assert.equal(p.run(`recheckBlockReason([batchState.cards[0]])`), '');
+  assert.match(p.run(`queueNote('复检')`), /复检进行中/);
+  // 提交 / 清除标色等：做完前所有文件都排着
+  p.run(`batchState.job = {kind: 'batch_commit', options: {}, completed: []}; batchState.open_blocked = {'A.xlsx': '后台任务正在处理文件，结束后才能打开', 'B.xlsx': '后台任务正在处理文件，结束后才能打开'};`);
+  assert.equal(p.run(`recheckBlockReason([batchState.cards[0], batchState.cards[1]])`), '');
+  assert.equal(p.run(`commitPlan('all').held.length`), 0);
+  // 其他页面的任务（精简 Sheet 等）：不排，写明原因
+  p.run(`batchState.job = {kind: 'clean_sheets', options: {}}`);
+  assert.equal(p.run(`queueBlockReason([], '提交')`), '后台正在处理别的任务，结束后才能提交');
+  assert.match(p.run(`recheckButtonHtml(batchState.cards[1])`), /disabled title="现在不能点：后台正在处理别的任务，结束后才能复检"/);
+});
+
+test('queued rechecks and commits are listed with start-now and cancel', () => {
+  const p = page();
+  p.run(`batchState.cards[0].wb_path = 'A.xlsx'; batchState.cards[1].wb_path = 'B.xlsx'; batchState.busy = true;
+    batchState.job = {kind: 'batch_scan', options: {scan_only: true}, workbooks: ['A.xlsx', 'B.xlsx'], completed: []};
+    batchState.followups = [{kind: 'batch_recheck', card_ids: ['b'], full_paths: ['B.xlsx']}, {kind: 'batch_commit', card_ids: ['a', 'b'], color: 'blue'}];
+    renderFollowups();`);
+  assert.equal(p.elements.get('followupText').textContent,
+    '⏳ 排队中：复检 1 个文件（1 格） → 提交蓝色 2 张卡。后台正在只扫描，结束后按顺序接着做。');
+  assert.match(p.run(`followupBadge('B.xlsx')`), /排队等复检、提交 · 当前任务结束后开始/);
+  assert.match(p.run(`followupBadge('A.xlsx')`), /排队等提交/);
+  p.run(`batchState.busy = false; renderFollowups();`);
+  assert.match(p.elements.get('followupText').textContent, /上一个任务暂停了，这些还没做/);
+});
+
+test('scan shows elapsed and remaining time, the current file, and files skipped for being slow', () => {
+  const p = page();
+  assert.equal(p.run(`duration(42)`), '42 秒');
+  assert.equal(p.run(`duration(200)`), '3 分 20 秒');
+  assert.equal(p.run(`duration(3720)`), '1 小时 2 分');
+  assert.equal(p.run(`etaText(null)`), '');
+  assert.equal(p.run(`etaText({elapsed: 30, remaining: null})`), ' · 已用 30 秒 · 扫完第一个文件后估算剩余时间');
+  assert.match(p.run(`etaText({elapsed: 600, remaining: 480})`), /^ · 已用 10 分 · 预计还要约 8 分（\d\d:\d\d 左右扫完）$/);
+  p.run(`renderScanNow({name: 'a.xlsx', sheet: 'レイアウト', index: 2, total: 5, seconds: 75, limit: 600})`);
+  assert.equal(p.elements.get('scanNow').textContent,
+    '正在检查 a.xlsx：第 2 / 5 张表「レイアウト」 · 这份已用 1 分 15 秒（上限 10 分，超过就跳过、留给人工）');
+  p.run(`batchState.slow_files = [{path: 'C:/Excel/a.xlsx', name: 'a.xlsx', sheet: 'レイアウト', limit: 600}]; renderSlowFiles();`);
+  assert.equal(p.elements.get('slowText').innerHTML,
+    '⏱ 1 个文件扫描超时，已跳过，请人工检查：<a>a.xlsx</a>（超过 10 分，卡在表「レイアウト」）');
+});
+
+test('open all during a background task opens finished files and lists the rest', async () => {
+  const p = page();
+  p.run(`batchState.busy = true; batchState.job = {kind: 'batch_scan', options: {scan_only: true}, workbooks: [], completed: []};
+    alerts = []; appAlert = async (m) => { alerts.push(m); };
+    post = async (url, payload) => { requests.push({url, payload}); return {ok: true, opened: ['b.xlsx'],
+      waiting: [{name: 'a.xlsx', reason: '还没轮到这份文件，处理完才能打开'}], errors: []}; };`);
+  await p.run(`openReady()`);
+  assert.deepEqual(p.requests.map(r => r.url), ['/api/batch/open']);
+  assert.match(p.run('alerts[0]'), /已打开 1 个文件：b\.xlsx/);
+  assert.match(p.run('alerts[0]'), /· a\.xlsx：还没轮到这份文件，处理完才能打开/);
+});
