@@ -525,6 +525,35 @@ class QuickTaskTests(unittest.TestCase):
         ])
         self.assertIn("2 个新版 Sheet 已去掉「新」字", files["layout.xlsx"]["current_action"])
 
+    def test_clean_sheets_previews_and_deletes_unpaired_old_layout(self):
+        name = "SSPLE0002_個別支援計画書（様式２）.xlsx"
+        sheets = [
+            "変更履歴", "概要", "帳票_出力内容", "レイアウト(1ページ)",
+            "レイアウト(複数ページ)", "旧レイアウト", "JSONサンプル",
+        ]
+        self.add_book(name, sheets)
+
+        preview = self.workflow.preview_backup_sheets(str(self.folder))["files"][0]
+        self.assertEqual(preview["backups"], ["旧レイアウト"])
+        self.assertEqual(preview["uncertain"], [])
+        self.assertEqual(preview["new_old_pairs"], {})
+        self.assertEqual(self.books[name].saved, [])
+
+        job = self.run_task("clean_sheets")
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(self.books[name].saved, [[s for s in sheets if s != "旧レイアウト"]])
+        self.assertEqual(self.report_files()[name]["deleted_backups"], ["旧レイアウト"])
+
+    def test_unpaired_old_sheet_can_be_manually_kept(self):
+        self.add_book("layout.xlsx", ["レイアウト(1ページ)", "旧レイアウト"])
+        plan = {"layout.xlsx": {"delete": [], "uncertain": []}}
+        self.assertTrue(self.workflow.queue_job("clean_sheets", {"folder": str(self.folder), "plan": plan}))
+        self.workflow.run_pending_workflow()
+
+        self.assertEqual(self.workflow.STATE["job"]["status"], "completed")
+        self.assertEqual([s.Name for s in self.books["layout.xlsx"].sheets], ["レイアウト(1ページ)", "旧レイアウト"])
+        self.assertEqual(self.report_files()["layout.xlsx"]["deleted_backups"], [])
+
     def test_clean_sheets_strips_new_prefix_without_old_version(self):
         # 没有旧表时「新」字也没有意义；只改名、不删表也要用 Excel 打开保存
         self.add_book("layout.xlsx", ["レイアウト", "新レイアウト（２ページ以降）", "新規登録"])

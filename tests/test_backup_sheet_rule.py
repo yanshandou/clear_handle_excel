@@ -166,6 +166,23 @@ class FindBackupSheetsTests(unittest.TestCase):
 
 
 class CleanTargetTests(unittest.TestCase):
+    def test_old_layout_is_cleaned_without_matching_original_or_new_sheet(self):
+        names = [
+            "変更履歴", "概要", "帳票_出力内容", "レイアウト(1ページ)",
+            "レイアウト(複数ページ)", "旧レイアウト", "JSONサンプル",
+        ]
+        self.assertEqual(find_clean_targets(names), ["旧レイアウト"])
+        self.assertEqual(find_contained_sheets(names), [])
+        # 无需配对的旧表清理只用于精简 Sheet。
+        self.assertEqual(find_backup_sheets(names), [])
+
+    def test_old_prefix_ignores_spaces_width_and_uncertain_prefix(self):
+        names = [
+            "概要", "旧 帳票", "　旧レイアウト（１ページ）", "❓旧画面",
+            "新旧対照表", "復旧手順", "障害復旧手順",
+        ]
+        self.assertEqual(find_clean_targets(names), names[1:4])
+
     def test_auto_generated_sheets_are_cleaned_without_original(self):
         names = [
             "変更履歴", "概要", "概要20220816", "自動生成_定数", "自動生成_OUTPUT_V_LIST_HEADER",
@@ -221,10 +238,10 @@ class NewOldPairTests(unittest.TestCase):
         self.assertEqual(find_contained_sheets(self.NAMES), [])
         self.assertEqual(find_backup_sheets(self.NAMES), [])
 
-    def test_unpaired_new_or_old_sheets_are_untouched(self):
+    def test_unpaired_old_sheets_are_cleaned_while_new_sheets_are_kept(self):
         names = ["新規登録", "旧画面定義", "新旧対照表", "新レイアウト", "旧帳票"]
         self.assertEqual(find_new_old_pairs(names), {})
-        self.assertEqual(find_clean_targets(names), [])
+        self.assertEqual(find_clean_targets(names), ["旧画面定義", "旧帳票"])
 
     def test_renamed_sheets_with_bracketed_suffix_are_not_uncertain(self):
         # 改名后再次扫描：多出的部分整段在括号里，不标待定

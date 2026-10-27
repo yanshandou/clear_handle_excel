@@ -245,11 +245,14 @@ def strip_new_prefix(sheet_name: str) -> str:
 
 
 def find_clean_targets(sheet_names: list[str]) -> list[str]:
-    """精简 Sheet 默认删除的工作表：有原表的备份表、有对应「新」版本的「旧」表，
-    加上「自動生成」开头的工作表（保持原顺序）"""
+    """精简 Sheet 默认删除的工作表：有原表的备份表、「旧」开头的旧版表，
+    加上「自動生成」开头的工作表（保持原顺序）。旧版表无需对应原表或「新」版本。
+    """
     targets = set(find_backup_sheets(sheet_names))
-    for olds in find_new_old_pairs(sheet_names).values():
-        targets.update(olds)
+    for name in sheet_names:
+        key = _new_old_key(name)
+        if key is not None and key[0] == OLD_PREFIX:
+            targets.add(name)
     return [name for name in sheet_names if name in targets or is_auto_generated_sheet(name)]
 
 
