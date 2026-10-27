@@ -114,6 +114,24 @@ async function main() {
       const screenshot = await cdp('Page.captureScreenshot', { format: 'png' });
       fs.writeFileSync(path.join(file.dir, `${file.name}-${suffix}.png`), Buffer.from(screenshot.data, 'base64'));
     };
+    const assertMagnifierFits = async (selector = '#largeCard .batch-shots img') => {
+      assert.equal(await evaluate(`(()=>{const image=$('imagePreview').querySelector('img'), r=image.getBoundingClientRect(),
+        frame=$('imagePreview').getBoundingClientRect(), source=document.querySelector(${JSON.stringify(selector)}),
+        sourceRect=source.getBoundingClientRect(), style=getComputedStyle(source),
+        sourceScale=Math.min((source.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight))/source.naturalWidth,
+          (source.clientHeight-parseFloat(style.paddingTop)-parseFloat(style.paddingBottom))/source.naturalHeight),
+        twiceWidth=source.naturalWidth*sourceScale*2, twiceHeight=source.naturalHeight*sourceScale*2;
+        return !$('imagePreview').classList.contains('hidden') && frame.left>=8 && frame.top>=8
+          && frame.right<=innerWidth-6 && frame.bottom<=innerHeight-6
+          && Math.abs(r.width/r.height-image.naturalWidth/image.naturalHeight)<0.01
+          && (twiceWidth<=innerWidth-64 && twiceHeight<=innerHeight-64
+            ? Math.abs(r.width-twiceWidth)<1 && Math.abs(r.height-twiceHeight)<1
+            : Math.abs(r.width-(innerWidth-64))<1 || Math.abs(r.height-(innerHeight-64))<1)
+          && (Math.abs(frame.left+frame.width/2-sourceRect.left-sourceRect.width/2)<1
+            || Math.abs(frame.left-8)<1 || Math.abs(frame.right-(innerWidth-12))<1)
+          && (Math.abs(frame.top+frame.height/2-sourceRect.top-sourceRect.height/2)<1
+            || Math.abs(frame.top-8)<1 || Math.abs(frame.bottom-(innerHeight-12))<1);})()`), true);
+    };
     await cdp('Runtime.enable'); await cdp('Page.enable');
     await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
     await cdp('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/workbench` });
@@ -193,6 +211,20 @@ async function main() {
           && context.querySelector('img').getBoundingClientRect().height>500
           && context.querySelector('img').getBoundingClientRect().bottom<=$('largeView').getBoundingClientRect().bottom-12;})()`), true);
       await capture('comparison');
+      for (const shot of ['first', 'last']) {
+        const selector = `#largeCard .batch-shots figure:${shot}-of-type img`;
+        await hover(selector);
+        await evaluate(`$('imagePreview').querySelector('img').decode()`);
+        await assertMagnifierFits(selector);
+        const before = await evaluate(`(()=>{const r=$('imagePreview').getBoundingClientRect();
+          return {left:r.left,top:r.top,width:r.width,height:r.height};})()`);
+        const moved = await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
+          return {x:r.left+r.width*0.65,y:r.top+r.height*0.4};})()`);
+        await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', ...moved });
+        assert.deepEqual(await evaluate(`(()=>{const r=$('imagePreview').getBoundingClientRect();
+          return {left:r.left,top:r.top,width:r.width,height:r.height};})()`), before);
+      }
+      await capture('comparison-magnifier');
       await evaluate(`window.__largeNode=$('largeCard').firstElementChild;batchState.job.completed.push('more-progress');render();`);
       assert.equal(await evaluate(`window.__largeNode === $('largeCard').firstElementChild`), true);
       await pressKey('AltLeft', 'Alt', 18, 1, 1);
@@ -205,7 +237,17 @@ async function main() {
       await hover('#largeCard .batch-shots img');
       await evaluate(`$('imagePreview').querySelector('img').decode()`);
       assert.equal(await evaluate(`!$('imagePreview').classList.contains('hidden') && $('imagePreview').closest('dialog')===$('largeView')`), true);
+      await assertMagnifierFits();
       await capture('magnifier');
+      // Native image size and contain-box whitespace must not affect the visual 2x magnification.
+      for (const [width, height] of [[120, 40], [120, 600]]) {
+        await evaluate(`(async()=>{const image=$('largeCard').querySelector('.batch-shots img');
+          image.src='data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="#e4edf9"/></svg>');
+          await image.decode();})()`);
+        await hover('#largeCard .batch-shots img');
+        await evaluate(`$('imagePreview').querySelector('img').decode()`);
+        await assertMagnifierFits();
+      }
       await pressKey('Escape', 'Escape', 27);
       assert.equal(await evaluate(`!$('largeView').open && !largeMode && $('imagePreview').classList.contains('hidden')`), true);
       await hover('#cardList [data-id="0"] .batch-shots img');
@@ -235,7 +277,8 @@ async function main() {
       assert.ok(anchorDelta < 2, `scroll anchor drifted ${anchorDelta}px`);
       report.functional_checks = ['selection after replacement', 'pause/manual prompts', 'resize retains nodes',
         'filter selection', 'left/right Alt and key repeat', 'hover stays quiet in list', 'modal layout and colors',
-        'Alt restores scroll position', 'single-image modal magnifier', 'Escape closes modal',
+        'Alt restores scroll position', 'single-image modal magnifier', '2x magnifier anchored to each comparison shot',
+        'magnifier stays still as pointer moves', 'small and tall images preserve ratio and stay within viewport', 'Escape closes modal',
         'large-view node retention', 'resize while in large view', 'image-load height invalidation',
         'scroll anchor after insertion above viewport', 'native fetch 304', 'visited Excel links after filtering'];
     }

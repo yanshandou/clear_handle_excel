@@ -7,6 +7,7 @@ let selectedFilter = 'all';
 let largeMode = false;
 let activeCardId = null;
 let cardPointer = null;
+let previewSourceImage = null;
 let leftAltHandled = false;
 let requestBusy = false;
 let pollVersion = 0;
@@ -981,8 +982,28 @@ function closeLarge() {
 }
 
 function hideImagePreview() {
+  previewSourceImage = null;
   $('imagePreview').classList.add('hidden');
   $('imagePreview').setAttribute('aria-hidden', 'true');
+}
+
+function sizeImagePreview() {
+  const image = previewSourceImage;
+  if (!image?.naturalWidth || !image.naturalHeight) return;
+  const preview = $('imagePreview');
+  const enlarged = preview.querySelector('img');
+  const rect = image.getBoundingClientRect(), style = getComputedStyle(image);
+  // object-fit: contain 可能在小图框内留白，按实际显示的图片内容放大两倍。
+  const displayedScale = Math.min(
+    (image.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)) / image.naturalWidth,
+    (image.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) / image.naturalHeight);
+  const scale = Math.min(displayedScale * 2, Math.max(1, innerWidth - 64) / image.naturalWidth,
+    Math.max(1, innerHeight - 64) / image.naturalHeight);
+  enlarged.style.width = `${image.naturalWidth * scale}px`;
+  enlarged.style.height = `${image.naturalHeight * scale}px`;
+  // 以小图中心展开，不跟随鼠标；只有超出屏幕边缘时才平移。
+  preview.style.left = `${Math.max(8, Math.min(rect.left + rect.width / 2 - preview.offsetWidth / 2, innerWidth - preview.offsetWidth - 12))}px`;
+  preview.style.top = `${Math.max(8, Math.min(rect.top + rect.height / 2 - preview.offsetHeight / 2, innerHeight - preview.offsetHeight - 12))}px`;
 }
 
 function moveCard(delta) {
@@ -1556,11 +1577,15 @@ document.addEventListener('pointermove', event => {
   const image = largeMode && event.target.closest('#largeCard .batch-shots img[data-preview]');
   const preview = $('imagePreview');
   if (!image) { hideImagePreview(); return; }
-  preview.querySelector('img').src = image.src;
+  previewSourceImage = image;
+  const enlarged = preview.querySelector('img');
+  if (enlarged.src !== image.src) enlarged.src = image.src;
   preview.classList.remove('hidden');
   preview.setAttribute('aria-hidden', 'false');
-  preview.style.left = `${Math.max(8, Math.min(event.clientX + 20, innerWidth - preview.offsetWidth - 12))}px`;
-  preview.style.top = `${Math.max(8, Math.min(event.clientY + 20, innerHeight - preview.offsetHeight - 12))}px`;
+  sizeImagePreview();
+});
+$('imagePreview').querySelector('img').addEventListener('load', () => {
+  if (!$('imagePreview').classList.contains('hidden')) sizeImagePreview();
 });
 document.addEventListener('pointerout', event => {
   if (!event.relatedTarget) { cardPointer = null; hideImagePreview(); }
@@ -1569,7 +1594,7 @@ window.addEventListener('blur', () => { cardPointer = null; leftAltHandled = fal
 document.addEventListener('scroll', hideImagePreview, true);
 $('cardList').addEventListener('load', scheduleCardMeasurement, true);
 $('cardList').addEventListener('error', scheduleCardMeasurement, true);
-window.addEventListener('resize', () => { renderKey = ''; render(); });
+window.addEventListener('resize', () => { hideImagePreview(); renderKey = ''; render(); });
 try { $('folderInput').value = localStorage.getItem('clear_handle_excel.lastFolder') || ''; } catch (_) {}
 renderHighlight();
 renderFixErrorTypes();
