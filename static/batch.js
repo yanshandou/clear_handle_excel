@@ -6,6 +6,8 @@ let batchState = { cards: [], busy: false, job: null, progress: {}, logs: [] };
 let selectedFilter = 'all';
 let largeMode = false;
 let activeCardId = null;
+let cardPointer = null;
+let leftAltHandled = false;
 let requestBusy = false;
 let pollVersion = 0;
 let lastEtag = '';
@@ -284,8 +286,6 @@ function renderControls() {
       + (plan.held.length ? `；后台还要处理的文件里的 ${plan.held.length} 张这次不交` : '') : '';
   $('commitBtn').textContent = selectedFilter === 'all' ? `✓ 确认并处理全部标记${offered ? `（${offered}）` : ''}`
     : `✓ 只处理${COLOR_NAMES[selectedFilter]}色标记（${offered}）`;
-  $('largeBtn').disabled = !batchState.cards.length;
-  $('largeBtn').title = batchState.cards.length ? '逐张放大查看卡片' : '有待审核卡片后可用';
   $('openAllBtn').disabled = requestBusy || !manual.length;
   $('openAllBtn').title = batchState.busy ? '后台在跑：处理完的文件马上打开，还要等的列出来' : '';
   // 复检进行中还能接着点复检：排进同一个任务；后台在跑别的批处理任务时排到它后面
@@ -515,7 +515,7 @@ function cardHtml(card, large = false) {
     <p class="batch-state">${card.finalized ? '已提交 · 可人工处理' : '颜色标记待提交'}${card.highlighted && card.after_kind !== 'scan_only' ? ' · 已在 Excel 中标色' : ''}${card.handed_over ? ' · 自动还没试过，可转回自动' : ''}${canMark(card) ? '' : ' · 后台处理完这个文件后可标记'}</p>
     ${card.verified ? '' : `<p class="batch-no-blue">${blueNote(card)}</p>`}
     ${card.auto_skip ? `<p class="batch-auto-off">🙅 不能自动调整：${esc(card.auto_skip)}</p>` : ''}
-    <div class="batch-card-footer"><button class="btn btn-outline" data-action="large"><span class="batch-icon-enlarge" aria-hidden="true"></span>大图审核</button>${card.color === 'yellow' && card.finalized ? `${recheckButtonHtml(card)}${card.auto_skip ? '' : autoButtonHtml(card)}` : ''}</div></article>`;
+    ${card.color === 'yellow' && card.finalized ? `<div class="batch-card-footer">${recheckButtonHtml(card)}${card.auto_skip ? '' : autoButtonHtml(card)}</div>` : ''}</article>`;
 }
 
 // 选中状态不进卡片 HTML：勾选只改类名，不重画卡片、不重新加载图片
@@ -921,9 +921,7 @@ function render() {
   // 筛选按钮用对应颜色的边框、底色和圆点；选中时整块填色
   const filterHtml = ['all', ...REVIEW_COLORS].map(color => `<button type="button" class="batch-filter" data-filter="${color}" aria-pressed="${selectedFilter === color}"><span class="batch-dot" aria-hidden="true"></span>${color === 'all' ? '全部' : REVIEW_LABELS[color]}<span class="batch-count">${color === 'all' ? batchState.cards.length : counts[color]}</span></button>`).join('');
   if ($('filters').innerHTML !== filterHtml) $('filters').innerHTML = filterHtml;
-  // 从大图返回时先恢复可见性，再读取列宽（隐藏元素的 clientWidth 为 0）。
-  $('cardList').classList.toggle('hidden', largeMode);
-  $('largeView').classList.toggle('hidden', !largeMode);
+  // 大图是原列表上的弹层，保留列表节点与滚动位置。
   const width = $('cardList').clientWidth || measuredWidth || 1200;
   const columnCount = Math.max(1, Math.min(3, Math.floor((width - 44 + 18) / 328)));
   const allByFile = new Map(fileGroups(batchState.cards)), context = fileRenderContext();
@@ -944,6 +942,7 @@ function render() {
     $('largeIndex').textContent = shown.length ? `${index + 1} / ${shown.length}` : '没有当前颜色的卡片';
     const signature = index >= 0 ? cardSigs.get(shown[index].id) : 'empty';
     if (largeCardKey !== signature) {
+      hideImagePreview();
       $('largeCard').innerHTML = index >= 0 ? cardHtml(shown[index], true) : '<p class="batch-empty">当前筛选下没有卡片</p>';
       largeCardKey = signature;
       ++domRevision;
@@ -965,10 +964,25 @@ function render() {
 }
 
 function openLarge(id) {
+  if (!shownCards().some(card => card.id === id)) return;
   largeMode = true;
-  activeCardId = id || shownCards()[0]?.id;
+  activeCardId = id;
+  hideImagePreview();
   render();
-  $('largeView').scrollIntoView({ block: 'start', behavior: 'smooth' });
+  if (!$('largeView').open) $('largeView').showModal();
+}
+
+function closeLarge() {
+  if (!largeMode) return;
+  largeMode = false;
+  hideImagePreview();
+  $('largeView').close();
+  render();
+}
+
+function hideImagePreview() {
+  $('imagePreview').classList.add('hidden');
+  $('imagePreview').setAttribute('aria-hidden', 'true');
 }
 
 function moveCard(delta) {
@@ -1471,8 +1485,8 @@ $('followupCancelBtn').addEventListener('click', async () => {
     await action(() => post('/api/batch/followups/cancel'));
   }
 });
-$('largeBtn').addEventListener('click', () => openLarge());
-$('closeLargeBtn').addEventListener('click', () => { largeMode = false; render(); });
+$('closeLargeBtn').addEventListener('click', closeLarge);
+$('largeView').addEventListener('cancel', event => { event.preventDefault(); closeLarge(); });
 $('prevBtn').addEventListener('click', () => moveCard(-1));
 $('nextBtn').addEventListener('click', () => moveCard(1));
 $('selectBar').addEventListener('click', event => {
@@ -1502,36 +1516,57 @@ for (const id of ['cardList', 'largeCard']) $(id).addEventListener('click', even
   if (!card || event.target.closest('a')) return;
   const button = event.target.closest('[data-action]');
   if (button?.dataset.action === 'select') toggleSelected(card.dataset.id);
-  else if (button?.dataset.action === 'large') openLarge(card.dataset.id);
   else if (button?.dataset.action === 'recheck') startJob('/api/batch/recheck', { card_ids: [card.dataset.id], single: true });
   else if (button?.dataset.action === 'auto') autoAdjust([card.dataset.id], '自动调整这一格');
   else changeColor(card.dataset.id);
 });
 
 document.addEventListener('keydown', event => {
-  if (event.target.closest('input, textarea, select') || event.ctrlKey || event.metaKey || event.altKey) return;
+  // Alt 必须先于通用修饰键过滤处理，且只认空格左边的 Alt，避免右 Alt / AltGr 和组合快捷键误触。
+  if (event.isComposing || event.target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')
+    || event.ctrlKey || event.metaKey || event.shiftKey || document.querySelector('dialog[open]:not(#largeView)')) return;
+  if (event.code === 'AltLeft') {
+    // 按键时重新命中鼠标下的卡片：滚动、筛选或后台更新后也不会打开旧位置的卡片。
+    const card = !largeMode && cardPointer
+      ? document.elementFromPoint(cardPointer.x, cardPointer.y)?.closest('#cardList .batch-card[data-id]') : null;
+    if (!largeMode && !card) return;
+    event.preventDefault();
+    leftAltHandled = true;
+    if (!event.repeat) largeMode ? closeLarge() : openLarge(card.dataset.id);
+    return;
+  }
+  if (event.altKey) return;
   if (largeMode) {
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Escape'].includes(event.key)) event.preventDefault();
     if (event.key === 'ArrowUp') moveCard(-1);
     if (event.key === 'ArrowDown') moveCard(1);
     if (event.key === 'ArrowLeft') changeColor(activeCardId, -1);
     if (event.key === 'ArrowRight') changeColor(activeCardId, 1);
-    if (event.key === 'Escape') { largeMode = false; render(); }
+    if (event.key === 'Escape') closeLarge();
   } else if (['Enter', ' '].includes(event.key) && event.target.matches('.batch-card')) {
     event.preventDefault(); changeColor(event.target.dataset.id);
   }
 });
+document.addEventListener('keyup', event => {
+  if (event.code === 'AltLeft' && leftAltHandled) { event.preventDefault(); leftAltHandled = false; }
+});
 
 document.addEventListener('pointermove', event => {
-  const image = event.target.closest('#cardList img[data-preview]');
+  cardPointer = { x: event.clientX, y: event.clientY };
+  const image = largeMode && event.target.closest('#largeCard .batch-shots img[data-preview]');
   const preview = $('imagePreview');
-  preview.classList.toggle('hidden', !image || largeMode);
-  if (!image || largeMode) return;
+  if (!image) { hideImagePreview(); return; }
   preview.querySelector('img').src = image.src;
+  preview.classList.remove('hidden');
+  preview.setAttribute('aria-hidden', 'false');
   preview.style.left = `${Math.max(8, Math.min(event.clientX + 20, innerWidth - preview.offsetWidth - 12))}px`;
   preview.style.top = `${Math.max(8, Math.min(event.clientY + 20, innerHeight - preview.offsetHeight - 12))}px`;
 });
-document.addEventListener('scroll', () => $('imagePreview').classList.add('hidden'), true);
+document.addEventListener('pointerout', event => {
+  if (!event.relatedTarget) { cardPointer = null; hideImagePreview(); }
+});
+window.addEventListener('blur', () => { cardPointer = null; leftAltHandled = false; hideImagePreview(); });
+document.addEventListener('scroll', hideImagePreview, true);
 $('cardList').addEventListener('load', scheduleCardMeasurement, true);
 $('cardList').addEventListener('error', scheduleCardMeasurement, true);
 window.addEventListener('resize', () => { renderKey = ''; render(); });

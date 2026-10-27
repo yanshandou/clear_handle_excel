@@ -23,6 +23,14 @@ const fixture = { folder: 'C:/Synthetic', busy: true, logs: [], progress: {}, op
     wb_path: `C:/Synthetic/book-${i % 80}.xlsx`, wb_name: `book-${i % 80}.xlsx`, sheet_name: 'Sheet1',
     cell_addr: `A${i + 1}`, excel_row: i + 1, color: 'yellow', finalized: true, verified: false,
     text: 'Synthetic review text '.repeat(2 + i % 5), images: { before: svg, after: svg } })) };
+const pageSvg = 'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="600" height="800">
+  <rect width="600" height="800" fill="white"/><text x="30" y="50" font-size="24">Sheet1 - Page 1</text>
+  ${Array.from({length:20}, (_, i) => `<path d="M30 ${90+i*32}H570" stroke="#aebdd0"/><text x="40" y="${112+i*32}" font-size="14">Row ${i+1} - sample cell content</text>`).join('')}
+  <path d="M30 90V730M220 90V730M570 90V730" stroke="#aebdd0"/></svg>`);
+for (const index of [0, 1]) fixture.cards[index].context = { image: pageSvg, page_width: 600, page_height: 800,
+  page_index: 0, bbox: [30, 218, 220, 250] };
+fixture.cards[1].images = { before: svg };
+fixture.cards[1].after_kind = 'scan_only';
 let script = baseline ? execFileSync('git', ['show', '940e58a:static/batch.js'], { cwd: root, encoding: 'utf8' })
   : fs.readFileSync(path.join(root, 'static/batch.js'), 'utf8');
 script = script.replace('function cardHtml(card, large = false) {',
@@ -90,6 +98,22 @@ async function main() {
       if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
       return result.result.value;
     };
+    const pressKey = async (code, key, keyCode, location = 0, modifiers = 0) => {
+      await cdp('Input.dispatchKeyEvent', { type: 'rawKeyDown', code, key, windowsVirtualKeyCode: keyCode, location, modifiers });
+      await cdp('Input.dispatchKeyEvent', { type: 'keyUp', code, key, windowsVirtualKeyCode: keyCode, location });
+    };
+    const hover = async selector => {
+      const point = await evaluate(`(async()=>{const el=document.querySelector(${JSON.stringify(selector)});
+        el.scrollIntoView({block:'center'});await new Promise(resolve=>requestAnimationFrame(resolve));
+        const r=el.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
+      await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
+    };
+    const capture = async suffix => {
+      if (!process.env.WORKBENCH_SCREENSHOT) return;
+      const file = path.parse(process.env.WORKBENCH_SCREENSHOT);
+      const screenshot = await cdp('Page.captureScreenshot', { format: 'png' });
+      fs.writeFileSync(path.join(file.dir, `${file.name}-${suffix}.png`), Buffer.from(screenshot.data, 'base64'));
+    };
     await cdp('Runtime.enable'); await cdp('Page.enable');
     await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
     await cdp('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/workbench` });
@@ -98,7 +122,9 @@ async function main() {
       ready = await evaluate(`document.querySelectorAll('#cardList .batch-card').length === 1000`);
       if (!ready) await delay(100);
     }
-    assert.equal(ready, true, errors.join('\n'));
+    assert.equal(ready, true, errors.join('\n') || JSON.stringify(await evaluate(`({url:location.href,
+      cards:document.querySelectorAll('#cardList .batch-card').length, body:document.body?.innerText.slice(0,800),
+      error:document.getElementById('errorText')?.textContent})`)));
     await evaluate(`poll=async()=>{}; new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
     assert.deepEqual(await evaluate(`(async()=>{const r=await fetch('/api/batch',{cache:'no-store',headers:{'If-None-Match':'"fixture"'}});return {status:r.status,body:await r.text()};})()`), { status: 304, body: '' });
     const report = { mode: baseline ? 'baseline' : 'optimized', browser: path.basename(browser), cards: 1000, files: 80 };
@@ -145,9 +171,45 @@ async function main() {
       assert.equal(await evaluate(`window.__beforeResize === document.querySelector('#cardList [data-id="0"]')`), true);
       await evaluate(`document.querySelector('[data-filter="yellow"]').click();`);
       assert.equal(await evaluate(`document.querySelector('#cardList [data-id="0"]') === null && selectedIds.size === 0`), true);
-      await evaluate(`document.querySelector('[data-filter="all"]').click();document.querySelector('#cardList [data-id="0"] [data-action="large"]').click();window.__largeNode=$('largeCard').firstElementChild;
-        batchState.job.completed.push('more-progress');render();`);
+      await evaluate(`document.querySelector('[data-filter="all"]').click();`);
+      await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+      await delay(100);
+      assert.equal(await evaluate(`document.querySelector('#largeBtn, [data-action="large"]') === null`), true);
+      await hover('#cardList [data-id="0"] .batch-shots img');
+      assert.equal(await evaluate(`!$('largeView').open && $('imagePreview').classList.contains('hidden')`), true);
+      await pressKey('AltRight', 'Alt', 18, 2, 1);
+      assert.equal(await evaluate(`$('largeView').open`), false);
+      await evaluate(`window.__reviewScroll=scrollY;`);
+      await pressKey('AltLeft', 'Alt', 18, 1, 1);
+      assert.equal(await evaluate(`$('largeView').open && activeCardId==='0' && !$('cardList').classList.contains('hidden')`), true);
+      await cdp('Input.dispatchKeyEvent', { type: 'rawKeyDown', code: 'AltLeft', key: 'Alt', windowsVirtualKeyCode: 18, location: 1, modifiers: 1, autoRepeat: true });
+      await cdp('Input.dispatchKeyEvent', { type: 'keyUp', code: 'AltLeft', key: 'Alt', windowsVirtualKeyCode: 18, location: 1 });
+      assert.equal(await evaluate(`$('largeView').open`), true);
+      assert.equal(await evaluate(`(()=>{const shots=$('largeCard').querySelector('.batch-shots'), context=$('largeCard').querySelector('.batch-context');
+        const figures=shots.querySelectorAll('figure');return shots.getBoundingClientRect().right<=context.getBoundingClientRect().left
+          && figures[0].getBoundingClientRect().bottom<=figures[1].getBoundingClientRect().top
+          && getComputedStyle(figures[0].querySelector('img')).borderTopColor==='rgb(220, 38, 38)'
+          && getComputedStyle(figures[1].querySelector('img')).borderTopColor==='rgb(37, 99, 235)'
+          && context.querySelector('img').getBoundingClientRect().height>500
+          && context.querySelector('img').getBoundingClientRect().bottom<=$('largeView').getBoundingClientRect().bottom-12;})()`), true);
+      await capture('comparison');
+      await evaluate(`window.__largeNode=$('largeCard').firstElementChild;batchState.job.completed.push('more-progress');render();`);
       assert.equal(await evaluate(`window.__largeNode === $('largeCard').firstElementChild`), true);
+      await pressKey('AltLeft', 'Alt', 18, 1, 1);
+      assert.equal(await evaluate(`!$('largeView').open && Math.abs(scrollY-window.__reviewScroll)<2`), true);
+      await hover('#cardList [data-id="1"] .batch-shots img');
+      await pressKey('AltLeft', 'Alt', 18, 1, 1);
+      assert.equal(await evaluate(`activeCardId==='1' && $('largeCard').querySelectorAll('.batch-shots figure').length===1
+        && !!$('largeCard').querySelector('.batch-context-marker')`), true);
+      await capture('single');
+      await hover('#largeCard .batch-shots img');
+      await evaluate(`$('imagePreview').querySelector('img').decode()`);
+      assert.equal(await evaluate(`!$('imagePreview').classList.contains('hidden') && $('imagePreview').closest('dialog')===$('largeView')`), true);
+      await capture('magnifier');
+      await pressKey('Escape', 'Escape', 27);
+      assert.equal(await evaluate(`!$('largeView').open && !largeMode && $('imagePreview').classList.contains('hidden')`), true);
+      await hover('#cardList [data-id="0"] .batch-shots img');
+      await pressKey('AltLeft', 'Alt', 18, 1, 1);
       await cdp('Emulation.setDeviceMetricsOverride', { width: 1100, height: 900, deviceScaleFactor: 1, mobile: false });
       await delay(100);
       await evaluate(`$('closeLargeBtn').click();`);
@@ -172,7 +234,9 @@ async function main() {
       })()`);
       assert.ok(anchorDelta < 2, `scroll anchor drifted ${anchorDelta}px`);
       report.functional_checks = ['selection after replacement', 'pause/manual prompts', 'resize retains nodes',
-        'filter selection', 'large-view node retention', 'resize while in large view', 'image-load height invalidation',
+        'filter selection', 'left/right Alt and key repeat', 'hover stays quiet in list', 'modal layout and colors',
+        'Alt restores scroll position', 'single-image modal magnifier', 'Escape closes modal',
+        'large-view node retention', 'resize while in large view', 'image-load height invalidation',
         'scroll anchor after insertion above viewport', 'native fetch 304', 'visited Excel links after filtering'];
     }
     assert.deepEqual(errors, []);

@@ -1474,6 +1474,8 @@ button.preview-sheet-tag:active {
 }
 
 #largeView .batch-shots figure:first-of-type {
+  --vs-top: #ffaaa5;
+  --vs-bot: #ef4444;
   --vs-clip: polygon(0 0, 100% 0, 100% calc(100% - var(--vs-slant)), 0 100%);
   --vs-r1: 1; --vs-r2: 1; --vs-r3: 0; --vs-r4: 0;
   padding: 10px 12px calc(var(--vs-slant) + 10px) 12px;
@@ -1549,6 +1551,14 @@ button.preview-sheet-tag:active {
   padding: 10px 12px 12px;
 }
 
+#largeView .batch-shots.is-single figure:only-of-type {
+  --vs-top: #ffaaa5;
+  --vs-bot: #ef4444;
+}
+
+#largeView .batch-shots figure:first-of-type img { border-color: #dc2626; }
+#largeView .batch-shots figure:last-of-type:not(:only-of-type) img { border-color: #2563eb; }
+
 .batch-shots.is-single figure:only-of-type figcaption,
 #largeView .batch-shots.is-single figure:only-of-type figcaption {
   padding: 0;
@@ -1572,7 +1582,7 @@ button.preview-sheet-tag:active {
 }
 
 #largeView .batch-shots.is-single img {
-  max-height: 62vh;
+  max-height: 34vh;
 }
 
 .batch-card .batch-problem {

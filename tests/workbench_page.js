@@ -9,7 +9,7 @@ function element(tag = 'div') {
     tag, value: '', dataset: {}, style: {}, attributes: {}, children: [], parentElement: null,
     _html: '', _raw: null, className: '', listeners: {}, _queries: new Map(),
     classList: { values: new Set(), toggle(name, value) { value ? this.values.add(name) : this.values.delete(name); },
-      add(name) { this.values.add(name); }, contains(name) { return this.values.has(name); } },
+      add(name) { this.values.add(name); }, remove(name) { this.values.delete(name); }, contains(name) { return this.values.has(name); } },
     get innerHTML() { return this._html + this.children.map(child => child.outerHTML).join(''); },
     set innerHTML(value) { this.children.forEach(child => { child.parentElement = null; }); this.children = []; this._html = value; this._queries.clear(); },
     get outerHTML() { return this._raw ?? `<${this.tag} class="${this.className}">${this.innerHTML}</${this.tag}>`; },
@@ -42,6 +42,7 @@ function element(tag = 'div') {
     setAttribute(name, value) { this.attributes[name] = value; },
     getAttribute(name) { return this.attributes[name]; },
     addEventListener(name, fn) { this.listeners[name] = fn; },
+    showModal() { this.open = true; }, close() { this.open = false; },
     scrollIntoView() {}, focus() {},
     getBoundingClientRect() { return { top: 100, bottom: 600, height: this.height || 500 }; },
     querySelectorAll(selector) {
@@ -62,7 +63,8 @@ function page() {
   const context = vm.createContext({
     document: { activeElement: null, createElement: element,
       getElementById(id) { if (!elements.has(id)) elements.set(id, Object.assign(element(), { root: true })); return elements.get(id); },
-      addEventListener(name, fn) { listeners[name] = fn; }, querySelectorAll() { return []; } },
+      addEventListener(name, fn) { listeners[name] = fn; }, querySelectorAll() { return []; },
+      querySelector() { return null; }, elementFromPoint() { return this.pointElement || null; } },
     localStorage: { getItem() { return ''; } }, window: { addEventListener() {}, scrollBy() {} }, appConfirm: async () => true,
     setInterval() {}, setTimeout, clearTimeout, requestAnimationFrame(fn) { frames.push(fn); return frames.length; },
     fetch() { return Promise.resolve({ status: 304 }); },

@@ -261,11 +261,76 @@ test('keyboard changes status and navigates while text inputs keep their keys', 
   assert.equal(p.run('activeCardId'), 'a');
 });
 
-test('mouse wheel scrolls the page instead of switching cards', () => {
+test('mouse wheel does not switch the enlarged card', () => {
   const p = page();
   p.run(`openLarge('a')`);
   assert.equal(p.elements.get('largeView').listeners.wheel, undefined);
   assert.equal(p.run('activeCardId'), 'a');
+});
+
+function keyEvent(code, extra = {}) {
+  return { code, key: code === 'AltLeft' || code === 'AltRight' ? 'Alt' : code,
+    target: { closest() { return null; } }, preventDefault() { this.prevented = true; }, ...extra };
+}
+
+test('hover stays quiet and left Alt toggles the card under the pointer without changing its color', () => {
+  const p = page();
+  p.run(`render(); const originalA=cardElements.get('a');
+    document.pointElement={closest:()=>({dataset:{id:'a'}})};`);
+  p.listeners.pointermove({ clientX: 120, clientY: 240, target: { closest() { return null; } } });
+  assert.equal(p.run('largeMode'), false);
+  assert.equal(p.elements.get('imagePreview').classList.contains('hidden'), true);
+  const alt = keyEvent('AltLeft', { altKey: true });
+  p.listeners.keydown(alt);
+  assert.equal(alt.prevented, true);
+  assert.equal(p.run('activeCardId'), 'a');
+  assert.equal(p.elements.get('largeView').open, true);
+  assert.equal(p.elements.get('cardList').classList.contains('hidden'), false);
+  p.listeners.keydown(keyEvent('AltLeft', { altKey: true, repeat: true }));
+  assert.equal(p.run('largeMode'), true);
+  p.listeners.keydown(keyEvent('AltLeft', { altKey: true }));
+  assert.equal(p.elements.get('largeView').open, false);
+  assert.equal(p.run(`cardElements.get('a')===originalA && batchState.cards[0].color==='blue'`), true);
+  assert.deepEqual(p.requests, []);
+});
+
+test('right Alt, shortcuts, typing and a pointer outside the cards do not open a large card', () => {
+  const p = page();
+  p.run(`cardPointer={x:120,y:240}; document.pointElement={closest:()=>({dataset:{id:'b'}})};`);
+  for (const event of [keyEvent('AltRight', { altKey: true }), keyEvent('AltLeft', { ctrlKey: true }),
+    keyEvent('AltLeft', { shiftKey: true }), keyEvent('AltLeft', { isComposing: true }),
+    keyEvent('AltLeft', { target: { closest: () => ({}) } }), keyEvent('AltLeft', { repeat: true })]) {
+    p.listeners.keydown(event);
+    assert.equal(p.run('largeMode'), false);
+  }
+  // Hit-test at keydown, so a card that moved away after scrolling cannot be opened by mistake.
+  p.run('document.pointElement=null');
+  p.listeners.keydown(keyEvent('AltLeft'));
+  assert.equal(p.run('largeMode'), false);
+  p.run(`document.pointElement={closest:()=>({dataset:{id:'b'}})};`);
+  p.listeners.keydown(keyEvent('AltLeft', { altKey: true }));
+  assert.equal(p.run('activeCardId'), 'b');
+  p.listeners.keydown(keyEvent('Escape'));
+  assert.equal(p.run('largeMode'), false);
+  assert.equal(p.elements.get('largeView').open, false);
+  p.listeners.pointerout({ relatedTarget: null });
+  p.listeners.keydown(keyEvent('AltLeft'));
+  assert.equal(p.run('largeMode'), false);
+});
+
+test('only local screenshots inside the large card can show the hover magnifier', () => {
+  const p = page();
+  p.run(`openLarge('b')`);
+  const image = { src: '/before.png' };
+  p.listeners.pointermove({ clientX: 120, clientY: 240, target: { closest: () => image } });
+  assert.equal(p.elements.get('imagePreview').classList.contains('hidden'), false);
+  assert.equal(p.elements.get('imagePreview').querySelector('img').src, '/before.png');
+  p.listeners.scroll();
+  assert.equal(p.elements.get('imagePreview').classList.contains('hidden'), true);
+  p.elements.get('largeView').listeners.cancel({ preventDefault() {} });
+  assert.equal(p.run('largeMode'), false);
+  p.listeners.pointermove({ clientX: 120, clientY: 240, target: { closest: () => image } });
+  assert.equal(p.elements.get('imagePreview').classList.contains('hidden'), true);
 });
 
 test('only submitted yellow cards are eligible for manual actions', () => {

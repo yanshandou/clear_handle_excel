@@ -75,21 +75,24 @@
 .batch-card-footer button { font-size: 12px; padding: 6px 10px; }
 .batch-empty { text-align: center; padding: 56px 20px; color: #64748b; }
 
-/* 单卡大图审核 */
+/* 小卡片的按键大图：原列表保留在弹层下面，关闭后继续原位置浏览 */
+html { scrollbar-gutter: stable; }
+html:has(#largeView[open]) { overflow: hidden; }
+.batch-large-dialog { box-sizing: border-box; width: min(1560px, calc(100vw - 32px)); max-width: none; max-height: calc(100dvh - 32px); margin: auto; padding: 18px; overflow: auto; overscroll-behavior: contain; border: 2px solid var(--ink, #1e293b); border-radius: 18px; background: #f7faff; color: var(--text-main); box-shadow: 8px 8px 0 #0f172a40; }
+.batch-large-dialog::backdrop { background: #0f172a99; }
 .batch-large-nav { justify-content: center; margin-bottom: 4px; }
 #largeIndex { min-width: 5em; text-align: center; font-weight: 700; color: var(--text-strong); }
 #largeView > .toolbar-hint { text-align: center; margin: 8px 0 12px; }
-#largeView { scroll-margin-top: 110px; }
 #largeView .batch-card { margin: 8px 0; padding: 22px 24px 22px 28px; }
 #largeView .batch-card::before { width: 8px; }
-.batch-large-layout { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); align-items: start; gap: 20px; }
+.batch-large-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); align-items: start; gap: 20px; }
 #largeView .batch-shots { grid-template-columns: minmax(0, 1fr); gap: 16px; }
 #largeView .batch-shots img { max-height: 29vh; }
 #largeView .batch-shots figure { min-height: 130px; }
 .batch-context { min-width: 0; padding: 12px; border: 1px solid #e2e8f0; border-radius: 9px; background: white; }
 .batch-context h3 { margin: 0 0 6px; font-size: 14px; color: #334155; }
 .batch-card .batch-context-note { color: #64748b; font-size: 12px; margin: 0 0 10px; }
-.batch-context-page { position: relative; width: 100%; max-width: calc(max(180px, 100vh - 400px) * var(--page-ratio)); margin: 0 auto; border: 1px solid #e2e8f0; }
+.batch-context-page { position: relative; width: 100%; max-width: calc(max(180px, 100dvh - 300px) * var(--page-ratio)); margin: 0 auto; border: 1px solid #e2e8f0; }
 .batch-context-page img { display: block; width: 100%; height: auto; }
 .batch-context-marker { position: absolute; box-sizing: border-box; border: 2px solid #ef2222; background: #ef222210; min-width: 4px; min-height: 4px; pointer-events: none; }
 .batch-context-missing { min-height: 220px; display: grid; align-content: center; text-align: center; color: #64748b; font-size: 13px; line-height: 1.8; }
@@ -117,9 +120,6 @@
 /* 日志放在浅色面板里：用深色字，不用控制台那套浅字+黑影 */
 .info-panel summary { cursor: pointer; font-weight: 700; color: var(--text-strong); }
 .info-panel .log-box { margin: 12px 0 0; padding: 12px 14px; max-height: 260px; border: 1px solid #d5deeb; border-radius: 10px; background: #f8fafc; color: #1e293b; text-shadow: none; font-family: Consolas, "MS Gothic", "Yu Gothic UI", monospace; font-size: 12.5px; line-height: 1.7; }
-/* 放大图标用 CSS 画（▣ 在日文 Windows 字体里显示不全） */
-.batch-icon-enlarge { flex: none; position: relative; display: inline-block; width: 12px; height: 12px; box-sizing: border-box; border: 2px solid currentColor; border-radius: 2px; }
-.batch-icon-enlarge::after { content: ""; position: absolute; inset: 2px; background: currentColor; border-radius: 1px; }
 .batch-scan-now { margin: 6px 0 0; font-size: 13px; color: var(--text-main); opacity: .85; overflow-wrap: anywhere; }
 .batch-pending { margin: 10px 0 0; padding: 10px 14px; border: 1px solid #f3c969; border-radius: 10px; background: #fff8e6; color: #7a4a00; font-size: 13px; line-height: 1.7; }
 /* 不可用的按钮也要看得清字，只是变淡一些 */
