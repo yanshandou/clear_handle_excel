@@ -545,7 +545,8 @@ def _detect_sheet_results(
                 occurrence = locate_text_occurrence(text_spans, page_index, clip["text"], clip["bbox"])
                 candidates[item_id] = candidate_cells(cells, clip["text"], row)
                 items[item_id] = {
-                    "id": item_id, "seq": start_seq + len(items), "kind": "clip", "page_id": page_id,
+                    "id": item_id, "seq": start_seq + len(items), "kind": "clip",
+                    "error_type": "border_clip", "page_id": page_id,
                     "index_on_page": index, "wb_path": str(wb_path), "wb_name": wb_label,
                     "sheet_name": sheet_name, "pdf_path": str(pdf_path),
                     "page_index": page_index, "text": clip["text"], "bbox": clip["bbox"],
@@ -565,8 +566,15 @@ def _detect_sheet_results(
             per_page[page_index] = per_page.get(page_index, 0) + 1
             address = f"{col_index_to_letters(found['col'])}{found['row']}"
             item_id = f"item_{generation}_{len(items)}"
+            hidden_error_type = (
+                "hash_overflow" if found["reason"] == REASON_HASH else
+                "text_missing" if found["reason"] == REASON_MISSING else
+                "box_overflow" if found["reason"] == REASON_CLIPPED else
+                "text_truncated"
+            )
             items[item_id] = {
                 "id": item_id, "seq": start_seq + len(items), "kind": "hidden",
+                "error_type": hidden_error_type,
                 "page_id": page_entry(page_index) if page_index is not None else None,
                 "index_on_page": per_page[page_index], "wb_path": str(wb_path), "wb_name": wb_label,
                 "sheet_name": sheet_name, "pdf_path": str(pdf_path),
@@ -594,6 +602,7 @@ def _detect_sheet_results(
             item_id = f"item_{generation}_{len(items)}"
             items[item_id] = {
                 "id": item_id, "seq": start_seq + len(items), "kind": "pagebreak",
+                "error_type": "page_break_cut",
                 "page_id": page_entry(page_index) if page_index is not None else None,
                 "index_on_page": 1, "wb_path": str(wb_path), "wb_name": wb_label,
                 "sheet_name": sheet_name, "pdf_path": str(pdf_path),

@@ -54,6 +54,40 @@ def _data() -> dict[str, Any]:
     return wf.STATE.setdefault("batch_review", {"cards": {}, "rows": {}, "ignored": []})
 
 
+def fix_error_types(value: Any = None, *, require_non_empty: bool = False) -> list[str]:
+    """当前自动修复要处理的错误类型（从 4 种可自动修复类型中选择；### 与 PDF 未匹配文字固定转人工）"""
+    if value is None:
+        saved = _data().get("fix_error_types")
+        selected = (list(autofix.FIXABLE_ERROR_TYPES) if not isinstance(saved, list)
+                    else [t for t in autofix.FIXABLE_ERROR_TYPES if t in saved])
+    else:
+        if not isinstance(value, list) or any(not isinstance(t, str) or t not in autofix.CELL_ERROR_SPECS for t in value):
+            raise ValueError("请选择有效的单元格错误类型")
+        selected = [t for t in autofix.FIXABLE_ERROR_TYPES if t in value]
+    if require_non_empty and not selected:
+        raise ValueError("请至少勾选一种要自动修复的错误类型，或使用「只扫描，全部转人工」")
+    return selected
+
+
+def set_fix_error_types(value: Any, *, require_non_empty: bool = False) -> list[str]:
+    with wf.STATE_LOCK:
+        selected = fix_error_types(value, require_non_empty=require_non_empty)
+        _data()["fix_error_types"] = list(selected)
+        job = wf.STATE.get("job") or {}
+        if job.get("kind") == "batch_scan" and isinstance(job.get("options"), dict):
+            job["options"]["fix_error_types"] = list(selected)
+        wf._persist_state()
+        return selected
+
+
+def _active_fix_types(job: dict | None = None) -> set[str]:
+    if job is not None:
+        raw = (job.get("options") or {}).get("fix_error_types")
+        if isinstance(raw, list):
+            return set(fix_error_types(raw))
+    return set(fix_error_types())
+
+
 def _marks() -> dict[str, dict]:
     """已在原 Excel 里标色的单元格（按卡片 id），记着原来的底色和字色，人工处理完再还原"""
     return _data().setdefault("highlights", {})
@@ -193,16 +227,48 @@ def carry_item_policies(items: dict[str, dict]) -> None:
 def _problem(item: dict) -> dict:
     """卡片上说明检测到了什么：问题类型、原因，只打印出开头一段时还有没显示的部分"""
     kind = item.get("kind") or "clip"
+    error_type = autofix.item_error_type(item)
     text, visible = normalize_text(item.get("text", "")), normalize_text(item.get("visible_text") or "")
     missing = text[len(visible):] if kind == "hidden" and visible and text.startswith(visible) else ""
     reason = {"hidden": item.get("hidden_reason"), "pagebreak": page_breaks.REASON}.get(kind) or CLIP_REASON
-    return {"kind": kind, "label": KIND_LABELS.get(kind, kind), "reason": reason, "missing": missing}
+    return {"kind": kind, "error_type": error_type, "label": KIND_LABELS.get(kind, kind),
+            "reason": reason, "missing": missing}
 
 
 def _remember_problems(card: dict, items: list[dict]) -> None:
     problems = {p["kind"]: p for p in card.get("problems", [])}
     problems.update((p["kind"], p) for p in map(_problem, items))  # 同一类型以最新一次检测为准
     card["problems"] = list(problems.values())
+    card["error_types"] = list(dict.fromkeys(
+        [*(p.get("error_type") for p in card["problems"] if p.get("error_type")),
+         *(autofix.item_error_type(it) for it in items)]
+    ))
+
+
+def _card_fixable_types(card: dict, items: list[dict] | None = None) -> list[str]:
+    items = _items_at(card) if items is None else items
+    raw = [autofix.item_error_type(it) for it in items] if items else list(card.get("error_types") or [])
+    if not raw:
+        for p in card.get("problems") or ():
+            if p.get("error_type"):
+                raw.append(p["error_type"])
+            else:
+                raw.append(autofix.item_error_type({"kind": p.get("kind"), "hidden_reason": p.get("reason")}))
+    if not raw and _is_break(card):
+        raw = [autofix.ERROR_TYPE_PAGE_BREAK_CUT]
+    return [t for t in dict.fromkeys(raw) if t in autofix.FIXABLE_ERROR_TYPES]
+
+
+def _unchecked_fix_reason(card: dict, items: list[dict] | None = None, enabled: set[str] | None = None) -> str:
+    fixable = _card_fixable_types(card, items)
+    if not fixable:
+        return ""
+    active = _active_fix_types() if enabled is None else enabled
+    if any(t in active for t in fixable):
+        return ""
+    labels = "、".join(autofix.error_type_label(t) for t in fixable)
+    action = "未修改" if autofix.ERROR_TYPE_PAGE_BREAK_CUT in fixable else "未调整行高"
+    return f"未勾选「{labels}」自动修复，{action}，请人工处理或标绿忽略"
 
 
 def _row_record(card: dict) -> dict | None:
@@ -380,6 +446,11 @@ def snapshot() -> dict:
             result = copy.deepcopy(card)
             if not result.get("problems"):  # 旧版本留下的卡片没存问题说明，按单元格现有的问题项补上
                 result["problems"] = list({p["kind"]: p for p in map(_problem, _items_at(card))}.values())
+            if not result.get("error_types"):
+                result["error_types"] = list(dict.fromkeys(
+                    p.get("error_type") or autofix.item_error_type({"kind": p.get("kind"), "hidden_reason": p.get("reason")})
+                    for p in result["problems"]
+                ))
             row = _row_record(card)
             if row is not None and _is_break(card):
                 result["page_break"] = {"row": row["row"], "saved": row["saved"], "applied": row["applied"] >= .5}
@@ -404,6 +475,8 @@ def snapshot() -> dict:
         tabs = sum(len(t) for p, t in _tabs().items() if wf.in_current_folder(p))
         return {"cards": cards, "busy": wf.STATE["busy"], "folder": wf.STATE["folder"], "highlighted": highlighted,
                 "tab_marks": tabs,
+                "error_types": list(autofix.CELL_ERROR_SPECS.values()),
+                "fix_error_types": fix_error_types(),
                 "mode": _mode(), "open_blocked": _open_blocked([c["wb_path"] for c in cards]),
                 "followups": copy.deepcopy(_data().get("followups") or []),
                 "scan_eta": _scan_eta(wf.STATE["job"]) if wf.STATE["job"] else None,
@@ -1018,7 +1091,18 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
         row_started = time.perf_counter()
         workbook = None  # 和原文件一致的副本：重新检测时直接用，不再打开原文件
         try:
+            enabled_types = _active_fix_types(job)
             if _is_break(first):
+                unchecked = _unchecked_fix_reason(cards[0], items, enabled_types)
+                if unchecked:
+                    with wf.STATE_LOCK:
+                        for card in cards:
+                            card.update(color="yellow", verified=False, manual=True, waiting=False,
+                                        handed_over=True, after_kind="handover", message=unchecked)
+                        wf.log_msg(f"⏭️ {first['wb_name']} / {first['sheet_name']} {first.get('cell_addr', '')}：{unchecked}")
+                        wf._persist_state()
+                    _remember_handover(path)
+                    raise _RowDone
                 workbook = _repair_break(excel, session, path, items[0], cards, rid, version, timing)
                 raise _RowDone
             column_only = [it for it in items if autofix.column_width_only(it)]
@@ -1042,6 +1126,25 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                 for card in cards:
                     card["manual"] = True  # 同行共用行高；该行也不能因另一格而自动加高。
                 raise ValueError(reason)
+            unchecked_cells: set[tuple[str, str, str]] = set()
+            with wf.STATE_LOCK:
+                for group in _group_cells(items):
+                    card = _card_for(group)
+                    unchecked = _unchecked_fix_reason(card, group, enabled_types)
+                    if unchecked:
+                        card.update(color="yellow", verified=False, manual=True, waiting=False,
+                                    handed_over=True, after_kind="handover", message=unchecked)
+                        wf.log_msg(f"⏭️ {first['wb_name']} / {first['sheet_name']} 行{first['excel_row']}：{unchecked}")
+                        unchecked_cells.add(_cell(group[0]))
+                if unchecked_cells:
+                    items = [it for it in items if _cell(it) not in unchecked_cells]
+                    cards = [c for c in cards if _cell(c) not in unchecked_cells]
+                    wf._persist_state()
+            if unchecked_cells:
+                _remember_handover(path)
+            if not items:
+                raise _RowDone
+            items = [it for it in items if autofix.item_error_type(it) in enabled_types]
             if any(it.get("location_confirmed") is False or not it.get("cell_addr") for it in items):
                 raise ValueError("单元格定位未确认，请人工核对")
             base, chosen, before = _prepare_row(session, path, items, on_attempt=remember_attempt, timing=timing)
@@ -1681,6 +1784,7 @@ def _back_to_auto(excel: Any, session: Any, path: str, *, picked: bool = False) 
         _recheck_file(excel, path, cards)
     with wf.STATE_LOCK:
         rows = hand.get("rows", {})
+        enabled_types = _active_fix_types(wf.STATE.get("job"))
         unresolved = [it for it in wf.STATE["items"].values() if it["wb_path"] == path
                       and it["status"] not in wf.RESOLVED_STATUSES]
         # 复检可能查出同一行新的格子：一行共用行高，要一起交给自动，不然这一行会被当成人工行跳过
@@ -1692,6 +1796,8 @@ def _back_to_auto(excel: Any, session: Any, path: str, *, picked: bool = False) 
             if not chosen or card.get("dismissed") or (
                     card.get("marked") and card["color"] != "yellow" and not card.get("finalized")):
                 continue  # 自动试过没通过的、你已标蓝 / 绿还没提交的、这次没选的，保持原样
+            if _unchecked_fix_reason(card, group, enabled_types):
+                continue  # 未勾选的错误类型继续留给人工
             if not unchanged and any(_touched(it, rows) for it in group):
                 card.update(handed_over=False, message=TOUCHED_MESSAGE)
                 kept += 1
@@ -1721,9 +1827,11 @@ def _back_to_auto(excel: Any, session: Any, path: str, *, picked: bool = False) 
 
 def _handed_over_paths() -> list[str]:
     """调用方持有 STATE_LOCK：当前文件夹里还有可交回自动的问题的文件"""
+    enabled = _active_fix_types()
     cards = sorted(_data()["cards"].values(), key=lambda c: c["seq"])
     return list(dict.fromkeys(c["wb_path"] for c in cards if c.get("handed_over") and not c.get("dismissed")
-                              and wf.in_current_folder(c["wb_path"])))
+                              and wf.in_current_folder(c["wb_path"])
+                              and not _unchecked_fix_reason(c, enabled=enabled)))
 
 
 def _mode() -> dict[str, bool]:
@@ -1754,9 +1862,15 @@ def request_manual() -> bool:
         return not wf.STATE["busy"]
 
 
-def check_auto() -> None:
+def check_auto(fix_types: Any = None) -> None:
     with wf.STATE_LOCK:
+        if fix_types is not None:
+            set_fix_error_types(fix_types, require_non_empty=True)
         if not _mode()["to_auto"]:
+            cards = [c for c in _data()["cards"].values() if c.get("handed_over") and not c.get("dismissed")
+                     and wf.in_current_folder(c["wb_path"])]
+            if cards and all(_unchecked_fix_reason(c) for c in cards):
+                raise ValueError("待交回自动的问题均属于未勾选的错误类型，请先勾选对应错误类型后再点「转回自动」")
             raise ValueError("没有可以交回自动处理的问题")
 
 
@@ -1772,7 +1886,7 @@ def _auto_retry_blocked(card: dict) -> bool:
     return done == current if done is not None else _unchanged_since_check(path)
 
 
-def _auto_skip_reason(card: dict, items: list[dict] | None = None) -> str:
+def _auto_skip_reason(card: dict, items: list[dict] | None = None, enabled: set[str] | None = None) -> str:
     """「🤖 自动调整」时这一格为什么不能交给自动；能交给自动返回空字符串。调用方持有 STATE_LOCK"""
     if card["color"] != "yellow" or not card.get("finalized"):
         return "颜色标记还没提交，请先提交黄色标记"
@@ -1785,17 +1899,22 @@ def _auto_skip_reason(card: dict, items: list[dict] | None = None) -> str:
         return "单元格位置没确认，不能自动加高"
     if not _is_break(card) and items and autofix.review_only_reason(items):
         return "PDF 里找不到这段文字，不能确认要不要加高"
+    if unchecked := _unchecked_fix_reason(card, items, enabled):
+        return unchecked
     if not card.get("handed_over") and _auto_retry_blocked(card):
         return "自动试过没通过，文件之后没改过，再试结果也一样"
     return ""
 
 
-def auto_adjust_plan(ids: Any) -> dict:
+def auto_adjust_plan(ids: Any, fix_types: Any = None) -> dict:
     """「🤖 自动调整」选中的黄卡：run 交给自动；extra 是同一行连带一起调整的黄卡（一行共用行高）；
     skip 是跳过的格子和原因。同一行有不能自动的格子时整行跳过（自动加高会连带改到它）。"""
     with wf.STATE_LOCK:
         if wf.STATE["busy"] and not _auto_queue_open():
             raise ValueError("后台任务执行中，请结束或暂停后再自动调整")
+        if fix_types is not None:
+            set_fix_error_types(fix_types)
+        enabled = _active_fix_types()
         cards = {c["id"]: c for c in _data()["cards"].values()
                  if not c.get("dismissed") and wf.in_current_folder(c["wb_path"])}
         if not isinstance(ids, list) or not ids or any(not isinstance(cid, str) or cid not in cards for cid in ids):
@@ -1816,7 +1935,7 @@ def auto_adjust_plan(ids: Any) -> dict:
             if cid in run or cid in extra or cid in skip:
                 continue
             card = cards[cid]
-            reason = _auto_skip_reason(card)
+            reason = _auto_skip_reason(card, enabled=enabled)
             peers = [c for c in by_row[_rid(card)] if c["id"] != cid]
             if not reason:
                 for peer in peers:
@@ -1835,7 +1954,8 @@ def auto_adjust_plan(ids: Any) -> dict:
             for peer in peers:
                 if peer["id"] in ids:
                     run.append(peer["id"])
-                elif not any(autofix.column_width_only(it) for it in _items_at(peer)):
+                elif (not any(autofix.column_width_only(it) for it in _items_at(peer))
+                      and not _unchecked_fix_reason(peer, _items_at(peer), enabled)):
                     extra.append(peer["id"])
         order = {cid: cards[cid]["seq"] for cid in cards}
         return {"run": sorted(dict.fromkeys(run), key=order.get),
@@ -2000,8 +2120,10 @@ def _queued_auto_to_picked(job: dict) -> bool:
     paths = list(dict.fromkeys(cards[cid]["wb_path"] for cid in sorted(ids, key=lambda cid: cards[cid]["seq"])))
     options = job["options"]
     folder = options["folder"]
+    fix_types = options.get("fix_error_types")
     options.clear()  # 原地改：run 里的 options 还指着它
-    options.update(folder=folder, back_to_auto=True, picked=True, card_ids=ids)
+    options.update(folder=folder, back_to_auto=True, picked=True, card_ids=ids,
+                   **({"fix_error_types": fix_types} if fix_types is not None else {}))
     for key in ("phase", "repairing", "picked_back", "closing"):
         job.pop(key, None)
     job.update(workbooks=paths, completed=[], scanned=[], scan_versions={}, rounds={}, file_errors={})
@@ -2012,13 +2134,13 @@ def _queued_auto_to_picked(job: dict) -> bool:
     return True
 
 
-def enqueue_auto_adjust(ids: Any) -> bool:
+def enqueue_auto_adjust(ids: Any, fix_types: Any = None) -> bool:
     """「🤖 自动调整」正在跑时又点了别的文件的自动调整：排进同一个任务，当前文件做完接着做，不用等它结束。
     没有在跑的自动调整（或它已经在收尾）返回 False，由调用方另起任务"""
     with wf.STATE_LOCK:
         if not _auto_queue_open():
             return False
-    plan = auto_adjust_plan(ids)
+    plan = auto_adjust_plan(ids, fix_types=fix_types)
     picked = plan["run"] + plan["extra"]
     if not picked:
         raise ValueError("选中的格子都不能自动调整：" + "；".join(dict.fromkeys(s["reason"] for s in plan["skip"])))
@@ -2062,9 +2184,9 @@ def enqueue_auto_adjust(ids: Any) -> bool:
     return True
 
 
-def start_auto_adjust(ids: Any) -> dict:
+def start_auto_adjust(ids: Any, fix_types: Any = None) -> dict:
     """「🤖 自动调整」：给要交给自动的卡打上 auto_pick，返回 batch_scan（转回自动）任务的参数"""
-    plan = auto_adjust_plan(ids)
+    plan = auto_adjust_plan(ids, fix_types=fix_types)
     picked = plan["run"] + plan["extra"]
     if not picked:
         raise ValueError("选中的格子都不能自动调整：" + "；".join(dict.fromkeys(s["reason"] for s in plan["skip"])))
@@ -2075,9 +2197,11 @@ def start_auto_adjust(ids: Any) -> dict:
             _data()["cards"][cid]["auto_pick"] = True
         wf._persist_state()
         folder = wf.STATE["folder"]
+        selected_types = fix_error_types()
     debug_log.event("🖱️ 自动调整", 选中=len(ids), 交给自动=len(plan["run"]), 同行连带=len(plan["extra"]),
                     跳过=[f"{s['id'][:6]}:{s['reason']}" for s in plan["skip"]])
-    return {"folder": folder, "back_to_auto": True, "picked": True, "card_ids": picked}
+    return {"folder": folder, "back_to_auto": True, "picked": True, "card_ids": picked,
+            "fix_error_types": selected_types}
 
 
 def _can_highlight(card: dict) -> bool:

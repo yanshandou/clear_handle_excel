@@ -33,7 +33,10 @@ from core.excel_ops import (
     CellProbe, extract_sheet_snapshot, normalize_workbook_view, quit_background_excel, snapshot_cells,
     start_background_excel, open_workbook_checked,
 )
-from core.hidden_text import REASON_HASH, REASON_MISSING, collect_text_pieces, find_hidden_cells, locate_text, normalize_text
+from core.hidden_text import (
+    REASON_CLIPPED, REASON_HASH, REASON_MISSING, REASON_TRUNCATED,
+    collect_text_pieces, find_hidden_cells, locate_text, normalize_text,
+)
 from core.pdf_detector import (
     RegionTrackingError, crossing_horizontal_line, extract_page_lines, fitz,
     is_region_still_clipped, render_crop_base64,
@@ -97,10 +100,79 @@ class _Paused(Exception):
     """后台有别的任务、或这组已不需要处理，中止当前预览，稍后重来"""
 
 
+ERROR_TYPE_BORDER_CLIP = "border_clip"
+ERROR_TYPE_TEXT_TRUNCATED = "text_truncated"
+ERROR_TYPE_BOX_OVERFLOW = "box_overflow"
+ERROR_TYPE_PAGE_BREAK_CUT = "page_break_cut"
+ERROR_TYPE_HASH_OVERFLOW = "hash_overflow"
+ERROR_TYPE_TEXT_MISSING = "text_missing"
+
+CELL_ERROR_SPECS: dict[str, dict[str, Any]] = {
+    ERROR_TYPE_BORDER_CLIP: {
+        "code": ERROR_TYPE_BORDER_CLIP,
+        "label": "边框压线",
+        "fixable": True,
+    },
+    ERROR_TYPE_TEXT_TRUNCATED: {
+        "code": ERROR_TYPE_TEXT_TRUNCATED,
+        "label": "文字截断",
+        "fixable": True,
+    },
+    ERROR_TYPE_BOX_OVERFLOW: {
+        "code": ERROR_TYPE_BOX_OVERFLOW,
+        "label": "超出裁剪框",
+        "fixable": True,
+    },
+    ERROR_TYPE_PAGE_BREAK_CUT: {
+        "code": ERROR_TYPE_PAGE_BREAK_CUT,
+        "label": "分页切开合并单元格",
+        "fixable": True,
+    },
+    ERROR_TYPE_HASH_OVERFLOW: {
+        "code": ERROR_TYPE_HASH_OVERFLOW,
+        "label": "### 列宽不足",
+        "fixable": False,
+    },
+    ERROR_TYPE_TEXT_MISSING: {
+        "code": ERROR_TYPE_TEXT_MISSING,
+        "label": "PDF 未匹配到文字",
+        "fixable": False,
+    },
+}
+FIXABLE_ERROR_TYPES: tuple[str, ...] = tuple(
+    code for code, spec in CELL_ERROR_SPECS.items() if spec["fixable"]
+)
+
+
+def item_error_type(item: dict[str, Any]) -> str:
+    """获取或推导检测项的单元格错误类型（兼容未存 error_type 的旧快照）"""
+    explicit = item.get("error_type")
+    if isinstance(explicit, str) and explicit in CELL_ERROR_SPECS:
+        return explicit
+    kind = item.get("kind") or "clip"
+    if kind == "pagebreak":
+        return ERROR_TYPE_PAGE_BREAK_CUT
+    if kind == "hidden":
+        reason = item.get("hidden_reason") or ""
+        if reason == REASON_HASH:
+            return ERROR_TYPE_HASH_OVERFLOW
+        if reason == REASON_MISSING:
+            return ERROR_TYPE_TEXT_MISSING
+        if reason == REASON_CLIPPED:
+            return ERROR_TYPE_BOX_OVERFLOW
+        return ERROR_TYPE_TEXT_TRUNCATED
+    return ERROR_TYPE_BORDER_CLIP
+
+
+def error_type_label(error_type: str) -> str:
+    spec = CELL_ERROR_SPECS.get(error_type)
+    return spec["label"] if spec else error_type
+
+
 def review_only_reason(items: list[dict[str, Any]]) -> str:
     """缺少 PDF 定位证据时不试加高；截图缓存缺失本身不影响判定。"""
     if any(it.get("page_index") is None or not it.get("bbox")
-           or it.get("hidden_reason") == REASON_MISSING for it in items):
+           or item_error_type(it) == ERROR_TYPE_TEXT_MISSING for it in items):
         return "PDF 未匹配到文字或无法定位，不能确认作者是否有意不显示；未调整行高，请人工核对或标绿忽略"
     return ""
 
@@ -110,7 +182,7 @@ COLUMN_ONLY_REASON = "列宽不够，数字显示成 ###；加高行高修不好
 
 def column_width_only(item: dict[str, Any]) -> bool:
     """### 是列宽问题，加高怎么试都不会通过，不用白白导出八九次"""
-    return item.get("hidden_reason") == REASON_HASH
+    return item_error_type(item) == ERROR_TYPE_HASH_OVERFLOW
 
 
 def validate_print_targets(sheet: Any, items: list[dict[str, Any]]) -> None:

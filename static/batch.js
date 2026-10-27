@@ -19,6 +19,7 @@ let selectNotice = '';
 let filterKeep = new Set();
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const cssEscape = id => typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(id) : String(id).replace(/["\\]/g, '\\$&');
 const nextColor = (color, direction = 1) => REVIEW_COLORS[(REVIEW_COLORS.indexOf(color) + direction + 3) % 3];
 // 页面按文件分组：一个文件一个框，文件按第一次出现（处理顺序）排，框里的卡片按处理顺序
 const fileKey = card => card.wb_path || card.wb_name || '';
@@ -141,6 +142,10 @@ async function poll() {
     const cleared = clearPending && !value.busy && value.job?.kind === 'batch_unhighlight';
     if (cleared) clearPending = false;
     batchState = value;
+    if (Array.isArray(value.fix_error_types) && !hasSavedFixTypes) {
+      fixErrorTypes = new Set(FIXABLE_CODES.filter(code => value.fix_error_types.includes(code)));
+      renderFixErrorTypes();
+    }
     if (!document.activeElement || document.activeElement.id !== 'folderInput') {
       if (value.folder && !$('folderInput').value) $('folderInput').value = value.folder;
       if (value.busy && value.folder) $('folderInput').value = value.folder;
@@ -561,7 +566,7 @@ function scrollAnchor() {
 }
 
 function restoreAnchor(anchor) {
-  const element = anchor && $('cardList').querySelector(`[data-id="${CSS.escape(anchor.id)}"]`);
+  const element = anchor && $('cardList').querySelector(`[data-id="${cssEscape(anchor.id)}"]`);
   if (element) window.scrollBy(0, element.getBoundingClientRect().top - anchor.top);
 }
 
@@ -747,7 +752,7 @@ function render() {
       // 卡片位置没变：只换内容有变化的卡片和文件标题栏，不整页重画（图片不重新加载、页面不跳）
       for (const [id, value] of html) {
         if (cardHtmlCache.get(id) === value) continue;
-        const element = $('cardList').querySelector(`[data-id="${CSS.escape(id)}"]`);
+        const element = $('cardList').querySelector(`[data-id="${cssEscape(id)}"]`);
         if (element) element.outerHTML = value;
       }
       const fileElements = $('cardList').querySelectorAll('.batch-file');
@@ -1034,6 +1039,50 @@ $('highlightAuto').addEventListener('change', event => {
 $('highlightFill').addEventListener('input', event => setHighlight({ ...highlight, fill: event.target.value }));
 $('highlightFont').addEventListener('input', event => setHighlight({ ...highlight, font: event.target.value }));
 
+const FIX_ERROR_TYPES_KEY = 'clear_handle_excel.fixErrorTypes';
+const CELL_ERROR_TYPES = [
+  { code: 'border_clip', label: '边框压线', fixable: true, hint: '文字被边框横线切穿：自动加高行高' },
+  { code: 'text_truncated', label: '文字截断', fixable: true, hint: 'PDF 只印出开头一部分、后半段未显示：自动开启换行并加高行高' },
+  { code: 'box_overflow', label: '超出裁剪框', fixable: true, hint: '文字超出单元格裁剪框看不见：自动开启换行并加高行高' },
+  { code: 'page_break_cut', label: '分页切开合并单元格', fixable: true, hint: '自动分页落在多行合并区域中间：自动在上方插入手动分页' },
+  { code: 'hash_overflow', label: '### 列宽不足（固定转人工）', fixable: false, hint: '列宽不够导致数字显示成 ###，加高行高修不好，固定转人工' },
+  { code: 'text_missing', label: 'PDF 未匹配到文字（固定转人工）', fixable: false, hint: 'PDF 中未匹配到该格文字，无法确认是否需要显示，固定转人工' },
+];
+const FIXABLE_CODES = CELL_ERROR_TYPES.filter(t => t.fixable).map(t => t.code);
+let fixErrorTypes = new Set(FIXABLE_CODES);
+let hasSavedFixTypes = false;
+try {
+  const savedTypes = JSON.parse(localStorage.getItem(FIX_ERROR_TYPES_KEY) || 'null');
+  if (Array.isArray(savedTypes)) {
+    fixErrorTypes = new Set(FIXABLE_CODES.filter(code => savedTypes.includes(code)));
+    hasSavedFixTypes = true;
+  }
+} catch (_) {}
+
+function renderFixErrorTypes() {
+  const el = $('fixErrorTypes');
+  if (!el) return;
+  const html = CELL_ERROR_TYPES.map(t => t.fixable
+    ? `<label class="batch-error-type-chip" title="${esc(t.hint)}"><input type="checkbox" data-error-type="${t.code}"${fixErrorTypes.has(t.code) ? ' checked' : ''}><span>${esc(t.label)}</span></label>`
+    : `<label class="batch-error-type-chip is-manual-only" title="${esc(t.hint)}"><input type="checkbox" disabled><span>${esc(t.label)}</span></label>`
+  ).join('');
+  if (el.innerHTML !== html) el.innerHTML = html;
+}
+
+$('fixErrorTypes').addEventListener('change', async event => {
+  const input = event.target.closest?.('[data-error-type]');
+  if (!input) return;
+  const code = input.dataset.errorType;
+  if (input.checked) fixErrorTypes.add(code); else fixErrorTypes.delete(code);
+  hasSavedFixTypes = true;
+  try { localStorage.setItem(FIX_ERROR_TYPES_KEY, JSON.stringify([...fixErrorTypes])); } catch (_) {}
+  renderFixErrorTypes();
+  try {
+    await post('/api/batch/fix_types', { fix_error_types: [...fixErrorTypes] });
+    await poll();
+  } catch (error) { $('errorText').textContent = error.message; }
+});
+
 // 暂停的全自动处理在提交、复检、打开文件后会放回来，不算替换续跑点
 const KEEPS_PAUSED_SCAN = new Set(['/api/batch/commit', '/api/batch/recheck', '/api/batch/open', '/api/batch/unhighlight']);
 const waitingCard = card => card.waiting ?? card.message === '等待自动处理';
@@ -1090,8 +1139,10 @@ async function autoAdjust(ids, title) {
   const queue = batchState.busy;
   const afterScan = queue && batchState.job?.options?.scan_only;
   if (requestBusy || !ids.length || !canAuto(batchState.cards.filter(c => ids.includes(c.id)))) return;
+  if (!fixErrorTypes.size) { $('errorText').textContent = '请至少勾选一种要自动修复的错误类型'; return; }
+  const selectedTypes = [...fixErrorTypes];
   let plan;
-  try { plan = await post('/api/batch/auto_plan', { card_ids: ids }); }
+  try { plan = await post('/api/batch/auto_plan', { card_ids: ids, fix_error_types: selectedTypes }); }
   catch (error) { $('errorText').textContent = error.message; return; }
   const total = plan.run.length + plan.extra.length;
   const skipped = plan.skip.length
@@ -1109,17 +1160,21 @@ async function autoAdjust(ids, title) {
       : queue ? '\n\n现在有自动调整正在跑：这些会排在后面，前面的文件做完接着做。' : '')
     + `\n\n确定${queue ? '排队' : '开始'}自动调整吗？`;
   if (!(await appConfirm(message, { title, okText: queue ? '排队自动调整' : '开始自动调整', tone: 'info' }))) return;
-  await startJob('/api/batch/auto_adjust', { card_ids: ids });
+  await startJob('/api/batch/auto_adjust', { card_ids: ids, fix_error_types: selectedTypes });
 }
 
 async function startBatch(extra = {}) {
   const folder = $('folderInput').value.trim();
   if (!folder) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
+  if (!extra.scan_only && !fixErrorTypes.size) {
+    $('errorText').textContent = '请至少勾选一种要自动修复的错误类型，或使用「只扫描，全部转人工」';
+    return;
+  }
   const unsent = batchState.cards.filter(c => !c.finalized).length;
   if (unsent && batchState.folder && folder !== batchState.folder
       && !(await appConfirm(`当前文件夹还有 ${unsent} 张卡片没有提交审核。\n审核记录会保留，以后对原文件夹重新开始全自动处理即可继续审核。\n\n确定换到新文件夹吗？`, { title: '换文件夹', okText: '换到新文件夹' }))) return;
   const limit = Number($('scanLimit').value);  // 空 = 自动估算
-  await startJob('/api/batch/start', { folder, ...extra, ...(limit ? { scan_limit_minutes: limit } : {}) }).then(() => {
+  await startJob('/api/batch/start', { folder, fix_error_types: [...fixErrorTypes], ...extra, ...(limit ? { scan_limit_minutes: limit } : {}) }).then(() => {
     if (batchState.busy) { try { localStorage.setItem('clear_handle_excel.lastFolder', folder); } catch (_) {} }
   });
 }
@@ -1151,9 +1206,10 @@ $('toManualBtn').addEventListener('click', async () => {
   await action(() => post('/api/batch/to_manual'));
 });
 $('toAutoBtn').addEventListener('click', async () => {
-  const count = batchState.cards.filter(c => c.handed_over).length;
-  if (!(await appConfirm(`把 ${count} 处自动还没试过的黄色问题交回自动处理。\n请先在 Excel 里保存并关闭这些文件。\n转人工后改过的文件整份重新检测；你改过行高的行、自动试过没通过的问题仍留给人工。\nExcel 里的标记颜色会先还原。\n\n确定转回自动吗？`, { title: '转回自动', okText: '转回自动' }))) return;
-  await startJob('/api/batch/to_auto', $('highlightAuto').checked ? { highlight: { ...highlight } } : {});
+  if (!fixErrorTypes.size) { $('errorText').textContent = '请至少勾选一种要自动修复的错误类型'; return; }
+  const count = batchState.cards.filter(c => c.handed_over && !c.auto_skip).length || batchState.cards.filter(c => c.handed_over).length;
+  if (!(await appConfirm(`把 ${count} 处自动还没试过的黄色问题交回自动处理。\n请先在 Excel 里保存并关闭这些文件。\n转人工后改过的文件整份重新检测；你改过行高的行、自动试过没通过的问题和未勾选的错误类型仍留给人工。\nExcel 里的标记颜色会先还原。\n\n确定转回自动吗？`, { title: '转回自动', okText: '转回自动' }))) return;
+  await startJob('/api/batch/to_auto', { fix_error_types: [...fixErrorTypes], ...($('highlightAuto').checked ? { highlight: { ...highlight } } : {}) });
 });
 $('commitBtn').addEventListener('click', async () => {
   const color = selectedFilter;
@@ -1269,5 +1325,6 @@ document.addEventListener('scroll', () => $('imagePreview').classList.add('hidde
 window.addEventListener('resize', () => { renderKey = ''; layoutKey = ''; render(); });
 try { $('folderInput').value = localStorage.getItem('clear_handle_excel.lastFolder') || ''; } catch (_) {}
 renderHighlight();
+renderFixErrorTypes();
 poll();
 setInterval(poll, 1800);

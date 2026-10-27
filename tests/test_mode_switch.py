@@ -684,6 +684,73 @@ class ModeSwitchTests(unittest.TestCase):
         self.assertEqual(post("/api/batch/followups/cancel", {}), {"ok": True, "cancelled": 2})
         self.assertIn("扫描上限", post("/api/batch/start", {"folder": str(self.root), "scan_limit_minutes": 7})["error"])
 
+    def test_fix_error_types_filters_autofix_and_allows_reenabling_later(self):
+        from core import autofix
+        from core.hidden_text import REASON_CLIPPED, REASON_HASH, REASON_MISSING, REASON_TRUNCATED
+
+        self.assertEqual(autofix.item_error_type({"kind": "clip"}), "border_clip")
+        self.assertEqual(autofix.item_error_type({"kind": "hidden", "hidden_reason": REASON_TRUNCATED}), "text_truncated")
+        self.assertEqual(autofix.item_error_type({"kind": "hidden", "hidden_reason": REASON_CLIPPED}), "box_overflow")
+        self.assertEqual(autofix.item_error_type({"kind": "hidden", "hidden_reason": REASON_HASH}), "hash_overflow")
+        self.assertEqual(autofix.item_error_type({"kind": "hidden", "hidden_reason": REASON_MISSING}), "text_missing")
+        self.assertEqual(autofix.item_error_type({"kind": "pagebreak"}), "page_break_cut")
+
+        # 只勾选「边框压线」，不勾选「文字截断」和「分页切开合并单元格」
+        batch.set_fix_error_types(["border_clip"])
+        self.job["options"]["fix_error_types"] = ["border_clip"]
+        clip_card, clip_item = self.add(self.paths[0], "A5", 5)
+        clip_item.update(kind="clip", error_type="border_clip", page_index=0, bbox=[0, 0, 10, 10])
+        batch._remember_problems(clip_card, [clip_item])
+        trunc_card, trunc_item = self.add(self.paths[0], "B5", 5)
+        trunc_item.update(kind="hidden", hidden_reason=REASON_TRUNCATED, error_type="text_truncated",
+                          page_index=0, bbox=[0, 0, 10, 10])
+        batch._remember_problems(trunc_card, [trunc_item])
+        brk_card, brk_item = self.add(self.paths[0], "C8:D10", 8)
+        brk_item.update(kind="pagebreak", error_type="page_break_cut", block={"top": 8, "bottom": 10, "left": 3})
+        brk_card["kind"] = "pagebreak"
+        batch._remember_problems(brk_card, [brk_item])
+
+        prepared = []
+        def fake_prepare(_session, _path, items, **_):
+            prepared.append([it["cell_addr"] for it in items])
+            return 18.0, {"height": 18.0, "shots": {}}, {}
+
+        with patch.object(batch, "_prepare_row", side_effect=fake_prepare), \
+                patch.object(batch, "_repair_break") as repair_break, \
+                patch.object(batch, "_refresh"):
+            batch._repair_file(Mock(), self.session, self.paths[0])
+
+        # 同一行的 A5（边框压线）照常自动修；B5（文字截断）和 C8:D10（分页切开）因未勾选而转黄留给人工
+        self.assertEqual(prepared, [["A5"]])
+        repair_break.assert_not_called()
+        self.assertEqual((clip_card["color"], clip_card["verified"]), ("blue", True))
+        self.assertEqual((trunc_card["color"], trunc_card["manual"], trunc_card["handed_over"]), ("yellow", True, True))
+        self.assertIn("未勾选「文字截断」", trunc_card["message"])
+        self.assertEqual((brk_card["color"], brk_card["manual"], brk_card["handed_over"]), ("yellow", True, True))
+        self.assertIn("未勾选「分页切开合并单元格」", brk_card["message"])
+
+        # 提交标记后（蓝卡移出列表，黄卡 finalized），未勾选时点自动调整或转回自动都会被拦截并说明原因
+        clip_card["dismissed"] = True
+        trunc_card["finalized"] = True
+        brk_card["finalized"] = True
+        self.wf.STATE["busy"] = False
+        self.job["status"] = "completed"
+        plan = batch.auto_adjust_plan([trunc_card["id"], brk_card["id"]])
+        self.assertEqual(plan["run"], [])
+        self.assertEqual(len(plan["skip"]), 2)
+        with self.assertRaisesRegex(ValueError, "未勾选的错误类型"):
+            batch.check_auto()
+
+        # 重新勾上「文字截断」后，立刻可以自动调整或转回自动
+        batch.set_fix_error_types(["border_clip", "text_truncated"])
+        self.assertTrue(batch._mode()["to_auto"])
+        plan2 = batch.auto_adjust_plan([trunc_card["id"], brk_card["id"]])
+        self.assertEqual(plan2["run"], [trunc_card["id"]])
+        self.assertEqual([s["id"] for s in plan2["skip"]], [brk_card["id"]])
+
+        with self.assertRaisesRegex(ValueError, "至少勾选一种"):
+            batch.set_fix_error_types([], require_non_empty=True)
+
 
 if __name__ == "__main__":
     unittest.main()
