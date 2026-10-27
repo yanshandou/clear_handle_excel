@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import mimetypes
@@ -103,17 +104,21 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def _send_bytes(
         self, body: bytes, content_type: str, status: int = 200, filename: str | None = None,
-        cacheable: bool = False,
+        cacheable: bool = False, etag: str = "",
     ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
+        if status != 304:
+            self.send_header("Content-Length", str(len(body)))
         # 带版本号的截图地址内容不会变，可以缓存；其余一律不缓存
         self.send_header("Cache-Control", "private, max-age=86400" if cacheable else "no-store")
+        if etag:
+            self.send_header("ETag", etag)
         if filename is not None:
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.end_headers()
-        self.wfile.write(body)
+        if status != 304:
+            self.wfile.write(body)
 
     def _send_json(self, data: dict, status: int = 200) -> None:
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -167,7 +172,12 @@ class WebHandler(BaseHTTPRequestHandler):
             rel = parsed.path.removeprefix("/static/")
             self._serve_static_file(rel)
         elif parsed.path == "/api/batch":
-            self._send_json(batch.snapshot())
+            body = json.dumps(batch.snapshot(), ensure_ascii=False).encode("utf-8")
+            etag = f'"{hashlib.sha256(body).hexdigest()}"'
+            validators = {tag.strip().removeprefix("W/") for tag in self.headers.get("If-None-Match", "").split(",")}
+            unchanged = etag in validators or "*" in validators
+            self._send_bytes(b"" if unchanged else body, "application/json; charset=utf-8",
+                             status=304 if unchanged else 200, etag=etag)
         elif parsed.path == "/api/batch/find_marks":
             self._send_json(mark_finder.status())
         elif parsed.path.startswith("/api/batch/image/"):

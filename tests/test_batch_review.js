@@ -1,35 +1,146 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const test = require('node:test');
-const vm = require('node:vm');
-const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'batch.js'), 'utf8');
+const { page } = require('./workbench_page');
 
-function page() {
-  const elements = new Map();
-  function element() {
-    return { value: '', innerHTML: '', dataset: {}, style: {}, classList: { toggle() {}, add() {} },
-      listeners: {}, addEventListener(name, fn) { this.listeners[name] = fn; },
-      scrollIntoView() {}, querySelector() { return element(); }, querySelectorAll() { return []; } };
-  }
-  const requests = [];
-  const listeners = {};
-  const context = vm.createContext({
-    document: { activeElement: null, getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); },
-      addEventListener(name, fn) { listeners[name] = fn; }, querySelectorAll() { return []; } },
-    localStorage: { getItem() { return ''; } }, window: { addEventListener() {} }, appConfirm: async () => true,
-    setInterval() {}, fetch() { return new Promise(() => {}); },
-    MutationObserver: class { observe() {} },
-    excelLinkHtml(label) { return `<a>${label}</a>`; }, Date, requests,
-  });
-  vm.runInContext(source, context);
-  const run = code => vm.runInContext(code, context);
-  run(`batchState = {busy: false, job: null, logs: [], progress: {}, folder: 'C:/Excel', cards: [
-    {id:'a', seq:1, wb_name:'book.xlsx', sheet_name:'Sheet', cell_addr:'A5', color:'blue', verified:true, images:{before:'/before.png', after:'/after.png'}},
-    {id:'b', seq:2, wb_name:'book.xlsx', sheet_name:'Sheet', cell_addr:'A6', color:'yellow', finalized:true, images:{}}
-  ]}; poll = async () => {}; post = async (url, payload) => {requests.push({url, payload}); return {ok:true};};`);
-  return { run, elements, requests, listeners };
-}
+test('appending and removing cards retain unchanged DOM nodes and file containers', () => {
+  const p = page();
+  p.run(`render(); const originalA = cardElements.get('a'), originalB = cardElements.get('b');
+    const originalFile = fileElements.get('book.xlsx').element, originalRoot = $('cardList').firstElementChild;
+    batchState.cards.push({...batchState.cards[0], id:'c', seq:3}); render();`);
+  assert.equal(p.run(`cardElements.get('a') === originalA && cardElements.get('b') === originalB`), true);
+  assert.equal(p.run(`fileElements.get('book.xlsx').element === originalFile && $('cardList').firstElementChild === originalRoot`), true);
+  p.run(`batchState.cards = batchState.cards.filter(c => c.id !== 'a'); render();`);
+  assert.equal(p.run(`cardElements.get('b') === originalB && !cardMemo.has('a') && !cardHeights.has('a')`), true);
+});
+
+test('empty-list messaging updates when a task starts or stops', () => {
+  const p = page();
+  p.run(`batchState.cards=[]; render();`);
+  assert.match(p.elements.get('cardList').innerHTML, /当前没有待审核卡片/);
+  p.run(`batchState.busy=true; render();`);
+  assert.match(p.elements.get('cardList').innerHTML, /正在自动扫描与修复/);
+});
+
+test('memoization ignores logs, progress and unused job options but updates the affected file', () => {
+  const p = page();
+  p.run(`batchState.cards[0].wb_path='A.xlsx'; batchState.cards[1].wb_path='B.xlsx';
+    batchState.busy=true; batchState.job={kind:'batch_scan', phase:'repair', options:{}, workbooks:['A.xlsx','B.xlsx']};
+    render(); let calls=[]; const originalHtml=cardHtml; cardHtml=card=>{calls.push(card.id);return originalHtml(card);};
+    batchState.logs.push('progress'); batchState.progress.completed=1; batchState.job.options.card_ids=['a','b']; render();`);
+  assert.equal(p.run('calls.length'), 0);
+  p.run(`batchState.open_blocked={'B.xlsx':'processing'}; render();`);
+  assert.deepEqual(Array.from(p.run('calls')), ['b']);
+});
+
+test('pause and manual requests invalidate card prompts without other state changes', () => {
+  const p = page();
+  p.run(`batchState.busy=true; batchState.job={kind:'batch_scan',phase:'repair',options:{},workbooks:[]}; render();
+    batchState.job.pause_requested=true; render();`);
+  assert.match(p.run(`cardElements.get('b').outerHTML`), /正在暂停/);
+  p.run(`batchState.job.pause_requested=false; batchState.job.to_manual=true; render();`);
+  assert.match(p.run(`cardElements.get('b').outerHTML`), /转人工/);
+});
+
+test('selection survives card and file header replacement', () => {
+  const p = page();
+  p.run(`render(); toggleSelected('b'); batchState.cards[1].color='blue'; render();`);
+  assert.equal(p.run(`cardElements.get('b').classList.contains('is-selected')`), true);
+  assert.equal(p.run(`cardElements.get('b').querySelector('.batch-select').getAttribute('aria-pressed')`), 'true');
+  p.run(`selectShown('all'); batchState.busy=true; render();`);
+  assert.equal(p.run(`fileElements.get('book.xlsx').head.querySelector('[data-file-action="select"]').getAttribute('aria-pressed')`), 'true');
+});
+
+test('expanding a filter updates file selection even when all card nodes are reused', () => {
+  const p = page();
+  p.run(`render(); selectedFilter='blue'; filterKeep=new Set(); render(); selectShown('all');`);
+  assert.equal(p.run(`fileElements.get('book.xlsx').head.querySelector('[data-file-action="select"]').getAttribute('aria-pressed')`), 'true');
+  p.run(`selectedFilter='all'; filterKeep=new Set(); render();`);
+  assert.equal(p.run(`fileElements.get('book.xlsx').head.querySelector('[data-file-action="select"]').getAttribute('aria-pressed')`), 'false');
+});
+
+test('image load and width changes refresh heights while preserving existing card nodes', () => {
+  const p = page();
+  p.run(`render(); const original=cardElements.get('a'); original.height=800;
+    scheduleCardMeasurement({target:{closest:()=>original}});`);
+  p.frames.shift()();
+  assert.equal(p.run(`cardHeight('a')`), 818);
+  p.run(`$('cardList').clientWidth=600; render();`);
+  assert.equal(p.run(`cardElements.get('a') === original`), true);
+  assert.equal(p.run(`fileElements.get('book.xlsx').columns.length`), 1);
+  assert.equal(p.run(`cardHeightSum === [...cardHeights.values()].reduce((a,b)=>a+b,0)`), true);
+});
+
+test('cards returning from a filter refresh heights changed while detached', () => {
+  const p = page();
+  p.run(`render(); const hidden=cardElements.get('b'); selectedFilter='blue'; filterKeep=new Set(); render();
+    hidden.height=900; selectedFilter='all'; filterKeep=new Set(); render();`);
+  assert.equal(p.run(`cardHeight('b')`), 918);
+});
+
+test('large review does not rebuild its card for unrelated progress', () => {
+  const p = page();
+  p.run(`openLarge('a'); const revision=domRevision; batchState.logs.push('new log'); render();`);
+  assert.equal(p.run(`revision === domRevision`), true);
+});
+
+test('cached card links notice changes to shared Excel link visit state', () => {
+  const p = page();
+  p.run(`render(); let calls=0; const original=cardHtml; cardHtml=card=>{calls++;return original(card);};
+    excelLinkHtml.revision=1; render();`);
+  assert.equal(p.run('calls'), 2);
+});
+
+test('ETag advances only with accepted data when a slower response is overtaken', async () => {
+  const p = page();
+  p.run(`lastEtag='v1'; let finishBody, count=0, validators=[];
+    fetch=async (url, options)=>{validators.push(options.headers['If-None-Match']);
+      if(options.headers['If-None-Match']==='v2') return {status:304};
+      return {status:200,ok:true,headers:{get:()=> 'v2'},json:()=> ++count===1
+        ? new Promise(resolve=>{finishBody=resolve;}) : Promise.resolve({...batchState,folder:'C:/Updated'})};};
+    let first=pollUnderTest();`);
+  await new Promise(resolve => setImmediate(resolve));
+  await p.run('pollUnderTest()');
+  p.run(`finishBody({...batchState,folder:'C:/Old'});`);
+  await p.run('first');
+  assert.equal(p.run('batchState.folder'), 'C:/Updated');
+  assert.equal(p.run('lastEtag'), 'v2');
+  assert.deepEqual(Array.from(p.run('validators')), ['v1', 'v1']);
+  await p.run('pollUnderTest()');
+  assert.equal(p.run('batchState.folder'), 'C:/Updated');
+});
+
+test('polls discarded during color saving cannot change ETag or state', async () => {
+  const p = page();
+  p.run(`lastEtag='old'; colorSaving=true; fetch=async()=>({status:200,ok:true,headers:{get:()=> 'new'},
+    json:async()=>({...batchState,folder:'changed'})});`);
+  await p.run('pollUnderTest()');
+  assert.equal(p.run('lastEtag'), 'old');
+  assert.equal(p.run('batchState.folder'), 'C:/Excel');
+});
+
+test('background polling does not accumulate requests while a poll is pending', async () => {
+  const p = page();
+  await new Promise(resolve => setImmediate(resolve));
+  p.run(`let finishFetch, fetchCalls=0; fetch=()=>{fetchCalls++; return new Promise(resolve=>{finishFetch=resolve;});};
+    let pendingPoll=pollUnderTest();`);
+  await p.run('pollUnderTest(true)');
+  assert.equal(p.run('fetchCalls'), 1);
+  p.run(`finishFetch({status:304});`);
+  await p.run('pendingPoll');
+  assert.equal(p.run('pollInFlight'), 0);
+});
+
+test('a failed POST resets validators and restores controls from the next snapshot', async () => {
+  const p = page();
+  p.run(`lastEtag='old'; poll=pollUnderTest; let validators=[];
+    fetch=async (url, options)=>options.method==='POST' ? {ok:false,json:async()=>({error:'rejected'})}
+      : (validators.push(options.headers['If-None-Match']), {status:200,ok:true,headers:{get:()=> 'fresh'},json:async()=>batchState});`);
+  await p.run(`action(()=>postUnderTest('/api/batch/mark',{id:'a',color:'blue'}))`);
+  assert.equal(p.run('requestBusy'), false);
+  assert.equal(p.elements.get('folderInput').disabled, false);
+  assert.deepEqual(Array.from(p.run('validators')), [undefined]);
+  assert.equal(p.elements.get('errorText').textContent, 'rejected');
+});
 
 test('both directions cycle through the three colors', () => {
   const p = page();

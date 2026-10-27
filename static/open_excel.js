@@ -18,6 +18,7 @@
     const key = linkKey(link.dataset);
     visited.add(key);
     lastKey = key;
+    ++window.excelLinkHtml.revision;
     document.querySelectorAll('.excel-link.is-last').forEach(el => el.classList.remove('is-last'));
     document.querySelectorAll('.excel-link').forEach(el => {
       if (linkKey(el.dataset) === key) el.classList.add('is-visited', 'is-last');
@@ -44,6 +45,8 @@
       + `${target.record ? ' data-record="1"' : ''}${target.blocked ? ' aria-disabled="true"' : ''}`
       + ` title="${escapeAttr(title)}">${labelHtml}</a>`;
   };
+  // 工作台缓存链接 HTML 时，也要跟随访问标记更新（含暂时被筛选隐藏的卡片）。
+  window.excelLinkHtml.revision = 0;
 
   // 水墨背景：5 张长短不同的图（宽/高比），挑形状最接近的那张，再拉到刚好盖住文字
   const INK_RATIOS = [1.86, 2.3, 2.61, 3.16, 3.05];

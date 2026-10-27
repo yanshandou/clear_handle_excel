@@ -126,13 +126,14 @@ def _sheet_checks() -> dict[str, dict[str, Any]]:
     return _data().setdefault("sheet_checks", {})
 
 
-def _unchanged_since_check(path: str) -> bool:
+def _unchanged_since_check(path: str, current: dict[str, int] | None = None) -> bool:
     """上次整份检测之后原文件没再改过（检测规则也没变）：重新导出检测的结果和上次一样"""
     checks = _sheet_checks().get(path) or {}
-    try:
-        current = wf._file_version(Path(path))
-    except OSError:
-        return False
+    if current is None:
+        try:
+            current = wf._file_version(Path(path))
+        except OSError:
+            return False
     return checks.get("*") == current
 
 
@@ -575,12 +576,28 @@ def snapshot() -> dict:
         by_cell: dict[tuple[str, str, str], list[dict]] = {}
         for item in wf.STATE["items"].values():
             by_cell.setdefault(_cell(item), []).append(item)
+        file_versions: dict[str, Any] = {}
+        image_urls: dict[str, str] = {}
+        folder_paths: dict[str, bool] = {}
+
+        def in_folder(path: str) -> bool:
+            if path not in folder_paths:
+                folder_paths[path] = wf.in_current_folder(path)
+            return folder_paths[path]
+
+        def image_url(name: str) -> str:
+            if name not in image_urls:
+                image_urls[name] = _image_url(name) if fix_images.image_path(name) else ""
+            return image_urls[name]
+
         for card in sorted(_data()["cards"].values(), key=lambda c: c["seq"]):
-            if card.get("dismissed") or not wf.in_current_folder(card["wb_path"]):
+            if card.get("dismissed") or not in_folder(card["wb_path"]):
                 continue
-            result = copy.deepcopy(card)
+            items = by_cell.get(_cell(card), [])
+            # 释放 STATE_LOCK 后才序列化 JSON，返回值仍需与后台线程的状态隔离。
+            result = copy.deepcopy({k: v for k, v in card.items() if k not in {"signatures", "item_ids"}})
             if not result.get("problems"):  # 旧版本留下的卡片没存问题说明，按单元格现有的问题项补上
-                result["problems"] = list({p["kind"]: p for p in map(_problem, _items_at(card))}.values())
+                result["problems"] = list({p["kind"]: p for p in map(_problem, items)}.values())
             if not result.get("error_types"):
                 result["error_types"] = list(dict.fromkeys(
                     p.get("error_type") or autofix.item_error_type({"kind": p.get("kind"), "hidden_reason": p.get("reason")})
@@ -599,28 +616,28 @@ def snapshot() -> dict:
             result["adoptable"] = _adoptable(card)
             if card["color"] == "yellow" and card.get("finalized"):
                 # 自动试过没修好（文件没改过）等不能交给自动的黄卡：页面上不给「🤖 自动调整」按钮，写明原因
-                result["auto_skip"] = _auto_skip_reason(card, by_cell.get(_cell(card), []))
+                result["auto_skip"] = _auto_skip_reason(card, items, file_versions=file_versions)
             result["highlighted"] = _shows_mark(_marks().get(card["id"]))
             result["images"] = {
-                which: _image_url(name) for which, name in card.get("fix_images", {}).items()
-                if fix_images.image_path(name)
+                which: url for which, name in card.get("fix_images", {}).items()
+                if (url := image_url(name))
             }
             if result.get("context"):
                 context = result["context"]
                 name = context["image_file"]
-                context["image"] = _image_url(name) if fix_images.image_path(name) else ""
+                context["image"] = image_url(name)
             cards.append(result)
-        highlighted = sum(1 for m in _marks().values() if wf.in_current_folder(m["path"]) and _shows_mark(m))
-        tabs = sum(len(t) for p, t in _tabs().items() if wf.in_current_folder(p))
+        highlighted = sum(1 for m in _marks().values() if in_folder(m["path"]) and _shows_mark(m))
+        tabs = sum(len(t) for p, t in _tabs().items() if in_folder(p))
         return {"cards": cards, "busy": wf.STATE["busy"], "folder": wf.STATE["folder"], "highlighted": highlighted,
                 "tab_marks": tabs,
                 "error_types": list(autofix.CELL_ERROR_SPECS.values()),
                 "fix_error_types": fix_error_types(),
-                "mode": _mode(), "open_blocked": _open_blocked([c["wb_path"] for c in cards]),
+                "mode": _mode(by_cell, in_folder), "open_blocked": _open_blocked([c["wb_path"] for c in cards]),
                 "followups": copy.deepcopy(_data().get("followups") or []),
                 "scan_eta": _scan_eta(wf.STATE["job"]) if wf.STATE["job"] else None,
                 "slow_files": [{"path": p, "name": Path(p).name, **info} for p, info in _data().get("slow_files", {}).items()
-                               if wf.in_current_folder(p)],
+                               if in_folder(p)],
                 "job": copy.deepcopy(wf.STATE["job"]), "progress": dict(wf.STATE["scan_progress"]),
                 "logs": wf.STATE["logs"][-100:]}
 
@@ -2213,16 +2230,19 @@ def _back_to_auto(excel: Any, session: Any, path: str, *, picked: bool = False) 
                + (f"，{kept} 处所在行转人工后被改过，留给人工" if kept else ""))
 
 
-def _handed_over_paths() -> list[str]:
+def _handed_over_paths(by_cell: dict[tuple[str, str, str], list[dict]] | None = None,
+                       in_folder: Callable[[str], bool] | None = None) -> list[str]:
     """调用方持有 STATE_LOCK：当前文件夹里还有可交回自动的问题的文件"""
     enabled = _active_fix_types()
+    in_folder = wf.in_current_folder if in_folder is None else in_folder
     cards = sorted(_data()["cards"].values(), key=lambda c: c["seq"])
     return list(dict.fromkeys(c["wb_path"] for c in cards if c.get("handed_over") and not c.get("dismissed")
-                              and wf.in_current_folder(c["wb_path"])
-                              and not _unchecked_fix_reason(c, enabled=enabled)))
+                              and in_folder(c["wb_path"])
+                              and not _unchecked_fix_reason(c, None if by_cell is None else by_cell.get(_cell(c), []), enabled)))
 
 
-def _mode() -> dict[str, bool]:
+def _mode(by_cell: dict[tuple[str, str, str], list[dict]] | None = None,
+          in_folder: Callable[[str], bool] | None = None) -> dict[str, bool]:
     """调用方持有 STATE_LOCK：现在能不能「转人工」/「转回自动」"""
     job = wf.STATE["job"] or {}
     auto = job.get("kind") == "batch_scan" and not job.get("options", {}).get("scan_only")
@@ -2231,7 +2251,7 @@ def _mode() -> dict[str, bool]:
         # 全部文件扫描完才能切；暂停中也可以直接转
         "to_manual": auto and active and job.get("phase") == "repair" and not job.get("to_manual"),
         "to_auto": not wf.STATE["busy"] and not (auto and job.get("status") == "interrupted")
-                   and bool(_handed_over_paths()),
+                   and bool(_handed_over_paths(by_cell, in_folder)),
     }
 
 
@@ -2262,32 +2282,40 @@ def check_auto(fix_types: Any = None) -> None:
             raise ValueError("没有可以交回自动处理的问题")
 
 
-def _auto_retry_blocked(card: dict) -> bool:
+def _auto_retry_blocked(card: dict, file_versions: dict[str, Any] | None = None) -> bool:
     """自动试过没通过的格子：文件之后没改过就不再试（同样的算法，结果也一样）。调用方持有 STATE_LOCK"""
     path = card["wb_path"]
-    try:
-        current = wf._file_version(Path(path))
-    except OSError:
+    if file_versions is not None and path in file_versions:
+        current = file_versions[path]
+    else:
+        try:
+            current = wf._file_version(Path(path))
+        except OSError:
+            current = None
+        if file_versions is not None:
+            file_versions[path] = current
+    if current is None:
         return False
     done = _data().get("auto_versions", {}).get(path)
     # 旧版本没记自动处理完时的文件版本：按上次整份检测之后有没有改过判断
-    return done == current if done is not None else _unchanged_since_check(path)
+    return done == current if done is not None else _unchanged_since_check(path, current)
 
 
-def _auto_skip_reason(card: dict, items: list[dict] | None = None, enabled: set[str] | None = None) -> str:
+def _auto_skip_reason(card: dict, items: list[dict] | None = None, enabled: set[str] | None = None,
+                      file_versions: dict[str, Any] | None = None) -> str:
     """「🤖 自动调整」时这一格为什么不能交给自动；能交给自动返回空字符串。调用方持有 STATE_LOCK"""
     if card["color"] != "yellow" or not card.get("finalized"):
         return "颜色标记还没提交，请先提交黄色标记"
     items = _items_at(card) if items is None else items
     if card.get("message") == TOUCHED_MESSAGE:
         return "这一行的行高被你改过，自动不再改这一行"
-    if not _can_highlight(card):
+    if not _can_highlight(card, items):
         return "单元格位置没确认，不能自动调整"
     if not _is_break(card) and items and autofix.review_only_reason(items):
         return "PDF 里找不到这段文字，不能确认要不要自动调整"
     if unchecked := _unchecked_fix_reason(card, items, enabled):
         return unchecked
-    if not card.get("handed_over") and _auto_retry_blocked(card):
+    if not card.get("handed_over") and _auto_retry_blocked(card, file_versions):
         return "自动试过没通过，文件之后没改过，再试结果也一样"
     return ""
 
@@ -2590,8 +2618,9 @@ def start_auto_adjust(ids: Any, fix_types: Any = None) -> dict:
             "fix_error_types": selected_types}
 
 
-def _can_highlight(card: dict) -> bool:
-    return bool(card.get("cell_addr")) and all(it.get("location_confirmed") is not False for it in _items_at(card))
+def _can_highlight(card: dict, items: list[dict] | None = None) -> bool:
+    return bool(card.get("cell_addr")) and all(it.get("location_confirmed") is not False
+                                             for it in (_items_at(card) if items is None else items))
 
 
 def _sheet_key(name: str) -> str:
