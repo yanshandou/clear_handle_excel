@@ -208,17 +208,50 @@ class BatchTests(unittest.TestCase):
         self.assertEqual((hashed["color"], hashed["manual"]), ("yellow", True))
         self.assertEqual(hashed["message"], autofix.COLUMN_ONLY_REASON)
 
-    def test_only_column_width_problem_in_row_skips_copy(self):
+    def test_only_column_width_problem_in_row_skips_row_prepare_and_can_widen_column(self):
         from core.hidden_text import REASON_HASH
         card, item = self.add_card("A5")
         batch._data()["rows"].clear()
         item.update(status="pending", hidden_reason=REASON_HASH)
+        # 未勾选 ### 列宽不足时：不打开副本，也不调 _prepare_row
+        batch.set_fix_error_types(["border_clip", "text_truncated", "box_overflow", "page_break_cut"])
         session = Mock()
         with patch.object(batch, "_prepare_row") as prepare:
             batch._repair_file(self.excel, session, self.path)
         prepare.assert_not_called()
         session.copy_of.assert_not_called()
         self.assertTrue(card["manual"])
+
+        # 勾选 ### 列宽不足时：自动加宽列并保存到原文件，提交标绿/标黄时还原原列宽
+        batch.set_fix_error_types(["border_clip", "text_truncated", "box_overflow", "page_break_cut", "hash_overflow"])
+        self.wf.STATE["job"]["attempted_rows"] = []
+        card.update(manual=False, waiting=True, handed_over=False)
+        item["status"] = "pending"
+        col_widths = {1: 8.0}
+        class Col:
+            def __init__(self, c):
+                self.c = c
+            @property
+            def ColumnWidth(self):
+                return col_widths[self.c]
+            @ColumnWidth.setter
+            def ColumnWidth(self, val):
+                col_widths[self.c] = val
+        self.book.Sheets.return_value.Columns.side_effect = Col
+        with patch.object(batch, "_prepare_column", return_value={
+            "base_cols": {"1": 8.0}, "target_cols": {"1": 11.0}, "after": "", "pdf": None,
+        }), patch.object(batch, "_prepare_row") as prepare:
+            batch._repair_file(self.excel, session, self.path)
+        prepare.assert_not_called()
+        self.assertEqual(col_widths[1], 11.0)
+        self.assertEqual((card["color"], card["verified"]), ("blue", True))
+
+        # 标绿提交时还原原列宽
+        batch.mark(card["id"], "green")
+        self.wf.STATE["job"] = {"kind": "batch_commit", "options": {"card_ids": [card["id"]]}, "completed": [],
+                                "pending_adjustment": None}
+        batch._commit_review(self.excel)
+        self.assertEqual(col_widths[1], 8.0)
 
     def test_refresh_keeps_users_green_mark_when_cell_breaks_again(self):
         card, item = self.add_card()

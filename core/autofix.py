@@ -131,7 +131,7 @@ CELL_ERROR_SPECS: dict[str, dict[str, Any]] = {
     ERROR_TYPE_HASH_OVERFLOW: {
         "code": ERROR_TYPE_HASH_OVERFLOW,
         "label": "### 列宽不足",
-        "fixable": False,
+        "fixable": True,
     },
     ERROR_TYPE_TEXT_MISSING: {
         "code": ERROR_TYPE_TEXT_MISSING,

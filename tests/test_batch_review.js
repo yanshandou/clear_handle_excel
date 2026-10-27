@@ -480,12 +480,12 @@ test('open all during a background task opens finished files and lists the rest'
   assert.match(p.run('alerts[0]'), /· a\.xlsx：还没轮到这份文件，处理完才能打开/);
 });
 
-test('fix error types render all 6 types, disable the 2 manual-only ones, and pass selected types to jobs', async () => {
+test('fix error types render all 6 types, disable the 1 manual-only one, and pass selected types to jobs', async () => {
   const p = page();
   const html = p.elements.get('fixErrorTypes').innerHTML;
-  assert.equal((html.match(/data-error-type="/g) || []).length, 4);
-  assert.equal((html.match(/is-manual-only/g) || []).length, 2);
-  assert.match(html, /### 列宽不足（固定转人工）/);
+  assert.equal((html.match(/data-error-type="/g) || []).length, 5);
+  assert.equal((html.match(/is-manual-only/g) || []).length, 1);
+  assert.match(html, /### 列宽不足/);
   assert.match(html, /PDF 未匹配到文字（固定转人工）/);
 
   p.elements.get('folderInput').value = 'C:/Excel';

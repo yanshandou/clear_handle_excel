@@ -215,7 +215,7 @@ class ModeSwitchTests(unittest.TestCase):
         for addr, row in (("A5", 5), ("B5", 5), ("C7", 7), ("E11", 11)):
             cards[addr], _ = self.add(self.paths[0], addr, row)
         cards["D9"], item = self.add(self.paths[0], "D9", 9)
-        item["hidden_reason"] = batch.autofix.REASON_HASH
+        item["hidden_reason"] = batch.autofix.REASON_MISSING
         for card in cards.values():
             self.wf.STATE["items"][card["item_ids"][0]].update(page_index=0, bbox=[0, 0, 1, 1])
         batch._hand_over(self.paths[0])
@@ -232,7 +232,7 @@ class ModeSwitchTests(unittest.TestCase):
         self.assertEqual(plan["extra"], [cards["B5"]["id"]])  # 同一行共用行高，一起调整
         reasons = {s["id"]: s["reason"] for s in plan["skip"]}
         self.assertIn("文件之后没改过", reasons[cards["C7"]["id"]])
-        self.assertIn("###", reasons[cards["D9"]["id"]])
+        self.assertIn("PDF 里找不到", reasons[cards["D9"]["id"]])
         self.assertIn("先提交", reasons[cards["E11"]["id"]])
 
     def test_auto_failed_cell_is_retried_only_after_file_changes(self):
@@ -251,7 +251,7 @@ class ModeSwitchTests(unittest.TestCase):
         shown = {c["id"]: c for c in batch.snapshot()["cards"]}
         self.assertEqual(shown[cards["A5"]["id"]]["auto_skip"], "")
         self.assertIn("文件之后没改过", shown[cards["C7"]["id"]]["auto_skip"])
-        self.assertIn("###", shown[cards["D9"]["id"]]["auto_skip"])
+        self.assertIn("PDF 里找不到", shown[cards["D9"]["id"]]["auto_skip"])
         self.assertNotIn("auto_skip", shown[cards["E11"]["id"]])  # 没提交的卡本来就没有自动调整按钮
         Path(self.paths[0]).write_bytes(b"edited by you, a longer file")
         shown = {c["id"]: c for c in batch.snapshot()["cards"]}

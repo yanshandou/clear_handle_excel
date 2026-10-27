@@ -267,12 +267,19 @@ def _unchecked_fix_reason(card: dict, items: list[dict] | None = None, enabled: 
     if any(t in active for t in fixable):
         return ""
     labels = "、".join(autofix.error_type_label(t) for t in fixable)
-    action = "未修改" if autofix.ERROR_TYPE_PAGE_BREAK_CUT in fixable else "未调整行高"
+    action = ("未修改" if autofix.ERROR_TYPE_PAGE_BREAK_CUT in fixable
+              else "未调整列宽" if fixable == [autofix.ERROR_TYPE_HASH_OVERFLOW]
+              else "未调整行高")
     return f"未勾选「{labels}」自动修复，{action}，请人工处理或标绿忽略"
 
 
+def _col_rid(card: dict) -> str:
+    return _key(card["wb_path"], card["sheet_name"], card.get("cell_addr", ""), "col")
+
+
 def _row_record(card: dict) -> dict | None:
-    return _data()["rows"].get(_rid(card))
+    rows = _data()["rows"]
+    return rows.get(_col_rid(card)) or rows.get(_rid(card))
 
 
 def _latest_shot(card: dict, items: list[dict]) -> str:
@@ -454,6 +461,9 @@ def snapshot() -> dict:
             row = _row_record(card)
             if row is not None and _is_break(card):
                 result["page_break"] = {"row": row["row"], "saved": row["saved"], "applied": row["applied"] >= .5}
+            elif row is not None and row.get("kind") == "col":
+                result["col_width"] = {"base": row["base"], "applied": row["applied"], "saved": row["saved"],
+                                       "cols": list((row.get("applied_cols") or {}).keys())}
             elif row is not None:
                 result["row_height"] = {"base": row["base"], "applied": row["applied"], "saved": row["saved"],
                                         "wrap": card.get("cell_addr") in row.get("wrap", [])}
@@ -567,12 +577,31 @@ def _followed_own_save(path: str, before: Any) -> None:
             versions[path] = _version_or_none(path)
 
 
+STEP_COL_WIDTH = 2.0
+MAX_COL_WIDTH = 255.0
+COL_WIDTH_TOLERANCE = 0.4
+
+
 def _row_value(book: Any, row: dict) -> float:
-    """写入日志里一行现在的值：行高；插分页的行是 1（上方有手动分页）/ 0（没有）"""
-    target = book.Sheets(row["sheet"]).Rows(row["row"])
+    """写入日志里一行现在的值：行高；插分页的行是 1（上方有手动分页）/ 0（没有）；列宽是各列宽度之和"""
+    sheet = book.Sheets(row["sheet"])
+    if row.get("kind") == "col":
+        cols = row.get("cols_target") or row.get("cols_expected") or {}
+        return round(sum(float(sheet.Columns(int(c)).ColumnWidth) for c in cols), 2)
+    target = sheet.Rows(row["row"])
     if row.get("kind") == "break":
         return 1.0 if int(target.PageBreak) == page_breaks.XL_PAGEBREAK_MANUAL else 0.0
     return float(target.RowHeight)
+
+
+def _cols_match(book: Any, row: dict, field: str) -> bool:
+    if row.get("kind") != "col":
+        return True
+    sheet = book.Sheets(row["sheet"])
+    return all(
+        abs(float(sheet.Columns(int(c)).ColumnWidth) - float(w)) < COL_WIDTH_TOLERANCE
+        for c, w in (row.get(field) or {}).items()
+    )
 
 
 def _write_rows(excel: Any, journal: dict) -> None:
@@ -591,21 +620,28 @@ def _write_rows(excel: Any, journal: dict) -> None:
                             换行=r.get("wrap") or "-")
         # 自动换行和行高一起保存；续跑时两样都已到位才算写过
         wraps = [(r["sheet"], addr, on) for r in journal["rows"] for addr, on in (r.get("wrap") or {}).items()]
-        at_target = (all(abs(h - r["target"]) < ROW_HEIGHT_TOLERANCE for h, r in zip(actual, journal["rows"]))
+        at_target = (all(abs(h - r["target"]) < ROW_HEIGHT_TOLERANCE and _cols_match(book, r, "cols_target")
+                         for h, r in zip(actual, journal["rows"]))
                      and all(bool(book.Sheets(sh).Range(addr).MergeArea.WrapText) == on for sh, addr, on in wraps))
         if wf._file_version(Path(path)) != journal["version"] and not at_target:
             raise ValueError(f"{where} 文件在准备后被修改，已停止写入；核对后可继续任务，或点「放弃这次写入」")
         if not at_target:
-            if any(abs(h - r["expected"]) >= ROW_HEIGHT_TOLERANCE for h, r in zip(actual, journal["rows"])):
+            if any(abs(h - r["expected"]) >= ROW_HEIGHT_TOLERANCE or not _cols_match(book, r, "cols_expected")
+                   for h, r in zip(actual, journal["rows"])):
                 raise ValueError(f"{where} 行高已被其他操作修改，未覆盖人工修改；可点「放弃这次写入」转人工处理")
             for sheet, addr, on in wraps:
                 book.Sheets(sheet).Range(addr).MergeArea.WrapText = on
             for row in journal["rows"]:
-                target = book.Sheets(row["sheet"]).Rows(row["row"])
-                if row.get("kind") == "break":
-                    target.PageBreak = page_breaks.XL_PAGEBREAK_MANUAL if row["target"] else page_breaks.XL_PAGEBREAK_NONE
+                sheet = book.Sheets(row["sheet"])
+                if row.get("kind") == "col":
+                    for col_str, w in (row.get("cols_target") or {}).items():
+                        sheet.Columns(int(col_str)).ColumnWidth = float(w)
+                elif row.get("kind") == "break":
+                    sheet.Rows(row["row"]).PageBreak = (
+                        page_breaks.XL_PAGEBREAK_MANUAL if row["target"] else page_breaks.XL_PAGEBREAK_NONE
+                    )
                 else:
-                    target.RowHeight = row["target"]
+                    sheet.Rows(row["row"]).RowHeight = row["target"]
             normalize_workbook_view(excel, book)
             before = _version_or_none(path)
             book.Save()
@@ -650,6 +686,13 @@ def _finish_pending(excel: Any) -> None:
                     item.update(status="fixed", batch_managed=True, triage_keep=False, page_break=True,
                                 fix_images=copy.deepcopy(card.get("fix_images", {})),
                                 review_reason="全自动批处理：已修复并保存")
+            elif pending["action"] == "fix" and any(r.get("kind") == "col" for r in pending["rows"]):
+                card.update(color="blue", verified=True, after_kind="fixed",
+                            message="已自动加宽列并保存，等待审核")
+                for item in _items_at(card):
+                    item.update(status="fixed", batch_managed=True, triage_keep=False, col_widened=True,
+                                fix_images=copy.deepcopy(card.get("fix_images", {})),
+                                review_reason="全自动批处理：已自动加宽列并保存")
             elif pending["action"] == "fix":
                 card.update(color="blue", verified=True, after_kind="fixed", message="已自动修复并保存，等待审核")
                 for item in _items_at(card):
@@ -950,6 +993,119 @@ def _prepare_row(
     return base, chosen, before
 
 
+def _cell_columns(sheet: Any, addr: str) -> tuple[int, list[int]]:
+    match = re.fullmatch(r"([A-Za-z]+)([1-9]\d*)", (addr or "").split(":")[0])
+    if match is None:
+        raise ValueError("单元格地址无法确认，未调整列宽，请人工核对")
+    row = int(match[2])
+    first_col = 0
+    for ch in match[1].upper():
+        first_col = first_col * 26 + ord(ch) - ord("A") + 1
+    col_count = 1
+    try:
+        area = sheet.Range(addr).MergeArea
+        c0, cnt = int(area.Column), int(area.Columns.Count)
+        if not isinstance(c0, bool) and not isinstance(cnt, bool) and isinstance(c0, int) and isinstance(cnt, int):
+            if c0 >= 1 and cnt >= 1:
+                first_col, col_count = c0, cnt
+    except Exception:
+        pass
+    return row, list(range(first_col, first_col + col_count))
+
+
+def _prepare_column(session: Any, path: str, items: list[dict], timing: dict[str, float]) -> dict:
+    """### 列宽不足：单列直接加宽该列，跨多列合并时平均微调合并区各列，直到 ### 消失并留余量"""
+    item = items[0]
+    sheet = session.copy_of(path).Sheets(item["sheet_name"])
+    row, cols = _cell_columns(sheet, item.get("cell_addr") or "")
+    try:
+        base_cols = {}
+        for c in cols:
+            w = sheet.Columns(c).ColumnWidth
+            if isinstance(w, bool) or not isinstance(w, (int, float)) or w <= 0:
+                raise TypeError("invalid ColumnWidth")
+            base_cols[str(c)] = round(float(w), 2)
+    except Exception:
+        raise ValueError(autofix.COLUMN_ONLY_REASON) from None
+    autofix.validate_print_targets(sheet, items)
+    step = max(0.5, round(STEP_COL_WIDTH / len(cols), 2))
+    margin = max(0.3, round(1.0 / len(cols), 2))
+    pdf = session.temp_pdf()
+    try:
+        for attempt in range(1, autofix.MAX_ATTEMPTS + 1):
+            target_cols = {str(c): min(MAX_COL_WIDTH, round(base_cols[str(c)] + step * attempt, 2)) for c in cols}
+            for c in cols:
+                sheet.Columns(c).ColumnWidth = target_cols[str(c)]
+            try:
+                disp = str(sheet.Cells(row, cols[0]).Text or "").strip()
+            except Exception:
+                disp = ""
+            if len(disp) >= 3 and set(disp) == {"#"} and attempt < autofix.MAX_ATTEMPTS:
+                continue  # 仍是 ###，继续加宽，不用每次都导出 PDF
+            target_cols = {str(c): min(MAX_COL_WIDTH, round(target_cols[str(c)] + margin, 2)) for c in cols}
+            for c in cols:
+                sheet.Columns(c).ColumnWidth = target_cols[str(c)]
+            started = time.perf_counter()
+            wf._export_sheet_pdf(sheet, pdf)
+            timing["exports"] = timing.get("exports", 0) + 1
+            timing["export"] = timing.get("export", 0.0) + time.perf_counter() - started
+            started = time.perf_counter()
+            cells = snapshot_cells(extract_sheet_snapshot(sheet))
+            probe = CellProbe(sheet)
+            ok, shot, _ = autofix._evaluate(pdf, items, cells, probe.text, probe.printed)
+            timing["evaluate"] = timing.get("evaluate", 0.0) + time.perf_counter() - started
+            if ok:
+                chosen_pdf = session.chosen_pdf()
+                shutil.copyfile(pdf, chosen_pdf)
+                return {"base_cols": base_cols, "target_cols": target_cols, "after": shot, "pdf": chosen_pdf}
+    finally:
+        for c in cols:
+            sheet.Columns(c).ColumnWidth = base_cols[str(c)]
+        pdf.unlink(missing_ok=True)
+    raise ValueError(autofix.COLUMN_ONLY_REASON)
+
+
+def _repair_column(
+    excel: Any, session: Any, path: str, items: list[dict], card: dict,
+    version: dict, timing: dict[str, float],
+) -> Any:
+    """### 列宽不足的单元格：在副本上试算加宽列，通过后走写入日志保存到原文件（可续跑、提交绿/黄时还原原列宽）"""
+    started = time.perf_counter()
+    chosen = _prepare_column(session, path, items, timing)
+    timing["prepare"] = timing.get("prepare", 0.0) + time.perf_counter() - started
+    item = items[0]
+    col_rid = _col_rid(card)
+    base_sum = round(sum(chosen["base_cols"].values()), 2)
+    target_sum = round(sum(chosen["target_cols"].values()), 2)
+    with wf.STATE_LOCK:
+        fix_images.forget(card, "after")
+        _save_shot(card, "after", chosen["after"])
+        _data()["rows"][col_rid] = {
+            "id": col_rid, "kind": "col", "path": path, "sheet": item["sheet_name"],
+            "row": int(item["excel_row"]), "cell_addr": card.get("cell_addr", ""),
+            "base": base_sum, "applied": target_sum,
+            "base_cols": chosen["base_cols"], "applied_cols": chosen["target_cols"],
+            "saved": False, "wrap": [],
+        }
+        wf.STATE["job"]["pending_adjustment"] = {
+            "action": "fix", "path": path, "version": version, "cards": [card["id"]],
+            "rows": [{
+                "id": col_rid, "kind": "col", "sheet": item["sheet_name"], "row": int(item["excel_row"]),
+                "expected": base_sum, "target": target_sum,
+                "cols_expected": chosen["base_cols"], "cols_target": chosen["target_cols"],
+            }],
+        }
+        wf._persist_state()
+    started = time.perf_counter()
+    _finish_pending(excel)
+    timing["write"] = timing.get("write", 0.0) + time.perf_counter() - started
+
+    def widen(sheet: Any) -> None:
+        for col_str, w in chosen["target_cols"].items():
+            sheet.Columns(int(col_str)).ColumnWidth = float(w)
+    return session.written_with(path, version, item["sheet_name"], widen, chosen["pdf"])
+
+
 def _prepare_break(session: Any, path: str, item: dict, timing: dict[str, float]) -> dict:
     """在副本上合并区域第一行上方插手动分页，核对整块不再被切开，导出一份截图后把副本改回去。
     缩放到 N 页高（Excel 忽略手动分页）、合并区域比一页还高、上方已有手动分页的都不改，转人工。"""
@@ -1107,14 +1263,26 @@ def _repair_file(excel: Any, session: Any, path: str) -> None:
                 raise _RowDone
             column_only = [it for it in items if autofix.column_width_only(it)]
             if column_only:
-                # ### 交给人工改列宽；同行其他格子照常自动加高
+                for group in _group_cells(column_only):
+                    card = _card_for(group)
+                    unchecked = _unchecked_fix_reason(card, group, enabled_types)
+                    if unchecked:
+                        with wf.STATE_LOCK:
+                            card.update(color="yellow", verified=False, manual=True, waiting=False,
+                                        handed_over=True, after_kind="handover", message=unchecked)
+                            wf.log_msg(f"⏭️ {first['wb_name']} / {first['sheet_name']} 行{first['excel_row']}：{unchecked}")
+                            wf._persist_state()
+                        _remember_handover(path)
+                        continue
+                    try:
+                        workbook = _repair_column(excel, session, path, group, card, version, timing)
+                        version = wf._file_version(Path(path))
+                    except ValueError as err:
+                        with wf.STATE_LOCK:
+                            card.update(color="yellow", verified=False, manual=True, waiting=False, message=str(err))
+                            wf.log_msg(f"⚠️ {first['wb_name']} / {first['sheet_name']} 行{first['excel_row']}：{err}")
+                            wf._persist_state()
                 with wf.STATE_LOCK:
-                    for group in _group_cells(column_only):
-                        card = _card_for(group)
-                        card.update(color="yellow", verified=False, manual=True, waiting=False,
-                                    message=autofix.COLUMN_ONLY_REASON)
-                    wf.log_msg(f"⚠️ {first['wb_name']} / {first['sheet_name']} 行{first['excel_row']}："
-                               f"{autofix.COLUMN_ONLY_REASON}")
                     done = {_cell(it) for it in column_only}
                     items = [it for it in items if _cell(it) not in done]
                     cards = [c for c in cards if _cell(c) not in done]
@@ -1306,6 +1474,16 @@ def _commit_review(excel: Any) -> None:
         rows = []
         reverting = []
         for rid, peers in by_row.items():
+            for card in peers:
+                col_row = data["rows"].get(_col_rid(card))
+                if col_row and col_row["path"] == path and col_row["saved"] and card["color"] != "blue":
+                    rows.append({
+                        "id": col_row["id"], "kind": "col", "sheet": col_row["sheet"], "row": col_row["row"],
+                        "expected": col_row["applied"], "target": col_row["base"],
+                        "cols_expected": col_row["applied_cols"], "cols_target": col_row["base_cols"],
+                        "wrap": {},
+                    })
+                    reverting.append(card["id"])
             row = data["rows"].get(rid)
             if not row or row["path"] != path or not row["saved"] or all(c["color"] == "blue" for c in peers):
                 continue
@@ -1893,8 +2071,6 @@ def _auto_skip_reason(card: dict, items: list[dict] | None = None, enabled: set[
     items = _items_at(card) if items is None else items
     if card.get("message") == TOUCHED_MESSAGE:
         return "这一行的行高被你改过，自动不再改这一行"
-    if any(autofix.column_width_only(it) for it in items):
-        return "列宽不够（显示 ###），加高修不好，请人工加宽列"
     if not _can_highlight(card):
         return "单元格位置没确认，不能自动加高"
     if not _is_break(card) and items and autofix.review_only_reason(items):

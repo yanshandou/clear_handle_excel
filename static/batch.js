@@ -411,6 +411,9 @@ function handlingText(card) {
   const brk = card.page_break;
   if (brk?.saved && brk.applied) return `处理：在第 ${brk.row} 行上方插入分页，整块移到下一页，已保存`;
   if (brk && !brk.applied && card.finalized) return '处理：已去掉插入的分页';
+  const col = card.col_width;
+  if (col?.saved && Math.abs(col.applied - col.base) >= 0.05) return `处理：${card.cell_addr} 所在列宽 ${pt(col.base).replace('pt', '')} → ${pt(col.applied).replace('pt', '')}（+${pt(col.applied - col.base).replace('pt', '')}），已保存`;
+  if (col && !col.saved && Math.abs(col.applied - col.base) < 0.05 && card.finalized) return `处理：已还原为原列宽 ${pt(col.base).replace('pt', '')}`;
   if (card.kind === 'pagebreak' && card.after_kind === 'rechecked') return '处理：未插入分页（其他行调整后重新导出已不再被切开）';
   if (card.after_kind === 'handover') return '处理：转人工时自动还没处理到这一格，原文件未修改';
   if (card.after_kind === 'scan_only') return `处理：只扫描，未自动修改${card.highlighted ? '；已在 Excel 中给这一格标色' : ''}`;
@@ -1045,7 +1048,7 @@ const CELL_ERROR_TYPES = [
   { code: 'text_truncated', label: '文字截断', fixable: true, hint: 'PDF 只印出开头一部分、后半段未显示：自动开启换行并加高行高' },
   { code: 'box_overflow', label: '超出裁剪框', fixable: true, hint: '文字超出单元格裁剪框看不见：自动开启换行并加高行高' },
   { code: 'page_break_cut', label: '分页切开合并单元格', fixable: true, hint: '自动分页落在多行合并区域中间：自动在上方插入手动分页' },
-  { code: 'hash_overflow', label: '### 列宽不足（固定转人工）', fixable: false, hint: '列宽不够导致数字显示成 ###，加高行高修不好，固定转人工' },
+  { code: 'hash_overflow', label: '### 列宽不足', fixable: true, hint: '列宽不够导致数字或日期显示成 ###：自动加宽该列（跨多列合并时平均加宽各列）' },
   { code: 'text_missing', label: 'PDF 未匹配到文字（固定转人工）', fixable: false, hint: 'PDF 中未匹配到该格文字，无法确认是否需要显示，固定转人工' },
 ];
 const FIXABLE_CODES = CELL_ERROR_TYPES.filter(t => t.fixable).map(t => t.code);
