@@ -260,6 +260,8 @@ def open_block_reason(job: dict, path: Path) -> str:
         return "正在转人工，要给这份文件标色，标完才能打开"
     if any(p in job.get("deferred_adjustments", {}) for p in mine):
         return "这份文件还有没写完的修改，后台还要回来处理"
+    if job.get("options", {}).get("scan_only") and any(Path(p).resolve() == target for p in _auto_queue_paths(job)):
+        return "排队等自动调整（全部文件扫完后开始），调整完才能打开"
     if all(p in completed for p in mine):
         return ""
     scanned = job.get("scanned", [])
@@ -1862,11 +1864,44 @@ def _finish_picked(path: str) -> None:
 
 
 def _auto_queue_open() -> bool:
-    """调用方持有 STATE_LOCK：正在跑「🤖 自动调整」，还能把别的文件排进去接着做"""
+    """调用方持有 STATE_LOCK：正在跑「🤖 自动调整」，还能把别的文件排进去接着做；
+    「只扫描」还没扫完时也能排，全部扫完后本任务接着自动调整（_queued_auto_to_picked）"""
     job = wf.STATE.get("job") or {}
-    return bool(wf.STATE["busy"] and job.get("kind") == "batch_scan" and job.get("options", {}).get("picked")
+    options = job.get("options", {})
+    return bool(wf.STATE["busy"] and job.get("kind") == "batch_scan" and (options.get("picked") or options.get("scan_only"))
                 and "workbooks" in job and not job.get("closing") and not job.get("pause_requested")
                 and not job.get("to_manual"))
+
+
+def _auto_queue_paths(job: dict) -> set[str]:
+    """调用方持有 STATE_LOCK：「只扫描」时排队等自动调整的文件"""
+    cards = _data()["cards"]
+    return {cards[cid]["wb_path"] for cid in job.get("auto_queue", []) if cid in cards}
+
+
+def _queued_auto_to_picked(job: dict) -> bool:
+    """调用方持有 STATE_LOCK：「只扫描」全部扫完，扫描中排队的「🤖 自动调整」本任务接着做：
+    任务就地改成自动调整选中的格子（和点「🤖 自动调整」另起的任务一样）。
+    有文件扫描出错没扫完时，扫描任务先收起来，自动调整做完放回，仍可「继续上次任务」接着扫"""
+    cards = _data()["cards"]
+    ids = [cid for cid in job.pop("auto_queue", []) if cid in cards and not cards[cid].get("dismissed")]
+    if not ids:
+        return False
+    if not set(job["workbooks"]).issubset(job["completed"]):
+        job["paused_scan"] = copy.deepcopy({k: v for k, v in job.items() if k != "paused_scan"})
+    paths = list(dict.fromkeys(cards[cid]["wb_path"] for cid in sorted(ids, key=lambda cid: cards[cid]["seq"])))
+    options = job["options"]
+    folder = options["folder"]
+    options.clear()  # 原地改：run 里的 options 还指着它
+    options.update(folder=folder, back_to_auto=True, picked=True, card_ids=ids)
+    for key in ("phase", "repairing", "picked_back", "closing"):
+        job.pop(key, None)
+    job.update(workbooks=paths, completed=[], scanned=[], scan_versions={}, rounds={}, file_errors={})
+    wf.STATE["scan_progress"] = {"total": len(paths), "completed": 0, "status": "running"}
+    wf._persist_state()
+    debug_log.event("🤖 扫完接着自动调整", 文件=len(paths), 格子=len(ids))
+    wf.log_msg(f"🤖 全部文件扫描完成，接着自动调整排队的 {len(paths)} 个文件（{len(ids)} 格）")
+    return True
 
 
 def enqueue_auto_adjust(ids: Any) -> bool:
@@ -1890,6 +1925,14 @@ def enqueue_auto_adjust(ids: Any) -> bool:
                 raise ValueError(f"{Path(path).name}：{reason.replace('才能打开', '再点自动调整')}")
         for cid in picked:
             cards[cid]["auto_pick"] = True
+        if job["options"].get("scan_only"):
+            # 「只扫描」还没扫完：先记下，全部扫完后本任务接着自动调整
+            job["auto_queue"] = list(dict.fromkeys(job.get("auto_queue", []) + picked))
+            wf._persist_state()
+            debug_log.event("🖱️ 自动调整排队（扫完再做）", 选中=len(ids), 交给自动=len(plan["run"]),
+                            同行连带=len(plan["extra"]), 跳过=[f"{s['id'][:6]}:{s['reason']}" for s in plan["skip"]])
+            wf.log_msg(f"🤖 已排队自动调整：{'、'.join(Path(p).name for p in paths)}（{len(picked)} 格），全部文件扫完后接着做")
+            return True
         options = job["options"]
         options["card_ids"] = list(dict.fromkeys(options["card_ids"] + picked))
         rounds = job.setdefault("rounds", {})
@@ -3040,8 +3083,14 @@ def run() -> list[str]:
                         p not in job["completed"]
                         and ("repair" if p in scanned else "scan", p, job.get("rounds", {}).get(p, 0)) not in tried
                         for p in expected)
+                    if scan_only and not job.get("pause_requested") and _queued_auto_to_picked(job):
+                        # 只扫描时排队的「🤖 自动调整」：全部扫完，本任务接着按自动调整做
+                        scan_only, back, picked = False, True, True
+                        expected, scanned, versions = job["workbooks"], job["scanned"], job["scan_versions"]
+                        tried.clear()
+                        more = True
                     if not more:
-                        job["closing"] = picked  # 之后再点自动调整另起任务，不会漏掉
+                        job["closing"] = picked or scan_only  # 之后再点自动调整另起任务，不会漏掉
                         wf._persist_state()
                         break
             if job.get("to_manual") and not job.get("pause_requested"):

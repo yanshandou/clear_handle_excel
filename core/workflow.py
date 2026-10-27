@@ -324,8 +324,13 @@ def run_pending_workflow() -> None:
             with STATE_LOCK:
                 STATE["job"] = job.pop("paused_scan")
                 STATE["job"]["status"] = "interrupted"
-            log_msg("ℹ️ 审核操作已完成；全自动处理仍处于暂停，可点「继续上次任务」")
-            interrupt_execution_batch("全自动处理已暂停，可点击继续上次任务")
+            if job["kind"] == "batch_scan":
+                # 「只扫描」时排队的自动调整做完了；扫描出错没扫完的文件还能接着扫
+                log_msg("ℹ️ 自动调整已完成；只扫描还有文件没扫完，可点「继续上次任务」接着扫")
+                interrupt_execution_batch("只扫描还有文件没扫完，可点击继续上次任务")
+            else:
+                log_msg("ℹ️ 审核操作已完成；全自动处理仍处于暂停，可点「继续上次任务」")
+                interrupt_execution_batch("全自动处理已暂停，可点击继续上次任务")
     except Exception as err:
         with STATE_LOCK:
             STATE["job"]["status"] = "interrupted"

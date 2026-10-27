@@ -404,6 +404,97 @@ class ModeSwitchTests(unittest.TestCase):
         self.assertNotIn(self.paths[0], self.job["scanned"])
         self.assertEqual(self.job["rounds"][self.paths[0]], 1)
 
+    def scan_only_job(self):
+        """「只扫描」正在跑：两个文件各一处问题，扫到时转成黄色人工项"""
+        self.job["options"] = {"folder": str(self.root), "scan_only": True, "highlight": dict(batch.DEFAULT_HIGHLIGHT)}
+        cards = []
+        for path, addr in ((self.paths[0], "A5"), (self.paths[1], "A3")):
+            card, item = self.add(path, addr, int(addr[1:]))
+            item.update(page_index=0, bbox=[0, 0, 1, 1])
+            cards.append(card)
+        return cards
+
+    def test_auto_adjust_clicked_during_scan_only_runs_after_all_files_are_scanned(self):
+        first, second = self.scan_only_job()
+        order = []
+
+        def refresh(excel, path, *a, **k):
+            order.append(("scan", path))
+            if path == self.paths[1]:
+                # 扫第二个文件时：扫完的第一个文件可以排队，正在扫的不行
+                with self.assertRaisesRegex(ValueError, "再点自动调整"):
+                    batch.enqueue_auto_adjust([second["id"]])
+                self.assertTrue(batch.enqueue_auto_adjust([first["id"]]))
+                self.assertTrue(first["auto_pick"])
+                # 排队的文件后台还要读、还要改：先不能打开、不能改颜色
+                self.assertIn("排队等自动调整", batch.open_block_reason(self.job, Path(self.paths[0])))
+                with self.assertRaisesRegex(ValueError, "才能改颜色"):
+                    batch.mark(first["id"], "green")
+
+        with patch.object(batch, "_refresh", side_effect=refresh), \
+                patch.object(batch, "_back_to_auto", side_effect=lambda e, s, path, picked=False:
+                             order.append(("back", path, picked))), \
+                patch.object(batch, "_repair_file", side_effect=lambda e, s, path: order.append(("fix", path))), \
+                patch.object(batch, "_finish_picked"), patch.object(batch, "_sync_highlights_safely"):
+            self.assertEqual(batch.run(), [self.paths[0]])
+        # 两个文件都扫完，才接着自动调整排队的文件
+        self.assertEqual(order, [("scan", self.paths[0]), ("scan", self.paths[1]),
+                                 ("back", self.paths[0], True), ("fix", self.paths[0])])
+        self.assertEqual(second["color"], "yellow")  # 没排队的照旧留给人工
+        # 同一个任务就地改成自动调整；全部扫完了，没有要放回的扫描任务
+        self.assertEqual(self.job["options"], {"folder": str(self.root), "back_to_auto": True, "picked": True,
+                                               "card_ids": [first["id"]]})
+        self.assertEqual((self.job["workbooks"], self.job["completed"]), ([self.paths[0]], [self.paths[0]]))
+        self.assertNotIn("auto_queue", self.job)
+        self.assertNotIn("paused_scan", self.job)
+        self.assertTrue(self.job["closing"])
+
+    def test_scan_only_without_queue_finishes_as_before(self):
+        self.scan_only_job()
+        with patch.object(batch, "_refresh"), patch.object(batch, "_back_to_auto") as back:
+            self.assertEqual(batch.run(), self.paths)
+        back.assert_not_called()
+        self.assertTrue(self.job["options"]["scan_only"])
+        self.assertEqual(self.job["completed"], self.paths)
+        self.assertTrue(self.job["closing"])  # 收尾时再点自动调整另起任务
+        self.assertFalse(batch.enqueue_auto_adjust([]))
+
+    def test_unscanned_files_can_still_be_resumed_after_queued_auto_adjust(self):
+        first, _ = self.scan_only_job()
+
+        def refresh(excel, path, *a, **k):
+            if path == self.paths[1]:
+                self.assertTrue(batch.enqueue_auto_adjust([first["id"]]))
+                raise ValueError("文件被占用")
+
+        with patch.object(batch, "_refresh", side_effect=refresh), patch.object(batch, "_back_to_auto"), \
+                patch.object(batch, "_repair_file"), patch.object(batch, "_finish_picked"), \
+                patch.object(batch, "_sync_highlights_safely"), \
+                patch.object(self.wf, "interrupt_execution_batch") as interrupt:
+            self.wf.run_pending_workflow()
+        # 自动调整做完：没扫完的「只扫描」放回来，可以「继续上次任务」接着扫出错的文件
+        job = self.wf.STATE["job"]
+        self.assertEqual((job["status"], job["options"]["scan_only"]), ("interrupted", True))
+        self.assertEqual(job["completed"], [self.paths[0]])
+        self.assertIn(self.paths[1], job["file_errors"])
+        self.assertNotIn("auto_queue", job)
+        self.assertIn("继续上次任务", interrupt.call_args.args[0])
+        self.assertEqual(batch._data()["auto_versions"][self.paths[0]], self.wf._file_version(Path(self.paths[0])))
+
+    def test_pause_during_scan_only_keeps_the_queue_for_resume(self):
+        first, _ = self.scan_only_job()
+
+        def refresh(excel, path, *a, **k):
+            if path == self.paths[1]:
+                self.assertTrue(batch.enqueue_auto_adjust([first["id"]]))
+                self.job["pause_requested"] = True
+
+        with patch.object(batch, "_refresh", side_effect=refresh), patch.object(batch, "_back_to_auto") as back:
+            batch.run()
+        back.assert_not_called()
+        self.assertEqual(self.job["auto_queue"], [first["id"]])
+        self.assertTrue(self.job["options"]["scan_only"])
+
 
 if __name__ == "__main__":
     unittest.main()

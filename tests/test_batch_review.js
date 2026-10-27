@@ -379,3 +379,31 @@ test('file box says which files are queued for auto adjust', () => {
   assert.match(p.run(`autoQueueBadge('D.xlsx')`), /排队等自动调整 · 前面还有 1 个文件/);
   assert.equal(p.run(`autoQueueBadge('E.xlsx')`), '');
 });
+
+test('while scan only runs, scanned files can queue auto adjust until all files are scanned', () => {
+  const p = page();
+  p.run(`batchState.cards[0].wb_path = 'A.xlsx'; batchState.cards[1].wb_path = 'B.xlsx';
+    batchState.cards[0].color = 'yellow'; batchState.cards[0].finalized = true;
+    batchState.busy = true; batchState.open_blocked = {'A.xlsx': '后台正在处理这份文件，处理完才能打开'};
+    batchState.job = {kind: 'batch_scan', options: {scan_only: true}, workbooks: ['B.xlsx', 'A.xlsx'], completed: ['B.xlsx']};`);
+  assert.equal(p.run(`canAuto([batchState.cards[1]])`), true);
+  assert.match(p.run(`autoButtonHtml(batchState.cards[1])`), /现在正在扫描：先排队，全部文件扫完后接着做/);
+  // 还在扫的文件：按钮不可点，提示写明原因
+  assert.equal(p.run(`canAuto([batchState.cards[0]])`), false);
+  assert.match(p.run(`autoButtonHtml(batchState.cards[0])`), /disabled title="现在不能点：book.xlsx：后台正在处理这份文件，处理完再点自动调整"/);
+  // 排上队的文件框写明扫完后开始
+  p.run(`batchState.job.auto_queue = ['b']`);
+  assert.match(p.run(`autoQueueBadge('B.xlsx')`), /排队等自动调整 · 全部文件扫完后开始/);
+  assert.equal(p.run(`autoQueueBadge('A.xlsx')`), '');
+  // 收尾、暂停、别的任务：都写明为什么不能点
+  p.run(`batchState.job.closing = true`);
+  assert.equal(p.run(`autoBlockReason([batchState.cards[1]])`), '只扫描正在收尾，结束后才能自动调整');
+  p.run(`batchState.job.closing = false; batchState.job.pause_requested = true`);
+  assert.equal(p.run(`autoBlockReason([batchState.cards[1]])`), '正在暂停，停下后才能自动调整');
+  p.run(`batchState.job = {kind: 'batch_scan', options: {}, workbooks: ['A.xlsx'], completed: []}`);
+  assert.equal(p.run(`autoBlockReason([batchState.cards[1]])`), '后台正在全自动处理，结束后才能自动调整');
+  p.run(`batchState.job = {kind: 'batch_commit', options: {}, workbooks: ['A.xlsx'], completed: []}`);
+  assert.equal(p.run(`autoBlockReason([batchState.cards[1]])`), '后台正在提交审核，结束后才能自动调整');
+  assert.match(p.run(`fileHeadHtml('B.xlsx')`), /disabled title="现在不能点：后台正在提交审核，结束后才能复检"/);
+  assert.match(p.run(`fileHeadHtml('B.xlsx')`), /disabled title="现在不能点：后台正在提交审核，结束后才能自动调整"/);
+});
