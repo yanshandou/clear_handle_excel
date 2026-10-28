@@ -6,6 +6,7 @@ import unicodedata
 from core.common import (
     _original_name_of, strip_new_prefix, strip_uncertain_prefix, workbook_rel_name,
 )
+from core.sheet_history import Projection
 
 
 def norm(name: str) -> str:
@@ -42,10 +43,22 @@ def pair_files(old_root: Path, old_paths: list[Path], names: list[str],
 
 
 def pair_sheets(current: list[Any], old: list[Any], *, title: Callable,
-                code: Callable, words: Callable) -> dict[str, tuple[Any, str]]:
-    """先表名、可识别的新旧标记、代码名，最后才用内容；歧义留给人工。"""
+                code: Callable, words: Callable, history: Projection | None = None) -> dict[str, tuple[Any, str]]:
+    """先按操作历史追溯身份，再按表名、代码名、内容；歧义留给人工。"""
     found: dict[str, tuple[Any, str]] = {}
     left, rest = list(old), list(current)
+
+    origins = history.origins if history else {}
+    for sheet in list(rest):
+        name = title(sheet)
+        if name not in origins:
+            continue
+        source = origins[name]
+        same = [other for other in left if source is not None and norm(title(other)) == norm(source)]
+        if len(same) == 1 and list(origins.values()).count(source) == 1:
+            found[name] = (same[0], "history")
+            left.remove(same[0])
+        rest.remove(sheet)  # 有历史但不能唯一追溯时，不回退到同名的另一张表。
 
     def assign(key: Callable, how: str) -> None:
         for sheet in list(rest):

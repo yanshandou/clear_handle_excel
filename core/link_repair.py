@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 from typing import Any
 
-from core import debug_log, formula_links as links, workflow as wf
+from core import debug_log, formula_links as links, workflow as wf, sheet_history
 from core.backup_compare import pair_files, pair_sheets
 from core.common import workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, start_background_excel, quit_background_excel
@@ -43,9 +43,9 @@ def _sheet_info(sheet: Any) -> dict:
     return {"name": sheet.Name, "code": sheet.CodeName, "words": sorted(words)}
 
 
-def _pair_sheets(current: list[dict], old: list[dict]) -> dict:
+def _pair_sheets(current: list[dict], old: list[dict], history=None) -> dict:
     return pair_sheets(current, old, title=lambda item: item["name"],
-                       code=lambda item: item["code"], words=lambda item: set(item["words"]))
+                       code=lambda item: item["code"], words=lambda item: set(item["words"]), history=history)
 
 
 def _anchors(cell: Any) -> list[dict]:
@@ -64,6 +64,7 @@ def scan_file(excel: Any, path: Path) -> dict:
     try:
         book.Application.CalculateFull()
         sheets = [_sheet_info(sheet) for sheet in book.Worksheets]
+        sheet_names = [sheet.Name for sheet in book.Sheets]
         hits, seen = [], set()
         for hit in links.link_errors(book):
             cell = book.Worksheets(hit["sheet"]).Range(hit["addr"])
@@ -79,7 +80,7 @@ def scan_file(excel: Any, path: Path) -> dict:
         book.Close(SaveChanges=False)
     if stamp != fingerprint(path):
         raise ValueError("文件在扫描期间发生变化，请重新扫描")
-    return {"path": str(path), "fingerprint": stamp, "sheets": sheets, "hits": hits}
+    return {"path": str(path), "fingerprint": stamp, "sheets": sheets, "sheet_names": sheet_names, "hits": hits}
 
 
 def _same(first: Any, second: Any) -> bool:
@@ -116,7 +117,10 @@ def preview_file(excel: Any, file: dict, old_path: Path) -> dict:
     cells = [{**hit, "action": "skip", "reason": "", "source_formula": "", "display": ""} for hit in file["hits"]]
     try:
         old.Application.CalculateFull()
-        matched = _pair_sheets(file["sheets"], [_sheet_info(sheet) for sheet in old.Worksheets])
+        old_sheets = [_sheet_info(sheet) for sheet in old.Worksheets]
+        history = sheet_history.for_paths(file["path"], old_path, file.get("sheet_names", [s["name"] for s in file["sheets"]]),
+                                          [s.Name for s in old.Sheets], old_hash=stamp)
+        matched = _pair_sheets(file["sheets"], old_sheets, history)
         ready = []
         for item in cells:
             match = matched.get(item["sheet"])

@@ -95,6 +95,9 @@ def render_execution_html() -> str:
             out += [f"<li><del>{_esc(sh.strip())}</del></li>" if sh in deleted else f"<li>{_esc(sh)}</li>" for sh in names]
             out.append("</ul>")
 
+        for change in f.get("sheet_changes", []):
+            for old, new in change["renamed"].items():
+                out.append(f"<div>Sheet 改名：{_esc(old)} → {_esc(new)}</div>")
         fixes = sorted((f.get("fixes") or {}).values(), key=lambda r: _fix_sort_key(r, all_sheets))
         if fixes:
             out += [f"<h3>② 修复切字：{len(fixes)} 处</h3>", '<table class="fixes"><tr><th>#</th><th>Sheet</th><th>位置</th><th>原因</th></tr>']

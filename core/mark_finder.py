@@ -384,8 +384,11 @@ def _text(value: Any) -> str:
     return str(value)
 
 
-def _row_values(sheet: Any, row: int) -> list[str]:
-    values = [_text(c.value) for c in sheet[row]] if row <= sheet.max_row else []
+def _row_values(sheet: Any, row: int, history=None) -> list[str]:
+    from core import sheet_history
+
+    values = [_text(history.value(sheet.title, c.coordinate, c.value) if history else sheet_history.formula_value(c.value))
+              for c in sheet[row]] if row <= sheet.max_row else []
     while values and values[-1] == "":
         values.pop()
     return values
@@ -405,7 +408,7 @@ def _old_colors(cell: Any) -> dict:
 
 
 SIMILAR_ROWS = 200
-_HOW = {"guess": "去掉「新」/ 日期等后的表名", "code": "代码名", "content": "内容"}
+_HOW = {"guess": "去掉「新」/ 日期等后的表名", "code": "代码名", "content": "内容", "history": "Sheet 操作历史"}
 
 
 def _sheet_words(ws: Any) -> set[str]:
@@ -416,10 +419,10 @@ def _sheet_words(ws: Any) -> set[str]:
     return words
 
 
-def _match_sheets(current: Any, old: Any) -> dict[str, tuple[Any, str]]:
+def _match_sheets(current: Any, old: Any, history=None) -> dict[str, tuple[Any, str]]:
     return pair_sheets(list(current.worksheets), list(old.worksheets),
                        title=lambda ws: ws.title, code=lambda ws: ws.sheet_properties.codeName,
-                       words=_sheet_words)
+                       words=_sheet_words, history=history)
 
 
 def _tab_plan(hit: dict, old_sheet: str, old_fill: str, how: str) -> dict:
@@ -433,16 +436,19 @@ def plan_tabs_excel(excel: Any, path: Path, old_path: Path, hits: list[dict]) ->
     """二进制文件的标签可用 Excel 对比；同名文件依次只读打开，不保存备份。"""
     from core.excel_ops import open_workbook_checked
     from core.link_repair import _sheet_info
+    from core import sheet_history
 
-    snapshots = []
+    snapshots, sheet_names = [], []
     for source in (path, old_path):
         book = open_workbook_checked(excel, str(source.resolve()), UpdateLinks=0, ReadOnly=True)
         try:
+            sheet_names.append([sheet.Name for sheet in book.Sheets])
             snapshots.append([{**_sheet_info(sheet), "tab": batch._read_tab(sheet)} for sheet in book.Worksheets])
         finally:
             book.Close(SaveChanges=False)
     matches = pair_sheets(*snapshots, title=lambda sheet: sheet["name"], code=lambda sheet: sheet["code"],
-                          words=lambda sheet: set(sheet["words"]))
+                          words=lambda sheet: set(sheet["words"]),
+                          history=sheet_history.for_paths(path, old_path, *sheet_names))
     result = []
     for hit in hits:
         match = matches.get(hit["sheet"])
@@ -460,11 +466,13 @@ def plan_file(path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
     """逐格决定改不改：旧版同一张表、同一地址的格子内容一样才改回旧版的颜色。
     空格子还要求整行内容相同；Sheet 标签按唯一工作表配对恢复，不依赖某个格子的内容。"""
     import openpyxl
+    from core import sheet_history
 
     current = openpyxl.load_workbook(path, data_only=False)
     old = openpyxl.load_workbook(old_path, data_only=False)
     try:
-        matched = _match_sheets(current, old)
+        history = sheet_history.for_paths(path, old_path, current.sheetnames, old.sheetnames)
+        matched = _match_sheets(current, old, history)
         debug_log.event("📄 表对应", 新版=[ws.title for ws in current.worksheets],
                         对上={name: f"{ws.title}（{_HOW.get(how, how)}）" for name, (ws, how) in matched.items()},
                         旧版=[ws.title for ws in old.worksheets])
@@ -489,9 +497,10 @@ def plan_file(path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
                 continue
             cell, old_cell = sheet[top], old_sheet[top]
             item.update(_old_colors(old_cell))
-            if _text(cell.value) != _text(old_cell.value):
+            item.update(source_content=_text(old_cell.value), current_content=_text(cell.value))
+            if _text(sheet_history.formula_value(cell.value)) != _text(history.value(old_sheet.title, top, old_cell.value)):
                 item["reason"] = "和旧版同一位置的内容不一样（可能插删过行列，或改过内容），请人工看一下"
-            elif cell.value in (None, "") and _row_values(sheet, cell.row) != _row_values(old_sheet, old_cell.row):
+            elif cell.value in (None, "") and _row_values(sheet, cell.row) != _row_values(old_sheet, old_cell.row, history):
                 item["reason"] = "空格子，这一行和旧版对不上（可能插删过行列），请人工看一下"
             elif item["old_fill"] == hit["fill"]:
                 item["reason"] = "旧版本来就是这个颜色，不是程序标的，不改"
@@ -712,8 +721,9 @@ def _apply_colors(excel: Any, path: str, old_path: str, cells: list[dict], check
                 target = book.Worksheets(item["sheet"]).Range(item["addr"])
                 top = target.Cells(1, 1)
                 if _text(top.Formula) != source["formula"]:
-                    result.update(code="content_mismatch", reason="内容和旧版不一样了，没有改")
-                    continue
+                    if (_text(top.Formula) != item.get("current_content") or source["formula"] != item.get("source_content")):
+                        result.update(code="content_mismatch", reason="内容和旧版不一样了，没有改")
+                        continue
                 color = top.Interior.Color
                 if item.get("mode") != "all" and (color is None or int(color) != _excel_color(item["fill"])):
                     result.update(code="other", reason="底色已经不是标记色（被人改过），没有改")

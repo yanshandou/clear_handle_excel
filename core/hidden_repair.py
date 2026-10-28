@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
-from core import debug_log, workflow as wf
+from core import debug_log, workflow as wf, sheet_history
 from core.backup_compare import pair_files, pair_sheets
 from core.common import EXCEL_EXTENSIONS, col_index_to_letters, workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, quit_background_excel, start_background_excel
@@ -98,7 +98,7 @@ def column_runs(sheet: Any, specs: list[dict], limit: int | None = None) -> list
     return result
 
 
-def content_info(sheet: Any) -> dict:
+def content_info(sheet: Any, history: sheet_history.Projection | None = None) -> dict:
     """按位置核对全部内容和公式；忽略单纯因格式变化而扩大的空白 UsedRange。"""
     used = sheet.UsedRange
     row, col = int(used.Row), int(used.Column)
@@ -109,10 +109,22 @@ def content_info(sheet: Any) -> dict:
     step = max(1, 20_000 // cols)
     for start in range(row, row + rows, step):
         end = min(start + step, row + rows) - 1
-        values = sheet.Range(sheet.Cells(start, col), sheet.Cells(end, col + cols - 1)).Formula
+        area = sheet.Range(sheet.Cells(start, col), sheet.Cells(end, col + cols - 1))
+        values = area.Formula
         matrix = values if isinstance(values, (tuple, list)) else ((values,),)
+        # Excel 的 Formula 对数值常量可能返回字符串（42 -> "42"）；Value2 保留数值类型，
+        # 才能与删表时记录的公式转值结果比较，也能区分数字和数字文本。
+        try:
+            constants = area.Value2
+        except AttributeError:
+            constants = values
+        constants = constants if isinstance(constants, (tuple, list)) else ((constants,),)
         for r, items in enumerate(matrix, start):
             for c, value in enumerate(items, col):
+                if not isinstance(value, str) or not value.startswith("="):
+                    value = constants[r - start][c - col]
+                value = (history.value(sheet.Name, f"{col_index_to_letters(c)}{r}", value)
+                         if history and history.operations else sheet_history.formula_value(value))
                 if value is None or value == "":
                     continue
                 populated += 1
@@ -123,10 +135,14 @@ def content_info(sheet: Any) -> dict:
     return {"signature": digest.hexdigest(), "populated": populated, "words": sorted(words)}
 
 
-def snapshot(excel: Any, path: Path, options: dict) -> dict:
+def snapshot(excel: Any, path: Path, options: dict, *, history_path: Path | None = None,
+             current_names: list[str] | None = None, old_hash: str = "") -> dict:
     book = open_workbook_checked(excel, str(path.resolve()), UpdateLinks=0, ReadOnly=True)
     temporary = None
     try:
+        sheet_names = [s.Name for s in book.Sheets]
+        history = sheet_history.for_paths(history_path, path, current_names, sheet_names,
+                                          old_hash=old_hash) if history_path is not None else None
         sheets = []
         for sheet in book.Worksheets:
             item = {"name": sheet.Name, "code": sheet.CodeName, "visible": int(sheet.Visible),
@@ -134,7 +150,7 @@ def snapshot(excel: Any, path: Path, options: dict) -> dict:
                     "columns": [], "words": [], "signature": None, "content_error": "", "columns_error": "",
                     "protected": bool(sheet.ProtectContents)}
             try:
-                item.update(content_info(sheet))
+                item.update(content_info(sheet, history) if history else content_info(sheet))
             except Exception as error:
                 item["content_error"] = str(error)
             sheets.append(item)
@@ -155,7 +171,7 @@ def snapshot(excel: Any, path: Path, options: dict) -> dict:
             except Exception as error:
                 for item in sheets:
                     item["columns_error"] = str(error)
-        return {"sheets": sheets, "structure_protected": bool(book.ProtectStructure),
+        return {"sheets": sheets, "sheet_names": sheet_names, "structure_protected": bool(book.ProtectStructure),
                 "visible_count": sum(int(sheet.Visible) == VISIBLE for sheet in book.Sheets)}
     finally:
         try:
@@ -165,9 +181,9 @@ def snapshot(excel: Any, path: Path, options: dict) -> dict:
                 temporary.cleanup()
 
 
-def plan_changes(current: dict, old: dict, options: dict) -> list[dict]:
+def plan_changes(current: dict, old: dict, options: dict, history: sheet_history.Projection | None = None) -> list[dict]:
     matches = pair_sheets(current["sheets"], old["sheets"], title=lambda sheet: sheet["name"],
-                          code=lambda sheet: sheet["code"], words=lambda sheet: set(sheet["words"]))
+                          code=lambda sheet: sheet["code"], words=lambda sheet: set(sheet["words"]), history=history)
     result = []
     for sheet in current["sheets"]:
         base = {"sheet": sheet["name"], "addr": "A1", "anchor": "A1", "kind": "sheet", "action": "restore"}
@@ -209,7 +225,7 @@ def plan_changes(current: dict, old: dict, options: dict) -> list[dict]:
             reason = sheet["content_error"] or source["content_error"]
             if not reason and sheet["signature"] != source["signature"]:
                 reason = "新旧表的内容、公式或位置不同，无法确认是否移动过行列，请人工检查"
-            if not reason and how != "name" and not sheet.get("populated"):
+            if not reason and how not in {"name", "history"} and not sheet.get("populated"):
                 reason = "空白工作表名称不同，缺少内容依据，请人工确认配对"
             if not reason and item["kind"] == "sheet" and current["structure_protected"]:
                 reason = "工作簿结构受保护，不能自动隐藏工作表"
@@ -229,12 +245,15 @@ def plan_file(excel: Any, path: Path, old_path: Path, options: dict) -> dict:
         raise ValueError("当前文件不能作为自己的备份，请选择原始备份")
     stamp, old_stamp = fingerprint(path), fingerprint(old_path)
     # 同名工作簿依次打开并关闭，兼容 Excel 不能同时打开同名文件的限制。
-    current, old = snapshot(excel, path, options), snapshot(excel, old_path, options)
+    current = snapshot(excel, path, options)
+    names = current.get("sheet_names", [s["name"] for s in current["sheets"]])
+    old = snapshot(excel, old_path, options, history_path=path, current_names=names, old_hash=old_stamp)
+    history = sheet_history.for_paths(path, old_path, names, old.get("sheet_names", [s["name"] for s in old["sheets"]]), old_hash=old_stamp)
     if stamp != fingerprint(path) or old_stamp != fingerprint(old_path):
         raise ValueError("当前文件或备份在对比期间发生变化，请重新扫描")
     return {"path": str(path), "old": str(old_path), "fingerprint": stamp, "old_fingerprint": old_stamp,
             "checks": {sheet["name"]: sheet["signature"] for sheet in current["sheets"]},
-            "cells": plan_changes(current, old, options)}
+            "cells": plan_changes(current, old, options, history)}
 
 
 def apply_file(excel: Any, file: dict) -> list[dict]:

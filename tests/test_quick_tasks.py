@@ -838,6 +838,53 @@ class QuickTaskTests(unittest.TestCase):
         self.assertIn("1 个 Sheet 已改名", action)
         self.assertNotIn("去掉「新」字", action)
 
+    def test_clean_history_records_actual_identity_and_survives_restart_and_transfer(self):
+        from core import sheet_history
+
+        path = self.add_book("a.xlsx", ["レイアウト", "新レイアウト", "Keep"])
+        self.run_plan({"a.xlsx": {"delete": ["レイアウト"], "uncertain": [],
+                                 "rename": {"Keep": "Kept"}}})
+        events = sheet_history.get(path)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["deleted"], ["レイアウト"])
+        self.assertEqual(events[0]["renamed"], {"Keep": "Kept", "新レイアウト": "レイアウト"})
+        self.assertEqual(events[0]["after"], ["レイアウト", "Kept"])
+        self.assertTrue(sheet_history.validate(self.workflow.STATE["sheet_history"]))
+        self.assertEqual(self.report_files()["a.xlsx"]["sheet_changes"], events)
+        self.assertIn("新レイアウト → レイアウト", self.reporter.get_execution_report_snapshot()["markdown"])
+        exported = self.workflow.export_progress()
+        importlib.reload(self.workflow)
+        self.assertEqual(sheet_history.get(path), events)
+        self.workflow.STATE["sheet_history"].clear()
+        self.workflow.import_progress(exported)
+        self.assertEqual(sheet_history.get(path), events)
+
+    def test_failed_save_or_failed_rename_is_not_recorded_as_completed(self):
+        from core import sheet_history
+
+        path = self.add_book("a.xlsx", ["Main", "Sub"])
+        self.books["a.xlsx"].Save = Mock(side_effect=RuntimeError("保存失败"))
+        self.run_plan({"a.xlsx": {"delete": ["Sub"], "uncertain": [], "rename": {"Main": "Renamed"}}})
+        self.assertEqual(sheet_history.get(path), [])
+        self.assertEqual(storage.load_snapshot("workflow")["sheet_history"], {})
+
+    def test_runtime_rename_failure_records_only_saved_deletion(self):
+        from core import sheet_history
+
+        path = self.add_book("a.xlsx", ["Main", "Sub"])
+
+        def set_attribute(sheet, name, value):
+            if name == "Name" and value == "Renamed":
+                raise RuntimeError("Excel 拒绝改名")
+            object.__setattr__(sheet, name, value)
+
+        with patch.object(FakeSheet, "__setattr__", set_attribute):
+            self.run_plan({"a.xlsx": {"delete": ["Sub"], "uncertain": [], "rename": {"Main": "Renamed"}}})
+        events = sheet_history.get(path)
+        self.assertEqual(events[0]["deleted"], ["Sub"])
+        self.assertEqual(events[0]["renamed"], {})
+        self.assertEqual(events[0]["after"], ["Main"])
+
     def test_validate_clean_plan_checks_excel_sheet_name_rules(self):
         for bad in ["", "a/b", "x" * 32, "'abc", "History", "[1]"]:
             with self.assertRaises(ValueError, msg=bad):

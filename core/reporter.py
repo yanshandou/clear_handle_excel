@@ -311,6 +311,7 @@ def update_file_progress(
     current_action: str | None = None,
     all_sheets: list[str] | None = None,
     deleted_backups: list[str] | None = None,
+    sheet_change: dict | None = None,
     uncertain_sheets: list[str] | None = None,
     renamed_to: str | None = None,
     exported_pdfs: int | None = None,
@@ -381,6 +382,8 @@ def update_file_progress(
         if deleted_backups is not None:
             # 删掉的表只会越来越多：后面的步骤（切字扫描等）不知道前面删过什么，不能把记录清掉
             entry["deleted_backups"] = list(dict.fromkeys(list(entry.get("deleted_backups", [])) + list(deleted_backups)))
+        if sheet_change is not None:
+            entry.setdefault("sheet_changes", []).append(copy.deepcopy(sheet_change))
         if all_sheets is not None:
             entry["all_sheets"] = _merge_sheet_list(entry.get("all_sheets", []), list(all_sheets), entry.get("deleted_backups", []))
         if fixes is not None:
@@ -550,6 +553,11 @@ def render_execution_markdown(image_dir: str | None = None) -> str:
         if all_sheets or deleted:
             lines.append("")
 
+        for change in f.get("sheet_changes", []):
+            for old, new in change["renamed"].items():
+                lines.append(f"- Sheet 改名：{old} → {new}")
+        if f.get("sheet_changes"):
+            lines.append("")
         fixes = sorted((f.get("fixes") or {}).values(), key=lambda r: _fix_sort_key(r, all_sheets))
         if fixes:
             lines += [f"**② 修复切字：{len(fixes)} 处**", "", "| # | Sheet | 位置 | 原因 |", "|---|---|---|---|"]

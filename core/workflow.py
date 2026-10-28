@@ -38,7 +38,7 @@ from core.common import (
     workbook_locked,
     workbook_rel_name,
 )
-from core import debug_log, fix_images, page_breaks, pdf_detector, print_layout, scan_analysis
+from core import debug_log, fix_images, page_breaks, pdf_detector, print_layout, scan_analysis, sheet_history
 from core.excel_watchdog import ExcelWatchdog
 from core.formula_links import delete_sheets_preserving_values
 from core.excel_ops import (
@@ -139,6 +139,7 @@ STATE: dict[str, Any] = {
     "scan_progress": {},  # 独立于执行报告，避免并行写入覆盖扫描的总进度
     "latest_scan_analysis": None,
     "print_layouts": {},  # 源文件 -> Sheet 身份 -> 已分析的打印方向与证据
+    "sheet_history": {},  # 源文件 -> 已保存的删表、改名及引用转值记录；跨任务保留。
     # 稍后人工复检：wb_path -> {"marks": [{sheet, addr, row, item_ids, state, fill, range, error}], "error"}
     # state: pending 等后台标黄 / marked 已标黄 / skipped 没能标黄（仍在队列里）
     "review_queue": {},
@@ -158,6 +159,7 @@ if _saved_state is not None:
         scan_analysis.finish(STATE["job"], interrupted=True)
 
 print_layout.configure(lambda: STATE.setdefault("print_layouts", {}))
+sheet_history.configure(lambda: STATE.setdefault("sheet_history", {}))
 
 
 def _referenced_images() -> set[str]:
@@ -1380,12 +1382,16 @@ def _scan_one_workbook(
             if len(bkp_names) >= len(all_names):
                 log_msg(f"  ⚠️ 跳过删除备份表（全部工作表均为备份表）: {wb_label}")
             else:
+                clean_before = [s.Name for s in wb.Sheets]
+                clean_hash = sheet_history.fingerprint(wb_path)
                 kept_values = delete_sheets_preserving_values(wb, bkp_names)
                 log_msg(f"  删表前保留引用值 {len(kept_values)} 处")
                 deleted_bkp_list = list(dict.fromkeys(deleted_bkp_list + bkp_names))
                 log_msg(f"  已清理 {len(bkp_names)} 个备份 Sheet")
                 update_file_progress(wb_label, all_sheets=all_names, deleted_backups=deleted_bkp_list)
                 wb.Save()
+                _record_sheet_changes(wb_path, clean_before, [s.Name for s in wb.Sheets],
+                                      bkp_names, {}, kept_values, clean_hash)
         update_file_progress(
             wb_label, all_sheets=all_names, deleted_backups=deleted_bkp_list,
             current_action="正在导出 PDF 并检测切字...",
@@ -2833,6 +2839,7 @@ def _sync_renamed_workbook_in_state(
         return
     with STATE_LOCK:
         print_layout.rename(STATE.setdefault("print_layouts", {}), old_str, new_str, sheet_rename_map)
+        sheet_history.move(old_path, new_path)
         folder_ref = root_folder or STATE.get("folder")
         new_label = workbook_rel_name(new_path, folder_ref)
         for collection in ("pages", "items"):
@@ -2867,6 +2874,16 @@ def _format_clean_action(
     if not parts:
         return "没有备份表，无需精简"
     return "，".join(parts)
+
+
+def _record_sheet_changes(path: Path, before: list[str], after: list[str], deleted: list[str],
+                          renamed: dict[str, str], values: list[dict], before_hash: str) -> None:
+    if not deleted and not renamed and not values:
+        return
+    with STATE_LOCK:
+        event = sheet_history.record(path, before, after, deleted, renamed, values, before_hash)
+        _persist_state()
+    update_file_progress(workbook_rel_name(path, STATE.get("folder")), sheet_change=event)
 
 
 def _clean_backup_sheets(
@@ -2906,6 +2923,7 @@ def _clean_backup_sheets(
                 record(pre_names, action, uncertain=uncertain_sel)
                 return
 
+    before_hash = sheet_history.fingerprint(wb_path)
     wb = open_workbook_checked(get_excel(), str(wb_path.resolve()), UpdateLinks=0)
     rename_map: dict[str, str] = {}
     final_uncertain: list[str] = []
@@ -2941,13 +2959,14 @@ def _clean_backup_sheets(
                 kind_text = "手动改名" if custom.get(old_name) == new_name else "去掉「新」字"
                 debug_log.event("✏️ 改表名", 文件=wb_label, 原名=old_name, 新名=new_name, 方式=kind_text)
                 log_msg(f"  已改名: {old_name} → {new_name}")
-            final_names = [rename_map.get(s, s) for s in all_names]
+            final_names = [s.Name for s in wb.Sheets]
             final_uncertain = [rename_map.get(s, s) for s in uncertain_sel]
             # 先记录删除与待定明细再保存，保存后中断也能在续跑时保留记录
             update_file_progress(
                 wb_label, deleted_backups=deleted, uncertain_sheets=final_uncertain,
             )
             wb.Save()
+            _record_sheet_changes(wb_path, all_names, final_names, to_delete, rename_map, kept_values, before_hash)
             custom_done = sum(custom.get(o) == n for o, n in rename_map.items())
             action = _format_clean_action(deleted, final_uncertain, len(rename_map) - custom_done, custom_done)
             log_msg(f"  {action}")
@@ -3212,6 +3231,9 @@ def import_progress(data: Any) -> dict[str, Any]:
     imported.setdefault("print_layouts", {})
     if not print_layout.validate_records(imported["print_layouts"]):
         raise ValueError("进度文件损坏：打印方案格式无效")
+    imported.setdefault("sheet_history", {})
+    if not sheet_history.validate(imported["sheet_history"]):
+        raise ValueError("进度文件损坏：Sheet 操作历史格式无效")
     imported.setdefault("scan_progress", {})
     imported.setdefault("review_queue", {})
     imported.setdefault("batch_review", {"cards": {}, "rows": {}, "ignored": []})

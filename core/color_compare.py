@@ -11,6 +11,7 @@ from openpyxl.styles.colors import COLOR_INDEX
 from openpyxl.utils import column_index_from_string, get_column_letter
 
 from core.excel_ops import _apply_tint, _THEME_SLOTS, open_workbook_checked
+from core import sheet_history
 
 
 def _context(book) -> dict:
@@ -64,11 +65,12 @@ def _display(signature) -> dict:
     return {"fill": "none" if fill[0] is None else f"#{fill[1]}" if fill[0] == "solid" else "other", "font": f"#{font}"}
 
 
-def _row_contents(sheet, text) -> dict:
+def _row_contents(sheet, text, history=None) -> dict:
     rows = {}
     for (row, col), cell in sheet._cells.items():
         if not isinstance(cell, MergedCell) and cell.value not in (None, ""):
-            rows.setdefault(row, {})[col] = text(cell.value)
+            rows.setdefault(row, {})[col] = text(history.value(sheet.title, cell.coordinate, cell.value)
+                                               if history else sheet_history.formula_value(cell.value))
     return rows
 
 
@@ -115,14 +117,16 @@ def _dimension_differences(sheet, source, now_context, old_context):
             yield entry("row_color", f"{row}:{row}", f"A{row}", signature, previous)
 
 
-def _plan_xml(path: Path, old_path: Path, limit: int | None) -> dict:
+def _plan_xml(path: Path, old_path: Path, limit: int | None, *, history_path=None, old_hash="") -> dict:
     from core import mark_finder as marks
 
     current = openpyxl.load_workbook(path, data_only=False)
     old = openpyxl.load_workbook(old_path, data_only=False)
     try:
         now_context, old_context = _context(current), _context(old)
-        matches = marks._match_sheets(current, old)
+        history = sheet_history.for_paths(history_path or path, old_path, current.sheetnames, old.sheetnames,
+                                          old_hash=old_hash)
+        matches = marks._match_sheets(current, old, history)
         result = []
 
         def append(item):
@@ -155,7 +159,7 @@ def _plan_xml(path: Path, old_path: Path, limit: int | None) -> dict:
             merged = {area.start_cell.coordinate:str(area) for area in sheet.merged_cells.ranges}
             old_merged = {area.start_cell.coordinate:str(area) for area in source.merged_cells.ranges} if source else {}
             now_rows = _row_contents(sheet, marks._text)
-            old_rows = _row_contents(source, marks._text) if source else {}
+            old_rows = _row_contents(source, marks._text, history) if source else {}
             positions = set(sheet._cells) | (set(source._cells) if source else set())
             for row, col in sorted(positions):
                 cell = sheet.cell(row, col)
@@ -174,12 +178,13 @@ def _plan_xml(path: Path, old_path: Path, limit: int | None) -> dict:
                     item.update(action="skip", code="sheet_unmatched", reason="备份工作表无法唯一配对，保留当前单元格颜色")
                 else:
                     item["old_sheet"] = source.title
+                    item.update(source_content=marks._text(original.value), current_content=marks._text(cell.value), match=how)
                     if previous is not None:
                         original_display = _display(previous)
                         item.update(old_fill=original_display["fill"], old_font=original_display["font"])
                     if isinstance(cell, MergedCell) or isinstance(original, MergedCell) or merged.get(cell.coordinate) != old_merged.get(cell.coordinate):
                         item.update(action="skip", code="merged_range_mismatch", reason="新旧合并区域不同，请人工检查颜色对应位置")
-                    elif marks._text(cell.value) != marks._text(original.value):
+                    elif marks._text(sheet_history.formula_value(cell.value)) != marks._text(history.value(source.title, original.coordinate, original.value)):
                         item.update(action="skip", code="content_mismatch", reason="和备份同一位置的内容或公式不同，请人工检查")
                     elif cell.value in (None, "") and now_rows.get(row, {}) != old_rows.get(row, {}):
                         item.update(action="skip", code="empty_row_mismatch", reason="空格子所在行和备份内容不同，请人工检查")
@@ -210,4 +215,4 @@ def plan_file(excel, path: Path, old_path: Path, limit: int | None = None) -> di
                 converted.append(target)
             finally:
                 book.Close(SaveChanges=False)
-        return _plan_xml(*converted, limit)
+        return _plan_xml(*converted, limit, history_path=path, old_hash=sheet_history.fingerprint(old_path))

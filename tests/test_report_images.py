@@ -87,6 +87,17 @@ class ReportImagesTests(unittest.TestCase):
             self.assertNotIn(word, page)
         self.assertIsNone(re.search(r"\d{1,2}:\d{2}|\d{4}-\d{2}-\d{2}", page))
 
+    def test_download_includes_sheet_renames_with_html_escaping(self):
+        reporter.init_execution_batch("精简 Sheet", self.folder, [self.book])
+        reporter.update_file_progress("a.xlsx", sheet_change={"at": "2026-10-28T12:00:00+09:00",
+                                     "renamed": {"新<Layout>": "<Layout>"}, "deleted": []})
+        archive = zipfile.ZipFile(io.BytesIO(report_export.build_report_zip()))
+        page = archive.read("execution_report.html").decode("utf-8")
+        self.assertIn("新&lt;Layout&gt; → &lt;Layout&gt;", page)
+        self.assertNotIn("新<Layout>", page)
+        self.assertIn("新<Layout> → <Layout>", archive.read("execution_report.md").decode("utf-8"))
+        self.assertNotIn("2026-10-28", page)
+
     def test_manually_fixed_problem_gets_after_picture_from_new_pdf(self):
         pdf_path = self.folder / "a_S1.pdf"
         with fitz.open() as doc:

@@ -100,6 +100,12 @@ function renderFilesTable(filesList) {
         sheetsHtml += `<div style="margin-top:4px;">待定存疑: ${uncTags}</div>`;
       }
 
+      for (const change of f.sheet_changes || []) {
+        for (const [oldName, newName] of Object.entries(change.renamed || {})) {
+          sheetsHtml += `<div style="margin-top:4px;" title="${escapeHtml(change.at || '')}">改名: ${escapeHtml(oldName)} → ${escapeHtml(newName)}</div>`;
+        }
+      }
+
       const fileDisplayName = f.renamed_to && f.renamed_to !== f.name
         ? `${escapeHtml(f.name)} <span style="color:#b45309; font-size:12px;">→ ${escapeHtml(f.renamed_to)}</span>`
         : escapeHtml(f.name);
