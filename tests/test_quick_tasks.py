@@ -193,6 +193,18 @@ class QuickTaskTests(unittest.TestCase):
         self.assertEqual(files["a.xlsx"]["deleted_backups"], ["機能設計_20250315_bak"])
         self.assertEqual(files["b.xlsx"]["status"], "done")
 
+    def test_clean_template_id_dated_copy_in_preview_and_execution(self):
+        names = ["雛型SSSEE0114", "雛型SSSEE0114_20231023", "雛型SSSEE0115", "雛型SSSEE0116"]
+        self.add_book("templates.xlsx", names)
+        preview = self.workflow.preview_backup_sheets(str(self.folder))["files"][0]
+        self.assertEqual(preview["backups"], [names[1]])
+        self.assertEqual(preview["uncertain"], [])
+
+        job = self.run_task("clean_sheets")
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(self.books["templates.xlsx"].saved, [[names[0], *names[2:]]])
+        self.assertEqual(self.report_files()["templates.xlsx"]["deleted_backups"], [names[1]])
+
     def test_dated_sheets_without_original_are_not_deleted(self):
         # 只有 基本情報_20241003、没有 基本情報 时，带日期的就是在用的表
         self.add_book("SSPLG1100_個別支援計画書情報.xlsx", [

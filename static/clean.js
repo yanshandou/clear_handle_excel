@@ -56,8 +56,8 @@ const MARK_PALETTE_SIZE = 5;
 // 20220929，或用同一种分隔符隔开的 2018-02-26 / 2018.02.26 / 2018/02/26
 const DATE_RE = /(?<!\d)((?:19|20)\d{2})([-/.]?)(\d{2})\2(\d{2})(?!\d)/g;
 
-// 名称末尾不带年份的 4 位月日（MMDD），如「請求書1)0513」
-const MMDD_SUFFIX_RE = /(?<!\d)(\d{2})(\d{2})[\s_\-・.]*$/;
+// 名称末尾不带年份的 4 位月日（MMDD），前面不能紧挨数字或英文字母，避免把 SSSEE0114 这类表编号当成日期
+const MMDD_SUFFIX_RE = /(?<![a-zA-Z\d])(\d{2})(\d{2})[\s_\-・.]*$/;
 
 function hasMmddSuffix(text) {
   const m = MMDD_SUFFIX_RE.exec(text);
@@ -150,7 +150,7 @@ function analyzeSheetName(displayName, { stripBackup = false, stripVersion = tru
     applyStrip(/copy\s+of|の?コピー|的?副本/gi, null, true);
     applyStrip(/(?<![a-z])(?:bak|backup|bk|old|copy)(?![a-z])/gi, null, true);
     applyStrip(/バックアップ|备份|コピー|副本|(?<![新復])旧/g, null, true);
-    applyStrip(/(?<!\d)(\d{2})(\d{2})[\s_\-・.]*$/g, m => isValidYmdDate(`2000${m[1]}${m[2]}`), true);
+    applyStrip(MMDD_SUFFIX_RE, m => isValidYmdDate(`2000${m[1]}${m[2]}`), true);
   }
   if (stripVersion) {
     applyStrip(/(?<![a-z])v(?:er)?\.?\d+(?:\.\d+)*(?![a-z])/gi, null, true);

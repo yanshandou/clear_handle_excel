@@ -64,6 +64,9 @@ class BackupMarkerTests(unittest.TestCase):
             # 无效日期或更长的数字串
             "20251340設定",
             "画面ID_123456789",
+            # 字母后紧接的四位数字是表编号，不按 MMDD 处理
+            "雛型SSSEE0114",
+            "雛型ＳＳＳＥＥ０１１５",
         ):
             with self.subTest(name=name):
                 self.assertFalse(has_backup_marker(name))
@@ -163,6 +166,23 @@ class FindBackupSheetsTests(unittest.TestCase):
     def test_mmdd_does_not_join_dated_version_comparison(self):
         # 没有年份无法比较新旧，没有原表时都保留
         self.assertEqual(find_backup_sheets(["一覧0513", "一覧0601"]), [])
+
+    def test_backup_of_alphanumeric_sheet_id_preserves_original_and_neighbors(self):
+        names = ["雛型SSSEE0114", "雛型SSSEE0114_20231023", "雛型SSSEE0115", "雛型SSSEE0116"]
+        self.assertEqual(find_backup_sheets(names), [names[1]])
+        self.assertEqual(find_clean_targets(names), [names[1]])
+        self.assertEqual(find_contained_sheets(names), [])
+        for backup in ("雛型SSSEE0114_bak", "雛型SSSEE0114 (2)", "雛型ＳＳＳＥＥ０１１４＿２０２３１０２３"):
+            with self.subTest(backup=backup):
+                self.assertEqual(find_backup_sheets([names[0], backup, *names[2:]]), [backup])
+
+    def test_dated_versions_keep_different_sheet_ids_separate(self):
+        names = ["雛型SSSEE0114_20231023", "雛型SSSEE0114_20240101", "雛型SSSEE0115_20250101"]
+        self.assertEqual(find_backup_sheets(names), [names[0]])
+        self.assertEqual(find_backup_sheets([names[0], names[2]]), [])
+
+    def test_latin_sheet_name_still_accepts_separated_mmdd(self):
+        self.assertEqual(find_backup_sheets(["Report", "Report_0513", "Report0513"]), ["Report_0513"])
 
 
 class CleanTargetTests(unittest.TestCase):
