@@ -88,6 +88,35 @@ class BatchTests(unittest.TestCase):
                 self.assertEqual(report["summary"]["completed"], 1)
                 self.assertEqual(report["files"][0]["attempts"], 1)
 
+    def test_scan_skips_preview_save_when_views_are_already_page_break_preview(self):
+        for needed, saves in ((False, 0), (True, 1)):
+            with self.subTest(needed=needed):
+                self.save_scan_preview.reset_mock()
+                job = {"kind": "batch_scan", "workbooks": [self.path], "completed": [],
+                       "options": {"folder": str(self.root), "scan_only": True}}
+                self.wf.STATE["job"] = job
+                session = Mock()
+                session.app.return_value = self.excel
+                def refresh(*_args, view=None, **_kwargs):
+                    view["needed"] = needed
+                self.refresh.side_effect = refresh
+                with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                        patch.object(batch, "ExcelWatchdog", return_value=Mock(timed_out=False, deadline_hit=False)), \
+                        patch.object(batch, "_sync_highlights"), \
+                        patch.object(batch, "finish_execution_batch"):
+                    batch.run()
+                self.assertEqual(self.save_scan_preview.call_count, saves)
+                self.assertEqual(job["completed"], [self.path])
+
+    def test_refresh_reports_whether_the_original_still_needs_the_preview(self):
+        def scan(*_args, check_page_break_preview=False, **_kwargs):
+            self.assertTrue(check_page_break_preview)
+            _args[2]["page_break_preview_needed"] = False
+        view = {}
+        with patch.object(self.wf, "_scan_one_workbook", side_effect=scan):
+            self.real_refresh(self.excel, self.path, view=view)
+        self.assertEqual(view, {"needed": False})
+
     def test_view_only_save_updates_check_versions_and_cached_pdfs(self):
         before = self.wf._file_version(Path(self.path))
         self.wf.STATE["checked_files"][self.path] = before

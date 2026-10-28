@@ -96,11 +96,11 @@ class IncrementalScanTests(unittest.TestCase):
         stat = path.stat()
         os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000))
 
-    def scan(self, full=False):
+    def scan(self, full=False, *, delete_backups=False):
         self.exports.clear()
         self.workflow.STATE["busy"] = False
         self.assertTrue(self.workflow.queue_job("scan", {
-            "folder": str(self.folder), "delete_backups": False, "full": full,
+            "folder": str(self.folder), "delete_backups": delete_backups, "full": full,
         }))
         self.workflow.run_pending_workflow()
         return self.workflow.STATE["job"]
@@ -283,6 +283,60 @@ class IncrementalScanTests(unittest.TestCase):
         self.assertEqual(self.scan()["status"], "completed")
         self.assertEqual(self.workflow.STATE["items"], {})
         self.save_preview.assert_called_once_with(self.excel, path, self.workflow._file_version(path))
+
+    def test_file_already_in_page_break_preview_is_not_opened_for_writing(self):
+        path = self.add_book("book", ["S1"])
+        with patch.object(self.workflow, "page_break_preview_needed", return_value=False) as check:
+            self.assertEqual(self.scan()["status"], "completed")
+        check.assert_called_once()
+        self.excel.Workbooks.Open.assert_called_once_with(str(path.resolve()), UpdateLinks=0, ReadOnly=True)
+        self.save_preview.assert_not_called()
+        self.assertEqual(self.workflow.STATE["checked_files"][str(path)], self.workflow._file_version(path))
+
+    def test_xls_already_in_preview_keeps_its_version_on_first_open(self):
+        original = self.add_book("book", ["S1"])
+        path = original.with_suffix(".xls")
+        original.rename(path)
+        before = self.workflow._file_version(path)
+
+        def opened(filename, **options):
+            if not options.get("ReadOnly", False):
+                self.modify(Path(filename))  # 模拟 .xls 可写打开时更新元数据。
+            return self.books[Path(filename).stem]
+
+        self.excel.Workbooks.Open.side_effect = opened
+        with patch.object(self.workflow, "page_break_preview_needed", return_value=False):
+            self.assertEqual(self.scan()["status"], "completed")
+        self.assertEqual(self.workflow._file_version(path), before)
+        self.excel.Workbooks.Open.assert_called_once_with(str(path.resolve()), UpdateLinks=0, ReadOnly=True)
+        self.save_preview.assert_not_called()
+
+    def test_explicit_backup_cleanup_still_opens_for_writing_and_deletes(self):
+        self.add_book("book", ["S1", "S1_20231023"])
+        book = self.books["book"]
+
+        class Sheets(list):
+            def __call__(self, name):
+                return next(sheet for sheet in self if sheet.Name == name)
+
+        book.Sheets = Sheets(book.Sheets)
+        backup = book.Sheets("S1_20231023")
+        backup.Delete = Mock(side_effect=lambda: book.Sheets.remove(backup))
+        book.Save = Mock()
+        with patch.object(self.workflow, "page_break_preview_needed", return_value=False):
+            self.assertEqual(self.scan(delete_backups=True)["status"], "completed")
+        self.assertFalse(self.excel.Workbooks.Open.call_args.kwargs.get("ReadOnly", False))
+        backup.Delete.assert_called_once()
+        book.Save.assert_called_once()
+        self.assertEqual(self.exports, [("book", "S1")])
+        report = self.reporter.get_execution_report_snapshot()["files"]["book.xlsx"]
+        self.assertEqual(report["deleted_backups"], ["S1_20231023"])
+
+    def test_view_check_failure_falls_back_to_saving_the_preview(self):
+        self.add_book("book", ["S1"])
+        with patch.object(self.workflow, "page_break_preview_needed", side_effect=RuntimeError("COM")):
+            self.assertEqual(self.scan()["status"], "completed")
+        self.save_preview.assert_called_once()
 
     def test_modified_problem_file_only_rechecks_problem_sheets(self):
         path = self.add_book("book", ["S1", "S2"])

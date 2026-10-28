@@ -55,6 +55,7 @@ from core.excel_ops import (
     normalize_workbook_view,
     open_workbook_for_manual_review,
     open_workbook_checked,
+    page_break_preview_needed,
     pythoncom,
     quit_background_excel,
     scan_workbook_sheets,
@@ -1321,12 +1322,15 @@ def _scan_one_workbook(
     reuse_pdfs: bool = True,
     timing: dict[str, float] | None = None,
     keep_page_break_preview: bool = False,
+    check_page_break_preview: bool = False,
 ) -> None:
     """检查一个工作簿；所有工作表检测完成后才一次性替换该文件的旧结果，中途失败不影响旧记录。
 
     workbook：已打开、内容和原文件当前版本一致的工作簿（全自动处理的副本），给了就不再打开原文件。
     pdfs：后台会话的导出记录（autofix._ExcelSession）；同一版本已导出过的表直接用那份 PDF，不再导出。
-    timing：累计打开 / 导出 / 检测各花了几秒。"""
+    timing：累计打开 / 导出 / 检测各花了几秒。
+    check_page_break_preview：打开原文件后先查视图，结果写入 entry["page_break_preview_needed"]；
+    已全是分页预览时不必再可写打开原文件（旧版 .xls 可写打开即使不保存也会改文件时间）。"""
     timing = {} if timing is None else timing
     path = str(wb_path)
     wb_label = workbook_rel_name(wb_path, STATE.get("folder"))
@@ -1351,6 +1355,14 @@ def _scan_one_workbook(
                     用副本=workbook is not None, 只查=entry["sheets"] if sheets_only else "全部",
                     大小KB=wb_path.stat().st_size // 1024 if wb_path.exists() else "?")
     try:
+        if (keep_page_break_preview or check_page_break_preview) and workbook is None:
+            # 检测分页时会临时切换视图，必须在检测前查看文件保存的视图。
+            try:
+                entry["page_break_preview_needed"] = page_break_preview_needed(excel, wb)
+            except Exception as err:
+                # 查不出来按需要处理：之后可写打开时照常设置并暴露错误。
+                debug_log.event("⚠️ 无法检查分页预览", 文件=wb_label, 错误=str(err))
+                entry["page_break_preview_needed"] = True
         all_names = [s.Name for s in wb.Sheets]
         layout_keys = [print_layout.identity(sheet) for sheet in wb.Sheets]
         with STATE_LOCK:
@@ -1459,7 +1471,7 @@ def _scan_one_workbook(
         if workbook is None:
             wb.Close(SaveChanges=False)
 
-    if keep_page_break_preview:
+    if keep_page_break_preview and entry.get("page_break_preview_needed", True):
         with scan_analysis.operation("save_view"):
             scan_version = _save_page_break_preview(excel, wb_path, scan_version)
 
@@ -1622,6 +1634,8 @@ def scan_folder_workflow(
                             excel, wb_path, entry, previous,
                             job=job, resumed=initialized, rescan_all=rescan_all,
                             delete_backups=delete_backups, used_pdf_paths=used_pdf_paths,
+                            # 未要求删表时只读检测，避免旧版 .xls 首次打开就更新时间。
+                            read_only=not delete_backups,
                             keep_page_break_preview=True,
                         )
                 except Exception as err:

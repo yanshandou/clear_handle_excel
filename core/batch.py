@@ -993,9 +993,11 @@ def _error_value_card(card: dict) -> bool:
 def _refresh(
     excel: Any, path: str, sheets: list[str] | None = None, *,
     session: Any = None, workbook: Any = None, reuse: bool = True, timing: dict[str, float] | None = None,
+    view: dict | None = None,
 ) -> list[str]:
     """重新检测（默认整个文件）。session 给了就沿用同一状态已导出的 PDF（reuse=False 时一律重新导出）；
     workbook 给了就直接用它检测（全自动的副本，或复检时在内存里还原过标记色的原文件），不再打开原文件。
+    view 给了就顺便查原文件视图，view["needed"] 表示是否还要另存分页预览。
     返回这次找不到、没有检测的工作表（被删除、隐藏，或改名后认不出来）。"""
     with wf.STATE_LOCK:
         cards = _data()["cards"]
@@ -1019,7 +1021,10 @@ def _refresh(
         previous, job=None, resumed=True, rescan_all=False, delete_backups=False,
         used_pdf_paths={Path(p["pdf_path"]) for p in wf.STATE["pages"].values()},
         read_only=True, workbook=workbook, pdfs=session, reuse_pdfs=reuse, timing=timing,
+        check_page_break_preview=view is not None,
     )
+    if view is not None:
+        view["needed"] = entry.get("page_break_preview_needed", True)
     with wf.STATE_LOCK:
         missing = list(entry.get("missing", []))
         for card in _data()["cards"].values():
@@ -3893,16 +3898,18 @@ def run() -> list[str]:
                     with wf.STATE_LOCK:
                         limit = _scan_limit(job, path)
                         job["scan_limit"] = {"path": path, "seconds": round(limit)}
-                    started, checking = time.perf_counter(), {}
+                    started, checking, view = time.perf_counter(), {}, {}
                     watchdog.deadline(limit)
                     try:
-                        _refresh(excel, path, session=session, timing=checking)
+                        _refresh(excel, path, session=session, timing=checking, view=view)
                     finally:
                         watchdog.deadline(None)
                     # 检测的只读工作簿已经关闭；另开原文件保存视图，避免保存临时上色。
                     # 写文件放在检测超时限制之外，即使没有问题项也保留分页预览。
-                    with scan_analysis.operation("save_view"):
-                        _save_scan_preview(excel, path, session)
+                    # 已全是分页预览就不再可写打开，文件（包括旧版 .xls）的修改时间保持不变。
+                    if view.get("needed", True):
+                        with scan_analysis.operation("save_view"):
+                            _save_scan_preview(excel, path, session)
                     with wf.STATE_LOCK:
                         job.setdefault("scan_seconds", {})[path] = round(time.perf_counter() - started, 1)
                         _data().get("slow_files", {}).pop(path, None)  # 以前超时跳过的，这次扫完了

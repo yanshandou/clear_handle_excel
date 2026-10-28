@@ -628,11 +628,12 @@ def adjust_row_heights_against_clipping(wb: Any, extra_points: float = 6.0) -> N
             pass
 
 
-def enable_page_break_preview(excel: Any, wb: Any) -> bool:
+def enable_page_break_preview(excel: Any, wb: Any, *, check_only: bool = False) -> bool:
     """所有窗口的可见工作表保留分页预览；保留缩放、选区和当前标签，返回是否改过视图。
 
     不修改隐藏表或图表页；隐藏的工作簿窗口临时显示、设置完再隐藏回去。
     设置失败向上传递，调用方不能把未完成的保存当成成功。
+    check_only=True 时不改视图，只返回是否还有可见工作表不是分页预览。
     """
     if wb.Windows.Count == 0:
         raise ValueError("工作簿没有可用窗口，无法保存分页预览")
@@ -653,6 +654,8 @@ def enable_page_break_preview(excel: Any, wb: Any) -> bool:
                             continue
                         sheet.Activate()
                         if window.View != XL_PAGE_BREAK_PREVIEW:
+                            if check_only:
+                                return True
                             zoom = window.Zoom
                             window.View = XL_PAGE_BREAK_PREVIEW
                             window.Zoom = zoom
@@ -666,6 +669,11 @@ def enable_page_break_preview(excel: Any, wb: Any) -> bool:
         if original_window is not None:
             original_window.Activate()
     return changed
+
+
+def page_break_preview_needed(excel: Any, wb: Any) -> bool:
+    """还有可见工作表不是分页预览时返回 True；只切换当前标签查看，不改视图。"""
+    return enable_page_break_preview(excel, wb, check_only=True)
 
 
 def normalize_workbook_view(

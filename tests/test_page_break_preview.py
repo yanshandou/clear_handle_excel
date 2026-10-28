@@ -81,6 +81,18 @@ class PageBreakPreviewTests(unittest.TestCase):
         excel.Goto.assert_not_called()
         self.assertFalse(excel_ops.enable_page_break_preview(excel, book))
 
+    def test_check_only_reports_without_changing_views_or_active_state(self):
+        excel, book = self.setup_book()
+        before = [(dict(w.views), dict(w.zooms), w.ActiveSheet) for w in book.Windows]
+        book.Windows[1].Visible = False
+        self.assertTrue(excel_ops.page_break_preview_needed(excel, book))
+        self.assertEqual([(w.views, w.zooms, w.ActiveSheet) for w in book.Windows], before)
+        self.assertFalse(book.Windows[1].Visible)
+        self.assertIs(excel.ActiveWindow, book.Windows[0])
+        book.Windows[1].Visible = True
+        excel_ops.enable_page_break_preview(excel, book)
+        self.assertFalse(excel_ops.page_break_preview_needed(excel, book))
+
     def test_hidden_workbook_window_is_set_and_hidden_again(self):
         excel, book = self.setup_book()
         book.Windows[1].Visible = False
