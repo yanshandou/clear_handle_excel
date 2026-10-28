@@ -354,8 +354,9 @@ def repair(folder: str, old_folder: str, options: dict | None = None) -> None:
     if root == old_root or root in old_root.parents or old_root in root.parents:
         raise ValueError("当前文件夹与备份文件夹不能相同或互相包含，请分别选择两份文件所在的目录")
     with wf.STATE_LOCK, _LOCK:
-        from core import link_repair, mark_finder
-        if wf.STATE.get("busy") or _STATUS.get("running") or link_repair.status().get("running") or mark_finder.status().get("running"):
+        from core import bl_links, link_repair, mark_finder
+        if (wf.STATE.get("busy") or _STATUS.get("running") or link_repair.status().get("running")
+                or mark_finder.status().get("running") or bl_links.status().get("running")):
             raise ValueError("后台任务正在执行，请等它结束")
         job = wf.STATE.get("job") or {}
         if job.get("pending_adjustment") or job.get("deferred_adjustments"):

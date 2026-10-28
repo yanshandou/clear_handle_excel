@@ -305,8 +305,9 @@ def _run(phase: str, folder: Path, paths: list, old_root: Path | None = None, ol
 
 def _launch(phase: str, folder: Path, paths: list, old_root: Path | None = None, old_paths: list | None = None) -> None:
     with wf.STATE_LOCK, _LOCK:
-        from core import mark_finder
-        if wf.STATE.get("busy") or _STATUS.get("running") or mark_finder.status().get("running"):
+        from core import bl_links, hidden_repair, mark_finder
+        if (wf.STATE.get("busy") or _STATUS.get("running") or mark_finder.status().get("running")
+                or hidden_repair.status().get("running") or bl_links.status().get("running")):
             raise ValueError("后台任务正在执行，请等它结束")
         job = wf.STATE.get("job") or {}
         if job.get("pending_adjustment") or job.get("deferred_adjustments"):

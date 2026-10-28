@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>排查 BL 超链接 - Excel 整理工具箱</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/repair.css">
+  <style>
+    .bl-summary { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 4px; }
+    .bl-chip { font-size: 14px; font-weight: 700; padding: 6px 12px; border-radius: 999px; border: 1.5px solid; }
+    .bl-chip-hit { color: var(--purple-ink); background: var(--purple-soft); border-color: #b7d4fb; }
+    .bl-chip-ok { color: #14633c; background: #e4f5ea; border-color: #b7e0c6; }
+    .bl-chip-err { color: #b42318; background: #fdeaea; border-color: #f2b8b2; }
+    .bl-chip-empty { color: var(--ink-3); background: #eef1f7; border-color: var(--line-soft); }
+    .bl-group-title { font-size: 15px; margin: 20px 0 4px; color: var(--ink-2); }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <a href="/" class="header-brand"><div class="header-logo-badge">🔎</div><div class="header-title"><h1>排查 BL 超链接</h1><span class="subtitle">清空「左边含 BL · 右边是 @ 超链接」的单元格</span></div></a>
+    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/repair-links" class="nav-link">🔗 修复引用错误</a><a href="/repair-colors" class="nav-link">🎨 修复颜色</a><a href="/repair-hidden" class="nav-link">🙈 修复隐藏页</a><a href="/workbench" class="nav-link">📐 切字检查工作台</a></nav>
+  </header>
+  <main class="container clean-container">
+    <section class="panel">
+      <h2>先扫描，确认后再清除</h2>
+      <p class="toolbar-hint">找出每一行里「左边单元格内容包含大写 BL、右边单元格是内容为 @ 的超链接」这样的单元格。第一步只列出位置，你看完确认后再点「清除」，删除这些超链接并清空内容。</p>
+      <div class="link-fields">
+        <label for="blFolder">Excel 文件夹（含子文件夹）<input id="blFolder" type="text" placeholder="例如 D:\当前文件\001"></label>
+      </div>
+      <div class="link-actions">
+        <button id="blScan" class="btn btn-primary" type="button" disabled>🔎 扫描 BL 超链接</button>
+        <button id="blClear" class="btn btn-danger" type="button" disabled>🧽 清除这些单元格</button>
+      </div>
+      <p class="toolbar-hint">清除会删除超链接并清空内容，属于不可恢复操作，请在扫描结果里核对无误后再点「清除」。清除前请保存并关闭目标 Excel 文件。关闭网页后任务继续。</p>
+      <p id="blProgress" role="status" aria-live="polite">填写文件夹后点「扫描」。</p>
+      <div class="progress-track progress-track-sm"><div id="blProgressFill" class="progress-fill" style="width:0%"></div></div>
+      <p id="blError" class="batch-error" role="alert"></p>
+    </section>
+    <section class="panel"><h2 id="blResultTitle">扫描结果</h2><p id="blResultFolder" class="toolbar-hint"></p><div id="blResults"><p>尚未扫描。</p></div></section>
+    <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
+  </main>
+  <script src="/static/dialog.js"></script><script src="/static/open_excel.js"></script><script src="/static/bl_links.js"></script><script src="/static/debug_log.js"></script>
+</body>
+</html>

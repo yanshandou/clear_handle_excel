@@ -485,6 +485,31 @@ class QuickTaskTests(unittest.TestCase):
                 self.workflow.STATE.update(busy=False)
                 self.workflow.STATE.pop("maintenance", None)
 
+    def test_bl_links_page_api_and_maintenance_exclusion(self):
+        from core import bl_links
+        with self.serve_api() as port, patch.object(bl_links, "start") as scan, \
+                patch.object(bl_links, "clear") as clear:
+            status, body = self.request(port, "GET", "/repair-bl-links")
+            self.assertEqual(status, 200)
+            self.assertIn("扫描 BL 超链接", body)
+            status, body = self.request(port, "GET", "/api/bl_links")
+            self.assertEqual(status, 200)
+            self.assertIn("running", json.loads(body))
+            status, body = self.request(port, "POST", "/api/bl_links/scan", {"folder": str(self.folder)})
+            self.assertEqual(status, 200, body)
+            scan.assert_called_once_with(str(self.folder))
+            status, body = self.request(port, "POST", "/api/bl_links/clear", {})
+            self.assertEqual(status, 200, body)
+            clear.assert_called_once()
+            self.workflow.STATE.update(busy=True, maintenance="bl_link_scan")
+            try:
+                status, body = self.request(port, "POST", "/api/link_repair/run", {"folder": str(self.folder), "old_folder": str(self.root)})
+                self.assertEqual(status, 400)
+                self.assertIn("BL 超链接", json.loads(body)["error"])
+            finally:
+                self.workflow.STATE.update(busy=False)
+                self.workflow.STATE.pop("maintenance", None)
+
     def test_browser_disconnect_during_preview_is_logged_quietly(self):
         import web_clip_fixer
 
