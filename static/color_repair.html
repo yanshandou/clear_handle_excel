@@ -27,6 +27,12 @@
       <div class="progress-track progress-track-sm"><div id="repairProgressFill" class="progress-fill" style="width:0%"></div></div>
       <p id="repairError" class="batch-error" role="alert"></p>
     </section>
+    <section class="panel">
+      <h2>🧽 清除 Excel 标记颜色</h2>
+      <p class="toolbar-hint">一键删掉切字工作台在 Excel 里加的条件格式标记（公式带 CHE_MARK 标识的规则），并把被标成橙黄色的工作表标签还原为无颜色。单元格直接设置的底色 / 字色不受影响；要恢复直接配色请用上方「扫描并修复颜色」。</p>
+      <p class="toolbar-hint">只需上方「当前 Excel 文件夹」，不需要备份文件夹；会递归处理该文件夹及其所有子文件夹下的 Excel 文件。</p>
+      <div class="link-actions"><button id="repairClearMarks" class="btn btn-outline" type="button">🧽 清除标记颜色</button></div>
+    </section>
     <section class="panel"><h2 id="repairResultTitle">修复结果</h2><p id="repairResultFolder" class="toolbar-hint"></p><div id="repairFilters" hidden></div><div id="repairResults"><p>尚未开始。</p></div></section>
     <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
   </main>

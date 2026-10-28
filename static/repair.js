@@ -13,15 +13,17 @@
   const CATEGORY_LABELS = new Map(CATEGORIES);
   const FILE_LEVEL_CODES = new Set(['no_difference', 'backup_not_unique', 'self_backup', 'file_changed', 'file_locked', 'file_readonly', 'tab_verify_failed']);
   let resultFilter = 'unresolved';
-  let latest = {}, submitting = false, loading = true, timer, initial = true, pollError = '';
+  let latest = {}, submitting = false, clearSubmitting = false, loading = true, timer, initial = true, pollError = '';
   const successful = cell => ['ok', 'resolved'].includes(cell.status);
   try { $('repairFolder').value = localStorage.getItem(FOLDER) || ''; $('repairOldFolder').value = localStorage.getItem(OLD) || ''; } catch (_) {}
 
   function controls() {
-    const busy = loading || submitting || latest.running;
+    const busy = loading || submitting || clearSubmitting || latest.running;
     for (const id of ['repairFolder', 'repairOldFolder', 'repairRun']) $(id).disabled = !!busy;
+    if (colors) $('repairClearMarks').disabled = !!busy;
     if (hidden) for (const id of Object.values(optionIds)) $(id).disabled = !!busy;
     $('repairRun').textContent = submitting || latest.running ? '正在扫描并修复…' : label;
+    if (colors) $('repairClearMarks').textContent = clearSubmitting ? '正在清除标记…' : '🧽 清除标记颜色';
   }
 
   function swatch(fill, font, tab = false) {
@@ -101,19 +103,49 @@
       + (shown.length < cells.length ? `<p>当前显示${view === 'unresolved' ? '未修复项' : ''} ${shown.length} / ${cells.length} 处。 <button class="btn btn-outline btn-sm" type="button" data-repair-more="${escape(file.name)}">查看更多差异</button></p>` : '') + '</details>';
   }
 
+  function renderClear(data) {
+    const files = data.files || [];
+    const totalRules = files.reduce((sum, file) => sum + (file.leftovers || 0), 0);
+    const totalTabs = files.reduce((sum, file) => sum + (file.tabs || []).filter(t => t.status === 'ok').length, 0);
+    const errors = files.filter(file => file.error).length;
+    $('repairResultTitle').textContent = '清除标记颜色结果';
+    $('repairResultFolder').textContent = `当前文件夹：${data.folder}`;
+    $('repairProgress').textContent = `已清除 ${totalRules} 条标记，还原标签 ${totalTabs} 张；${errors} 份文件处理失败。`;
+    $('repairProgressFill').style.width = '100%';
+    $('repairFilters').hidden = true;
+    $('repairResults').innerHTML = files.map(file => {
+      const target = {folder: data.folder, file: file.name};
+      const fileLink = window.excelLinkHtml(escape(file.name), target);
+      const tabs = file.tabs || [];
+      const tabOk = tabs.filter(t => t.status === 'ok').length;
+      const tabFailed = tabs.filter(t => t.status !== 'ok');
+      const leftoverFailed = file.leftover_failed || [];
+      const hasWork = !!(file.error || file.leftovers || tabOk || tabFailed.length || leftoverFailed.length);
+      const summary = hasWork
+        ? `<p>清掉标记规则 ${file.leftovers || 0} 条${tabOk ? `，还原标签 ${tabOk} 张` : ''}${file.error ? `；${escape(file.error)}` : ''}</p>`
+        : '<p>没有程序加的标记，无需处理。</p>';
+      const detail = summary
+        + (leftoverFailed.length ? `<p class="link-skip">删不掉的残留标记：${escape(leftoverFailed.join('；'))}</p>` : '')
+        + (tabFailed.length ? `<p class="link-skip">标签还原失败：${tabFailed.map(t => `${escape(t.sheet)}（${escape(t.reason)}）`).join('；')}</p>` : '');
+      return `<details class="link-file"${hasWork ? ' open' : ''}><summary>${fileLink}${file.error ? ' · 处理失败' : (file.leftovers || tabOk) ? ` · 清掉 ${file.leftovers || 0} 条规则${tabOk ? `、${tabOk} 张标签` : ''}` : ' · 无需处理'}</summary>${detail}</details>`;
+    }).join('') || '<p>没有需要处理的文件。</p>';
+  }
+
   function render() {
     controls();
     const phase = latest.applied ? 'apply' : latest.plan ? 'preview' : 'scan';
     const data = latest.applied || latest.plan || latest.result;
     if (colors) $('repairFilters').hidden = !!latest.running || phase !== 'apply' || !data;
     if (latest.running) {
+      const clearing = latest.phase === 'clear';
       const stage = latest.phase === 'repair' ? latest.stage : latest.phase;
-      $('repairProgress').textContent = `${{scan:'正在扫描', find:'正在扫描', preview:'正在对比备份', apply:'正在修复'}[stage] || '正在处理'} ${Math.min((latest.done || 0) + 1, latest.total || 0)} / ${latest.total || 0}：${latest.current || '准备中…'}`;
+      $('repairProgress').textContent = `${{scan:'正在扫描', find:'正在扫描', preview:'正在对比备份', apply:'正在修复', clear:'正在清除标记'}[stage] || '正在处理'} ${Math.min((latest.done || 0) + 1, latest.total || 0)} / ${latest.total || 0}：${latest.current || '准备中…'}`;
       $('repairProgressFill').style.width = `${latest.total ? latest.done / latest.total * 100 : 0}%`;
-      $('repairResults').textContent = '正在扫描并修复，完成后显示明细。';
+      $('repairResults').textContent = clearing ? '正在清除标记，完成后显示明细。' : '正在扫描并修复，完成后显示明细。';
       return;
     }
     if (!data) return;
+    if (colors && latest.phase === 'clear') { renderClear(data); return; }
     const cells = data.files.flatMap(file => file.cells || file.hits || []);
     const errors = data.files.filter(file => file.error).length;
     const count = data.files.filter(file => !file.error).flatMap(file => file.cells || []).filter(successful).length;
@@ -193,6 +225,26 @@
     } finally { submitting = false; controls(); }
   }
   $('repairRun').addEventListener('click', run);
+  if (colors) {
+    async function clearMarks() {
+      if (loading || submitting || clearSubmitting || latest.running) return;
+      const folder = $('repairFolder').value.trim();
+      $('repairError').textContent = '';
+      if (!folder) { $('repairError').textContent = '请填写当前 Excel 文件夹'; return; }
+      clearSubmitting = true; controls();
+      try {
+        const response = await fetch('/api/batch/clear_marks', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({folder})});
+        const result = await response.json();
+        if (!response.ok || !result.ok) throw Error(result.error || '操作失败');
+        try { localStorage.setItem(FOLDER, folder); } catch (_) {}
+        await refresh();
+      } catch (error) {
+        $('repairError').textContent = error.message;
+        await refresh();
+      } finally { clearSubmitting = false; controls(); }
+    }
+    $('repairClearMarks').addEventListener('click', clearMarks);
+  }
   if (colors) $('repairFilters').addEventListener('click', event => {
     const button = event.target.closest('[data-repair-filter]');
     if (!button) return;

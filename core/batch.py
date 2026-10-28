@@ -3528,6 +3528,45 @@ def highlighted_paths() -> list[str]:
         return paths
 
 
+def clear_marks_in_file(excel: Any, path: str, report: dict | None = None) -> None:
+    """不依赖 STATE 记录，全局清除一份文件里程序加的条件格式标记（CHE_MARK 规则），
+    并还原被标成橙黄色的工作表标签；单元格直接设置的底色 / 字色不动。
+    report：传入时填 leftovers（删掉的规则条数）、leftover_failed（删不掉的规则原因）、tabs（标签还原明细）。"""
+    _check_file(path)
+    book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
+    try:
+        try:
+            excel.ScreenUpdating = False
+        except Exception:
+            pass
+        if book.ReadOnly:
+            raise ValueError(f"{Path(path).name} 以只读方式打开，未能清除标记")
+        # keep 传空集：删掉文件里所有带 CHE_MARK 标识的条件格式规则（包括崩溃残留、复制粘贴带出去的）。
+        _present, dropped, failed = _drop_rules(book, set())
+        tabs: list[dict] = []
+        for sheet in book.Worksheets:
+            name = str(sheet.Name)
+            try:
+                if _tab_is_ours(sheet):
+                    sheet.Tab.ColorIndex = XL_COLOR_INDEX_NONE
+                    tabs.append({"sheet": name, "status": "ok", "reason": "已还原为无颜色"})
+            except Exception as err:
+                tabs.append({"sheet": name, "status": "failed", "reason": f"还原标签失败：{err}"})
+        leftovers = sum(dropped.values())
+        if report is not None:
+            report["leftovers"] = leftovers
+            report["leftover_failed"] = [reason for reason in failed.values()][:20]
+            report["tabs"] = tabs
+        if leftovers or any(t["status"] == "ok" for t in tabs):
+            book.Save()
+    finally:
+        try:
+            excel.ScreenUpdating = True
+        except Exception:
+            pass
+        book.Close(SaveChanges=False)
+
+
 def recheck_options(ids: list[str], *, single: bool = False) -> dict:
     """复检任务的参数。full_paths 里的文件整份重查；卡片上的「单项复检」（single）只查点的那几格"""
     with wf.STATE_LOCK:

@@ -374,6 +374,9 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "fix_error_types": batch.set_fix_error_types(payload.get("fix_error_types"))})
         elif self.path == "/api/batch/unhighlight":
             self._start_job("batch_unhighlight", {"paths": batch.highlighted_paths()})
+        elif self.path == "/api/batch/clear_marks":
+            mark_finder.clear_marks(_require_folder(payload))
+            self._send_json({"ok": True})
         elif self.path == "/api/hidden_repair/run":
             hidden_repair.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}), payload.get("options"))
             self._send_json({"ok": True})

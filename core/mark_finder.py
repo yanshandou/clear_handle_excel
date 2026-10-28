@@ -935,3 +935,78 @@ def repair(folder: str, old_folder: str, colors: Any = None) -> None:
             wf.STATE.pop("maintenance", None)
             _STATUS["running"] = False
         raise
+
+
+def _run_clear_marks(root: Path, paths: list[Path]) -> None:
+    from core.excel_ops import quit_background_excel, start_background_excel
+
+    files: list[dict] = []
+    excel, com = None, False
+    try:
+        wf.pythoncom.CoInitialize()
+        com = True
+        for index, path in enumerate(paths):
+            name = workbook_rel_name(path, root)
+            entry = {"name": name, "path": str(path), "cells": [], "leftovers": 0,
+                     "leftover_failed": [], "tabs": [], "error": None}
+            files.append(entry)
+            with _LOCK:
+                _STATUS.update(done=index, current=name, stage="scan")
+            try:
+                if _is_template(path):
+                    raise ValueError("模板格式请先另存为 .xlsx / .xlsm 工作簿后再清除标记")
+                if workbook_locked(path):
+                    raise ValueError("文件正在 Excel 中打开，请保存并关闭后再清除标记")
+                if excel is None:
+                    excel = start_background_excel()
+                batch.clear_marks_in_file(excel, str(path), entry)
+            except Exception as error:
+                entry["error"] = str(error)
+                debug_log.exception(error, f"清除标记 {name}")
+            finally:
+                tabs_ok = sum(1 for t in entry["tabs"] if t["status"] == "ok")
+                wf.log_msg(f"🧽 {name}：清掉 {entry['leftovers']} 条标记，还原标签 {tabs_ok} 张"
+                           + (f"；{entry['error']}" if entry["error"] else ""))
+    except Exception as error:
+        debug_log.exception(error, "清除标记任务")
+        files.append({"name": "任务", "path": "", "cells": [], "leftovers": 0,
+                      "leftover_failed": [], "tabs": [], "error": str(error)})
+    finally:
+        try:
+            quit_background_excel(excel)
+        finally:
+            try:
+                if com:
+                    wf.pythoncom.CoUninitialize()
+            finally:
+                with wf.STATE_LOCK, _LOCK:
+                    _STATUS.update(running=False, done=len(paths), current="", applied={
+                        "folder": str(root), "files": files})
+                    wf.STATE["busy"] = False
+                    wf.STATE.pop("maintenance", None)
+
+
+def clear_marks(folder: str) -> None:
+    """清除文件夹下所有文件里程序加的条件格式标记（CHE_MARK 规则）并还原橙黄标签；不依赖任何记录、不需要备份。"""
+    root, paths = list_workbooks(folder)
+    with wf.STATE_LOCK, _LOCK:
+        from core import bl_links, hidden_repair, link_repair
+        if (wf.STATE.get("busy") or _STATUS.get("running") or link_repair.status().get("running")
+                or hidden_repair.status().get("running") or bl_links.status().get("running")):
+            raise ValueError("后台任务正在执行，请等它结束")
+        job = wf.STATE.get("job") or {}
+        if job.get("pending_adjustment") or job.get("deferred_adjustments"):
+            raise ValueError("还有未完成的文件写入，请先继续或放弃上次写入")
+        wf.STATE.update(busy=True, maintenance="color_repair")
+        _STATUS.clear()
+        _STATUS.update(running=True, phase="clear", stage="scan", folder=str(root), total=len(paths), done=0, current="")
+    try:
+        threading.Thread(target=_logged, args=("clear_marks", {"folder": str(root), "files": len(paths)},
+                                               _run_clear_marks, root, paths),
+                         name="清除标记颜色", daemon=True).start()
+    except Exception:
+        with wf.STATE_LOCK, _LOCK:
+            wf.STATE["busy"] = False
+            wf.STATE.pop("maintenance", None)
+            _STATUS["running"] = False
+        raise
