@@ -1944,10 +1944,11 @@ body {
   content: none;
 }
 
-.feature-violet { --g-top: #7ee04a; --g-bot: #4fbf1f; --g-edge: #34900f; --g-soft: #e6f9d8; }
-.feature-sky { --g-top: #6cb2ff; --g-bot: #2f80ff; --g-edge: #1f5fc4; --g-soft: #e2eeff; }
-.feature-rose { --g-top: #ffc066; --g-bot: #ff8a1f; --g-edge: #d9620a; --g-soft: #fff0dc; }
-.feature-mint { --g-top: #b49cff; --g-bot: #7c5cf0; --g-edge: #5a3cc8; --g-soft: #eee8ff; }
+.feature-violet { --g-top: #91e46a; --g-bot: #51bf39; --g-edge: #329322; --g-soft: #e6f9d8; }
+.feature-sky { --g-top: #50c7f5; --g-bot: #168fe6; --g-edge: #0873b9; --g-soft: #e2f3ff; }
+.feature-rose { --g-top: #ffd45e; --g-bot: #f5a623; --g-edge: #d87a0d; --g-soft: #fff3d6; }
+.feature-mint { --g-top: #c384f3; --g-bot: #9c60ed; --g-edge: #7637c3; --g-soft: #f2e8ff; }
+.feature-bl { --g-top: #f590d1; --g-bot: #e852af; --g-edge: #bd2c88; --g-soft: #ffe6f5; }
 
 .feature-card {
   justify-content: flex-start;
@@ -1989,11 +1990,23 @@ body {
   transform: none;
 }
 
+/* 首页八个功能共用一张精灵图；每个格子对应一个独立功能。 */
 .feature-icon {
-  width: 124px;
-  height: 124px;
-  filter: drop-shadow(0 5px 0 rgba(28, 40, 88, 0.35));
+  width: 150px;
+  height: 150px;
+  background-image: url("/static/icons/home-features.png");
+  background-size: 400% 200%;
+  background-repeat: no-repeat;
+  filter: none;
 }
+.feature-icon-clean      { background-position: 0% 0%; }
+.feature-icon-inspect    { background-position: 33.333% 0%; }
+.feature-icon-normalize  { background-position: 66.667% 0%; }
+.feature-icon-pdf        { background-position: 100% 0%; }
+.feature-icon-references { background-position: 0% 100%; }
+.feature-icon-colors     { background-position: 33.333% 100%; }
+.feature-icon-hidden     { background-position: 66.667% 100%; }
+.feature-icon-bl-links   { background-position: 100% 100%; }
 
 /* 白色铭牌：分类 + 名称 + 说明 + 状态 */
 .feature-text {
