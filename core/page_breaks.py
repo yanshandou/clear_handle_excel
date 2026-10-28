@@ -114,6 +114,97 @@ def find_cut_blocks(sheet: Any, breaks: dict[str, list], printed: Any = None) ->
     return sorted(blocks.values(), key=lambda b: (b["top"], b["left"]))
 
 
+def _row_has_text(sheet: Any, row: int, first: int, last: int, printed: Any = None) -> bool:
+    """这一行在打印列范围内是否有非空文字（含覆盖到这一行的合并单元格）。"""
+    col = first
+    while col <= last:
+        step = 1
+        try:
+            cell = sheet.Cells(row, col)
+            if cell.MergeCells:
+                area = cell.MergeArea
+                top, left = int(area.Row), int(area.Column)
+                step = max(1, left + int(area.Columns.Count) - col)
+                if printed is None or printed(top, left) is not False:
+                    text = str(area.Cells(1, 1).Text or "").strip()
+                    if normalize_text(text):
+                        return True
+            else:
+                if printed is None or printed(row, col) is not False:
+                    text = str(cell.Text or "").strip()
+                    if normalize_text(text):
+                        return True
+        except Exception:
+            pass
+        col += step
+    return False
+
+
+def _row_is_blank_separator(sheet: Any, row: int, first: int, last: int, printed: Any = None) -> bool:
+    """判断第 row 行是否可作为空白分界行（分页放在 row 与 row+1 之间，即插在 row+1 上方）：
+    - 该行不能是隐藏行；
+    - 打印列范围内无非空文字；
+    - 没有纵向合并单元格穿过 row 与 row+1 之间的分界线。"""
+    try:
+        row_obj = sheet.Rows(row)
+        if getattr(row_obj, "Hidden", False) is True:
+            return False
+        height = getattr(row_obj, "RowHeight", None)
+        if isinstance(height, (int, float)) and not isinstance(height, bool) and height <= 0:
+            return False
+    except Exception:
+        pass
+    col = first
+    while col <= last:
+        step = 1
+        try:
+            cell = sheet.Cells(row, col)
+            if cell.MergeCells:
+                area = cell.MergeArea
+                top, left = int(area.Row), int(area.Column)
+                bottom = top + int(area.Rows.Count) - 1
+                step = max(1, left + int(area.Columns.Count) - col)
+                if printed is None or printed(top, left) is not False:
+                    if top <= row < bottom:
+                        return False
+                    text = str(area.Cells(1, 1).Text or "").strip()
+                    if normalize_text(text):
+                        return False
+            else:
+                if printed is None or printed(row, col) is not False:
+                    text = str(cell.Text or "").strip()
+                    if normalize_text(text):
+                        return False
+        except Exception:
+            return False
+        col += step
+    return True
+
+
+def find_break_row(
+    sheet: Any, block: dict, breaks: dict[str, list] | None = None, printed: Any = None,
+) -> int:
+    """从被分页截断的区域向上寻找「一行空白、一行有字」的分界（即 r-1 行为空白行、r 行有字，分页线放在 r-1 与 r 之间）；
+    当前页内找不到合适分界时，退回在被截断合并区域的第一行 top 上方分页。"""
+    top = int(block.get("top") or 0)
+    if top <= 2:
+        return top
+    columns = _columns(sheet)
+    if columns is None:
+        return top
+    first, last = columns
+    if breaks is None:
+        breaks = read_breaks(sheet)
+    h_breaks = [r for r, _ in (breaks or {}).get("h", []) if r <= top]
+    page_start = max(h_breaks, default=1)
+    if page_start >= top:
+        return top
+    for r in range(top, page_start + 1, -1):
+        if _row_is_blank_separator(sheet, r - 1, first, last, printed):
+            return next((k for k in range(r, top + 1) if _row_has_text(sheet, k, first, last, printed)), top)
+    return top
+
+
 def still_cut(breaks: dict[str, list], block: dict) -> bool:
     return any(block["top"] < row <= block["bottom"] for row, _ in breaks["h"])
 

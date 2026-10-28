@@ -155,7 +155,7 @@ def rename_sheet(path: str, old: str, new: str) -> None:
         if row["path"] == path and row["sheet"] == old:
             row["sheet"] = new
             row["id"] = (_col_key(path, new, row["col"]) if row.get("kind") == "col" else
-                         _key(path, new, int(row["row"]), "break") if row.get("kind") == "break" else
+                         _key(path, new, int(row.get("excel_row") or row["row"]), "break") if row.get("kind") == "break" else
                          _key(path, new, int(row["row"])))
             moved_rows[rid] = row["id"]
             data["rows"][row["id"]] = data["rows"].pop(rid)
@@ -874,8 +874,11 @@ def _finish_pending(excel: Any) -> None:
         for cid in pending["cards"]:
             card = data["cards"][cid]
             if pending["action"] == "fix" and _is_break(card):
+                break_row = next((r["row"] for r in pending["rows"] if r.get("kind") == "break"), card.get("excel_row"))
                 card.update(color="blue", verified=True, after_kind="fixed",
-                            message="已在合并区域上方插入分页并保存，等待审核")
+                            message=(f"已在第 {break_row} 行上方插入分页并保存，等待审核"
+                                     if break_row and break_row != card.get("excel_row")
+                                     else "已在合并区域上方插入分页并保存，等待审核"))
                 for item in _items_at(card):
                     item.update(status="fixed", batch_managed=True, triage_keep=False, page_break=True,
                                 fix_images=copy.deepcopy(card.get("fix_images", {})),
@@ -1126,15 +1129,52 @@ def _wrap_targets(sheet: Any, items: list[dict]) -> list[str]:
     return targets
 
 
+DIRECT_LINE_PT = 12.0  # 默认单行字高（约 10pt 字体对应的一行高度）
+DIRECT_MARGIN_PT = autofix.STEP_PT  # 一步到位额外留出的安全余白（3pt）
+
+
+def _cell_line_height(sheet: Any, items: list[dict]) -> float:
+    """读取问题单元格字号推算单行高度（pt）；读不到时按默认单行字高 12pt 算。"""
+    sizes: list[float] = []
+    for item in items:
+        addr = item.get("cell_addr") or ""
+        if not addr:
+            continue
+        try:
+            size = sheet.Range(addr).MergeArea.Cells(1, 1).Font.Size
+            if not isinstance(size, bool) and isinstance(size, (int, float)) and 4.0 <= float(size) <= 72.0:
+                sizes.append(float(size) * 1.2)
+        except Exception:
+            continue
+    return max(sizes) if sizes else DIRECT_LINE_PT
+
+
+def _direct_extra_height(sheet: Any, items: list[dict], need: float) -> float:
+    """一步到位计算需要增加的行高（pt）：
+    - 常见情况（列宽略窄多换出 1 行或压线）：直接加 1 行字高 + 余白；
+    - 多行截断或刚开启自动换行：按缺口高度（折算打印缩放）或未显示字数估算行数，一次加够并留余白。"""
+    line_pt = _cell_line_height(sheet, items)
+    extra_lines = 1
+    for item in items:
+        full_len = len(normalize_text(item.get("text", "")))
+        vis_len = len(normalize_text(item.get("visible_text") or ""))
+        if 0 < vis_len < full_len:
+            extra_lines = max(extra_lines, math.ceil((full_len - vis_len) / vis_len))
+    from_lines = extra_lines * line_pt + DIRECT_MARGIN_PT
+    from_need = (need / autofix.print_scale(sheet) + DIRECT_MARGIN_PT) if need > 0 else 0.0
+    raw = max(from_lines, from_need)
+    return math.ceil(round(raw / autofix.STEP_PT, 3)) * autofix.STEP_PT
+
+
 def _prepare_row(
     session: Any, path: str, items: list[dict], *,
     on_attempt: Callable[[int, float, dict, list[str]], None] | None = None,
     timing: dict[str, float] | None = None,
 ) -> tuple[float, dict | None, dict]:
-    """只在副本上做图；逐次交出截图，即使随后导出失败也能保留最后已生成的效果。
-    原样没通过、有不换行被横向截断的格子时，从第一次加高起先给这些格子开自动换行。
-    原样那张直接用刚才检测导出的 PDF（同一版本）；通过的方案正好是最后一次导出时，
-    chosen["pdf"] 留下那份 PDF，写入后重新检测可直接用。"""
+    """只在副本上一步到位调整行高并导出 1 次 PDF 核验截图：
+    - 原样那张直接复用刚才检测导出的 PDF（同一版本）；若原样已通过则不改行高、不重新导出；
+    - 原样未通过时，有不换行被横向截断的格子先开启自动换行，并直接按缺口/单行字高+余白一步加够行高，
+      仅导出 1 次 PDF 核验效果并生成修改后截图；通过时留下那份 PDF 供写入后复查直接复用。"""
     timing = {} if timing is None else timing
     sheet = session.copy_of(path).Sheets(items[0]["sheet_name"])
     exported = session.pdf_for(path, items[0]["sheet_name"])
@@ -1144,61 +1184,62 @@ def _prepare_row(
     row = int(items[0]["excel_row"])
     base = round(float(sheet.Rows(row).RowHeight), 2)
     cells = snapshot_cells(extract_sheet_snapshot(sheet))
-    probe = CellProbe(sheet)
     groups = _group_cells(items)
     before: dict[str, str] = {}
     chosen = None
-    extra = 0.0
-    scale = None
-    success = False
     pdf = session.temp_pdf()
     try:
-        for attempt in range(autofix.MAX_ATTEMPTS + 1):
-            height = min(autofix.MAX_ROW_HEIGHT, round(base + extra, 2))
-            if attempt and height <= last_height:
-                break
-            if attempt == 1 and wrap:
-                for addr in wrap:
-                    sheet.Range(addr).MergeArea.WrapText = True
-                wrapped = list(wrap)
+        sheet.Rows(row).RowHeight = base
+        started = time.perf_counter()
+        source = exported if exported is not None else pdf
+        if source == pdf:
+            wf._export_sheet_pdf(sheet, pdf)
+            timing["exports"] = timing.get("exports", 0) + 1
+        timing["export"] = timing.get("export", 0.0) + time.perf_counter() - started
+        started = time.perf_counter()
+        probe = CellProbe(sheet)
+        ok, single_shot, need = autofix._evaluate(source, items, cells, probe.text, probe.printed)
+        shots = ({_key(*_cell(groups[0][0])): single_shot} if len(groups) == 1 else
+                 {_key(*_cell(group[0])): autofix._evaluate(source, group, cells, probe.text, probe.printed)[1]
+                  for group in groups})
+        timing["evaluate"] = timing.get("evaluate", 0.0) + time.perf_counter() - started
+        debug_log.event("🧪 试算", 次=0, 行高=base, 原行高=base, 通过=ok, 缺口pt=need,
+                        打印缩放=None, 换行="-", 用检测时的PDF=source != pdf,
+                        比对秒=time.perf_counter() - started)
+        if on_attempt is not None:
+            on_attempt(0, base, shots, [])
+        before = shots
+        if ok:
+            return base, {"height": base, "shots": shots, "wrap": []}, before
+
+        if wrap:
+            for addr in wrap:
+                sheet.Range(addr).MergeArea.WrapText = True
+            wrapped = list(wrap)
+        extra = _direct_extra_height(sheet, items, need)
+        height = min(autofix.MAX_ROW_HEIGHT, round(base + extra, 2))
+        if height > base or wrapped:
             sheet.Rows(row).RowHeight = height
             started = time.perf_counter()
-            source = exported if attempt == 0 and exported is not None else pdf
-            if source == pdf:
-                wf._export_sheet_pdf(sheet, pdf)
-                timing["exports"] = timing.get("exports", 0) + 1
+            wf._export_sheet_pdf(sheet, pdf)
+            timing["exports"] = timing.get("exports", 0) + 1
             timing["export"] = timing.get("export", 0.0) + time.perf_counter() - started
             started = time.perf_counter()
-            # 每次行高改变后重建 probe，避免沿用 Range.Text 缓存。
+            # 行高改变后重建 probe，避免沿用 Range.Text 缓存。
             probe = CellProbe(sheet)
-            ok, _, need = autofix._evaluate(source, items, cells, probe.text, probe.printed)
-            shots = {_key(*_cell(group[0])): autofix._evaluate(source, group, cells, probe.text, probe.printed)[1]
-                     for group in groups}
+            ok, single_shot, need = autofix._evaluate(pdf, items, cells, probe.text, probe.printed)
+            shots = ({_key(*_cell(groups[0][0])): single_shot} if len(groups) == 1 else
+                     {_key(*_cell(group[0])): autofix._evaluate(pdf, group, cells, probe.text, probe.printed)[1]
+                      for group in groups})
             timing["evaluate"] = timing.get("evaluate", 0.0) + time.perf_counter() - started
-            debug_log.event("🧪 试算", 次=attempt, 行高=height, 原行高=base, 通过=ok, 缺口pt=need,
-                            打印缩放=scale, 换行=wrapped or "-", 用检测时的PDF=source != pdf,
+            debug_log.event("🧪 试算", 次=1, 行高=height, 原行高=base, 通过=ok, 缺口pt=need,
+                            打印缩放=autofix.print_scale(sheet), 换行=wrapped or "-", 用检测时的PDF=False,
                             比对秒=time.perf_counter() - started)
             if on_attempt is not None:
-                on_attempt(attempt, height, shots, wrapped)
-            if attempt == 0:
-                before = shots
+                on_attempt(1, height, shots, wrapped)
             if ok:
-                chosen = {"height": height, "shots": shots, "wrap": wrapped}
-            if (attempt == 0 and ok) or success:
-                if attempt and ok:
-                    # 最后这次导出就是要写入的状态
-                    shutil.copyfile(pdf, session.chosen_pdf())
-                    chosen["pdf"] = session.chosen_pdf()
-                break
-            success = ok
-            last_height = height
-            if need:
-                # 缺口是在 PDF 上量的，打印缩放 70% 时要除以 0.7 才是实际要加的行高
-                if scale is None:
-                    scale = autofix.print_scale(sheet)
-                need /= scale
-            extra = max(extra + autofix.STEP_PT,
-                        math.ceil(round((extra + need) / autofix.STEP_PT, 3)) * autofix.STEP_PT)
+                shutil.copyfile(pdf, session.chosen_pdf())
+                chosen = {"height": height, "shots": shots, "wrap": wrapped, "pdf": session.chosen_pdf()}
     finally:
         sheet.Rows(row).RowHeight = base
         for addr in wrapped:
@@ -1227,7 +1268,7 @@ def _cell_columns(sheet: Any, addr: str) -> tuple[int, list[int]]:
 
 
 def _prepare_column(session: Any, path: str, items: list[dict], timing: dict[str, float]) -> dict:
-    """### 列宽不足：单列直接加宽该列，跨多列合并时平均微调合并区各列，直到 ### 消失并留余量"""
+    """### 列宽不足：单列直接加宽该列，跨多列合并时平均微调合并区各列，直到 ### 消失并多加约 1.5 个字宽余量，仅导出 1 次 PDF 核验"""
     item = items[0]
     sheet = session.copy_of(path).Sheets(item["sheet_name"])
     row, cols = _cell_columns(sheet, item.get("cell_addr") or "")
@@ -1242,7 +1283,7 @@ def _prepare_column(session: Any, path: str, items: list[dict], timing: dict[str
         raise ValueError(autofix.COLUMN_ONLY_REASON) from None
     autofix.validate_print_targets(sheet, items, action="未调整列宽")
     step = max(0.5, round(STEP_COL_WIDTH / len(cols), 2))
-    margin = max(0.3, round(1.0 / len(cols), 2))
+    margin = max(0.3, round(1.5 / len(cols), 2))
     pdf = session.temp_pdf()
     try:
         for attempt in range(1, autofix.MAX_ATTEMPTS + 1):
@@ -1271,6 +1312,7 @@ def _prepare_column(session: Any, path: str, items: list[dict], timing: dict[str
                 chosen_pdf = session.chosen_pdf()
                 shutil.copyfile(pdf, chosen_pdf)
                 return {"base_cols": base_cols, "target_cols": target_cols, "after": shot, "pdf": chosen_pdf}
+            break
     finally:
         for c in cols:
             sheet.Columns(c).ColumnWidth = base_cols[str(c)]
@@ -1334,7 +1376,8 @@ def _repair_column(
 
 
 def _prepare_break(session: Any, path: str, item: dict, timing: dict[str, float]) -> dict:
-    """在副本上合并区域第一行上方插手动分页，核对整块不再被切开，导出一份截图后把副本改回去。
+    """在副本上向上寻找「一行空白、一行有字」的分界行（找不到或分页后仍被切开则退回合并区域第一行）插手动分页，
+    核对整块不再被切开，导出一份截图后把副本改回去。
     缩放到 N 页高（Excel 忽略手动分页）、合并区域比一页还高、上方已有手动分页的都不改，转人工。"""
     block = item.get("block") or {}
     top, bottom = int(block.get("top") or 0), int(block.get("bottom") or 0)
@@ -1343,28 +1386,41 @@ def _prepare_break(session: Any, path: str, item: dict, timing: dict[str, float]
     sheet = session.copy_of(path).Sheets(item["sheet_name"])
     if page_breaks.fit_to_pages_tall(sheet):
         raise ValueError(page_breaks.FIT_REASON)
-    row = sheet.Rows(top)
-    if int(row.PageBreak) == page_breaks.XL_PAGEBREAK_MANUAL:
+    if int(sheet.Rows(top).PageBreak) == page_breaks.XL_PAGEBREAK_MANUAL:
         raise ValueError(page_breaks.MANUAL_REASON)
+    initial_breaks = page_breaks.read_breaks(sheet)
+    target_row = page_breaks.find_break_row(sheet, block, initial_breaks)
+    if target_row != top and int(sheet.Rows(target_row).PageBreak) == page_breaks.XL_PAGEBREAK_MANUAL:
+        target_row = top
+    candidates = [target_row] if target_row == top else [target_row, top]
     pdf = session.chosen_pdf()
-    row.PageBreak = page_breaks.XL_PAGEBREAK_MANUAL
-    try:
-        breaks = page_breaks.read_breaks(sheet)
-        if breaks is None:
-            raise ValueError("读不到 Excel 的分页信息（可能没有设置打印机），未修改，请人工处理")
-        if not any(r == top and manual for r, manual in breaks["h"]):
-            raise ValueError("插入的分页没有生效（打印设置不支持手动分页），未修改，请人工处理")
-        if page_breaks.still_cut(breaks, block):
-            raise ValueError(page_breaks.TALL_REASON)
-        started = time.perf_counter()
-        wf._export_sheet_pdf(sheet, pdf)
-        timing["exports"] = timing.get("exports", 0) + 1
-        timing["export"] = timing.get("export", 0.0) + time.perf_counter() - started
-        with fitz.open(pdf) as doc:
-            after = page_breaks.shot_around(sheet, breaks, doc, top, int(block.get("left") or 1), item["text"])[0]
-    finally:
-        row.PageBreak = page_breaks.XL_PAGEBREAK_NONE
-    return {"after": after, "pdf": pdf}
+    for chosen_row in candidates:
+        row = sheet.Rows(chosen_row)
+        row.PageBreak = page_breaks.XL_PAGEBREAK_MANUAL
+        try:
+            breaks = page_breaks.read_breaks(sheet)
+            if breaks is None:
+                raise ValueError("读不到 Excel 的分页信息（可能没有设置打印机），未修改，请人工处理")
+            if not any(r == chosen_row and manual for r, manual in breaks["h"]):
+                if chosen_row != top:
+                    continue
+                raise ValueError("插入的分页没有生效（打印设置不支持手动分页），未修改，请人工处理")
+            if page_breaks.still_cut(breaks, block):
+                if chosen_row != top:
+                    continue
+                raise ValueError(page_breaks.TALL_REASON)
+            started = time.perf_counter()
+            wf._export_sheet_pdf(sheet, pdf)
+            timing["exports"] = timing.get("exports", 0) + 1
+            timing["export"] = timing.get("export", 0.0) + time.perf_counter() - started
+            with fitz.open(pdf) as doc:
+                after = page_breaks.shot_around(
+                    sheet, breaks, doc, chosen_row, int(block.get("left") or 1), item["text"]
+                )[0]
+            return {"after": after, "pdf": pdf, "row": chosen_row}
+        finally:
+            row.PageBreak = page_breaks.XL_PAGEBREAK_NONE
+    raise ValueError(page_breaks.TALL_REASON)
 
 
 def _repair_break(
@@ -1375,12 +1431,14 @@ def _repair_break(
     started = time.perf_counter()
     chosen = _prepare_break(session, path, item, timing)
     timing["prepare"] = time.perf_counter() - started
-    top = int(item["block"]["top"])
+    top = int(chosen.get("row") or item["block"]["top"])
+    card_row = int(item["excel_row"])
     with wf.STATE_LOCK:
         for card in cards:
             fix_images.forget(card, "after")
             _save_shot(card, "after", chosen["after"])
-        _data()["rows"][rid] = {"id": rid, "kind": "break", "path": path, "sheet": item["sheet_name"], "row": top,
+        _data()["rows"][rid] = {"id": rid, "kind": "break", "path": path, "sheet": item["sheet_name"],
+                                "row": top, "excel_row": card_row,
                                 "base": 0.0, "applied": 1.0, "saved": False, "wrap": []}
         wf.STATE["job"]["pending_adjustment"] = {
             "action": "fix", "path": path, "version": version, "cards": [c["id"] for c in cards],

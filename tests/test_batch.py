@@ -1138,26 +1138,28 @@ class BatchTests(unittest.TestCase):
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         items = list(workflow.STATE["items"].values())
+        timing = {}
         with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot):
-            base, chosen, before = batch._prepare_row(fixture.session, str(fixture.wb_path), items)
+            base, chosen, before = batch._prepare_row(fixture.session, str(fixture.wb_path), items, timing=timing)
         self.assertEqual(base, 15)
-        self.assertEqual(chosen["height"], 24)  # 21 首次通过，再加 3pt
+        self.assertEqual(chosen["height"], 30)  # 一步到位：直接加 1 行字高 (12pt) + 余白 (3pt) = +15pt
+        self.assertEqual(timing["exports"], 2)  # 原样 1 次 + 一步到位核验 1 次
         self.assertTrue(all(before.values()))
         cid = batch._key(*batch._cell(items[0]))
         self.assertTrue(chosen["shots"][cid])
+        # 多行截断缺口更大时按缺口 + 余白一步给够（例如缺 2 行 = 24pt，加 3pt 余白 = +27pt → 42pt）
         original_evaluate = fixture.autofix._evaluate
-        def evaluate(*args, **kwargs):
-            result = original_evaluate(*args, **kwargs)
-            if fixture.session.copy_of(str(fixture.wb_path)).heights[5] == 24:
-                return False, result[1], 0
-            return result
+        def evaluate_multi_line(*args, **kwargs):
+            ok, shot, _ = original_evaluate(*args, **kwargs)
+            height = fixture.session.copy_of(str(fixture.wb_path)).heights[5]
+            return (height >= 42.0, shot, 24.0 if height == 15.0 else 0.0)
         with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot), \
-                patch.object(fixture.autofix, "_evaluate", side_effect=evaluate):
+                patch.object(fixture.autofix, "_evaluate", side_effect=evaluate_multi_line):
             _, chosen, _ = batch._prepare_row(fixture.session, str(fixture.wb_path), items)
-        self.assertEqual(chosen["height"], 21)
+        self.assertEqual(chosen["height"], 42)
 
     def test_preparation_reuses_checked_pdf_and_keeps_the_written_state(self):
-        """原样那张用刚检测导出的 PDF；最后一次导出就是写入的状态时留下给重新检测用"""
+        """原样那张用刚检测导出的 PDF；一步到位那次导出就是写入的状态，直接留下给重新检测用"""
         from test_autofix import AutofixTests
         fixture = AutofixTests("runTest")
         fixture.setUp()
@@ -1176,30 +1178,21 @@ class BatchTests(unittest.TestCase):
         timing = {}
         with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot):
             base, chosen, before = batch._prepare_row(session, path, items, timing=timing)
-        self.assertEqual((base, chosen["height"]), (15, 24))
+        self.assertEqual((base, chosen["height"]), (15, 30))
         self.assertTrue(all(before.values()))
-        self.assertEqual(timing["exports"], 3)  # 18、21、24 三次；原样 15 那次没有再导出
+        self.assertEqual(timing["exports"], 1)  # 原样 15 复用检测 PDF，一步到位 30 仅导出 1 次
         self.assertEqual(chosen["pdf"], session.chosen_pdf())
         self.assertTrue(chosen["pdf"].is_file())
         # 原文件写入保存后：副本做同样修改继续用，这张表用通过那次的 PDF，别的表沿用
         fixture.wb_path.write_bytes(b"workbook saved")
-        copy = session.written(path, version, "S1", 5, 24, [], chosen["pdf"])
+        copy = session.written(path, version, "S1", 5, 30, [], chosen["pdf"])
         self.assertIs(copy, book)
-        self.assertEqual(book.heights[5], 24)
+        self.assertEqual(book.heights[5], 30)
         self.assertIs(session.copy_of(path), book)
         self.assertEqual(session.pdf_for(path, "S1"), chosen["pdf"])
         self.assertEqual(session.pdf_for(path, "S2"), other)
         other.write_bytes(b"%PDF overwritten by another export")
         self.assertIsNone(session.pdf_for(path, "S2"))  # 被别的导出覆盖了就不能再用
-        # 通过那次不是最后一次（多加的那次没过）：不留 PDF，重新检测时照常导出
-        original_evaluate = fixture.autofix._evaluate
-        def evaluate(*args, **kwargs):
-            result = original_evaluate(*args, **kwargs)
-            return (False, result[1], 0) if session.copy_of(path).heights[5] == 27 else result
-        with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot), \
-                patch.object(fixture.autofix, "_evaluate", side_effect=evaluate):
-            _, chosen, _ = batch._prepare_row(session, path, items)
-        self.assertNotIn("pdf", chosen)
 
     def test_recheck_on_copy_uses_exported_pdf_and_leaves_copy_open(self):
         from core import autofix
@@ -1461,7 +1454,7 @@ class BatchTests(unittest.TestCase):
                 fixture.session, str(fixture.wb_path), items,
                 on_attempt=lambda index, height, shots, wrapped: frames.append((index, height, shots)))
         self.assertIsNone(chosen)
-        self.assertEqual((base, frames[-1][0], frames[-1][1]), (15, 8, 39))
+        self.assertEqual((base, frames[-1][0], frames[-1][1]), (15, 1, 30))
         self.assertTrue(all(before.values()) and all(frames[-1][2].values()))
         self.assertEqual(fixture.real_heights[5], 15)
         self.assertEqual(fixture.session.copy_of(str(fixture.wb_path)).heights[5], 15)
@@ -2044,6 +2037,65 @@ class BatchTests(unittest.TestCase):
         fix_images.clear()
         self.assertIsNotNone(fix_images.image_path(card["fix_images"]["before"]))
         self.assertFalse(orphan.exists())
+
+    def test_direct_extra_height_scales_by_font_size_and_visible_text(self):
+        sheet = Mock()
+        sheet.PageSetup.Zoom = 100
+        sheet.Range.return_value.MergeArea.Cells.return_value.Font.Size = 15.0
+        # 15pt 字体单行约 18pt，加 3pt 余白 = 21pt
+        self.assertEqual(batch._direct_extra_height(sheet, [{"cell_addr": "B5", "text": "あいう"}], 0.0), 21.0)
+        # 横向被裁只显示 5 个字、全文 13 个字：还差 8 个字（约 2 行），2 * 18 + 3 = 39pt
+        self.assertEqual(
+            batch._direct_extra_height(sheet, [{"cell_addr": "B5", "text": "1234567890123", "visible_text": "12345"}], 0.0),
+            39.0,
+        )
+
+    def test_prepare_column_adds_one_and_half_char_margin_and_exports_once(self):
+        from core.hidden_text import REASON_HASH
+        _, item = self.column_card("C5")
+        item.update(hidden_reason=REASON_HASH, status="pending")
+        widths = {3: 8.0}
+        sheet = Mock(Name="S1", Visible=-1)
+        sheet.PageSetup = Mock(PrintArea="")
+        def col_at(col):
+            class Col:
+                Hidden = False
+                @property
+                def ColumnWidth(_):
+                    return widths[col]
+                @ColumnWidth.setter
+                def ColumnWidth(_, val):
+                    widths[col] = val
+            return Col()
+        sheet.Columns.side_effect = col_at
+        sheet.Rows.return_value = Mock(Hidden=False, RowHeight=15.0)
+        area = Mock(Row=5, Column=3)
+        area.Rows.Count = area.Columns.Count = 1
+        area.Cells.return_value = Mock(Text="2026/10/28")
+        sheet.Range.return_value.MergeArea = area
+        sheet.Cells.return_value.MergeArea = area
+        session = Mock()
+        session.copy_of.return_value.Sheets.return_value = sheet
+        session.temp_pdf.return_value = self.root / "attempt.pdf"
+        session.chosen_pdf.return_value = self.root / "chosen.pdf"
+        timing = {}
+        with patch.object(self.wf, "_export_sheet_pdf", side_effect=lambda s, p: p.write_bytes(b"%PDF")), \
+                patch.object(batch, "extract_sheet_snapshot", return_value={"start_r": 5, "start_c": 3, "rows_vals": [("2026/10/28",)]}), \
+                patch.object(batch.autofix, "_evaluate", return_value=(True, "shot", 0.0)):
+            chosen = batch._prepare_column(session, self.path, [item], timing)
+        # 8.0 + 2.0 (step) + 1.5 (margin) = 11.5，只导出 1 次 PDF
+        self.assertEqual(chosen["target_cols"], {"3": 11.5})
+        self.assertEqual(timing["exports"], 1)
+        self.assertEqual(widths[3], 8.0)  # 副本还原
+        # 若核验未通过，也不再重复导出 8 次 PDF
+        timing.clear()
+        with patch.object(self.wf, "_export_sheet_pdf", side_effect=lambda s, p: p.write_bytes(b"%PDF")), \
+                patch.object(batch, "extract_sheet_snapshot", return_value={"start_r": 5, "start_c": 3, "rows_vals": [("2026/10/28",)]}), \
+                patch.object(batch.autofix, "_evaluate", return_value=(False, "shot", 0.0)):
+            with self.assertRaisesRegex(ValueError, "自动加宽未通过"):
+                batch._prepare_column(session, self.path, [item], timing)
+        self.assertEqual(timing["exports"], 1)
+        self.assertEqual(widths[3], 8.0)
 
     def test_review_tasks_do_not_write_another_folders_report(self):
         reporter.EXECUTION_STATE.update(folder=str(self.root / "elsewhere"), files={})
