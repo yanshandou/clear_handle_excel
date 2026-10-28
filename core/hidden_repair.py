@@ -13,7 +13,7 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from core import debug_log, workflow as wf, sheet_history
-from core.backup_compare import pair_files, pair_sheets
+from core.backup_compare import inferred_renames, pair_files, pair_sheets, require_manual_file_check
 from core.common import EXCEL_EXTENSIONS, col_index_to_letters, workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, quit_background_excel, start_background_excel
 from core.link_repair import fingerprint
@@ -136,13 +136,14 @@ def content_info(sheet: Any, history: sheet_history.Projection | None = None) ->
 
 
 def snapshot(excel: Any, path: Path, options: dict, *, history_path: Path | None = None,
-             current_names: list[str] | None = None, old_hash: str = "") -> dict:
+             current_names: list[str] | None = None, old_hash: str = "",
+             projection: sheet_history.Projection | None = None) -> dict:
     book = open_workbook_checked(excel, str(path.resolve()), UpdateLinks=0, ReadOnly=True)
     temporary = None
     try:
         sheet_names = [s.Name for s in book.Sheets]
-        history = sheet_history.for_paths(history_path, path, current_names, sheet_names,
-                                          old_hash=old_hash) if history_path is not None else None
+        history = projection if projection is not None else (sheet_history.for_paths(
+            history_path, path, current_names, sheet_names, old_hash=old_hash) if history_path is not None else None)
         sheets = []
         for sheet in book.Worksheets:
             item = {"name": sheet.Name, "code": sheet.CodeName, "visible": int(sheet.Visible),
@@ -190,7 +191,7 @@ def plan_changes(current: dict, old: dict, options: dict, history: sheet_history
         match = matches.get(sheet["name"])
         if match is None:
             result.append({**base, "action": "skip", "current_state": "待核对", "old_state": "无法配对",
-                           "reason": "备份工作表无法唯一配对，无法判断原隐藏状态"})
+                           "reason": "备份工作表无法唯一配对（可能存在同名旧表和「新」表，证据不足），请人工检查"})
             continue
         source, how = match
         base.update(old_sheet=source["name"], match=how)
@@ -249,6 +250,12 @@ def plan_file(excel: Any, path: Path, old_path: Path, options: dict) -> dict:
     names = current.get("sheet_names", [s["name"] for s in current["sheets"]])
     old = snapshot(excel, old_path, options, history_path=path, current_names=names, old_hash=old_stamp)
     history = sheet_history.for_paths(path, old_path, names, old.get("sheet_names", [s["name"] for s in old["sheets"]]), old_hash=old_stamp)
+    matches = pair_sheets(current["sheets"], old["sheets"], title=lambda sheet: sheet["name"],
+                          code=lambda sheet: sheet["code"], words=lambda sheet: set(sheet["words"]), history=history)
+    renames = inferred_renames(matches, lambda sheet: sheet["name"])
+    if renames:
+        comparison = sheet_history.with_inferred_renames(history, renames)
+        old = snapshot(excel, old_path, options, projection=comparison)
     if stamp != fingerprint(path) or old_stamp != fingerprint(old_path):
         raise ValueError("当前文件或备份在对比期间发生变化，请重新扫描")
     return {"path": str(path), "old": str(old_path), "fingerprint": stamp, "old_fingerprint": old_stamp,
@@ -319,7 +326,8 @@ def _run(root: Path, paths: list[Path], old_root: Path, old_paths: list[Path], o
     try:
         wf.pythoncom.CoInitialize()
         initialized = True
-        pairs = pair_files(old_root, old_paths, [workbook_rel_name(path, root) for path in paths], root)
+        inferred: set[str] = set()
+        pairs = pair_files(old_root, old_paths, [workbook_rel_name(path, root) for path in paths], root, inferred=inferred)
         for index, path in enumerate(paths):
             name = workbook_rel_name(path, root)
             entry = {"name": name, "path": str(path), "cells": [], "error": None}
@@ -334,6 +342,8 @@ def _run(root: Path, paths: list[Path], old_root: Path, old_paths: list[Path], o
                 if excel is None:
                     excel = start_background_excel()
                 entry.update(plan_file(excel, path, old_path, options))
+                if name in inferred:
+                    require_manual_file_check(entry)
                 if any(item["action"] == "restore" for item in entry["cells"]):
                     with _LOCK:
                         _STATUS["stage"] = "apply"

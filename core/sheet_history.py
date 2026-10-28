@@ -109,6 +109,24 @@ def formula_value(value, renamed: dict[str, str] | None = None):
     return "=" + "".join(token.value for token in tokens)
 
 
+def _references_reused_name(value, names: set[str]) -> bool:
+    if not names or not isinstance(value, str) or not value.startswith("="):
+        return False
+    try:
+        tokens = Tokenizer(value).items
+    except Exception:
+        return True
+    for token in tokens:
+        if token.type == "FUNC" and token.subtype == "OPEN" and token.value.upper().split(".")[-1] == "INDIRECT(":
+            return True  # 字符串拼接可能间接引用已复用的旧表名。
+        if token.type != "OPERAND" or token.subtype != "RANGE" or "!" not in token.value:
+            continue
+        head = token.value.rsplit("!", 1)[0].strip("'").replace("''", "'")
+        if "[" not in head and (":" in head or head.casefold() in names):
+            return True
+    return False
+
+
 @dataclass
 class Projection:
     # 包含 None 的名字禁止继续按同名/内容猜配，避免回退到已删掉的另一张表。
@@ -125,9 +143,19 @@ class Projection:
             item = frozen.get((sheet.casefold(), address.upper()))
             if item and formula_value(value) == formula_value(item["formula"]):
                 value = item["value"]
+            if _references_reused_name(value, set(op.get("reused_names", []))):
+                return "[无法确认已复用的原表引用]" + value
             value = formula_value(value, op["renamed"])
             sheet = next((new for old, new in op["renamed"].items() if old.casefold() == sheet.casefold()), sheet)
         return formula_value(value)
+
+
+def with_inferred_renames(projection: Projection, renamed: dict[str, str]) -> Projection:
+    """仅将有代码名或内容证据的名称推断用于公式比较；不猜测删表后的转值。"""
+    if not renamed:
+        return projection
+    return Projection(projection.origins, [*projection.operations, {"renamed": renamed, "preserved_values": [],
+                                                                   "reused_names": [name.casefold() for name in renamed.values()]}])
 
 
 def project(events: list[dict], current: list[str], old: list[str], old_hash: str = "") -> Projection:

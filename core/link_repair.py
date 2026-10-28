@@ -9,7 +9,7 @@ from uuid import uuid4
 from typing import Any
 
 from core import debug_log, formula_links as links, workflow as wf, sheet_history
-from core.backup_compare import pair_files, pair_sheets
+from core.backup_compare import pair_files, pair_sheets, require_manual_file_check
 from core.common import workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, start_background_excel, quit_background_excel
 
@@ -240,7 +240,8 @@ def _run(phase: str, folder: Path, paths: list, old_root: Path | None = None, ol
         com = True
         excel = start_background_excel()
         names = [workbook_rel_name(source, folder) if isinstance(source, Path) else source["name"] for source in paths]
-        pairs = pair_files(old_root, old_paths, names, folder) if phase in {"preview", "repair"} else {}
+        inferred: set[str] = set()
+        pairs = pair_files(old_root, old_paths, names, folder, inferred=inferred) if phase in {"preview", "repair"} else {}
         for index, source in enumerate(paths):
             name = workbook_rel_name(source, folder) if isinstance(source, Path) else source["name"]
             _progress(index, name)
@@ -260,6 +261,8 @@ def _run(phase: str, folder: Path, paths: list, old_root: Path | None = None, ol
                         with _LOCK:
                             _STATUS["stage"] = "preview"
                         entry.update(preview_file(excel, entry, pairs[name]))
+                        if name in inferred:
+                            require_manual_file_check(entry)
                         ready = [cell for cell in entry["cells"] if cell["action"] == "restore"]
                         if ready:
                             with _LOCK:
@@ -277,6 +280,8 @@ def _run(phase: str, folder: Path, paths: list, old_root: Path | None = None, ol
                     if fingerprint(Path(source["path"])) != source["fingerprint"]:
                         raise ValueError("当前文件在扫描后发生变化，请重新扫描")
                     entry.update(preview_file(excel, source, pairs[name]))
+                    if name in inferred:
+                        require_manual_file_check(entry)
                 else:
                     entry["cells"] = apply_file(excel, source)
                     for item in entry["cells"]:

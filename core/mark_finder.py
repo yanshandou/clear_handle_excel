@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from core import batch, debug_log, workflow as wf
-from core.backup_compare import norm as _norm, pair_files as _pair_files, pair_sheets
+from core.backup_compare import inferred_renames, norm as _norm, pair_files as _pair_files, pair_sheets, require_manual_file_check
 from core.common import workbook_locked, workbook_rel_name
 
 READABLE = {".xlsx", ".xlsm", ".xltx", ".xltm"}
@@ -408,7 +408,7 @@ def _old_colors(cell: Any) -> dict:
 
 
 SIMILAR_ROWS = 200
-_HOW = {"guess": "去掉「新」/ 日期等后的表名", "code": "代码名", "content": "内容", "history": "Sheet 操作历史"}
+_HOW = {"guess": "去掉「新」/ 日期等后的表名", "code": "代码名", "content": "内容", "history": "Sheet 操作历史", "rule": "清理规则及代码名或内容推断"}
 
 
 def _sheet_words(ws: Any) -> set[str]:
@@ -473,6 +473,7 @@ def plan_file(path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
     try:
         history = sheet_history.for_paths(path, old_path, current.sheetnames, old.sheetnames)
         matched = _match_sheets(current, old, history)
+        history = sheet_history.with_inferred_renames(history, inferred_renames(matched, lambda sheet: sheet.title))
         debug_log.event("📄 表对应", 新版=[ws.title for ws in current.worksheets],
                         对上={name: f"{ws.title}（{_HOW.get(how, how)}）" for name, (ws, how) in matched.items()},
                         旧版=[ws.title for ws in old.worksheets])
@@ -523,7 +524,8 @@ def plan_file(path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
 def _run_preview(old_root: Path, old_paths: list[Path], files: list[dict], folder: str = "") -> None:
     plan_files: list[dict] = []
     try:
-        pairs = _pair_files(old_root, old_paths, [f["name"] for f in files], Path(folder) if folder else None)
+        inferred: set[str] = set()
+        pairs = _pair_files(old_root, old_paths, [f["name"] for f in files], Path(folder) if folder else None, inferred=inferred)
         for i, file in enumerate(files, 1):
             with _LOCK:
                 _STATUS.update(done=i - 1, current=file["name"])
@@ -540,6 +542,8 @@ def _run_preview(old_root: Path, old_paths: list[Path], files: list[dict], folde
             else:
                 try:
                     entry["cells"] = plan_file(Path(file["path"]), old_path, file["hits"])
+                    if file["name"] in inferred:
+                        require_manual_file_check(entry)
                 except Exception as err:
                     debug_log.exception(err, f"对比旧版 {file['name']}")
                     entry["error"] = f"读取失败：{err}"
@@ -834,7 +838,8 @@ def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[P
     try:
         wf.pythoncom.CoInitialize()
         com = True
-        pairs = _pair_files(old_root, old_paths, [workbook_rel_name(path, root) for path in paths], root)
+        inferred: set[str] = set()
+        pairs = _pair_files(old_root, old_paths, [workbook_rel_name(path, root) for path in paths], root, inferred=inferred)
         for index, path in enumerate(paths):
             name = workbook_rel_name(path, root)
             entry = {"name": name, "path": str(path), "cells": [], "error": None}
@@ -859,6 +864,8 @@ def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[P
                 entry.update(compare_file_colors(excel, path, old_path))
                 if fingerprint(path) != stamp or fingerprint(old_path) != old_stamp:
                     raise ValueError("当前文件或备份在检查期间发生变化，请重新扫描")
+                if name in inferred:
+                    require_manual_file_check(entry)
                 ready = [cell for cell in entry["cells"] if cell["action"] == "restore"]
                 if ready:
                     if workbook_locked(path):

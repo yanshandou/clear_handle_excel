@@ -12,6 +12,7 @@ from openpyxl.utils import column_index_from_string, get_column_letter
 
 from core.excel_ops import _apply_tint, _THEME_SLOTS, open_workbook_checked
 from core import sheet_history
+from core.backup_compare import inferred_renames
 
 
 def _context(book) -> dict:
@@ -127,6 +128,7 @@ def _plan_xml(path: Path, old_path: Path, limit: int | None, *, history_path=Non
         history = sheet_history.for_paths(history_path or path, old_path, current.sheetnames, old.sheetnames,
                                           old_hash=old_hash)
         matches = marks._match_sheets(current, old, history)
+        history = sheet_history.with_inferred_renames(history, inferred_renames(matches, lambda sheet: sheet.title))
         result = []
 
         def append(item):
