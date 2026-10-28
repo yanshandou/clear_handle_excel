@@ -9,6 +9,7 @@ from typing import Any
 from core.common import col_index_to_letters
 from core.hidden_text import collect_text_pieces, locate_text, normalize_text
 from core.pdf_detector import fitz
+from core import print_layout
 
 XL_PAGEBREAK_MANUAL, XL_PAGEBREAK_NONE = -4135, -4142
 XL_PAGE_BREAK_PREVIEW = 2
@@ -28,6 +29,7 @@ def _read_breaks(sheet: Any) -> dict[str, list]:
     return {"h": sorted(h), "v": sorted(v)}
 
 
+@print_layout.with_layout
 def read_breaks(sheet: Any) -> dict[str, list] | None:
     """当前的分页：{"h": [(行, 是否手动)], "v": [列]}，分页落在这一行/列的上方/左边。读不到返回 None。
     后台 Excel 不在「分页预览」时 HPageBreaks 常常没算好、读后面的分页还会报错，先切到分页预览读，读完切回去。"""

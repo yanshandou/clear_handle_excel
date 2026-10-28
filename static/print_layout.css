@@ -1,0 +1,8 @@
+.print-layout-list { overflow-x: auto; margin-top: 14px; }
+.print-layout-table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.7; }
+.print-layout-table th, .print-layout-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border, #dce3ed); vertical-align: top; }
+.print-layout-table th { white-space: nowrap; }
+.print-layout-table select { display: block; padding: 6px; margin-bottom: 8px; min-width: 160px; }
+.print-layout-stale { color: #a45314; }
+#printLayoutsDetails summary { cursor: pointer; font-weight: 600; }
+#printLayoutsStatus { margin-top: 10px; }

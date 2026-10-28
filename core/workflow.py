@@ -37,7 +37,7 @@ from core.common import (
     workbook_locked,
     workbook_rel_name,
 )
-from core import debug_log, fix_images, page_breaks, pdf_detector
+from core import debug_log, fix_images, page_breaks, pdf_detector, print_layout
 from core.excel_watchdog import ExcelWatchdog
 from core.excel_ops import (
     CellProbe,
@@ -133,6 +133,7 @@ STATE: dict[str, Any] = {
     "job": None,
     "checked_files": {},  # wb_path -> 最近一次完整检查未解决项时的文件版本
     "scan_progress": {},  # 独立于执行报告，避免并行写入覆盖扫描的总进度
+    "print_layouts": {},  # 源文件 -> Sheet 身份 -> 已分析的打印方向与证据
     # 稍后人工复检：wb_path -> {"marks": [{sheet, addr, row, item_ids, state, fill, range, error}], "error"}
     # state: pending 等后台标黄 / marked 已标黄 / skipped 没能标黄（仍在队列里）
     "review_queue": {},
@@ -148,6 +149,8 @@ if _saved_state is not None:
     STATE["busy"] = False
     if STATE["job"] and STATE["job"]["status"] == "running":
         STATE["job"]["status"] = "interrupted"
+
+print_layout.configure(lambda: STATE.setdefault("print_layouts", {}))
 
 
 def _referenced_images() -> set[str]:
@@ -218,6 +221,8 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
                 or any(not isinstance(iid, str) or iid not in STATE["items"] for iid in ids)
             ):
                 raise ValueError("请选择有效的问题项")
+            if kind == "fix" and any(STATE["items"][iid].get("layout_stale") for iid in ids):
+                raise ValueError("打印方向已调整，请先复检，再按新的定位修复")
         previous = copy.deepcopy(STATE)
         if kind == "resume":
             if not STATE["job"] or STATE["job"]["status"] != "interrupted":
@@ -273,8 +278,8 @@ def run_pending_workflow() -> None:
             job = STATE["job"]
             options = dict(job["options"])
             # 审核提交 / 复检 / 打开不重建执行记录：记录属于别的文件夹时不往里写
-            suspend_report_updates(job["kind"] in BATCH_REVIEW_KINDS
-                                   and not _report_is_for_workbench())
+            suspend_report_updates(job["kind"] == "print_layout" or (job["kind"] in BATCH_REVIEW_KINDS
+                                   and not _report_is_for_workbench()))
         if job["kind"].startswith("batch_"):
             from core import batch
             expected = batch.run()
@@ -294,6 +299,9 @@ def run_pending_workflow() -> None:
         elif job["kind"] == "review_recheck":
             review_recheck_workflow()
             expected = job["options"]["selected_ids"]
+        elif job["kind"] == "print_layout":
+            analyze_print_layout_workflow(options["path"], options["key"])
+            expected = []
         elif job["kind"] in QUICK_TASK_NAMES:
             quick_task_workflow(job["kind"])
             expected = job.get("workbooks", [])
@@ -488,6 +496,7 @@ def update_item_row(item_id: str, new_row: int) -> bool:
         return True
 
 
+@print_layout.with_layout
 def _detect_sheet_results(
     sheet: Any, wb_path: Path, sheet_name: str, pdf_path: Path, start_seq: int,
     *, confirm_locations: bool = True,
@@ -615,7 +624,7 @@ def _detect_sheet_results(
 
 
 # 检测规则变化时加一：之前按旧规则查过的文件即使没改过，下次扫描也要整份重新检查
-DETECTOR_VERSION = 14
+DETECTOR_VERSION = 15
 
 
 def _confirm_clip_cells(
@@ -1099,7 +1108,7 @@ def _follow_renamed_sheets(
     return missing
 
 
-def _export_sheet_pdf(sheet: Any, pdf_path: Path, pages: tuple[int, int] | None = None) -> None:
+def _export_sheet_pdf_raw(sheet: Any, pdf_path: Path, pages: tuple[int, int] | None = None) -> None:
     """pages=(第一页, 最后一页)（从 1 起）：只导出这几页，分页和导出整张表时完全一样"""
     span = {"From": pages[0], "To": pages[1]} if pages else {}
     sheet.ExportAsFixedFormat(
@@ -1111,6 +1120,130 @@ def _export_sheet_pdf(sheet: Any, pdf_path: Path, pages: tuple[int, int] | None 
         OpenAfterPublish=False,
         **span,
     )
+
+
+_export_sheet_pdf = print_layout.with_layout(_export_sheet_pdf_raw)
+
+
+def prepare_print_layout(sheet: Any, path: str, output: Path | None = None) -> bool:
+    """首次或输入变化时分析；缓存命中时复用，返回是否已生成选定方向的 PDF。"""
+    with STATE_LOCK:
+        path = str(Path(path).resolve())
+        records = {path: copy.deepcopy(STATE.setdefault("print_layouts", {}).get(path, {}))}
+        old = print_layout.record_for(sheet, path)
+        revision = old.get("revision") if old else None
+    # COM 导出不能持有 STATE_LOCK，否则前端轮询和暂停都会被挡住。
+    record, generated = print_layout.prepare(sheet, path, records, _export_sheet_pdf_raw, output)
+    if record:
+        with STATE_LOCK:
+            STATE["print_layouts"].setdefault(path, {})[record["identity"]] = record
+            if revision != record["revision"]:
+                _persist_state()
+        log_msg(f"  📄 [{record['sheet']}] 打印方向：{print_layout.label(record['selected'])}"
+                f"（{'复用记录' if revision == record['revision'] else record['reason']}）")
+    elif old:
+        with STATE_LOCK:
+            old.update(stale=True, reason="无法读取完整打印设置，暂时沿用原方向")
+            _persist_state()
+        log_msg(f"  ⚠️ [{old['sheet']}] 无法读取完整打印设置，暂时沿用原方向")
+    return generated
+
+
+def print_layout_snapshot(folder: str | None = None) -> list[dict]:
+    with STATE_LOCK:
+        rows = []
+        root = Path(folder or STATE.get("folder") or ".").resolve()
+        for path, entries in STATE.get("print_layouts", {}).items():
+            if not Path(path).resolve().is_relative_to(root):
+                continue
+            try:
+                current = print_layout.version(path)
+            except OSError:
+                current = None
+            for key, record in entries.items():
+                metrics = {direction: {"pages": m["pages"], "font_pt": m["font_pt"], "across": m["across"],
+                                       "hidden": len(m["hidden"]), "borders": len(m["borders"]), "cuts": len(m["cuts"])}
+                           for direction, m in record.get("metrics", {}).items()}
+                rows.append({"path": path, "key": key, "file": workbook_rel_name(Path(path), root),
+                             **{k: record.get(k) for k in ("sheet", "original", "selected", "manual", "reason", "revision", "review_needed")},
+                             "metrics": metrics,
+                             "stale": bool(record.get("stale") or record.get("version") != current
+                                           or record.get("rule_version") != print_layout.RULE_VERSION)})
+        return rows
+
+
+def set_print_layout(path: str, key: str, direction: Any) -> None:
+    """只改已有记录；下一次扫描或导出应用，不读写 Excel。"""
+    with STATE_LOCK:
+        if STATE["busy"]:
+            raise ValueError("请等任务结束或暂停后再调整打印方向")
+        job = STATE.get("job") or {}
+        if job.get("pending_adjustment") or job.get("deferred_adjustments"):
+            raise ValueError("请先结算未完成的写入，再调整打印方向")
+        if (not isinstance(path, str) or not isinstance(key, str)
+                or type(direction) is not str or direction not in ("auto", "portrait", "landscape")):
+            raise ValueError("请选择有效的工作表和打印方向")
+        path = str(Path(path).resolve())
+        record = STATE.get("print_layouts", {}).get(path, {}).get(key)
+        if not record:
+            raise ValueError("找不到这张工作表的打印方案，请先扫描或导出")
+        if job.get("status") == "interrupted":
+            raise ValueError("存在暂停任务，请先完成该任务再调整方向，避免使用旧分页续跑")
+        previous = copy.deepcopy(STATE)
+        if direction == "auto":
+            record.update(manual=None, stale=True, reason="等待重新分析打印方向")
+        else:
+            target = print_layout.PORTRAIT if direction == "portrait" else print_layout.LANDSCAPE
+            record.update(manual=target, selected=target, reason="人工指定打印方向")
+        record["revision"] = uuid4().hex
+        # 旧 PDF 中的页码、坐标和未采用的试修图不能用于新方向。
+        for item in STATE["items"].values():
+            if item["wb_path"] == path and item["sheet_name"] == record["sheet"]:
+                item.update(layout_stale=True, autofix_revision=record["revision"])
+        for card in STATE.get("batch_review", {}).get("cards", {}).values():
+            if card["wb_path"] == path and card["sheet_name"] == record["sheet"] and not card.get("dismissed"):
+                card.update(verified=False, layout_stale=True, message="打印方向已调整，请复检以更新截图和定位")
+                card.pop("attempt_height", None)
+                card.pop("attempt_wrap", None)
+                if not card.get("marked"):
+                    card.update(color="yellow", manual=True, finalized=True, waiting=False)
+        STATE["checked_files"].pop(path, None)
+        STATE.get("batch_review", {}).get("sheet_checks", {}).pop(path, None)
+        try:
+            _persist_state()
+        except Exception:
+            STATE.clear()
+            STATE.update(previous)
+            raise
+
+
+def analyze_print_layout_workflow(path: str, key: str) -> None:
+    pythoncom.CoInitialize()
+    excel = book = None
+    watchdog = ExcelWatchdog(lambda: log_msg("⚠️ 打印方向分析超时，已结束本任务专用 Excel"))
+    watchdog.start()
+    try:
+        excel = start_background_excel()
+        watchdog.register(excel)
+        book = open_workbook_checked(excel, str(Path(path).resolve()), ReadOnly=True, UpdateLinks=0)
+        print_layout.bind(book, path)
+        matches = [sheet for sheet in _exportable_sheets(book)
+                   if print_layout.identity(sheet) and print_layout.identity(sheet)[0] == key]
+        if len(matches) != 1:
+            raise ValueError("找不到要分析的工作表，可能已删除、隐藏或改名，请重新扫描文件")
+        prepare_print_layout(matches[0], path)
+        log_msg("✅ 打印方向分析完成；下次扫描、复检或批量导出时应用")
+    finally:
+        try:
+            if book is not None:
+                book.Close(SaveChanges=False)
+        finally:
+            try:
+                if excel is not None:
+                    quit_background_excel(excel)
+            finally:
+                watchdog.stop()
+                pythoncom.CoUninitialize()
 
 
 def _scan_plan(workbooks: list[Path], *, rescan_all: bool) -> dict[str, dict[str, Any]]:
@@ -1175,12 +1308,16 @@ def _scan_one_workbook(
         open_options["ReadOnly"] = True
     started = time.perf_counter()
     wb = workbook if workbook is not None else open_workbook_checked(excel, str(wb_path.resolve()), **open_options)
+    print_layout.bind(wb, path)
     timing["open"] = timing.get("open", 0.0) + time.perf_counter() - started
     debug_log.event("📂 打开工作簿", 文件=wb_label, 秒=time.perf_counter() - started, 只读=read_only,
                     用副本=workbook is not None, 只查=entry["sheets"] if sheets_only else "全部",
                     大小KB=wb_path.stat().st_size // 1024 if wb_path.exists() else "?")
     try:
         all_names = [s.Name for s in wb.Sheets]
+        layout_keys = [print_layout.identity(sheet) for sheet in wb.Sheets]
+        with STATE_LOCK:
+            print_layout.prune(STATE.setdefault("print_layouts", {}), path, layout_keys)
         deleted_bkp_list: list[str] = []
         if resumed:
             previous_report = get_execution_report_snapshot()["files"].get(wb_label, {})
@@ -1234,9 +1371,13 @@ def _scan_one_workbook(
             update_file_progress(wb_label, current_action=f"正在导出并检测 [{s_name}]...")
             pdf_path = unique_pdf_path(wb_path.parent, file_stem, sanitize_filename(s_name), used_pdf_paths)
             started = time.perf_counter()
+            generated = prepare_print_layout(sheet, path, pdf_path)
             exported = pdfs.pdf_for(path, s_name, scan_version) if pdfs is not None and reuse_pdfs else None
             try:
-                if exported is None:
+                if generated:
+                    exported = None
+                    timing["exports"] = timing.get("exports", 0) + 2
+                elif exported is None:
                     _export_sheet_pdf(sheet, pdf_path)
                     timing["exports"] = timing.get("exports", 0) + 1
                 elif exported != pdf_path:
@@ -1285,6 +1426,14 @@ def _scan_one_workbook(
         STATE["pages"].update(file_pages)
         STATE["items"].update(merged)
         STATE["checked_files"][path] = scan_version
+        for sheet in sheets:
+            record = print_layout.record_for(sheet, path)
+            if record:
+                found = [it for it in file_items.values() if it["sheet_name"] == sheet.Name]
+                record["last_check"] = {"issues": len(found), "version": print_layout.version(path)}
+                original_cuts = set(record.get("metrics", {}).get(str(record["selected"]), {}).get("cuts", []))
+                record["review_needed"] = any(it.get("kind") == "pagebreak"
+                    and (it.get("block") or {}).get("addr") not in original_cuts for it in found)
         _relink_review_marks(path)
         if job is not None:
             job["completed"].append(path)
@@ -1652,6 +1801,7 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
                     current_action="根据新 PDF 重新检测问题工作表（不自动加高）", error="",
                 )
                 workbook = excel.Workbooks.Open(str(Path(path).resolve()), ReadOnly=True, UpdateLinks=0)
+                print_layout.bind(workbook, path)
                 new_pages: dict[str, Any] = {}
                 new_items: dict[str, Any] = {}
                 with STATE_LOCK:
@@ -1659,7 +1809,8 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
                 for sheet_name, pdf_path_str in entry["sheets"].items():
                     sheet = workbook.Sheets(sheet_name)
                     pdf_path = Path(pdf_path_str)
-                    _export_sheet_pdf(sheet, pdf_path)
+                    if not prepare_print_layout(sheet, path, pdf_path):
+                        _export_sheet_pdf(sheet, pdf_path)
                     pages, items = _detect_sheet_results(
                         sheet, Path(path), sheet_name, pdf_path, next_seq,
                         confirm_locations=False,
@@ -1829,6 +1980,7 @@ def _rebase_checked_file(path: str, before: dict[str, int]) -> None:
     """只是标黄 / 去黄色时，文件的检查基线跟着前进，免得下次扫描把它当成改过的文件"""
     if STATE["checked_files"].get(path) == before:
         STATE["checked_files"][path] = _file_version(Path(path))
+    print_layout.followed_save(STATE.setdefault("print_layouts", {}), path, before)
 
 
 def _replace_job_path(old: str, new: str) -> None:
@@ -2238,7 +2390,9 @@ def fix_selected_workflow(
 
                             # 先写入目标高度，再保存 Excel；重启后重放同一目标，不重复递增。
                             sheet.Rows(target_row).RowHeight = new_h
+                            before_print_save = _file_version(wb_path)
                             wb.Save()
+                            print_layout.followed_save(STATE.setdefault("print_layouts", {}), wb_path_str, before_print_save)
 
                             _export_sheet_pdf(sheet, pdf_path)
                             touched_pdfs.add(pdf_path)
@@ -2300,7 +2454,9 @@ def fix_selected_workflow(
                         log_msg(f"⏭️ {wb_path.name}: 选中项均无法可靠定位，未修改也未保存 Excel")
                     else:
                         normalize_workbook_view(excel, wb)
+                        before_print_save = _file_version(wb_path)
                         wb.Save()
+                        print_layout.followed_save(STATE.setdefault("print_layouts", {}), wb_path_str, before_print_save)
                         log_msg(f"💾 已保存并完成 A1/100% 标准化: {wb_path.name}")
                     total_skipped += len(skipped_ids)
 
@@ -2591,6 +2747,7 @@ def _sync_renamed_workbook_in_state(
     if old_str == new_str and not sheet_rename_map:
         return
     with STATE_LOCK:
+        print_layout.rename(STATE.setdefault("print_layouts", {}), old_str, new_str, sheet_rename_map)
         folder_ref = root_folder or STATE.get("folder")
         new_label = workbook_rel_name(new_path, folder_ref)
         for collection in ("pages", "items"):
@@ -2721,14 +2878,19 @@ def _export_workbook_pdfs(
 ) -> list[Path]:
     wb_label = workbook_rel_name(wb_path, root_folder)
     wb = open_workbook_checked(get_excel(), str(wb_path.resolve()), ReadOnly=True, UpdateLinks=0)
+    print_layout.bind(wb, str(wb_path))
     try:
+        layout_keys = [print_layout.identity(sheet) for sheet in wb.Sheets]
+        with STATE_LOCK:
+            print_layout.prune(STATE.setdefault("print_layouts", {}), str(wb_path), layout_keys)
         file_stem = sanitize_filename(strip_review_prefix(wb_path.stem))
         exported: list[Path] = []
         for sheet in _exportable_sheets(wb):
             pdf_path = unique_pdf_path(
                 wb_path.parent, file_stem, sanitize_filename(sheet.Name), used_pdf_paths
             )
-            _export_sheet_pdf(sheet, pdf_path)
+            if not prepare_print_layout(sheet, str(wb_path), pdf_path):
+                _export_sheet_pdf(sheet, pdf_path)
             exported.append(pdf_path)
             update_file_progress(
                 wb_label, exported_pdfs=len(exported),
@@ -2751,7 +2913,9 @@ def _normalize_workbook_file(get_excel: Callable[[], Any], wb_path: Path, root_f
     wb = open_workbook_checked(excel, str(wb_path.resolve()), UpdateLinks=0)
     try:
         normalize_workbook_view(excel, wb, on_error=log_msg)
+        before_print_save = _file_version(wb_path)
         wb.Save()
+        print_layout.followed_save(STATE.setdefault("print_layouts", {}), str(wb_path), before_print_save)
         update_file_progress(
             wb_label, status="done", normalized_a1=True,
             current_action="已定位 A1 并设为 100% 缩放",
@@ -2910,6 +3074,7 @@ def _version_or_none(path: str) -> dict[str, int] | None:
 def _referenced_workbooks(state: dict[str, Any]) -> set[str]:
     paths = {item["wb_path"] for item in state["items"].values()}
     paths.update(state["checked_files"])
+    paths.update(state.get("print_layouts", {}))
     if state["job"]:
         paths.update(state["job"].get("workbooks", []))
     return paths
@@ -2958,6 +3123,9 @@ def import_progress(data: Any) -> dict[str, Any]:
         raise ValueError("进度文件损坏：缺少文件版本信息")
 
     imported = copy.deepcopy(workflow_state)
+    imported.setdefault("print_layouts", {})
+    if not print_layout.validate_records(imported["print_layouts"]):
+        raise ValueError("进度文件损坏：打印方案格式无效")
     imported.setdefault("scan_progress", {})
     imported.setdefault("review_queue", {})
     imported.setdefault("batch_review", {"cards": {}, "rows": {}, "ignored": []})

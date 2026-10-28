@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from core import autofix, debug_log, fix_images, page_breaks, workflow as wf
+from core import autofix, debug_log, fix_images, page_breaks, print_layout, workflow as wf
 from core.common import STALE_LOCK_HINT, workbook_locked, workbook_rel_name
 from core.excel_ops import (
     CellProbe, close_saved_workbooks, extract_sheet_snapshot, normalize_workbook_view,
@@ -495,7 +495,7 @@ def _adoptable(card: dict) -> bool:
     """自动检查没通过、但留下了「最后一次尝试」截图的卡：用户看图确认已显示完整时可以标蓝，
     提交时按那次尝试的行高写入原文件（检测器可能误报，人眼判断为准）。"""
     heights = (card.get("base_height"), card.get("attempt_height"))
-    return (not card.get("verified") and card.get("after_kind") == "attempt" and not _waiting(card)
+    return (not card.get("layout_stale") and not card.get("verified") and card.get("after_kind") == "attempt" and not _waiting(card)
             and all(isinstance(h, (int, float)) and math.isfinite(h) for h in heights)
             and bool(card.get("fix_images", {}).get("after")))
 
@@ -721,6 +721,7 @@ def _followed_own_save(path: str, before: Any) -> None:
         versions = _data().get("auto_versions", {})
         if before is not None and versions.get(path) == before:
             versions[path] = _version_or_none(path)
+        print_layout.followed_save(wf.STATE.setdefault("print_layouts", {}), path, before)
 
 
 STEP_COL_WIDTH = 2.0
@@ -990,6 +991,10 @@ def _refresh(
     )
     with wf.STATE_LOCK:
         missing = list(entry.get("missing", []))
+        for card in _data()["cards"].values():
+            if card["wb_path"] == path and card["sheet_name"] not in missing and (
+                    sheets is None or card["sheet_name"] in entry["sheets"]):
+                card.pop("layout_stale", None)
         if workbook is None:
             # 记下这几张表是按原文件哪个版本检测的：文件没再改过时复检结果必然一样，不用重新导出
             checked = wf.STATE["checked_files"].get(path)
@@ -1951,6 +1956,7 @@ def _current_area(book: Any, path: str, card: dict) -> tuple[Any, tuple[int, int
     return area.Worksheet, (top, left, top + int(area.Rows.Count) - 1, left + int(area.Columns.Count) - 1)
 
 
+@print_layout.with_layout
 def _page_span(sheet: Any, breaks: dict | None, box: tuple[int, int, int, int]
                ) -> tuple[tuple[int, int], tuple[int, int, int, int]] | None:
     """这一格打印在哪几页：((第一页, 最后一页)（从 1 起）, 这几页上的格子 (首行, 末行, 首列, 末列))。
@@ -2000,9 +2006,11 @@ def _recheck_cell(excel: Any, path: str, card: dict) -> None:
     timing: dict[str, Any] = {}
     pdf = Path(tempfile.gettempdir()) / f"~单项复检_{uuid4().hex}.pdf"
     book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0, ReadOnly=True)
+    print_layout.bind(book, path)
     try:
         timing["open"] = time.perf_counter() - started
         sheet, box = _current_area(book, path, card)
+        wf.prepare_print_layout(sheet, path)
         if marks:
             _strip_marks(book, path, marks)  # 检测的是最后交出去的样子，不保存
         top, left, bottom, right = box

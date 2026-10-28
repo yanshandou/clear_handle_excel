@@ -45,6 +45,8 @@ from core.workflow import (
     fix_selected_workflow,
     get_overview_snapshot,
     get_state_snapshot,
+    print_layout_snapshot,
+    set_print_layout,
     state_image,
     import_progress,
     list_workbooks,
@@ -171,6 +173,15 @@ class WebHandler(BaseHTTPRequestHandler):
         elif parsed.path.startswith("/static/"):
             rel = parsed.path.removeprefix("/static/")
             self._serve_static_file(rel)
+        elif parsed.path == "/api/print_layouts":
+            folder = parse_qs(parsed.query).get("folder", [None])[0]
+            with STATE_LOCK:
+                job = STATE.get("job") or {}
+                blocked = ("任务进行中，完成后可调整方向。" if STATE["busy"] else
+                           "请先结算未完成的写入，再调整方向。" if job.get("pending_adjustment") or job.get("deferred_adjustments") else
+                           "请先完成暂停任务，再调整方向。" if job.get("status") == "interrupted" else "")
+                result = {"rows": print_layout_snapshot(folder), "busy": STATE["busy"], "blocked": blocked}
+            self._send_json(result)
         elif parsed.path == "/api/batch":
             body = json.dumps(batch.snapshot(), ensure_ascii=False).encode("utf-8")
             etag = f'"{hashlib.sha256(body).hexdigest()}"'
@@ -314,6 +325,12 @@ class WebHandler(BaseHTTPRequestHandler):
                 else:
                     options["highlight_off"] = True
             self._start_job("batch_scan", options)
+        elif self.path == "/api/print_layout":
+            set_print_layout(payload.get("path"), payload.get("key"), payload.get("direction"))
+            if payload.get("direction") == "auto":
+                self._start_job("print_layout", {"path": payload["path"], "key": payload["key"]})
+            else:
+                self._send_json({"ok": True})
         elif self.path == "/api/batch/fix_types":
             self._send_json({"ok": True, "fix_error_types": batch.set_fix_error_types(payload.get("fix_error_types"))})
         elif self.path == "/api/batch/unhighlight":

@@ -6,6 +6,7 @@
   <title>Excel 整理工具箱 - 主页</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/print_layout.css">
   <link rel="stylesheet" href="/static/theme.css"><script src="/static/game_fx.js"></script>
 </head>
 <body>
@@ -106,6 +107,11 @@
         <span class="feature-orb" aria-hidden="true"><span class="feature-icon">📄</span></span>
       </button>
     </section>
+    <section class="panel"><details id="printLayoutsDetails"><summary>📄 Sheet 打印方向记录</summary>
+      <p class="toolbar-hint">每张 Sheet 分别比较横向、竖向；分析结果供扫描和导出复用，原 Excel 的打印设置保持不变。</p>
+      <button type="button" id="printLayoutsRefresh" class="btn btn-outline btn-sm">刷新记录</button>
+      <p id="printLayoutsStatus" role="status"></p><div id="printLayoutsList" class="print-layout-list"></div>
+    </details></section>
   </main>
 
   <!-- 单项功能对话框：填写文件夹 → 执行 → 查看结果（精简 Sheet 在独立页面 /clean） -->
@@ -159,6 +165,7 @@
 
   <script src="/static/dialog.js"></script>
   <script src="/static/home.js"></script>
+  <script src="/static/print_layout.js"></script>
   <script src="/static/debug_log.js"></script>
 </body>
 </html>

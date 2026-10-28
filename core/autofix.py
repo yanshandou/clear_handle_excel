@@ -28,6 +28,7 @@ from typing import Any
 from uuid import uuid4
 
 from core import fix_images
+from core import print_layout
 from core.common import STALE_LOCK_HINT, workbook_locked, XL_SHEET_VISIBLE, as_bbox, col_index_to_letters
 from core.excel_ops import (
     CellProbe, extract_sheet_snapshot, normalize_workbook_view, quit_background_excel, snapshot_cells,
@@ -285,7 +286,7 @@ def sync_groups() -> None:
 def _sync_groups_locked() -> None:
     rows: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
     for item in STATE["items"].values():
-        if (not item.get("batch_managed") and item["status"] not in RESOLVED_STATUSES
+        if (not item.get("batch_managed") and not item.get("layout_stale") and item["status"] not in RESOLVED_STATUSES
                 and file_available(item["wb_path"])):
             rows.setdefault((item["wb_path"], item["sheet_name"], int(item["excel_row"])), []).append(item)
     eligible = {item["id"] for peers in rows.values() if all(it.get("triage_keep") for it in peers) for item in peers}
@@ -623,6 +624,7 @@ class _ExcelSession:
         # 最近一次整表导出：(原文件, 表名) -> (原文件版本, PDF, PDF 的修改时间和大小)。
         # 同一状态不再重复导出；PDF 被别的导出覆盖（时间/大小变了）就不用。
         self.pdfs: dict[tuple[str, str], tuple[dict[str, int], Path, tuple[int, int]]] = {}
+        self.pdf_layouts: dict[tuple[str, str], str] = {}
 
     def app(self) -> Any:
         if self.excel is None:
@@ -660,6 +662,7 @@ class _ExcelSession:
         target.parent.mkdir()
         shutil.copy2(wb_path, target)
         workbook = open_workbook_checked(app, str(target), UpdateLinks=0)
+        print_layout.bind(workbook, wb_path)
         self.copies[wb_path] = (version, workbook)
         return workbook
 
@@ -675,6 +678,7 @@ class _ExcelSession:
         self.touch()
         stat = pdf.stat()
         self.pdfs[(wb_path, sheet_name)] = (version, pdf, (stat.st_mtime_ns, stat.st_size))
+        self.pdf_layouts[(wb_path, sheet_name)] = print_layout.token(wb_path, sheet_name)
 
     def pdf_for(self, wb_path: str, sheet_name: str, version: dict[str, int] | None = None) -> Path | None:
         """这张表在给定版本（默认：当前副本的版本）下已导出过的 PDF；没有就返回 None"""
@@ -685,6 +689,8 @@ class _ExcelSession:
             version = copy[0]
         cached = self.pdfs.get((wb_path, sheet_name))
         if cached is None or cached[0] != version:
+            return None
+        if self.pdf_layouts.get((wb_path, sheet_name), "") != print_layout.token(wb_path, sheet_name):
             return None
         try:
             stat = cached[1].stat()
@@ -745,6 +751,7 @@ class _ExcelSession:
                 pass
         self.copies = {}
         self.pdfs = {}
+        self.pdf_layouts = {}
         if self.copy_excel is not None:
             try:
                 quit_background_excel(self.copy_excel)
@@ -1129,7 +1136,10 @@ def _apply(session: _ExcelSession, wb_path: str, gids: list[str]) -> bool:
         for _, sheet_name, row, _, height, *_ in plan:
             workbook.Sheets(sheet_name).Rows(row).RowHeight = height
         normalize_workbook_view(excel, workbook)
+        before_print_save = _file_version(path)
         workbook.Save()
+        with STATE_LOCK:
+            print_layout.followed_save(STATE.setdefault("print_layouts", {}), str(path), before_print_save)
     finally:
         workbook.Close(SaveChanges=False)
 
