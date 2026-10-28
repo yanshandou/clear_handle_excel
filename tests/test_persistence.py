@@ -1030,7 +1030,7 @@ class PersistenceTests(unittest.TestCase):
         )
         self.wb.Sheets = []
         self.workflow.run_pending_workflow()
-        self.excel.Workbooks.Open.assert_called_once_with(str(second.resolve()), UpdateLinks=0)
+        self.excel.Workbooks.Open.assert_called_once_with(str(second.resolve()), UpdateLinks=0, ReadOnly=True)
         self.assertEqual(set(job["completed"]), {str(self.wb_path), str(second)})
         self.assertEqual(job["status"], "completed")
         self.assertEqual(

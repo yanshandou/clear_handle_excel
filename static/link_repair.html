@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>修复引用错误 - Excel 整理工具箱</title>
+  <link rel="icon" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/link_repair.css">
+</head>
+<body>
+  <header class="app-header">
+    <a href="/" class="header-brand"><div class="header-logo-badge">🔗</div><div class="header-title"><h1>修复引用错误</h1><span class="subtitle">对照原始备份 · 恢复计算结果</span></div></a>
+    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/clean" class="nav-link">🧹 精简 Sheet</a><a href="/workbench" class="nav-link">📐 切字检查工作台</a></nav>
+  </header>
+  <main class="container clean-container">
+    <section class="panel">
+      <h2>查找断开的引用，确认后恢复值</h2>
+      <p class="toolbar-hint">扫描全部工作表中的 #REF!，包括隐藏表和间接产生的引用错误。对照备份里的原公式与计算结果，恢复为固定值，并保留当前格式。</p>
+      <div class="link-fields">
+        <label for="linkFolder">当前 Excel 文件夹（含子文件夹）<input id="linkFolder" type="text" placeholder="例如 D:\当前文件\001"></label>
+        <label for="linkOldFolder">原始备份文件夹<input id="linkOldFolder" type="text" placeholder="例如 D:\老版备份\001，或包含 001 的备份总目录"></label>
+      </div>
+      <div class="link-actions">
+        <button id="linkScan" class="btn btn-primary" type="button">① 扫描引用错误</button>
+        <button id="linkPreview" class="btn btn-outline" type="button" disabled>② 对比备份</button>
+        <button id="linkApply" class="btn btn-success" type="button" disabled>③ 确认修复</button>
+      </div>
+      <p class="toolbar-hint">复杂公式恢复的是备份中的完整计算结果。配对不明确、附近内容已变、备份本身也报错的格子会列出原因，留给人工检查。修复前请保存并关闭目标 Excel 文件。</p>
+      <p id="linkProgress" role="status" aria-live="polite">先扫描当前文件夹，再对比原始备份。</p>
+      <p id="linkError" class="batch-error" role="alert"></p>
+    </section>
+    <section class="panel"><h2 id="linkResultTitle">检查结果</h2><div id="linkResults"><p>尚未扫描。</p></div></section>
+    <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
+  </main>
+  <script src="/static/open_excel.js"></script><script src="/static/link_repair.js"></script><script src="/static/debug_log.js"></script>
+</body>
+</html>

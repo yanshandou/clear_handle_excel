@@ -40,6 +40,7 @@ from core.common import (
 )
 from core import debug_log, fix_images, page_breaks, pdf_detector, print_layout, scan_analysis
 from core.excel_watchdog import ExcelWatchdog
+from core.formula_links import delete_sheets_preserving_values
 from core.excel_ops import (
     CellProbe,
     close_saved_workbooks,
@@ -151,6 +152,7 @@ _saved_state = load_snapshot("workflow")
 if _saved_state is not None:
     STATE.update(_saved_state)
     STATE["busy"] = False
+    STATE.pop("maintenance", None)
     if STATE["job"] and STATE["job"]["status"] == "running":
         STATE["job"]["status"] = "interrupted"
         scan_analysis.finish(STATE["job"], interrupted=True)
@@ -632,7 +634,7 @@ def _detect_sheet_results(
 
 
 # 检测规则变化时加一：之前按旧规则查过的文件即使没改过，下次扫描也要整份重新检查
-DETECTOR_VERSION = 19
+DETECTOR_VERSION = 20
 
 
 def _confirm_clip_cells(
@@ -1378,8 +1380,8 @@ def _scan_one_workbook(
             if len(bkp_names) >= len(all_names):
                 log_msg(f"  ⚠️ 跳过删除备份表（全部工作表均为备份表）: {wb_label}")
             else:
-                for bn in bkp_names:
-                    wb.Sheets(bn).Delete()
+                kept_values = delete_sheets_preserving_values(wb, bkp_names)
+                log_msg(f"  删表前保留引用值 {len(kept_values)} 处")
                 deleted_bkp_list = list(dict.fromkeys(deleted_bkp_list + bkp_names))
                 log_msg(f"  已清理 {len(bkp_names)} 个备份 Sheet")
                 update_file_progress(wb_label, all_sheets=all_names, deleted_backups=deleted_bkp_list)
@@ -2922,8 +2924,9 @@ def _clean_backup_sheets(
             final_uncertain = uncertain_sel
             action = _format_clean_action(deleted, final_uncertain)
         else:
-            for name in to_delete:
-                wb.Sheets(name).Delete()
+            kept_values = delete_sheets_preserving_values(wb, to_delete)
+            if kept_values:
+                log_msg(f"  删表前保留引用值 {len(kept_values)} 处")
             deleted = list(dict.fromkeys(deleted + to_delete))
             custom = (file_plan or {}).get("rename") or {}
             for old_name, new_name in renames:

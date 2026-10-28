@@ -25,6 +25,7 @@ from core.excel_ops import (
     scan_workbook_sheets,
     start_background_excel,
 )
+from core.formula_links import delete_sheets_preserving_values
 from core.reporter import (
     finish_execution_batch,
     init_execution_batch,
@@ -136,8 +137,8 @@ def process_workbooks(
                     if len(backup_sheets) >= len(original_sheets):
                         progress_write(f"跳过删除（删除后将无剩余工作表）: {wb_label}")
                     else:
-                        for sheet_name in backup_sheets:
-                            wb.Sheets(sheet_name).Delete()
+                        kept_values = delete_sheets_preserving_values(wb, backup_sheets)
+                        progress_write(f"删表前保留引用值 {len(kept_values)} 处")
                         deleted_list = list(backup_sheets)
                         need_save = True
                         progress_write(f"已清理: {wb_label} (删除 {len(backup_sheets)} 个备份表)")

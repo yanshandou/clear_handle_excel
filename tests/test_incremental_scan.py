@@ -4,6 +4,7 @@ import re
 import shutil
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -120,9 +121,10 @@ class IncrementalScanTests(unittest.TestCase):
 
     def test_layout_names_are_exempt_while_other_sheets_are_checked(self):
         exempt = ["レイアウト", "レイアウト(複数ページ)", "新レイアウト（２ページ以降）",
-                  "帳票_レイアウト", "ﾚｲｱｳﾄ", "雛形", "帳票雛形", "雛形(複数ページ)"]
+                  "帳票_レイアウト", "ﾚｲｱｳﾄ", "雛形", "帳票雛形", "雛形(複数ページ)",
+                  "雛型", "雛型.", "帳票雛型", "雛型SSSEE0114"]
         self.add_book("book", exempt + ["S1", "JSONサンプル"])
-        self.fail_export["book"] = "雛形"  # 若未提前跳过，会在导出时失败。
+        self.fail_export["book"] = "雛型"  # 若未提前跳过，会在导出时失败。
         for name in exempt + ["S1"]:
             self.clips[("book", name)] = [name + " problem"]
         job = self.scan()
@@ -202,6 +204,36 @@ class IncrementalScanTests(unittest.TestCase):
         card.update(color="yellow", manual=True, finalized=True)
         self.exports.clear()
         self.fail_export["book"] = "雛形"
+        batch._recheck_cell(self.excel, str(path), card)
+        self.assertEqual(self.exports, [])
+        self.assertTrue(card["dismissed"])
+        self.assertFalse(card["verified"])
+        self.assertIn("免检", card["message"])
+        self.assertEqual(set(self.items_by_text()), {"ordinary problem"})
+
+    def test_new_template_spelling_clears_unchanged_cached_problems_and_report(self):
+        from core import scan_analysis
+        self.legacy_layout_book("雛型")
+        ordinary_id = self.items_by_text()["ordinary problem"]["id"]
+        self.fail_export["book"] = "雛型"
+        job = self.scan()
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(self.exports, [("book", "S1")])
+        self.assertEqual(set(self.items_by_text()), {"ordinary problem"})
+        self.assertEqual(self.items_by_text()["ordinary problem"]["id"], ordinary_id)
+        self.assertFalse(any(page["sheet_name"] == "雛型" for page in self.workflow.STATE["pages"].values()))
+        report = scan_analysis.report(job["analysis_id"])
+        self.assertEqual(report["summary"]["exempt_sheets"], 1)
+        self.assertIn("雛型", report["files"][0]["exempt_sheets"])
+        self.assertFalse(any(row["sheet"] == "雛型" for row in report["sheets"]))
+
+    def test_single_recheck_retires_old_new_template_spelling_card_without_exporting(self):
+        from core import batch
+        path = self.legacy_layout_book("雛型")
+        card = batch._card_for([self.items_by_text()["layout problem"]])
+        card.update(color="yellow", manual=True, finalized=True)
+        self.exports.clear()
+        self.fail_export["book"] = "雛型"
         batch._recheck_cell(self.excel, str(path), card)
         self.assertEqual(self.exports, [])
         self.assertTrue(card["dismissed"])
@@ -316,10 +348,20 @@ class IncrementalScanTests(unittest.TestCase):
         book = self.books["book"]
 
         class Sheets(list):
+            @property
+            def Count(self):
+                return len(self)
+
             def __call__(self, name):
                 return next(sheet for sheet in self if sheet.Name == name)
 
         book.Sheets = Sheets(book.Sheets)
+        book.Name, book.Names = "book.xlsx", []
+        book.Worksheets = book.Sheets
+        book.Application = SimpleNamespace(CalculateFull=Mock())
+        for sheet in book.Sheets:
+            sheet.ListObjects = []
+            sheet.UsedRange = SimpleNamespace(CountLarge=1, Formula=None, Value2=None, Row=1, Column=1)
         backup = book.Sheets("S1_20231023")
         backup.Delete = Mock(side_effect=lambda: book.Sheets.remove(backup))
         book.Save = Mock()

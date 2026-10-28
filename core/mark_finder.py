@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import tempfile
 import threading
-import unicodedata
 from pathlib import Path
 from typing import Any
 
 from core import debug_log, workflow as wf
-from core.common import _original_name_of, strip_new_prefix, strip_uncertain_prefix, workbook_rel_name
+from core.backup_compare import norm as _norm, pair_files as _pair_files, pair_sheets
+from core.common import workbook_rel_name
 
 READABLE = {".xlsx", ".xlsm", ".xltx", ".xltm"}
 EXCEL_READABLE = {".xls", ".xlsb"}  # openpyxl 读不了，用 Excel 读
@@ -280,7 +280,9 @@ def _logged(kind: str, options: dict, func: Any, *args: Any) -> None:
 
 
 def _begin(phase: str, total: int) -> None:
-    with _LOCK:
+    with wf.STATE_LOCK, _LOCK:
+        if wf.STATE.get("busy"):
+            raise ValueError("后台任务正在执行，请等它结束")
         if _STATUS.get("running"):
             raise ValueError("上一步还没做完，请稍等")
         _STATUS.update(running=True, phase=phase, total=total, done=0, current="")
@@ -299,31 +301,6 @@ def start(folder: str, colors: Any) -> None:
 
 
 # ---------- 对比旧版文件夹，把找到的格子改回旧版的颜色 ----------
-
-def _norm(name: str) -> str:
-    return unicodedata.normalize("NFKC", name).strip().casefold()
-
-
-def _pair_files(old_root: Path, old_paths: list[Path], names: list[str]) -> dict[str, Path | None]:
-    """新文件（相对路径）→ 旧版里的同一份文件：先按相对路径找，找不到再找两边都只有一个的同名文件"""
-    by_rel = {_norm(workbook_rel_name(p, old_root)): p for p in old_paths}
-    by_name: dict[str, list[Path]] = {}
-    for p in old_paths:
-        by_name.setdefault(_norm(p.name), []).append(p)
-    new_names: dict[str, int] = {}
-    for name in names:
-        key = _norm(Path(name).name)
-        new_names[key] = new_names.get(key, 0) + 1
-    pairs: dict[str, Path | None] = {}
-    for name in names:
-        found = by_rel.get(_norm(name))
-        if found is None:
-            key = _norm(Path(name).name)
-            same = by_name.get(key, [])
-            found = same[0] if len(same) == 1 and new_names[key] == 1 else None
-        pairs[name] = found
-    return pairs
-
 
 def _text(value: Any) -> str:
     if value is None:
@@ -353,7 +330,7 @@ def _old_colors(cell: Any) -> dict:
     return {"old_fill": old_fill, "old_font": f"#{font}" if font else ""}
 
 
-SIMILAR_ROWS, SIMILAR_MIN = 200, 0.6
+SIMILAR_ROWS = 200
 _HOW = {"guess": "去掉「新」/ 日期等后的表名", "code": "代码名", "content": "内容"}
 
 
@@ -366,51 +343,9 @@ def _sheet_words(ws: Any) -> set[str]:
 
 
 def _match_sheets(current: Any, old: Any) -> dict[str, tuple[Any, str]]:
-    """新版每张表 → (旧版的表, 怎么对上的)。精简 Sheet 会改表名（去掉「新」、日期后缀等），
-    旧版还是原来的名字，所以按名字对不上时先猜原名（加回「新」、带日期后缀等），再按代码名、再按内容找。
-    认错了也不要紧：后面逐格还要比内容，内容不一样就不改"""
-    found: dict[str, tuple[Any, str]] = {}
-    left = list(old.worksheets)
-    by_name = {_norm(ws.title): ws for ws in left}
-    for ws in current.worksheets:
-        hit = by_name.get(_norm(ws.title))
-        if hit is not None and hit in left:
-            found[ws.title] = (hit, "name")
-            left.remove(hit)
-    rest = [ws for ws in current.worksheets if ws.title not in found]
-
-    def guess(ws: Any) -> str:
-        """猜原名：去掉开头的「新」「❓」、日期后缀、(2)、bak/旧 等，和精简 Sheet 改名的规则一样"""
-        return _original_name_of(strip_new_prefix(strip_uncertain_prefix(ws.title)))
-
-    for ws in list(rest):
-        same = [o for o in left if guess(o) == guess(ws)]
-        if guess(ws) and len(same) == 1 and sum(1 for w in rest if guess(w) == guess(ws)) == 1:
-            found[ws.title] = (same[0], "guess")
-            left.remove(same[0])
-            rest.remove(ws)
-
-    def code(ws: Any) -> str:
-        return _norm(ws.sheet_properties.codeName or "")
-
-    for ws in list(rest):
-        same = [o for o in left if code(ws) and code(o) == code(ws)]
-        if len(same) == 1 and sum(1 for w in rest if code(w) == code(ws)) == 1:
-            found[ws.title] = (same[0], "code")
-            left.remove(same[0])
-            rest.remove(ws)
-    if rest and left:
-        old_words = {id(o): _sheet_words(o) for o in left}
-        for ws in rest:
-            words = _sheet_words(ws)
-            scores = sorted(((len(words & old_words[id(o)]) / len(words | old_words[id(o)]), i)
-                             for i, o in enumerate(left) if words | old_words[id(o)]), reverse=True)
-            if scores and scores[0][0] >= SIMILAR_MIN and (len(scores) == 1 or scores[1][0] < scores[0][0]):
-                best = left[scores[0][1]]
-                found[ws.title] = (best, "content")
-                left.remove(best)
-                old_words.pop(id(best))
-    return found
+    return pair_sheets(list(current.worksheets), list(old.worksheets),
+                       title=lambda ws: ws.title, code=lambda ws: ws.sheet_properties.codeName,
+                       words=_sheet_words)
 
 
 def plan_file(path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
@@ -463,7 +398,7 @@ def plan_file(path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
 def _run_preview(old_root: Path, old_paths: list[Path], files: list[dict], folder: str = "") -> None:
     plan_files: list[dict] = []
     try:
-        pairs = _pair_files(old_root, old_paths, [f["name"] for f in files])
+        pairs = _pair_files(old_root, old_paths, [f["name"] for f in files], Path(folder) if folder else None)
         for i, file in enumerate(files, 1):
             with _LOCK:
                 _STATUS.update(done=i - 1, current=file["name"])

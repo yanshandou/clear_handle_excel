@@ -10,7 +10,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from core import autofix, batch, debug_log, fix_images, mark_finder, scan_analysis
+from core import autofix, batch, debug_log, fix_images, mark_finder, scan_analysis, link_repair
 from core.common import (
     STATIC_DIR,
     console_print,
@@ -166,6 +166,10 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_bytes(image.read_bytes(), MIME_TYPES[image.suffix])
         elif parsed.path in {"/workbench", "/index.html"}:
             self._serve_static_file("batch.html")
+        elif parsed.path == "/repair-links":
+            self._serve_static_file("link_repair.html")
+        elif parsed.path == "/api/link_repair":
+            self._send_json(link_repair.status())
         elif parsed.path == "/analysis":
             self._serve_static_file("analysis.html")
         elif parsed.path in {"/api/scan-analysis", "/api/scan-analysis/markdown"}:
@@ -321,6 +325,9 @@ class WebHandler(BaseHTTPRequestHandler):
             console_print(f"ℹ️ 浏览器已断开，{path} 的结果未送达")
 
     def _handle_post(self, payload: dict) -> None:
+        with STATE_LOCK:
+            if STATE.get("maintenance"):
+                raise ValueError("正在检查或修复引用错误，请等当前步骤结束")
         if self.path == "/api/batch/start":
             options = {"folder": _require_folder(payload)}
             minutes = payload.get("scan_limit_minutes")
@@ -354,6 +361,15 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "fix_error_types": batch.set_fix_error_types(payload.get("fix_error_types"))})
         elif self.path == "/api/batch/unhighlight":
             self._start_job("batch_unhighlight", {"paths": batch.highlighted_paths()})
+        elif self.path == "/api/link_repair":
+            link_repair.start(_require_folder(payload))
+            self._send_json({"ok": True})
+        elif self.path == "/api/link_repair/preview":
+            link_repair.preview(_require_folder(payload))
+            self._send_json({"ok": True})
+        elif self.path == "/api/link_repair/apply":
+            link_repair.apply()
+            self._send_json({"ok": True})
         elif self.path == "/api/batch/find_marks":
             mark_finder.start(_require_folder(payload), payload.get("colors"))
             self._send_json({"ok": True})

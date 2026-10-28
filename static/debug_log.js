@@ -27,6 +27,7 @@
     batch_scan: '全自动 / 只扫描', batch_commit: '提交审核', batch_recheck: '复检', batch_open: '打开 Excel',
     batch_unhighlight: '清除标记颜色', clean_sheets: '精简 Sheet', export_pdf: '导出 PDF', normalize_view: '视图标准化',
     find_marks: '查找残留标记色', compare_old: '对比旧版', restore_old: '改回旧版颜色', clean_preview: '精简 Sheet 预览',
+    link_scan: '扫描引用错误', link_preview: '对比引用备份', link_apply: '修复引用错误',
   };
   // {id: '20261024_183012', kind: 'batch_scan'} → 10-24 18:30 全自动 / 只扫描
   const label = item => {

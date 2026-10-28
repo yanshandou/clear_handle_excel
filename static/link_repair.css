@@ -1,0 +1,13 @@
+.link-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin: 22px 0; }
+.link-fields label { display: grid; gap: 10px; font-weight: 600; }
+.link-fields input { width: 100%; min-width: 0; box-sizing: border-box; }
+.link-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+.link-file { border: 1px solid #c9d8e9; border-radius: 12px; margin: 16px 0; padding: 12px; }
+.link-file summary { cursor: pointer; overflow-wrap: anywhere; }
+.link-table-wrap { overflow-x: auto; margin-top: 12px; }
+.link-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.link-table th, .link-table td { text-align: left; border-bottom: 1px solid #dce5ef; padding: 12px 10px; vertical-align: top; min-width: 100px; max-width: 360px; overflow-wrap: anywhere; }
+.link-table code { white-space: pre-wrap; }
+.link-ok { color: #14633c; }.link-skip { color: #89580b; }.link-error { color: #b42318; }
+#linkError { color: #b42318; }
+@media (max-width: 760px) { .link-fields { grid-template-columns: 1fr; } }

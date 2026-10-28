@@ -21,6 +21,8 @@ class FakeSheet:
         self.book = book
         self.Name = name
         self.Visible = visible
+        self.ListObjects = []
+        self.UsedRange = SimpleNamespace(CountLarge=1, Formula=None, Value2=None, Row=1, Column=1)
         self.tab_color = None  # 标签颜色 RRGGBB；None = 没设
         self.ExportAsFixedFormat = Mock(side_effect=self._export)
 
@@ -48,6 +50,10 @@ class FakeSheets:
     def __iter__(self):
         return iter(list(self.book.sheets))
 
+    @property
+    def Count(self):
+        return len(self.book.sheets)
+
     def __call__(self, name):
         return next(sheet for sheet in self.book.sheets if sheet.Name == name)
 
@@ -58,6 +64,10 @@ class FakeWorkbook:
         self.events = events
         self.sheets = [FakeSheet(self, n, 0 if n in hidden else -1) for n in sheet_names]
         self.Sheets = FakeSheets(self)
+        self.Worksheets = self.Sheets
+        self.Names = []
+        self.Name = name
+        self.Application = SimpleNamespace(CalculateFull=Mock())
         self.saved = []
         self.fail_export = False
 
@@ -410,6 +420,28 @@ class QuickTaskTests(unittest.TestCase):
                 status, body = self.request(port, "GET", path)
                 self.assertEqual(status, 200)
                 self.assertIn("精简 Sheet", body)
+
+    def test_link_repair_page_api_and_maintenance_exclusion(self):
+        from core import link_repair
+        with self.serve_api() as port, patch.object(link_repair, "start") as scan, \
+                patch.object(link_repair, "preview") as preview, patch.object(link_repair, "apply") as apply:
+            status, body = self.request(port, "GET", "/repair-links")
+            self.assertEqual(status, 200)
+            self.assertIn("对比备份", body)
+            status, body = self.request(port, "GET", "/api/link_repair")
+            self.assertEqual(status, 200)
+            self.assertIn("running", json.loads(body))
+            for route, target in (("", scan), ("/preview", preview), ("/apply", apply)):
+                status, body = self.request(port, "POST", "/api/link_repair" + route, {"folder": str(self.folder)})
+                self.assertEqual(status, 200, body)
+                target.assert_called_once()
+            self.workflow.STATE["maintenance"] = "link_apply"
+            try:
+                status, body = self.request(port, "POST", "/api/batch/find_marks", {"folder": str(self.folder)})
+                self.assertEqual(status, 400)
+                self.assertIn("引用错误", json.loads(body)["error"])
+            finally:
+                self.workflow.STATE.pop("maintenance", None)
 
     def test_browser_disconnect_during_preview_is_logged_quietly(self):
         import web_clip_fixer
