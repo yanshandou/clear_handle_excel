@@ -1,6 +1,6 @@
-"""查找旧版本留下的标记颜色：没有记录时，按「底色、字色和标记色完全一致」把格子找出来给人看。
+"""查找旧版本留下的标记颜色，并对照原始备份恢复颜色。
 
-旧版本直接改单元格的底色和字色，记录丢了以后程序认不出、也不知道原来的颜色，所以这里只列出来，不改文件。
+旧版本直接改单元格的底色和字色，记录丢了以后通过原始备份核对内容再恢复颜色。
 新版本的标记是条件格式规则，公式里带标识，点「清除」就能按标识删掉，不用这里找。
 .xlsx 等用 openpyxl 只读文件内容，不开 Excel（文件在 Excel 里开着也能读）；
 .xls / .xlsb openpyxl 读不了，改在后台隐藏的 Excel 里只读打开来读颜色（慢一些）。
@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import copy
 import tempfile
 import threading
 from pathlib import Path
@@ -15,7 +16,7 @@ from typing import Any
 
 from core import debug_log, workflow as wf
 from core.backup_compare import norm as _norm, pair_files as _pair_files, pair_sheets
-from core.common import workbook_rel_name
+from core.common import workbook_locked, workbook_rel_name
 
 READABLE = {".xlsx", ".xlsm", ".xltx", ".xltm"}
 EXCEL_READABLE = {".xls", ".xlsb"}  # openpyxl 读不了，用 Excel 读
@@ -554,7 +555,7 @@ def _run_apply(files: list[dict], folder: str = "") -> None:
         for i, file in enumerate(files, 1):
             with _LOCK:
                 _STATUS.update(done=i - 1, current=file["name"])
-            entry = {"path": file["path"], "name": file["name"], "cells": [], "error": None}
+            entry = {"path": file["path"], "name": file["name"], "old": file.get("old", ""), "cells": [], "error": None}
             applied.append(entry)
             debug_log.begin(f"改回旧版颜色 {i} / {len(files)}：{file['name']}")
             if Path(file["path"]) in unsaved:
@@ -610,4 +611,122 @@ def apply() -> None:
 
 def status() -> dict:
     with _LOCK:
-        return dict(_STATUS)
+        return copy.deepcopy(_STATUS)
+
+
+def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[Path], styles: list[tuple[str, str]]) -> None:
+    from core.excel_ops import quit_background_excel, start_background_excel
+    from core.link_repair import fingerprint
+
+    files: list[dict] = []
+    excel, com, saved = None, False, None
+    try:
+        wf.pythoncom.CoInitialize()
+        com = True
+        pairs = _pair_files(old_root, old_paths, [workbook_rel_name(path, root) for path in paths], root)
+        for index, path in enumerate(paths):
+            name = workbook_rel_name(path, root)
+            entry = {"name": name, "path": str(path), "cells": [], "error": None}
+            if pairs[name] is not None:
+                entry["old"] = str(pairs[name])
+            files.append(entry)
+            with _LOCK:
+                _STATUS.update(done=index, current=name, stage="scan")
+            try:
+                stamp = fingerprint(path)
+                if path.suffix.lower() in READABLE:
+                    hits = scan_file(path, styles, _recorded(str(path)))
+                elif path.suffix.lower() in EXCEL_READABLE:
+                    if excel is None:
+                        excel = start_background_excel()
+                    if saved is None:
+                        saved = xls_saved_colors(excel, styles)
+                    hits = scan_file_excel(excel, path, styles, _recorded(str(path)), saved)
+                else:
+                    raise ValueError(f"{path.suffix} 格式不能自动恢复颜色，请人工检查")
+                entry["truncated"] = len(hits) >= MAX_HITS_PER_FILE
+                entry["cells"] = [{**hit, "status": "skip", "reason": "未修复"} for hit in hits]
+                if not hits:
+                    continue
+                if path.suffix.lower() not in READABLE:
+                    raise ValueError(f"{path.suffix} 文件还不能自动对比备份，请按列出的位置人工恢复颜色")
+                old_path = pairs[name]
+                if old_path is None:
+                    raise ValueError("备份文件夹里找不到唯一对应的文件")
+                if path.resolve() == old_path.resolve():
+                    raise ValueError("当前文件不能作为自己的备份，请选择原始备份")
+                entry["old"] = str(old_path)
+                if old_path.suffix.lower() not in READABLE:
+                    raise ValueError(f"备份文件是 {old_path.suffix}，不能自动对比颜色，请人工检查")
+                old_stamp = fingerprint(old_path)
+                with _LOCK:
+                    _STATUS["stage"] = "preview"
+                entry["cells"] = plan_file(path, old_path, hits)
+                ready = [cell for cell in entry["cells"] if cell["action"] == "restore"]
+                if ready:
+                    if fingerprint(path) != stamp or fingerprint(old_path) != old_stamp:
+                        raise ValueError("当前文件或备份在检查期间发生变化，请重新扫描")
+                    if workbook_locked(path):
+                        raise ValueError("文件正在 Excel 中打开，请保存并关闭后再修复")
+                    with _LOCK:
+                        _STATUS["stage"] = "apply"
+                    if excel is None:
+                        excel = start_background_excel()
+                    outcomes = {(cell["sheet"], cell["addr"]): cell
+                                for cell in apply_file(excel, str(path), str(old_path), ready)}
+                    entry["cells"] = [outcomes.get((cell["sheet"], cell["addr"]), cell) for cell in entry["cells"]]
+            except Exception as error:
+                entry["error"] = str(error)
+                debug_log.exception(error, f"颜色修复 {name}")
+            finally:
+                for cell in entry["cells"]:
+                    debug_log.event("🎨 颜色修复", 位置=f"{cell['sheet']}!{cell['addr']}", 结果=entry["error"] or cell["reason"])
+                count = sum(cell.get("status") == "ok" for cell in entry["cells"])
+                wf.log_msg(f"🎨 {name}：已恢复 {count} 格" + (f"；{entry['error']}" if entry["error"] else ""))
+    except Exception as error:
+        debug_log.exception(error, "颜色修复任务")
+        files.append({"name": "任务", "path": "", "cells": [], "error": str(error)})
+    finally:
+        try:
+            quit_background_excel(excel)
+        finally:
+            try:
+                if com:
+                    wf.pythoncom.CoUninitialize()
+            finally:
+                with wf.STATE_LOCK, _LOCK:
+                    _STATUS.update(running=False, done=len(paths), current="", applied={
+                        "folder": str(root), "old_folder": str(old_root), "files": files,
+                        "colors": [{"fill": f"#{a}", "font": f"#{b}"} for a, b in styles]})
+                    wf.STATE["busy"] = False
+                    wf.STATE.pop("maintenance", None)
+
+
+def repair(folder: str, old_folder: str, colors: Any) -> None:
+    """独立页面的一键任务；整个扫描、对比、写入期间保留后台任务锁。"""
+    styles = _styles(colors if isinstance(colors, list) else [])
+    root, paths = wf.list_workbooks(folder)
+    old_root, old_paths = wf.list_workbooks(old_folder)
+    if root == old_root:
+        raise ValueError("备份文件夹不能与当前文件夹相同")
+    with wf.STATE_LOCK, _LOCK:
+        if wf.STATE.get("busy") or _STATUS.get("running"):
+            raise ValueError("后台任务正在执行，请等它结束")
+        job = wf.STATE.get("job") or {}
+        if job.get("pending_adjustment") or job.get("deferred_adjustments"):
+            raise ValueError("还有未完成的文件写入，请先继续或放弃上次写入")
+        wf.STATE.update(busy=True, maintenance="color_repair")
+        _STATUS.clear()
+        _STATUS.update(running=True, phase="repair", stage="scan", folder=str(root), old_folder=str(old_root),
+                       total=len(paths), done=0, current="")
+    try:
+        threading.Thread(target=_logged, args=("color_repair", {"folder": str(root), "old_folder": str(old_root),
+                                                                "files": len(paths), "colors": styles},
+                                               _run_repair, root, paths, old_root, old_paths, styles),
+                         name="扫描并修复颜色", daemon=True).start()
+    except Exception:
+        with wf.STATE_LOCK, _LOCK:
+            wf.STATE["busy"] = False
+            wf.STATE.pop("maintenance", None)
+            _STATUS["running"] = False
+        raise

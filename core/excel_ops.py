@@ -217,34 +217,36 @@ def _show_in_excel(excel: Any, workbook_path: Path, sheet_name: str, cell_addres
     return round(float(sheet.Rows(row).RowHeight or 15.0), 1)
 
 
-def open_workbook_in_excel(workbook_path: Path, sheet_name: str = "", cell_address: str = "") -> str:
-    """网页上点文件名时用：在可见 Excel（不是后台那个隐藏的）打开文件，知道工作表/单元格就跳过去。
+def focus_workbook_in_excel(excel: Any, workbook: Any, sheet_name: str = "", cell_address: str = "") -> str:
+    """只调整可见工作簿的位置和选区，不保存；找不到或隐藏的表返回提示。"""
+    excel.Visible = True
+    excel.WindowState = -4143  # xlNormal
+    workbook.Activate()
+    if workbook.Windows.Count > 0:
+        workbook.Windows(1).Visible = True
+        workbook.Windows(1).WindowState = -4143  # xlNormal
+    note = ""
+    if sheet_name:
+        try:
+            sheet = workbook.Sheets(sheet_name)
+        except Exception:
+            sheet, note = None, f"找不到工作表「{sheet_name}」，可能已被删除或改名"
+        if sheet is not None and sheet.Visible != XL_SHEET_VISIBLE:
+            sheet, note = None, f"工作表「{sheet_name}」是隐藏的，没有跳过去"
+        if sheet is not None:
+            sheet.Activate()
+            if re.fullmatch(CELL_OR_RANGE, cell_address or ""):
+                _goto_fit_width(excel, workbook, sheet, cell_address)
+    return note
 
-    只打开、不保存。工作表不存在或被隐藏时照样打开文件，返回提示文字；一切正常返回空字符串。
-    """
+
+def open_workbook_in_excel(workbook_path: Path, sheet_name: str = "", cell_address: str = "") -> str:
+    """网页上点文件名时用：在可见 Excel 打开并定位，不保存或关闭用户工作簿。"""
     workbook_path = workbook_path.resolve(strict=True)
     pythoncom.CoInitialize()
     try:
         excel = _visible_excel()
-        workbook = _find_or_open(excel, workbook_path)
-        excel.Visible = True
-        excel.WindowState = -4143  # xlNormal
-        workbook.Activate()
-        if workbook.Windows.Count > 0:
-            workbook.Windows(1).Visible = True
-            workbook.Windows(1).WindowState = -4143  # xlNormal
-        note = ""
-        if sheet_name:
-            try:
-                sheet = workbook.Sheets(sheet_name)
-            except Exception:
-                sheet, note = None, f"找不到工作表「{sheet_name}」，可能已被删除或改名"
-            if sheet is not None and sheet.Visible != XL_SHEET_VISIBLE:
-                sheet, note = None, f"工作表「{sheet_name}」是隐藏的，没有跳过去"
-            if sheet is not None:
-                sheet.Activate()
-                if re.fullmatch(CELL_OR_RANGE, cell_address or ""):
-                    _goto_fit_width(excel, workbook, sheet, cell_address)
+        note = focus_workbook_in_excel(excel, _find_or_open(excel, workbook_path), sheet_name, cell_address)
         _bring_to_front(excel)
         return note
     finally:

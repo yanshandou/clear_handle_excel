@@ -427,7 +427,8 @@ class QuickTaskTests(unittest.TestCase):
                 patch.object(link_repair, "preview") as preview, patch.object(link_repair, "apply") as apply:
             status, body = self.request(port, "GET", "/repair-links")
             self.assertEqual(status, 200)
-            self.assertIn("对比备份", body)
+            self.assertIn("扫描并修复引用错误", body)
+            self.assertNotIn('id="linkPreview"', body)
             status, body = self.request(port, "GET", "/api/link_repair")
             self.assertEqual(status, 200)
             self.assertIn("running", json.loads(body))
@@ -441,6 +442,31 @@ class QuickTaskTests(unittest.TestCase):
                 self.assertEqual(status, 400)
                 self.assertIn("引用错误", json.loads(body)["error"])
             finally:
+                self.workflow.STATE.pop("maintenance", None)
+
+    def test_one_click_repair_routes_and_color_page(self):
+        from core import link_repair, mark_finder
+        with self.serve_api() as port, patch.object(link_repair, "repair") as links, \
+                patch.object(mark_finder, "repair") as colors:
+            status, body = self.request(port, "GET", "/repair-colors")
+            self.assertEqual(status, 200)
+            self.assertIn("扫描并修复颜色", body)
+            for route, target in (("/api/link_repair/run", links), ("/api/batch/find_marks/run", colors)):
+                status, body = self.request(port, "POST", route, {"folder": str(self.folder), "old_folder": str(self.root), "colors": []})
+                self.assertEqual(status, 200, body)
+                self.assertEqual(target.call_args.args[:2], (str(self.folder), str(self.root)))
+                target.reset_mock()
+                status, body = self.request(port, "POST", route, {"folder": str(self.folder)})
+                self.assertEqual(status, 400, body)
+                target.assert_not_called()
+            self.workflow.STATE.update(busy=True, maintenance="color_repair")
+            try:
+                status, body = self.request(port, "POST", "/api/link_repair/run", {"folder": str(self.folder), "old_folder": str(self.root)})
+                self.assertEqual(status, 400)
+                self.assertIn("颜色", json.loads(body)["error"])
+                links.assert_not_called()
+            finally:
+                self.workflow.STATE.update(busy=False)
                 self.workflow.STATE.pop("maintenance", None)
 
     def test_browser_disconnect_during_preview_is_logged_quietly(self):

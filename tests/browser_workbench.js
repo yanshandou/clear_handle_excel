@@ -10,6 +10,9 @@ const { spawn, execFileSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const layoutRequests = [];
 const openRequests = [];
+const repairRequests = [];
+const comparisonRequests = [];
+const repairStates = {links:{running:false}, colors:{running:false}};
 const openedFiles = new Set();
 let layoutBusy = true;
 const layoutRows = [{path:'C:/Synthetic/book-0.xlsx', key:'code:Sheet1', file:'book-0.xlsx', sheet:'Wide',
@@ -46,7 +49,25 @@ script = script.replace('function cardHtml(card, large = false) {',
   'function cardHtml(card, large = false) { window.__htmlCalls = (window.__htmlCalls || 0) + 1;');
 const server = http.createServer((request, response) => {
   const url = new URL(request.url, 'http://localhost');
-  if (url.pathname === '/api/print_layouts') {
+  const repairKind = url.pathname.startsWith('/api/link_repair') ? 'links'
+    : url.pathname.startsWith('/api/batch/find_marks') ? 'colors' : '';
+  if (repairKind) {
+    response.setHeader('Content-Type', 'application/json');
+    if (request.method === 'POST') {
+      let body = ''; request.on('data', part => body += part); request.on('end', () => {
+        const payload = JSON.parse(body); repairRequests.push({url:url.pathname, payload});
+        repairStates[repairKind] = {running:true, phase:'repair', stage:'preview', total:1, done:0,
+          folder:payload.folder, old_folder:payload.old_folder, current:'book.xlsx'};
+        response.end('{"ok":true}');
+      });
+    } else response.end(JSON.stringify(repairStates[repairKind]));
+  } else if (url.pathname === '/api/excel/compare') {
+    let body = ''; request.on('data', part=>body+=part); request.on('end',()=>{
+      comparisonRequests.push(JSON.parse(body));
+      response.setHeader('Content-Type','application/json');
+      response.end('{"ok":true,"opened":["current","backup"],"note":""}');
+    });
+  } else if (url.pathname === '/api/print_layouts') {
     response.setHeader('Content-Type', 'application/json');
     response.end(JSON.stringify({rows:layoutRows,busy:layoutBusy}));
   } else if (url.pathname === '/api/print_layout') {
@@ -98,8 +119,10 @@ const server = http.createServer((request, response) => {
     response.end(fs.readFileSync(file));
   } else {
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
-    response.end(fs.readFileSync(path.join(root, 'static/batch.html'), 'utf8')
-      .replace('<script src="/static/debug_log.js"></script>', ''));
+    const page = {'/repair-links':'link_repair.html', '/repair-colors':'color_repair.html'}[url.pathname] || 'batch.html';
+    let html = fs.readFileSync(path.join(root, 'static', page), 'utf8');
+    if (baseline && page === 'batch.html') html = html.replace('<script src="/static/highlight_colors.js"></script>', '');
+    response.end(html.replace('<script src="/static/debug_log.js"></script>', ''));
   }
 });
 
@@ -174,6 +197,63 @@ async function main() {
             || Math.abs(frame.top-8)<1 || Math.abs(frame.bottom-(innerHeight-12))<1);})()`), true);
     };
     await cdp('Runtime.enable'); await cdp('Page.enable');
+    if (process.argv.includes('--repairs')) {
+      for (const kind of ['links', 'colors']) {
+        await cdp('Emulation.setDeviceMetricsOverride', {width:1280, height:1000, deviceScaleFactor:1, mobile:false});
+        await cdp('Page.navigate', {url:`http://127.0.0.1:${server.address().port}/repair-${kind}`});
+        for (let i=0; i<100; i++) {
+          if (await evaluate(`document.body?.dataset.repairKind === '${kind}' && document.getElementById('repairRun')?.disabled === false`)) break;
+          await delay(50);
+        }
+        assert.equal(await evaluate(`document.querySelectorAll('.link-actions button').length`), 1);
+        await evaluate(`localStorage.setItem('clear_handle_excel.highlightColorHistory', JSON.stringify([{fill:'#123456',font:'#FEDCBA'}]));
+          document.getElementById('repairFolder').value='C:/Synthetic/current';
+          document.getElementById('repairOldFolder').value='C:/Synthetic/backup';
+          document.getElementById('repairRun').click();`);
+        for (let i=0; i<50 && repairRequests.length < (kind==='links'?1:2); i++) await delay(50);
+        assert.equal(repairRequests.length, kind==='links'?1:2);
+        assert.match(repairRequests.at(-1).url, /\/run$/);
+        assert.equal(repairRequests.at(-1).payload.old_folder, 'C:/Synthetic/backup');
+        if (kind==='colors') assert.ok(repairRequests.at(-1).payload.colors.some(color=>color.fill==='#123456'));
+        await cdp('Page.reload');
+        for (let i=0; i<100; i++) {
+          if (await evaluate(`document.getElementById('repairProgress')?.textContent.includes('正在对比备份')`)) break;
+          await delay(50);
+        }
+        assert.equal(await evaluate(`document.getElementById('repairRun').disabled`), true);
+        const cells = [{sheet:'明細',addr:'A1',formula:'=#REF!*2', source_formula:'=Source!A1*2', source:'明細!A1', display:'20',
+          fill:'#C0007A',font:'#FFFFFF',old_fill:'#DDEEFF',old_font:'#112233',status:'ok',reason:'已恢复'},
+          {sheet:'明細',addr:'A2',fill:'#C0007A',font:'#FFFFFF',action:'skip',reason:'附近内容与备份不同，请人工检查'}];
+        repairStates[kind] = {running:false, applied:{folder:'C:/Synthetic/current', old_folder:'C:/Synthetic/backup',
+          files:[{name:'book.xlsx',old:'C:/Synthetic/backup/book.xlsx',cells,error:null}]}};
+        for (let i=0; i<100; i++) {
+          if (await evaluate(`document.getElementById('repairProgress')?.textContent.includes('未修复 1 处')`)) break;
+          await delay(50);
+        }
+        assert.equal(await evaluate(`document.querySelectorAll('#repairResults tbody tr').length`), 2);
+        assert.equal(await evaluate(`document.getElementById('repairRun').disabled`), false);
+        const comparisonsBefore = comparisonRequests.length;
+        await evaluate(`document.querySelector('#repairResults summary .excel-link').click()`);
+        for(let i=0;i<50 && comparisonRequests.length===comparisonsBefore;i++) await delay(50);
+        assert.equal(comparisonRequests.at(-1).kind, kind);
+        assert.equal(comparisonRequests.at(-1).file, 'book.xlsx');
+        assert.equal(await evaluate(`document.querySelector('#repairResults details').open`), true);
+        await evaluate(`document.querySelector('#repairResults tbody .excel-link').click()`);
+        for(let i=0;i<50 && comparisonRequests.length===comparisonsBefore+1;i++) await delay(50);
+        assert.equal(comparisonRequests.at(-1).sheet, '明細');
+        assert.equal(comparisonRequests.at(-1).cell, 'A1');
+        assert.equal(await evaluate(`document.querySelectorAll('.repair-backup-path .excel-link').length`), 1);
+        await capture(`${kind}-desktop`);
+        await cdp('Emulation.setDeviceMetricsOverride', {width:390,height:844,deviceScaleFactor:1,mobile:false});
+        await delay(100);
+        assert.equal(await evaluate(`document.documentElement.scrollWidth<=innerWidth`), true, kind+' page overflows on mobile');
+        await capture(`${kind}-mobile`);
+      }
+      assert.deepEqual(errors, []);
+      console.log(JSON.stringify({repair_pages:['links','colors'], one_button:true, background_reload:true,
+        skipped_results:true, custom_palette:true, paired_file_and_cell_links:true, mobile_layout:true, browser_errors:errors}));
+      return;
+    }
     await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
     await cdp('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/workbench` });
     let ready = false;

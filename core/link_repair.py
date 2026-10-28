@@ -1,4 +1,4 @@
-"""独立的引用错误扫描、备份对照预览与确认修复。备份始终只读。"""
+"""独立的引用错误扫描、备份对照与修复。备份始终只读。"""
 from __future__ import annotations
 
 import copy
@@ -235,13 +235,37 @@ def _run(phase: str, folder: Path, paths: list, old_root: Path | None = None, ol
         wf.pythoncom.CoInitialize()
         com = True
         excel = start_background_excel()
-        pairs = pair_files(old_root, old_paths, [file["name"] for file in paths], folder) if phase == "preview" else {}
+        names = [workbook_rel_name(source, folder) if isinstance(source, Path) else source["name"] for source in paths]
+        pairs = pair_files(old_root, old_paths, names, folder) if phase in {"preview", "repair"} else {}
         for index, source in enumerate(paths):
             name = workbook_rel_name(source, folder) if isinstance(source, Path) else source["name"]
             _progress(index, name)
             entry = {"name": name, "path": str(source) if isinstance(source, Path) else source["path"], "error": None}
+            old_path = pairs.get(name) if phase in {"repair", "preview"} else source.get("old") if isinstance(source, dict) else None
+            if old_path:
+                entry["old"] = str(old_path)
             try:
-                if phase == "scan":
+                if phase == "repair":
+                    with _LOCK:
+                        _STATUS["stage"] = "scan"
+                    entry.update(scan_file(excel, source))
+                    entry["cells"] = [{**hit, "status": "skip", "reason": "未修复"} for hit in entry["hits"]]
+                    if entry["hits"]:
+                        if not pairs[name]:
+                            raise ValueError("找不到唯一对应的备份文件，请选到对应子文件夹")
+                        with _LOCK:
+                            _STATUS["stage"] = "preview"
+                        entry.update(preview_file(excel, entry, pairs[name]))
+                        ready = [cell for cell in entry["cells"] if cell["action"] == "restore"]
+                        if ready:
+                            with _LOCK:
+                                _STATUS["stage"] = "apply"
+                            outcomes = {(cell["sheet"], cell["addr"]): cell
+                                        for cell in apply_file(excel, {**entry, "cells": ready})}
+                            entry["cells"] = [outcomes.get((cell["sheet"], cell["addr"]), cell) for cell in entry["cells"]]
+                        for item in entry["cells"]:
+                            debug_log.event("🔗 引用修复", 位置=f"{item['sheet']}!{item['addr']}", 结果=item["reason"])
+                elif phase == "scan":
                     entry.update(scan_file(excel, source))
                 elif phase == "preview":
                     if not pairs[name]:
@@ -257,7 +281,9 @@ def _run(phase: str, folder: Path, paths: list, old_root: Path | None = None, ol
                 entry["error"] = str(error)
                 debug_log.exception(error, f"引用修复 {phase} {name}")
             files.append(entry)
-            message = entry["error"] or (f"发现引用错误 {len(entry.get('hits', []))} 处" if phase == "scan" else "对比完成" if phase == "preview" else "修复完成")
+            repaired = sum(cell.get("status") in {"ok", "resolved"} for cell in entry.get("cells", []))
+            message = entry["error"] or (f"已恢复正常 {repaired} 处，未修复 {len(entry.get('cells', [])) - repaired} 处" if phase == "repair" else
+                                         f"发现引用错误 {len(entry.get('hits', []))} 处" if phase == "scan" else "对比完成" if phase == "preview" else "修复完成")
             wf.log_msg(f"🔗 {name}：{message}")
     except Exception as error:
         debug_log.exception(error, "引用错误任务")
@@ -269,7 +295,7 @@ def _run(phase: str, folder: Path, paths: list, old_root: Path | None = None, ol
             if com:
                 wf.pythoncom.CoUninitialize()
             with _LOCK:
-                key = {"scan": "result", "preview": "plan", "apply": "applied"}[phase]
+                key = {"scan": "result", "preview": "plan", "apply": "applied", "repair": "applied"}[phase]
                 _STATUS.update(running=False, done=len(paths), current="")
                 _STATUS[key] = {"folder": str(folder), "old_folder": str(old_root or ""), "files": files}
             with wf.STATE_LOCK:
@@ -287,8 +313,10 @@ def _launch(phase: str, folder: Path, paths: list, old_root: Path | None = None,
             raise ValueError("还有未完成的文件写入，请先继续或放弃上次写入")
         wf.STATE["busy"] = True
         wf.STATE["maintenance"] = "link_" + phase
-        _STATUS.update(running=True, phase=phase, total=len(paths), done=0, current="")
-        for key in {"scan": ("result", "plan", "applied"), "preview": ("plan", "applied"), "apply": ("plan",)}[phase]:
+        _STATUS.update(running=True, phase=phase, stage="scan", folder=str(folder), old_folder=str(old_root or ""),
+                       total=len(paths), done=0, current="")
+        for key in {"scan": ("result", "plan", "applied"), "preview": ("plan", "applied"), "apply": ("plan",),
+                    "repair": ("result", "plan", "applied")}[phase]:
             _STATUS.pop(key, None)
     def run() -> None:
         with debug_log.side_task("link_" + phase, {"folder": str(folder), "old_folder": str(old_root or ""), "files": len(paths)}):
@@ -306,6 +334,15 @@ def _launch(phase: str, folder: Path, paths: list, old_root: Path | None = None,
 def start(folder: str) -> None:
     root, paths = wf.list_workbooks(folder)
     _launch("scan", root, paths)
+
+
+def repair(folder: str, old_folder: str) -> None:
+    """一次后台任务完成扫描、对比和修复，页面关闭后仍继续。"""
+    root, paths = wf.list_workbooks(folder)
+    old_root, old_paths = wf.list_workbooks(old_folder)
+    if root == old_root:
+        raise ValueError("备份文件夹不能与当前文件夹相同")
+    _launch("repair", root, paths, old_root, old_paths)
 
 
 def preview(old_folder: str) -> None:

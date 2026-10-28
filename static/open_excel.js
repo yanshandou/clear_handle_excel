@@ -6,7 +6,7 @@
   // 点过的链接（结果弹窗里标「✓ 已打开」，最后点的那个加框）：弹窗每次都重建，按文件 / 表 / 格记住；
   // 存 sessionStorage，刷新页面也还在，关掉浏览器就清空
   const VISITED_KEY = 'clear_handle_excel.openedLinks';
-  const linkKey = t => [t.folder, t.file, t.sheet, t.cell].map(v => v || '').join('\0');
+  const linkKey = t => [t.folder, t.file, t.sheet, t.cell, ...(t.compare ? [t.compare] : [])].map(v => v || '').join('\0');
   let visited = new Set();
   let lastKey = '';
   try {
@@ -31,14 +31,15 @@
       { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
   }
 
-  // labelHtml 需已转义；target: { file, sheet, cell, folder, record, blocked }
+  // labelHtml 需已转义；compare: links / colors，按服务端配对同时打开当前与备份。
   // blocked：后台还要处理这份文件时不能打开的原因，链接变灰、鼠标移上去显示原因，点了只提示不打开
   window.excelLinkHtml = function (labelHtml, target, extraClass = '') {
-    const data = ['file', 'sheet', 'cell', 'folder', 'blocked']
+    const data = ['file', 'sheet', 'cell', 'folder', 'blocked', 'compare']
       .filter(key => target[key])
       .map(key => ` data-${key}="${escapeAttr(target[key])}"`).join('');
     const where = target.sheet ? `并跳到 ${target.sheet}${target.cell ? `!${target.cell}` : ''}` : '';
-    const title = target.blocked ? `暂时不能打开：${target.blocked}` : `点击在 Excel 中打开${where}`;
+    const title = target.blocked ? `暂时不能打开：${target.blocked}` : target.compare
+      ? `同时打开当前文件和原始备份（只读），左右对比${where}` : `点击在 Excel 中打开${where}`;
     const key = linkKey(target);
     const seen = visited.has(key) ? `is-visited ${key === lastKey ? 'is-last ' : ''}` : '';
     return `<a href="#" class="excel-link ${target.blocked ? 'is-blocked ' : ''}${seen}${extraClass}"${data}`
@@ -91,22 +92,24 @@
 
   async function openExcel(link) {
     const d = link.dataset;
-    const key = `${d.file}\0${d.sheet || ''}\0${d.cell || ''}`;
+    const key = linkKey(d);
+    const compare = !!d.compare;
     if (opening.has(key)) return;
     opening.add(key);
     link.classList.add('opening');
-    toast('正在用 Excel 打开…');
+    toast(compare ? '正在打开当前文件和备份…' : '正在用 Excel 打开…');
     try {
-      const res = await fetch('/api/excel/open', {
+      const res = await fetch(compare ? '/api/excel/compare' : '/api/excel/open', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          file: d.file, sheet: d.sheet || '', cell: d.cell || '', folder: d.folder || '', record: d.record === '1',
+          file: d.file, sheet: d.sheet || '', cell: d.cell || '', folder: d.folder || '',
+          ...(compare ? {kind: d.compare} : {record: d.record === '1'}),
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      toast(data.note ? `已打开，但${data.note}` : '已在 Excel 中打开', !!data.note);
+      toast(data.note ? data.note : compare ? '已同时打开：左侧当前文件，右侧原始备份（只读）' : '已在 Excel 中打开', !!data.note);
     } catch (e) {
       toast(`无法打开：${e.message}`, true);
     } finally {
