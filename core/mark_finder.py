@@ -63,7 +63,9 @@ def scan_file(path: Path, styles: list[tuple[str, str]], recorded: set[tuple[str
     """一份文件里底色是标记色的格子（合并区域算一格）。match：both 底色字色都对上 / fill 只有底色对上"""
     import openpyxl
 
-    fills = {fill: font for fill, font in styles}
+    fills: dict[str, set[str]] = {}
+    for fill, font in styles:
+        fills.setdefault(fill, set()).add(font)
     hits: list[dict] = []
     book = openpyxl.load_workbook(path, data_only=False)
     try:
@@ -91,7 +93,7 @@ def scan_file(path: Path, styles: list[tuple[str, str]], recorded: set[tuple[str
                     font = _rgb(cell.font.color) if cell.font is not None else None
                     hits.append({"sheet": sheet.title, "addr": key, "fill": f"#{color}",
                                  "font": f"#{font}" if font else "",
-                                 "match": "both" if font == fills[color] else "fill",
+                                 "match": "both" if font in fills[color] else "fill",
                                  "recorded": (sheet.title, top) in recorded})
                     if len(hits) >= MAX_HITS_PER_FILE:
                         return hits
@@ -171,12 +173,14 @@ def scan_file_excel(excel: Any, path: Path, styles: list[tuple[str, str]], recor
     .xls 里的标记色可能已经被换成 56 色里最接近的那种（saved），这种也算，标 approx"""
     from core.excel_ops import open_workbook_checked
 
-    fills: dict[str, tuple[str, bool]] = {}
+    # 同一底色可能配过多种字色，保留全部组合；直接匹配优先于 .xls 调色板映射。
+    fills: dict[str, dict[str, bool]] = {}
     for fill, font in styles:
-        fills.setdefault(fill, (font, False))
-        if path.suffix.lower() == ".xls":
+        fills.setdefault(fill, {})[font] = False
+    if path.suffix.lower() == ".xls":
+        for fill, font in styles:
             near_fill, near_font = saved.get((fill, font), (fill, font))
-            fills.setdefault(near_fill, (near_font, near_fill != fill))
+            fills.setdefault(near_fill, {}).setdefault(near_font, near_fill != fill)
     hits: list[dict] = []
     book = open_workbook_checked(excel, str(path.resolve()), UpdateLinks=0, ReadOnly=True)
     try:
@@ -185,7 +189,7 @@ def scan_file_excel(excel: Any, path: Path, styles: list[tuple[str, str]], recor
             for area, color in _same_color_blocks(sheet.UsedRange):
                 if color not in fills:
                     continue
-                font_want, approx = fills[color]
+                fonts = fills[color]
                 for cell in area.Cells:
                     if int(cell.Interior.Pattern) != XL_SOLID:
                         continue
@@ -196,8 +200,10 @@ def scan_file_excel(excel: Any, path: Path, styles: list[tuple[str, str]], recor
                     seen.add(key)
                     top = key.split(":")[0]
                     font = _hex_of(sheet.Range(top).Font.Color)
+                    both = font in fonts
+                    approx = fonts[font] if both else all(fonts.values())
                     hit = {"sheet": name, "addr": key, "fill": f"#{color}", "font": f"#{font}" if font else "",
-                           "match": "both" if font == font_want else "fill", "recorded": (name, top) in recorded}
+                           "match": "both" if both else "fill", "recorded": (name, top) in recorded}
                     if approx:
                         hit["approx"] = True
                     hits.append(hit)

@@ -187,6 +187,31 @@ async function main() {
       error:document.getElementById('errorText')?.textContent})`)));
     let foldedChecks;
     if (!baseline) {
+      // Exercise native DOM events, persistence and history buttons, including reload.
+      assert.equal(await evaluate(`$('highlightHistoryRow').classList.contains('hidden')`), true);
+      await evaluate(`(()=>{const fill=$('highlightFill');
+        for(const value of ['#123450','#123451','#123456']) {
+          fill.value=value; fill.dispatchEvent(new Event('input',{bubbles:true}));
+        }})()`);
+      assert.equal(await evaluate(`document.querySelectorAll('#highlightHistory button').length`), 0);
+      await evaluate(`$('highlightFill').dispatchEvent(new Event('change',{bubbles:true}));
+        $('highlightFont').value='#fedcba';
+        $('highlightFont').dispatchEvent(new Event('change',{bubbles:true}));
+        document.querySelector('[data-preset="4"]').click()`);
+      assert.equal(await evaluate(`document.querySelectorAll('#highlightHistory button').length`), 2);
+      await cdp('Page.reload');
+      for (let i = 0; i < 100; i++) {
+        if (await evaluate(`typeof highlightHistory!=='undefined' && document.querySelectorAll('#highlightHistory button').length===2
+          && document.querySelectorAll('#cardList .batch-file').length===80`)) break;
+        await delay(100);
+      }
+      await evaluate(`document.querySelector('#highlightHistory button').click()`);
+      assert.deepEqual(await evaluate(`({fill:$('highlightFill').value,font:$('highlightFont').value,
+        pressed:document.querySelector('#highlightHistory button').getAttribute('aria-pressed')})`),
+        {fill:'#123456',font:'#fedcba',pressed:'true'});
+      assert.equal(await evaluate(`$('highlightHistoryRow').scrollWidth <= $('highlightHistoryRow').clientWidth`), true);
+      await evaluate(`$('highlightHistoryRow').scrollIntoView({block:'center'})`);
+      await capture('highlight-history');
       assert.equal(await evaluate(`document.querySelectorAll('#cardList img').length`),0);
       assert.equal(await evaluate(`window.__htmlCalls || 0`),0);
       assert.equal(await evaluate(`batchState.cards.every(c=>c.details_pending && !c.images && !c.context)`),true);
@@ -396,7 +421,8 @@ async function main() {
         return Math.abs(cardElements.get(anchor.id).getBoundingClientRect().top-anchor.top);
       })()`);
       assert.ok(anchorDelta < 2, `scroll anchor drifted ${anchorDelta}px`);
-      report.functional_checks = ['selection after replacement', 'pause/manual prompts', 'resize retains nodes',
+      report.functional_checks = ['custom color history preview/commit, reload and reuse',
+        'selection after replacement', 'pause/manual prompts', 'resize retains nodes',
         'filter selection', 'left/right Alt and key repeat', 'hover stays quiet in list', 'modal layout and colors',
         'Alt restores scroll position', 'single-image modal magnifier', '1.5x magnifier anchored to each comparison shot',
         'magnifier stays still as pointer moves', 'small and tall images preserve ratio and stay within viewport', 'Escape closes modal',

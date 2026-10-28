@@ -61,6 +61,12 @@ class MarkFinderTests(unittest.TestCase):
         hits = mark_finder.scan_file(self.path, mark_finder._styles(MAGENTA), mark_finder._recorded(str(self.path)))
         self.assertEqual({h["addr"] for h in hits if h["recorded"]}, {"A5"})
 
+    def test_history_with_same_fill_and_different_fonts_matches_every_pair(self):
+        colors = MAGENTA + [{"fill": "#C0007A", "font": "#123456"}]
+        hits = mark_finder.scan_file(self.path, mark_finder._styles(colors), set())
+        self.assertEqual({h["addr"]: h["match"] for h in hits},
+                         {"A5": "both", "B7": "both", "E2:G2": "both"})
+
     def test_background_run_reports_each_file_and_unreadable_formats(self):
         with patch.object(self.wf, "log_msg") as log, \
                 patch("core.excel_ops.start_background_excel", side_effect=RuntimeError("没有 Excel")):
@@ -285,11 +291,11 @@ class FakeSheet:
 
 class ExcelReadTests(unittest.TestCase):
     """.xls / .xlsb 用后台 Excel 读颜色"""
-    def scan(self, sheet, suffix=".xls", saved=None, recorded=()):
+    def scan(self, sheet, suffix=".xls", saved=None, recorded=(), colors=None):
         book = Mock(Worksheets=[sheet])
         excel = Mock()
         excel.Workbooks.Open.return_value = book
-        hits = mark_finder.scan_file_excel(excel, Path("C:/x/book" + suffix), mark_finder._styles(MAGENTA),
+        hits = mark_finder.scan_file_excel(excel, Path("C:/x/book" + suffix), mark_finder._styles(MAGENTA if colors is None else colors),
                                            set(recorded), saved or {})
         self.assertEqual(excel.Workbooks.Open.call_args.kwargs["ReadOnly"], True)
         book.Close.assert_called_once_with(SaveChanges=False)
@@ -323,6 +329,34 @@ class ExcelReadTests(unittest.TestCase):
         sheet = FakeSheet("空", 500, 10)
         self.assertEqual(self.scan(sheet), {})
         self.assertLessEqual(sheet.calls, 2)
+
+    def test_history_with_same_fill_and_different_fonts_matches_every_pair(self):
+        colors = MAGENTA + [{"fill": "#C0007A", "font": "#123456"}]
+        sheet = FakeSheet("表", 10, 3)
+        sheet.paint(1, 1, "C0007A", "FFFFFF")
+        sheet.paint(2, 1, "C0007A", "123456")
+        sheet.paint(3, 1, "C0007A", "000000")
+        for suffix in (".xls", ".xlsb"):
+            with self.subTest(suffix=suffix):
+                hits = self.scan(sheet, suffix, colors=colors)
+                self.assertEqual({a: h["match"] for a, h in hits.items()},
+                                 {"A1": "both", "A2": "both", "A3": "fill"})
+
+    def test_xls_palette_collisions_preserve_fonts_and_prefer_direct_matches(self):
+        colors = MAGENTA + [{"fill": "#993366", "font": "#123456"},
+                            {"fill": "#C0007A", "font": "#000000"}]
+        saved = {("C0007A", "FFFFFF"): ("993366", "FFFFFF"),
+                 ("C0007A", "000000"): ("993366", "000000")}
+        sheet = FakeSheet("表", 10, 3)
+        for row, font in enumerate(("FFFFFF", "000000", "123456", "654321"), 1):
+            sheet.paint(row, 1, "993366", font)
+        hits = self.scan(sheet, saved=saved, colors=colors)
+        self.assertEqual({a: h["match"] for a, h in hits.items()},
+                         {"A1": "both", "A2": "both", "A3": "both", "A4": "fill"})
+        self.assertTrue(hits["A1"]["approx"])
+        self.assertTrue(hits["A2"]["approx"])
+        self.assertNotIn("approx", hits["A3"])
+        self.assertNotIn("approx", hits["A4"])
 
 
 if __name__ == "__main__":

@@ -36,6 +36,14 @@
 .batch-highlight-sample { padding: 4px 12px; border: 1px solid #94a3b8; font-weight: 700; }
 .batch-highlight-contrast { font-size: 12.5px; color: var(--text-muted, #64748b); }
 .batch-highlight-contrast.is-low { color: #b42318; }
+.batch-highlight-history { align-items: flex-start; }
+.batch-highlight-history .batch-highlight-label { padding-top: 6px; }
+.batch-highlight-history .batch-highlight-presets { min-width: 0; max-height: 150px; overflow-y: auto; }
+.batch-highlight-history .batch-highlight-preset { white-space: nowrap; }
+.find-marks-colors { margin: 12px 0; }
+.find-marks-colors summary { cursor: pointer; }
+.find-marks-colors .batch-highlight-presets { margin-top: 8px; max-height: 150px; overflow-y: auto; }
+.find-marks-colors .batch-highlight-preset { cursor: default; }
 .batch-error-types { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .batch-error-type-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid #cbd5e1; border-radius: 999px; background: #fff; color: var(--text-main); font-size: 12.5px; font-weight: 700; cursor: pointer; user-select: none; }
 .batch-error-type-chip:hover { border-color: #64748b; }

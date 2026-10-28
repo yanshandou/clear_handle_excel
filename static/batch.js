@@ -1193,8 +1193,9 @@ async function saveColors() {
   }
 }
 
-// 只扫描时 Excel 里的标记颜色：预设 + 自定义，记在本机浏览器
+// Excel 里的标记颜色：当前配色和历史自定义配色都记在本机浏览器
 const HIGHLIGHT_KEY = 'clear_handle_excel.highlightColors';
+const HIGHLIGHT_HISTORY_KEY = 'clear_handle_excel.highlightColorHistory';
 const HIGHLIGHT_PRESETS = [
   { label: '洋红底白字（推荐）', fill: '#C0007A', font: '#FFFFFF' },
   { label: '宝蓝底白字', fill: '#1649CC', font: '#FFFFFF' },
@@ -1206,18 +1207,45 @@ const HIGHLIGHT_PRESETS = [
   { label: '纯黑底黄字', fill: '#000000', font: '#FFFF00' },
 ];
 const HEX = /^#[0-9a-f]{6}$/i;
+const sameHighlight = (a, b) => a.fill === b.fill && a.font === b.font;
+function normalizeHighlight(color) {
+  return typeof color?.fill === 'string' && typeof color?.font === 'string' && HEX.test(color.fill) && HEX.test(color.font)
+    ? { fill: color.fill.toUpperCase(), font: color.font.toUpperCase() } : null;
+}
+function uniqueHighlights(colors) {
+  const seen = new Set();
+  return colors.map(normalizeHighlight).filter(color => {
+    if (!color) return false;
+    const key = `${color.fill}/${color.font}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 let highlight = { fill: HIGHLIGHT_PRESETS[0].fill, font: HIGHLIGHT_PRESETS[0].font };
 try {
-  const saved = JSON.parse(localStorage.getItem(HIGHLIGHT_KEY) || 'null');
-  if (HEX.test(saved?.fill) && HEX.test(saved?.font)) highlight = { fill: saved.fill.toUpperCase(), font: saved.font.toUpperCase() };
+  highlight = normalizeHighlight(JSON.parse(localStorage.getItem(HIGHLIGHT_KEY) || 'null')) || highlight;
 } catch (_) {}
+let highlightHistory = [];
+try {
+  const saved = JSON.parse(localStorage.getItem(HIGHLIGHT_HISTORY_KEY) || '[]');
+  if (Array.isArray(saved)) highlightHistory = uniqueHighlights(saved)
+    .filter(color => !HIGHLIGHT_PRESETS.some(p => sameHighlight(p, color)));
+} catch (_) {}
+function rememberHighlight(color) {
+  if (HIGHLIGHT_PRESETS.some(p => sameHighlight(p, color))) return;
+  highlightHistory = uniqueHighlights([color, ...highlightHistory]);
+  try { localStorage.setItem(HIGHLIGHT_HISTORY_KEY, JSON.stringify(highlightHistory)); } catch (_) {}
+}
+// 升级时保留浏览器里已经保存的当前自定义配色。
+rememberHighlight(highlight);
 
 // 查找残留标记色：旧版本直接改了单元格颜色、记录又丢了的，按标记色完全一致找出来，只列出、不改文件
 let findingMarks = false;
 async function findMarks() {
   if (findingMarks) return;
   const folder = $('folderInput').value.trim() || batchState.folder;
-  const colors = [...HIGHLIGHT_PRESETS.map(p => ({ fill: p.fill, font: p.font })), { ...highlight }];
+  const colors = uniqueHighlights([...HIGHLIGHT_PRESETS, highlight, ...highlightHistory]);
   $('errorText').textContent = '';
   try { await post('/api/batch/find_marks', { folder, colors }); } catch (error) { $('errorText').textContent = error.message; return; }
   await waitFindMarks('正在查找残留标记色…', '正在查找', status => showFoundMarks(status.result));
@@ -1343,6 +1371,7 @@ function showFoundMarks(result) {
   const both = hits.filter(h => h.match === 'both').length;
   const recorded = hits.filter(h => h.recorded).length;
   const unread = files.filter(f => f.error).length;
+  const colors = uniqueHighlights(result.colors || []);
   const chips = [`<span class="unhighlight-chip">${result.total} 份文件</span>`];
   chips.push(`<span class="unhighlight-chip ${hits.length ? 'is-check' : 'is-ok'}">🎯 底色字色都对上 ${both} 格</span>`);
   if (hits.length - both) chips.push(`<span class="unhighlight-chip is-check">🎨 只有底色对上 ${hits.length - both} 格</span>`);
@@ -1365,6 +1394,8 @@ function showFoundMarks(result) {
   $('findMarksTitle').textContent = hits.length ? '找到底色是标记色的格子' : '没有找到残留标记色';
   $('findMarksDialog').dataset.tone = hits.length || unread ? 'warn' : 'info';
   $('findMarksBody').innerHTML = `<p class="unhighlight-summary">${chips.join('')}</p>`
+    + (colors.length ? `<details class="find-marks-colors"><summary>本次匹配 ${colors.length} 组配色（全部预设、当前及历史自定义配色）</summary><div class="batch-highlight-presets">`
+      + colors.map(color => `<span class="batch-highlight-preset" style="background:${color.fill};color:${color.font}">底 ${color.fill} / 字 ${color.font}</span>`).join('') + '</div></details>' : '')
     + '<p class="unhighlight-hint">查找只列出来，不改文件：程序不知道这些格子原来是什么颜色，也可能本来就是这个颜色。点文件名或位置用 Excel 打开看一下；有原始备份的话，可以在下面对比旧版，确认后自动改回去。</p>'
     + (hits.length ? '<div class="find-marks-old"><label for="oldFolderInput">旧版（原始备份）文件夹</label>'
       + `<input id="oldFolderInput" class="input" type="text" placeholder="例如 D:\\原始备份" value="${esc(savedOldFolder())}">`
@@ -1390,27 +1421,39 @@ function renderHighlight() {
   $('highlightSample').style.background = highlight.fill;
   $('highlightSample').style.color = highlight.font;
   $('highlightPresets').innerHTML = HIGHLIGHT_PRESETS.map((p, i) => `<button type="button" class="batch-highlight-preset" data-preset="${i}" aria-pressed="${p.fill === highlight.fill && p.font === highlight.font}" style="background:${p.fill};color:${p.font}">${esc(p.label)}</button>`).join('');
+  $('highlightHistoryRow').classList.toggle('hidden', !highlightHistory.length);
+  $('highlightHistory').innerHTML = highlightHistory.map((color, i) => `<button type="button" class="batch-highlight-preset" data-history="${i}" aria-pressed="${sameHighlight(color, highlight)}" title="底色 ${color.fill}，字色 ${color.font}；点击使用" style="background:${color.fill};color:${color.font}">底 ${color.fill} / 字 ${color.font}</button>`).join('');
   const ratio = contrastRatio(highlight.fill, highlight.font);
   $('highlightContrast').textContent = `对比度 ${ratio.toFixed(1)}:1${ratio < 4.5 ? '，偏低，字可能看不清' : ''}`;
   $('highlightContrast').classList.toggle('is-low', ratio < 4.5);
 }
 
-function setHighlight(next) {
-  highlight = { fill: next.fill.toUpperCase(), font: next.font.toUpperCase() };
+function setHighlight(next, remember = true) {
+  const color = normalizeHighlight(next);
+  if (!color) return;
+  highlight = color;
   try { localStorage.setItem(HIGHLIGHT_KEY, JSON.stringify(highlight)); } catch (_) {}
+  if (remember) rememberHighlight(highlight);
   renderHighlight();
 }
 $('highlightPresets').addEventListener('click', event => {
   const button = event.target.closest('[data-preset]');
   if (button) setHighlight(HIGHLIGHT_PRESETS[Number(button.dataset.preset)]);
 });
+$('highlightHistory').addEventListener('click', event => {
+  const button = event.target.closest('[data-history]');
+  if (button) setHighlight(highlightHistory[Number(button.dataset.history)]);
+});
 const HIGHLIGHT_AUTO_KEY = 'clear_handle_excel.highlightAuto';
 try { $('highlightAuto').checked = localStorage.getItem(HIGHLIGHT_AUTO_KEY) !== '0'; } catch (_) { $('highlightAuto').checked = true; }
 $('highlightAuto').addEventListener('change', event => {
   try { localStorage.setItem(HIGHLIGHT_AUTO_KEY, event.target.checked ? '1' : '0'); } catch (_) {}
 });
-$('highlightFill').addEventListener('input', event => setHighlight({ ...highlight, fill: event.target.value }));
-$('highlightFont').addEventListener('input', event => setHighlight({ ...highlight, font: event.target.value }));
+// 拖动取色器时只预览，确认选择后再记历史，避免把每个过渡颜色都存下来。
+for (const [id, part] of [['highlightFill', 'fill'], ['highlightFont', 'font']]) {
+  $(id).addEventListener('input', event => setHighlight({ ...highlight, [part]: event.target.value }, false));
+  $(id).addEventListener('change', event => setHighlight({ ...highlight, [part]: event.target.value }));
+}
 
 const FIX_ERROR_TYPES_KEY = 'clear_handle_excel.fixErrorTypes';
 const CELL_ERROR_TYPES = [

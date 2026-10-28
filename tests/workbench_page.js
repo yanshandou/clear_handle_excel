@@ -58,14 +58,15 @@ function element(tag = 'div') {
   };
 }
 
-function page({ collapsed = false } = {}) {
+function page({ collapsed = false, storage = new Map() } = {}) {
   const elements = new Map(), requests = [], listeners = {}, frames = [];
   const context = vm.createContext({
     document: { activeElement: null, createElement: element,
       getElementById(id) { if (!elements.has(id)) elements.set(id, Object.assign(element(), { root: true })); return elements.get(id); },
       addEventListener(name, fn) { listeners[name] = fn; }, querySelectorAll() { return []; },
       querySelector() { return null; }, elementFromPoint() { return this.pointElement || null; } },
-    localStorage: { getItem() { return ''; } }, window: { addEventListener() {}, scrollBy() {} }, appConfirm: async () => true,
+    localStorage: { getItem(key) { return storage.get(key) ?? null; }, setItem(key, value) { storage.set(key, value); } },
+    window: { addEventListener() {}, scrollBy() {} }, appConfirm: async () => true,
     setInterval() {}, setTimeout, clearTimeout, requestAnimationFrame(fn) { frames.push(fn); return frames.length; },
     fetch() { return Promise.resolve({ status: 304 }); },
     MutationObserver: class { observe() {} }, innerHeight: 900, innerWidth: 1200,
@@ -83,7 +84,7 @@ function page({ collapsed = false } = {}) {
     batchState.cards.forEach(c => { expandedFiles.add(fileKey(c)); fileMountLimits.set(fileKey(c), Infinity); });
     expandedRenderUnderTest();
   };`);
-  return { run, elements, requests, listeners, frames };
+  return { run, elements, requests, listeners, frames, storage };
 }
 
 module.exports = { page };
