@@ -174,6 +174,7 @@ class ScanOnlyTests(unittest.TestCase):
         self.excel = Mock()
         self.excel.Workbooks.Open.return_value = self.book
         patch.object(batch, "normalize_workbook_view").start()
+        patch.object(batch, "_save_scan_preview").start()
         self.real_matches = batch._marked_matches
         self.matches = patch.object(batch, "_marked_matches", return_value=[]).start()
         patch.object(self.wf, "_sync_problem_counts").start()

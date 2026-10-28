@@ -69,6 +69,9 @@ class IncrementalScanTests(unittest.TestCase):
         self.patch_value(workflow, "extract_sheet_snapshot", Mock(return_value={}))
         self.patch_value(workflow, "match_excel_row", Mock(return_value=(2, "A2", 15.0)))
         self.patch_value(workflow, "find_clipped_spans_on_page", self.fake_clips)
+        # 视图写回单独由 test_page_break_preview.py 验证；此处仅模拟检测流程。
+        self.save_preview = Mock(side_effect=lambda app, path, version: version)
+        self.patch_value(workflow, "_save_page_break_preview", self.save_preview)
 
     def patch_value(self, target, name, value):
         patcher = patch.object(target, name, value)
@@ -173,6 +176,12 @@ class IncrementalScanTests(unittest.TestCase):
         report = self.reporter.get_execution_report_snapshot()["files"]["book.xlsx"]
         self.assertEqual((report["status"], report["clip_unfixed"]), ("needs_fix", 1))
         self.assertIn("沿用", report["current_action"])
+
+    def test_clean_legacy_scan_also_saves_page_break_preview(self):
+        path = self.add_book("book", ["S1"])
+        self.assertEqual(self.scan()["status"], "completed")
+        self.assertEqual(self.workflow.STATE["items"], {})
+        self.save_preview.assert_called_once_with(self.excel, path, self.workflow._file_version(path))
 
     def test_modified_problem_file_only_rechecks_problem_sheets(self):
         path = self.add_book("book", ["S1", "S2"])

@@ -64,6 +64,7 @@ class PersistenceTests(unittest.TestCase):
         self.patch_value(workflow, "win32", Mock(DispatchEx=Mock(return_value=self.excel)))
         self.patch_value(excel_ops, "win32", workflow.win32)  # 后台 Excel 由 excel_ops 启动
         self.patch_value(workflow, "normalize_workbook_view", Mock())
+        self.patch_value(workflow, "_save_page_break_preview", lambda app, path, version: version)
         self.patch_value(workflow, "_refresh_sheet_pages_in_state", Mock())
         self.detect = Mock(return_value=(True, "new", [0, 0, 10, 10], 0))
         self.patch_value(workflow, "is_region_still_clipped", self.detect)

@@ -2,6 +2,127 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { page } = require('./workbench_page');
 
+test('80 files and 2000 cards initially mount only file headers with no card HTML or images', () => {
+  const p = page({collapsed:true});
+  p.run(`batchState.cards=Array.from({length:2000},(_,i)=>({...batchState.cards[1],id:String(i),seq:i,
+    wb_path:'file-'+(i%80),wb_name:'file-'+(i%80)+'.xlsx'}));
+    let htmlCalls=0;const originalCardHtml=cardHtml;cardHtml=(...args)=>{htmlCalls++;return originalCardHtml(...args)};render();`);
+  assert.equal(p.run('fileElements.size'),80);
+  assert.equal(p.run('cardElements.size'),0);
+  assert.equal(p.run('cardMemo.size'),0);
+  assert.equal(p.run('htmlCalls'),0);
+  assert.equal(p.run(`[...fileElements.values()].every(f=>f.body===null && f.waterfall===null)`),true);
+});
+
+test('expansion creates only that file in batches, collapse frees its cards, file selection does not mark cards', () => {
+  const p = page({collapsed:true});
+  p.run(`batchState.cards=Array.from({length:100},(_,i)=>({...batchState.cards[1],id:String(i),seq:i,
+    wb_path:'file-'+(i%4),wb_name:'file-'+(i%4)+'.xlsx'}));render();toggleFileChecked('file-0');toggleFileExpanded('file-0');`);
+  assert.equal(p.run('cardElements.size'),18);
+  assert.equal(p.run('selectedIds.size'),0);
+  assert.equal(p.run(`batchState.cards.every(c=>c.color==='yellow')`),true);
+  while(p.frames.length) p.frames.shift()();
+  assert.equal(p.run('cardElements.size'),25);
+  p.run(`toggleFileExpanded('file-0')`);
+  assert.equal(p.run('cardElements.size'),0);
+  assert.equal(p.run('cardMemo.size'),0);
+  assert.equal(p.run(`fileElements.get('file-0').body`),null);
+  assert.equal(p.run(`selectedFiles.has('file-0')`),true);
+  assert.equal(p.run(`batchState.cards.filter(c=>c.wb_path==='file-0').every(c=>c.details_pending)`),true);
+  assert.equal(p.elements.get('openSelectedFilesBtn').textContent,'📂 打开选中文件（1 个）');
+});
+
+test('lazy snapshot URLs request only expanded files and reset ETag when the expansion changes', async () => {
+  const p=page({collapsed:true});
+  p.run(`let requested=[];fetch=async(url,opts)=>{requested.push([url,opts.headers]);return {status:200,ok:true,
+    headers:{get:()=> 'fresh'},json:async()=>batchState};};`);
+  await p.run('pollUnderTest()');
+  p.run(`expandedFiles.add('C:/Excel/one.xlsx');lastEtag='old';`);
+  await p.run('pollUnderTest()');
+  assert.equal(p.run(`requested[0][0]`),'/api/batch?details=lazy');
+  assert.match(p.run(`requested[1][0]`),/file=C%3A%2FExcel%2Fone\.xlsx/);
+  assert.equal(p.run(`requested[1][1]['If-None-Match']`),undefined);
+});
+
+test('ordinary open confirms at most five while selected file open sends only explicitly selected files', async () => {
+  const p=page({collapsed:true});
+  p.run(`batchState.cards=Array.from({length:8},(_,i)=>({...batchState.cards[1],id:String(i),seq:i,
+    wb_path:'file-'+i,wb_name:'file-'+i+'.xlsx'}));
+    confirmations=[];appConfirm=async m=>{confirmations.push(m);return true};
+    post=async(url,body)=>{requests.push({url,body});if(url.endsWith('open_plan')){
+      const cards=batchState.cards.filter(c=>body.card_ids.includes(c.id));const picked=body.selected_files?cards:cards.slice(0,5);
+      return {total:cards.length,files:picked.map(c=>({name:c.wb_name})),card_ids:picked.map(c=>c.id),waiting:[],remaining:cards.length-picked.length};
+    }return {ok:true};};render();`);
+  await p.run('openReady()');
+  assert.match(p.run('confirmations[0]'),/本次最多打开 5 个/);
+  assert.equal(p.requests[1].body.card_ids.length,5);
+  p.run(`requests.length=0;batchState.cards[0].color='blue';batchState.cards.forEach(c=>toggleFileChecked(fileKey(c)));`);
+  await p.run('openReady(true)');
+  assert.equal(p.requests[1].body.selected_files,true);
+  assert.equal(p.requests[1].body.card_ids.length,8);
+  assert.match(p.run('confirmations[1]'),/本次将打开 8 个选中文件/);
+});
+
+test('selected file open jumps to the first manual yellow card of each file', () => {
+  const p=page({collapsed:true});
+  p.run(`batchState.cards=[
+    {...batchState.cards[1],id:'blue',seq:0,wb_path:'a',wb_name:'a.xlsx',color:'blue'},
+    {...batchState.cards[1],id:'yellow',seq:1,wb_path:'a',wb_name:'a.xlsx',color:'yellow',finalized:true},
+    {...batchState.cards[1],id:'green',seq:2,wb_path:'b',wb_name:'b.xlsx',color:'green'}];
+    toggleFileChecked('a');toggleFileChecked('b');`);
+  assert.equal(p.run(`selectedFileCards().map(c=>c.id).join()`),'yellow,green');
+});
+
+test('cancelling batch open performs no open and does not turn file selection into card selection', async () => {
+  const p=page({collapsed:true});
+  p.run(`toggleFileChecked('book.xlsx');appConfirm=async()=>false;post=async(url,body)=>{requests.push({url,body});
+    return {total:1,files:[{name:'book.xlsx'}],card_ids:['b'],remaining:0,waiting:[]};};`);
+  await p.run('openReady(true)');
+  assert.deepEqual(p.requests.map(r=>r.url),['/api/batch/open_plan']);
+  assert.equal(p.run('selectedIds.size'),0);
+});
+
+test('next batch counts skip opened files and the exhausted round does not loop', () => {
+  const p=page({collapsed:true});
+  p.run(`batchState.cards=Array.from({length:80},(_,i)=>({...batchState.cards[1],id:String(i),seq:i,
+    wb_path:'file-'+i,wb_name:'file-'+i+'.xlsx'}));batchState.opened_files=batchState.cards.slice(0,5).map(fileKey);render();`);
+  assert.match(p.elements.get('openAllBtn').textContent,/未开 75 \/ 共 80 个/);
+  assert.equal(p.elements.get('resetOpenHistoryBtn').disabled,false);
+  assert.match(p.run(`fileElements.get('file-0').head.outerHTML`),/本轮已打开/);
+  assert.doesNotMatch(p.run(`fileElements.get('file-5').head.outerHTML`),/本轮已打开/);
+  p.run(`batchState.opened_files=batchState.cards.map(fileKey);render();`);
+  assert.equal(p.elements.get('openAllBtn').disabled,true);
+  assert.match(p.elements.get('openAllBtn').textContent,/本轮已全部打开/);
+});
+
+test('two next batch clicks send different files without changing review colors', async () => {
+  const p=page({collapsed:true});
+  p.run(`batchState.cards=Array.from({length:12},(_,i)=>({...batchState.cards[1],id:String(i),seq:i,
+    wb_path:'file-'+i,wb_name:'file-'+i+'.xlsx'}));batchState.opened_files=[];
+    post=async(url,body)=>{requests.push({url,body});const seen=new Set(batchState.opened_files);
+      if(url.endsWith('open_plan')){const picked=batchState.cards.filter(c=>!seen.has(fileKey(c))).slice(0,5);
+        return {total:12,already_opened:seen.size,files:picked.map(c=>({name:c.wb_name})),card_ids:picked.map(c=>c.id),waiting:[],remaining:12-seen.size-picked.length};}
+      batchState.opened_files.push(...body.card_ids.map(id=>fileKey(batchState.cards.find(c=>c.id===id))));return {ok:true};};`);
+  await p.run('openReady()');
+  await p.run('openReady()');
+  const opened=p.requests.filter(r=>r.url==='/api/batch/open').map(r=>Array.from(r.body.card_ids));
+  assert.deepEqual(opened,[['0','1','2','3','4'],['5','6','7','8','9']]);
+  assert.match(p.elements.get('openAllBtn').textContent,/未开 2 \/ 共 12 个/);
+  assert.equal(p.run(`batchState.cards.every(c=>c.color==='yellow')`),true);
+});
+
+test('reset action clears only the opening round and selected files can still be reopened', async () => {
+  const p=page({collapsed:true});
+  p.run(`batchState.opened_files=['book.xlsx'];toggleFileChecked('book.xlsx');
+    post=async(url,body)=>{requests.push({url,body});batchState.opened_files=[];return {ok:true};};`);
+  await p.elements.get('resetOpenHistoryBtn').listeners.click();
+  p.run('renderControls()');
+  assert.deepEqual(p.requests.map(r=>r.url),['/api/batch/open_reset']);
+  assert.match(p.elements.get('openAllBtn').textContent,/未开 1/);
+  assert.equal(p.run('selectedFiles.size'),1);
+  assert.equal(p.run(`batchState.cards[1].color`),'yellow');
+});
+
 test('appending and removing cards retain unchanged DOM nodes and file containers', () => {
   const p = page();
   p.run(`render(); const originalA = cardElements.get('a'), originalB = cardElements.get('b');
@@ -682,10 +803,12 @@ test('open all during a background task opens finished files and lists the rest'
   const p = page();
   p.run(`batchState.busy = true; batchState.job = {kind: 'batch_scan', options: {scan_only: true}, workbooks: [], completed: []};
     alerts = []; appAlert = async (m) => { alerts.push(m); };
-    post = async (url, payload) => { requests.push({url, payload}); return {ok: true, opened: ['b.xlsx'],
+    post = async (url, payload) => { requests.push({url, payload});
+      if(url.endsWith('open_plan')) return {total:2, files:[{name:'b.xlsx'}],card_ids:['b'],remaining:1,waiting:[]};
+      return {ok: true, opened: ['b.xlsx'],
       waiting: [{name: 'a.xlsx', reason: '还没轮到这份文件，处理完才能打开'}], errors: []}; };`);
   await p.run(`openReady()`);
-  assert.deepEqual(p.requests.map(r => r.url), ['/api/batch/open']);
+  assert.deepEqual(p.requests.map(r => r.url), ['/api/batch/open_plan', '/api/batch/open']);
   assert.match(p.run('alerts[0]'), /已打开 1 个文件：b\.xlsx/);
   assert.match(p.run('alerts[0]'), /· a\.xlsx：还没轮到这份文件，处理完才能打开/);
 });

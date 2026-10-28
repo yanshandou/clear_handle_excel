@@ -44,6 +44,8 @@ class BatchTests(unittest.TestCase):
         self.normalize = patch.object(batch, "normalize_workbook_view").start()
         self.real_refresh = batch._refresh
         self.refresh = patch.object(batch, "_refresh").start()
+        self.real_save_scan_preview = batch._save_scan_preview
+        self.save_scan_preview = patch.object(batch, "_save_scan_preview").start()
         self.addCleanup(patch.stopall)
         self.addCleanup(reporter.flush_execution_report)
 
@@ -60,6 +62,62 @@ class BatchTests(unittest.TestCase):
         self.assertIs(self.wf.STATE["job"]["pending_adjustment"], pending)
         self.assertEqual(self.heights[5], 24)
         self.book.Save.assert_not_called()
+
+    def test_clean_scan_saves_preview_before_repair_or_handover(self):
+        for scan_only in (False, True):
+            with self.subTest(scan_only=scan_only):
+                job = {"kind": "batch_scan", "workbooks": [self.path], "completed": [],
+                       "options": {"folder": str(self.root), "scan_only": scan_only}}
+                self.wf.STATE["job"] = job
+                session = Mock()
+                session.app.return_value = self.excel
+                events = []
+                self.refresh.side_effect = lambda *_args, **_kwargs: events.append("scan")
+                self.save_scan_preview.side_effect = lambda *_: events.append("preview")
+                with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                        patch.object(batch, "ExcelWatchdog", return_value=Mock(timed_out=False, deadline_hit=False)), \
+                        patch.object(batch, "_repair_file", side_effect=lambda *_: events.append("repair")), \
+                        patch.object(batch, "_sync_highlights", side_effect=lambda *_args, **_kwargs: events.append("color")), \
+                        patch.object(batch, "finish_execution_batch"):
+                    batch.run()
+                self.assertEqual(events, ["scan", "preview", "color" if scan_only else "repair"])
+                self.assertEqual(job["completed"], [self.path])
+
+    def test_view_only_save_updates_check_versions_and_cached_pdfs(self):
+        before = self.wf._file_version(Path(self.path))
+        self.wf.STATE["checked_files"][self.path] = before
+        batch._sheet_checks()[self.path] = {"*": before, "old": {"size": -1}}
+        def save(*_):
+            Path(self.path).write_bytes(b"workbook with saved preview")
+            return self.wf._file_version(Path(self.path))
+        session = Mock()
+        with patch.object(self.wf, "_save_page_break_preview", side_effect=save):
+            self.real_save_scan_preview(self.excel, self.path, session)
+        after = self.wf._file_version(Path(self.path))
+        self.assertEqual(self.wf.STATE["checked_files"][self.path], after)
+        self.assertEqual(batch._sheet_checks()[self.path], {"*": after, "old": {"size": -1}})
+        session.view_saved.assert_called_once_with(self.path, before, after)
+
+    def test_changed_file_is_not_saved_as_a_scanned_view(self):
+        self.wf.STATE["checked_files"][self.path] = self.wf._file_version(Path(self.path))
+        Path(self.path).write_bytes(b"edited after scan")
+        with patch.object(self.wf, "_save_page_break_preview") as save:
+            with self.assertRaisesRegex(ValueError, "扫描后文件已修改"):
+                self.real_save_scan_preview(self.excel, self.path, Mock())
+        save.assert_not_called()
+
+    def test_preview_save_failure_keeps_file_incomplete_and_does_not_repair(self):
+        job = self.wf.STATE["job"]
+        job.update(workbooks=[self.path], options={"folder": str(self.root)})
+        self.save_scan_preview.side_effect = ValueError("无法保存分页预览")
+        with patch.object(batch.autofix, "_ExcelSession", return_value=Mock()), \
+                patch.object(batch, "_repair_file") as repair, \
+                patch.object(batch, "finish_execution_batch"):
+            batch.run()
+        self.assertEqual(job["completed"], [])
+        self.assertEqual(job["scanned"], [])
+        self.assertIn(self.path, job["file_errors"])
+        repair.assert_not_called()
 
     def test_same_named_trial_and_original_use_separate_excel_instances(self):
         from core import autofix

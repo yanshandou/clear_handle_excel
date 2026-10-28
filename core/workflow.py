@@ -42,6 +42,7 @@ from core.excel_watchdog import ExcelWatchdog
 from core.excel_ops import (
     CellProbe,
     close_saved_workbooks,
+    enable_page_break_preview,
     extract_sheet_snapshot,
     gray_tab_sheet_names,
     mark_review_cells,
@@ -117,7 +118,7 @@ LATER_REVIEW_FAILED_REASON = "统一复检仍有问题：请继续修改并保�
 QUICK_TASK_NAMES = {
     "clean_sheets": "精简 Sheet（删除备份表）",
     "export_pdf": "批量导出 PDF",
-    "normalize_view": "视图标准化（A1 + 100% 缩放）",
+    "normalize_view": "视图标准化（分页预览 + A1 + 100% 缩放）",
 }
 
 # 全局状态存储（供前端网页读取和操作）
@@ -624,7 +625,7 @@ def _detect_sheet_results(
 
 
 # 检测规则变化时加一：之前按旧规则查过的文件即使没改过，下次扫描也要整份重新检查
-DETECTOR_VERSION = 16
+DETECTOR_VERSION = 17
 
 
 def _confirm_clip_cells(
@@ -1269,6 +1270,31 @@ def _scan_plan(workbooks: list[Path], *, rescan_all: bool) -> dict[str, dict[str
     return plan
 
 
+def _save_page_break_preview(excel: Any, wb_path: Path, expected_version: dict) -> dict:
+    """检测结束后重新打开原文件，只保存分页预览，丢弃检测时临时上色等内存修改。"""
+    if _file_version(wb_path) != expected_version:
+        raise ValueError(f"扫描后文件已修改，未保存分页预览，请重新扫描：{wb_path.name}")
+    book = open_workbook_checked(excel, str(wb_path.resolve()), ReadOnly=False, UpdateLinks=0)
+    try:
+        if book.ReadOnly:
+            raise ValueError(f"文件以只读方式打开，未能保存分页预览：{wb_path.name}")
+        # Excel 以可写方式打开旧版 .xls 时会原地更新 OLE 元数据和文件时间，
+        # 即使尚未 Save。只对该格式接受打开产生的变化，随后仍检查有无再次修改。
+        opened_version = _file_version(wb_path)
+        if wb_path.suffix.lower() != ".xls" and opened_version != expected_version:
+            raise ValueError(f"扫描后文件已修改，未保存分页预览，请重新扫描：{wb_path.name}")
+        changed = enable_page_break_preview(excel, book)
+        if _file_version(wb_path) != opened_version:
+            raise ValueError(f"扫描后文件已修改，未保存分页预览，请重新扫描：{wb_path.name}")
+        if changed:
+            book.Save()
+            with STATE_LOCK:
+                print_layout.followed_save(STATE.setdefault("print_layouts", {}), str(wb_path), expected_version)
+    finally:
+        book.Close(SaveChanges=False)
+    return _file_version(wb_path)
+
+
 def _scan_one_workbook(
     excel: Any,
     wb_path: Path,
@@ -1285,6 +1311,7 @@ def _scan_one_workbook(
     pdfs: Any = None,
     reuse_pdfs: bool = True,
     timing: dict[str, float] | None = None,
+    keep_page_break_preview: bool = False,
 ) -> None:
     """检查一个工作簿；所有工作表检测完成后才一次性替换该文件的旧结果，中途失败不影响旧记录。
 
@@ -1409,6 +1436,9 @@ def _scan_one_workbook(
         if workbook is None:
             wb.Close(SaveChanges=False)
 
+    if keep_page_break_preview:
+        scan_version = _save_page_break_preview(excel, wb_path, scan_version)
+
     merged = _merge_redetected(file_items, previous, mark_new=entry["scanned"], keep_unmatched=not rescan_all)
     fixed_now = sum(
         old["status"] not in RESOLVED_STATUSES and merged.get(old["id"], {}).get("status") == "fixed"
@@ -1489,6 +1519,8 @@ def scan_folder_workflow(
                 STATE["logs"].clear()
                 plan = _scan_plan(workbooks, rescan_all=rescan_all)
                 STATE.update(folder=str(folder), pdf_folder=str(folder), backup_folder="")
+                from core import batch as batch_review
+                batch_review.start_new_open_round()
                 if job is not None:
                     job.update(
                         workbooks=[str(path) for path in workbooks], plan=plan,
@@ -1558,6 +1590,7 @@ def scan_folder_workflow(
                         excel, wb_path, entry, previous,
                         job=job, resumed=initialized, rescan_all=rescan_all,
                         delete_backups=delete_backups, used_pdf_paths=used_pdf_paths,
+                        keep_page_break_preview=True,
                     )
                 except Exception as err:
                     wb_label = workbook_rel_name(wb_path, folder)
@@ -2918,7 +2951,7 @@ def _normalize_workbook_file(get_excel: Callable[[], Any], wb_path: Path, root_f
         print_layout.followed_save(STATE.setdefault("print_layouts", {}), str(wb_path), before_print_save)
         update_file_progress(
             wb_label, status="done", normalized_a1=True,
-            current_action="已定位 A1 并设为 100% 缩放",
+            current_action="已开启分页预览、定位 A1 并设为 100% 缩放",
             all_sheets=[sheet.Name for sheet in wb.Sheets],
         )
     finally:

@@ -183,7 +183,9 @@ class WebHandler(BaseHTTPRequestHandler):
                 result = {"rows": print_layout_snapshot(folder), "busy": STATE["busy"], "blocked": blocked}
             self._send_json(result)
         elif parsed.path == "/api/batch":
-            body = json.dumps(batch.snapshot(), ensure_ascii=False).encode("utf-8")
+            query = parse_qs(parsed.query)
+            result = batch.snapshot(set(query.get("file", []))) if query.get("details") == ["lazy"] else batch.snapshot()
+            body = json.dumps(result, ensure_ascii=False).encode("utf-8")
             etag = f'"{hashlib.sha256(body).hexdigest()}"'
             validators = {tag.strip().removeprefix("W/") for tag in self.headers.get("If-None-Match", "").split(",")}
             unchanged = etag in validators or "*" in validators
@@ -386,9 +388,16 @@ class WebHandler(BaseHTTPRequestHandler):
         elif self.path == "/api/batch/abandon":
             batch.abandon_pending()
             self._send_json({"ok": True})
+        elif self.path == "/api/batch/open_reset":
+            self._send_json({"ok": True, "reset": batch.reset_open_history()})
+        elif self.path == "/api/batch/open_plan":
+            selected_files = payload.get("selected_files") is True
+            ids = batch.validate_cards(payload.get("card_ids"), yellow=not selected_files)
+            self._send_json({"ok": True, **batch.open_plan(ids, selected_files=selected_files)})
         elif self.path in {"/api/batch/commit", "/api/batch/recheck", "/api/batch/open"}:
             action = self.path.rsplit("/", 1)[1]
-            ids = batch.validate_cards(payload.get("card_ids"), yellow=action != "commit")
+            selected_files = action == "open" and payload.get("selected_files") is True
+            ids = batch.validate_cards(payload.get("card_ids"), yellow=action != "commit" and not selected_files)
             single = payload.get("single") is True
             color = None
             if action == "commit" and payload.get("color") not in (None, "all"):
@@ -399,12 +408,17 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "queued": True})
             elif action == "open" and STATE["busy"]:
                 # 后台在跑：处理完的文件马上打开，还要等的列出来
-                self._send_json({"ok": True, **batch.open_ready(ids)})
+                self._send_json({"ok": True, **batch.open_ready(ids, selected_files=selected_files)})
             elif action != "open" and batch.enqueue_followup(f"batch_{action}", ids, single=single, color=color):
                 # 后台在跑别的任务：排到它后面，结束后接着复检 / 提交
                 self._send_json({"ok": True, "queued": True})
             else:
                 options = batch.recheck_options(ids, single=single) if action == "recheck" else {"card_ids": ids}
+                if action == "open":
+                    options = {"card_ids": batch.open_plan(ids, selected_files=selected_files)["card_ids"],
+                               "selected_files": selected_files}
+                    if not options["card_ids"]:
+                        raise ValueError("当前没有可以打开的人工待处理文件")
                 if color:
                     options["color"] = color
                 self._start_job(f"batch_{action}", options)

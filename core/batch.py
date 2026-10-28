@@ -11,10 +11,12 @@ import math
 import re
 import shutil
 import tempfile
+import threading
 import time
 import traceback
 import unicodedata
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -570,7 +572,10 @@ def _image_url(name: str) -> str:
     return f"/api/batch/image/{name}?v={fix_images.version(name)}"
 
 
-def snapshot() -> dict:
+CARD_DETAIL_FIELDS = {"text", "problems", "fix_images", "context", "images", "message"}
+
+
+def snapshot(detail_paths: set[str] | None = None) -> dict:
     with wf.STATE_LOCK:
         cards = []
         by_cell: dict[tuple[str, str, str], list[dict]] = {}
@@ -595,13 +600,15 @@ def snapshot() -> dict:
                 continue
             items = by_cell.get(_cell(card), [])
             # 释放 STATE_LOCK 后才序列化 JSON，返回值仍需与后台线程的状态隔离。
-            result = copy.deepcopy({k: v for k, v in card.items() if k not in {"signatures", "item_ids"}})
-            if not result.get("problems"):  # 旧版本留下的卡片没存问题说明，按单元格现有的问题项补上
+            detailed = detail_paths is None or card["wb_path"] in detail_paths
+            omitted = {"signatures", "item_ids"} | (set() if detailed else CARD_DETAIL_FIELDS)
+            result = copy.deepcopy({k: v for k, v in card.items() if k not in omitted})
+            if detailed and not result.get("problems"):  # 旧版本留下的卡片没存问题说明，按单元格现有的问题项补上
                 result["problems"] = list({p["kind"]: p for p in map(_problem, items)}.values())
             if not result.get("error_types"):
                 result["error_types"] = list(dict.fromkeys(
                     p.get("error_type") or autofix.item_error_type({"kind": p.get("kind"), "hidden_reason": p.get("reason")})
-                    for p in result["problems"]
+                    for p in (result.get("problems") or card.get("problems") or map(_problem, items))
                 ))
             row = _row_record(card)
             if row is not None and _is_break(card):
@@ -618,14 +625,18 @@ def snapshot() -> dict:
                 # 自动试过没修好（文件没改过）等不能交给自动的黄卡：页面上不给「🤖 自动调整」按钮，写明原因
                 result["auto_skip"] = _auto_skip_reason(card, items, file_versions=file_versions)
             result["highlighted"] = _shows_mark(_marks().get(card["id"]))
-            result["images"] = {
-                which: url for which, name in card.get("fix_images", {}).items()
-                if (url := image_url(name))
-            }
-            if result.get("context"):
-                context = result["context"]
-                name = context["image_file"]
-                context["image"] = image_url(name)
+            if detailed:
+                result["images"] = {
+                    which: url for which, name in card.get("fix_images", {}).items()
+                    if (url := image_url(name))
+                }
+                if result.get("context"):
+                    context = result["context"]
+                    name = context["image_file"]
+                    context["image"] = image_url(name)
+            else:
+                result["details_pending"] = True
+                result["waiting"] = _waiting(card)
             cards.append(result)
         highlighted = sum(1 for m in _marks().values() if in_folder(m["path"]) and _shows_mark(m))
         tabs = sum(len(t) for p, t in _tabs().items() if in_folder(p))
@@ -635,6 +646,7 @@ def snapshot() -> dict:
                 "fix_error_types": fix_error_types(),
                 "mode": _mode(by_cell, in_folder), "open_blocked": _open_blocked([c["wb_path"] for c in cards]),
                 "followups": copy.deepcopy(_data().get("followups") or []),
+                "opened_files": sorted(_opened_paths()),
                 "scan_eta": _scan_eta(wf.STATE["job"]) if wf.STATE["job"] else None,
                 "slow_files": [{"path": p, "name": Path(p).name, **info} for p, info in _data().get("slow_files", {}).items()
                                if in_folder(p)],
@@ -722,6 +734,24 @@ def _followed_own_save(path: str, before: Any) -> None:
         if before is not None and versions.get(path) == before:
             versions[path] = _version_or_none(path)
         print_layout.followed_save(wf.STATE.setdefault("print_layouts", {}), path, before)
+
+
+def _save_scan_preview(excel: Any, path: str, session: Any) -> None:
+    """扫描的只读工作簿已关闭，另开原文件保存视图，并跟进只涉及视图的版本变化。"""
+    _check_file(path)
+    before = wf._file_version(Path(path))
+    if wf.STATE["checked_files"].get(path) != before:
+        raise ValueError(f"扫描后文件已修改，请重新扫描：{Path(path).name}")
+    after = wf._save_page_break_preview(excel, Path(path), before)
+    with wf.STATE_LOCK:
+        wf.STATE["checked_files"][path] = after
+        checks = _sheet_checks().get(path, {})
+        for name, checked in list(checks.items()):
+            if checked == before:
+                checks[name] = after
+        _followed_own_save(path, before)
+        session.view_saved(path, before, after)
+        wf._persist_state()
 
 
 STEP_COL_WIDTH = 2.0
@@ -3549,29 +3579,129 @@ def cancel_followups() -> int:
     return len(queue)
 
 
-def open_ready(ids: list[str]) -> dict:
-    """后台在跑时「打开全部人工待处理文件」：后台不再碰的文件马上在可见 Excel 打开、跳到第一处黄格，
-    还要等的文件列出原因，不排队（等它的话还不如做完一份开一份）"""
+DEFAULT_OPEN_LIMIT = 5
+_OPEN_LOCK = threading.Lock()
+# 每次重置打开记录加一；打开途中轮次变了，这批结果属于旧一轮，不再记入新一轮。
+_open_round = 0
+
+
+@contextmanager
+def _opening_files():
+    if not _OPEN_LOCK.acquire(blocking=False):
+        raise ValueError("正在打开文件，请等这批打开完成后再试")
+    try:
+        yield
+    finally:
+        _OPEN_LOCK.release()
+
+
+def _open_folder_key() -> str:
+    return str(Path(wf.STATE.get("folder") or ".").resolve()).casefold()
+
+
+def _opened_paths() -> set[str]:
+    """按当前文件夹保存本轮成功打开的路径；关闭 Excel 或重新启动服务都不清空。"""
+    return set(_data().get("open_history", {}).get(_open_folder_key(), []))
+
+
+def _remember_opened(paths: list[str], *, folder_key: str | None = None, round_: int | None = None) -> None:
+    if not paths:
+        return
     with wf.STATE_LOCK:
-        cards = sorted((_data()["cards"][cid] for cid in ids), key=lambda c: c["seq"])
-        first = {}
-        for card in cards:
-            first.setdefault(card["wb_path"], card)
-        job = wf.STATE.get("job") or {}
-        busy = wf.STATE["busy"]
-        waiting = {path: reason for path in first if busy and (reason := open_block_reason(job, Path(path)))}
-    targets = [(Path(path), c["sheet_name"], c["cell_addr"], c["excel_row"]) for path, c in first.items()
-               if path not in waiting]
-    if targets:
+        if round_ is not None and round_ != _open_round:
+            return
+        history = _data().setdefault("open_history", {})
+        key = folder_key or _open_folder_key()
+        previous = history.get(key)
+        history[key] = list(dict.fromkeys([*(previous or []), *paths]))
         try:
-            autofix.wait_for_writes(15)  # 后台正在保存的文件别同时打开
-        except ValueError:
-            raise ValueError("后台正在保存 Excel，请几秒后再点") from None
-    errors = open_workbooks_for_review(targets) if targets else {}
+            wf._persist_state()
+        except Exception:
+            if previous is None:
+                history.pop(key, None)
+            else:
+                history[key] = previous
+            raise
+
+
+def reset_open_history() -> int:
+    """「重置打开记录」：只重置当前文件夹的批量打开进度，不关闭 Excel，也不改变审核结果。"""
+    global _open_round
+    with _opening_files(), wf.STATE_LOCK:
+        history = _data().get("open_history", {})
+        key = _open_folder_key()
+        previous = history.pop(key, None)
+        try:
+            wf._persist_state()
+        except Exception:
+            if previous is not None:
+                history[key] = previous
+            raise
+        _open_round += 1
+        return len(previous or [])
+
+
+def start_new_open_round() -> None:
+    """新扫描开始新一轮。调用方持有 STATE_LOCK 并负责持久化；不等正在进行的打开，
+    也不会失败，避免扫描在清空旧结果后因打开操作抛错。"""
+    global _open_round
+    with wf.STATE_LOCK:
+        _data().get("open_history", {}).pop(_open_folder_key(), None)
+        _open_round += 1
+
+
+def _open_candidates(ids: list[str]) -> list[dict]:
+    """按卡片处理顺序列出文件，同一文件的多张黄卡只算一次。调用方持有 STATE_LOCK。"""
+    first = {}
+    for card in sorted((_data()["cards"][cid] for cid in ids), key=lambda c: c["seq"]):
+        first.setdefault(card["wb_path"], card)
+    return list(first.values())
+
+
+def open_plan(ids: list[str], *, selected_files: bool = False) -> dict:
+    """默认一次最多五份；明确勾选的文件按选择打开。后台仍要处理的文件暂不打开。"""
+    with wf.STATE_LOCK:
+        candidates = _open_candidates(ids)
+        opened = _opened_paths()
+        unopened = [c for c in candidates if c["wb_path"] not in opened]
+        job = wf.STATE.get("job") or {}
+        waiting, available = [], []
+        for card in candidates if selected_files else unopened:
+            reason = open_block_reason(job, Path(card["wb_path"])) if wf.STATE["busy"] else ""
+            if reason:
+                waiting.append({"name": card["wb_name"], "reason": reason})
+            else:
+                available.append(card)
+        selected = available if selected_files else available[:DEFAULT_OPEN_LIMIT]
+        return {"total": len(candidates), "available": len(available),
+                "files": [{"name": c["wb_name"], "path": c["wb_path"]} for c in selected],
+                "card_ids": [c["id"] for c in selected], "waiting": waiting,
+                "already_opened": len(candidates) - len(unopened), "unopened": len(unopened),
+                "round_opened": len(opened),
+                "exhausted": not selected_files and bool(candidates) and not unopened,
+                "remaining": len(candidates if selected_files else unopened) - len(selected)}
+
+
+def open_ready(ids: list[str], *, selected_files: bool = False) -> dict:
+    """后台在跑时批量打开：后台不再碰的文件马上在可见 Excel 打开、跳到目标单元格，
+    还要等的文件列出原因，不排队（等它的话还不如做完一份开一份）"""
+    with _opening_files():
+        with wf.STATE_LOCK:
+            plan = open_plan(ids, selected_files=selected_files)
+            folder_key, round_ = _open_folder_key(), _open_round
+            cards = [_data()["cards"][cid] for cid in plan["card_ids"]]
+            targets = [(Path(c["wb_path"]), c["sheet_name"], c["cell_addr"], c["excel_row"]) for c in cards]
+        if targets:
+            try:
+                autofix.wait_for_writes(15)  # 后台正在保存的文件别同时打开
+            except ValueError:
+                raise ValueError("后台正在保存 Excel，请几秒后再点") from None
+        errors = open_workbooks_for_review(targets) if targets else {}
+        _remember_opened([str(p) for p, *_ in targets if p not in errors], folder_key=folder_key, round_=round_)
     for path, error in errors.items():
         wf.log_msg(f"⚠️ {path.name}：{error}")
     return {"opened": [Path(p).name for p, *_ in targets if p not in errors],
-            "waiting": [{"name": Path(p).name, "reason": why} for p, why in waiting.items()],
+            "waiting": plan["waiting"], "remaining": plan["remaining"] + len(errors),
             "errors": [{"name": p.name, "reason": str(e)} for p, e in errors.items()]}
 
 
@@ -3666,6 +3796,7 @@ def run() -> list[str]:
                             # 审核卡片、忽略规则、行高记录按文件路径区分，各文件夹分开保留：切回来还能审核、还原
                             wf.STATE.update(items={}, pages={}, checked_files={})
                         wf.STATE.update(folder=str(folder), pdf_folder=str(folder))
+                        start_new_open_round()  # 新扫描开始新一轮；续跑、自动调整和复检不重置。
                         job["workbooks"] = [str(p) for p in paths]
                         wf._persist_state()
                 init_execution_batch(task_name="只扫描（全部转人工）" if scan_only else
@@ -3752,6 +3883,9 @@ def run() -> list[str]:
                         _refresh(excel, path, session=session, timing=checking)
                     finally:
                         watchdog.deadline(None)
+                    # 检测的只读工作簿已经关闭；另开原文件保存视图，避免保存临时上色。
+                    # 写文件放在检测超时限制之外，即使没有问题项也保留分页预览。
+                    _save_scan_preview(excel, path, session)
                     with wf.STATE_LOCK:
                         job.setdefault("scan_seconds", {})[path] = round(time.perf_counter() - started, 1)
                         _data().get("slow_files", {}).pop(path, None)  # 以前超时跳过的，这次扫完了
@@ -3888,10 +4022,25 @@ def run() -> list[str]:
             cards = [_data()["cards"][cid] for cid in options["card_ids"]]
             expected = list(dict.fromkeys(c["wb_path"] for c in cards))
             if kind == "batch_open":
-                targets = [(Path(path), c["sheet_name"], c["cell_addr"], c["excel_row"])
-                           for path in expected for c in [next(c for c in cards if c["wb_path"] == path)]]
-                errors = open_workbooks_for_review(targets)
-                job["completed"].extend(path for path in expected if Path(path) not in errors)
+                # 后端也执行上限，旧任务续跑或直接调用接口不会绕过每次打开的数量。
+                # 先去掉别处已打开的，再取前五份，避免名额被已打开的文件占掉。
+                selected = options.get("selected_files") is True
+                with _opening_files():
+                    with wf.STATE_LOCK:
+                        opened = set() if selected else _opened_paths()
+                        folder_key, round_ = _open_folder_key(), _open_round
+                        if not selected:
+                            expected = [path for path in expected
+                                        if path in job["completed"] or path not in opened][:DEFAULT_OPEN_LIMIT]
+                        job["workbooks"] = expected
+                        wf._persist_state()
+                    targets = [(Path(path), c["sheet_name"], c["cell_addr"], c["excel_row"])
+                               for path in expected if path not in job["completed"] and path not in opened
+                               for c in [next(c for c in cards if c["wb_path"] == path)]]
+                    errors = open_workbooks_for_review(targets) if targets else {}
+                    _remember_opened([str(p) for p, *_ in targets if p not in errors],
+                                     folder_key=folder_key, round_=round_)
+                job["completed"] = list(dict.fromkeys(job["completed"] + [path for path in expected if Path(path) not in errors]))
                 for path, error in errors.items():
                     wf.log_msg(f"⚠️ {path.name}：{error}")
             else:

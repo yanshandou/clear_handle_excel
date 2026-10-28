@@ -131,6 +131,18 @@ html:has(#largeView[open]) { overflow: hidden; }
 /* 按文件分组：每个文件一个框，标题栏放文件名、三色数量和本文件的操作，框里是这个文件的卡片瀑布流 */
 .batch-files { display: flex; flex-direction: column; gap: 22px; }
 .batch-file { padding: 14px 18px 0; border: 2px solid #cbd5e1; border-radius: 16px; background: #fff; }
+.batch-file.is-collapsed .batch-file-head { border-bottom: 0; margin-bottom: 0; }
+.batch-file.is-file-selected { border-color: #5071c0; box-shadow: 0 0 0 2px #5071c026; }
+.batch-file input.batch-file-checkbox[type="checkbox"]:not(.hidden) { appearance: auto; flex: 0 0 20px; width: 20px; min-width: 20px; height: 20px; margin: 0; padding: 0; border-radius: 4px; box-shadow: none; accent-color: #3158a7; cursor: pointer; }
+.batch-file input.batch-file-checkbox[type="checkbox"]:not(.hidden)::before { display: none; }
+.batch-file-toggle { min-width: 112px; }
+.batch-file-body.is-opening { animation: batch-file-open .2s ease-out; }
+.batch-file-loading { display: flex; align-items: center; gap: 9px; padding: 12px 4px; margin: 0; color: #475569; font-size: 13px; }
+.batch-file-loading[hidden] { display: none; }
+.batch-file-loading::before { content: ''; flex: none; width: 14px; height: 14px; border: 2px solid #d7e2f6; border-top-color: #4265b1; border-radius: 50%; animation: batch-file-spin .7s linear infinite; }
+@keyframes batch-file-open { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes batch-file-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .batch-file-body.is-opening, .batch-file-loading::before { animation: none; } }
 .batch-file-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 0 0 14px; padding-bottom: 12px; border-bottom: 1px dashed #cbd5e1; }
 .batch-file-title { flex: 1 1 260px; min-width: 0; display: flex; align-items: center; gap: 10px; }
 .batch-file-icon { flex: none; font-size: 20px; }
@@ -140,6 +152,7 @@ html:has(#largeView[open]) { overflow: hidden; }
 .batch-file-open { display: inline-flex; align-items: center; max-width: 100%; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; overflow-wrap: anywhere; }
 .batch-file-open[data-open="blocked"] { border: 1.5px dashed #7d89a8; background: #eef2f8; color: #4f5b7d; }
 .batch-file-open[data-open="ready"] { border: 1.5px solid #35a514; background: #e6f8dc; color: #1d6409; }
+.batch-file-open[data-open="opened"] { border: 1.5px solid #aab9e0; background: #eef2ff; color: #33458c; }
 .batch-file-queue { display: inline-flex; align-items: center; max-width: 100%; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; overflow-wrap: anywhere; }
 .batch-file-queue[data-queue="waiting"] { border: 1.5px solid #b7791f; background: #fff4d6; color: #7a4a00; }
 .batch-file-queue[data-queue="running"] { border: 1.5px solid #1d4ed8; background: #e0eaff; color: #1e3a8a; }

@@ -110,12 +110,41 @@ class WorkbenchSnapshotTests(unittest.TestCase):
             batch.snapshot()
             self.assertEqual(probe.call_count, 2)
 
+    def test_collapsed_snapshot_omits_heavy_details_without_probing_images(self):
+        card = self.card()
+        card.update(text="long text" * 200, context={"image_file": "page.png"},
+                    fix_images={"before": "before.png"}, message=batch.WAITING_MESSAGE)
+        card.pop("waiting", None)
+        with patch.object(fix_images, "image_path", side_effect=AssertionError("collapsed image probe")):
+            result = batch.snapshot(detail_paths=set())["cards"][0]
+        self.assertTrue(result["details_pending"])
+        self.assertTrue(result["waiting"])
+        self.assertTrue(batch.CARD_DETAIL_FIELDS.isdisjoint(result))
+        self.assertEqual(result["id"], card["id"])
+        self.assertIn("text", card)
+        self.assertIn("context", card)
+
+    def test_only_expanded_files_receive_details_and_images(self):
+        first, second = self.card(1), self.card(2)
+        other = self.root / "other.xlsx"
+        other.write_bytes(b"other")
+        second.update(wb_path=str(other), wb_name=other.name)
+        first["fix_images"] = {"before": "before.png"}
+        second["fix_images"] = {"before": "other.png"}
+        with patch.object(fix_images, "image_path", return_value=Path("image.png")) as image, \
+                patch.object(fix_images, "version", return_value="version"):
+            result = batch.snapshot(detail_paths={str(self.book)})["cards"]
+        self.assertNotIn("details_pending", result[0])
+        self.assertIn("images", result[0])
+        self.assertTrue(result[1]["details_pending"])
+        self.assertEqual([c.args[0] for c in image.call_args_list], ["before.png"])
+
 
 class WorkbenchConditionalHttpTests(unittest.TestCase):
-    def request(self, validator=""):
+    def request(self, validator="", path="/api/batch"):
         from web_clip_fixer import WebHandler
         handler = object.__new__(WebHandler)
-        handler.path = "/api/batch"
+        handler.path = path
         handler.headers = Message()
         if validator:
             handler.headers["If-None-Match"] = validator
@@ -148,6 +177,14 @@ class WorkbenchConditionalHttpTests(unittest.TestCase):
             etag = self.request()[1]["ETag"]
             self.assertEqual(self.request(f'"other", W/{etag}')[0], 304)
             self.assertEqual(self.request("*")[0], 304)
+
+    def test_lazy_request_passes_only_expanded_paths_to_snapshot(self):
+        with patch.object(batch, "snapshot", return_value={"cards": []}) as snapshot:
+            self.request(path="/api/batch?details=lazy")
+            snapshot.assert_called_once_with(set())
+            snapshot.reset_mock()
+            self.request(path="/api/batch?details=lazy&file=C%3A%2FExcel%2Fbook.xlsx")
+            snapshot.assert_called_once_with({"C:/Excel/book.xlsx"})
 
 
 if __name__ == "__main__":

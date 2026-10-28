@@ -86,7 +86,7 @@ def progress_write(message: str) -> None:
 
 
 def normalize_sheets_view(excel, wb) -> None:
-    """将所有可见工作表定位到左上角 A1、缩放设为 100%，并停留在第一个可见 Sheet"""
+    """可见工作表开启分页预览、定位到 A1、缩放设为 100%，并停留在第一个可见 Sheet。"""
     normalize_workbook_view(excel, wb, on_error=progress_write)
 
 
@@ -274,7 +274,7 @@ def main() -> None:
     )
 
     do_normalize = (
-        input("\n[3/4] 是否将所有工作表定位到 A1 单元格并以 100% 缩放保存？(输入 y 确认): ")
+        input("\n[3/4] 是否为可见工作表开启分页预览、定位到 A1 并以 100% 缩放保存？(输入 y 确认): ")
         .strip()
         .lower()
         == "y"

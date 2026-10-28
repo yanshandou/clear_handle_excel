@@ -9,6 +9,8 @@ const { spawn, execFileSync } = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
 const layoutRequests = [];
+const openRequests = [];
+const openedFiles = new Set();
 let layoutBusy = true;
 const layoutRows = [{path:'C:/Synthetic/book-0.xlsx', key:'code:Sheet1', file:'book-0.xlsx', sheet:'Wide',
   original:1, selected:2, manual:null, reason:'减少横向拆页，文字清楚',
@@ -59,7 +61,28 @@ const server = http.createServer((request, response) => {
     response.setHeader('Content-Type', 'application/json');
     response.setHeader('ETag', '"fixture"');
     if (request.headers['if-none-match'] === '"fixture"') { response.writeHead(304); response.end(); }
-    else response.end(JSON.stringify(fixture));
+    else {
+      const expanded = new Set(url.searchParams.getAll('file'));
+      const cards = url.searchParams.get('details') !== 'lazy' ? fixture.cards : fixture.cards.map(card =>
+        expanded.has(card.wb_path) ? card : {...Object.fromEntries(Object.entries(card)
+          .filter(([key])=>!['text','problems','fix_images','context','images','message'].includes(key))),details_pending:true});
+      response.end(JSON.stringify({...fixture,cards,opened_files:[...openedFiles]}));
+    }
+  } else if (url.pathname === '/api/batch/open_plan' || url.pathname === '/api/batch/open') {
+    let body=''; request.on('data',part=>body+=part); request.on('end',()=>{
+      const payload=JSON.parse(body), ids=new Set(payload.card_ids);
+      const files=[...new Map(fixture.cards.filter(c=>ids.has(c.id)).map(c=>[c.wb_path,c])).values()];
+      const unseen=files.filter(c=>!openedFiles.has(c.wb_path));
+      const picked=payload.selected_files?files:unseen.slice(0,5);
+      response.setHeader('Content-Type','application/json');
+      if(url.pathname.endsWith('open_plan')) response.end(JSON.stringify({ok:true,total:files.length,
+        already_opened:files.length-unseen.length,unopened:unseen.length,exhausted:!payload.selected_files&&!unseen.length,
+        files:picked.map(c=>({name:c.wb_name,path:c.wb_path})),card_ids:picked.map(c=>c.id),waiting:[],remaining:(payload.selected_files?files:unseen).length-picked.length}));
+      else {openRequests.push(payload);picked.forEach(c=>openedFiles.add(c.wb_path));response.end(JSON.stringify({ok:true,opened:picked.map(c=>c.wb_name),waiting:[],errors:[]}));}
+    });
+  } else if (url.pathname === '/api/batch/open_reset') {
+    request.resume();openedFiles.clear();
+    response.setHeader('Content-Type','application/json');response.end('{"ok":true}');
   } else if (request.method === 'POST') {
     request.resume();
     response.setHeader('Content-Type', 'application/json');
@@ -88,7 +111,7 @@ async function main() {
   try {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     child = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-      '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { windowsHide: true, stdio: 'ignore' });
+      '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { cwd: profile, windowsHide: true, stdio: 'ignore' });
     child.on('error', error => errors.push(error.message));
     const activePort = path.join(profile, 'DevToolsActivePort');
     for (let i = 0; !fs.existsSync(activePort) && i < 100; i++) await delay(100);
@@ -138,12 +161,12 @@ async function main() {
         sourceRect=source.getBoundingClientRect(), style=getComputedStyle(source),
         sourceScale=Math.min((source.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight))/source.naturalWidth,
           (source.clientHeight-parseFloat(style.paddingTop)-parseFloat(style.paddingBottom))/source.naturalHeight),
-        twiceWidth=source.naturalWidth*sourceScale*2, twiceHeight=source.naturalHeight*sourceScale*2;
+        enlargedWidth=source.naturalWidth*sourceScale*1.5, enlargedHeight=source.naturalHeight*sourceScale*1.5;
         return !$('imagePreview').classList.contains('hidden') && frame.left>=8 && frame.top>=8
           && frame.right<=innerWidth-6 && frame.bottom<=innerHeight-6
           && Math.abs(r.width/r.height-image.naturalWidth/image.naturalHeight)<0.01
-          && (twiceWidth<=innerWidth-64 && twiceHeight<=innerHeight-64
-            ? Math.abs(r.width-twiceWidth)<1 && Math.abs(r.height-twiceHeight)<1
+          && (enlargedWidth<=innerWidth-64 && enlargedHeight<=innerHeight-64
+            ? Math.abs(r.width-enlargedWidth)<1 && Math.abs(r.height-enlargedHeight)<1
             : Math.abs(r.width-(innerWidth-64))<1 || Math.abs(r.height-(innerHeight-64))<1)
           && (Math.abs(frame.left+frame.width/2-sourceRect.left-sourceRect.width/2)<1
             || Math.abs(frame.left-8)<1 || Math.abs(frame.right-(innerWidth-12))<1)
@@ -155,12 +178,70 @@ async function main() {
     await cdp('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/workbench` });
     let ready = false;
     for (let i = 0; i < 100 && !ready; i++) {
-      ready = await evaluate(`document.querySelectorAll('#cardList .batch-card').length === 1000`);
+      ready = await evaluate(baseline ? `document.querySelectorAll('#cardList .batch-card').length === 1000`
+        : `document.querySelectorAll('#cardList .batch-file').length === 80 && document.querySelectorAll('#cardList .batch-card').length === 0`);
       if (!ready) await delay(100);
     }
     assert.equal(ready, true, errors.join('\n') || JSON.stringify(await evaluate(`({url:location.href,
       cards:document.querySelectorAll('#cardList .batch-card').length, body:document.body?.innerText.slice(0,800),
       error:document.getElementById('errorText')?.textContent})`)));
+    let foldedChecks;
+    if (!baseline) {
+      assert.equal(await evaluate(`document.querySelectorAll('#cardList img').length`),0);
+      assert.equal(await evaluate(`window.__htmlCalls || 0`),0);
+      assert.equal(await evaluate(`batchState.cards.every(c=>c.details_pending && !c.images && !c.context)`),true);
+      assert.match(await evaluate(`$('openAllBtn').textContent`),/80 个/);
+      assert.equal(await evaluate(`document.querySelector('[data-file-check]').getBoundingClientRect().width`),20);
+      await evaluate(`$('cardList').scrollIntoView({block:'start'})`);
+      await capture('folded');
+      await evaluate(`document.querySelector('[data-file-check]').click()`);
+      assert.equal(await evaluate(`selectedFiles.size===1 && selectedIds.size===0`),true);
+      assert.equal(await evaluate(`!$('fileSelectActions').classList.contains('hidden') && $('cardSelectActions').classList.contains('hidden')`),true);
+      await evaluate(`document.querySelector('[data-file-action="toggle"]').click()`);
+      for(let i=0;i<100 && !await evaluate(`document.querySelectorAll('#cardList .batch-card').length===13`);i++) await delay(50);
+      assert.equal(await evaluate(`document.querySelectorAll('#cardList .batch-card').length`),13);
+      assert.equal(await evaluate(`batchState.cards.filter(c=>!c.details_pending).length`),13);
+      await capture('one-file-expanded');
+      await evaluate(`document.querySelector('[data-file-action="toggle"]').click()`);
+      for(let i=0;i<100 && !await evaluate(`batchState.cards.every(c=>c.details_pending)`);i++) await delay(30);
+      assert.equal(await evaluate(`document.querySelectorAll('#cardList .batch-card').length===0 && cardElements.size===0 && cardMemo.size===0`),true);
+      await evaluate(`$('openPickedFilesBtn').click()`);
+      for(let i=0;i<100 && !await evaluate(`!!document.querySelector('.app-dialog[open]')`);i++) await delay(30);
+      assert.match(await evaluate(`document.querySelector('#appDialogMessage').textContent`),/本次将打开 1 个选中文件/);
+      await evaluate(`document.querySelector('.app-dialog-ok').click()`);
+      for(let i=0;i<100 && !openRequests.length;i++) await delay(30);
+      assert.equal(openRequests[0].selected_files,true);
+      assert.equal(openRequests[0].card_ids.length,1);
+      for(let i=0;i<100 && !await evaluate(`!openChoosing && !requestBusy`);i++) await delay(30);
+      assert.equal(await evaluate(`!openChoosing && !requestBusy`),true);
+      await evaluate(`$('clearSelectedFilesBtn').click()`);
+      await evaluate(`$('openAllBtn').click()`);
+      for(let i=0;i<100 && !await evaluate(`!!document.querySelector('.app-dialog[open]')`);i++) await delay(30);
+      assert.match(await evaluate(`document.querySelector('#appDialogMessage').textContent`),/本次最多打开 5 个/);
+      await evaluate(`document.querySelector('.app-dialog-ok').click()`);
+      for(let i=0;i<100 && openRequests.length<2;i++) await delay(30);
+      assert.equal(openRequests[1].card_ids.length,5);
+      assert.equal(openRequests[1].selected_files,false);
+      for(let i=0;i<100 && !await evaluate(`!openChoosing && !requestBusy`);i++) await delay(30);
+      assert.match(await evaluate(`$('openAllBtn').textContent`),/未开 74 \/ 共 80 个/);
+      assert.equal(await evaluate(`document.querySelectorAll('[data-open="opened"]').length`),6);
+      await evaluate(`$('openAllBtn').click()`);
+      for(let i=0;i<100 && !await evaluate(`!!document.querySelector('.app-dialog[open]')`);i++) await delay(30);
+      await evaluate(`document.querySelector('.app-dialog-ok').click()`);
+      for(let i=0;i<100 && openRequests.length<3;i++) await delay(30);
+      assert.equal(openRequests[2].card_ids.length,5);
+      assert.equal(openRequests[2].card_ids.some(id=>openRequests[1].card_ids.includes(id)),false);
+      for(let i=0;i<100 && !await evaluate(`!openChoosing && !requestBusy`);i++) await delay(30);
+      await evaluate(`$('resetOpenHistoryBtn').click()`);
+      for(let i=0;i<100 && !await evaluate(`!!document.querySelector('.app-dialog[open]')`);i++) await delay(30);
+      await evaluate(`document.querySelector('.app-dialog-ok').click()`);
+      for(let i=0;i<100 && !await evaluate(`batchState.opened_files.length===0 && !requestBusy`);i++) await delay(30);
+      assert.equal(await evaluate(`batchState.opened_files.length`),0);
+      foldedChecks={files:80,initial_card_nodes:0,initial_image_nodes:0,expanded_card_nodes:13,released_on_collapse:true};
+      // 下面继续覆盖全部展开时的既有审核/布局行为。
+      await evaluate(`(async()=>{++pollVersion;poll=async()=>{};batchState=await(await fetch('/api/batch')).json();
+        batchState.cards.forEach(c=>{expandedFiles.add(fileKey(c));fileMountLimits.set(fileKey(c),Infinity)});render();})()`);
+    }
     await evaluate(`poll=async()=>{}; new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
     if (!baseline) {
       await evaluate(`$('printLayoutsDetails').open=true`);
@@ -185,7 +266,7 @@ async function main() {
       await evaluate(`$('printLayoutsDetails').open=false;window.scrollTo(0,0)`);
     }
     assert.deepEqual(await evaluate(`(async()=>{const r=await fetch('/api/batch',{cache:'no-store',headers:{'If-None-Match':'"fixture"'}});return {status:r.status,body:await r.text()};})()`), { status: 304, body: '' });
-    const report = { mode: baseline ? 'baseline' : 'optimized', browser: path.basename(browser), cards: 1000, files: 80 };
+    const report = { mode: baseline ? 'baseline' : 'optimized', browser: path.basename(browser), cards: 1000, files: 80,folded:foldedChecks };
     report.progress = await evaluate(`(() => {
       const durations=[]; window.__htmlCalls=0;
       for(let i=0;i<12;i++){batchState.job.completed.push('progress-'+i);const t=performance.now();render();durations.push(performance.now()-t);}
@@ -279,7 +360,7 @@ async function main() {
       assert.equal(await evaluate(`!$('imagePreview').classList.contains('hidden') && $('imagePreview').closest('dialog')===$('largeView')`), true);
       await assertMagnifierFits();
       await capture('magnifier');
-      // Native image size and contain-box whitespace must not affect the visual 2x magnification.
+      // Native image size and contain-box whitespace must not affect the visual 1.5x magnification.
       for (const [width, height] of [[120, 40], [120, 600]]) {
         await evaluate(`(async()=>{const image=$('largeCard').querySelector('.batch-shots img');
           image.src='data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="#e4edf9"/></svg>');
@@ -317,7 +398,7 @@ async function main() {
       assert.ok(anchorDelta < 2, `scroll anchor drifted ${anchorDelta}px`);
       report.functional_checks = ['selection after replacement', 'pause/manual prompts', 'resize retains nodes',
         'filter selection', 'left/right Alt and key repeat', 'hover stays quiet in list', 'modal layout and colors',
-        'Alt restores scroll position', 'single-image modal magnifier', '2x magnifier anchored to each comparison shot',
+        'Alt restores scroll position', 'single-image modal magnifier', '1.5x magnifier anchored to each comparison shot',
         'magnifier stays still as pointer moves', 'small and tall images preserve ratio and stay within viewport', 'Escape closes modal',
         'large-view node retention', 'resize while in large view', 'image-load height invalidation',
         'scroll anchor after insertion above viewport', 'native fetch 304', 'visited Excel links after filtering'];

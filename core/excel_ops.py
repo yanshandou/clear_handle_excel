@@ -9,6 +9,7 @@ from typing import Any
 
 from core.common import (
     EXCLUDE_PDF_SHEETS,
+    XL_PAGE_BREAK_PREVIEW,
     XL_SHEET_VISIBLE,
     XL_WORKSHEET,
     col_index_to_letters,
@@ -625,12 +626,52 @@ def adjust_row_heights_against_clipping(wb: Any, extra_points: float = 6.0) -> N
             pass
 
 
+def enable_page_break_preview(excel: Any, wb: Any) -> bool:
+    """所有窗口的可见工作表保留分页预览；保留缩放、选区和当前标签，返回是否改过视图。
+
+    不修改隐藏表或图表页；隐藏的工作簿窗口临时显示、设置完再隐藏回去。
+    设置失败向上传递，调用方不能把未完成的保存当成成功。
+    """
+    if wb.Windows.Count == 0:
+        raise ValueError("工作簿没有可用窗口，无法保存分页预览")
+    original_window = excel.ActiveWindow
+    changed = False
+    try:
+        for index in range(1, int(wb.Windows.Count) + 1):
+            window = wb.Windows(index)
+            hidden = not window.Visible
+            if hidden:
+                window.Visible = True
+            try:
+                window.Activate()
+                original_sheet = window.ActiveSheet
+                try:
+                    for sheet in wb.Worksheets:
+                        if sheet.Visible != XL_SHEET_VISIBLE:
+                            continue
+                        sheet.Activate()
+                        if window.View != XL_PAGE_BREAK_PREVIEW:
+                            zoom = window.Zoom
+                            window.View = XL_PAGE_BREAK_PREVIEW
+                            window.Zoom = zoom
+                            changed = True
+                finally:
+                    original_sheet.Activate()
+            finally:
+                if hidden:
+                    window.Visible = False
+    finally:
+        if original_window is not None:
+            original_window.Activate()
+    return changed
+
+
 def normalize_workbook_view(
     excel: Any,
     wb: Any,
     on_error: Callable[[str], None] | None = None,
 ) -> None:
-    """将所有可见工作表定位到左上角 A1、缩放设为 100%，并停留在第一个可见 Sheet"""
+    """可见工作表设为分页预览、A1、100%，并停留在第一个可见 Sheet。"""
     if wb.Windows.Count > 0:
         wb.Windows(1).Visible = True
 
@@ -645,6 +686,7 @@ def normalize_workbook_view(
         try:
             sheet.Activate()
             if sheet.Type == XL_WORKSHEET:
+                excel.ActiveWindow.View = XL_PAGE_BREAK_PREVIEW
                 excel.Goto(sheet.Range("A1"), Scroll=True)
             excel.ActiveWindow.Zoom = 100
         except Exception as err:

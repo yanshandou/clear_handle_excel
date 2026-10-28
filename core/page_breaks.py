@@ -6,13 +6,12 @@
 import base64
 from typing import Any
 
-from core.common import col_index_to_letters
+from core.common import XL_PAGE_BREAK_PREVIEW, col_index_to_letters
 from core.hidden_text import collect_text_pieces, locate_text, normalize_text
 from core.pdf_detector import fitz
 from core import print_layout
 
 XL_PAGEBREAK_MANUAL, XL_PAGEBREAK_NONE = -4135, -4142
-XL_PAGE_BREAK_PREVIEW = 2
 XL_OVER_THEN_DOWN = 2
 REASON = "合并单元格被分页切开，打印时一半在上一页、一半在下一页"
 FIX_REASON = "合并单元格跨页被切开（分页落在合并区域中间）"

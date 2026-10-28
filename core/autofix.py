@@ -698,6 +698,15 @@ class _ExcelSession:
             return None
         return cached[1] if (stat.st_mtime_ns, stat.st_size) == cached[2] else None
 
+    def view_saved(self, wb_path: str, old_version: dict, new_version: dict) -> None:
+        """只保存了视图：打印内容没变，沿用已导出的 PDF，副本也仍和原文件内容一致。"""
+        for key, (version, pdf, stat) in list(self.pdfs.items()):
+            if key[0] == wb_path and version == old_version:
+                self.pdfs[key] = (new_version, pdf, stat)
+        cached = self.copies.get(wb_path)
+        if cached is not None and cached[0] == old_version:
+            self.copies[wb_path] = (new_version, cached[1])
+
     def written(self, wb_path: str, old_version: dict[str, int], sheet_name: str, row: int, height: float,
                 wrap: list[str], pdf: Path | None) -> Any:
         def change(sheet: Any) -> None:

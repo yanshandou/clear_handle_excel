@@ -10,6 +10,7 @@ let cardPointer = null;
 let previewSourceImage = null;
 let leftAltHandled = false;
 let requestBusy = false;
+let openChoosing = false;
 let pollVersion = 0;
 let lastEtag = '';
 let pollInFlight = 0;
@@ -23,6 +24,14 @@ const fileElements = new Map();
 let largeCardKey = '';
 let lastActiveIndex = 0;
 let selectedIds = new Set();
+const selectedFiles = new Set();
+const expandedFiles = new Set();
+const fileMountLimits = new Map();
+const fileMountFrames = new Map();
+const FILE_MOUNT_BATCH = 18;
+const CARD_DETAIL_FIELDS = ['text', 'problems', 'fix_images', 'context', 'images', 'message'];
+let lastSnapshotUrl = '';
+let fileFolder = null;
 let selectNotice = '';
 // 筛选后改了颜色的卡片继续留在当前筛选里，不立刻消失；重新点筛选按钮才按新颜色过滤
 let filterKeep = new Set();
@@ -123,7 +132,8 @@ function fileRenderContext() {
       followups.get(path).push(FOLLOWUP_NAMES[entry.kind]);
     }
   }
-  return { done, failed, current, ahead, followups, workbooks: new Set(job.workbooks || []), queued: new Set(job.auto_queue || []) };
+  return { done, failed, current, ahead, followups, workbooks: new Set(job.workbooks || []), queued: new Set(job.auto_queue || []),
+    opened: new Set(batchState.opened_files || []) };
 }
 const canAuto = cards => !autoBlockReason(cards);
 function fileGroups(cards) {
@@ -143,6 +153,63 @@ const shownCards = () => fileGroups(batchState.cards.filter(c => {
 })).flatMap(([, cards]) => cards);
 const manualCards = () => batchState.cards.filter(c => c.color === 'yellow' && c.finalized);
 
+function snapshotUrl() {
+  const paths = new Set(expandedFiles);
+  const active = largeMode && batchState.cards.find(c => c.id === activeCardId);
+  if (active) paths.add(fileKey(active));
+  return '/api/batch?details=lazy' + [...paths].sort().map(path => `&file=${encodeURIComponent(path)}`).join('');
+}
+
+function requestFileDetails() {
+  lastEtag = '';
+  return poll();
+}
+
+function toggleFileExpanded(key) {
+  const top = fileElements.get(key)?.element.getBoundingClientRect().top;
+  if (expandedFiles.has(key)) {
+    expandedFiles.delete(key);
+    fileMountLimits.delete(key);
+    // 收起就释放重内容和卡片节点，下次展开按最新结果重新加载。
+    batchState.cards = batchState.cards.map(card => {
+      if (fileKey(card) !== key) return card;
+      const light = Object.fromEntries(Object.entries(card).filter(([field]) => !CARD_DETAIL_FIELDS.includes(field)));
+      return { ...light, waiting: card.waiting ?? card.message === '等待自动处理', details_pending: true };
+    });
+  } else {
+    expandedFiles.add(key);
+    fileMountLimits.set(key, FILE_MOUNT_BATCH);
+  }
+  renderKey = '';
+  render();
+  if (top !== undefined) window.scrollBy(0, fileElements.get(key).element.getBoundingClientRect().top - top);
+  // 先绘制展开动画和加载提示，再开始请求、解析与分批创建卡片。
+  requestAnimationFrame(() => requestFileDetails());
+}
+
+function toggleFileChecked(key) {
+  selectedFiles.has(key) ? selectedFiles.delete(key) : selectedFiles.add(key);
+  applySelection();
+  renderControls();
+}
+
+// 每个选中文件取一张卡作打开后的跳转目标：优先第一张人工待处理的黄卡。
+function selectedFileCards() {
+  const picked = new Map();
+  for (const card of batchState.cards) {
+    const key = fileKey(card);
+    if (!selectedFiles.has(key)) continue;
+    const manual = card.color === 'yellow' && card.finalized;
+    if (!picked.has(key) || (manual && !picked.get(key).manual)) picked.set(key, { card, manual });
+  }
+  return [...picked.values()].map(entry => entry.card);
+}
+
+function mountedFileCards(key, cards) {
+  if (!expandedFiles.has(key)) return [];
+  return cards.filter(c => !c.details_pending).slice(0, fileMountLimits.get(key) ?? FILE_MOUNT_BATCH);
+}
+
 async function post(url, payload = {}) {
   lastEtag = '';
   ++pollVersion;
@@ -157,7 +224,9 @@ async function poll(background = false) {
   ++pollInFlight;
   const version = ++pollVersion;
   try {
-    const response = await fetch('/api/batch', { cache: 'no-store', headers: lastEtag ? { 'If-None-Match': lastEtag } : {} });
+    const url = snapshotUrl();
+    if (lastSnapshotUrl !== url) { lastEtag = ''; lastSnapshotUrl = url; }
+    const response = await fetch(url, { cache: 'no-store', headers: lastEtag ? { 'If-None-Match': lastEtag } : {} });
     if (response.status === 304) {
       if (version === pollVersion && !requestBusy && !colorSaving) renderControls();
       return;
@@ -169,6 +238,13 @@ async function poll(background = false) {
     if (value.busy && value.job?.kind === 'batch_unhighlight') clearPending = true;
     const cleared = clearPending && !value.busy && value.job?.kind === 'batch_unhighlight';
     if (cleared) clearPending = false;
+    if (fileFolder !== null && fileFolder !== value.folder) {
+      expandedFiles.clear(); selectedFiles.clear(); fileMountLimits.clear();
+      // 切换文件夹的这一帧也不保留意外随旧展开请求返回的重内容。
+      value.cards = value.cards.map(card => ({ ...Object.fromEntries(Object.entries(card)
+        .filter(([field]) => !CARD_DETAIL_FIELDS.includes(field))), details_pending: true }));
+    }
+    fileFolder = value.folder;
     batchState = value;
     lastEtag = response.headers.get('ETag') || '';
     if (Array.isArray(value.fix_error_types) && !hasSavedFixTypes) {
@@ -287,8 +363,22 @@ function renderControls() {
       + (plan.held.length ? `；后台还要处理的文件里的 ${plan.held.length} 张这次不交` : '') : '';
   $('commitBtn').textContent = selectedFilter === 'all' ? `✓ 确认并处理全部标记${offered ? `（${offered}）` : ''}`
     : `✓ 只处理${COLOR_NAMES[selectedFilter]}色标记（${offered}）`;
-  $('openAllBtn').disabled = requestBusy || !manual.length;
-  $('openAllBtn').title = batchState.busy ? '后台在跑：处理完的文件马上打开，还要等的列出来' : '';
+  const openFiles = new Map(manual.map(c => [fileKey(c), c]));
+  const opened = new Set(batchState.opened_files || []);
+  const unopened = [...openFiles.values()].filter(c => !opened.has(fileKey(c)));
+  const openAvailable = unopened.filter(c => !batchState.busy || !openBlocked(c)).length;
+  const opening = batchState.busy && batchState.job?.kind === 'batch_open';
+  const pickedFiles = selectedFileCards();
+  $('openAllBtn').textContent = openFiles.size && !unopened.length
+    ? `📂 本轮已全部打开（共 ${openFiles.size} 个）`
+    : `📂 打开下一批（未开 ${unopened.length} / 共 ${openFiles.size} 个）`;
+  $('openAllBtn').disabled = requestBusy || openChoosing || opening || !unopened.length;
+  $('openAllBtn').title = '每次最多打开 5 个本轮尚未成功打开的文件；关闭 Excel 后仍会记住进度';
+  $('resetOpenHistoryBtn').disabled = requestBusy || openChoosing || opening || !opened.size;
+  $('openSelectedFilesBtn').textContent = `📂 打开选中文件（${pickedFiles.length} 个）`;
+  $('openSelectedFilesBtn').disabled = requestBusy || openChoosing || opening || !pickedFiles.length;
+  $('clearSelectedFilesBtn').disabled = openChoosing || !selectedFiles.size;
+  $('openFilesHint').textContent = `本轮累计已打开 ${opened.size} 个文件；当前有 ${openFiles.size} 个人工待处理文件，其中 ${unopened.length} 个本轮未打开（当前可打开 ${openAvailable} 个）。每次最多打开 5 个新文件，全部打开后不自动循环；重置打开记录可从头开始，勾选文件也可明确重新打开。`;
   // 复检进行中还能接着点复检：排进同一个任务；后台在跑别的批处理任务时排到它后面
   const held = new Set(manual.filter(c => !recheckSet.has(c)).map(fileKey)).size;
   $('recheckAllBtn').disabled = requestBusy || !recheckAll.length;
@@ -525,7 +615,7 @@ let lastSelectionKey = '';
 const selectionOnElement = new WeakMap();
 function applySelection() {
   renderSelectBar();
-  const key = JSON.stringify([...selectedIds]) + '|' + domRevision;
+  const key = JSON.stringify([[...selectedIds], [...selectedFiles]]) + '|' + domRevision;
   if (key === lastSelectionKey) return;
   lastSelectionKey = key;
   const elements = [...cardElements.values()];
@@ -542,6 +632,9 @@ function applySelection() {
   }
   const byFile = new Map(fileGroups(shownCards()));
   for (const [path, file] of fileElements) {
+    const checkbox = file.head.querySelector('[data-file-check]');
+    if (checkbox) checkbox.checked = selectedFiles.has(path);
+    file.element.classList.toggle('is-file-selected', selectedFiles.has(path));
     const button = file.head.querySelector('[data-file-action="select"]');
     if (!button) continue;
     const ids = (byFile.get(path) || []).map(c => c.id);
@@ -553,7 +646,14 @@ function applySelection() {
 
 function renderSelectBar() {
   const busy = batchState.busy || requestBusy;
-  $('selectBar').classList.toggle('hidden', largeMode || !batchState.cards.length);
+  const files = selectedFileCards().length;
+  const cardTools = cardElements.size > 0 || selectedIds.size > 0;
+  $('selectBar').classList.toggle('hidden', largeMode || (!files && !cardTools));
+  $('fileSelectActions').classList.toggle('hidden', !files);
+  $('cardSelectActions').classList.toggle('hidden', !cardTools);
+  $('pickedFileCount').textContent = `已选 ${files} 个文件`;
+  $('openPickedFilesBtn').disabled = requestBusy || openChoosing || (batchState.busy && batchState.job?.kind === 'batch_open') || !files;
+  $('clearPickedFilesBtn').disabled = openChoosing || !files;
   $('selectCount').textContent = (selectedIds.size ? `已选 ${selectedIds.size} 张` : '未选择卡片') + (selectNotice ? ` · ${selectNotice}` : '');
   const chosen = batchState.cards.filter(c => selectedIds.has(c.id));
   for (const button of $('selectBar').querySelectorAll('[data-set-color]')) {
@@ -748,6 +848,8 @@ function fileHeadHtml(key, cards = batchState.cards.filter(c => fileKey(c) === k
   const openState = !batchState.busy ? ''
     : blocked ? `<span class="batch-file-open" data-open="blocked" title="${esc(blocked)}">🔒 暂不能打开 · ${esc(blocked)}</span>`
     : '<span class="batch-file-open" data-open="ready" title="后台不会再处理这份文件，现在可以在 Excel 中打开">✅ 已处理完，可以打开</span>';
+  const openedState = (context?.opened || new Set(batchState.opened_files || [])).has(key)
+    ? '<span class="batch-file-open" data-open="opened" title="本轮成功打开过；不代表已修复或复检通过">📂 本轮已打开</span>' : '';
   const counts = REVIEW_COLORS.map(color => `<span class="batch-file-count" data-color="${color}"><span class="batch-dot" aria-hidden="true"></span>${COLOR_NAMES[color]} ${cards.filter(c => c.color === color).length}</span>`).join('');
   const recheckBlock = manual.length ? recheckBlockReason(manual) : '';
   const recheckTitle = recheckBlock ? `现在不能点：${recheckBlock}`
@@ -766,9 +868,9 @@ function fileHeadHtml(key, cards = batchState.cards.filter(c => fileKey(c) === k
   const badges = autoQueueBadge(key, cards, context) + followupBadge(key, cards, context);
   const queue = badges.match(/data-queue="(\w+)"/)?.[1];
   return `<header class="batch-file-head"${batchState.busy ? ` data-open="${blocked ? 'blocked' : 'ready'}"` : ''}${queue ? ` data-queue="${queue}"` : ''}>
-    <div class="batch-file-title"><span class="batch-file-icon" aria-hidden="true">📄</span><div class="batch-file-name">${excelLinkHtml(esc(first.wb_name || key), target)}${sub ? `<p class="batch-file-path">${esc(sub)}</p>` : ''}</div></div>${badges}${openState}
+    <div class="batch-file-title"><input type="checkbox" class="batch-file-checkbox" data-file-check="${esc(key)}" aria-label="选择文件 ${esc(first.wb_name || key)}"><span class="batch-file-icon" aria-hidden="true">📄</span><div class="batch-file-name">${excelLinkHtml(esc(first.wb_name || key), target)}${sub ? `<p class="batch-file-path">${esc(sub)}</p>` : ''}</div></div>${badges}${openState}${openedState}
     <div class="batch-file-counts" aria-label="这个文件的卡片数">${counts}<span class="batch-file-total">共 ${cards.length} 格</span></div>
-    <div class="batch-file-actions"><button type="button" class="btn btn-outline" data-file-action="select" data-file="${esc(key)}" aria-pressed="false">选中本文件的卡</button>${excelLinkHtml('📂 打开文件', { ...target, sheet: jump.sheet_name, cell: jump.cell_addr }, 'btn btn-outline')}${recheck}${auto}</div>
+    <div class="batch-file-actions"><button type="button" class="btn btn-outline batch-file-toggle" data-file-action="toggle" data-file="${esc(key)}" aria-expanded="${expandedFiles.has(key)}">${expandedFiles.has(key) ? '▾ 收起卡片' : `▸ 展开 ${cards.length} 张卡片`}</button><button type="button" class="btn btn-outline" data-file-action="select" data-file="${esc(key)}" aria-pressed="false">选中本文件的卡</button>${excelLinkHtml('📂 打开文件', { ...target, sheet: jump.sheet_name, cell: jump.cell_addr }, 'btn btn-outline')}${recheck}${auto}</div>
   </header>`;
 }
 
@@ -810,22 +912,28 @@ function syncCardList(groups, count, html, heads, fresh) {
     filesContainer = document.createElement('div');
     filesContainer.className = 'batch-files';
   }
-  const visible = new Set(groups.flatMap(([, cards]) => cards.map(c => c.id)));
+  const mounted = new Map(groups.map(([key, cards]) => [key, mountedFileCards(key, cards)]));
+  const visible = new Set([...mounted.values()].flatMap(cards => cards.map(c => c.id)));
+  const owners = new Map(batchState.cards.map(c => [c.id, fileKey(c)]));
   const visibleFiles = new Set(groups.map(([key]) => key));
-  for (const [id, element] of cardElements) if (!visible.has(id)) element.remove();
+  for (const [id, element] of cardElements) if (!visible.has(id)) {
+    element.remove();
+    if (!expandedFiles.has(owners.get(id))) {
+      cardElements.delete(id); cardHtmlCache.delete(id); cardMemo.delete(id); forgetCardHeight(id);
+    }
+  }
   for (const [key, file] of fileElements) if (!visibleFiles.has(key)) file.element.remove();
-  for (const [key, cards] of groups) {
+  for (const [key, allCards] of groups) {
+    const cards = mounted.get(key);
     let file = fileElements.get(key);
     if (!file) {
       const element = document.createElement('section');
       element.className = 'batch-file';
       element.dataset.file = key;
-      element.setAttribute('aria-label', cards[0].wb_name || key);
-      const waterfall = document.createElement('div');
-      waterfall.className = 'batch-waterfall';
+      element.setAttribute('aria-label', allCards[0].wb_name || key);
       const head = htmlElement(heads.get(key));
-      element.append(head, waterfall);
-      file = { element, head, waterfall, columns: [] };
+      element.append(head);
+      file = { element, head, waterfall: null, body: null, status: null, columns: [] };
       fileElements.set(key, file);
       headHtmlCache.set(key, heads.get(key));
       ++domRevision;
@@ -834,8 +942,38 @@ function syncCardList(groups, count, html, heads, fresh) {
       file.head.replaceWith(head);
       file.head = head;
       headHtmlCache.set(key, heads.get(key));
-      file.element.setAttribute('aria-label', cards[0].wb_name || key);
+      file.element.setAttribute('aria-label', allCards[0].wb_name || key);
       ++domRevision;
+    }
+    const expanded = expandedFiles.has(key);
+    file.element.classList.toggle('is-collapsed', !expanded);
+    if (!expanded) {
+      file.body?.remove(); file.body = null; file.waterfall = null; file.status = null; file.columns = [];
+      continue;
+    }
+    if (!file.body) {
+      file.body = document.createElement('div'); file.body.className = 'batch-file-body is-opening';
+      const body = file.body;
+      body.addEventListener('animationend', event => {
+        if (event.target === body) body.classList.remove('is-opening');
+      });
+      file.waterfall = document.createElement('div'); file.waterfall.className = 'batch-waterfall';
+      file.status = document.createElement('p'); file.status.className = 'batch-file-loading';
+      file.status.setAttribute('role', 'status');
+      file.body.append(file.status, file.waterfall); file.element.append(file.body);
+    }
+    const pending = allCards.some(c => c.details_pending);
+    const more = !pending && cards.length < allCards.length;
+    file.status.hidden = !pending && !more;
+    file.status.textContent = pending ? '正在加载此文件的卡片…' : more ? `正在展开卡片… ${cards.length} / ${allCards.length}` : '';
+    file.body.setAttribute('aria-busy', String(pending || more));
+    if (more && !fileMountFrames.has(key)) {
+      fileMountFrames.set(key, requestAnimationFrame(() => {
+        fileMountFrames.delete(key);
+        if (!expandedFiles.has(key)) return;
+        fileMountLimits.set(key, (fileMountLimits.get(key) ?? FILE_MOUNT_BATCH) + FILE_MOUNT_BATCH);
+        renderKey = ''; render();
+      }));
     }
     if (file.columns.length !== count) {
       file.columns = Array.from({ length: count }, () => {
@@ -864,7 +1002,7 @@ function syncCardList(groups, count, html, heads, fresh) {
   if (groups.length) {
     if (list.firstElementChild !== filesContainer) { list.replaceChildren(filesContainer); ++domRevision; }
     measureDirtyCards();
-    rebalanceFresh(groups, count, fresh);
+    rebalanceFresh([...mounted], count, fresh);
   } else {
     const empty = `<section class="panel batch-empty"><h2>${batchState.busy ? '正在自动扫描与修复…' : '当前没有待审核卡片'}</h2><p>${batchState.busy ? '文件处理后会在这里出现修改前后对比，无需逐项放行。' : '开始全自动处理，或切换颜色筛选查看结果。'}</p></section>`;
     if (list.innerHTML !== empty) { list.innerHTML = empty; ++domRevision; }
@@ -887,6 +1025,7 @@ function pruneRenderCaches(allByFile) {
     headHtmlCache.delete(key);
     fileElements.get(key)?.element.remove();
     fileElements.delete(key);
+    expandedFiles.delete(key); selectedFiles.delete(key); fileMountLimits.delete(key);
   }
 }
 
@@ -927,12 +1066,17 @@ function render() {
   const columnCount = Math.max(1, Math.min(3, Math.floor((width - 44 + 18) / 328)));
   const allByFile = new Map(fileGroups(batchState.cards)), context = fileRenderContext();
   const chrome = cardChromeSig();
-  const cardSigs = new Map(batchState.cards.map(card => [card.id, JSON.stringify([card, chrome, openBlocked(card)])]));
+  const groups = fileGroups(shown);
+  const mountedGroups = groups.map(([key, cards]) => [key, mountedFileCards(key, cards)]);
+  const rendering = mountedGroups.flatMap(([, cards]) => cards);
+  const active = largeMode && shown.find(c => c.id === activeCardId);
+  if (active && !rendering.includes(active)) rendering.push(active);
+  const cardSigs = new Map(rendering.map(card => [card.id, JSON.stringify([card, chrome, openBlocked(card)])]));
   const headSigs = new Map([...allByFile].map(([key, cards]) => [key, JSON.stringify([
     cards.map(c => [c.id, c.wb_path, c.wb_name, c.sheet_name, c.cell_addr, c.color, c.finalized, c.auto_skip]),
-    chrome, openBlocked(cards[0]), autoQueueBadge(key, cards, context), followupBadge(key, cards, context),
+    chrome, expandedFiles.has(key), context.opened.has(key), cards.some(c => c.details_pending), openBlocked(cards[0]), autoQueueBadge(key, cards, context), followupBadge(key, cards, context),
   ])]));
-  const key = JSON.stringify([chrome, [...cardSigs], [...headSigs], selectedFilter, largeMode, activeCardId, width]);
+  const key = JSON.stringify([chrome, [...cardSigs], [...headSigs], selectedFilter, largeMode, activeCardId, width, [...fileMountLimits]]);
   if (renderKey === key) { applySelection(); return; }
   renderKey = key;
   if (largeMode) {
@@ -944,7 +1088,9 @@ function render() {
     const signature = index >= 0 ? cardSigs.get(shown[index].id) : 'empty';
     if (largeCardKey !== signature) {
       hideImagePreview();
-      $('largeCard').innerHTML = index >= 0 ? cardHtml(shown[index], true) : '<p class="batch-empty">当前筛选下没有卡片</p>';
+      $('largeCard').innerHTML = index >= 0 ? (shown[index].details_pending
+        ? '<p class="batch-file-loading" role="status">正在加载此文件的卡片…</p>' : cardHtml(shown[index], true))
+        : '<p class="batch-empty">当前筛选下没有卡片</p>';
       largeCardKey = signature;
       ++domRevision;
     }
@@ -952,11 +1098,10 @@ function render() {
     $('nextBtn').disabled = index >= shown.length - 1;
   } else {
     // 按文件分组，框里按处理顺序固定排列；改色只换颜色，卡片和文件框都不挪位置。筛选时没有卡片的文件框不显示
-    const groups = fileGroups(shown);
-    const fresh = placeCards(groups, columnCount);
-    const html = new Map(shown.map(c => [c.id, memoHtml(cardMemo, c.id, cardSigs.get(c.id), () => cardHtml(c))]));
+    const fresh = placeCards(mountedGroups, columnCount);
+    const html = new Map(rendering.map(c => [c.id, memoHtml(cardMemo, c.id, cardSigs.get(c.id), () => cardHtml(c))]));
     const heads = new Map(groups.map(([key]) => [key, memoHtml(headMemo, key, headSigs.get(key), () => fileHeadHtml(key, allByFile.get(key), context))]));
-    if (width !== measuredWidth) shown.forEach(c => dirtyHeights.add(c.id));
+    if (width !== measuredWidth) rendering.forEach(c => dirtyHeights.add(c.id));
     measuredWidth = width;
     syncCardList(groups, columnCount, html, heads, fresh);
   }
@@ -971,6 +1116,7 @@ function openLarge(id) {
   hideImagePreview();
   render();
   if (!$('largeView').open) $('largeView').showModal();
+  if (batchState.cards.find(c => c.id === id)?.details_pending) requestFileDetails();
 }
 
 function closeLarge() {
@@ -993,11 +1139,11 @@ function sizeImagePreview() {
   const preview = $('imagePreview');
   const enlarged = preview.querySelector('img');
   const rect = image.getBoundingClientRect(), style = getComputedStyle(image);
-  // object-fit: contain 可能在小图框内留白，按实际显示的图片内容放大两倍。
+  // object-fit: contain 可能在小图框内留白，按实际显示的图片内容放大 1.5 倍。
   const displayedScale = Math.min(
     (image.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)) / image.naturalWidth,
     (image.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) / image.naturalHeight);
-  const scale = Math.min(displayedScale * 2, Math.max(1, innerWidth - 64) / image.naturalWidth,
+  const scale = Math.min(displayedScale * 1.5, Math.max(1, innerWidth - 64) / image.naturalWidth,
     Math.max(1, innerHeight - 64) / image.naturalHeight);
   enlarged.style.width = `${image.naturalWidth * scale}px`;
   enlarged.style.height = `${image.naturalHeight * scale}px`;
@@ -1011,6 +1157,7 @@ function moveCard(delta) {
   const index = cards.findIndex(c => c.id === activeCardId);
   activeCardId = cards[Math.max(0, Math.min(cards.length - 1, index + delta))]?.id;
   render();
+  if (batchState.cards.find(c => c.id === activeCardId)?.details_pending) requestFileDetails();
 }
 
 // 单击换色马上在页面上变，后台按顺序保存最后选的颜色：连点两下（双击）也能 黄→蓝→绿，不会因为上一次还没保存完被吞掉
@@ -1018,7 +1165,7 @@ const colorQueue = new Map();
 let colorSaving = false;
 function changeColor(id, direction = 1) {
   const card = batchState.cards.find(c => c.id === id);
-  if (requestBusy || !card || !canMark(card)) return;
+  if (requestBusy || !card || card.details_pending || !canMark(card)) return;
   card.color = nextColor(card.color, direction);
   colorQueue.set(id, card.color);
   render();
@@ -1368,16 +1515,38 @@ const cardWhere = id => {
   const card = batchState.cards.find(c => c.id === id);
   return card ? `${card.wb_name} ${card.sheet_name}!${card.cell_addr || '?'}` : id;
 };
-// 后台在跑时「打开全部人工待处理文件」：处理完的文件马上打开，还要等的列出原因（不排队）
-async function openReady() {
-  let result;
-  await action(async () => { result = await post('/api/batch/open', { card_ids: manualCards().map(c => c.id) }); });
-  if (!result?.opened || (!result.waiting.length && !result.errors.length)) return;  // 后台刚好空了就照常开了打开任务
-  const list = items => items.map(item => `· ${item.name}：${item.reason}`).join('\n');
-  const parts = [result.opened.length ? `已打开 ${result.opened.length} 个文件：${result.opened.join('、')}` : '现在还没有可以打开的文件。'];
-  if (result.waiting.length) parts.push(`还要等后台处理的 ${result.waiting.length} 个文件，处理完再打开（文件框上的文件名可以单独点）：\n${list(result.waiting)}`);
-  if (result.errors.length) parts.push(`打不开的 ${result.errors.length} 个文件：\n${list(result.errors)}`);
-  await appAlert(parts.join('\n\n'), { title: '打开人工待处理文件' });
+// 普通打开固定最多五份；文件复选框是明确选择，按勾选的文件打开。
+async function openReady(selectedOnly = false) {
+  if (requestBusy || openChoosing) return;
+  const ids = (selectedOnly ? selectedFileCards() : manualCards()).map(c => c.id);
+  if (!ids.length) return;
+  openChoosing = true;
+  renderControls();
+  try {
+    const plan = await post('/api/batch/open_plan', { card_ids: ids, selected_files: selectedOnly });
+    const waiting = plan.waiting.length ? `\n其中 ${plan.waiting.length} 个还要等后台处理，暂不打开。` : '';
+    if (!plan.files.length) {
+      await appAlert(plan.exhausted ? '本轮所有人工待处理文件都已打开过，不会自动重复打开。需要重开时，可重置打开记录，或勾选文件后打开。'
+        : `共 ${plan.total} 个${selectedOnly ? '选中文件' : '人工待处理文件'}，目前没有可以打开的文件。${waiting}`, { title: '批量打开文件' });
+      return;
+    }
+    const message = (selectedOnly ? `已选择 ${plan.total} 个文件。\n本次将打开 ${plan.files.length} 个选中文件。`
+      : `当前有 ${plan.total} 个人工待处理文件，本轮累计已打开 ${plan.round_opened ?? plan.already_opened ?? 0} 个。\n本次最多打开 5 个新文件，实际将打开 ${plan.files.length} 个；完成后还剩 ${plan.remaining} 个未打开，其余不会自动打开。`)
+      + waiting + '\n\n本次文件：\n' + plan.files.map(file => `· ${file.name}`).join('\n')
+      + (selectedOnly ? '\n\n同时打开较多文件会增加内存占用，可取消后减少勾选。' : '');
+    if (!(await appConfirm(message, { title: '确认打开文件', okText: `打开 ${plan.files.length} 个文件`, tone: 'info' }))) return;
+    const body = { card_ids: plan.card_ids, selected_files: selectedOnly };
+    if (!batchState.busy) { await startJob('/api/batch/open', body); return; }
+    let result;
+    await action(async () => { result = await post('/api/batch/open', body); });
+    if (!result?.opened || (!result.waiting.length && !result.errors.length)) return;
+    const list = items => items.map(item => `· ${item.name}：${item.reason}`).join('\n');
+    const parts = [result.opened.length ? `已打开 ${result.opened.length} 个文件：${result.opened.join('、')}` : '现在还没有可以打开的文件。'];
+    if (result.waiting.length) parts.push(`还要等后台处理的 ${result.waiting.length} 个文件，处理完再打开：\n${list(result.waiting)}`);
+    if (result.errors.length) parts.push(`打不开的 ${result.errors.length} 个文件：\n${list(result.errors)}`);
+    await appAlert(parts.join('\n\n'), { title: '打开人工待处理文件' });
+  } catch (error) { $('errorText').textContent = error.message; }
+  finally { openChoosing = false; renderControls(); }
 }
 
 async function autoAdjust(ids, title) {
@@ -1498,7 +1667,17 @@ $('copyLogErrorsBtn').addEventListener('click', event => copyText(errorLogLines(
 // 报错文字在很多地方被设置/清空，统一盯着它显示或隐藏复制按钮
 new MutationObserver(renderCopyErrorBtn).observe($('errorText'), { childList: true, characterData: true, subtree: true });
 new MutationObserver(renderCopyErrorBtn).observe($('pendingNotice'), { attributes: true, attributeFilter: ['class'] });
-$('openAllBtn').addEventListener('click', () => batchState.busy ? openReady() : startJob('/api/batch/open', { card_ids: manualCards().map(c => c.id) }));
+$('openAllBtn').addEventListener('click', () => openReady(false));
+$('resetOpenHistoryBtn').addEventListener('click', async () => {
+  if (requestBusy || openChoosing) return;
+  if (await appConfirm('重置当前文件夹的打开记录？下一次将从第一个待处理文件开始。\n已打开的 Excel 不会关闭，审核颜色和修复结果不变。', { title: '从头开始打开', okText: '重置记录' })) {
+    await action(() => post('/api/batch/open_reset'));
+  }
+});
+$('openSelectedFilesBtn').addEventListener('click', () => openReady(true));
+$('clearSelectedFilesBtn').addEventListener('click', () => { selectedFiles.clear(); applySelection(); renderControls(); });
+$('openPickedFilesBtn').addEventListener('click', () => openReady(true));
+$('clearPickedFilesBtn').addEventListener('click', () => { selectedFiles.clear(); applySelection(); renderControls(); });
 $('recheckAllBtn').addEventListener('click', () => startJob('/api/batch/recheck', { card_ids: recheckAllCards().map(c => c.id) }));
 $('followupStartBtn').addEventListener('click', () => action(() => post('/api/batch/followups/start')));
 $('followupCancelBtn').addEventListener('click', async () => {
@@ -1525,12 +1704,18 @@ for (const id of ['cardList', 'largeCard']) $(id).addEventListener('click', even
   const fileButton = event.target.closest('[data-file-action]');
   if (fileButton) {
     const key = fileButton.dataset.file;
-    if (fileButton.dataset.fileAction === 'select') toggleFileSelected(key);
+    if (fileButton.dataset.fileAction === 'toggle') toggleFileExpanded(key);
+    else if (fileButton.dataset.fileAction === 'select') toggleFileSelected(key);
     else if (fileButton.dataset.fileAction === 'recheck') {
       startJob('/api/batch/recheck', { card_ids: manualCards().filter(c => fileKey(c) === key).map(c => c.id) });
     } else if (fileButton.dataset.fileAction === 'auto') {
       autoAdjust(manualCards().filter(c => fileKey(c) === key && !c.auto_skip).map(c => c.id), '自动调整这个文件');
     }
+    return;
+  }
+  const head = event.target.closest('.batch-file-head');
+  if (head && !event.target.closest('a, button, input, label')) {
+    toggleFileExpanded(head.closest('.batch-file').dataset.file);
     return;
   }
   const card = event.target.closest('[data-id]');
@@ -1540,6 +1725,11 @@ for (const id of ['cardList', 'largeCard']) $(id).addEventListener('click', even
   else if (button?.dataset.action === 'recheck') startJob('/api/batch/recheck', { card_ids: [card.dataset.id], single: true });
   else if (button?.dataset.action === 'auto') autoAdjust([card.dataset.id], '自动调整这一格');
   else changeColor(card.dataset.id);
+});
+
+$('cardList').addEventListener('change', event => {
+  const checkbox = event.target.closest('[data-file-check]');
+  if (checkbox) toggleFileChecked(checkbox.dataset.fileCheck);
 });
 
 document.addEventListener('keydown', event => {

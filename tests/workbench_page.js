@@ -58,7 +58,7 @@ function element(tag = 'div') {
   };
 }
 
-function page() {
+function page({ collapsed = false } = {}) {
   const elements = new Map(), requests = [], listeners = {}, frames = [];
   const context = vm.createContext({
     document: { activeElement: null, createElement: element,
@@ -78,6 +78,11 @@ function page() {
     {id:'a', seq:1, wb_name:'book.xlsx', sheet_name:'Sheet', cell_addr:'A5', color:'blue', verified:true, images:{before:'/before.png', after:'/after.png'}},
     {id:'b', seq:2, wb_name:'book.xlsx', sheet_name:'Sheet', cell_addr:'A6', color:'yellow', finalized:true, images:{}}
   ]}; poll = async () => {}; post = async (url, payload) => {requests.push({url, payload}); return {ok:true};};`);
+  // 既有卡片交互用例按全部展开验证；折叠/懒加载用例明确使用真实默认状态。
+  if (!collapsed) run(`const expandedRenderUnderTest = render; render = () => {
+    batchState.cards.forEach(c => { expandedFiles.add(fileKey(c)); fileMountLimits.set(fileKey(c), Infinity); });
+    expandedRenderUnderTest();
+  };`);
   return { run, elements, requests, listeners, frames };
 }
 

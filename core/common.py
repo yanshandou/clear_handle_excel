@@ -50,6 +50,7 @@ STATIC_DIR = PROJECT_ROOT / "static"
 XL_TYPE_PDF = 0
 XL_SHEET_VISIBLE = -1
 XL_WORKSHEET = -4167
+XL_PAGE_BREAK_PREVIEW = 2
 
 
 def console_print(text: str) -> None:

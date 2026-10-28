@@ -42,6 +42,7 @@ class ModeSwitchTests(unittest.TestCase):
         patch.object(batch, "init_execution_batch").start()
         patch.object(self.wf, "_sync_problem_counts").start()
         self.sync = patch.object(batch, "_sync_highlights").start()
+        patch.object(batch, "_save_scan_preview").start()
         self.addCleanup(patch.stopall)
         self.addCleanup(reporter.flush_execution_report)
 
