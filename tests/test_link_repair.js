@@ -88,22 +88,87 @@ test('running task disables duplicate writes and folder changes, and resumes pol
   assert.match(p.get('repairResultTitle').textContent, /修复结果/);
 });
 
-test('colors page reuses validated presets and history and retains skipped colors', async () => {
+test('colors page compares all colors independently of saved presets and retains skipped colors', async () => {
   const storage = new Map([
     ['clear_handle_excel.highlightColors', JSON.stringify({fill:'#123456', font:'#fedcba'})],
     ['clear_handle_excel.highlightColorHistory', JSON.stringify([{fill:'#123456',font:'#FEDCBA'}, {fill:'red',font:'#000000'}])],
   ]);
   const p = await page({}, {kind:'colors', storage});
-  assert.match(p.get('repairColorsSummary').textContent, /9 组/);
-  assert.match(p.get('repairColors').innerHTML, /#123456/);
   p.get('repairFolder').value = result.folder; p.get('repairOldFolder').value = result.old_folder;
   p.setStatus({applied:{...result, files:[{name:'book.xlsx', cells:[{sheet:'Main', addr:'B7', fill:'#123456', font:'#FEDCBA', old_fill:'none', old_font:'#000000', status:'ok', reason:'已恢复'}, {sheet:'Main',addr:'B8', action:'skip', reason:'内容不一致'}]}]}});
   await p.get('repairRun').events.click();
   const post = p.requests.find(request => request.options?.method === 'POST');
   assert.equal(post.url, '/api/batch/find_marks/run');
-  assert.equal(JSON.parse(post.options.body).colors.length, 9);
+  assert.equal(JSON.parse(post.options.body).colors, undefined);
   assert.match(p.get('repairResults').innerHTML, /无填充/);
   assert.match(p.get('repairProgress').textContent, /恢复颜色 1 处；未修复 1 处/);
+});
+
+test('font-only differences show both current and backup font values in preview and applied results', async () => {
+  for (const phase of ['plan', 'applied']) {
+    const p = await page({[phase]:{folder:'current', files:[{name:'book.xlsx', cells:[{
+      sheet:'Main', addr:'A1', fill:'none', font:'#FF0000', old_fill:'none', old_font:'#123456',
+      status:'ok', reason:'已恢复字色',
+    }]}]}}, {kind:'colors'});
+    assert.match(p.get('repairResults').innerHTML, /<td>无填充 \/ 字色 #FF0000<\/td><td>无填充 \/ 字色 #123456<\/td>/);
+  }
+});
+
+test('skipped font-only differences retain both font values and the skip reason', async () => {
+  const p = await page({applied:{folder:'current', files:[{name:'book.xlsx', cells:[{
+    sheet:'Main', addr:'A2', fill:'none', font:'#FF0000', old_fill:'none', old_font:'#000000',
+    action:'skip', reason:'附近内容不同，未修复',
+  }]}]}}, {kind:'colors'});
+  assert.match(p.get('repairResults').innerHTML, /<td>无填充 \/ 字色 #FF0000<\/td><td>无填充 \/ 字色 #000000<\/td>/);
+  assert.match(p.get('repairResults').innerHTML, /class="link-skip">附近内容不同，未修复/);
+  assert.match(p.get('repairProgress').textContent, /恢复颜色 0 处；未修复 1 处/);
+});
+
+test('theme or pattern fills also retain existing font values', async () => {
+  const p = await page({applied:{folder:'current', files:[{name:'book.xlsx', cells:[{
+    sheet:'Main', addr:'A1', fill:'other', font:'#112233', old_fill:'other', old_font:'#445566', status:'ok',
+  }]}]}}, {kind:'colors'});
+  assert.match(p.get('repairResults').innerHTML, /<td>主题色 \/ 图案 \/ 字色 #112233<\/td><td>主题色 \/ 图案 \/ 字色 #445566<\/td>/);
+});
+
+test('unknown fonts never produce a fabricated black value or an Aa preview', async () => {
+  for (const font of [undefined, null, '']) {
+    const p = await page({applied:{folder:'current', files:[{name:'book.xlsx', cells:
+      ['none', 'other', '#AABBCC'].map((fill, index) => ({sheet:'Main', addr:`A${index+1}`,
+        fill, font, old_fill:fill, old_font:font, status:'ok'})),
+    }]}}, {kind:'colors'});
+    const html = p.get('repairResults').innerHTML;
+    assert.match(html, /<td>无填充<\/td><td>无填充<\/td>/);
+    assert.match(html, /<td>主题色 \/ 图案<\/td><td>主题色 \/ 图案<\/td>/);
+    assert.match(html, /<td>#AABBCC<\/td><td>#AABBCC<\/td>/);
+    assert.doesNotMatch(html, /#000000|字色|>Aa<|style=/);
+  }
+});
+
+test('sheet tab colors ignore font values even when the API supplies them', async () => {
+  const p = await page({applied:{folder:'current', files:[{name:'book.xlsx', cells:
+    ['none', 'other', '#FFC000'].map((fill, index) => ({kind:'tab', sheet:'Main', addr:`A${index+1}`,
+      fill, font:'#112233', old_fill:fill, old_font:'#445566', status:'ok'})),
+  }]}}, {kind:'colors'});
+  const html = p.get('repairResults').innerHTML;
+  assert.match(html, /<td>标签：无标签颜色<\/td><td>无标签颜色<\/td>/);
+  assert.match(html, /<td>标签：主题色<\/td><td>主题色<\/td>/);
+  assert.match(html, /style="background:#FFC000"/);
+  assert.doesNotMatch(html, /字色|#112233|#445566|#000000|>Aa<|;color:/);
+});
+
+test('untrusted font strings are escaped as text and never used as CSS', async () => {
+  const font = '#123456" onmouseover="alert(1)"><img src=x onerror=alert(1)>&\'';
+  const escapedFont = '#123456&quot; onmouseover=&quot;alert(1)&quot;&gt;&lt;img src=x onerror=alert(1)&gt;&amp;&#39;';
+  const cssFont = '#123456;background:url(javascript:alert(1))';
+  const p = await page({applied:{folder:'current', files:[{name:'book.xlsx', cells:
+    ['none', 'other', '#AABBCC'].map((fill, index) => ({sheet:'Main', addr:`A${index+1}`,
+      fill, font, old_fill:fill, old_font:cssFont, status:'ok'})),
+  }]}}, {kind:'colors'});
+  const html = p.get('repairResults').innerHTML;
+  assert.equal(html.split(escapedFont).length - 1, 3);
+  assert.equal(html.split(cssFont).length - 1, 3);
+  assert.doesNotMatch(html, /<img|<script|style=| onmouseover="| onerror="/);
 });
 
 test('failed files never report pending repairs as successful, and workbook text is escaped', async () => {
@@ -112,6 +177,31 @@ test('failed files never report pending repairs as successful, and workbook text
   assert.ok(!p.get('repairResults').innerHTML.includes('<script>'));
   assert.ok(!p.get('repairResults').innerHTML.includes('<img'));
   assert.match(p.get('repairResults').innerHTML, /未修复：无法保存/);
+});
+
+test('color results label sheet tabs separately and count restored tabs', async () => {
+  const p = await page({applied:{folder:'current', files:[{name:'book.xlsx', old:'backup/book.xlsx', cells:[
+    {sheet:'Main', old_sheet:'OldMain', kind:'tab', addr:'A1', anchor:'A1', fill:'#FFC000', old_fill:'none', status:'ok', reason:'已清除标签色'},
+    {sheet:'Main', addr:'A1', fill:'#C0007A', old_fill:'none', status:'ok', reason:'已恢复单元格'},
+  ]}]}}, {kind:'colors'});
+  assert.match(p.get('repairResults').innerHTML, /Main · Sheet 标签/);
+  assert.match(p.get('repairResults').innerHTML, /OldMain · Sheet 标签/);
+  assert.match(p.get('repairResults').innerHTML, /无标签颜色/);
+  assert.match(p.get('repairResults').innerHTML, /Main!A1/);
+  assert.match(p.get('repairProgress').textContent, /恢复颜色 2 处/);
+  assert.match(p.get('repairProgress').textContent, /Sheet 标签 1 张/);
+  assert.ok(p.links.every(link => link.target.compare === 'colors'));
+});
+
+test('large color comparisons process and count all results while expanding the list in batches', async () => {
+  const cells = Array.from({length:601}, (_, index) => ({sheet:'Main',addr:`A${index+1}`, mode:'all',
+    fill:'#8ACDD1', old_fill:'none', status:'ok', reason:'已恢复'}));
+  const p = await page({applied:{folder:'current', files:[{name:'book.xlsx', cells}]}}, {kind:'colors'});
+  assert.match(p.get('repairProgress').textContent, /恢复颜色 601 处/);
+  assert.equal((p.get('repairResults').innerHTML.match(/<tr><td>/g) || []).length, 200);
+  assert.match(p.get('repairResults').innerHTML, /200 \/ 601/);
+  p.get('repairResults').events.click({target:{closest:() => ({dataset:{repairMore:'book.xlsx'}})}});
+  assert.equal((p.get('repairResults').innerHTML.match(/<tr><td>/g) || []).length, 400);
 });
 
 test('initial polling failures retry while keeping duplicate operations disabled', async () => {

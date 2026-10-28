@@ -1,4 +1,4 @@
-"""查找旧版本留下的标记颜色，并对照原始备份恢复颜色。
+"""按备份对比所有单元格底色、字色及 Sheet 标签颜色；保留旧版标记色扫描 API。
 
 旧版本直接改单元格的底色和字色，记录丢了以后通过原始备份核对内容再恢复颜色。
 新版本的标记是条件格式规则，公式里带标识，点「清除」就能按标识删掉，不用这里找。
@@ -9,12 +9,14 @@
 from __future__ import annotations
 
 import copy
+import os
+import shutil
 import tempfile
 import threading
 from pathlib import Path
 from typing import Any
 
-from core import debug_log, workflow as wf
+from core import batch, debug_log, workflow as wf
 from core.backup_compare import norm as _norm, pair_files as _pair_files, pair_sheets
 from core.common import workbook_locked, workbook_rel_name
 
@@ -24,6 +26,45 @@ MAX_HITS_PER_FILE = 500
 
 _LOCK = threading.Lock()
 _STATUS: dict[str, Any] = {"running": False}
+
+
+def list_workbooks(folder: str) -> tuple[Path, list[Path]]:
+    root = Path(folder.strip().strip('"').strip("'")).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"文件夹不存在: {root}")
+    paths = sorted((path for path in root.rglob("*") if path.is_file()
+                    and path.suffix.lower() in READABLE | EXCEL_READABLE and not path.name.startswith("~$")),
+                   key=lambda path: workbook_rel_name(path, root))
+    if not paths:
+        raise ValueError("未找到 Excel 文件")
+    return root, paths
+
+
+def _is_template(path: str | Path) -> bool:
+    return Path(path).suffix.lower() in {".xltx", ".xltm"}
+
+
+def compare_file_colors(excel: Any, path: Path, old_path: Path) -> dict:
+    from core.color_compare import plan_file
+    return plan_file(excel, path, old_path)
+
+
+def _item_key(item: dict) -> tuple:
+    return item.get("kind", "cell"), item["sheet"], item["addr"]
+
+
+def _tab_hit(name: str) -> dict:
+    return {"kind": "tab", "sheet": name, "addr": "A1", "anchor": "A1", "fill": batch.TAB_HIGHLIGHT,
+            "font": "", "match": "tab", "recorded": False}
+
+
+def _tab_matches(sheet: Any, expected: dict) -> bool:
+    actual = batch._read_tab(sheet)
+    if expected["index"] == batch.XL_COLOR_INDEX_NONE:
+        return actual["index"] == batch.XL_COLOR_INDEX_NONE
+    if expected.get("theme"):
+        return actual.get("theme") == expected["theme"] and abs(actual.get("tint", 0) - expected.get("tint", 0)) < 0.00001
+    return actual.get("color") == expected.get("color") and abs(actual.get("tint", 0) - expected.get("tint", 0)) < 0.00001
 
 
 def _rgb(color: Any) -> str | None:
@@ -70,6 +111,8 @@ def scan_file(path: Path, styles: list[tuple[str, str]], recorded: set[tuple[str
     hits: list[dict] = []
     book = openpyxl.load_workbook(path, data_only=False)
     try:
+        hits.extend(_tab_hit(sheet.title) for sheet in book.worksheets
+                    if _rgb(sheet.sheet_properties.tabColor) == batch.TAB_HIGHLIGHT[1:])
         for sheet in book.worksheets:
             merged = {}
             for area in sheet.merged_cells.ranges:
@@ -186,6 +229,12 @@ def scan_file_excel(excel: Any, path: Path, styles: list[tuple[str, str]], recor
     book = open_workbook_checked(excel, str(path.resolve()), UpdateLinks=0, ReadOnly=True)
     try:
         for sheet in book.Worksheets:
+            try:
+                if batch._tab_is_ours(sheet):
+                    hits.append(_tab_hit(sheet.Name))
+            except AttributeError:
+                pass
+        for sheet in book.Worksheets:
             name, seen = sheet.Name, set()
             for area, color in _same_color_blocks(sheet.UsedRange):
                 if color not in fills:
@@ -297,7 +346,7 @@ def _begin(phase: str, total: int) -> None:
 
 def start(folder: str, colors: Any) -> None:
     styles = _styles(colors if isinstance(colors, list) else [])
-    root, paths = wf.list_workbooks(folder)
+    root, paths = list_workbooks(folder)
     _begin("find", len(paths))
     with _LOCK:
         for key in ("result", "plan", "applied"):
@@ -355,9 +404,43 @@ def _match_sheets(current: Any, old: Any) -> dict[str, tuple[Any, str]]:
                        words=_sheet_words)
 
 
+def _tab_plan(hit: dict, old_sheet: str, old_fill: str, how: str) -> dict:
+    same = old_fill == hit["fill"]
+    return {**hit, "old_sheet": old_sheet, "old_fill": old_fill, "old_font": "", "action": "skip" if same else "restore",
+            "reason": "备份的 Sheet 标签本来就是橙黄色，保留" if same else
+                      "恢复备份的 Sheet 标签颜色" + (f"（旧版表名「{old_sheet}」，按{_HOW[how]}对上）" if how != "name" else "")}
+
+
+def plan_tabs_excel(excel: Any, path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
+    """二进制文件的标签可用 Excel 对比；同名文件依次只读打开，不保存备份。"""
+    from core.excel_ops import open_workbook_checked
+    from core.link_repair import _sheet_info
+
+    snapshots = []
+    for source in (path, old_path):
+        book = open_workbook_checked(excel, str(source.resolve()), UpdateLinks=0, ReadOnly=True)
+        try:
+            snapshots.append([{**_sheet_info(sheet), "tab": batch._read_tab(sheet)} for sheet in book.Worksheets])
+        finally:
+            book.Close(SaveChanges=False)
+    matches = pair_sheets(*snapshots, title=lambda sheet: sheet["name"], code=lambda sheet: sheet["code"],
+                          words=lambda sheet: set(sheet["words"]))
+    result = []
+    for hit in hits:
+        match = matches.get(hit["sheet"])
+        if match is None:
+            result.append({**hit, "action": "skip", "reason": "备份工作表无法唯一配对，保留当前标签颜色"})
+            continue
+        old, how = match
+        tab = old["tab"]
+        fill = "none" if tab["index"] == batch.XL_COLOR_INDEX_NONE else f"#{_hex_of(tab['color'])}"
+        result.append(_tab_plan(hit, old["name"], fill, how))
+    return result
+
+
 def plan_file(path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
     """逐格决定改不改：旧版同一张表、同一地址的格子内容一样才改回旧版的颜色。
-    空格子内容一样说明不了什么（插了行、地址对不上时也是空的），还要这一整行的内容都一样。"""
+    空格子还要求整行内容相同；Sheet 标签按唯一工作表配对恢复，不依赖某个格子的内容。"""
     import openpyxl
 
     current = openpyxl.load_workbook(path, data_only=False)
@@ -370,6 +453,7 @@ def plan_file(path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
         plan = []
         for hit in hits:
             item = {"sheet": hit["sheet"], "addr": hit["addr"], "fill": hit["fill"], "font": hit["font"],
+                    **({"kind": "tab", "anchor": "A1"} if hit.get("kind") == "tab" else {}),
                     "action": "skip", "reason": ""}
             plan.append(item)
             top = hit["addr"].split(":")[0]
@@ -380,6 +464,11 @@ def plan_file(path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
                 item["reason"] = f"旧版里找不到这张表（按表名、猜原名、代码名、内容都对不上；旧版的表：{names}）"
                 continue
             item["old_sheet"] = old_sheet.title
+            if hit.get("kind") == "tab":
+                color = old_sheet.sheet_properties.tabColor
+                fill = "none" if color is None else f"#{_rgb(color)}" if _rgb(color) else "other"
+                item.update(_tab_plan(hit, old_sheet.title, fill, how))
+                continue
             cell, old_cell = sheet[top], old_sheet[top]
             item.update(_old_colors(old_cell))
             if _text(cell.value) != _text(old_cell.value):
@@ -393,6 +482,8 @@ def plan_file(path: Path, old_path: Path, hits: list[dict]) -> list[dict]:
             if how != "name":
                 item["reason"] += f"（旧版表名「{old_sheet.title}」，按{_HOW[how]}对上）"
         for item in plan:
+            if item["action"] == "restore" and (_is_template(path) or _is_template(old_path)):
+                item.update(action="skip", reason="模板格式暂不自动写回，请先另存为 .xlsx / .xlsm 工作簿后恢复颜色")
             debug_log.event("🔍 对比", 位置=f"{item['sheet']}!{item['addr']}", 旧表=item.get("old_sheet", "-"),
                             动作=item["action"], 原因=item["reason"], 标记色=item["fill"],
                             旧底色=item.get("old_fill", "-"), 旧字色=item.get("old_font", "-"))
@@ -440,7 +531,7 @@ def preview(old_folder: str) -> None:
         result = _STATUS.get("result")
     if not result:
         raise ValueError("请先查找残留标记色")
-    old_root, old_paths = wf.list_workbooks(old_folder)
+    old_root, old_paths = list_workbooks(old_folder)
     if old_root == Path(result["folder"]).resolve():
         raise ValueError("旧版文件夹和当前文件夹是同一个，请选原始备份的文件夹")
     files = [f for f in result["files"] if f["hits"]]
@@ -464,23 +555,61 @@ def _excel_color(hex_color: str) -> int:
     return r + g * 256 + b * 65536
 
 
-def _read_old(excel: Any, old_path: str, cells: list[dict]) -> dict[str, dict | str]:
+def _read_format_color(target: Any, prefix: str = "") -> dict:
+    result = {}
+    for key, attribute, convert in (("color", "Color", int), ("index", "ColorIndex", int),
+                                    ("theme", "ThemeColor", int), ("tint", "TintAndShade", float)):
+        try:
+            result[key] = convert(getattr(target, prefix + attribute))
+        except Exception:
+            result[key] = None
+    if result.get("theme", 0) is not None and result["theme"] <= 0:
+        result["theme"] = None
+    return result
+
+
+def _write_format_color(target: Any, record: dict, prefix: str = "") -> None:
+    if record.get("index") == -4105:  # xlColorIndexAutomatic
+        setattr(target, prefix + "ColorIndex", -4105)
+    elif record.get("theme"):
+        setattr(target, prefix + "ThemeColor", record["theme"])
+        setattr(target, prefix + "TintAndShade", record.get("tint") or 0)
+    elif record.get("color") is not None:
+        setattr(target, prefix + "Color", record["color"])
+        setattr(target, prefix + "TintAndShade", 0)
+    else:
+        raise ValueError("备份颜色无法读取，本文件没有保存")
+    # 不同工作簿可能使用不同主题；必要时用备份的实际 RGB 保证颜色相同。
+    if int(getattr(target, prefix + "Color")) != record["color"]:
+        setattr(target, prefix + "Color", record["color"])
+        setattr(target, prefix + "TintAndShade", 0)
+    if int(getattr(target, prefix + "Color")) != record["color"]:
+        raise ValueError("颜色未能恢复为备份原色，本文件没有保存")
+
+
+def _read_old(excel: Any, old_path: str, cells: list[dict]) -> dict[tuple, dict | str]:
     """先把旧版要用的格子读出来（内容、底色、字色）就关掉：旧版和新版多半同名，
     Excel 不能同时打开两个同名文件（第二个 Open 会返回空对象）。读不到的格子记原因"""
     from core.excel_ops import open_workbook_checked
 
-    found: dict[str, dict | str] = {}
+    found: dict[tuple, dict | str] = {}
     old = open_workbook_checked(excel, str(Path(old_path).resolve()), UpdateLinks=0, ReadOnly=True)
     try:
         sheets = {_norm(sheet.Name): sheet for sheet in old.Worksheets}
         for item in cells:
-            key = f"{item['sheet']}!{item['addr']}"
+            key = _item_key(item)
             try:
-                source = sheets[_norm(item.get("old_sheet", item["sheet"]))].Range(item["addr"].split(":")[0])
+                sheet = sheets[_norm(item.get("old_sheet", item["sheet"]))]
+                if item.get("kind") == "tab":
+                    found[key] = batch._read_tab(sheet)
+                    continue
+                source = sheet.Range(item["addr"].split(":")[0])
                 interior = source.Interior
                 found[key] = {"formula": _text(source.Formula), "pattern": int(interior.Pattern),
                               "color": interior.Color, "tint": interior.TintAndShade,
-                              "pattern_color": interior.PatternColor, "font": source.Font.Color}
+                              "pattern_color": interior.PatternColor, "font": source.Font.Color,
+                              "fill_state": _read_format_color(interior), "pattern_state": _read_format_color(interior, "Pattern"),
+                              "font_state": _read_format_color(source.Font)}
             except Exception as err:
                 found[key] = f"读旧版这一格出错：{err}"
     finally:
@@ -488,36 +617,86 @@ def _read_old(excel: Any, old_path: str, cells: list[dict]) -> dict[str, dict | 
     return found
 
 
-def apply_file(excel: Any, path: str, old_path: str, cells: list[dict]) -> list[dict]:
-    """用 Excel 把旧版格子的底色（含主题色、图案）和字色抄回来，保存。写之前再确认一次：
-    内容还和旧版一样、底色还是标记色（期间被人改过就不动）。只改颜色，不动别的格式"""
+def apply_file(excel: Any, path: str, old_path: str, cells: list[dict], *, versions: tuple[str, str] | None = None) -> list[dict]:
+    """恢复备份底色、字色与标签颜色；全量对比模式校验版本，只改颜色，不修改内容。"""
+    from core.link_repair import fingerprint
+
+    if _is_template(path) or _is_template(old_path):
+        raise ValueError("模板格式暂不自动写回，请先另存为 .xlsx / .xlsm 工作簿后恢复颜色")
+
+    def check_versions():
+        if versions is not None and (fingerprint(Path(path)) != versions[0]
+                                     or fingerprint(Path(old_path)) != versions[1]):
+            raise ValueError("当前文件或备份在对比后发生变化，请重新扫描")
+
+    check_versions()
+    if versions is not None and Path(path).suffix.lower() == ".xls":
+        # Excel 可在打开 .xls 时更新文件元数据，不能把这类变动当成新的扫描基准。
+        with tempfile.TemporaryDirectory(prefix=".color-repair-", dir=Path(path).parent) as directory:
+            working = Path(directory) / Path(path).name
+            shutil.copy2(path, working)
+            if fingerprint(working) != versions[0]:
+                raise ValueError("当前文件在复制期间发生变化，请重新扫描")
+            check_versions()
+            done = _apply_colors(excel, str(working), old_path, cells, check_versions)
+            if any(item.get("status") == "ok" for item in done):
+                check_versions()
+                os.replace(working, path)
+            return done
+    return _apply_colors(excel, path, old_path, cells, check_versions)
+
+
+def _apply_colors(excel: Any, path: str, old_path: str, cells: list[dict], check_versions: Any) -> list[dict]:
     from core.excel_ops import normalize_workbook_view, open_workbook_checked
 
     old = _read_old(excel, old_path, cells)
+    check_versions()
     done: list[dict] = []
     book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
     try:
         if book.ReadOnly:
             raise ValueError("文件以只读方式打开（可能在别处开着），没有改")
-        changed = False
+        check_versions()
+        changed = cells_changed = False
         for item in cells:
             result = {**item, "status": "failed", "reason": ""}
             done.append(result)
-            source = old[f"{item['sheet']}!{item['addr']}"]
-            if not isinstance(source, str):
+            source = old[_item_key(item)]
+            if item.get("kind") != "tab" and not isinstance(source, str):
                 debug_log.event("📄 旧版这一格", 位置=f"{item['sheet']}!{item['addr']}", 内容=debug_log.clip(source["formula"]),
                                 图案=source["pattern"], 底色=source["color"], 深浅=source["tint"], 字色=source["font"])
             if isinstance(source, str):
                 result["reason"] = source
                 continue
             try:
+                if item.get("kind") == "tab":
+                    sheet = book.Worksheets(item["sheet"])
+                    if item.get("mode") != "all" and not batch._tab_is_ours(sheet):
+                        result["reason"] = "Sheet 标签已不是程序标记的橙黄色，保留当前颜色"
+                        continue
+                    if item.get("mode") != "all" and source.get("color") == _excel_color(batch.TAB_HIGHLIGHT):
+                        result["reason"] = "备份的 Sheet 标签本来就是橙黄色，保留"
+                        continue
+                    batch._restore_tab(sheet, source)
+                    if item.get("mode") == "all" and source["index"] != batch.XL_COLOR_INDEX_NONE:
+                        if int(sheet.Tab.Color) != source["color"]:
+                            sheet.Tab.Color = source["color"]
+                            sheet.Tab.TintAndShade = 0
+                        verified = int(sheet.Tab.Color) == source["color"]
+                    else:
+                        verified = _tab_matches(sheet, source)
+                    if not verified:
+                        raise ValueError("Sheet 标签颜色未能恢复为备份颜色，本文件没有保存")
+                    changed = True
+                    result.update(status="ok", reason="已恢复备份的 Sheet 标签颜色" if source["index"] != batch.XL_COLOR_INDEX_NONE else "已清除 Sheet 标签标记色（备份无颜色）")
+                    continue
                 target = book.Worksheets(item["sheet"]).Range(item["addr"])
                 top = target.Cells(1, 1)
                 if _text(top.Formula) != source["formula"]:
                     result["reason"] = "内容和旧版不一样了，没有改"
                     continue
                 color = top.Interior.Color
-                if color is None or int(color) != _excel_color(item["fill"]):
+                if item.get("mode") != "all" and (color is None or int(color) != _excel_color(item["fill"])):
                     result["reason"] = "底色已经不是标记色（被人改过），没有改"
                     continue
                 interior = target.Interior
@@ -525,18 +704,21 @@ def apply_file(excel: Any, path: str, old_path: str, cells: list[dict]) -> list[
                     interior.Pattern = XL_PATTERN_NONE
                 else:
                     interior.Pattern = source["pattern"]
-                    interior.Color = source["color"]
-                    interior.TintAndShade = source["tint"]
+                    _write_format_color(interior, source["fill_state"])
                     if source["pattern"] != XL_PATTERN_SOLID:
-                        interior.PatternColor = source["pattern_color"]
+                        _write_format_color(interior, source["pattern_state"], "Pattern")
                 if source["font"] is not None:
-                    target.Font.Color = source["font"]
-                changed = True
+                    _write_format_color(target.Font, source["font_state"])
+                changed = cells_changed = True
                 result.update(status="ok", reason="已改回旧版的颜色")
             except Exception as err:
+                if item.get("kind") == "tab" or item.get("mode") == "all":
+                    raise
                 result["reason"] = f"改的时候出错：{err}"
         if changed:
-            normalize_workbook_view(excel, book)
+            if cells_changed and not any(item.get("mode") == "all" for item in cells):
+                normalize_workbook_view(excel, book)
+            check_versions()
             book.Save()
     finally:
         book.Close(SaveChanges=False)
@@ -619,7 +801,7 @@ def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[P
     from core.link_repair import fingerprint
 
     files: list[dict] = []
-    excel, com, saved = None, False, None
+    excel, com = None, False
     try:
         wf.pythoncom.CoInitialize()
         com = True
@@ -634,47 +816,31 @@ def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[P
                 _STATUS.update(done=index, current=name, stage="scan")
             try:
                 stamp = fingerprint(path)
-                if path.suffix.lower() in READABLE:
-                    hits = scan_file(path, styles, _recorded(str(path)))
-                elif path.suffix.lower() in EXCEL_READABLE:
-                    if excel is None:
-                        excel = start_background_excel()
-                    if saved is None:
-                        saved = xls_saved_colors(excel, styles)
-                    hits = scan_file_excel(excel, path, styles, _recorded(str(path)), saved)
-                else:
-                    raise ValueError(f"{path.suffix} 格式不能自动恢复颜色，请人工检查")
-                entry["truncated"] = len(hits) >= MAX_HITS_PER_FILE
-                entry["cells"] = [{**hit, "status": "skip", "reason": "未修复"} for hit in hits]
-                if not hits:
-                    continue
-                if path.suffix.lower() not in READABLE:
-                    raise ValueError(f"{path.suffix} 文件还不能自动对比备份，请按列出的位置人工恢复颜色")
                 old_path = pairs[name]
                 if old_path is None:
                     raise ValueError("备份文件夹里找不到唯一对应的文件")
                 if path.resolve() == old_path.resolve():
                     raise ValueError("当前文件不能作为自己的备份，请选择原始备份")
                 entry["old"] = str(old_path)
-                if old_path.suffix.lower() not in READABLE:
-                    raise ValueError(f"备份文件是 {old_path.suffix}，不能自动对比颜色，请人工检查")
                 old_stamp = fingerprint(old_path)
                 with _LOCK:
                     _STATUS["stage"] = "preview"
-                entry["cells"] = plan_file(path, old_path, hits)
+                if (path.suffix.lower() not in READABLE or old_path.suffix.lower() not in READABLE) and excel is None:
+                    excel = start_background_excel()
+                entry.update(compare_file_colors(excel, path, old_path))
+                if fingerprint(path) != stamp or fingerprint(old_path) != old_stamp:
+                    raise ValueError("当前文件或备份在检查期间发生变化，请重新扫描")
                 ready = [cell for cell in entry["cells"] if cell["action"] == "restore"]
                 if ready:
-                    if fingerprint(path) != stamp or fingerprint(old_path) != old_stamp:
-                        raise ValueError("当前文件或备份在检查期间发生变化，请重新扫描")
                     if workbook_locked(path):
                         raise ValueError("文件正在 Excel 中打开，请保存并关闭后再修复")
                     with _LOCK:
                         _STATUS["stage"] = "apply"
                     if excel is None:
                         excel = start_background_excel()
-                    outcomes = {(cell["sheet"], cell["addr"]): cell
-                                for cell in apply_file(excel, str(path), str(old_path), ready)}
-                    entry["cells"] = [outcomes.get((cell["sheet"], cell["addr"]), cell) for cell in entry["cells"]]
+                    outcomes = {_item_key(cell): cell
+                                for cell in apply_file(excel, str(path), str(old_path), ready, versions=(stamp, old_stamp))}
+                    entry["cells"] = [outcomes.get(_item_key(cell), cell) for cell in entry["cells"]]
             except Exception as error:
                 entry["error"] = str(error)
                 debug_log.exception(error, f"颜色修复 {name}")
@@ -682,7 +848,7 @@ def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[P
                 for cell in entry["cells"]:
                     debug_log.event("🎨 颜色修复", 位置=f"{cell['sheet']}!{cell['addr']}", 结果=entry["error"] or cell["reason"])
                 count = sum(cell.get("status") == "ok" for cell in entry["cells"])
-                wf.log_msg(f"🎨 {name}：已恢复 {count} 格" + (f"；{entry['error']}" if entry["error"] else ""))
+                wf.log_msg(f"🎨 {name}：已恢复 {count} 处" + (f"；{entry['error']}" if entry["error"] else ""))
     except Exception as error:
         debug_log.exception(error, "颜色修复任务")
         files.append({"name": "任务", "path": "", "cells": [], "error": str(error)})
@@ -697,16 +863,16 @@ def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[P
                 with wf.STATE_LOCK, _LOCK:
                     _STATUS.update(running=False, done=len(paths), current="", applied={
                         "folder": str(root), "old_folder": str(old_root), "files": files,
-                        "colors": [{"fill": f"#{a}", "font": f"#{b}"} for a, b in styles]})
+                        "scope": "all"})
                     wf.STATE["busy"] = False
                     wf.STATE.pop("maintenance", None)
 
 
-def repair(folder: str, old_folder: str, colors: Any) -> None:
-    """独立页面的一键任务；整个扫描、对比、写入期间保留后台任务锁。"""
-    styles = _styles(colors if isinstance(colors, list) else [])
-    root, paths = wf.list_workbooks(folder)
-    old_root, old_paths = wf.list_workbooks(old_folder)
+def repair(folder: str, old_folder: str, colors: Any = None) -> None:
+    """按备份比较所有配色；colors 仅保留旧 API 参数兼容，不再作为筛选条件。"""
+    styles = []
+    root, paths = list_workbooks(folder)
+    old_root, old_paths = list_workbooks(old_folder)
     if root == old_root:
         raise ValueError("备份文件夹不能与当前文件夹相同")
     with wf.STATE_LOCK, _LOCK:

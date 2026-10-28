@@ -9,21 +9,20 @@
 </head>
 <body data-repair-kind="colors">
   <header class="app-header">
-    <a href="/" class="header-brand"><div class="header-logo-badge">🎨</div><div class="header-title"><h1>修复颜色</h1><span class="subtitle">对照原始备份 · 恢复底色与字色</span></div></a>
+    <a href="/" class="header-brand"><div class="header-logo-badge">🎨</div><div class="header-title"><h1>修复颜色</h1><span class="subtitle">对照原始备份 · 恢复单元格与 Sheet 标签颜色</span></div></a>
     <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/repair-links" class="nav-link">🔗 修复引用错误</a><a href="/repair-hidden" class="nav-link">🙈 修复隐藏页</a><a href="/workbench" class="nav-link">📐 切字检查工作台</a></nav>
   </header>
   <main class="container clean-container">
     <section class="panel">
-      <h2>查找残留标记色，对照备份直接恢复</h2>
-      <p class="toolbar-hint">扫描当前文件中的残留标记色，自动匹配原始备份。内容和位置能核对上的格子，恢复备份中的底色与字色。</p>
+      <h2>对照备份，检查全部配色差异</h2>
+      <p class="toolbar-hint">比较全部单元格直接设置的底色、字色及 Sheet 标签颜色，不限预设颜色。颜色相同则保留，颜色不同且对应关系能确认时，恢复备份原色；备份没有填充或标签颜色时清除当前颜色，缺失的原色也会恢复。</p>
       <div class="link-fields">
         <label for="repairFolder">当前 Excel 文件夹（含子文件夹）<input id="repairFolder" type="text" placeholder="例如 D:\当前文件\001"></label>
         <label for="repairOldFolder">原始备份文件夹<input id="repairOldFolder" type="text" placeholder="例如 D:\老版备份\001，或包含 001 的备份总目录"></label>
       </div>
-      <details class="repair-colors"><summary id="repairColorsSummary">本次查找的标记配色</summary><div id="repairColors" class="repair-color-list"></div><p class="toolbar-hint">包含全部预设，以及切字工作台在本机浏览器中保存的当前配色和历史自定义配色。</p></details>
       <div class="link-actions"><button id="repairRun" class="btn btn-primary" type="button" disabled>🎨 扫描并修复颜色</button></div>
-      <p class="toolbar-hint">点击后自动扫描、对比备份并保存修复结果。内容不一致、配对不明确或备份里本来就是标记色的格子，会保留并说明原因。修复前请保存并关闭目标 Excel 文件。</p>
-      <p class="toolbar-hint">支持自动恢复 .xlsx / .xlsm / .xltx / .xltm；.xls / .xlsb 会列出标记位置供人工检查。新版本添加的条件格式标记，可在工作台点「清除 Excel 标记颜色」。关闭网页后任务继续。</p>
+      <p class="toolbar-hint">点击后自动对比并保存修复结果。内容、公式或合并区域对不上，以及配对不明确、渐变填充、整行整列的默认配色等复杂情况，会列出原因供人工核对。修复前请保存并关闭目标 Excel 文件。</p>
+      <p class="toolbar-hint">支持 .xlsx / .xlsm / .xls / .xlsb；.xltx / .xltm 模板只读对比，请另存为工作簿后修复。条件格式动态显示的颜色不属于直接配色，程序添加的条件格式标记可在工作台点「清除 Excel 标记颜色」。关闭网页后任务继续。</p>
       <p id="repairProgress" role="status" aria-live="polite">填写两个文件夹，一次完成扫描和修复。</p>
       <div class="progress-track progress-track-sm"><div id="repairProgressFill" class="progress-fill" style="width:0%"></div></div>
       <p id="repairError" class="batch-error" role="alert"></p>

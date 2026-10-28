@@ -198,6 +198,32 @@ async function main() {
     };
     await cdp('Runtime.enable'); await cdp('Page.enable');
     if (process.argv.includes('--repairs')) {
+      const assertFontOnlyColumns = async viewport => {
+        const rows = await evaluate(`(async()=>{
+          const results=[];
+          for(const address of ['A2','A3']) {
+            const row=[...document.querySelectorAll('#repairResults tbody tr')]
+              .find(row=>row.cells[0].textContent.includes('明細!'+address));
+            const columns=[];
+            for(const cell of [row.cells[1],row.cells[2]]) {
+              cell.scrollIntoView({block:'center',inline:'center'});
+              await new Promise(resolve=>requestAnimationFrame(resolve));
+              const r=cell.getBoundingClientRect(), frame=cell.closest('.link-table-wrap').getBoundingClientRect();
+              columns.push({text:cell.textContent.trim(), visible:r.width>0 && r.height>0
+                && r.left>=Math.max(0,frame.left)-1 && r.right<=Math.min(innerWidth,frame.right)+1
+                && r.top>=0 && r.bottom<=innerHeight});
+            }
+            results.push({address,columns,status:row.cells[3].className});
+          }
+          return results;
+        })()`);
+        assert.deepEqual(rows, [
+          {address:'A2', columns:[{text:'无填充 / 字色 #0000FF',visible:true},
+            {text:'无填充 / 字色 #008000',visible:true}], status:'link-skip'},
+          {address:'A3', columns:[{text:'无填充 / 字色 #FF0000',visible:true},
+            {text:'无填充 / 字色 #123456',visible:true}], status:'link-ok'},
+        ], `font-only columns not visible on ${viewport}`);
+      };
       for (const kind of ['links', 'colors']) {
         await cdp('Emulation.setDeviceMetricsOverride', {width:1280, height:1000, deviceScaleFactor:1, mobile:false});
         await cdp('Page.navigate', {url:`http://127.0.0.1:${server.address().port}/repair-${kind}`});
@@ -214,7 +240,7 @@ async function main() {
         assert.equal(repairRequests.length, kind==='links'?1:2);
         assert.match(repairRequests.at(-1).url, /\/run$/);
         assert.equal(repairRequests.at(-1).payload.old_folder, 'C:/Synthetic/backup');
-        if (kind==='colors') assert.ok(repairRequests.at(-1).payload.colors.some(color=>color.fill==='#123456'));
+        if (kind==='colors') assert.equal(repairRequests.at(-1).payload.colors, undefined);
         await cdp('Page.reload');
         for (let i=0; i<100; i++) {
           if (await evaluate(`document.getElementById('repairProgress')?.textContent.includes('正在对比备份')`)) break;
@@ -224,13 +250,28 @@ async function main() {
         const cells = [{sheet:'明細',addr:'A1',formula:'=#REF!*2', source_formula:'=Source!A1*2', source:'明細!A1', display:'20',
           fill:'#C0007A',font:'#FFFFFF',old_fill:'#DDEEFF',old_font:'#112233',status:'ok',reason:'已恢复'},
           {sheet:'明細',addr:'A2',fill:'#C0007A',font:'#FFFFFF',action:'skip',reason:'附近内容与备份不同，请人工检查'}];
+        if (kind === 'colors') {
+          Object.assign(cells[1], {fill:'none',font:'#0000FF',old_fill:'none',old_font:'#008000'});
+          cells.push({kind:'tab', sheet:'标签表', old_sheet:'旧标签表', addr:'A1', anchor:'A1',
+            fill:'#FFC000', font:'#ABCDEF', old_fill:'none', old_font:'#FEDCBA', status:'ok',
+            reason:'已清除 Sheet 标签标记色（备份无颜色）'},
+            {sheet:'明細',addr:'A3',fill:'none',font:'#FF0000',old_fill:'none',old_font:'#123456',
+              status:'ok',reason:'已恢复仅字色差异'});
+        }
         repairStates[kind] = {running:false, applied:{folder:'C:/Synthetic/current', old_folder:'C:/Synthetic/backup',
           files:[{name:'book.xlsx',old:'C:/Synthetic/backup/book.xlsx',cells,error:null}]}};
         for (let i=0; i<100; i++) {
           if (await evaluate(`document.getElementById('repairProgress')?.textContent.includes('未修复 1 处')`)) break;
           await delay(50);
         }
-        assert.equal(await evaluate(`document.querySelectorAll('#repairResults tbody tr').length`), 2);
+        assert.equal(await evaluate(`document.querySelectorAll('#repairResults tbody tr').length`), kind === 'colors' ? 4 : 2);
+        if (kind === 'colors') {
+          assert.equal(await evaluate(`document.getElementById('repairProgress').textContent.includes('Sheet 标签 1 张')`), true);
+          assert.equal(await evaluate(`document.getElementById('repairResults').textContent.includes('无标签颜色')`), true);
+          assert.equal(await evaluate(`document.getElementById('repairResults').textContent.includes('#ABCDEF')
+            || document.getElementById('repairResults').textContent.includes('#FEDCBA')`), false);
+          await assertFontOnlyColumns('desktop');
+        }
         assert.equal(await evaluate(`document.getElementById('repairRun').disabled`), false);
         const comparisonsBefore = comparisonRequests.length;
         await evaluate(`document.querySelector('#repairResults summary .excel-link').click()`);
@@ -246,12 +287,14 @@ async function main() {
         await capture(`${kind}-desktop`);
         await cdp('Emulation.setDeviceMetricsOverride', {width:390,height:844,deviceScaleFactor:1,mobile:false});
         await delay(100);
+        if (kind === 'colors') await assertFontOnlyColumns('mobile');
         assert.equal(await evaluate(`document.documentElement.scrollWidth<=innerWidth`), true, kind+' page overflows on mobile');
         await capture(`${kind}-mobile`);
       }
       assert.deepEqual(errors, []);
       console.log(JSON.stringify({repair_pages:['links','colors'], one_button:true, background_reload:true,
-        skipped_results:true, custom_palette:true, paired_file_and_cell_links:true, mobile_layout:true, browser_errors:errors}));
+        skipped_results:true, all_color_comparison:true, font_only_columns:true, font_only_mobile:true,
+        paired_file_and_cell_links:true, mobile_layout:true, browser_errors:errors}));
       return;
     }
     await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });

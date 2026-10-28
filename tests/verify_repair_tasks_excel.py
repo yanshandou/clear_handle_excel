@@ -105,13 +105,14 @@ def main():
         assert sheet["A1"].fill.fgColor.rgb[-6:] == "DDEEFF" and sheet["A1"].font.color.rgb[-6:] == "112233"
         assert sheet["B4"].fill.fgColor.rgb[-6:] == "DDEEFF" and "B4:C4" in sheet.merged_cells
         assert sheet["A2"].fill.fgColor.rgb[-6:] == "C0007A" and sheet["A3"].value == "changed content"
+        assert sheet["A2"].font.color.rgb[-6:] == "112233"  # 底色相同、仅字色变化也恢复。
         book.close()
         assert all(link_repair.fingerprint(path) == stamp for path, stamp in stamps.items())
         link_cells = next(file["cells"] for file in links["files"] if file["name"] == "links.xlsx")
         color_cells = next(file["cells"] for file in colors["files"] if file["name"] == "colors.xlsx")
         assert any(cell.get("action") == "skip" for cell in link_cells)
-        assert sum(cell.get("status") == "ok" for cell in color_cells) == 2
-        assert sum(cell.get("action") == "skip" for cell in color_cells) == 2
+        assert sum(cell.get("status") == "ok" for cell in color_cells) == 3
+        assert sum(cell.get("action") == "skip" for cell in color_cells) == 1
         print(json.dumps({"one_click_links": True, "one_click_colors": True, "skipped_details_preserved": True,
                           "merged_cells_preserved": True, "backup_unchanged": True, "background_lock_released": True}))
 

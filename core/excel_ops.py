@@ -1,8 +1,10 @@
+import ctypes
 import re
 import sys
 import threading
 import zipfile
 from collections.abc import Callable
+from functools import lru_cache
 from xml.etree import ElementTree
 from pathlib import Path
 from typing import Any
@@ -445,13 +447,33 @@ def _theme_colors(archive: zipfile.ZipFile) -> dict[str, str]:
     return colors
 
 
+_COLOR_RGB_TO_HLS = ctypes.windll.shlwapi.ColorRGBToHLS
+_COLOR_RGB_TO_HLS.argtypes = [ctypes.c_uint32] + [ctypes.POINTER(ctypes.c_ushort)] * 3
+_COLOR_RGB_TO_HLS.restype = None
+_COLOR_HLS_TO_RGB = ctypes.windll.shlwapi.ColorHLSToRGB
+_COLOR_HLS_TO_RGB.argtypes = [ctypes.c_ushort] * 3
+_COLOR_HLS_TO_RGB.restype = ctypes.c_uint32
+
+
+@lru_cache(maxsize=8192)
 def _apply_tint(hex_color: str, tint: float) -> str:
-    """Excel 的 tint：按 HLS 亮度变深（负数）或变浅（正数）"""
-    import colorsys
-    r, g, b = (int(hex_color[i:i + 2], 16) / 255 for i in (0, 2, 4))
-    h, l, s = colorsys.rgb_to_hls(r, g, b)
-    l = l * (1 + tint) if tint < 0 else l * (1 - tint) + tint
-    return "".join(f"{round(v * 255):02X}" for v in colorsys.hls_to_rgb(h, l, s))
+    """Excel 的 tint 使用 16 位有符号量化和 240 阶整数 HLS。"""
+    shade = int(tint * 32767)
+    if shade == 0:
+        return hex_color.upper()
+    rgb = int.from_bytes(bytes.fromhex(hex_color), "little")
+    hue, lightness, saturation = ctypes.c_ushort(), ctypes.c_ushort(), ctypes.c_ushort()
+    _COLOR_RGB_TO_HLS(rgb, ctypes.byref(hue), ctypes.byref(lightness), ctypes.byref(saturation))
+    if shade < 0:
+        lightness.value = lightness.value * (32767 + shade) // 32767
+    else:
+        remaining = 32767 - shade
+        # Excel 分别截断两个乘积；合并表达式后截断会改变最终色值。
+        lightness.value = lightness.value * remaining // 32767 + 240 - 240 * remaining // 32767
+    if saturation.value == 0:
+        return f"{(lightness.value * 255 + 120) // 240:02X}" * 3
+    color = _COLOR_HLS_TO_RGB(hue.value, lightness.value, saturation.value)
+    return f"{color & 255:02X}{color >> 8 & 255:02X}{color >> 16 & 255:02X}"
 
 
 def _tab_color_hex(element: Any, theme: dict[str, str]) -> str | None:

@@ -80,7 +80,7 @@ class RepairTasksTests(unittest.TestCase):
 
     def run_color(self, **patches):
         self.state.update(busy=True, maintenance="color_repair")
-        defaults = {"scan_file": Mock(return_value=self.hits), "plan_file": Mock(return_value=self.plan),
+        defaults = {"compare_file_colors": Mock(return_value={"cells":self.plan, "truncated":False}),
                     "apply_file": Mock(return_value=[{**self.plan[0], "status": "ok", "reason": "已恢复颜色"}]),
                     "workbook_locked": Mock(return_value=False)}
         defaults.update(patches)
@@ -98,6 +98,16 @@ class RepairTasksTests(unittest.TestCase):
         self.assertFalse(self.state["busy"])
         self.assertNotIn("maintenance", self.state)
 
+    def test_color_task_keeps_tab_and_cell_outcomes_separate_at_the_same_address(self):
+        tab = {**mark_finder._tab_hit("Main"), "action":"restore", "reason":"恢复标签"}
+        original = self.plan
+        self.plan = [tab, *original]
+        results = [{**tab, "status":"ok"}, {**original[0], "status":"ok", "reason":"恢复单元格"}]
+        file, _ = self.run_color(apply_file=Mock(return_value=results))
+        self.assertEqual(len(file["cells"]), 3)
+        self.assertEqual([item.get("kind", "cell") for item in file["cells"]], ["tab", "cell", "cell"])
+        self.assertEqual(sum(item.get("status") == "ok" for item in file["cells"]), 2)
+
     def test_color_open_targets_and_changed_files_are_never_written(self):
         file, mocks = self.run_color(workbook_locked=Mock(return_value=True))
         self.assertIn("Excel 中打开", file["error"])
@@ -105,14 +115,14 @@ class RepairTasksTests(unittest.TestCase):
 
         def change_during_plan(*args):
             self.path.write_bytes(b"changed externally")
-            return self.plan
+            return {"cells":self.plan}
 
-        file, mocks = self.run_color(plan_file=Mock(side_effect=change_during_plan))
+        file, mocks = self.run_color(compare_file_colors=Mock(side_effect=change_during_plan))
         self.assertIn("发生变化", file["error"])
         mocks["apply_file"].assert_not_called()
 
     def test_color_no_matches_does_not_start_excel_and_failed_saves_keep_all_cells(self):
-        file, mocks = self.run_color(scan_file=Mock(return_value=[]))
+        file, mocks = self.run_color(compare_file_colors=Mock(return_value={"cells":[]}))
         self.assertEqual(file["cells"], [])
         mocks["apply_file"].assert_not_called()
         file, mocks = self.run_color(apply_file=Mock(side_effect=RuntimeError("保存失败")))

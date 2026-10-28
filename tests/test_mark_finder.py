@@ -6,7 +6,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import openpyxl
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Color, Font, PatternFill
+from types import SimpleNamespace
 
 from core import fix_images, mark_finder, reporter, storage, workflow
 
@@ -217,6 +218,260 @@ class MarkFinderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             mark_finder._styles([{"fill": "red", "font": "#FFFFFF"}])
 
+    def test_color_file_listing_includes_binary_and_templates_and_ignores_lock_files(self):
+        for name in ("binary.xlsb", "template.xltx", "macro_template.xltm", "~$binary.xlsb", "notes.txt"):
+            (self.folder / name).touch()
+        _, paths = mark_finder.list_workbooks(str(self.folder))
+        self.assertEqual({path.name for path in paths}, {"book.xlsx", "old.xls", "binary.xlsb", "template.xltx", "macro_template.xltm"})
+        self.assertTrue(mark_finder._is_template("file.xltm"))
+        self.assertFalse(mark_finder._is_template("file.xlsx"))
+
+    def test_templates_are_listed_for_manual_repair_and_never_opened_for_writing(self):
+        template, backup = self.folder / "marked.xltx", self.root / "original.xltx"
+        book = openpyxl.Workbook()
+        book.template = True
+        book.save(backup)
+        book.active.sheet_properties.tabColor = "FFC000"
+        book.save(template)
+        book.close()
+        hits = mark_finder.scan_file(template, mark_finder._styles(MAGENTA), set())
+        plan = mark_finder.plan_file(template, backup, hits)
+        self.assertEqual(plan[0]["action"], "skip")
+        self.assertIn("模板", plan[0]["reason"])
+        excel = Mock()
+        with self.assertRaisesRegex(ValueError, "模板"):
+            mark_finder.apply_file(excel, str(template), str(backup), plan)
+        excel.Workbooks.Open.assert_not_called()
+
+    def test_tab_only_markers_restore_none_theme_and_renamed_sheet_and_preserve_original_orange(self):
+        path, old_path = self.folder / "tabs.xlsx", self.root / "tabs_old.xlsx"
+        book = openpyxl.Workbook()
+        book.active.title = "NoColor"
+        book.create_sheet("Theme").sheet_properties.tabColor = Color(theme=5, tint=0.4)
+        book.create_sheet("OriginallyOrange").sheet_properties.tabColor = "FFC000"
+        book.create_sheet("Manual").sheet_properties.tabColor = "112233"
+        book.create_sheet("Renamed").sheet_properties.tabColor = "123456"
+        for sheet in book.worksheets:
+            sheet["A1"] = sheet.title
+            sheet.sheet_properties.codeName = f"Sheet{len(sheet.title)}{sheet.title}"
+        book.save(old_path)
+        for sheet in book.worksheets:
+            sheet.sheet_properties.tabColor = "FF0000" if sheet.title == "Manual" else "FFC000"
+        book["Renamed"].title = "新Renamed"
+        book.create_sheet("Unpaired").sheet_properties.tabColor = "FFC000"
+        book.save(path)
+        book.close()
+        hits = mark_finder.scan_file(path, mark_finder._styles(MAGENTA), set())
+        self.assertTrue(all(hit["kind"] == "tab" for hit in hits))
+        self.assertNotIn("Manual", [hit["sheet"] for hit in hits])
+        plan = {item["sheet"]:item for item in mark_finder.plan_file(path, old_path, hits)}
+        self.assertEqual((plan["NoColor"]["action"], plan["NoColor"]["old_fill"]), ("restore", "none"))
+        self.assertEqual((plan["Theme"]["action"], plan["Theme"]["old_fill"]), ("restore", "other"))
+        self.assertEqual(plan["OriginallyOrange"]["action"], "skip")
+        self.assertEqual(plan["新Renamed"]["old_sheet"], "Renamed")
+        self.assertEqual(plan["Unpaired"]["action"], "skip")
+
+    def tab_apply(self, original, current_color="#FFC000", include_cell=False, *,
+                  versions=None, on_open=None, before_save=None):
+        old_sheet = Mock(Name="Main", Tab=original)
+        tab = SimpleNamespace(ColorIndex=6, Color=mark_finder._excel_color(current_color), ThemeColor=None, TintAndShade=0.0)
+        current = Mock(Tab=tab)
+        self.last_tab_sheet = current
+        old_cell = Mock(Formula="same", Interior=Mock(Pattern=-4142, Color=0, TintAndShade=0, PatternColor=0), Font=Mock(Color=0))
+        cell = Mock(Formula="same", Interior=Mock(Pattern=1, Color=mark_finder._excel_color("#C0007A")), Font=Mock())
+        cell.Cells.return_value = cell
+        old_sheet.Range.return_value = old_cell
+        current.Range.return_value = cell
+        old, book = Mock(Worksheets=[old_sheet]), Mock(ReadOnly=False)
+        self.last_tab_book = book
+        book.Worksheets.return_value = current
+        excel = Mock()
+
+        def open_book(path, **options):
+            if options.get("ReadOnly"):
+                return old
+            self.assertEqual(Path(path), self.path.resolve())
+            old.Close.assert_called_once_with(SaveChanges=False)
+            if on_open is not None:
+                on_open()
+            return book
+
+        excel.Workbooks.Open.side_effect = open_book
+        items = [mark_finder._tab_hit("Main")]
+        if include_cell:
+            items.append({"sheet":"Main", "addr":"A1", "fill":"#C0007A", "font":"#FFFFFF"})
+        with patch("core.excel_ops.normalize_workbook_view", side_effect=before_save) as normalize:
+            results = mark_finder.apply_file(excel, str(self.path), str(self.root / "old.xlsx"), items,
+                                            versions=versions)
+        old.Close.assert_called_once_with(SaveChanges=False)
+        self.assertTrue(excel.Workbooks.Open.call_args_list[0].kwargs["ReadOnly"])
+        return results, book, tab, normalize
+
+    def test_tab_restore_preserves_theme_and_clears_only_program_orange_without_changing_view(self):
+        for original in (SimpleNamespace(ColorIndex=-4142),
+                         SimpleNamespace(ColorIndex=5, Color=0x123456, ThemeColor=5, TintAndShade=0.4)):
+            results, book, tab, normalize = self.tab_apply(original)
+            self.assertEqual(results[0]["status"], "ok")
+            if original.ColorIndex == -4142:
+                self.assertEqual(tab.ColorIndex, -4142)
+            else:
+                self.assertEqual((tab.ThemeColor, tab.TintAndShade), (5, 0.4))
+            book.Save.assert_called_once()
+            normalize.assert_not_called()
+        results, book, tab, _ = self.tab_apply(SimpleNamespace(ColorIndex=-4142), current_color="#FF0000")
+        self.assertIn("保留当前颜色", results[0]["reason"])
+        self.assertEqual(tab.Color, mark_finder._excel_color("#FF0000"))
+        book.Save.assert_not_called()
+
+    def test_tab_and_cell_at_a1_keep_separate_backup_data_and_both_restore(self):
+        results, book, tab, normalize = self.tab_apply(SimpleNamespace(ColorIndex=-4142), include_cell=True)
+        self.assertEqual([item["status"] for item in results], ["ok", "ok"])
+        self.assertEqual(tab.ColorIndex, -4142)
+        book.Save.assert_called_once()
+        normalize.assert_called_once()
+
+    def test_tab_write_failure_never_saves_partial_changes(self):
+        with patch.object(mark_finder.batch, "_restore_tab", side_effect=RuntimeError("工作簿受保护")):
+            with self.assertRaisesRegex(RuntimeError, "受保护"):
+                self.tab_apply(SimpleNamespace(ColorIndex=-4142))
+        self.last_tab_book.Save.assert_not_called()
+        self.last_tab_book.Close.assert_called_once_with(SaveChanges=False)
+
+    def tab_apply_versions(self):
+        from core.link_repair import fingerprint
+
+        backup = self.root / "old.xlsx"
+        backup.write_bytes(b"original backup")
+        return fingerprint(self.path), fingerprint(backup)
+
+    def test_version_changes_during_current_open_abort_before_any_sheet_write(self):
+        for changed_path in (self.path, self.root / "old.xlsx"):
+            with self.subTest(changed_path=changed_path):
+                versions = self.tab_apply_versions()
+
+                def change_file():
+                    changed_path.write_bytes(changed_path.read_bytes() + b"external change")
+
+                with patch.object(mark_finder.batch, "_restore_tab", wraps=mark_finder.batch._restore_tab) as restore, \
+                        patch.object(mark_finder, "_write_format_color", wraps=mark_finder._write_format_color) as write:
+                    with self.assertRaisesRegex(ValueError, "发生变化.*重新扫描"):
+                        self.tab_apply(SimpleNamespace(ColorIndex=-4142), include_cell=True,
+                                       versions=versions, on_open=change_file)
+                restore.assert_not_called()
+                write.assert_not_called()
+                self.last_tab_book.Worksheets.assert_not_called()
+                self.last_tab_sheet.Range.assert_not_called()
+                self.assertEqual(self.last_tab_sheet.Tab.ColorIndex, 6)
+                self.last_tab_book.Save.assert_not_called()
+                self.last_tab_book.Close.assert_called_once_with(SaveChanges=False)
+
+    def test_version_changes_after_sheet_writes_abort_before_save(self):
+        for changed_path in (self.path, self.root / "old.xlsx"):
+            with self.subTest(changed_path=changed_path):
+                versions = self.tab_apply_versions()
+
+                def change_file(*_):
+                    self.assertEqual(self.last_tab_sheet.Tab.ColorIndex, -4142)
+                    self.assertEqual(self.last_tab_sheet.Range.return_value.Interior.Pattern, -4142)
+                    changed_path.write_bytes(changed_path.read_bytes() + b"external change")
+
+                with self.assertRaisesRegex(ValueError, "发生变化.*重新扫描"):
+                    self.tab_apply(SimpleNamespace(ColorIndex=-4142), include_cell=True,
+                                   versions=versions, before_save=change_file)
+                self.last_tab_book.Save.assert_not_called()
+                self.last_tab_book.Close.assert_called_once_with(SaveChanges=False)
+
+    def test_unchanged_versions_restore_and_save_normally(self):
+        results, book, tab, normalize = self.tab_apply(SimpleNamespace(ColorIndex=-4142), include_cell=True,
+                                                      versions=self.tab_apply_versions())
+        self.assertEqual([item["status"] for item in results], ["ok", "ok"])
+        self.assertEqual(tab.ColorIndex, -4142)
+        normalize.assert_called_once()
+        book.Save.assert_called_once()
+        book.Close.assert_called_once_with(SaveChanges=False)
+
+    def test_legacy_apply_without_versions_never_reads_fingerprints(self):
+        with patch("core.link_repair.fingerprint", side_effect=AssertionError("legacy API must not read files")) as fingerprint:
+            results, book, _, _ = self.tab_apply(SimpleNamespace(ColorIndex=-4142), include_cell=True)
+        fingerprint.assert_not_called()
+        self.assertEqual([item["status"] for item in results], ["ok", "ok"])
+        book.Save.assert_called_once()
+        book.Close.assert_called_once_with(SaveChanges=False)
+
+    def test_binary_color_repair_opens_a_copy_and_replaces_only_after_success(self):
+        from core.link_repair import fingerprint
+
+        path, backup = self.root / "current.xls", self.root / "backup.xls"
+        path.write_bytes(b"current")
+        backup.write_bytes(b"backup")
+        versions = fingerprint(path), fingerprint(backup)
+        working_paths = []
+
+        def restore(excel, working, old_path, cells, check_versions):
+            working = Path(working)
+            working_paths.append(working)
+            self.assertNotEqual(working, path)
+            self.assertEqual(working.name, path.name)
+            self.assertEqual(working.parent.parent, path.parent)
+            working.write_bytes(b"Excel updated metadata and restored colors")
+            check_versions()
+            return [{"status": "ok"}]
+
+        with patch.object(mark_finder, "_apply_colors", side_effect=restore):
+            self.assertEqual(mark_finder.apply_file(Mock(), str(path), str(backup), [], versions=versions), [{"status": "ok"}])
+        self.assertEqual(path.read_bytes(), b"Excel updated metadata and restored colors")
+        self.assertEqual(fingerprint(backup), versions[1])
+        self.assertFalse(working_paths[0].parent.exists())
+
+    def test_binary_color_repair_keeps_external_changes_and_discards_its_copy(self):
+        from core.link_repair import fingerprint
+
+        path, backup = self.root / "current.xls", self.root / "backup.xls"
+        for changed_path in (path, backup):
+            with self.subTest(changed_path=changed_path):
+                path.write_bytes(b"current")
+                backup.write_bytes(b"backup")
+                versions = fingerprint(path), fingerprint(backup)
+
+                def restore(excel, working, old_path, cells, check_versions):
+                    Path(working).write_bytes(b"repaired")
+                    changed_path.write_bytes(b"external changes")
+                    return [{"status": "ok"}]
+
+                with patch.object(mark_finder, "_apply_colors", side_effect=restore), \
+                        patch.object(mark_finder.os, "replace") as replace:
+                    with self.assertRaisesRegex(ValueError, "发生变化.*重新扫描"):
+                        mark_finder.apply_file(Mock(), str(path), str(backup), [], versions=versions)
+                replace.assert_not_called()
+                self.assertEqual(changed_path.read_bytes(), b"external changes")
+                self.assertFalse(list(self.root.glob(".color-repair-*")))
+
+    def test_binary_color_repair_never_replaces_original_on_failure_or_no_changes(self):
+        from core.link_repair import fingerprint
+
+        path, backup = self.root / "current.xls", self.root / "backup.xls"
+        path.write_bytes(b"current")
+        backup.write_bytes(b"backup")
+        versions = fingerprint(path), fingerprint(backup)
+        for fail in (False, True):
+            with self.subTest(fail=fail):
+                def restore(excel, working, old_path, cells, check_versions):
+                    Path(working).write_bytes(b"Excel updated metadata")
+                    if fail:
+                        raise RuntimeError("save failed")
+                    return [{"status": "failed"}]
+
+                with patch.object(mark_finder, "_apply_colors", side_effect=restore), \
+                        patch.object(mark_finder.os, "replace") as replace:
+                    if fail:
+                        with self.assertRaisesRegex(RuntimeError, "save failed"):
+                            mark_finder.apply_file(Mock(), str(path), str(backup), [], versions=versions)
+                    else:
+                        mark_finder.apply_file(Mock(), str(path), str(backup), [], versions=versions)
+                replace.assert_not_called()
+                self.assertEqual(fingerprint(path), versions[0])
+                self.assertFalse(list(self.root.glob(".color-repair-*")))
+
 
 def bgr(hex_color):
     return mark_finder._excel_color("#" + hex_color)
@@ -329,6 +584,12 @@ class ExcelReadTests(unittest.TestCase):
         sheet = FakeSheet("空", 500, 10)
         self.assertEqual(self.scan(sheet), {})
         self.assertLessEqual(sheet.calls, 2)
+
+    def test_binary_tab_markers_are_found_without_any_cell_markers(self):
+        sheet = FakeSheet("OnlyTab", 1, 1)
+        sheet.Tab = SimpleNamespace(ColorIndex=6, Color=mark_finder._excel_color("#FFC000"))
+        hits = self.scan(sheet)
+        self.assertEqual(hits["A1"]["kind"], "tab")
 
     def test_history_with_same_fill_and_different_fonts_matches_every_pair(self):
         colors = MAGENTA + [{"fill": "#C0007A", "font": "#123456"}]

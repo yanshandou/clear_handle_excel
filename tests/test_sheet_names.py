@@ -46,7 +46,7 @@ class XlsxSheetNameTests(unittest.TestCase):
         names, _ = excel_ops.scan_workbook_sheets(path, tab_colors=colors)
         self.assertEqual(colors["灰"], "808080")
         self.assertEqual(colors["白色深色15%"], "D9D9D9")
-        self.assertEqual(colors["黑色浅色50%"], "7F7F7F")
+        self.assertEqual(colors["黑色浅色50%"], "808080")
         self.assertEqual(colors["橙黄"], "FFC000")
         self.assertEqual(colors["索引灰"], "C0C0C0")
         self.assertNotIn("无色", colors)
