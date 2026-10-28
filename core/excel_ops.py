@@ -15,6 +15,7 @@ from core.common import (
     col_index_to_letters,
     find_backup_sheets,
     is_gray_tab_color,
+    is_inspection_exempt_sheet,
     normalize_used_values,
 )
 from core import debug_log
@@ -594,7 +595,8 @@ def adjust_row_heights_against_clipping(wb: Any, extra_points: float = 6.0) -> N
     for sheet in wb.Sheets:
         if sheet.Visible != XL_SHEET_VISIBLE or sheet.Type != XL_WORKSHEET:
             continue
-        if sheet.Name in EXCLUDE_PDF_SHEETS or sheet.Name in backup_names:
+        if (sheet.Name in EXCLUDE_PDF_SHEETS or sheet.Name in backup_names
+                or is_inspection_exempt_sheet(sheet.Name)):
             continue
         if _is_sheet_already_height_adjusted(sheet):
             continue

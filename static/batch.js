@@ -348,6 +348,9 @@ async function action(work) {
 
 function renderControls() {
   const busy = batchState.busy || requestBusy;
+  const analysis = batchState.scan_analysis;
+  $('scanReportBtn').classList.toggle('hidden', !analysis || analysis.folder !== batchState.folder);
+  if (analysis) $('scanReportBtn').href = `/analysis?id=${encodeURIComponent(analysis.id)}&folder=${encodeURIComponent(analysis.folder)}`;
   const manual = manualCards(), recheckAll = recheckAllCards(manual), recheckSet = new Set(recheckAll);
   for (const id of ['startBtn', 'scanOnlyBtn', 'commitBtn', 'folderInput', 'scanLimit']) $(id).disabled = busy;
   $('unhighlightBtn').disabled = busy || !(batchState.highlighted || batchState.tab_marks);

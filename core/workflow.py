@@ -24,6 +24,7 @@ from core.common import (
     copy_series_sheets,
     find_backup_sheets,
     is_gray_tab_color,
+    is_inspection_exempt_sheet,
     find_clean_targets,
     find_contained_sheets,
     find_new_prefix_sheets,
@@ -37,7 +38,7 @@ from core.common import (
     workbook_locked,
     workbook_rel_name,
 )
-from core import debug_log, fix_images, page_breaks, pdf_detector, print_layout
+from core import debug_log, fix_images, page_breaks, pdf_detector, print_layout, scan_analysis
 from core.excel_watchdog import ExcelWatchdog
 from core.excel_ops import (
     CellProbe,
@@ -134,6 +135,7 @@ STATE: dict[str, Any] = {
     "job": None,
     "checked_files": {},  # wb_path -> 最近一次完整检查未解决项时的文件版本
     "scan_progress": {},  # 独立于执行报告，避免并行写入覆盖扫描的总进度
+    "latest_scan_analysis": None,
     "print_layouts": {},  # 源文件 -> Sheet 身份 -> 已分析的打印方向与证据
     # 稍后人工复检：wb_path -> {"marks": [{sheet, addr, row, item_ids, state, fill, range, error}], "error"}
     # state: pending 等后台标黄 / marked 已标黄 / skipped 没能标黄（仍在队列里）
@@ -150,6 +152,7 @@ if _saved_state is not None:
     STATE["busy"] = False
     if STATE["job"] and STATE["job"]["status"] == "running":
         STATE["job"]["status"] = "interrupted"
+        scan_analysis.finish(STATE["job"], interrupted=True)
 
 print_layout.configure(lambda: STATE.setdefault("print_layouts", {}))
 
@@ -506,6 +509,8 @@ def _detect_sheet_results(
     """从当前 PDF 构建新快照；不沿用旧文字、坐标或问题状态。
     单格复检时 PDF 只导出了 page_span 这几页（从 1 起），area=(首行, 末行, 首列, 末列) 是这几页上的格子：
     只拿这些格子去对，别页同样文字的格子不会抢走这几页的文字；分页切开按整张表算，这里不查，由调用方判断。"""
+    if is_inspection_exempt_sheet(sheet_name):
+        return {}, {}
     pages: dict[str, Any] = {}
     items: dict[str, Any] = {}
     sheet_snapshot = extract_sheet_snapshot(sheet)
@@ -514,6 +519,7 @@ def _detect_sheet_results(
     with fitz.open(pdf_path) as doc:
         if not len(doc):
             raise ValueError(f"导出的 PDF 没有页面: {pdf_path}")
+        scan_analysis.count("pdf_pages", len(doc))
         text_spans = collect_text_spans(doc)
         probe = CellProbe(sheet)
         cells = [cell for cell in snapshot_cells(sheet_snapshot) if probe.printed(cell[0], cell[1]) is not False
@@ -625,7 +631,7 @@ def _detect_sheet_results(
 
 
 # 检测规则变化时加一：之前按旧规则查过的文件即使没改过，下次扫描也要整份重新检查
-DETECTOR_VERSION = 17
+DETECTOR_VERSION = 19
 
 
 def _confirm_clip_cells(
@@ -842,6 +848,8 @@ def _merge_redetected(
     - 新检出、对应不上的：mark_new 时标为「新发现」
     - 旧问题未再检出（keep_unmatched 时保留记录）：未解决的记为已修复，已跳过 / 已修复的保持不变
     """
+    # 免检表的旧问题直接移除，不把「未再检测」记成已修复。
+    previous = [old for old in previous if not is_inspection_exempt_sheet(old["sheet_name"])]
     for old in previous:
         fix_images.remember_before(old)
     matched = _match_previous(new_items, previous)
@@ -1112,6 +1120,7 @@ def _follow_renamed_sheets(
 def _export_sheet_pdf_raw(sheet: Any, pdf_path: Path, pages: tuple[int, int] | None = None) -> None:
     """pages=(第一页, 最后一页)（从 1 起）：只导出这几页，分页和导出整张表时完全一样"""
     span = {"From": pages[0], "To": pages[1]} if pages else {}
+    scan_analysis.count("pdf_exports")
     sheet.ExportAsFixedFormat(
         Type=XL_TYPE_PDF,
         Filename=str(pdf_path.resolve()),
@@ -1334,7 +1343,8 @@ def _scan_one_workbook(
     if read_only:
         open_options["ReadOnly"] = True
     started = time.perf_counter()
-    wb = workbook if workbook is not None else open_workbook_checked(excel, str(wb_path.resolve()), **open_options)
+    with scan_analysis.operation("open"):
+        wb = workbook if workbook is not None else open_workbook_checked(excel, str(wb_path.resolve()), **open_options)
     print_layout.bind(wb, path)
     timing["open"] = timing.get("open", 0.0) + time.perf_counter() - started
     debug_log.event("📂 打开工作簿", 文件=wb_label, 秒=time.perf_counter() - started, 只读=read_only,
@@ -1382,7 +1392,14 @@ def _scan_one_workbook(
                 missing = []
         if sheets_only is not None:
             sheets_only = set(entry["sheets"])
-        sheets = [s for s in exportable if sheets_only is None or s.Name in sheets_only]
+        exempt = [s.Name for s in exportable if is_inspection_exempt_sheet(s.Name)]
+        exportable_names = {s.Name for s in exportable}
+        scan_analysis.note(exempt_sheets=exempt, skipped_sheets=[s.Name for s in wb.Sheets if s.Name not in exportable_names],
+                           missing_sheets=list(missing), scan_scope=entry["mode"], hidden_text_supported=clip_check_supported())
+        if exempt:
+            log_msg(f"  ℹ️ 命中表名免检规则：{'、'.join(exempt)}")
+        sheets = [s for s in exportable if not is_inspection_exempt_sheet(s.Name)
+                  and (sheets_only is None or s.Name in sheets_only)]
         rescanning_names = {s.Name for s in sheets}
         with STATE_LOCK:
             for p in STATE["pages"].values():
@@ -1398,24 +1415,30 @@ def _scan_one_workbook(
             update_file_progress(wb_label, current_action=f"正在导出并检测 [{s_name}]...")
             pdf_path = unique_pdf_path(wb_path.parent, file_stem, sanitize_filename(s_name), used_pdf_paths)
             started = time.perf_counter()
-            generated = prepare_print_layout(sheet, path, pdf_path)
+            with scan_analysis.operation("layout", s_name):
+                generated = prepare_print_layout(sheet, path, pdf_path)
             exported = pdfs.pdf_for(path, s_name, scan_version) if pdfs is not None and reuse_pdfs else None
             try:
                 if generated:
                     exported = None
                     timing["exports"] = timing.get("exports", 0) + 2
                 elif exported is None:
-                    _export_sheet_pdf(sheet, pdf_path)
+                    with scan_analysis.operation("export", s_name):
+                        _export_sheet_pdf(sheet, pdf_path)
                     timing["exports"] = timing.get("exports", 0) + 1
                 elif exported != pdf_path:
                     shutil.copyfile(exported, pdf_path)
+                if exported is not None:
+                    scan_analysis.count("pdf_reused")
             except Exception as e:
                 log_msg(f"  导出 PDF 失败 [{s_name}]: {e}")
                 raise
             export_seconds = time.perf_counter() - started
             timing["export"] = timing.get("export", 0.0) + export_seconds
             started = time.perf_counter()
-            pages, items = _detect_sheet_results(sheet, wb_path, s_name, pdf_path, next_seq)
+            with scan_analysis.operation("detect", s_name):
+                pages, items = _detect_sheet_results(sheet, wb_path, s_name, pdf_path, next_seq)
+            scan_analysis.detected(s_name, items)
             timing["detect"] = timing.get("detect", 0.0) + time.perf_counter() - started
             debug_log.event("📄 检测表", 表=s_name, 复用PDF=exported is not None, 导出秒=export_seconds,
                             检测秒=time.perf_counter() - started, 有问题的页=len(pages), 检出=len(items))
@@ -1437,7 +1460,8 @@ def _scan_one_workbook(
             wb.Close(SaveChanges=False)
 
     if keep_page_break_preview:
-        scan_version = _save_page_break_preview(excel, wb_path, scan_version)
+        with scan_analysis.operation("save_view"):
+            scan_version = _save_page_break_preview(excel, wb_path, scan_version)
 
     merged = _merge_redetected(file_items, previous, mark_new=entry["scanned"], keep_unmatched=not rescan_all)
     fixed_now = sum(
@@ -1450,8 +1474,10 @@ def _scan_one_workbook(
             item["autofix_revision"] = revision
         for collection in ("pages", "items"):
             for key, value in list(STATE[collection].items()):
-                if (value["wb_path"] == path and value["sheet_name"] not in missing
-                        and (sheets_only is None or value["sheet_name"] in sheets_only)):
+                if value["wb_path"] == path and (
+                        is_inspection_exempt_sheet(value["sheet_name"])
+                        or (value["sheet_name"] not in missing
+                            and (sheets_only is None or value["sheet_name"] in sheets_only))):
                     del STATE[collection][key]
         STATE["pages"].update(file_pages)
         STATE["items"].update(merged)
@@ -1495,6 +1521,7 @@ def scan_folder_workflow(
         STATE["busy"] = True
         job = STATE["job"] if resume else None
         initialized = bool(job and "workbooks" in job)
+    analysis_job = job if job is not None else {}
 
     try:
         if initialized:
@@ -1539,6 +1566,9 @@ def scan_folder_workflow(
             with STATE_LOCK:
                 _persist_state()
         with STATE_LOCK:
+            STATE["latest_scan_analysis"] = scan_analysis.begin(
+                analysis_job, folder, workbooks, "完整扫描" if rescan_all else "增量扫描")
+            _persist_state()
             elsewhere = [path for path, entry in STATE["review_queue"].items()
                          if entry["marks"] and not in_current_folder(path)]
         if elsewhere and not initialized:
@@ -1564,6 +1594,7 @@ def scan_folder_workflow(
                     continue
                 entry = plan[path]
                 if entry["mode"] == "skip":
+                    scan_analysis.cached(analysis_job, path)
                     with STATE_LOCK:
                         _sync_problem_counts(path, "文件未修改，沿用上次检查结果")
                         if job is not None:
@@ -1586,12 +1617,13 @@ def scan_folder_workflow(
                             and (entry["mode"] == "full" or item["sheet_name"] in entry["sheets"])
                         ]
                 try:
-                    _scan_one_workbook(
-                        excel, wb_path, entry, previous,
-                        job=job, resumed=initialized, rescan_all=rescan_all,
-                        delete_backups=delete_backups, used_pdf_paths=used_pdf_paths,
-                        keep_page_break_preview=True,
-                    )
+                    with scan_analysis.attempt(analysis_job, path):
+                        _scan_one_workbook(
+                            excel, wb_path, entry, previous,
+                            job=job, resumed=initialized, rescan_all=rescan_all,
+                            delete_backups=delete_backups, used_pdf_paths=used_pdf_paths,
+                            keep_page_break_preview=True,
+                        )
                 except Exception as err:
                     wb_label = workbook_rel_name(wb_path, folder)
                     log_msg(f"❌ 处理文件出错 {wb_label}: {err}")
@@ -1623,6 +1655,7 @@ def scan_folder_workflow(
         log_msg(summary_msg)
         finish_execution_batch(summary_msg)
     finally:
+        scan_analysis.finish(analysis_job, interrupted=STATE["scan_progress"].get("completed") != STATE["scan_progress"].get("total"))
         with STATE_LOCK:
             if not resume:
                 STATE["busy"] = False
@@ -1840,6 +1873,9 @@ def recheck_items_workflow(selected_ids: list[str]) -> None:
                 with STATE_LOCK:
                     next_seq = max((item["seq"] for item in STATE["items"].values()), default=0) + 1
                 for sheet_name, pdf_path_str in entry["sheets"].items():
+                    if is_inspection_exempt_sheet(sheet_name):
+                        log_msg(f"  ℹ️ [{sheet_name}] 命中表名免检规则，免检")
+                        continue
                     sheet = workbook.Sheets(sheet_name)
                     pdf_path = Path(pdf_path_str)
                     if not prepare_print_layout(sheet, path, pdf_path):

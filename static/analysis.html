@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>扫描分析报告 · Excel 切字检查</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/analysis.css">
+</head>
+<body>
+  <main class="analysis-shell">
+    <nav class="analysis-nav"><a href="/workbench">← 切字检查工作台</a><a href="/analysis">全部扫描历史</a></nav>
+    <header class="analysis-header"><div><p class="analysis-eyebrow">SCAN ANALYSIS</p><h1>扫描分析报告</h1><p>找出检查薄弱点，把优化精力放在最耗时的地方。</p></div><div class="analysis-actions"><button id="refreshBtn" class="btn btn-outline" type="button">刷新数据</button><a id="downloadBtn" class="btn btn-primary hidden" href="#">下载报告 .md</a></div></header>
+    <section class="panel analysis-picker"><label for="reportSelect">选择一次扫描</label><select id="reportSelect" aria-label="选择扫描报告"><option>正在读取…</option></select><p id="runMeta" class="analysis-muted"></p></section>
+    <p id="analysisError" class="analysis-error hidden" role="alert"></p>
+    <section id="emptyState" class="panel analysis-empty hidden"><h2>还没有扫描分析报告</h2><p>更新程序后完成一次扫描，就会自动记录各阶段耗时并生成报告。历史扫描没有详细计时数据。</p><a class="btn btn-primary" href="/workbench">前往扫描</a></section>
+    <div id="reportBody" class="hidden">
+      <p id="runNotice" class="analysis-notice" role="status"></p>
+      <div id="metrics" class="analysis-metrics"></div>
+      <p class="analysis-muted analysis-scope">计时范围：扫描阶段，包含失败尝试、保存视图及只扫描模式的标色。累计文件处理时间不包含暂停等待与后续自动试修。系统按扫描目录下第一级子文件夹归类；根目录中的文件单列。</p>
+      <section class="panel analysis-section" aria-labelledby="weakTitle"><div class="analysis-section-head"><div><p class="analysis-eyebrow">01 · COVERAGE & PRIORITIES</p><h2 id="weakTitle">薄弱点与优化优先级</h2></div><p class="analysis-muted">建议均附本次观测依据，具体根因仍需核实。</p></div><div id="findings" class="analysis-findings"></div><div id="issueTypes" class="analysis-issue-types"></div></section>
+      <div class="analysis-columns">
+        <section class="panel analysis-section" aria-labelledby="opsTitle"><p class="analysis-eyebrow">02 · OPERATIONS</p><h2 id="opsTitle">时间花在哪些操作上</h2><div id="operations" class="analysis-bars"></div><p class="analysis-muted">方向分析包含试算导出；检测包含文字定位所需的确认导出。各阶段时间分别归入当时执行的操作，不重复相加。</p></section>
+        <section class="panel analysis-section" aria-labelledby="systemsTitle"><p class="analysis-eyebrow">03 · SYSTEMS</p><h2 id="systemsTitle">哪些系统耗时更长</h2><div class="analysis-table-wrap"><table><thead><tr><th>系统 / 子目录</th><th>文件</th><th>耗时</th><th>未完成</th></tr></thead><tbody id="systems"></tbody></table></div></section>
+      </div>
+      <section class="panel analysis-section" aria-labelledby="filesTitle"><p class="analysis-eyebrow">04 · FILES</p><h2 id="filesTitle">文件耗时与检查结果</h2><div class="analysis-filters"><label>搜索文件 <input id="fileSearch" type="search" placeholder="文件名或系统名"></label><label>状态 <select id="statusFilter"><option value="">全部状态</option><option value="completed">已完成</option><option value="timeout">扫描超时</option><option value="error">处理失败</option><option value="pending">未处理</option><option value="running">处理中</option><option value="cached">沿用缓存</option></select></label><label>排序 <select id="sortFiles"><option value="seconds">耗时从长到短</option><option value="issues">检出数量从多到少</option><option value="name">文件名</option></select></label></div><p id="fileCount" class="analysis-muted"></p><div class="analysis-table-wrap"><table class="analysis-file-table"><thead><tr><th>文件（展开查看阶段、Sheet 和错误）</th><th>状态</th><th>耗时 / 尝试</th><th>检出</th></tr></thead><tbody id="files"></tbody></table></div><div class="analysis-pagination"><button id="prevPage" class="btn btn-outline btn-sm" type="button">上一页</button><span id="pageLabel"></span><button id="nextPage" class="btn btn-outline btn-sm" type="button">下一页</button></div></section>
+      <section class="panel analysis-section"><p class="analysis-eyebrow">05 · SHEETS</p><h2>最耗时的 Sheet · 前 20 项</h2><p class="analysis-muted">这里累加方向分析、导出和检测的实测时间，不含工作簿级的打开与保存；未完成项会明确标注。</p><div class="analysis-table-wrap"><table><thead><tr><th>文件</th><th>Sheet</th><th>耗时</th><th>检查情况</th></tr></thead><tbody id="sheets"></tbody></table></div></section>
+    </div>
+  </main>
+  <script src="/static/analysis.js"></script>
+</body>
+</html>

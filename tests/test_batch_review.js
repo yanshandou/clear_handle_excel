@@ -2,6 +2,16 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { page } = require('./workbench_page');
 
+test('scan analysis link keeps the report identity and is scoped to the active folder', () => {
+  const p = page();
+  p.run(`batchState.scan_analysis = {id:'scan-1', folder:'C:/Excel'}; renderControls();`);
+  const link = p.elements.get('scanReportBtn');
+  assert.equal(link.classList.contains('hidden'), false);
+  assert.equal(link.href, '/analysis?id=scan-1&folder=C%3A%2FExcel');
+  p.run(`batchState.folder = 'C:/Other'; renderControls();`);
+  assert.equal(link.classList.contains('hidden'), true);
+});
+
 test('80 files and 2000 cards initially mount only file headers with no card HTML or images', () => {
   const p = page({collapsed:true});
   p.run(`batchState.cards=Array.from({length:2000},(_,i)=>({...batchState.cards[1],id:String(i),seq:i,

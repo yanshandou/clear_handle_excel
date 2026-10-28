@@ -108,6 +108,107 @@ class IncrementalScanTests(unittest.TestCase):
     def items_by_text(self):
         return {item["text"]: item for item in self.workflow.STATE["items"].values()}
 
+    def legacy_layout_book(self, sheet_name="レイアウト"):
+        path = self.add_book("book", [sheet_name, "S1"])
+        self.clips[("book", sheet_name)] = ["layout problem"]
+        self.clips[("book", "S1")] = ["ordinary problem"]
+        with patch.object(self.workflow, "is_inspection_exempt_sheet", return_value=False), \
+                patch.object(self.workflow, "DETECTOR_VERSION", self.workflow.DETECTOR_VERSION - 1):
+            self.scan()
+        self.assertIn("layout problem", self.items_by_text())
+        return path
+
+    def test_layout_names_are_exempt_while_other_sheets_are_checked(self):
+        exempt = ["レイアウト", "レイアウト(複数ページ)", "新レイアウト（２ページ以降）",
+                  "帳票_レイアウト", "ﾚｲｱｳﾄ", "雛形", "帳票雛形", "雛形(複数ページ)"]
+        self.add_book("book", exempt + ["S1", "JSONサンプル"])
+        self.fail_export["book"] = "雛形"  # 若未提前跳过，会在导出时失败。
+        for name in exempt + ["S1"]:
+            self.clips[("book", name)] = [name + " problem"]
+        job = self.scan()
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(self.exports, [("book", "S1"), ("book", "JSONサンプル")])
+        self.assertEqual(set(self.items_by_text()), {"S1 problem"})
+
+    def test_workbook_with_only_exempt_sheets_finishes_without_exporting(self):
+        path = self.add_book("book", ["レイアウト", "レイアウト(複数ページ)", "雛形"])
+        job = self.scan()
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(self.exports, [])
+        self.assertEqual(self.workflow.STATE["items"], {})
+        self.assertIn(str(path), self.workflow.STATE["checked_files"])
+
+    def test_scan_generates_a_persistent_report_with_real_stages_and_exemptions(self):
+        from core import scan_analysis
+        self.add_book("book", ["S1", "雛形"])
+        self.clips[("book", "S1")] = ["problem"]
+        job = self.scan()
+        report = scan_analysis.report(job["analysis_id"])
+        self.assertEqual(report["run"]["status"], "completed")
+        self.assertEqual(report["summary"]["completed"], 1)
+        self.assertEqual(report["summary"]["exempt_sheets"], 1)
+        self.assertEqual(report["summary"]["checked_sheets"], 1)
+        self.assertEqual(report["summary"]["issues"], 1)
+        self.assertTrue({"open", "layout", "export", "detect", "save_view"}.issubset(
+            op["key"] for op in report["operations"]))
+        first_id = job["analysis_id"]
+        self.scan()
+        self.assertNotEqual(self.workflow.STATE["job"]["analysis_id"], first_id)
+        cached = scan_analysis.report(self.workflow.STATE["job"]["analysis_id"])
+        self.assertEqual(cached["summary"]["cached"], 1)
+        self.assertEqual(scan_analysis.report(first_id)["summary"]["issues"], 1)
+
+    def test_new_rule_removes_cached_layout_problems_from_unchanged_workbook(self):
+        self.legacy_layout_book()
+        ordinary_id = self.items_by_text()["ordinary problem"]["id"]
+        job = self.scan()
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(self.exports, [("book", "S1")])
+        self.assertEqual(set(self.items_by_text()), {"ordinary problem"})
+        self.assertEqual(self.items_by_text()["ordinary problem"]["id"], ordinary_id)
+        self.assertFalse(any(p["sheet_name"] == "レイアウト"
+                             for p in self.workflow.STATE["pages"].values()))
+        self.scan()
+        self.assertEqual(self.exports, [])
+
+    def test_single_recheck_retires_old_exempt_card_without_exporting(self):
+        from core import batch
+        path = self.legacy_layout_book()
+        card = batch._card_for([self.items_by_text()["layout problem"]])
+        card.update(color="yellow", manual=True, finalized=True)
+        self.exports.clear()
+        batch._recheck_cell(self.excel, str(path), card)
+        self.assertEqual(self.exports, [])
+        self.assertTrue(card["dismissed"])
+        self.assertFalse(card["verified"])
+        self.assertIn("免检", card["message"])
+        self.assertEqual(set(self.items_by_text()), {"ordinary problem"})
+
+    def test_template_rule_removes_cached_problems_from_unchanged_workbook(self):
+        self.legacy_layout_book("雛形")
+        ordinary_id = self.items_by_text()["ordinary problem"]["id"]
+        self.fail_export["book"] = "雛形"
+        self.assertEqual(self.scan()["status"], "completed")
+        self.assertEqual(self.exports, [("book", "S1")])
+        self.assertEqual(set(self.items_by_text()), {"ordinary problem"})
+        self.assertEqual(self.items_by_text()["ordinary problem"]["id"], ordinary_id)
+        self.assertFalse(any(p["sheet_name"] == "雛形"
+                             for p in self.workflow.STATE["pages"].values()))
+
+    def test_single_recheck_retires_old_template_card_without_exporting(self):
+        from core import batch
+        path = self.legacy_layout_book("雛形")
+        card = batch._card_for([self.items_by_text()["layout problem"]])
+        card.update(color="yellow", manual=True, finalized=True)
+        self.exports.clear()
+        self.fail_export["book"] = "雛形"
+        batch._recheck_cell(self.excel, str(path), card)
+        self.assertEqual(self.exports, [])
+        self.assertTrue(card["dismissed"])
+        self.assertFalse(card["verified"])
+        self.assertIn("免检", card["message"])
+        self.assertEqual(set(self.items_by_text()), {"ordinary problem"})
+
     def test_first_file_is_reviewable_and_queues_work_before_second_file_opens(self):
         from core import autofix
         autofix = importlib.reload(autofix)

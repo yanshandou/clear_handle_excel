@@ -258,6 +258,14 @@ class QuickTaskTests(unittest.TestCase):
         # 新批次不沿用上一批的备份目录
         self.assertEqual(report["backup_folder"], "")
 
+    def test_standalone_pdf_export_keeps_inspection_exempt_layout_sheets(self):
+        self.add_book("book.xlsx", ["レイアウト", "レイアウト(複数ページ)", "雛形", "JSONサンプル"])
+        job = self.run_task("export_pdf")
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual([s.Name for s in self.books["book.xlsx"].sheets if s.ExportAsFixedFormat.called],
+                         ["レイアウト", "レイアウト(複数ページ)", "雛形", "JSONサンプル"])
+        self.assertEqual(self.books["book.xlsx"].saved, [])
+
     def test_export_resume_retries_failed_workbook_without_overwriting_finished_pdf(self):
         self.add_book("a.xlsm", ["Sheet1"])
         self.add_book("a.xlsx", ["Sheet1"])

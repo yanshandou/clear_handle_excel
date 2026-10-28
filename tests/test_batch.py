@@ -82,6 +82,11 @@ class BatchTests(unittest.TestCase):
                     batch.run()
                 self.assertEqual(events, ["scan", "preview", "color" if scan_only else "repair"])
                 self.assertEqual(job["completed"], [self.path])
+                from core import scan_analysis
+                report = scan_analysis.report(job["analysis_id"])
+                self.assertEqual(report["run"]["status"], "completed")
+                self.assertEqual(report["summary"]["completed"], 1)
+                self.assertEqual(report["files"][0]["attempts"], 1)
 
     def test_view_only_save_updates_check_versions_and_cached_pdfs(self):
         before = self.wf._file_version(Path(self.path))
@@ -1042,6 +1047,13 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(attempts, [self.path] * 3 + [second])
         self.assertEqual(job["completed"], [second])
         self.assertIn(self.path, job["file_errors"])
+        from core import scan_analysis
+        report = scan_analysis.report(job["analysis_id"])
+        failed = next(row for row in report["files"] if row["path"] == self.path)
+        self.assertEqual(failed["attempts"], 3)
+        self.assertEqual(failed["status"], "error")
+        self.assertEqual(failed["operations"]["restart"]["calls"], 2)
+        self.assertEqual(report["summary"]["completed"], 1)
 
     def test_abandon_promotes_next_deferred_write_without_losing_it(self):
         job = self.wf.STATE["job"]

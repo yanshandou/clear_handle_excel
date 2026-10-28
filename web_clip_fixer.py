@@ -10,7 +10,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from core import autofix, batch, debug_log, fix_images, mark_finder
+from core import autofix, batch, debug_log, fix_images, mark_finder, scan_analysis
 from core.common import (
     STATIC_DIR,
     console_print,
@@ -166,6 +166,23 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_bytes(image.read_bytes(), MIME_TYPES[image.suffix])
         elif parsed.path in {"/workbench", "/index.html"}:
             self._serve_static_file("batch.html")
+        elif parsed.path == "/analysis":
+            self._serve_static_file("analysis.html")
+        elif parsed.path in {"/api/scan-analysis", "/api/scan-analysis/markdown"}:
+            query = parse_qs(parsed.query)
+            folder = query.get("folder", [None])[0]
+            run_id = query.get("id", [None])[0]
+            data = scan_analysis.report(run_id, folder)
+            if parsed.path.endswith("/markdown"):
+                if data is None:
+                    self._send_json({"ok": False, "error": "找不到扫描分析报告"}, status=404)
+                else:
+                    self._send_bytes(scan_analysis.markdown(data).encode("utf-8"), "text/markdown; charset=utf-8",
+                                     filename="scan_analysis.md")
+            elif run_id and data is None:
+                self._send_json({"ok": False, "error": "找不到扫描分析报告"}, status=404)
+            else:
+                self._send_json({"ok": True, "reports": scan_analysis.history(folder), "report": data})
         elif parsed.path in {"/records", "/records.html"}:
             self._serve_static_file("records.html")
         elif parsed.path == "/favicon.ico":

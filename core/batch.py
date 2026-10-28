@@ -21,8 +21,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from core import autofix, debug_log, fix_images, page_breaks, print_layout, workflow as wf
-from core.common import STALE_LOCK_HINT, workbook_locked, workbook_rel_name
+from core import autofix, debug_log, fix_images, page_breaks, print_layout, scan_analysis, workflow as wf
+from core.common import STALE_LOCK_HINT, is_inspection_exempt_sheet, workbook_locked, workbook_rel_name
 from core.excel_ops import (
     CellProbe, close_saved_workbooks, extract_sheet_snapshot, normalize_workbook_view,
     open_workbooks_for_review, snapshot_cells, open_workbook_checked,
@@ -641,6 +641,7 @@ def snapshot(detail_paths: set[str] | None = None) -> dict:
         highlighted = sum(1 for m in _marks().values() if in_folder(m["path"]) and _shows_mark(m))
         tabs = sum(len(t) for p, t in _tabs().items() if in_folder(p))
         return {"cards": cards, "busy": wf.STATE["busy"], "folder": wf.STATE["folder"], "highlighted": highlighted,
+                "scan_analysis": copy.deepcopy(wf.STATE.get("latest_scan_analysis")),
                 "tab_marks": tabs,
                 "error_types": list(autofix.CELL_ERROR_SPECS.values()),
                 "fix_error_types": fix_error_types(),
@@ -1022,6 +1023,10 @@ def _refresh(
     with wf.STATE_LOCK:
         missing = list(entry.get("missing", []))
         for card in _data()["cards"].values():
+            if card["wb_path"] == path and is_inspection_exempt_sheet(card["sheet_name"]):
+                card.update(dismissed=True, waiting=False, verified=False,
+                            message="命中表名免检规则，免检")
+                continue
             if card["wb_path"] == path and card["sheet_name"] not in missing and (
                     sheets is None or card["sheet_name"] in entry["sheets"]):
                 card.pop("layout_stale", None)
@@ -1894,6 +1899,8 @@ def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:
         problem_cells = {_cell(it) for it in unresolved}
         passed = 0
         for card in cards:
+            if is_inspection_exempt_sheet(card["sheet_name"]):
+                continue
             if _cell(card) in problem_cells:
                 continue
             passed += 1
@@ -2026,6 +2033,10 @@ def _recheck_cell(excel: Any, path: str, card: dict) -> None:
     通过就翻篇（变蓝移出列表、去掉标记色），没过照旧是黄色人工项，可以接着改、接着复检。"""
     _check_file(path)
     label = f"{card['sheet_name']}!{card['cell_addr']}"
+    if is_inspection_exempt_sheet(card["sheet_name"]):
+        _refresh(excel, path, [card["sheet_name"]])
+        wf.log_msg(f"ℹ️ {Path(path).name} {label}：命中表名免检规则，免检")
+        return
     if _unchanged_since_check(path):
         # 上次整份检测之后文件没改过：这一格的结果就是卡片现在的样子
         wf.log_msg(f"ℹ️ {Path(path).name} {label}：上次检测后文件没有修改，结果不变，仍需人工处理")
@@ -2515,6 +2526,7 @@ def _skip_slow_file(job: dict, path: str, limit: float) -> None:
                                      "status": "running"}
         wf._persist_state()
     message = f"扫描超过 {_minutes(limit)}" + (f"，卡在表「{sheet}」" if sheet else "") + "，已跳过，请人工检查"
+    scan_analysis.timeout(job, path, sheet, limit)
     wf.log_msg(f"⏱ {Path(path).name}：{message}")
     debug_log.event("⏱ 扫描超时跳过", 文件=Path(path).name, 表=sheet, 上限秒=round(limit))
     update_file_progress(workbook_rel_name(Path(path), wf.STATE["folder"]), status="error", error=message,
@@ -3811,6 +3823,9 @@ def run() -> list[str]:
                 # 先把全部文件扫完，再逐行修；旧版本的任务没分两步，做完的文件当作扫过
                 scanned = job.setdefault("scanned", list(job["completed"]))
                 versions = job.setdefault("scan_versions", {})
+                if not back and (not job.get("analysis_id") or any(p not in scanned for p in expected)):
+                    wf.STATE["latest_scan_analysis"] = scan_analysis.begin(
+                        job, wf.STATE["folder"], expected, "只扫描" if scan_only else "全自动处理的扫描阶段")
                 job["closing"] = False  # 暂停后继续：又可以往里排自动调整
                 wf._persist_state()
 
@@ -3843,7 +3858,8 @@ def run() -> list[str]:
                                 and tries < autofix.MAX_ERROR_RETRIES):
                             wf.log_msg(f"⚠️ {Path(path).name} 出错，重启 Excel 后重试：{err}")
                             try:
-                                _restart_excel(session)
+                                with scan_analysis.recovery(job, path, enabled=work is scan and not back):
+                                    _restart_excel(session)
                             except Exception as restart_err:
                                 wf.log_msg(f"❌ 无法重新启动 Excel：{restart_err}")
                                 err = restart_err
@@ -3862,7 +3878,7 @@ def run() -> list[str]:
                         session.drop_copy(path)
                 return False
 
-            def scan(path: str) -> None:
+            def scan_body(path: str) -> None:
                 debug_log.begin(f"{'自动调整' if picked else '转回自动' if back else '扫描'} "
                                   f"{expected.index(path) + 1} / {len(expected)}："
                                   f"{workbook_rel_name(Path(path), wf.STATE['folder'])}")
@@ -3885,7 +3901,8 @@ def run() -> list[str]:
                         watchdog.deadline(None)
                     # 检测的只读工作簿已经关闭；另开原文件保存视图，避免保存临时上色。
                     # 写文件放在检测超时限制之外，即使没有问题项也保留分页预览。
-                    _save_scan_preview(excel, path, session)
+                    with scan_analysis.operation("save_view"):
+                        _save_scan_preview(excel, path, session)
                     with wf.STATE_LOCK:
                         job.setdefault("scan_seconds", {})[path] = round(time.perf_counter() - started, 1)
                         _data().get("slow_files", {}).pop(path, None)  # 以前超时跳过的，这次扫完了
@@ -3896,9 +3913,17 @@ def run() -> list[str]:
                     # 不试修、不改行高：检出的全部转人工，在原 Excel 里标色方便定位
                     with wf.STATE_LOCK:
                         _data().setdefault("highlight_files", {})[path] = highlight_style(options.get("highlight"))
-                    _hand_over(path)
-                    _sync_highlights(session.app, path, tick=session.touch)
-                    _remember_handover(path)
+                    with scan_analysis.operation("highlight"):
+                        _hand_over(path)
+                        _sync_highlights(session.app, path, tick=session.touch)
+                        _remember_handover(path)
+
+            def scan(path: str) -> None:
+                if back:
+                    scan_body(path)
+                else:
+                    with scan_analysis.attempt(job, path):
+                        scan_body(path)
 
             # 「🤖 自动调整」运行中还能排进新的文件（enqueue_auto_adjust），做完一轮再看有没有新排进来的。
             # 每份文件每轮（排一次队算一轮）只试一次，出错跳过的不在这次任务里反复重试
@@ -3934,6 +3959,8 @@ def run() -> list[str]:
                     with wf.STATE_LOCK:
                         job["phase"] = "repair"  # 全部扫完：从这里起可以「转人工」
                         wf._persist_state()
+                if not back:
+                    scan_analysis.finish(job, interrupted=bool(job.get("pause_requested")))
 
             def repair(path: str) -> None:
                 debug_log.begin(f"修复 {expected.index(path) + 1} / {len(expected)}："
@@ -4160,6 +4187,7 @@ def run() -> list[str]:
         finish_execution_batch("处理完成，请审核结果" if set(expected).issubset(job["completed"]) else "部分文件尚未完成，可继续任务")
         return expected
     finally:
+        scan_analysis.finish(job, interrupted=True)
         try:
             with wf.STATE_LOCK:
                 _show_deferred_pending()

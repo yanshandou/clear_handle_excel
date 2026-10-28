@@ -53,6 +53,12 @@ XL_WORKSHEET = -4167
 XL_PAGE_BREAK_PREVIEW = 2
 
 
+def is_inspection_exempt_sheet(sheet_name: str) -> bool:
+    """名称包含「レイアウト」或「雛形」的工作表免检，兼容半角片假名。"""
+    normalized = unicodedata.normalize("NFKC", sheet_name)
+    return any(keyword in normalized for keyword in ("レイアウト", "雛形"))
+
+
 def console_print(text: str) -> None:
     """打印到终端，不因编码失败抛出异常。
 
