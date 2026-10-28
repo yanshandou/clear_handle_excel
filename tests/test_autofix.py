@@ -653,12 +653,20 @@ class AutofixEvaluationTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.pdf = Path(self.temp.name) / "attempt.pdf"
 
-    def evaluate(self, text, lines, *, display=None, border=None, cells=None, kind="hidden", item_text=None):
+    def evaluate(self, text, lines, *, display=None, border=None, cells=None, kind="hidden", item_text=None,
+                 strike=False):
         from core.pdf_detector import fitz
         with fitz.open() as doc:
             page = doc.new_page()
             for x, y, line in lines:
                 page.insert_text((x, y), line, fontsize=10, fontname="japan")
+            if strike:
+                for block in page.get_text("dict")["blocks"]:
+                    for line in block.get("lines", []):
+                        for span in line["spans"]:
+                            x0, _, x1, _ = span["bbox"]
+                            y = span["origin"][1] - span["size"] * .3
+                            page.draw_line((x0, y), (x1, y), width=0.5)
             if border:
                 page.draw_line(border[0], border[1], width=0.5)
             doc.save(self.pdf)
@@ -701,6 +709,23 @@ class AutofixEvaluationTests(unittest.TestCase):
         ok, image = self.evaluate("文字列(100)", [(60, 100, "文字列(100)")])
         self.assertTrue(ok)
         self.assertTrue(image)
+
+    def test_strikethrough_alone_passes_automatic_recheck(self):
+        for kind in ("clip", "hidden"):
+            with self.subTest(kind=kind):
+                ok, image = self.evaluate("DbExCmok06Mapper", [(60, 100, "DbExCmok06Mapper")],
+                                          kind=kind, strike=True)
+                self.assertTrue(ok)
+                self.assertTrue(image)
+
+    def test_strikethrough_does_not_hide_clipping_or_missing_suffix(self):
+        for kind in ("clip", "hidden"):
+            with self.subTest(kind=kind):
+                ok, _ = self.evaluate("Target", [(60, 100, "Target")], kind=kind, strike=True,
+                                      border=((55, 99), (250, 99)))
+                self.assertFalse(ok)
+        ok, _ = self.evaluate("TargetMore", [(60, 100, "Target")], strike=True)
+        self.assertFalse(ok)
 
     def test_truncated_target_reports_how_much_height_is_missing(self):
         from core.pdf_detector import fitz

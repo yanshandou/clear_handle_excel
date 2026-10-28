@@ -16,8 +16,9 @@ except ImportError:
 
 def extract_page_lines(
     page: fitz.Page,
+    *, text_dict: dict[str, Any] | None = None,
 ) -> tuple[list[tuple[float, float, float]], list[tuple[float, float, float]]]:
-    """提取 PDF 页面中的所有水平线与垂直线"""
+    """提取 PDF 页面的横线与竖线，排除文字自身的删除线；扫描和复检共用。"""
     h_lines: list[tuple[float, float, float]] = []  # (y, x0, x1)
     v_lines: list[tuple[float, float, float]] = []  # (x, y0, y1)
     for drawing in page.get_drawings():
@@ -39,7 +40,50 @@ def extract_page_lines(
                     h_lines.append((rect.y1, rect.x0, rect.x1))
                     v_lines.append((rect.x0, rect.y0, rect.y1))
                     v_lines.append((rect.x1, rect.y0, rect.y1))
+    if h_lines:
+        if text_dict is None:
+            text_dict = page.get_text("dict", flags=fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES)
+        spans = [
+            span for block in text_dict.get("blocks", []) if block.get("type") == 0
+            for line in block.get("lines", []) if line.get("dir", (1, 0)) == (1, 0)
+            for span in line.get("spans", []) if span.get("text", "").strip()
+        ]
+        h_lines = [line for line in h_lines if not _is_strikethrough_line(line, spans, v_lines)]
     return h_lines, v_lines
+
+
+def _is_strikethrough_line(
+    line: tuple[float, float, float], spans: list[dict[str, Any]],
+    v_lines: list[tuple[float, float, float]],
+) -> bool:
+    """删除线位于基线上方的字身中部，长度限于连续文字，且不连接表格竖边框。
+
+    不能只看 PDF 的 strikeout 标记：穿过字身的表格边框也可能被标为删除线。
+    支持局部删除线、不同字色组成的文字以及导出为细矩形的删除线。
+    """
+    y, x0, x1 = line
+    runs = []
+    for span in spans:
+        size = float(span.get("size", 0))
+        origin = span.get("origin")
+        if size <= 0 or origin is None or not origin[1] - size * .5 <= y <= origin[1] - size * .15:
+            continue
+        left, _, right, _ = span["bbox"]
+        tolerance = max(1.0, size * .12)
+        if left <= x1 + tolerance and right >= x0 - tolerance:
+            runs.append((left, right, tolerance))
+    if not runs:
+        return False
+    # 横线一旦跨过文字之间的明显空隙或伸出文字两端，就保留为疑似边框。
+    covered = x0
+    for left, right, tolerance in sorted(runs):
+        if left > covered + tolerance:
+            return False
+        covered = max(covered, right)
+        if covered >= x1 - tolerance:
+            return not any(x0 - 1.5 <= x <= x1 + 1.5 and top - 1 <= y <= bottom + 1
+                           for x, top, bottom in v_lines)
+    return False
 
 
 def crossing_horizontal_line(
@@ -62,9 +106,9 @@ def find_clipped_spans_on_page(page: fitz.Page) -> list[dict[str, Any]]:
     在单页 PDF 上寻找被边框横线切穿/压线的文字块。
     返回列表: [{"text": str, "bbox": (x0, y0, x1, y1), "line_y": float}]
     """
-    h_lines, _ = extract_page_lines(page)
     results: list[dict[str, Any]] = []
     text_dict = page.get_text("dict")
+    h_lines, _ = extract_page_lines(page, text_dict=text_dict)
     blocks = text_dict.get("blocks", []) if isinstance(text_dict, dict) else []
 
     for block in blocks:

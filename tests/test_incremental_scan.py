@@ -336,6 +336,29 @@ class IncrementalScanTests(unittest.TestCase):
         report = self.reporter.get_execution_report_snapshot()["files"][path.name]
         self.assertEqual((report["status"], report["clip_unfixed"]), ("done", 0))
 
+    def test_strikethrough_does_not_create_a_problem_card(self):
+        path = self.add_book("book", ["S1"])
+        text = "DbExCmok06Mapper"
+        with self.workflow.fitz.open() as doc:
+            page = doc.new_page()
+            page.draw_rect(self.workflow.fitz.Rect(50, 75, 250, 120))
+            page.insert_text((60, 100), text, fontsize=12)
+            span = page.get_text("dict")["blocks"][0]["lines"][0]["spans"][0]
+            x0, _, x1, _ = span["bbox"]
+            page.draw_line((x0, 96.4), (x1, 96.4), width=0.5)
+            doc.save(self.root / "strikethrough.pdf")
+        self.blank_pdf = self.root / "strikethrough.pdf"
+        self.patch_value(self.workflow, "find_clipped_spans_on_page",
+                         self.workflow.pdf_detector.find_clipped_spans_on_page)
+        self.patch_value(self.workflow, "extract_sheet_snapshot", Mock(return_value={
+            "start_r": 23, "start_c": 8, "rows_vals": [(text,)],
+        }))
+
+        self.assertEqual(self.scan()["status"], "completed")
+        self.assertEqual(self.workflow.STATE["items"], {})
+        report = self.reporter.get_execution_report_snapshot()["files"][path.name]
+        self.assertEqual((report["status"], report["clip_unfixed"]), ("done", 0))
+
     def test_hidden_wrapped_text_is_reported_with_cell(self):
         path = self.add_book("book", ["S1"])
         with self.workflow.fitz.open() as doc:

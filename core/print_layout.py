@@ -16,7 +16,7 @@ from core.hidden_text import collect_text_pieces, find_hidden_cells, normalize_t
 from core.excel_ops import CellProbe, extract_sheet_snapshot, snapshot_cells
 
 PORTRAIT, LANDSCAPE = 1, 2
-RULE_VERSION = 1
+RULE_VERSION = 2
 MIN_FONT_PT = 8.0
 SETTINGS = (
     "PaperSize", "LeftMargin", "RightMargin", "TopMargin", "BottomMargin",

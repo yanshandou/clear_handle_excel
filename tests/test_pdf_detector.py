@@ -123,5 +123,93 @@ class PdfTrackingTests(unittest.TestCase):
         self.assertTrue(clipped)
 
 
+class StrikethroughTests(unittest.TestCase):
+    def add_text(self, page, text="DbExCmok06Mapper", x=60, color=(0, 0, 0)):
+        page.insert_text((x, 100), text, fontsize=12, color=color)
+        return next(
+            span for block in page.get_text("dict")["blocks"]
+            for line in block.get("lines", []) for span in line["spans"]
+            if span["text"] == text
+        )
+
+    def test_text_sized_strikethrough_is_not_clipping(self):
+        for filled in (False, True):
+            with self.subTest(filled=filled), fitz.open() as doc:
+                page = doc.new_page()
+                span = self.add_text(page)
+                x0, _, x1, _ = span["bbox"]
+                if filled:
+                    page.draw_rect(fitz.Rect(x0, 96.1, x1, 96.7), color=None, fill=(0, 0, 0))
+                else:
+                    page.draw_line((x0, 96.4), (x1, 96.4), width=0.5)
+                self.assertEqual(find_clipped_spans_on_page(page), [])
+
+    def test_partial_strikethrough_is_not_clipping(self):
+        with fitz.open() as doc:
+            page = doc.new_page()
+            span = self.add_text(page)
+            x0, _, x1, _ = span["bbox"]
+            page.draw_line((x0 + 20, 96.4), (x1 - 20, 96.4), width=0.5)
+            self.assertEqual(find_clipped_spans_on_page(page), [])
+
+    def test_strikethrough_across_adjacent_color_runs_is_not_clipping(self):
+        with fitz.open() as doc:
+            page = doc.new_page()
+            first = self.add_text(page, "DbExCmok")
+            last = self.add_text(page, "06Mapper", x=first["bbox"][2], color=(1, 0, 0))
+            page.draw_line((first["bbox"][0], 96.4), (last["bbox"][2], 96.4), width=0.5)
+            self.assertEqual(find_clipped_spans_on_page(page), [])
+
+    def test_strikethrough_does_not_hide_another_crossing_border(self):
+        for strike_first in (False, True):
+            with self.subTest(strike_first=strike_first), fitz.open() as doc:
+                page = doc.new_page()
+                span = self.add_text(page)
+                x0, _, x1, _ = span["bbox"]
+                lines = [((x0, 96.4), (x1, 96.4)), ((50, 100), (250, 100))]
+                for start, end in lines if strike_first else reversed(lines):
+                    page.draw_line(start, end, width=0.5)
+                found = find_clipped_spans_on_page(page)
+                self.assertEqual(len(found), 1)
+                self.assertEqual(found[0]["line_y"], 100)
+
+    def test_text_width_table_border_connected_to_vertical_edges_is_still_clipping(self):
+        with fitz.open() as doc:
+            page = doc.new_page()
+            span = self.add_text(page)
+            x0, _, x1, _ = span["bbox"]
+            page.draw_line((x0, 96.4), (x1, 96.4), width=0.5)
+            for x in (x0, x1):
+                page.draw_line((x, 75), (x, 120), width=0.5)
+            self.assertEqual(len(find_clipped_spans_on_page(page)), 1)
+
+    def test_border_across_two_columns_is_not_a_strikethrough(self):
+        with fitz.open() as doc:
+            page = doc.new_page()
+            first = self.add_text(page, "Old")
+            last = self.add_text(page, "New", x=250)
+            page.draw_line((first["bbox"][0], 96.4), (last["bbox"][2], 96.4), width=0.5)
+            self.assertEqual(len(find_clipped_spans_on_page(page)), 2)
+
+    def test_text_sized_line_near_baseline_is_still_clipping(self):
+        with fitz.open() as doc:
+            page = doc.new_page()
+            span = self.add_text(page)
+            x0, _, x1, _ = span["bbox"]
+            page.draw_line((x0, 100), (x1, 100), width=0.5)
+            self.assertEqual(len(find_clipped_spans_on_page(page)), 1)
+
+    def test_strikethrough_is_ignored_during_recheck(self):
+        with tempfile.TemporaryDirectory() as temp, fitz.open() as doc:
+            page = doc.new_page()
+            span = self.add_text(page)
+            x0, _, x1, _ = span["bbox"]
+            page.draw_line((x0, 96.4), (x1, 96.4), width=0.5)
+            path = Path(temp) / "strike.pdf"
+            doc.save(path)
+            still, _, _, _ = is_region_still_clipped(path, 0, span["text"], tuple(span["bbox"]))
+            self.assertFalse(still)
+
+
 if __name__ == "__main__":
     unittest.main()
