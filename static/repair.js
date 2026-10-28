@@ -2,9 +2,12 @@
   const $ = id => document.getElementById(id);
   const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[char]));
   const colors = document.body.dataset.repairKind === 'colors';
-  const api = colors ? '/api/batch/find_marks' : '/api/link_repair';
+  const hidden = document.body.dataset.repairKind === 'hidden';
+  const kind = hidden ? 'hidden' : colors ? 'colors' : 'links';
+  const api = hidden ? '/api/hidden_repair' : colors ? '/api/batch/find_marks' : '/api/link_repair';
   const FOLDER = 'clear_handle_excel.lastFolder', OLD = 'clear_handle_excel.oldFolder';
-  const label = colors ? '🎨 扫描并修复颜色' : '🔗 扫描并修复引用错误';
+  const label = hidden ? '🙈 扫描并修复隐藏页' : colors ? '🎨 扫描并修复颜色' : '🔗 扫描并修复引用错误';
+  const optionIds = {sheets:'repairSheets', columns:'repairColumns', narrow:'repairNarrow'};
   let latest = {}, submitting = false, loading = true, timer, initial = true, pollError = '';
   const successful = cell => ['ok', 'resolved'].includes(cell.status);
   try { $('repairFolder').value = localStorage.getItem(FOLDER) || ''; $('repairOldFolder').value = localStorage.getItem(OLD) || ''; } catch (_) {}
@@ -22,6 +25,7 @@
   function controls() {
     const busy = loading || submitting || latest.running;
     for (const id of ['repairFolder', 'repairOldFolder', 'repairRun']) $(id).disabled = !!busy;
+    if (hidden) for (const id of Object.values(optionIds)) $(id).disabled = !!busy;
     $('repairRun').textContent = submitting || latest.running ? '正在扫描并修复…' : label;
   }
 
@@ -34,17 +38,20 @@
 
   function table(file, data, phase) {
     const cells = file.cells || file.hits || [];
-    const target = {folder: data.folder, file: file.name, ...(file.old ? {compare: colors ? 'colors' : 'links'} : {})};
+    const target = {folder: data.folder, file: file.name, ...(file.old ? {compare: kind} : {})};
     const rows = cells.map(cell => {
       const location = window.excelLinkHtml(escape(`${cell.sheet}!${cell.addr}`), {...target, sheet: cell.sheet, cell: cell.anchor || cell.addr.split(':')[0]});
       const ok = phase === 'apply' && !file.error && successful(cell);
       const reason = file.error ? `未修复：${file.error}` : cell.reason || (phase === 'scan' ? '已发现，等待重新扫描并修复' : '未修复');
-      return `<tr><td>${location}</td>` + (colors
+      return `<tr><td>${location}</td>` + (hidden
+        ? `<td>${escape({sheet:'工作表', columns:'隐藏列', narrow:'超窄列'}[cell.kind] || '待核对')}</td><td>${escape(cell.current_state)}</td><td>${escape(cell.old_state)}${cell.old_sheet ? `<br>${escape(cell.old_sheet)}!${escape(cell.addr)}` : ''}</td>`
+        : colors
         ? `<td>${swatch(cell.fill, cell.font)}</td><td>${swatch(cell.old_fill, cell.old_font)}${cell.old_sheet ? `<br>${escape(cell.old_sheet)}!${escape(cell.addr)}` : ''}</td>`
         : `<td><code>${escape(cell.formula || '固定错误值')}</code></td><td><code>${escape(cell.source_formula)}</code><br>${escape(cell.source)}</td><td>${escape(cell.display === '' ? JSON.stringify(cell.value ?? '') : cell.display)}</td>`)
         + `<td class="${ok ? 'link-ok' : 'link-skip'}">${escape(reason)}</td></tr>`;
     });
-    const columns = colors ? '<th>位置</th><th>修复前配色</th><th>备份配色与位置</th><th>处理结果</th>'
+    const columns = hidden ? '<th>位置</th><th>恢复类型</th><th>修复前状态</th><th>备份状态与位置</th><th>处理结果</th>'
+      : colors ? '<th>位置</th><th>修复前配色</th><th>备份配色与位置</th><th>处理结果</th>'
       : '<th>位置</th><th>修复前公式</th><th>备份公式与位置</th><th>恢复值</th><th>处理结果</th>';
     const fileLink = window.excelLinkHtml(escape(file.name), target);
     return `<details class="link-file"${cells.length || file.error ? ' open' : ''}><summary>${fileLink} · ${cells.length} 处${file.error ? ' · 处理失败' : ''}</summary>`
@@ -69,10 +76,10 @@
     const cells = data.files.flatMap(file => file.cells || file.hits || []);
     const errors = data.files.filter(file => file.error).length;
     const count = data.files.filter(file => !file.error).flatMap(file => file.cells || []).filter(successful).length;
-    $('repairResultTitle').textContent = colors ? '颜色修复结果' : '引用错误修复结果';
+    $('repairResultTitle').textContent = hidden ? '隐藏恢复结果' : colors ? '颜色修复结果' : '引用错误修复结果';
     $('repairResultFolder').textContent = `当前文件夹：${data.folder}${data.old_folder ? `；原始备份：${data.old_folder}` : ''}`;
     $('repairProgress').textContent = phase === 'apply'
-      ? `已${colors ? '恢复颜色' : '恢复正常'} ${count} 处；未修复 ${cells.length - count} 处；${errors} 份文件处理失败。`
+      ? `已${hidden ? '恢复隐藏设置' : colors ? '恢复颜色' : '恢复正常'} ${count} 处；未修复 ${cells.length - count} 处；${errors} 份文件处理失败。${hidden ? '连续列按列段计数。' : ''}`
       : '上次检查尚未修复，点击“扫描并修复”即可重新检查并处理。';
     $('repairProgressFill').style.width = '100%';
     $('repairResults').innerHTML = data.files.map(file => table(file, data, phase)).join('') || '<p>没有待处理的文件。</p>';
@@ -91,6 +98,10 @@
       if (latest.running || initial) {
         $('repairFolder').value = latest.folder || data?.folder || $('repairFolder').value;
         $('repairOldFolder').value = latest.old_folder || data?.old_folder || $('repairOldFolder').value;
+        if (hidden) {
+          const options = latest.options || data?.options;
+          if (options) for (const [key, id] of Object.entries(optionIds)) $(id).checked = options[key] !== false;
+        }
       }
       initial = false;
       loading = false;
@@ -108,6 +119,10 @@
     try {
       const payload = {folder, old_folder};
       if (colors) payload.colors = palette();
+      if (hidden) {
+        payload.options = Object.fromEntries(Object.entries(optionIds).map(([key, id]) => [key, $(id).checked]));
+        if (!Object.values(payload.options).some(Boolean)) throw Error('请至少选择一种要恢复的隐藏状态');
+      }
       const response = await fetch(api + '/run', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
       const result = await response.json();
       if (!response.ok || !result.ok) throw Error(result.error || '操作失败');

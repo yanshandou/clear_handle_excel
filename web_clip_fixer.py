@@ -10,7 +10,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from core import autofix, batch, debug_log, fix_images, mark_finder, scan_analysis, link_repair, repair_compare
+from core import autofix, batch, debug_log, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair
 from core.common import (
     STATIC_DIR,
     console_print,
@@ -170,6 +170,10 @@ class WebHandler(BaseHTTPRequestHandler):
             self._serve_static_file("link_repair.html")
         elif parsed.path == "/repair-colors":
             self._serve_static_file("color_repair.html")
+        elif parsed.path == "/repair-hidden":
+            self._serve_static_file("hidden_repair.html")
+        elif parsed.path == "/api/hidden_repair":
+            self._send_json(hidden_repair.status())
         elif parsed.path == "/api/link_repair":
             self._send_json(link_repair.status())
         elif parsed.path == "/analysis":
@@ -329,7 +333,8 @@ class WebHandler(BaseHTTPRequestHandler):
     def _handle_post(self, payload: dict) -> None:
         with STATE_LOCK:
             if STATE.get("maintenance"):
-                name = "颜色" if STATE["maintenance"].startswith("color_") else "引用错误"
+                name = ("颜色" if STATE["maintenance"].startswith("color_") else
+                        "隐藏状态" if STATE["maintenance"].startswith("hidden_") else "引用错误")
                 raise ValueError(f"正在检查或修复{name}，请等当前任务结束")
         if self.path == "/api/batch/start":
             options = {"folder": _require_folder(payload)}
@@ -364,6 +369,9 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "fix_error_types": batch.set_fix_error_types(payload.get("fix_error_types"))})
         elif self.path == "/api/batch/unhighlight":
             self._start_job("batch_unhighlight", {"paths": batch.highlighted_paths()})
+        elif self.path == "/api/hidden_repair/run":
+            hidden_repair.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}), payload.get("options"))
+            self._send_json({"ok": True})
         elif self.path == "/api/link_repair/run":
             link_repair.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}))
             self._send_json({"ok": True})

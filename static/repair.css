@@ -16,4 +16,7 @@
 .repair-pair-action { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
 .repair-pair-action span { font-size: 13px; color: var(--text-muted, #64748b); }
 .repair-backup-path { overflow-wrap: anywhere; }
+.repair-options { display: grid; gap: 12px; border: 1px solid #c9d8e9; border-radius: 10px; padding: 16px; }
+.repair-options label { display: flex; align-items: flex-start; gap: 8px; }
+.repair-options input { flex: 0 0 auto; margin-top: 4px; }
 @media (max-width: 760px) { .link-fields { grid-template-columns: 1fr; } }

@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
-from core import excel_ops, link_repair, mark_finder, repair_compare as compare
+from core import excel_ops, link_repair, mark_finder, hidden_repair, repair_compare as compare
 
 
 class RepairComparisonTests(unittest.TestCase):
@@ -23,7 +23,7 @@ class RepairComparisonTests(unittest.TestCase):
             "cells":[{"sheet":"NewMain", "old_sheet":"Main", "addr":"B7:D7", "anchor":"B7"}]}]}
 
     def test_server_pair_resolves_renamed_sheets_and_merged_anchors_for_both_features(self):
-        for kind, module in (("links", link_repair), ("colors", mark_finder)):
+        for kind, module in (("links", link_repair), ("colors", mark_finder), ("hidden", hidden_repair)):
             with patch.object(module, "status", return_value={"applied":self.data}):
                 for sheet, cell in (("", ""), ("NewMain", "B7"), ("NewMain", "$B$7:$D$7")):
                     self.assertEqual(compare.comparison_target(kind, str(self.current.parent), "book.xlsx", sheet, cell), self.target)

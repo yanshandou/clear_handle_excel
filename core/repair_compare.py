@@ -15,11 +15,11 @@ from core import excel_ops as ops
 
 def comparison_target(kind: str, folder: str, name: str, sheet: str = "", cell: str = "") -> dict:
     """只接受服务端结果中已经配对的两个文件，旧表定位也由服务端清单决定。"""
-    from core import link_repair, mark_finder
+    from core import link_repair, mark_finder, hidden_repair
 
-    if kind not in {"links", "colors"}:
+    if kind not in {"links", "colors", "hidden"}:
         raise ValueError("未知的修复结果类型")
-    status = (link_repair if kind == "links" else mark_finder).status()
+    status = {"links": link_repair, "colors": mark_finder, "hidden": hidden_repair}[kind].status()
     if status.get("running"):
         raise ValueError("正在扫描或修复，请等任务结束后再打开对比")
     data = status.get("applied") or status.get("plan")
