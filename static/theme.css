@@ -1836,12 +1836,22 @@ body {
 }
 
 .btn-outline:hover:not(:disabled) {
-  --b: #e2eeff;
+  --b: #ffffff;
+  box-shadow: 0 8px 18px rgba(255, 255, 255, 0.85), 0 3px 6px rgba(15, 23, 42, 0.18), inset 0 -5px 0 var(--b-edge), inset 0 3px 0 rgba(255, 255, 255, 0.65);
 }
 
 .btn-primary { --b-top: #63d936; --b: #35a514; --b-edge: #23780a; color: #ffffff; }
+.btn-primary:hover:not(:disabled) {
+  box-shadow: 0 8px 18px rgba(53, 165, 20, 0.44), 0 3px 6px rgba(15, 23, 42, 0.24), inset 0 1px 1px rgba(255, 255, 255, 0.65), inset 0 -2px 3px rgba(35, 120, 10, 0.42);
+}
 .btn-success { --b-top: #5aa6ff; --b: #2f80ff; --b-edge: #1f5fc4; color: #ffffff; }
 .btn-danger { --b-top: #ff5c7a; --b: #ec2049; --b-edge: #a81034; color: #ffffff; }
+.btn-success:hover:not(:disabled) {
+  box-shadow: 0 8px 18px rgba(47, 128, 255, 0.44), 0 3px 6px rgba(15, 23, 42, 0.24), inset 0 1px 1px rgba(255, 255, 255, 0.65), inset 0 -2px 3px rgba(31, 95, 196, 0.42);
+}
+.btn-danger:hover:not(:disabled) {
+  box-shadow: 0 8px 18px rgba(236, 32, 73, 0.44), 0 3px 6px rgba(15, 23, 42, 0.24), inset 0 1px 1px rgba(255, 255, 255, 0.65), inset 0 -2px 3px rgba(168, 16, 52, 0.42);
+}
 
 .btn-primary,
 .btn-success,
