@@ -27,6 +27,24 @@ MAX_HITS_PER_FILE = 500
 _LOCK = threading.Lock()
 _STATUS: dict[str, Any] = {"running": False}
 
+# 文件级报错的原因码：前端按码分类展示，新增报错时兜底为 other。
+_FILE_ERROR_CODES = (
+    ("备份文件夹里找不到唯一对应的文件", "backup_not_unique"),
+    ("当前文件不能作为自己的备份", "self_backup"),
+    ("当前文件或备份在检查期间发生变化", "file_changed"),
+    ("当前文件在复制期间发生变化", "file_changed"),
+    ("文件正在 Excel 中打开", "file_locked"),
+    ("文件以只读方式打开", "file_readonly"),
+    ("模板格式暂不自动写回", "template"),
+    ("Sheet 标签颜色未能恢复为备份颜色", "tab_verify_failed"),
+    ("备份颜色无法读取", "backup_color_unreadable"),
+    ("颜色未能恢复为备份原色", "cell_verify_failed"),
+)
+
+
+def _error_code(message: str) -> str:
+    return next((code for prefix, code in _FILE_ERROR_CODES if message.startswith(prefix)), "other")
+
 
 def list_workbooks(folder: str) -> tuple[Path, list[Path]]:
     root = Path(folder.strip().strip('"').strip("'")).expanduser().resolve()
@@ -666,16 +684,16 @@ def _apply_colors(excel: Any, path: str, old_path: str, cells: list[dict], check
                 debug_log.event("📄 旧版这一格", 位置=f"{item['sheet']}!{item['addr']}", 内容=debug_log.clip(source["formula"]),
                                 图案=source["pattern"], 底色=source["color"], 深浅=source["tint"], 字色=source["font"])
             if isinstance(source, str):
-                result["reason"] = source
+                result.update(code="backup_cell_read_failed", reason=source)
                 continue
             try:
                 if item.get("kind") == "tab":
                     sheet = book.Worksheets(item["sheet"])
                     if item.get("mode") != "all" and not batch._tab_is_ours(sheet):
-                        result["reason"] = "Sheet 标签已不是程序标记的橙黄色，保留当前颜色"
+                        result.update(code="other", reason="Sheet 标签已不是程序标记的橙黄色，保留当前颜色")
                         continue
                     if item.get("mode") != "all" and source.get("color") == _excel_color(batch.TAB_HIGHLIGHT):
-                        result["reason"] = "备份的 Sheet 标签本来就是橙黄色，保留"
+                        result.update(code="other", reason="备份的 Sheet 标签本来就是橙黄色，保留")
                         continue
                     batch._restore_tab(sheet, source)
                     if item.get("mode") == "all" and source["index"] != batch.XL_COLOR_INDEX_NONE:
@@ -688,16 +706,17 @@ def _apply_colors(excel: Any, path: str, old_path: str, cells: list[dict], check
                     if not verified:
                         raise ValueError("Sheet 标签颜色未能恢复为备份颜色，本文件没有保存")
                     changed = True
-                    result.update(status="ok", reason="已恢复备份的 Sheet 标签颜色" if source["index"] != batch.XL_COLOR_INDEX_NONE else "已清除 Sheet 标签标记色（备份无颜色）")
+                    result.update(status="ok", code="restored_tab" if source["index"] != batch.XL_COLOR_INDEX_NONE else "cleared_tab",
+                                  reason="已恢复备份的 Sheet 标签颜色" if source["index"] != batch.XL_COLOR_INDEX_NONE else "已清除 Sheet 标签标记色（备份无颜色）")
                     continue
                 target = book.Worksheets(item["sheet"]).Range(item["addr"])
                 top = target.Cells(1, 1)
                 if _text(top.Formula) != source["formula"]:
-                    result["reason"] = "内容和旧版不一样了，没有改"
+                    result.update(code="content_mismatch", reason="内容和旧版不一样了，没有改")
                     continue
                 color = top.Interior.Color
                 if item.get("mode") != "all" and (color is None or int(color) != _excel_color(item["fill"])):
-                    result["reason"] = "底色已经不是标记色（被人改过），没有改"
+                    result.update(code="other", reason="底色已经不是标记色（被人改过），没有改")
                     continue
                 interior = target.Interior
                 if source["pattern"] == XL_PATTERN_NONE:
@@ -710,11 +729,11 @@ def _apply_colors(excel: Any, path: str, old_path: str, cells: list[dict], check
                 if source["font"] is not None:
                     _write_format_color(target.Font, source["font_state"])
                 changed = cells_changed = True
-                result.update(status="ok", reason="已改回旧版的颜色")
+                result.update(status="ok", code="restored_cell", reason="已改回旧版的颜色")
             except Exception as err:
                 if item.get("kind") == "tab" or item.get("mode") == "all":
                     raise
-                result["reason"] = f"改的时候出错：{err}"
+                result.update(code=_error_code(str(err)), reason=f"改的时候出错：{err}")
         if changed:
             if cells_changed and not any(item.get("mode") == "all" for item in cells):
                 normalize_workbook_view(excel, book)
@@ -843,6 +862,7 @@ def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[P
                     entry["cells"] = [outcomes.get(_item_key(cell), cell) for cell in entry["cells"]]
             except Exception as error:
                 entry["error"] = str(error)
+                entry["code"] = _error_code(str(error))
                 debug_log.exception(error, f"颜色修复 {name}")
             finally:
                 for cell in entry["cells"]:
@@ -851,7 +871,7 @@ def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[P
                 wf.log_msg(f"🎨 {name}：已恢复 {count} 处" + (f"；{entry['error']}" if entry["error"] else ""))
     except Exception as error:
         debug_log.exception(error, "颜色修复任务")
-        files.append({"name": "任务", "path": "", "cells": [], "error": str(error)})
+        files.append({"name": "任务", "path": "", "cells": [], "error": str(error), "code": "other"})
     finally:
         try:
             quit_background_excel(excel)
@@ -876,7 +896,9 @@ def repair(folder: str, old_folder: str, colors: Any = None) -> None:
     if root == old_root:
         raise ValueError("备份文件夹不能与当前文件夹相同")
     with wf.STATE_LOCK, _LOCK:
-        if wf.STATE.get("busy") or _STATUS.get("running"):
+        from core import bl_links, hidden_repair, link_repair
+        if (wf.STATE.get("busy") or _STATUS.get("running") or link_repair.status().get("running")
+                or hidden_repair.status().get("running") or bl_links.status().get("running")):
             raise ValueError("后台任务正在执行，请等它结束")
         job = wf.STATE.get("job") or {}
         if job.get("pending_adjustment") or job.get("deferred_adjustments"):

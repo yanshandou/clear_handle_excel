@@ -134,6 +134,7 @@ async function main() {
   try {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     child = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+      '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
       '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { cwd: profile, windowsHide: true, stdio: 'ignore' });
     child.on('error', error => errors.push(error.message));
     const activePort = path.join(profile, 'DevToolsActivePort');
@@ -154,7 +155,7 @@ async function main() {
     };
     const cdp = (method, params = {}) => new Promise((resolve, reject) => {
       const id = ++nextId;
-      const timer = setTimeout(() => { pending.delete(id); reject(new Error('CDP timeout: ' + method)); }, 30000);
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error('CDP timeout: ' + method + (params.expression ? ' (' + params.expression.slice(0, 120) + ')' : ''))); }, 30000);
       pending.set(id, { resolve, reject, timer }); socket.send(JSON.stringify({ id, method, params }));
     });
     const evaluate = async expression => {
@@ -196,7 +197,7 @@ async function main() {
           && (Math.abs(frame.top+frame.height/2-sourceRect.top-sourceRect.height/2)<1
             || Math.abs(frame.top-8)<1 || Math.abs(frame.bottom-(innerHeight-12))<1);})()`), true);
     };
-    await cdp('Runtime.enable'); await cdp('Page.enable');
+    await cdp('Runtime.enable'); await cdp('Page.enable'); await cdp('Page.bringToFront');
     if (process.argv.includes('--repairs')) {
       const assertFontOnlyColumns = async viewport => {
         const rows = await evaluate(`(async()=>{
@@ -251,12 +252,12 @@ async function main() {
           fill:'#C0007A',font:'#FFFFFF',old_fill:'#DDEEFF',old_font:'#112233',status:'ok',reason:'已恢复'},
           {sheet:'明細',addr:'A2',fill:'#C0007A',font:'#FFFFFF',action:'skip',reason:'附近内容与备份不同，请人工检查'}];
         if (kind === 'colors') {
-          Object.assign(cells[1], {fill:'none',font:'#0000FF',old_fill:'none',old_font:'#008000'});
+          Object.assign(cells[1], {fill:'none',font:'#0000FF',old_fill:'none',old_font:'#008000',code:'content_mismatch'});
           cells.push({kind:'tab', sheet:'标签表', old_sheet:'旧标签表', addr:'A1', anchor:'A1',
-            fill:'#FFC000', font:'#ABCDEF', old_fill:'none', old_font:'#FEDCBA', status:'ok',
+            fill:'#FFC000', font:'#ABCDEF', old_fill:'none', old_font:'#FEDCBA', status:'ok', code:'cleared_tab',
             reason:'已清除 Sheet 标签标记色（备份无颜色）'},
             {sheet:'明細',addr:'A3',fill:'none',font:'#FF0000',old_fill:'none',old_font:'#123456',
-              status:'ok',reason:'已恢复仅字色差异'});
+              status:'ok',code:'restored_cell',reason:'已恢复仅字色差异'});
         }
         repairStates[kind] = {running:false, applied:{folder:'C:/Synthetic/current', old_folder:'C:/Synthetic/backup',
           files:[{name:'book.xlsx',old:'C:/Synthetic/backup/book.xlsx',cells,error:null}]}};
@@ -264,8 +265,14 @@ async function main() {
           if (await evaluate(`document.getElementById('repairProgress')?.textContent.includes('未修复 1 处')`)) break;
           await delay(50);
         }
-        assert.equal(await evaluate(`document.querySelectorAll('#repairResults tbody tr').length`), kind === 'colors' ? 4 : 2);
+        assert.equal(await evaluate(`document.querySelectorAll('#repairResults tbody tr').length`), kind === 'colors' ? 1 : 2);
         if (kind === 'colors') {
+          assert.equal(await evaluate(`document.getElementById('repairFilters')?.hidden`), false);
+          assert.equal(await evaluate(`document.querySelector('[data-repair-filter="unresolved"]')?.getAttribute('aria-pressed')`), 'true');
+          assert.equal(await evaluate(`document.getElementById('repairResults').textContent.includes('明細!A2')`), true);
+          assert.equal(await evaluate(`document.getElementById('repairResults').textContent.includes('明細!A1')`), false);
+          await evaluate(`document.querySelector('[data-repair-filter="all"]').click()`);
+          assert.equal(await evaluate(`document.querySelectorAll('#repairResults tbody tr').length`), 4);
           assert.equal(await evaluate(`document.getElementById('repairProgress').textContent.includes('Sheet 标签 1 张')`), true);
           assert.equal(await evaluate(`document.getElementById('repairResults').textContent.includes('无标签颜色')`), true);
           assert.equal(await evaluate(`document.getElementById('repairResults').textContent.includes('#ABCDEF')

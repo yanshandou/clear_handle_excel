@@ -85,12 +85,13 @@ def _dimension_differences(sheet, source, now_context, old_context):
 
     def entry(kind, addr, anchor, signature, original):
         item = {"kind":kind, "sheet":sheet.title, "addr":addr, "anchor":anchor, "mode":"all", **_display(signature),
-                "action":"skip", "reason":"整行或整列的默认配色与备份不同，可能包含单元格独立样式，请人工对照恢复"}
+                "action":"skip", "code":"dimension_default",
+                "reason":"整行或整列的默认配色与备份不同，可能包含单元格独立样式，请人工对照恢复"}
         if source:
             previous = _display(original)
             item.update(old_sheet=source.title, old_fill=previous["fill"], old_font=previous["font"])
         else:
-            item["reason"] = "备份工作表无法唯一配对，请人工核对整行或整列配色"
+            item.update(code="sheet_unmatched", reason="备份工作表无法唯一配对，请人工核对整行或整列配色")
         return item
 
     def columns(ws):
@@ -128,7 +129,7 @@ def _plan_xml(path: Path, old_path: Path, limit: int | None) -> dict:
             if limit is not None and len(result) >= limit:
                 return False
             if item["action"] == "restore" and (marks._is_template(path) or marks._is_template(old_path)):
-                item.update(action="skip", reason="模板格式暂不自动写回，请先另存为 .xlsx / .xlsm 工作簿后恢复颜色")
+                item.update(action="skip", code="template", reason="模板格式暂不自动写回，请先另存为 .xlsx / .xlsm 工作簿后恢复颜色")
             result.append(item)
             return True
 
@@ -138,14 +139,15 @@ def _plan_xml(path: Path, old_path: Path, limit: int | None) -> dict:
             before = "none" if color is None else f"#{_color(color, now_context)}"
             if source is None:
                 if color is not None and not append({"kind":"tab", "sheet":sheet.title, "addr":"A1", "anchor":"A1",
-                        "mode":"all", "fill":before, "font":"", "action":"skip", "reason":"备份工作表无法唯一配对，保留当前标签颜色"}):
+                        "mode":"all", "fill":before, "font":"", "action":"skip", "code":"sheet_unmatched",
+                        "reason":"备份工作表无法唯一配对，保留当前标签颜色"}):
                     return {"cells":result, "truncated":True}
             else:
                 base = source.sheet_properties.tabColor
                 after = "none" if base is None else f"#{_color(base, old_context)}"
                 if before != after and not append({"kind":"tab", "sheet":sheet.title, "old_sheet":source.title,
                         "addr":"A1", "anchor":"A1", "mode":"all", "fill":before, "font":"", "old_fill":after,
-                        "old_font":"", "action":"restore", "reason":"标签颜色与备份不同，恢复备份原色"}):
+                        "old_font":"", "action":"restore", "code":"pending", "reason":"标签颜色与备份不同，恢复备份原色"}):
                     return {"cells":result, "truncated":True}
             for item in _dimension_differences(sheet, source, now_context, old_context):
                 if not append(item):
@@ -167,22 +169,22 @@ def _plan_xml(path: Path, old_path: Path, limit: int | None) -> dict:
                     continue
                 addr = merged.get(cell.coordinate, cell.coordinate)
                 item = {"sheet":sheet.title, "addr":addr, "anchor":cell.coordinate, "mode":"all", **_display(signature),
-                        "action":"restore", "reason":"配色与备份不同，恢复备份底色与字色"}
+                        "action":"restore", "code":"pending", "reason":"配色与备份不同，恢复备份底色与字色"}
                 if source is None:
-                    item.update(action="skip", reason="备份工作表无法唯一配对，保留当前单元格颜色")
+                    item.update(action="skip", code="sheet_unmatched", reason="备份工作表无法唯一配对，保留当前单元格颜色")
                 else:
                     item["old_sheet"] = source.title
                     if previous is not None:
                         original_display = _display(previous)
                         item.update(old_fill=original_display["fill"], old_font=original_display["font"])
                     if isinstance(cell, MergedCell) or isinstance(original, MergedCell) or merged.get(cell.coordinate) != old_merged.get(cell.coordinate):
-                        item.update(action="skip", reason="新旧合并区域不同，请人工检查颜色对应位置")
+                        item.update(action="skip", code="merged_range_mismatch", reason="新旧合并区域不同，请人工检查颜色对应位置")
                     elif marks._text(cell.value) != marks._text(original.value):
-                        item.update(action="skip", reason="和备份同一位置的内容或公式不同，请人工检查")
+                        item.update(action="skip", code="content_mismatch", reason="和备份同一位置的内容或公式不同，请人工检查")
                     elif cell.value in (None, "") and now_rows.get(row, {}) != old_rows.get(row, {}):
-                        item.update(action="skip", reason="空格子所在行和备份内容不同，请人工检查")
+                        item.update(action="skip", code="empty_row_mismatch", reason="空格子所在行和备份内容不同，请人工检查")
                     elif signature[0][0] == "gradient" or previous[0][0] == "gradient":
-                        item.update(action="skip", reason="渐变填充有颜色差异，请人工对照恢复")
+                        item.update(action="skip", code="gradient", reason="渐变填充有颜色差异，请人工对照恢复")
                 if not append(item):
                     return {"cells":result, "truncated":True}
         return {"cells":result, "truncated":False}

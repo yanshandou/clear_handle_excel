@@ -206,5 +206,22 @@ class AllColorComparisonTests(unittest.TestCase):
         self.assertIn("合并", rows[0]["reason"])
 
 
+    def test_plan_items_carry_stable_category_codes(self):
+        old, current = openpyxl.Workbook(), openpyxl.Workbook()
+        source, sheet = old.active, current.active
+        source["A1"], sheet["A1"] = "old", "changed"
+        source["A1"].fill = PatternFill("solid", fgColor="112233")
+        sheet["A1"].fill = PatternFill("solid", fgColor="445566")
+        source["A2"] = sheet["A2"] = "gradient"
+        source["A2"].fill = GradientFill(stop=("FF0000", "0000FF"))
+        sheet["A2"].fill = GradientFill(stop=("FFFF00", "00FF00"))
+        source.sheet_properties.tabColor = "112233"
+        sheet.sheet_properties.tabColor = "445566"
+        source.column_dimensions["B"].fill = PatternFill("solid", fgColor="112233")
+        sheet.column_dimensions["B"].fill = PatternFill("solid", fgColor="ABCDEF")
+        codes = {item["code"] for item in self.plan(current, old)}
+        self.assertTrue({"content_mismatch", "gradient", "pending", "dimension_default"} <= codes)
+
+
 if __name__ == "__main__":
     unittest.main()
