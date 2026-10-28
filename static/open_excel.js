@@ -31,7 +31,7 @@
       { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
   }
 
-  // labelHtml 需已转义；compare: links / colors，按服务端配对同时打开当前与备份。
+  // labelHtml 需已转义；compare: links / colors / hidden，按服务端配对同时打开当前与备份。
   // blocked：后台还要处理这份文件时不能打开的原因，链接变灰、鼠标移上去显示原因，点了只提示不打开
   window.excelLinkHtml = function (labelHtml, target, extraClass = '') {
     const data = ['file', 'sheet', 'cell', 'folder', 'blocked', 'compare']

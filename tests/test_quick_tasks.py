@@ -445,13 +445,20 @@ class QuickTaskTests(unittest.TestCase):
                 self.workflow.STATE.pop("maintenance", None)
 
     def test_one_click_repair_routes_and_color_page(self):
-        from core import link_repair, mark_finder
+        from core import link_repair, mark_finder, hidden_repair
         with self.serve_api() as port, patch.object(link_repair, "repair") as links, \
-                patch.object(mark_finder, "repair") as colors:
+                patch.object(mark_finder, "repair") as colors, patch.object(hidden_repair, "repair") as hidden:
             status, body = self.request(port, "GET", "/repair-colors")
             self.assertEqual(status, 200)
             self.assertIn("扫描并修复颜色", body)
-            for route, target in (("/api/link_repair/run", links), ("/api/batch/find_marks/run", colors)):
+            status, body = self.request(port, "GET", "/repair-hidden")
+            self.assertEqual(status, 200)
+            self.assertIn("扫描并修复隐藏页", body)
+            self.assertIn('id="repairNarrow"', body)
+            status, body = self.request(port, "GET", "/api/hidden_repair")
+            self.assertEqual(status, 200)
+            self.assertIn("running", json.loads(body))
+            for route, target in (("/api/link_repair/run", links), ("/api/batch/find_marks/run", colors), ("/api/hidden_repair/run", hidden)):
                 status, body = self.request(port, "POST", route, {"folder": str(self.folder), "old_folder": str(self.root), "colors": []})
                 self.assertEqual(status, 200, body)
                 self.assertEqual(target.call_args.args[:2], (str(self.folder), str(self.root)))
@@ -465,6 +472,15 @@ class QuickTaskTests(unittest.TestCase):
                 self.assertEqual(status, 400)
                 self.assertIn("颜色", json.loads(body)["error"])
                 links.assert_not_called()
+            finally:
+                self.workflow.STATE.update(busy=False)
+                self.workflow.STATE.pop("maintenance", None)
+
+            self.workflow.STATE.update(busy=True, maintenance="hidden_repair")
+            try:
+                status, body = self.request(port, "POST", "/api/link_repair/run", {"folder": str(self.folder), "old_folder": str(self.root)})
+                self.assertEqual(status, 400)
+                self.assertIn("隐藏状态", json.loads(body)["error"])
             finally:
                 self.workflow.STATE.update(busy=False)
                 self.workflow.STATE.pop("maintenance", None)

@@ -1,4 +1,4 @@
-"""颜色恢复与引用恢复共用的备份文件、工作表配对。"""
+"""颜色、引用与隐藏状态恢复共用的备份文件、工作表配对。"""
 from pathlib import Path
 from typing import Any, Callable
 import unicodedata

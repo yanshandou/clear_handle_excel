@@ -7,7 +7,7 @@ const vm = require('node:vm');
 async function page(initial = {}, {kind = 'links', storage = new Map(), postError = '', failPoll = false} = {}) {
   const elements = {}, requests = [], timers = [], links = [];
   let status = initial;
-  const get = id => elements[id] ||= {value:'', textContent:'', innerHTML:'', disabled:true, style:{},
+  const get = id => elements[id] ||= {value:'', textContent:'', innerHTML:'', disabled:true, checked:true, style:{},
     events:{}, addEventListener(name, handler) {this.events[name] = handler;}};
   const context = vm.createContext({
     document: {getElementById:get, body:{dataset:{repairKind:kind}}},
@@ -61,7 +61,7 @@ test('page reload restores results, source folders and recovery values', async (
 });
 
 test('file titles, backup paths and cell locations all open the same server-paired comparison', async () => {
-  for (const kind of ['links', 'colors']) {
+  for (const kind of ['links', 'colors', 'hidden']) {
     const p = await page({applied:result}, {kind});
     assert.equal(p.links.length, 5);
     assert.ok(p.links.every(link => link.target.compare === kind && link.target.file === 'book.xlsx'));
@@ -131,4 +131,35 @@ test('server rejection is shown and a fresh scan can be retried', async () => {
   await p.get('repairRun').events.click();
   assert.match(p.get('repairError').textContent, /后台任务正在执行/);
   assert.equal(p.get('repairRun').disabled, false);
+});
+
+test('hidden page sends selected scope and distinguishes hidden columns from narrow widths', async () => {
+  const data = {...result, options:{sheets:true, columns:true, narrow:false}, files:[{name:'book.xlsx', old:'D:/backup/book.xlsx', cells:[
+    {sheet:'Main', old_sheet:'OldMain', addr:'B:D', anchor:'B1', kind:'columns', status:'ok', current_state:'可见，列宽 20', old_state:'隐藏列', reason:'已恢复备份隐藏状态'},
+    {sheet:'Main', old_sheet:'OldMain', addr:'E:E', anchor:'E1', kind:'narrow', action:'skip', current_state:'可见', old_state:'超窄列，列宽 0.25', reason:'内容不同'},
+  ]}]};
+  const p = await page({applied:data}, {kind:'hidden'});
+  assert.equal(p.get('repairNarrow').checked, false);
+  assert.match(p.get('repairResults').innerHTML, /隐藏列/);
+  assert.match(p.get('repairResults').innerHTML, /超窄列/);
+  assert.match(p.get('repairResults').innerHTML, /OldMain/);
+  assert.match(p.get('repairProgress').textContent, /恢复隐藏设置 1 处；未修复 1 处/);
+  assert.match(p.get('repairProgress').textContent, /按列段计数/);
+  await p.get('repairRun').events.click();
+  const post = p.requests.find(request => request.options?.method === 'POST');
+  assert.equal(post.url, '/api/hidden_repair/run');
+  assert.deepEqual(JSON.parse(post.options.body).options, data.options);
+  assert.ok(p.links.every(link => link.target.compare === 'hidden'));
+  assert.equal(p.links[0].target.cell, 'B1');
+});
+
+test('hidden page blocks empty scope and disables scope changes while running', async () => {
+  const p = await page({}, {kind:'hidden'});
+  p.get('repairFolder').value = 'current'; p.get('repairOldFolder').value = 'old';
+  for (const id of ['repairSheets', 'repairColumns', 'repairNarrow']) p.get(id).checked = false;
+  await p.get('repairRun').events.click();
+  assert.ok(!p.requests.some(request => request.options?.method === 'POST'));
+  assert.match(p.get('repairError').textContent, /至少选择/);
+  const running = await page({running:true, phase:'repair', stage:'apply'}, {kind:'hidden'});
+  for (const id of ['repairSheets', 'repairColumns', 'repairNarrow']) assert.equal(running.get(id).disabled, true);
 });
