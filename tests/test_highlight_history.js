@@ -53,18 +53,14 @@ test('history validates, normalizes and deduplicates pairs while retaining diffe
   ]);
 });
 
-test('find marks includes every history pair, current preview and presets without duplicates', async () => {
+test('repair palette includes every saved history pair, current selection and presets without duplicates', () => {
   const history = Array.from({ length: 35 }, (_, i) => ({
     fill: '#' + (0x123400 + i).toString(16).toUpperCase(), font: '#FFFFFF',
   }));
   history.push({ fill: '#C0007A', font: '#000000' });
   const p = page({ storage: new Map([[HISTORY, JSON.stringify(history)]]) });
-  p.elements.get('highlightFill').listeners.input({ target: { value: custom.fill } });
-  p.run('waitFindMarks = async () => {}');
-  await p.run('findMarks()');
-  const { url, payload } = p.requests[0];
-  assert.equal(url, '/api/batch/find_marks');
-  const pairs = Array.from(payload.colors, color => `${color.fill}/${color.font}`);
+  p.run(`setHighlight({fill:'#123456', font:'#FFFFFF'})`);
+  const pairs = Array.from(p.run('savedHighlightColors()'), color => `${color.fill}/${color.font}`);
   for (const color of history) assert.ok(pairs.includes(`${color.fill}/${color.font}`));
   assert.ok(pairs.includes('#123456/#FFFFFF'));
   assert.ok(pairs.includes('#C0007A/#FFFFFF'));
@@ -72,24 +68,13 @@ test('find marks includes every history pair, current preview and presets withou
   assert.equal(new Set(pairs).size, pairs.length);
 });
 
-test('search results show the actual palette even when no cells match', () => {
-  const p = page();
-  p.run(`showFoundMarks({total: 1, folder: 'C:/Excel', files: [{name: 'book.xlsx', hits: []}],
-    colors: [{fill: '#123456', font: '#FEDCBA'}]})`);
-  const html = p.elements.get('findMarksBody').innerHTML;
-  assert.match(html, /本次匹配 1 组配色/);
-  assert.match(html, /底 #123456 \/ 字 #FEDCBA/);
-});
-
-test('malformed or unavailable browser storage does not prevent choosing and finding colors', async () => {
+test('malformed or unavailable browser storage does not prevent choosing and finding colors', () => {
   for (const value of ['{bad json', '{}', 'null']) {
     const p = page({ storage: new Map([[HISTORY, value], [CURRENT, value]]) });
     p.run(`setHighlight({fill:'#123456',font:'#FEDCBA'})`);
     assert.deepEqual(readHistory(p), [custom]);
   }
   const p = page({ storage: { get() { throw Error('blocked'); }, set() { throw Error('blocked'); } } });
-  p.run(`setHighlight({fill:'#123456',font:'#FEDCBA'}); setHighlight(HIGHLIGHT_PRESETS[0]);
-    waitFindMarks = async () => {}`);
-  await p.run('findMarks()');
-  assert.equal(p.requests[0].payload.colors.length, 9);
+  p.run(`setHighlight({fill:'#123456',font:'#FEDCBA'}); setHighlight(HIGHLIGHT_PRESETS[0]);`);
+  assert.equal(p.run('savedHighlightColors().length'), 8);
 });

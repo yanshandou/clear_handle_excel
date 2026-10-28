@@ -10,7 +10,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from core import autofix, batch, debug_log, fix_images, mark_finder, scan_analysis, link_repair
+from core import autofix, batch, debug_log, fix_images, mark_finder, scan_analysis, link_repair, repair_compare
 from core.common import (
     STATIC_DIR,
     console_print,
@@ -168,6 +168,8 @@ class WebHandler(BaseHTTPRequestHandler):
             self._serve_static_file("batch.html")
         elif parsed.path == "/repair-links":
             self._serve_static_file("link_repair.html")
+        elif parsed.path == "/repair-colors":
+            self._serve_static_file("color_repair.html")
         elif parsed.path == "/api/link_repair":
             self._send_json(link_repair.status())
         elif parsed.path == "/analysis":
@@ -327,7 +329,8 @@ class WebHandler(BaseHTTPRequestHandler):
     def _handle_post(self, payload: dict) -> None:
         with STATE_LOCK:
             if STATE.get("maintenance"):
-                raise ValueError("正在检查或修复引用错误，请等当前步骤结束")
+                name = "颜色" if STATE["maintenance"].startswith("color_") else "引用错误"
+                raise ValueError(f"正在检查或修复{name}，请等当前任务结束")
         if self.path == "/api/batch/start":
             options = {"folder": _require_folder(payload)}
             minutes = payload.get("scan_limit_minutes")
@@ -361,6 +364,12 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "fix_error_types": batch.set_fix_error_types(payload.get("fix_error_types"))})
         elif self.path == "/api/batch/unhighlight":
             self._start_job("batch_unhighlight", {"paths": batch.highlighted_paths()})
+        elif self.path == "/api/link_repair/run":
+            link_repair.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}))
+            self._send_json({"ok": True})
+        elif self.path == "/api/batch/find_marks/run":
+            mark_finder.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}), payload.get("colors"))
+            self._send_json({"ok": True})
         elif self.path == "/api/link_repair":
             link_repair.start(_require_folder(payload))
             self._send_json({"ok": True})
@@ -536,6 +545,21 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": f"生成预览图失败: {err}"}, status=500)
                 return
             self._send_json({"ok": True, **result})
+
+        elif self.path == "/api/excel/compare":
+            values = [payload.get(key, "") for key in ("kind", "folder", "file", "sheet", "cell")]
+            if any(not isinstance(value, str) for value in values) or not all(values[:3]):
+                raise ValueError("需要有效的修复结果、文件夹和文件名")
+            target = repair_compare.comparison_target(*values)
+            with STATE_LOCK:
+                job = STATE.get("job") or {}
+                if STATE["busy"]:
+                    for path in (target["current"], target["backup"]):
+                        reason = batch.open_block_reason(job, path)
+                        if reason:
+                            raise ValueError(reason)
+            autofix.wait_for_writes(15)
+            self._send_json({"ok": True, **repair_compare.open_comparison(target)})
 
         elif self.path == "/api/excel/open":
             # 网页上任何地方点文件名：在可见 Excel 打开，知道工作表/单元格就跳过去
