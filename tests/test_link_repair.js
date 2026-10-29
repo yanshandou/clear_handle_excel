@@ -62,6 +62,33 @@ test('page reload restores results, source folders and recovery values', async (
   assert.equal(p.get('repairRun').disabled, false);
 });
 
+test('link result categories filter cells and retain file failures', async () => {
+  const p = await page({applied:{folder:'current', files:[
+    {name:'mixed.xlsx', cells:[
+      {...hit, status:'ok', reason:'已恢复备份计算结果为固定值'},
+      {...hit, addr:'A4', reason:'备份工作表无法唯一配对，请人工检查'},
+      {...hit, addr:'A5', reason:'附近的内容和备份不同，可能移动过行列，请人工检查'},
+    ]},
+    {name:'failed.xlsx', error:'无法保存', cells:[{...hit, addr:'B1', status:'ok'}]},
+    {name:'clean.xlsx', cells:[]},
+  ]}});
+  assert.equal(p.get('repairFilters').hidden, false);
+  assert.match(p.get('repairFilters').innerHTML, /工作表无法配对（1 处）/);
+  assert.match(p.get('repairFilters').innerHTML, /文件处理失败（1 份）/);
+  p.selectFilter('link_sheet');
+  assert.match(p.get('repairResults').innerHTML, /Main!A4/);
+  assert.doesNotMatch(p.get('repairResults').innerHTML, /Main!A3|Main!A5|failed.xlsx/);
+  p.selectFilter('unresolved');
+  assert.match(p.get('repairResults').innerHTML, /failed.xlsx/);
+  assert.doesNotMatch(p.get('repairResults').innerHTML, /Main!A3|clean.xlsx/);
+  p.selectFilter('link_file_error');
+  assert.match(p.get('repairResults').innerHTML, /Main!B1/);
+  assert.match(p.get('repairResults').innerHTML, /无法保存/);
+  p.selectFilter('no_difference');
+  assert.match(p.get('repairResults').innerHTML, /clean.xlsx/);
+  assert.doesNotMatch(p.get('repairResults').innerHTML, /mixed.xlsx/);
+});
+
 test('file titles, backup paths and cell locations all open the same server-paired comparison', async () => {
   for (const kind of ['links', 'colors', 'hidden']) {
     const p = await page({applied:result}, {kind});
@@ -378,7 +405,7 @@ test('color filters are hidden before results, while running and in legacy previ
   }
   for (const kind of ['links', 'hidden']) {
     const p = await page({applied:result}, {kind});
-    assert.equal(p.get('repairFilters').events.click, undefined);
+    assert.equal(typeof p.get('repairFilters').events.click, kind === 'links' ? 'function' : 'undefined');
     assert.match(p.get('repairResults').innerHTML, /Main!A3/);
     assert.match(p.get('repairResults').innerHTML, /Main!A4/);
   }

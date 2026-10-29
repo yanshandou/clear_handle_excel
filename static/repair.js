@@ -12,7 +12,7 @@
   const CATEGORIES = [['no_difference','配色无差异'], ['restored_cell','单元格配色已恢复'], ['restored_tab','Sheet 标签颜色已恢复'], ['cleared_tab','Sheet 标签标记色已清除'], ['backup_not_unique','备份文件无法唯一匹配'], ['self_backup','当前文件被用作备份'], ['sheet_unmatched','工作表无法唯一匹配'], ['merged_range_mismatch','合并区域不一致'], ['content_mismatch','单元格内容或公式不一致'], ['empty_row_mismatch','空白格所在行内容不一致'], ['dimension_default','整行整列默认配色需人工处理'], ['gradient','渐变填充需人工处理'], ['template','模板格式不支持自动写回'], ['file_changed','文件在处理中发生变化'], ['file_locked','文件被占用'], ['file_readonly','文件只读'], ['backup_cell_read_failed','备份单元格读取失败'], ['backup_color_unreadable','备份颜色无法读取'], ['cell_verify_failed','单元格颜色恢复校验失败'], ['tab_verify_failed','标签颜色恢复校验失败'], ['other','其他执行异常']];
   const CATEGORY_LABELS = new Map(CATEGORIES);
   const FILE_LEVEL_CODES = new Set(['no_difference', 'backup_not_unique', 'self_backup', 'file_changed', 'file_locked', 'file_readonly', 'tab_verify_failed']);
-  let resultFilter = 'unresolved';
+  let resultFilter = colors ? 'unresolved' : 'all';
   let latest = {}, submitting = false, clearSubmitting = false, loading = true, timer, initial = true, pollError = '';
   const successful = cell => ['ok', 'resolved'].includes(cell.status);
   try { $('repairFolder').value = localStorage.getItem(FOLDER) || ''; $('repairOldFolder').value = localStorage.getItem(OLD) || ''; } catch (_) {}
@@ -35,17 +35,27 @@
   }
 
   function cellCode(cell, phase) {
+    if (!colors) {
+      if (phase === 'apply' && successful(cell)) return 'link_restored';
+      const reason = cell.reason || '';
+      if (reason.includes('工作表无法唯一配对')) return 'link_sheet';
+      if (reason.includes('固定的错误值')) return 'link_fixed_error';
+      if (reason.includes('附近的内容') || reason.includes('数组或溢出区域')) return 'link_content';
+      if (reason.includes('备份同一位置没有公式') || reason.includes('备份的原公式本身')) return 'link_backup_formula';
+      if (reason.includes('模拟删除') || reason.includes('模拟删表')) return 'link_mismatch';
+      return 'link_other';
+    }
     if (phase === 'apply' && successful(cell)) return cell.code || (cell.kind === 'tab' ? 'restored_tab' : 'restored_cell');
     return cell.code || 'other';
   }
 
   function analyzeFile(file, phase) {
     const cells = file.cells || file.hits || [];
-    const coded = cells.map(cell => ({cell, code: cellCode(cell, phase)}));
+    const coded = cells.map(cell => ({cell, code: !colors && file.error ? 'link_file_error' : cellCode(cell, phase)}));
     const applied = phase === 'apply' && !file.error;
     const pending = coded.filter(item => !(applied && successful(item.cell)));
     const codes = new Set(coded.map(item => item.code));
-    const errorCode = file.error ? file.code || 'other' : null;
+    const errorCode = file.error ? (colors ? file.code || 'other' : 'link_file_error') : null;
     if (errorCode) codes.add(errorCode);
     const noDifference = !cells.length && !errorCode && !file.truncated;
     if (noDifference) codes.add('no_difference');
@@ -135,7 +145,7 @@
     controls();
     const phase = latest.applied ? 'apply' : latest.plan ? 'preview' : 'scan';
     const data = latest.applied || latest.plan || latest.result;
-    if (colors) $('repairFilters').hidden = !!latest.running || phase !== 'apply' || !data;
+    if (!hidden) $('repairFilters').hidden = !!latest.running || phase !== 'apply' || !data;
     if (latest.running) {
       const clearing = latest.phase === 'clear';
       const stage = latest.phase === 'repair' ? latest.stage : latest.phase;
@@ -171,6 +181,25 @@
       }
       entries = viewEntries(analyses, view);
       emptyMessage = view === 'unresolved' ? '没有需要人工处理的配色问题。' : view === 'all' ? '没有检查结果。' : `没有「${CATEGORY_LABELS.get(view)}」的项目。`;
+    } else if (!hidden && phase === 'apply') {
+      const analyses = data.files.map(file => analyzeFile(file, phase));
+      const categories = [['link_restored', '已恢复'], ['link_sheet', '工作表无法配对'],
+        ['link_fixed_error', '固定错误值'], ['link_content', '附近内容或区域不同'],
+        ['link_backup_formula', '备份公式无法使用'], ['link_mismatch', '引用来源无法确认'],
+        ['link_other', '其他未修复'], ['link_file_error', '文件处理失败'], ['no_difference', '无引用错误']];
+      if (resultFilter !== 'all' && resultFilter !== 'unresolved' && !analyses.some(analysis => analysis.codes.has(resultFilter))) resultFilter = 'all';
+      view = resultFilter;
+      const chips = [['all', `全部（${analyses.length} 份）`], ['unresolved', `未修复（${analyses.filter(a => a.needsAttention).length} 份）`]]
+        .concat(categories.filter(([code]) => analyses.some(a => a.codes.has(code))).map(([code, label]) => {
+          const fileLevel = code === 'link_file_error' || code === 'no_difference';
+          const count = fileLevel ? analyses.filter(a => a.codes.has(code)).length : categoryCount(analyses, code);
+          return [code, `${label}（${count} ${fileLevel ? '份' : '处'}）`];
+        }));
+      $('repairFilters').innerHTML = '<div class="repair-filter-buttons" role="group" aria-label="引用错误修复结果分类">'
+        + chips.map(([key, label]) => `<button type="button" class="btn ${key === view ? 'btn-primary' : 'btn-outline'} btn-sm" data-repair-filter="${key}" aria-pressed="${key === view}" aria-controls="repairResults">${label}</button>`).join('')
+        + '</div><p class="toolbar-hint">同一文件可能出现在多个分类中；明细只显示当前分类的项目。</p>';
+      entries = viewEntries(analyses, view);
+      emptyMessage = view === 'unresolved' ? '没有未修复的引用错误或处理失败的文件。' : '该分类没有结果。';
     } else entries = data.files;
     $('repairResults').innerHTML = entries.map(file => table(file, data, phase, view)).join('') || `<p>${emptyMessage}</p>`;
   }
@@ -216,7 +245,7 @@
       const result = await response.json();
       if (!response.ok || !result.ok) throw Error(result.error || '操作失败');
       displayLimits.clear();
-      resultFilter = 'unresolved';
+      resultFilter = colors ? 'unresolved' : 'all';
       try { localStorage.setItem(FOLDER, folder); localStorage.setItem(OLD, old_folder); } catch (_) {}
       await refresh();
     } catch (error) {
@@ -245,7 +274,7 @@
     }
     $('repairClearMarks').addEventListener('click', clearMarks);
   }
-  if (colors) $('repairFilters').addEventListener('click', event => {
+  if (!hidden) $('repairFilters').addEventListener('click', event => {
     const button = event.target.closest('[data-repair-filter]');
     if (!button) return;
     resultFilter = button.dataset.repairFilter;
