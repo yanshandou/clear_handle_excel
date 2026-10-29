@@ -2,6 +2,19 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { page } = require('./workbench_page');
 
+test('clear result filters retain failed files and show only matching cells', () => {
+  const p = page();
+  p.run(`batchState.job={kind:'batch_unhighlight',result:{one:{name:'one.xlsx',cells:[
+    {sheet:'S',addr:'A1',status:'ok',reason:'完成'}, {sheet:'S',addr:'A2',status:'check',reason:'检查'}]},
+    two:{name:'two.xlsx',cells:[],error:'无法打开'}}};
+    unhighlightFilter='check';showUnhighlightResult();`);
+  assert.match(p.elements.get('unhighlightBody').innerHTML, /S!A2/);
+  assert.doesNotMatch(p.elements.get('unhighlightBody').innerHTML, /S!A1|two.xlsx/);
+  p.run(`unhighlightFilter='failed';showUnhighlightResult()`);
+  assert.match(p.elements.get('unhighlightBody').innerHTML, /two.xlsx|无法打开/);
+  assert.doesNotMatch(p.elements.get('unhighlightBody').innerHTML, /one.xlsx/);
+});
+
 test('scan analysis link keeps the report identity and is scoped to the active folder', () => {
   const p = page();
   p.run(`batchState.scan_analysis = {id:'scan-1', folder:'C:/Excel'}; renderControls();`);

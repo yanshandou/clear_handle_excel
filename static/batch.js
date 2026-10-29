@@ -273,6 +273,7 @@ function unhighlightResult() {
 }
 
 const CLEAR_STATUS = { ok: '✅', check: '⚠️', failed: '❌' };
+let unhighlightFilter = 'all';
 function showUnhighlightResult() {
   const files = Object.values(unhighlightResult() || {});
   const count = { ok: 0, check: 0, failed: 0 };
@@ -295,31 +296,44 @@ function showUnhighlightResult() {
     for (const cell of file.cells) own[cell.status] += 1;
     const tally = file.error ? `<span class="unhighlight-file-error">${esc(file.error)}</span>`
       : file.cells.length || tabs(file).length ? `✅ ${own.ok}${own.check ? ` · ⚠️ ${own.check}` : ''}${own.failed ? ` · ❌ ${own.failed}` : ''}` : '没有要清的标记';
-    const rows = file.cells.map(cell => {
+    const matches = status => unhighlightFilter === 'all' || status === unhighlightFilter;
+    const rows = file.cells.filter(cell => matches(file.error ? 'failed' : cell.status)).map(cell => {
       const where = `${cell.sheet}!${cell.addr}`;
       const link = excelLinkHtml(esc(where), { file: file.name, folder: batchState.folder, sheet: cell.sheet, cell: cell.addr.split(':')[0] });
       return `<li class="is-${cell.status}"><span aria-hidden="true">${CLEAR_STATUS[cell.status] || ''}</span>${link}<span class="unhighlight-reason">${esc(cell.reason)}</span></li>`;
     });
-    for (const tab of tabs(file)) {
+    for (const tab of tabs(file).filter(tab => matches(file.error ? 'failed' : tab.status))) {
       const link = excelLinkHtml(esc(`🏷️ ${tab.sheet}`), { file: file.name, folder: batchState.folder, sheet: tab.sheet });
       rows.push(`<li class="is-${tab.status}"><span aria-hidden="true">${CLEAR_STATUS[tab.status] || ''}</span>${link}<span class="unhighlight-reason">工作表标签：${esc(tab.reason)}</span></li>`);
     }
-    for (const reason of file.leftover_failed || []) {
+    for (const reason of matches('failed') ? file.leftover_failed || [] : []) {
       rows.push(`<li class="is-failed"><span aria-hidden="true">❌</span><span>残留标记</span><span class="unhighlight-reason">删不掉：${esc(reason)}</span></li>`);
     }
     return `<details class="unhighlight-file"${trouble(file) ? ' open' : ''}><summary><b>${fileNameLink(file, batchState.folder)}</b><span class="unhighlight-tally">${tally}</span></summary>`
       + (rows.length ? `<ul>${rows.join('')}</ul>` : '') + '</details>';
   };
   const tone = count.failed || errors ? 'error' : count.check ? 'warn' : 'info';
+  const visibleFiles = files.filter(file => unhighlightFilter === 'all' || (unhighlightFilter === 'failed' && (file.error || (file.leftover_failed || []).length))
+    || file.cells.some(cell => !file.error && cell.status === unhighlightFilter)
+    || tabs(file).some(tab => !file.error && tab.status === unhighlightFilter));
+  const filters = [['all', '全部'], ['ok', '已清除'], ['check', '需要看一下'], ['failed', '没清掉或文件失败']];
   $('unhighlightDialog').dataset.tone = tone;
   $('unhighlightTitle').textContent = tone === 'info' ? '标记已全部清除' : '清除结果：有格子要看一下';
   $('unhighlightBody').innerHTML = `<p class="unhighlight-summary">${files.length} 份文件　${chips.join('')}</p>`
+    + `<div class="repair-filter-buttons" role="group" aria-label="清除结果分类">${filters.map(([key, label]) => `<button type="button" class="btn ${key === unhighlightFilter ? 'btn-primary' : 'btn-outline'} btn-sm" data-unhighlight-filter="${key}" aria-pressed="${key === unhighlightFilter}">${label}</button>`).join('')}</div>`
     + `<p class="unhighlight-hint">点格子位置可以用 Excel 打开并跳到那一格。⚠️ 和 ❌ 的请人工看一下。</p>`
-    + `<div class="unhighlight-files">${files.map(fileHtml).join('')}</div>`;
+    + `<div class="unhighlight-files">${visibleFiles.map(fileHtml).join('') || '<p>该分类没有结果。</p>'}</div>`;
   if (!$('unhighlightDialog').open) $('unhighlightDialog').showModal();
   $('unhighlightBody').scrollTop = 0;
   $('unhighlightCloseBtn').focus(); // 不然浏览器把焦点放在第一个文件上，显示一圈焦点框
 }
+$('unhighlightBody').addEventListener('click', event => {
+  const button = event.target.closest('[data-unhighlight-filter]');
+  if (!button) return;
+  unhighlightFilter = button.dataset.unhighlightFilter;
+  showUnhighlightResult();
+  $('unhighlightBody').querySelector('[aria-pressed="true"]')?.focus();
+});
 
 // 后台任务刚结束且成功：撒花。提交 / 复检时若有暂停的全自动处理会被放回来，任务种类变了也算提交完成
 const FINISH_TITLES = { batch_scan: '全自动处理完成！', batch_commit: '审核已提交！', batch_recheck: '复检完成！' };

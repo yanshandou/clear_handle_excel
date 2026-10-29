@@ -35,6 +35,15 @@
   }
 
   function cellCode(cell, phase) {
+    if (hidden) {
+      if (phase === 'apply' && successful(cell)) return {sheet:'hidden_sheet', columns:'hidden_columns', narrow:'hidden_narrow'}[cell.kind] || 'hidden_restored';
+      const reason = cell.reason || '';
+      if (reason.includes('无法唯一配对') || reason.includes('缺少内容依据')) return 'hidden_pair';
+      if (reason.includes('内容、公式或位置不同')) return 'hidden_content';
+      if (reason.includes('受保护')) return 'hidden_protected';
+      if (reason.includes('可见工作表')) return 'hidden_visible';
+      return 'hidden_other';
+    }
     if (!colors) {
       if (phase === 'apply' && successful(cell)) return 'link_restored';
       const reason = cell.reason || '';
@@ -122,8 +131,17 @@
     $('repairResultFolder').textContent = `当前文件夹：${data.folder}`;
     $('repairProgress').textContent = `已清除 ${totalRules} 条标记，还原标签 ${totalTabs} 张；${errors} 份文件处理失败。`;
     $('repairProgressFill').style.width = '100%';
-    $('repairFilters').hidden = true;
-    $('repairResults').innerHTML = files.map(file => {
+    const failed = file => !!file.error || (file.leftover_failed || []).length > 0 || (file.tabs || []).some(tab => tab.status !== 'ok');
+    const hasWork = file => !!file.leftovers || (file.tabs || []).some(tab => tab.status === 'ok');
+    const categories = [['all', '全部', files], ['clear_done', '已清除', files.filter(hasWork)],
+      ['clear_empty', '无需处理', files.filter(file => !hasWork(file) && !failed(file))], ['clear_failed', '处理失败', files.filter(failed)]];
+    if (!categories.some(([key]) => key === resultFilter)) resultFilter = 'all';
+    $('repairFilters').hidden = false;
+    $('repairFilters').innerHTML = '<div class="repair-filter-buttons" role="group" aria-label="清除标记结果分类">'
+      + categories.map(([key, label, group]) => `<button type="button" class="btn ${key === resultFilter ? 'btn-primary' : 'btn-outline'} btn-sm" data-repair-filter="${key}" aria-pressed="${key === resultFilter}" aria-controls="repairResults">${label}（${group.length} 份）</button>`).join('')
+      + '</div><p class="toolbar-hint">分类只影响显示，同一文件可能出现在多个分类中。</p>';
+    const shown = categories.find(([key]) => key === resultFilter)[2];
+    $('repairResults').innerHTML = shown.map(file => {
       const target = {folder: data.folder, file: file.name};
       const fileLink = window.excelLinkHtml(escape(file.name), target);
       const tabs = file.tabs || [];
@@ -138,14 +156,14 @@
         + (leftoverFailed.length ? `<p class="link-skip">删不掉的残留标记：${escape(leftoverFailed.join('；'))}</p>` : '')
         + (tabFailed.length ? `<p class="link-skip">标签还原失败：${tabFailed.map(t => `${escape(t.sheet)}（${escape(t.reason)}）`).join('；')}</p>` : '');
       return `<details class="link-file"${hasWork ? ' open' : ''}><summary>${fileLink}${file.error ? ' · 处理失败' : (file.leftovers || tabOk) ? ` · 清掉 ${file.leftovers || 0} 条规则${tabOk ? `、${tabOk} 张标签` : ''}` : ' · 无需处理'}</summary>${detail}</details>`;
-    }).join('') || '<p>没有需要处理的文件。</p>';
+    }).join('') || '<p>该分类没有结果。</p>';
   }
 
   function render() {
     controls();
     const phase = latest.applied ? 'apply' : latest.plan ? 'preview' : 'scan';
     const data = latest.applied || latest.plan || latest.result;
-    if (!hidden) $('repairFilters').hidden = !!latest.running || phase !== 'apply' || !data;
+    $('repairFilters').hidden = !!latest.running || phase !== 'apply' || !data;
     if (latest.running) {
       const clearing = latest.phase === 'clear';
       const stage = latest.phase === 'repair' ? latest.stage : latest.phase;
@@ -181,9 +199,14 @@
       }
       entries = viewEntries(analyses, view);
       emptyMessage = view === 'unresolved' ? '没有需要人工处理的配色问题。' : view === 'all' ? '没有检查结果。' : `没有「${CATEGORY_LABELS.get(view)}」的项目。`;
-    } else if (!hidden && phase === 'apply') {
+    } else if (phase === 'apply') {
       const analyses = data.files.map(file => analyzeFile(file, phase));
-      const categories = [['link_restored', '已恢复'], ['link_sheet', '工作表无法配对'],
+      const categories = hidden ? [['hidden_sheet', '工作表已恢复'], ['hidden_columns', '隐藏列已恢复'],
+        ['hidden_narrow', '窄列宽已恢复'], ['hidden_restored', '其他已恢复'],
+        ['hidden_pair', '工作表无法配对'], ['hidden_content', '工作表内容或位置不同'],
+        ['hidden_protected', '工作簿或工作表受保护'], ['hidden_visible', '需保留可见工作表'],
+        ['hidden_other', '其他未恢复'], ['link_file_error', '文件处理失败'], ['no_difference', '无须恢复']]
+        : [['link_restored', '已恢复'], ['link_sheet', '工作表无法配对'],
         ['link_fixed_error', '固定错误值'], ['link_content', '附近内容或区域不同'],
         ['link_backup_formula', '备份公式无法使用'], ['link_mismatch', '引用来源无法确认'],
         ['link_other', '其他未修复'], ['link_file_error', '文件处理失败'], ['no_difference', '无引用错误']];
@@ -195,11 +218,11 @@
           const count = fileLevel ? analyses.filter(a => a.codes.has(code)).length : categoryCount(analyses, code);
           return [code, `${label}（${count} ${fileLevel ? '份' : '处'}）`];
         }));
-      $('repairFilters').innerHTML = '<div class="repair-filter-buttons" role="group" aria-label="引用错误修复结果分类">'
+      $('repairFilters').innerHTML = `<div class="repair-filter-buttons" role="group" aria-label="${hidden ? '隐藏恢复' : '引用错误修复'}结果分类">`
         + chips.map(([key, label]) => `<button type="button" class="btn ${key === view ? 'btn-primary' : 'btn-outline'} btn-sm" data-repair-filter="${key}" aria-pressed="${key === view}" aria-controls="repairResults">${label}</button>`).join('')
         + '</div><p class="toolbar-hint">同一文件可能出现在多个分类中；明细只显示当前分类的项目。</p>';
       entries = viewEntries(analyses, view);
-      emptyMessage = view === 'unresolved' ? '没有未修复的引用错误或处理失败的文件。' : '该分类没有结果。';
+      emptyMessage = view === 'unresolved' ? (hidden ? '没有未恢复的项目或处理失败的文件。' : '没有未修复的引用错误或处理失败的文件。') : '该分类没有结果。';
     } else entries = data.files;
     $('repairResults').innerHTML = entries.map(file => table(file, data, phase, view)).join('') || `<p>${emptyMessage}</p>`;
   }
@@ -265,6 +288,7 @@
         const response = await fetch('/api/batch/clear_marks', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({folder})});
         const result = await response.json();
         if (!response.ok || !result.ok) throw Error(result.error || '操作失败');
+        resultFilter = 'all';
         try { localStorage.setItem(FOLDER, folder); } catch (_) {}
         await refresh();
       } catch (error) {
@@ -274,7 +298,7 @@
     }
     $('repairClearMarks').addEventListener('click', clearMarks);
   }
-  if (!hidden) $('repairFilters').addEventListener('click', event => {
+  $('repairFilters').addEventListener('click', event => {
     const button = event.target.closest('[data-repair-filter]');
     if (!button) return;
     resultFilter = button.dataset.repairFilter;

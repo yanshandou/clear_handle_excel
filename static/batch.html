@@ -29,6 +29,8 @@
     <section class="panel"><details id="printLayoutsDetails"><summary>📄 Sheet 打印方向记录</summary>
       <p class="toolbar-hint">先确定每张 Sheet 的方向，再调整单元格。方向只临时用于 PDF 导出和分页检测，不保存进原 Excel。</p>
       <button type="button" id="printLayoutsRefresh" class="btn btn-outline btn-sm">刷新记录</button>
+      <label>搜索文件或工作表 <input type="search" id="printLayoutsSearch"></label>
+      <label>分类 <select id="printLayoutsFilter"><option value="all">全部</option><option value="stale">待重新验证</option><option value="review">建议重新分析</option><option value="manual">人工指定</option><option value="auto">自动推荐</option></select></label>
       <p id="printLayoutsStatus" role="status"></p><div id="printLayoutsList" class="print-layout-list"></div>
     </details></section>
     <section class="panel batch-tools">

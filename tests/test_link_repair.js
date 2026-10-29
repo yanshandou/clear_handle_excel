@@ -405,7 +405,7 @@ test('color filters are hidden before results, while running and in legacy previ
   }
   for (const kind of ['links', 'hidden']) {
     const p = await page({applied:result}, {kind});
-    assert.equal(typeof p.get('repairFilters').events.click, kind === 'links' ? 'function' : 'undefined');
+    assert.equal(typeof p.get('repairFilters').events.click, 'function');
     assert.match(p.get('repairResults').innerHTML, /Main!A3/);
     assert.match(p.get('repairResults').innerHTML, /Main!A4/);
   }
@@ -440,6 +440,50 @@ test('server rejection is shown and a fresh scan can be retried', async () => {
   await p.get('repairRun').events.click();
   assert.match(p.get('repairError').textContent, /后台任务正在执行/);
   assert.equal(p.get('repairRun').disabled, false);
+});
+
+test('hidden result categories filter recovery types, pending items and file errors', async () => {
+  const p = await page({applied:{folder:'current', files:[
+    {name:'mixed.xlsx', cells:[
+      {...hit, kind:'sheet', status:'ok'},
+      {...hit, addr:'B:B', kind:'columns', status:'ok'},
+      {...hit, addr:'C:C', kind:'narrow', reason:'工作表受保护，请人工确认列设置'},
+    ]},
+    {name:'failed.xlsx', error:'无法保存', cells:[{...hit, kind:'sheet', status:'ok'}]},
+    {name:'clean.xlsx', cells:[]},
+  ]}}, {kind:'hidden'});
+  assert.equal(p.get('repairFilters').hidden, false);
+  assert.match(p.get('repairFilters').innerHTML, /工作表已恢复（1 处）/);
+  assert.match(p.get('repairFilters').innerHTML, /隐藏列已恢复（1 处）/);
+  assert.match(p.get('repairFilters').innerHTML, /工作簿或工作表受保护（1 处）/);
+  p.selectFilter('hidden_columns');
+  assert.match(p.get('repairResults').innerHTML, /Main!B:B/);
+  assert.doesNotMatch(p.get('repairResults').innerHTML, /Main!A3|Main!C:C|failed.xlsx/);
+  p.selectFilter('unresolved');
+  assert.match(p.get('repairResults').innerHTML, /Main!C:C/);
+  assert.match(p.get('repairResults').innerHTML, /failed.xlsx/);
+  assert.doesNotMatch(p.get('repairResults').innerHTML, /Main!B:B|clean.xlsx/);
+  p.selectFilter('link_file_error');
+  assert.match(p.get('repairResults').innerHTML, /无法保存/);
+  p.selectFilter('no_difference');
+  assert.match(p.get('repairResults').innerHTML, /clean.xlsx/);
+});
+
+test('color clear results filter files without losing mixed failures', async () => {
+  const p = await page({phase:'clear', applied:{folder:'current', files:[
+    {name:'cleaned.xlsx', leftovers:2},
+    {name:'empty.xlsx'},
+    {name:'mixed.xlsx', leftovers:1, leftover_failed:['无法删除']},
+    {name:'failed.xlsx', error:'无法打开'},
+  ]}}, {kind:'colors'});
+  assert.equal(p.get('repairFilters').hidden, false);
+  p.selectFilter('clear_failed');
+  assert.match(p.get('repairResults').innerHTML, /mixed.xlsx/);
+  assert.match(p.get('repairResults').innerHTML, /failed.xlsx/);
+  assert.doesNotMatch(p.get('repairResults').innerHTML, /cleaned.xlsx|empty.xlsx/);
+  p.selectFilter('clear_done');
+  assert.match(p.get('repairResults').innerHTML, /mixed.xlsx|cleaned.xlsx/);
+  assert.doesNotMatch(p.get('repairResults').innerHTML, /failed.xlsx|empty.xlsx/);
 });
 
 test('hidden page sends selected scope and distinguishes hidden columns from narrow widths', async () => {

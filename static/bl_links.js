@@ -4,6 +4,7 @@
   const api = '/api/bl_links';
   const FOLDER = 'clear_handle_excel.lastFolder';
   let latest = {}, submitting = false, loading = true, timer, initial = true, pollError = '';
+  let resultFilter = 'all';
 
   try { $('blFolder').value = localStorage.getItem(FOLDER) || ''; } catch (_) {}
 
@@ -104,7 +105,14 @@
       ? `已清除 ${cleared} 处；${errors} 份文件处理失败。`
       : `发现 ${total} 处待清除。核对无误后点「🧽 清除这些单元格」。`;
     $('blProgressFill').style.width = '100%';
-    $('blResults').innerHTML = renderSummary(files, applied) + renderFiles(files, data, applied);
+    const has = file => (applied ? (file.cells || []) : (file.hits || [])).length > 0;
+    const groups = [['all', '全部', files], ['hit', applied ? '已处理' : '发现问题', files.filter(f => !f.error && has(f))],
+      ['empty', '无问题', files.filter(f => !f.error && !has(f))], ['failed', '处理失败', files.filter(f => f.error)]];
+    const shown = groups.find(([key]) => key === resultFilter)[2];
+    const filters = '<div class="repair-filter-buttons" role="group" aria-label="BL 超链接结果分类">'
+      + groups.map(([key, label, group]) => `<button type="button" class="btn ${key === resultFilter ? 'btn-primary' : 'btn-outline'} btn-sm" data-bl-filter="${key}" aria-pressed="${key === resultFilter}">${label}（${group.length} 份）</button>`).join('')
+      + '</div><p class="toolbar-hint">筛选只影响显示，清除范围仍为全部扫描结果。</p>';
+    $('blResults').innerHTML = renderSummary(files, applied) + filters + renderFiles(shown, data, applied);
   }
 
   async function refresh() {
@@ -142,6 +150,7 @@
     submitting = true; controls();
     try {
       await post(api + '/scan', { folder });
+      resultFilter = 'all';
       try { localStorage.setItem(FOLDER, folder); } catch (_) {}
       await refresh();
     } catch (error) {
@@ -163,6 +172,7 @@
     submitting = true; controls();
     try {
       await post(api + '/clear', {});
+      resultFilter = 'all';
       await refresh();
     } catch (error) {
       $('blError').textContent = error.message;
@@ -171,6 +181,13 @@
   }
 
   $('blScan').addEventListener('click', scan);
+  $('blResults').addEventListener('click', event => {
+    const button = event.target.closest('[data-bl-filter]');
+    if (!button) return;
+    resultFilter = button.dataset.blFilter;
+    render();
+    $('blResults').querySelector('[aria-pressed="true"]')?.focus();
+  });
   $('blClear').addEventListener('click', clear);
   $('blFolder').addEventListener('keydown', e => { if (e.key === 'Enter') scan(); });
   controls();

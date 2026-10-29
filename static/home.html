@@ -135,6 +135,8 @@
     <section class="panel"><details id="printLayoutsDetails"><summary>📄 Sheet 打印方向记录</summary>
       <p class="toolbar-hint">每张 Sheet 分别比较横向、竖向；分析结果供扫描和导出复用，原 Excel 的打印设置保持不变。</p>
       <button type="button" id="printLayoutsRefresh" class="btn btn-outline btn-sm">刷新记录</button>
+      <label>搜索文件或工作表 <input type="search" id="printLayoutsSearch"></label>
+      <label>分类 <select id="printLayoutsFilter"><option value="all">全部</option><option value="stale">待重新验证</option><option value="review">建议重新分析</option><option value="manual">人工指定</option><option value="auto">自动推荐</option></select></label>
       <p id="printLayoutsStatus" role="status"></p><div id="printLayoutsList" class="print-layout-list"></div>
     </details></section>
   </main>
