@@ -241,6 +241,10 @@ class ContainedSheetTests(unittest.TestCase):
         self.assertEqual(find_contained_sheets(names), ["概要_bak詳細"])
         self.assertEqual(find_contained_sheets(["一覧1340", "一覧"]), ["一覧1340"])
 
+    def test_layout_option_is_not_uncertain(self):
+        names = ["レイアウト", "レイアウト_オプション", "レイアウト詳細"]
+        self.assertEqual(find_contained_sheets(names), ["レイアウト詳細"])
+
 
 
 class NewOldPairTests(unittest.TestCase):

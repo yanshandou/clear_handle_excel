@@ -670,7 +670,7 @@ function previewFileItem(file, fileIndex, extraClass = '') {
       : (isUncertain
         ? '当前：待定，本次不删，等确认后再处理（单击切换为「保留」）'
         : '当前：保留（单击切换为「删除」）')) + renameTip
-      + ((file.gray_tabs || []).includes(name) ? '；Excel 里标签是灰色，不看名字默认删除' : '');
+      + ((file.gray_tabs || []).includes(name) ? '；Excel 里标签是灰色或黑色；编号后缀的表默认保留' : '');
     if (processed) {
       return `<span class="preview-sheet-tag is-${st} is-processed" title="已在预览窗口处理，重新扫描后更新">${labelHtml}</span>`;
     }

@@ -133,6 +133,11 @@ def _original_name_of(backup_name: str) -> str:
     return _comparable_name(text)
 
 
+def has_numbered_suffix(sheet_name: str) -> bool:
+    """表名末尾是括号数字编号，支持全角和半角。"""
+    return bool(EXCEL_COPY_SUFFIX_PATTERN.search(unicodedata.normalize("NFKC", strip_uncertain_prefix(sheet_name))))
+
+
 def copy_series_sheets(sheet_names: list[str]) -> set[str]:
     """一组带编号的同名表：同一原表有 2 张以上只多了「(n)」后缀的表，如 帳票入力画面定義書 与 (2)…(6)。
     用户 2026-10-26 说明：这种连续编号往往是同一定義書的多个画面，全部都要保留（导出 PDF 也要导出）。
@@ -297,7 +302,8 @@ def find_contained_sheets(sheet_names: list[str]) -> list[str]:
     contained: list[str] = []
     for name in sheet_names:
         text = _comparable_name(compare_name(name))
-        if name in targets or is_uncertain_name(name) or is_auto_generated_sheet(name) or text in has_backup:
+        if (name in targets or is_uncertain_name(name) or is_auto_generated_sheet(name)
+                or text in has_backup or unicodedata.normalize("NFKC", name).strip() == "レイアウト_オプション"):
             continue
         # 多出的部分整段在括号里（如 レイアウト 与 レイアウト(介護給付費請求書1)）是用途或页的补充说明，不算
         bare = _comparable_name(BRACKET_GROUP_PATTERN.sub("", unicodedata.normalize("NFKC", compare_name(name))))

@@ -23,6 +23,7 @@ from core.common import (
     console_print,
     copy_series_sheets,
     find_backup_sheets,
+    has_numbered_suffix,
     is_gray_tab_color,
     is_change_note_sheet,
     is_inspection_exempt_sheet,
@@ -2667,13 +2668,13 @@ def _preview_workbook(wb_path: Path, folder: Path, get_excel: Callable[[], Any])
         entry["sheet_count"] = len(all_names)
         entry["sheets"] = all_names  # 保持工作簿中的原有顺序，便于对照保留、删除与待定
         uncertain = [s for s in all_names if is_uncertain_name(s)]
-        # 灰色标签的表不看名字，默认删除（用户 2026-10-26）
-        gray = {s for s in all_names if is_gray_tab_color(tab_colors.get(s))}
+        # 精简时纯黑标签也默认删除；其他功能仍沿用原有灰色规则。
+        gray = {s for s in all_names if is_gray_tab_color(tab_colors.get(s)) or tab_colors.get(s) == "000000"}
         entry["gray_tabs"] = [s for s in all_names if s in gray]
         name_targets = set(find_clean_targets(all_names))
-        default_delete = [s for s in all_names if (s in name_targets and (s not in set(uncertain) or is_change_note_sheet(s))) or s in gray]
+        default_delete = [s for s in all_names if not has_numbered_suffix(s) and ((s in name_targets and (s not in set(uncertain) or is_change_note_sheet(s))) or s in gray)]
         contained = set(find_contained_sheets(all_names))
-        entry["uncertain"] = [s for s in all_names if (s in contained or s in set(uncertain)) and s not in set(default_delete)]
+        entry["uncertain"] = [s for s in all_names if (s in set(uncertain) or (s in contained and not has_numbered_suffix(s))) and s not in set(default_delete)]
         with STATE_LOCK:
             confirmation = copy.deepcopy(STATE.get("clean_confirmed_keep", {}).get(sheet_history.key(wb_path)))
         try:

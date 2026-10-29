@@ -772,6 +772,21 @@ class QuickTaskTests(unittest.TestCase):
         self.assertTrue((self.folder / "02_帳票" / "spec_Report.pdf").exists())
         self.assertTrue((self.folder / "02_帳票" / "spec_Draft.pdf").exists())
 
+    def test_numbered_suffix_is_kept_in_clean_preview(self):
+        self.add_book("numbered.xlsx", ["Main", "Main (2)", "Main（３）", "Main (2)_20221005"])
+        self.books["numbered.xlsx"].sheets[1].tab_color = "000000"
+        self.books["numbered.xlsx"].sheets[2].tab_color = "808080"
+        files = {f["name"]: f for f in self.workflow.preview_backup_sheets(str(self.folder))["files"]}
+        self.assertEqual(files["numbered.xlsx"]["backups"], ["Main (2)_20221005"])
+        self.assertEqual(files["numbered.xlsx"]["uncertain"], [])
+
+    def test_black_tab_defaults_to_delete(self):
+        self.add_book("black.xlsx", ["Main", "Black", "Uncolored"])
+        self.books["black.xlsx"].sheets[1].tab_color = "000000"
+        files = {f["name"]: f for f in self.workflow.preview_backup_sheets(str(self.folder))["files"]}
+        self.assertEqual(files["black.xlsx"]["backups"], ["Black"])
+        self.assertEqual(files["black.xlsx"]["gray_tabs"], ["Black"])
+
     def test_gray_tab_sheets_default_to_delete_and_skip_pdf(self):
         # 灰色标签的表不看名字：精简 Sheet 默认删除，导出 PDF 也跳过（用户 2026-10-26）；橙黄问题标签不算
         book = self.add_book("spec.xlsx", ["Main", "Main詳細", "20161101サービスコード選択(削除)", "Report"])
