@@ -168,6 +168,31 @@ class QuickTaskTests(unittest.TestCase):
     def report_files(self):
         return self.reporter.get_execution_report_snapshot()["files"]
 
+    def test_clean_confirmed_keep_survives_rescan_and_restart_until_file_changes(self):
+        path = self.add_book("a.xlsx", ["介護保険", "介護保険外"])
+        preview = lambda: self.workflow.preview_backup_sheets(str(self.folder))["files"][0]
+        self.assertIn("介護保険外", preview()["uncertain"])
+        plan = self.workflow.validate_clean_plan({"a.xlsx": {
+            "delete": [], "uncertain": [], "keep": ["介護保険", "介護保険外"]}})["a.xlsx"]
+        self.workflow._clean_backup_sheets(lambda: self.excel, path, self.folder, plan)
+        self.restart()
+        self.assertNotIn("介護保険外", preview()["uncertain"])
+        path.write_bytes(b"changed")
+        self.assertIn("介護保険外", preview()["uncertain"])
+
+    def test_new_change_note_rule_applies_to_old_confirmations_but_respects_new_ones(self):
+        from core import sheet_history
+        path = self.add_book("a.xlsx", ["概要", "レイアウト変更点", "仕様変更（#7547）", "レイアウト変更"])
+        key = sheet_history.key(path)
+        self.workflow.STATE.setdefault("clean_confirmed_keep", {})[key] = {
+            "hash": sheet_history.fingerprint(path), "sheets": ["レイアウト変更点", "仕様変更（#7547）", "レイアウト変更"]}
+        preview = lambda: self.workflow.preview_backup_sheets(str(self.folder))["files"][0]
+        self.assertEqual(preview()["backups"], ["レイアウト変更点", "仕様変更（#7547）", "レイアウト変更"])
+        self.workflow.STATE["clean_confirmed_keep"][key]["rule_version"] = 1
+        self.assertEqual(preview()["backups"], ["レイアウト変更"])
+        self.workflow.STATE["clean_confirmed_keep"][key]["rule_version"] = 2
+        self.assertEqual(preview()["backups"], [])
+
     def restart(self):
         loaded = storage.load_snapshot("workflow")
         self.workflow.STATE.clear()

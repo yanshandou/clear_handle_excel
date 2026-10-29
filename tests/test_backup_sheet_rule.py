@@ -13,6 +13,12 @@ from core.common import (
 
 
 class BackupMarkerTests(unittest.TestCase):
+    def test_change_note_sheets_are_clean_targets(self):
+        names = ["変更履歴", "レイアウト", "レイアウト変更点", "仕様変更（#7547）",
+                 "仕様変更", "❓仕様変更 (#1)", "レイアウト変更", "仕様書", "変更点一覧"]
+        self.assertEqual(find_clean_targets(names), names[2:7])
+        self.assertEqual(find_contained_sheets(names), [])
+
     def test_names_with_backup_markers(self):
         for name in (
             # 名称含有效日期

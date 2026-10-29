@@ -496,12 +496,14 @@ function buildCleanPlan() {
     if (processedFiles.has(file.name)) return;
     const del = [];
     const unc = [];
+    const keep = [];
     (file.sheets || []).forEach(name => {
       const st = getSheetState(file.name, name);
       if (st === 'delete') del.push(name);
       else if (st === 'uncertain') unc.push(name);
+      else keep.push(name);
     });
-    plan[file.name] = { delete: del, uncertain: unc };
+    plan[file.name] = { delete: del, uncertain: unc, keep };
     const renames = activeRenames(file);
     if (renames.length) {
       plan[file.name].rename = Object.fromEntries(renames.map(n => [n, getSheetRenames(file.name)[n]]));
@@ -576,7 +578,10 @@ function renderPage() {
     const stats = summarizeDecisions();
     renderSummary(stats);
     // 待定只是本次不删，不改文件；只去掉「新」字（没有旧表的新X）或只改名也要执行
-    const hasAction = stats.deletedTotal > 0 || stats.renameTotal > 0 || stats.customRenameTotal > 0;
+    const hasConfirmedKeep = previewData.files.some(file =>
+      [...(file.backups || []), ...(file.uncertain || [])]
+        .some(name => getSheetState(file.name, name) === 'keep'));
+    const hasAction = stats.deletedTotal > 0 || stats.renameTotal > 0 || stats.customRenameTotal > 0 || hasConfirmedKeep;
     const hasError = stats.emptyFiles.length > 0;
     execBtn.disabled = working || !hasAction || hasError || isBusyOther() || isCleanRunning();
     if (pending === 'start') {
@@ -589,6 +594,8 @@ function renderPage() {
         (stats.customRenameTotal ? `，改名 ${stats.customRenameTotal} 个` : '');
     } else if (stats.customRenameTotal > 0) {
       execBtn.textContent = `✏️ 改名 ${stats.customRenameTotal} 个工作表`;
+    } else if (hasConfirmedKeep) {
+      execBtn.textContent = '✅ 确认保留所选工作表';
     } else {
       execBtn.textContent = '没有标记删除的工作表';
     }
@@ -795,9 +802,28 @@ async function runPreview() {
   setPending('scan');
   try {
     const data = await postAction('/api/clean/preview', { folder });
+    const oldData = previewData;
+    const oldDecisions = sheetDecisions;
+    const oldRenames = sheetRenames;
     previewData = data;
     saveLastFolder(folder);
     initSheetDecisions();
+    if (oldData && oldData.folder === data.folder) {
+      const oldFiles = new Map(oldData.files.map(file => [file.name, file]));
+      data.files.forEach(file => {
+        const old = oldFiles.get(file.name);
+        if (!old || !file.version || JSON.stringify(old.version) !== JSON.stringify(file.version)) return;
+        const oldDelete = new Set(old.backups || []), oldUncertain = new Set(old.uncertain || []);
+        file.sheets.forEach(name => {
+          if (!old.sheets.includes(name)) return;
+          const initial = oldDelete.has(name) ? 'delete' : oldUncertain.has(name) ? 'uncertain' : 'keep';
+          const chosen = oldDecisions[file.name]?.[name];
+          if (chosen && chosen !== initial) sheetDecisions[file.name][name] = chosen;
+        });
+        sheetRenames[file.name] = Object.fromEntries(Object.entries(oldRenames[file.name] || {})
+          .filter(([name]) => file.sheets.includes(name)));
+      });
+    }
     previewFromFile = null;
     phase = 'preview';
     renderPreview();

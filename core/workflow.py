@@ -24,6 +24,7 @@ from core.common import (
     copy_series_sheets,
     find_backup_sheets,
     is_gray_tab_color,
+    is_change_note_sheet,
     is_inspection_exempt_sheet,
     find_clean_targets,
     find_contained_sheets,
@@ -140,6 +141,7 @@ STATE: dict[str, Any] = {
     "latest_scan_analysis": None,
     "print_layouts": {},  # 源文件 -> Sheet 身份 -> 已分析的打印方向与证据
     "sheet_history": {},  # 源文件 -> 已保存的删表、改名及引用转值记录；跨任务保留。
+    "clean_confirmed_keep": {},  # 文件内容指纹与执行精简时确认保留的表
     # 稍后人工复检：wb_path -> {"marks": [{sheet, addr, row, item_ids, state, fill, range, error}], "error"}
     # state: pending 等后台标黄 / marked 已标黄 / skipped 没能标黄（仍在队列里）
     "review_queue": {},
@@ -2651,6 +2653,7 @@ def _preview_workbook(wb_path: Path, folder: Path, get_excel: Callable[[], Any])
         "new_old_pairs": {},
         "gray_tabs": [],
         "note": "",
+        "version": _version_or_none(wb_path),
     }
     tab_colors: dict[str, str] = {}
     try:
@@ -2668,9 +2671,23 @@ def _preview_workbook(wb_path: Path, folder: Path, get_excel: Callable[[], Any])
         gray = {s for s in all_names if is_gray_tab_color(tab_colors.get(s))}
         entry["gray_tabs"] = [s for s in all_names if s in gray]
         name_targets = set(find_clean_targets(all_names))
-        default_delete = [s for s in all_names if (s in name_targets and s not in set(uncertain)) or s in gray]
+        default_delete = [s for s in all_names if (s in name_targets and (s not in set(uncertain) or is_change_note_sheet(s))) or s in gray]
         contained = set(find_contained_sheets(all_names))
-        entry["uncertain"] = [s for s in all_names if (s in contained or s in set(uncertain)) and s not in gray]
+        entry["uncertain"] = [s for s in all_names if (s in contained or s in set(uncertain)) and s not in set(default_delete)]
+        with STATE_LOCK:
+            confirmation = copy.deepcopy(STATE.get("clean_confirmed_keep", {}).get(sheet_history.key(wb_path)))
+        try:
+            confirmed_hash = sheet_history.fingerprint(wb_path) if confirmation else None
+        except OSError:
+            confirmed_hash = None
+        if confirmation and confirmed_hash and confirmation.get("hash") == confirmed_hash:
+            confirmed = set(confirmation.get("sheets", []))
+            version = confirmation.get("rule_version", 0)
+            if version < 2:
+                confirmed = {s for s in confirmed if not is_change_note_sheet(s) or (
+                    version >= 1 and is_change_note_sheet(s, rule_version=1))}
+            entry["uncertain"] = [s for s in entry["uncertain"] if s not in confirmed]
+            default_delete = [s for s in default_delete if s not in confirmed]
         entry["new_old_pairs"] = find_new_prefix_sheets(all_names)  # 旧表全部删除（或没有旧表）时，新表去掉「新」字
         if default_delete and len(default_delete) >= len(all_names):
             entry["note"] = "全部工作表均被识别为备份表，将跳过删除"
@@ -2689,18 +2706,25 @@ def validate_clean_plan(plan: Any) -> dict[str, dict[str, list[str]]]:
             raise ValueError("精简方案格式无效")
         delete_list = item.get("delete", [])
         uncertain_list = item.get("uncertain", [])
+        keep_list = item.get("keep", [])
         if (
             not isinstance(delete_list, list)
             or not isinstance(uncertain_list, list)
+            or not isinstance(keep_list, list)
             or any(not isinstance(s, str) or not s for s in delete_list)
             or any(not isinstance(s, str) or not s for s in uncertain_list)
+            or any(not isinstance(s, str) or not s for s in keep_list)
         ):
             raise ValueError("工作表选择列表格式无效")
         del_dedup = list(dict.fromkeys(delete_list))
         unc_dedup = list(dict.fromkeys(uncertain_list))
         if set(del_dedup) & set(unc_dedup):
             raise ValueError(f"{wb_name} 中同一工作表不能同时勾选删除和标记待定")
+        if set(keep_list) & (set(del_dedup) | set(unc_dedup)):
+            raise ValueError(f"{wb_name} 中同一工作表不能同时保留和删除或待定")
         normalized[wb_name] = {"delete": del_dedup, "uncertain": unc_dedup}
+        if "keep" in item:
+            normalized[wb_name]["keep"] = list(dict.fromkeys(keep_list))
         rename = item.get("rename", {})
         if not isinstance(rename, dict) or any(
             not isinstance(k, str) or not k or not isinstance(v, str) for k, v in rename.items()
@@ -2898,6 +2922,19 @@ def _clean_backup_sheets(
     deleted = list(previous.get("deleted_backups", []))
     uncertain_recorded = list(previous.get("uncertain_sheets", []))
 
+    def remember_kept(names: list[str], rename_map: dict[str, str] | None = None) -> None:
+        if file_plan is None or "keep" not in file_plan:
+            return
+        selected = set(file_plan["keep"])
+        renamed = rename_map or {}
+        kept = [renamed.get(n, n) for n in names if n in selected]
+        fingerprint = sheet_history.fingerprint(wb_path)
+        with STATE_LOCK:
+            STATE.setdefault("clean_confirmed_keep", {})[sheet_history.key(wb_path)] = {
+                "hash": fingerprint, "sheets": kept, "rule_version": 2,
+            }
+            _persist_state()
+
     def record(all_names: list[str], action: str, *, uncertain: list[str] | None = None) -> None:
         update_file_progress(
             wb_label,
@@ -2921,6 +2958,7 @@ def _clean_backup_sheets(
                 if uncertain_sel:
                     log_msg(f"  {action}")
                 record(pre_names, action, uncertain=uncertain_sel)
+                remember_kept(pre_names)
                 return
 
     before_hash = sheet_history.fingerprint(wb_path)
@@ -2975,6 +3013,8 @@ def _clean_backup_sheets(
 
     if rename_map:
         _sync_renamed_workbook_in_state(wb_path, wb_path, rename_map, root_folder)
+    if not del_all:
+        remember_kept(all_names, rename_map)
     record(final_names, action, uncertain=final_uncertain)
 
 

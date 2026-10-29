@@ -254,14 +254,21 @@ def strip_new_prefix(sheet_name: str) -> str:
 
 def find_clean_targets(sheet_names: list[str]) -> list[str]:
     """精简 Sheet 默认删除的工作表：有原表的备份表、「旧」开头的旧版表，
-    加上「自動生成」开头的工作表（保持原顺序）。旧版表无需对应原表或「新」版本。
+    以及「自動生成」「レイアウト変更」「仕様変更」开头的表（保持原顺序）。
     """
     targets = set(find_backup_sheets(sheet_names))
     for name in sheet_names:
         key = _new_old_key(name)
         if key is not None and key[0] == OLD_PREFIX:
             targets.add(name)
-    return [name for name in sheet_names if name in targets or is_auto_generated_sheet(name)]
+    return [name for name in sheet_names if name in targets or is_auto_generated_sheet(name) or is_change_note_sheet(name)]
+
+
+def is_change_note_sheet(sheet_name: str, rule_version: int = 2) -> bool:
+    """变更说明表：包括全角括号、编号及旧待定前缀。"""
+    text = unicodedata.normalize("NFKC", strip_uncertain_prefix(sheet_name)).strip()
+    layout = "レイアウト変更点" if rule_version < 2 else "レイアウト変更"
+    return text.startswith((layout, "仕様変更"))
 
 
 def find_contained_sheets(sheet_names: list[str]) -> list[str]:

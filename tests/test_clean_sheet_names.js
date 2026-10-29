@@ -48,3 +48,17 @@ test('MMDD still works after Japanese names or separators', () => {
   assert.equal(run("hasBackupMarker('Report0513')"), false);
   assert.equal(run("hasBackupMarker('Report_1340')"), false);
 });
+
+test('rescan retains manual decisions only for an unchanged file', async () => {
+  const run = cleanPage();
+  run(`previewData = {folder:'folder', files:[{name:'a', sheets:['A','AB'], backups:[], uncertain:['AB'], version:{size:1}}]};
+    initSheetDecisions(); sheetDecisions.a.AB = 'keep';
+    readFolderInput = () => 'folder'; setPending = () => {}; saveLastFolder = () => {};
+    renderPreview = () => {}; renderPage = () => {}; appAlert = e => { throw Error(e); };
+    postAction = async () => ({folder:'folder', files:[{name:'a', sheets:['A','AB'], backups:[], uncertain:['AB'], version:{size:1}}]});`);
+  await run('runPreview()');
+  assert.equal(run('sheetDecisions.a.AB'), 'keep');
+  run(`postAction = async () => ({folder:'folder', files:[{name:'a', sheets:['A','AB'], backups:[], uncertain:['AB'], version:{size:2}}]});`);
+  await run('runPreview()');
+  assert.equal(run('sheetDecisions.a.AB'), 'uncertain');
+});
