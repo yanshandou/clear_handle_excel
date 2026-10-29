@@ -265,7 +265,16 @@ def _launch(phase: str, folder: str, targets: list) -> None:
 
     def run() -> None:
         with debug_log.side_task("bl_link_" + phase, {"folder": folder, "files": len(targets)}):
-            _run(phase, folder, targets)
+            from core import operation_history
+            kind = "bl_scan" if phase == "scan" else "bl_clear"
+            ids = operation_history.begin(folder, [kind]) if kind else []
+            try:
+                _run(phase, folder, targets)
+                result = status().get("result" if phase == "scan" else "applied", {})
+                operation_history.finish(ids, "failed" if any(f.get("error") for f in result.get("files", [])) else "completed")
+            except Exception:
+                operation_history.finish(ids, "failed")
+                raise
 
     try:
         threading.Thread(target=run, name="BL超链接" + phase, daemon=True).start()

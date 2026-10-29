@@ -228,3 +228,31 @@ async function copyMarkdownReport() {
 
 setInterval(pollRecords, 1200);
 pollRecords();
+
+let operationHistory = null;
+let historyKey = '';
+function renderOperationHistory(data) {
+  const select = document.getElementById('historyFolder');
+  const selected = select.value;
+  const folders = data.folders || [];
+  select.innerHTML = folders.length ? folders.map(f => `<option value="${escapeHtml(f.folder)}">${escapeHtml(f.folder)}</option>`).join('') : '<option value="">暂无操作记录</option>';
+  if (folders.some(f => f.folder === selected)) select.value = selected;
+  const group = folders.find(f => f.folder === select.value);
+  const statuses = {running: '进行中', completed: '已完成', failed: '部分失败或失败', interrupted: '已中断'};
+  document.getElementById('historyBody').innerHTML = Object.entries(data.labels).map(([kind, label]) => {
+    const item = group?.operations?.[kind];
+    return `<tr><td>${escapeHtml(label)}</td><td>${item ? item.count + ' 次' : '0 次'}</td><td>${escapeHtml(item?.last || '—')}</td><td>${escapeHtml(item ? (statuses[item.status] || item.status) : '未操作')}</td></tr>`;
+  }).join('');
+}
+document.getElementById('historyFolder').addEventListener('change', () => { if (operationHistory) renderOperationHistory(operationHistory); });
+async function pollOperationHistory() {
+  try {
+    const response = await fetch('/api/operation-history');
+    if (!response.ok) throw new Error('history unavailable');
+    const data = await response.json();
+    const key = JSON.stringify(data);
+    if (key !== historyKey) { historyKey = key; operationHistory = data; renderOperationHistory(data); }
+  } catch (e) { document.getElementById('historyBody').innerHTML = '<tr><td colspan="4">无法加载操作记录，请稍后重试。</td></tr>'; historyKey = ''; }
+}
+pollOperationHistory();
+setInterval(pollOperationHistory, 3000);

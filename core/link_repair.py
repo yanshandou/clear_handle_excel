@@ -330,7 +330,16 @@ def _launch(phase: str, folder: Path, paths: list, old_root: Path | None = None,
             _STATUS.pop(key, None)
     def run() -> None:
         with debug_log.side_task("link_" + phase, {"folder": str(folder), "old_folder": str(old_root or ""), "files": len(paths)}):
-            _run(phase, folder, paths, old_root, old_paths)
+            from core import operation_history
+            kind = "links" if phase == "repair" else None
+            ids = operation_history.begin(folder, [kind]) if kind else []
+            try:
+                _run(phase, folder, paths, old_root, old_paths)
+                result = status().get("applied", {})
+                operation_history.finish(ids, "failed" if any(f.get("error") for f in result.get("files", [])) else "completed")
+            except Exception:
+                operation_history.finish(ids, "failed")
+                raise
     try:
         threading.Thread(target=run, name="引用错误" + phase, daemon=True).start()
     except Exception:

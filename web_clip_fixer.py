@@ -276,6 +276,9 @@ class WebHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/debug-log/download":
             data = debug_log.LOG_PATH.read_bytes() if debug_log.LOG_PATH.exists() else b""
             self._send_bytes(data, "text/plain; charset=utf-8", filename="log.txt")
+        elif parsed.path == "/api/operation-history":
+            from core import operation_history
+            self._send_json(operation_history.summary())
         elif parsed.path == "/api/records":
             self._send_json(get_execution_report_snapshot())
         elif parsed.path == "/api/records/zip":
@@ -754,6 +757,8 @@ class WebHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    from core import operation_history
+    operation_history.interrupt_running()
     debug_log.install()
     port = 8765
     try:

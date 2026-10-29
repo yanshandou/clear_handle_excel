@@ -292,6 +292,13 @@ def run_pending_workflow() -> None:
             # 审核提交 / 复检 / 打开不重建执行记录：记录属于别的文件夹时不往里写
             suspend_report_updates(job["kind"] == "print_layout" or (job["kind"] in BATCH_REVIEW_KINDS
                                    and not _report_is_for_workbench()))
+        if "workbooks" in job and options.get("folder"):
+            from core.reporter import resume_operation_history
+            names = ({"batch_scan": {"只扫描（全部转人工）", "全自动扫描与修复", "自动调整选中的格子"},
+                      "scan": {"Web 切字扫描（完整）", "Web 切字扫描（增量）"}}
+                     .get(job["kind"], {QUICK_TASK_NAMES[job["kind"]]} if job["kind"] in QUICK_TASK_NAMES else set()))
+            if names:
+                resume_operation_history(options["folder"], names)
         if job["kind"].startswith("batch_"):
             from core import batch
             expected = batch.run()

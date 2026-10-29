@@ -349,8 +349,17 @@ def _run(folder: Path, paths: list[Path], styles: list[tuple[str, str]]) -> None
 
 def _logged(kind: str, options: dict, func: Any, *args: Any) -> None:
     """后台线程跑的这几步也在调试日志里算一个任务，网页上能选出来复制"""
-    with debug_log.side_task(kind, options):
-        func(*args)
+    from core import operation_history
+    ids = operation_history.begin(options["folder"], ["colors"]) if kind == "color_repair" else []
+    try:
+        with debug_log.side_task(kind, options):
+            func(*args)
+        result = status().get("applied", {})
+        files = result.get("files", []) + result.get("clear_files", [])
+        operation_history.finish(ids, "failed" if any(f.get("error") for f in files) else "completed")
+    except Exception:
+        operation_history.finish(ids, "failed")
+        raise
 
 
 def _begin(phase: str, total: int) -> None:

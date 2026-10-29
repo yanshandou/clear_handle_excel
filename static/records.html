@@ -28,6 +28,13 @@
   </header>
 
   <main class="container">
+    <section class="panel">
+      <div class="panel-section-head"><div class="panel-section-title"><span class="step-chip">HISTORY</span><span>用户操作记录</span></div></div>
+      <p>按目标文件夹统计主要操作。次数表示任务启动次数，最近一次的状态可帮助判断是否完成；记录从此功能启用后开始。</p>
+      <label for="historyFolder">目标文件夹：</label>
+      <select id="historyFolder" style="max-width:100%; margin:8px 0;"></select>
+      <div style="overflow-x:auto"><table class="records-table"><thead><tr><th>操作</th><th>次数</th><th>最近一次</th><th>最近状态</th></tr></thead><tbody id="historyBody"></tbody></table></div>
+    </section>
     <!-- 总体进度与核心指标面板 -->
     <section class="panel">
       <div class="panel-section-head">

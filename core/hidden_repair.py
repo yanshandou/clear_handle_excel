@@ -397,7 +397,16 @@ def repair(folder: str, old_folder: str, options: dict | None = None) -> None:
 
     def run() -> None:
         with debug_log.side_task("hidden_repair", {"folder": str(root), "old_folder": str(old_root), "options": options}):
-            _run(root, paths, old_root, old_paths, options)
+            from core import operation_history
+            kind = "hidden"
+            ids = operation_history.begin(root, [kind]) if kind else []
+            try:
+                _run(root, paths, old_root, old_paths, options)
+                result = status().get("applied", {})
+                operation_history.finish(ids, "failed" if any(f.get("error") for f in result.get("files", [])) else "completed")
+            except Exception:
+                operation_history.finish(ids, "failed")
+                raise
 
     try:
         threading.Thread(target=run, name="扫描并修复隐藏页", daemon=True).start()

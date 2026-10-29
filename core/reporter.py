@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from core import fix_images
+from core import fix_images, operation_history
 from core.common import (
     EXCEL_EXTENSIONS, PROJECT_ROOT, RECORD_PATH, has_review_prefix, md_wrap, review_name_variants, strip_review_prefix,
     workbook_rel_name,
@@ -19,6 +19,7 @@ from core.storage import load_snapshot, save_snapshot
 REPORT_LOCK = threading.RLock()
 REPORT_STATE_PATH = PROJECT_ROOT / "record_state.json"
 WRITE_INTERVAL = 1.0  # 进度更新很频繁：数据库和 Markdown 最多每秒写一次，开始、结束、中断时立即写
+_history_context = threading.local()
 _last_write = 0.0
 _write_timer: threading.Timer | None = None
 
@@ -220,7 +221,14 @@ def init_execution_batch(
 
     同一个文件夹接着做下一步（精简 Sheet → 导出 PDF → 切字扫描……）时累加：
     每个文件的记录合并，前面步骤的结果不丢；换了文件夹才清空重来。"""
+    kinds = ({"精简 Sheet（删除备份表）": ["clean"], "批量导出 PDF": ["pdf"],
+              "视图标准化（分页预览 + A1 + 100% 缩放）": ["view"],
+              "只扫描（全部转人工）": ["scan"], "全自动扫描与修复": ["scan", "autofix"],
+              "自动调整选中的格子": ["autofix"], "Web 切字扫描（完整）": ["scan"],
+              "Web 切字扫描（增量）": ["scan"]}).get(task_name, [])
     with REPORT_LOCK:
+        _history_context.ids = operation_history.begin(folder, kinds) if kinds else []
+        EXECUTION_STATE["operation_history_ids"] = _history_context.ids
         now = _now_str()
         old_folder = EXECUTION_STATE.get("folder", "")
         # 换了文件夹一定清空：否则上一个文件夹的文件会出现在这个文件夹的报告里，也打不开
@@ -432,11 +440,24 @@ def _merge_sheet_list(old: list[str], new: list[str], deleted: list[str]) -> lis
     return result
 
 
+def resume_operation_history(folder: str, task_names: set[str]) -> None:
+    """继续同一批任务时更新原记录，不重复计数。"""
+    with REPORT_LOCK:
+        if (EXECUTION_STATE.get("status") != "interrupted"
+                or EXECUTION_STATE.get("task_name") not in task_names
+                or not _same_folder(EXECUTION_STATE.get("folder", ""), folder)):
+            return
+        ids = EXECUTION_STATE.get("operation_history_ids", [])
+        _history_context.ids = ids
+        operation_history.finish(ids, "running")
+
+
 def finish_execution_batch(summary_step: str = "全部任务处理完毕") -> None:
     """标记当前批次任务完成，并持久化最新 Markdown 与 JSON 状态"""
     if _updates_suspended():
         return
     with REPORT_LOCK:
+        operation_history.finish(getattr(_history_context, "ids", []), "failed" if EXECUTION_STATE.get("error_files") or "未完成" in summary_step else "completed")
         EXECUTION_STATE["status"] = "completed"
         EXECUTION_STATE["current_file"] = ""
         EXECUTION_STATE["current_step"] = summary_step
@@ -448,6 +469,7 @@ def interrupt_execution_batch(message: str) -> None:
     if _updates_suspended():
         return
     with REPORT_LOCK:
+        operation_history.finish(getattr(_history_context, "ids", []), "interrupted")
         EXECUTION_STATE["status"] = "interrupted"
         EXECUTION_STATE["current_file"] = ""
         EXECUTION_STATE["current_step"] = message
