@@ -2945,6 +2945,17 @@ button.preview-sheet-tag:active {
   font-size: 13px;
 }
 
+.clean-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 0 4px; font-size: 13px; }
+.clean-filter.hidden { display: none; }
+.clean-filter-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.clean-filter-btn { font: inherit; border: 1px solid #aab6d0; border-radius: 8px; padding: 5px 10px; background: #fff; color: #1b2c5c; cursor: pointer; }
+.clean-filter-btn.is-keep { background: #e0ecff; color: #1e3a8a; }
+.clean-filter-btn.is-delete { background: #fee2e2; color: #991b1b; }
+.clean-filter-btn.is-uncertain { background: #fef3c7; color: #92400e; }
+.clean-filter-btn.is-active { border-color: #182859; box-shadow: 0 0 0 2px #182859; font-weight: 700; }
+.clean-filter-hint { color: #596783; }
+.clean-filter-empty { padding: 24px; text-align: center; color: #596783; }
+
 .clean-actionbar-main {
   display: flex;
   align-items: center;

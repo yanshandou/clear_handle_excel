@@ -62,3 +62,32 @@ test('rescan retains manual decisions only for an unchanged file', async () => {
   await run('runPreview()');
   assert.equal(run('sheetDecisions.a.AB'), 'uncertain');
 });
+
+test('status filtering selects whole files and follows current decisions', () => {
+  const run = cleanPage();
+  run(`previewData = {folder:'folder', files:[
+    {name:'mixed.xlsx', sheets:['original','backup'], backups:['backup']},
+    {name:'keep.xlsx', sheets:['only'], backups:[]},
+    {name:'uncertain.xlsx', sheets:['review'], backups:[], uncertain:['review']},
+  ]}; initSheetDecisions();
+  excelLinkHtml = text => text;
+  const box = {style:{}, offsetHeight:0, innerHTML:''};
+  const filter = {querySelectorAll: () => []};
+  const count = {};
+  document = {getElementById: id => id === 'previewBox' ? box : id === 'cleanFilter' ? filter : count,
+    querySelectorAll: () => []};
+  window.scrollY = 0; window.scrollX = 0;`);
+  run("setCleanFilter('delete')");
+  assert.match(run('box.innerHTML'), /mixed\.xlsx/);
+  assert.match(run('box.innerHTML'), /original/);
+  assert.match(run('box.innerHTML'), /backup/);
+  assert.doesNotMatch(run('box.innerHTML'), /keep\.xlsx|uncertain\.xlsx/);
+  assert.equal(run('count.textContent'), '显示 1 / 3 个文件');
+  run("sheetDecisions['mixed.xlsx'].backup = 'uncertain'; renderPreview()");
+  assert.match(run('box.innerHTML'), /没有符合条件的文件/);
+  run("setCleanFilter('uncertain')");
+  assert.match(run('box.innerHTML'), /mixed\.xlsx/);
+  assert.match(run('box.innerHTML'), /uncertain\.xlsx/);
+  run("setCleanFilter('all')");
+  assert.equal(run('count.textContent'), '显示 3 / 3 个文件');
+});

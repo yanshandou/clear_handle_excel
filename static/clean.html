@@ -85,6 +85,18 @@
       </div>
     </section>
 
+    <section id="cleanFilter" class="clean-filter hidden" aria-label="按工作表状态筛选文件">
+      <span>筛选文件：</span>
+      <div class="clean-filter-buttons" role="group" aria-label="工作表状态">
+        <button type="button" class="clean-filter-btn is-active" data-filter="all" aria-pressed="true" onclick="setCleanFilter('all')">全部</button>
+        <button type="button" class="clean-filter-btn is-keep" data-filter="keep" aria-pressed="false" onclick="setCleanFilter('keep')">含保留</button>
+        <button type="button" class="clean-filter-btn is-delete" data-filter="delete" aria-pressed="false" onclick="setCleanFilter('delete')">含删除</button>
+        <button type="button" class="clean-filter-btn is-uncertain" data-filter="uncertain" aria-pressed="false" onclick="setCleanFilter('uncertain')">含待定</button>
+      </div>
+      <span id="cleanFilterCount" aria-live="polite"></span>
+      <span class="clean-filter-hint">筛选仅影响显示，执行范围仍为全部文件</span>
+    </section>
+
     <section id="cleanEmpty" class="clean-placeholder">输入文件夹路径后点击「扫描备份表」，这里会列出每个 Excel 的全部工作表。</section>
     <section id="cleanScanning" class="clean-placeholder is-scanning hidden" aria-live="polite">
       <span class="clean-spinner" aria-hidden="true"></span>

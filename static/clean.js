@@ -7,6 +7,7 @@ let phase = 'form'; // form | preview | running | done
 let pending = null; // scan | start：请求已发出、后台尚未确认完成，按钮保持「扫描中 / 整理中」
 let pendingSince = 0;
 let previewData = null;
+let cleanFilter = 'all';
 let sheetDecisions = {}; // { [fileName]: { [sheetName]: 'keep' | 'delete' | 'uncertain' } }
 let sheetOrders = {};
 let sheetRenames = {}; // { [fileName]: { [原表名]: 新表名 } }：在预览窗口单击表名改的，执行时一起改
@@ -565,6 +566,7 @@ function renderPage() {
   document.getElementById('cleanFolderInput').disabled = working;
   document.getElementById('cleanActionBar').classList.toggle('hidden', phase !== 'preview');
   document.getElementById('cleanLegend').classList.toggle('hidden', phase !== 'preview');
+  document.getElementById('cleanFilter').classList.toggle('hidden', phase !== 'preview');
   document.getElementById('previewBox').classList.toggle('hidden', phase !== 'preview');
   document.getElementById('previewBox').classList.toggle('is-busy', pending !== null);
   document.getElementById('cleanRunBox').classList.toggle('hidden', phase !== 'running' && phase !== 'done');
@@ -738,13 +740,33 @@ function layoutMasonry() {
 }
 
 // 全部文件按文件夹放在一起，按扫描顺序排列；没有检出备份表的文件所有标签默认为保留，单击标签不会改变卡片位置
+function setCleanFilter(filter) {
+  if (!['all', 'keep', 'delete', 'uncertain'].includes(filter)) return;
+  cleanFilter = filter;
+  renderPreview();
+}
+
+function fileMatchesCleanFilter(file, filter = cleanFilter) {
+  return filter === 'all' || (file.sheets || []).some(name => getSheetState(file.name, name) === filter);
+}
+
 function renderPreview() {
-  const indexed = previewData.files.map((file, idx) => ({ file, idx }));
+  const indexed = previewData.files.map((file, idx) => ({ file, idx }))
+    .filter(({ file }) => fileMatchesCleanFilter(file));
+  const filterSection = document.getElementById('cleanFilter');
+  filterSection.querySelectorAll('[data-filter]').forEach(button => {
+    const active = button.dataset.filter === cleanFilter;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+  document.getElementById('cleanFilterCount').textContent = `显示 ${indexed.length} / ${previewData.files.length} 个文件`;
   const box = document.getElementById('previewBox');
   const scrollY = window.scrollY;
   // 重建期间先撑住原高度，页面不会因为暂时变矮而被拉回顶部
   box.style.minHeight = `${box.offsetHeight}px`;
-  box.innerHTML = renderFolderGroups(indexed, file => (file.note ? 'is-warn' : ''));
+  box.innerHTML = indexed.length
+    ? renderFolderGroups(indexed, file => (file.note ? 'is-warn' : ''))
+    : '<div class="clean-filter-empty">没有符合条件的文件</div>';
   layoutMasonry();
   box.style.minHeight = '';
   if (window.scrollY !== scrollY) window.scrollTo(window.scrollX, scrollY);
