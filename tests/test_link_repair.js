@@ -477,6 +477,8 @@ test('color clear results filter files without losing mixed failures', async () 
     {name:'failed.xlsx', error:'无法打开'},
   ]}}, {kind:'colors'});
   assert.equal(p.get('repairFilters').hidden, false);
+  assert.match(p.get('repairProgress').textContent, /已清除 3 条标记/);
+  assert.equal(p.get('repairProgressFill').style.width, '100%');
   p.selectFilter('clear_failed');
   assert.match(p.get('repairResults').innerHTML, /mixed.xlsx/);
   assert.match(p.get('repairResults').innerHTML, /failed.xlsx/);
@@ -484,6 +486,30 @@ test('color clear results filter files without losing mixed failures', async () 
   p.selectFilter('clear_done');
   assert.match(p.get('repairResults').innerHTML, /mixed.xlsx|cleaned.xlsx/);
   assert.doesNotMatch(p.get('repairResults').innerHTML, /failed.xlsx|empty.xlsx/);
+});
+
+test('combined color task reports both stages on one progress bar', async () => {
+  const clear = await page({running:true, phase:'repair', stage:'clear', done:2, total:4, current:'book.xlsx'}, {kind:'colors'});
+  assert.match(clear.get('repairProgress').textContent, /正在清除标记 3 \/ 4/);
+  assert.equal(clear.get('repairProgressFill').style.width, '25%');
+  assert.match(clear.get('repairRun').textContent, /正在处理/);
+  assert.equal(clear.get('repairRun').disabled, true);
+  const repair = await page({running:true, phase:'repair', stage:'preview', done:1, total:4}, {kind:'colors'});
+  assert.match(repair.get('repairProgress').textContent, /正在对比备份/);
+  assert.equal(repair.get('repairProgressFill').style.width, '62.5%');
+});
+
+test('combined results keep independent color and clear categories', async () => {
+  const p = await page({phase:'repair', applied:{folder:'current', files:[], clear_files:[
+    {name:'mixed.xlsx', leftovers:1, leftover_failed:['无法删除']}, {name:'empty.xlsx'}
+  ]}}, {kind:'colors'});
+  assert.equal(p.get('clearResultPanel').hidden, false);
+  assert.match(p.get('clearResultSummary').textContent, /1 份文件存在清除失败/);
+  assert.match(p.get('repairFilters').innerHTML, /未处理好/);
+  p.get('clearFilters').events.click({target:{closest:() => ({dataset:{repairFilter:'clear_failed'}})}});
+  assert.match(p.get('clearResults').innerHTML, /mixed.xlsx/);
+  assert.doesNotMatch(p.get('clearResults').innerHTML, /empty.xlsx/);
+  assert.match(p.get('repairFilters').innerHTML, /未处理好/);
 });
 
 test('hidden page sends selected scope and distinguishes hidden columns from narrow widths', async () => {

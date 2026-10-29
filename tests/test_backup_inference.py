@@ -131,6 +131,7 @@ class FileGuessSafetyTests(unittest.TestCase):
             state.update(busy=True, maintenance="repair")
             with patch.object(workflow, "STATE", state), patch.object(workflow, "pythoncom", com), \
                  patch.object(workflow, "log_msg"), patch("core.excel_ops.quit_background_excel"), \
+                 patch.object(mark_finder, "_clear_mark_files", return_value=[]), \
                  patch.object(mark_finder, "compare_file_colors", return_value={"cells": [{**hit, "action": "restore"}]}), \
                  patch.object(mark_finder, "apply_file") as apply, patch.object(mark_finder, "_STATUS", {}):
                 mark_finder._run_repair(current, [path], old, [backup], [])

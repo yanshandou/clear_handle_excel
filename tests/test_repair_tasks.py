@@ -81,6 +81,7 @@ class RepairTasksTests(unittest.TestCase):
     def run_color(self, **patches):
         self.state.update(busy=True, maintenance="color_repair")
         defaults = {"compare_file_colors": Mock(return_value={"cells":self.plan, "truncated":False}),
+                    "_clear_mark_files": Mock(return_value=[]),
                     "apply_file": Mock(return_value=[{**self.plan[0], "status": "ok", "reason": "已恢复颜色"}]),
                     "workbook_locked": Mock(return_value=False)}
         defaults.update(patches)
@@ -97,6 +98,34 @@ class RepairTasksTests(unittest.TestCase):
         self.assertEqual(file["old"], str(self.backup))
         self.assertFalse(self.state["busy"])
         self.assertNotIn("maintenance", self.state)
+
+    def test_color_clear_precedes_comparison_and_retains_failures(self):
+        order = []
+        def clear(root, paths, protected):
+            self.assertTrue(self.state["busy"])
+            self.assertIn(self.backup.resolve(), protected)
+            order.append("clear")
+            return [{"name": "book.xlsx", "error": "清除失败"}]
+        def compare(*args):
+            self.assertTrue(self.state["busy"])
+            order.append("compare")
+            return {"cells": [], "truncated": False}
+        self.run_color(_clear_mark_files=Mock(side_effect=clear), compare_file_colors=Mock(side_effect=compare))
+        self.assertEqual(order, ["clear", "compare"])
+        self.assertEqual(mark_finder.status()["applied"]["clear_files"][0]["error"], "清除失败")
+
+    def test_color_does_not_modify_files_also_in_backup_folder(self):
+        self.state.update(busy=True, maintenance="color_repair")
+        with patch.object(mark_finder, "workbook_locked", return_value=False), \
+                patch.object(mark_finder.batch, "clear_marks_in_file") as clear, \
+                patch.object(mark_finder, "compare_file_colors") as compare, \
+                patch("core.excel_ops.quit_background_excel"):
+            mark_finder._run_repair(self.current, [self.path], self.root, [self.path], [])
+        data = mark_finder.status()["applied"]
+        self.assertIn("保护备份", data["clear_files"][0]["error"])
+        self.assertIn("保护备份", data["files"][0]["error"])
+        clear.assert_not_called()
+        compare.assert_not_called()
 
     def test_color_task_keeps_tab_and_cell_outcomes_separate_at_the_same_address(self):
         tab = {**mark_finder._tab_hit("Main"), "action":"restore", "reason":"恢复标签"}

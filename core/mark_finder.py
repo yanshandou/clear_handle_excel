@@ -834,8 +834,11 @@ def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[P
     from core.link_repair import fingerprint
 
     files: list[dict] = []
+    clear_files: list[dict] = []
     excel, com = None, False
     try:
+        protected = {p.resolve() for p in old_paths}
+        clear_files = _clear_mark_files(root, paths, protected=protected)
         wf.pythoncom.CoInitialize()
         com = True
         inferred: set[str] = set()
@@ -849,6 +852,8 @@ def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[P
             with _LOCK:
                 _STATUS.update(done=index, current=name, stage="scan")
             try:
+                if path.resolve() in protected:
+                    raise ValueError("文件同时位于备份文件夹中，未修复以保护备份")
                 stamp = fingerprint(path)
                 old_path = pairs[name]
                 if old_path is None:
@@ -900,7 +905,7 @@ def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[P
                 with wf.STATE_LOCK, _LOCK:
                     _STATUS.update(running=False, done=len(paths), current="", applied={
                         "folder": str(root), "old_folder": str(old_root), "files": files,
-                        "scope": "all"})
+                        "scope": "all", "clear_files": clear_files})
                     wf.STATE["busy"] = False
                     wf.STATE.pop("maintenance", None)
 
@@ -922,7 +927,7 @@ def repair(folder: str, old_folder: str, colors: Any = None) -> None:
             raise ValueError("还有未完成的文件写入，请先继续或放弃上次写入")
         wf.STATE.update(busy=True, maintenance="color_repair")
         _STATUS.clear()
-        _STATUS.update(running=True, phase="repair", stage="scan", folder=str(root), old_folder=str(old_root),
+        _STATUS.update(running=True, phase="repair", stage="clear", folder=str(root), old_folder=str(old_root),
                        total=len(paths), done=0, current="")
     try:
         threading.Thread(target=_logged, args=("color_repair", {"folder": str(root), "old_folder": str(old_root),
@@ -937,7 +942,7 @@ def repair(folder: str, old_folder: str, colors: Any = None) -> None:
         raise
 
 
-def _run_clear_marks(root: Path, paths: list[Path]) -> None:
+def _clear_mark_files(root: Path, paths: list[Path], protected: set[Path] | None = None) -> list[dict]:
     from core.excel_ops import quit_background_excel, start_background_excel
 
     files: list[dict] = []
@@ -951,8 +956,10 @@ def _run_clear_marks(root: Path, paths: list[Path]) -> None:
                      "leftover_failed": [], "tabs": [], "error": None}
             files.append(entry)
             with _LOCK:
-                _STATUS.update(done=index, current=name, stage="scan")
+                _STATUS.update(done=index, current=name, stage="clear")
             try:
+                if protected and path.resolve() in protected:
+                    raise ValueError("文件同时位于备份文件夹中，未清除标记以保护备份")
                 if _is_template(path):
                     raise ValueError("模板格式请先另存为 .xlsx / .xlsm 工作簿后再清除标记")
                 if workbook_locked(path):
@@ -975,15 +982,21 @@ def _run_clear_marks(root: Path, paths: list[Path]) -> None:
         try:
             quit_background_excel(excel)
         finally:
-            try:
-                if com:
-                    wf.pythoncom.CoUninitialize()
-            finally:
-                with wf.STATE_LOCK, _LOCK:
-                    _STATUS.update(running=False, done=len(paths), current="", applied={
-                        "folder": str(root), "files": files})
-                    wf.STATE["busy"] = False
-                    wf.STATE.pop("maintenance", None)
+            if com:
+                wf.pythoncom.CoUninitialize()
+    return files
+
+
+def _run_clear_marks(root: Path, paths: list[Path]) -> None:
+    files: list[dict] = []
+    try:
+        files = _clear_mark_files(root, paths)
+    finally:
+        with wf.STATE_LOCK, _LOCK:
+            _STATUS.update(running=False, done=len(paths), current="", applied={
+                "folder": str(root), "files": files})
+            wf.STATE["busy"] = False
+            wf.STATE.pop("maintenance", None)
 
 
 def clear_marks(folder: str) -> None:

@@ -14,26 +14,26 @@
   </header>
   <main class="container clean-container">
     <section class="panel">
-      <h2>对照备份，检查全部配色差异</h2>
-      <p class="toolbar-hint">比较全部单元格直接设置的底色、字色及 Sheet 标签颜色，不限预设颜色。颜色相同则保留，颜色不同且对应关系能确认时，恢复备份原色；备份没有填充或标签颜色时清除当前颜色，缺失的原色也会恢复。</p>
+      <h2>选择文件夹</h2>
+      <p class="toolbar-hint">选择当前 Excel 文件夹和原始备份文件夹。</p>
       <div class="link-fields">
         <label for="repairFolder">当前 Excel 文件夹（含子文件夹）<input id="repairFolder" type="text" placeholder="例如 D:\当前文件\001"></label>
         <label for="repairOldFolder">原始备份文件夹<input id="repairOldFolder" type="text" placeholder="例如 D:\老版备份\001，或包含 001 的备份总目录"></label>
       </div>
-      <div class="link-actions"><button id="repairRun" class="btn btn-primary" type="button" disabled>🎨 扫描并修复颜色</button></div>
-      <p class="toolbar-hint">点击后自动对比并保存修复结果。内容、公式或合并区域对不上，以及配对不明确、渐变填充、整行整列的默认配色等复杂情况，会列出原因供人工核对。修复前请保存并关闭目标 Excel 文件。</p>
-      <p class="toolbar-hint">支持 .xlsx / .xlsm / .xls / .xlsb；.xltx / .xltm 模板只读对比，请另存为工作簿后修复。条件格式动态显示的颜色不属于直接配色，程序添加的条件格式标记可在工作台点「清除 Excel 标记颜色」。关闭网页后任务继续。</p>
-      <p id="repairProgress" role="status" aria-live="polite">填写两个文件夹，一次完成扫描和修复。</p>
-      <div class="progress-track progress-track-sm"><div id="repairProgressFill" class="progress-fill" style="width:0%"></div></div>
       <p id="repairError" class="batch-error" role="alert"></p>
     </section>
     <section class="panel">
-      <h2>🧽 清除 Excel 标记颜色</h2>
-      <p class="toolbar-hint">一键删掉切字工作台在 Excel 里加的条件格式标记（公式带 CHE_MARK 标识的规则），并把被标成橙黄色的工作表标签还原为无颜色。单元格直接设置的底色 / 字色不受影响；要恢复直接配色请用上方「扫描并修复颜色」。</p>
-      <p class="toolbar-hint">只需上方「当前 Excel 文件夹」，不需要备份文件夹；会递归处理该文件夹及其所有子文件夹下的 Excel 文件。</p>
-      <div class="link-actions"><button id="repairClearMarks" class="btn btn-outline" type="button">🧽 清除标记颜色</button></div>
+      <h2>清除标记并对照备份修复配色</h2>
+      <p class="toolbar-hint">比较全部单元格直接设置的底色、字色及 Sheet 标签颜色，不限预设颜色。颜色相同则保留，颜色不同且对应关系能确认时，恢复备份原色；备份没有填充或标签颜色时清除当前颜色，缺失的原色也会恢复。</p>
+      <div class="link-actions"><button id="repairRun" class="btn btn-primary" type="button" disabled>🎨 清除标记并修复颜色</button></div>
+      <p class="toolbar-hint">先清除程序添加的 CHE_MARK 条件格式标记，并将橙黄色的工作表标签设为无颜色；再对照备份检查并修复配色。清除失败的文件仍会检查配色，失败原因会列在结果中。</p>
+      <p class="toolbar-hint">点击后自动对比并保存修复结果。内容、公式或合并区域对不上，以及配对不明确、渐变填充、整行整列的默认配色等复杂情况，会列出原因供人工核对。修复前请保存并关闭目标 Excel 文件。</p>
+      <p class="toolbar-hint">支持 .xlsx / .xlsm / .xls / .xlsb；.xltx / .xltm 模板只读对比，请另存为工作簿后修复。其他条件格式动态显示的颜色不属于直接配色。关闭网页后任务继续。</p>
+      <p id="repairProgress" role="status" aria-live="polite">填写两个文件夹后开始处理。</p>
+      <div class="progress-track progress-track-sm"><div id="repairProgressFill" class="progress-fill" style="width:0%"></div></div>
     </section>
-    <section class="panel"><h2 id="repairResultTitle">修复结果</h2><p id="repairResultFolder" class="toolbar-hint"></p><div id="repairFilters" hidden></div><div id="repairResults"><p>尚未开始。</p></div></section>
+    <section class="panel"><h2 id="repairResultTitle">最近一次任务的结果</h2><p id="repairResultFolder" class="toolbar-hint"></p><div id="repairFilters" hidden></div><div id="repairResults"><p>尚未开始。</p></div></section>
+    <section class="panel" id="clearResultPanel" hidden><h2>标记清除结果</h2><p id="clearResultSummary" class="toolbar-hint"></p><div id="clearFilters"></div><div id="clearResults"></div></section>
     <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
   </main>
   <script src="/static/open_excel.js"></script><script src="/static/highlight_colors.js"></script><script src="/static/repair.js"></script><script src="/static/debug_log.js"></script>
