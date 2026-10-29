@@ -65,6 +65,17 @@ class SheetHistoryTests(unittest.TestCase):
         invalid["path"][0]["renamed"]["Missing"] = "Fake"
         self.assertFalse(history.validate(invalid))
 
+    def test_reorder_history_validates_and_preserves_identity_across_rename(self):
+        events = [event(["A", "B", "C"], ["C", "A", "B"], before_hash="v0", after_hash="v1"),
+                  event(["C", "A", "B"], ["B", "C", "Final"], renamed={"A": "Final"},
+                        before_hash="v1", after_hash="v2")]
+        self.assertTrue(history.validate({"path": events}))
+        projected = history.project(events, ["B", "C", "Final"], ["A", "B", "C"], "v0")
+        self.assertEqual(projected.origins, {"B": "B", "C": "C", "Final": "A"})
+        invalid = copy.deepcopy(events)
+        invalid[0]["after"] = ["C", "A", "Other"]
+        self.assertFalse(history.validate({"path": invalid}))
+
     def test_only_recorded_formula_effects_are_projected_and_strings_and_external_refs_stay(self):
         frozen = {"sheet": "新Layout", "addr": "A1", "formula": "=Layout!B1", "value": 42, "kind": "cell"}
         self.events[0]["preserved_values"] = [frozen]

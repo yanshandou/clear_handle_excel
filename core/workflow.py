@@ -2725,6 +2725,12 @@ def validate_clean_plan(plan: Any) -> dict[str, dict[str, list[str]]]:
         normalized[wb_name] = {"delete": del_dedup, "uncertain": unc_dedup}
         if "keep" in item:
             normalized[wb_name]["keep"] = list(dict.fromkeys(keep_list))
+        if "order" in item:
+            order = item["order"]
+            if (not isinstance(order, list) or any(not isinstance(s, str) or not s for s in order)
+                    or len(set(order)) != len(order)):
+                raise ValueError("工作表排序列表格式无效")
+            normalized[wb_name]["order"] = order
         rename = item.get("rename", {})
         if not isinstance(rename, dict) or any(
             not isinstance(k, str) or not k or not isinstance(v, str) for k, v in rename.items()
@@ -2922,6 +2928,14 @@ def _clean_backup_sheets(
     deleted = list(previous.get("deleted_backups", []))
     uncertain_recorded = list(previous.get("uncertain_sheets", []))
 
+    def requested_order(names: list[str]) -> list[str]:
+        order = (file_plan or {}).get("order")
+        if order is None:
+            return names
+        if len(order) != len(names) or set(order) != set(names):
+            raise ValueError(f"{wb_label} 的工作表已发生变化，请重新扫描后排序")
+        return order
+
     def remember_kept(names: list[str], rename_map: dict[str, str] | None = None) -> None:
         if file_plan is None or "keep" not in file_plan:
             return
@@ -2953,7 +2967,8 @@ def _clean_backup_sheets(
             pre_names = None  # 预检失败时交给 Excel 判断
         if pre_names is not None:
             to_delete, uncertain_sel, renames, del_all = _resolve_clean_targets(pre_names, file_plan)
-            if not del_all and not to_delete and not renames:
+            order = requested_order(pre_names)
+            if not del_all and not to_delete and not renames and order == pre_names:
                 action = _format_clean_action(deleted, uncertain_sel)
                 if uncertain_sel:
                     log_msg(f"  {action}")
@@ -2969,6 +2984,7 @@ def _clean_backup_sheets(
         all_names = [sheet.Name for sheet in wb.Sheets]
         final_names = all_names
         to_delete, uncertain_sel, renames, del_all = _resolve_clean_targets(all_names, file_plan)
+        order = requested_order(all_names)
         if del_all:
             action = (
                 "全部工作表均被识别为备份表，已跳过删除"
@@ -2976,7 +2992,7 @@ def _clean_backup_sheets(
                 else "全部工作表均被勾选删除，已跳过删除"
             )
             log_msg(f"  ⚠️ {action}: {wb_label}")
-        elif not to_delete and not renames:
+        elif not to_delete and not renames and order == all_names:
             final_uncertain = uncertain_sel
             action = _format_clean_action(deleted, final_uncertain)
         else:
@@ -2997,6 +3013,13 @@ def _clean_backup_sheets(
                 kind_text = "手动改名" if custom.get(old_name) == new_name else "去掉「新」字"
                 debug_log.event("✏️ 改表名", 文件=wb_label, 原名=old_name, 新名=new_name, 方式=kind_text)
                 log_msg(f"  已改名: {old_name} → {new_name}")
+            desired = [rename_map.get(name, name) for name in order if name not in set(to_delete)]
+            for index in range(len(desired) - 1, -1, -1):
+                current = [sheet.Name for sheet in wb.Sheets]
+                if index < len(desired) - 1 and current[index] != desired[index]:
+                    wb.Sheets(desired[index]).Move(Before=wb.Sheets(desired[index + 1]))
+                elif index == len(desired) - 1 and current[index] != desired[index]:
+                    wb.Sheets(desired[index]).Move(After=wb.Sheets(current[-1]))
             final_names = [s.Name for s in wb.Sheets]
             final_uncertain = [rename_map.get(s, s) for s in uncertain_sel]
             # 先记录删除与待定明细再保存，保存后中断也能在续跑时保留记录

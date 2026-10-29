@@ -8,6 +8,7 @@ let pending = null; // scan | start：请求已发出、后台尚未确认完成
 let pendingSince = 0;
 let previewData = null;
 let sheetDecisions = {}; // { [fileName]: { [sheetName]: 'keep' | 'delete' | 'uncertain' } }
+let sheetOrders = {};
 let sheetRenames = {}; // { [fileName]: { [原表名]: 新表名 } }：在预览窗口单击表名改的，执行时一起改
 let processedFiles = new Set(); // 已在预览窗口单独执行过的文件：卡片原地锁定，执行时跳过，重新扫描后才更新
 let previewFromFile = null; // 最近一次打开预览窗口的文件：卡片边框发亮，从预览窗口返回时滚过去、闪完去掉
@@ -320,6 +321,7 @@ function renderSheetLabelHtml(displayName, highlight) {
 function initSheetDecisions() {
   sheetDecisions = {};
   sheetRenames = {};
+  sheetOrders = {};
   processedFiles = new Set();
   if (!previewData || !Array.isArray(previewData.files)) return;
   previewData.files.forEach(file => {
@@ -386,7 +388,7 @@ function broadcastStates(fileName) {
   if (!syncChannel || !previewData) return;
   syncChannel.postMessage({
     type: 'states', folder: previewData.folder, file: fileName, states: sheetDecisions[fileName] || {},
-    renames: getSheetRenames(fileName),
+    renames: getSheetRenames(fileName), order: sheetOrders[fileName],
   });
 }
 
@@ -443,6 +445,10 @@ if (syncChannel) {
         });
         sheetRenames[file.name] = renames;
       }
+      if (Array.isArray(msg.order) && msg.order.length === file.sheets.length &&
+          new Set(msg.order).size === file.sheets.length && msg.order.every(n => file.sheets.includes(n))) {
+        sheetOrders[file.name] = msg.order.slice();
+      }
       renderPreview();
       renderPage();
     } else if (msg.type === 'return') {
@@ -463,11 +469,13 @@ function summarizeDecisions() {
     keptTotal: 0,
     renameTotal: 0,
     customRenameTotal: 0,
+    reorderTotal: 0,
     emptyFiles: [],
   };
   if (!previewData || !Array.isArray(previewData.files)) return summary;
   previewData.files.forEach(file => {
     if (processedFiles.has(file.name)) return;
+    if (sheetOrders[file.name] && sheetOrders[file.name].some((name, i) => name !== file.sheets[i])) summary.reorderTotal += 1;
     let fileDel = 0;
     let fileUnc = 0;
     (file.sheets || []).forEach(name => {
@@ -504,6 +512,7 @@ function buildCleanPlan() {
       else keep.push(name);
     });
     plan[file.name] = { delete: del, uncertain: unc, keep };
+    if (sheetOrders[file.name]) plan[file.name].order = sheetOrders[file.name].slice();
     const renames = activeRenames(file);
     if (renames.length) {
       plan[file.name].rename = Object.fromEntries(renames.map(n => [n, getSheetRenames(file.name)[n]]));
@@ -581,7 +590,7 @@ function renderPage() {
     const hasConfirmedKeep = previewData.files.some(file =>
       [...(file.backups || []), ...(file.uncertain || [])]
         .some(name => getSheetState(file.name, name) === 'keep'));
-    const hasAction = stats.deletedTotal > 0 || stats.renameTotal > 0 || stats.customRenameTotal > 0 || hasConfirmedKeep;
+    const hasAction = stats.deletedTotal > 0 || stats.renameTotal > 0 || stats.customRenameTotal > 0 || stats.reorderTotal > 0 || hasConfirmedKeep;
     const hasError = stats.emptyFiles.length > 0;
     execBtn.disabled = working || !hasAction || hasError || isBusyOther() || isCleanRunning();
     if (pending === 'start') {
@@ -592,6 +601,8 @@ function renderPage() {
     } else if (stats.deletedTotal > 0) {
       execBtn.textContent = `🧹 删除 ${stats.deletedTotal} 个工作表` +
         (stats.customRenameTotal ? `，改名 ${stats.customRenameTotal} 个` : '');
+    } else if (stats.reorderTotal > 0 && !stats.customRenameTotal) {
+      execBtn.textContent = `↕ 保存 ${stats.reorderTotal} 个文件的工作表顺序`;
     } else if (stats.customRenameTotal > 0) {
       execBtn.textContent = `✏️ 改名 ${stats.customRenameTotal} 个工作表`;
     } else if (hasConfirmedKeep) {
@@ -616,7 +627,7 @@ function renderSummary(stats) {
     待定 <b class="is-uncertain">${stats.uncertainTotal}</b> 个（不删） ·
     保留 <b>${stats.keptTotal}</b> 个 ·
     去掉「新」字 <b>${stats.renameTotal}</b> 个` + (stats.customRenameTotal ? ` ·
-    改名 <b>${stats.customRenameTotal}</b> 个` : '');
+    改名 <b>${stats.customRenameTotal}</b> 个` : '') + (stats.reorderTotal ? ` · 排序 <b>${stats.reorderTotal}</b> 个文件` : '');
 }
 
 // 按工作簿中的原有顺序列出全部工作表，单击标签循环切换「保留 / 删除 / 待定」
@@ -805,6 +816,7 @@ async function runPreview() {
     const oldData = previewData;
     const oldDecisions = sheetDecisions;
     const oldRenames = sheetRenames;
+    const oldOrders = sheetOrders;
     previewData = data;
     saveLastFolder(folder);
     initSheetDecisions();
@@ -822,6 +834,8 @@ async function runPreview() {
         });
         sheetRenames[file.name] = Object.fromEntries(Object.entries(oldRenames[file.name] || {})
           .filter(([name]) => file.sheets.includes(name)));
+        const order = oldOrders[file.name];
+        if (order && order.length === file.sheets.length && order.every(name => file.sheets.includes(name))) sheetOrders[file.name] = order.slice();
       });
     }
     previewFromFile = null;

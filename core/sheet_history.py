@@ -82,7 +82,8 @@ def validate(records) -> bool:
             deleted = set(event["deleted"])
             if not deleted <= before or not set(renamed) <= before - deleted:
                 return False
-            if [renamed.get(n, n) for n in event["before"] if n not in deleted] != event["after"]:
+            expected = [renamed.get(n, n) for n in event["before"] if n not in deleted]
+            if len(expected) != len(event["after"]) or set(expected) != set(event["after"]):
                 return False
     return True
 

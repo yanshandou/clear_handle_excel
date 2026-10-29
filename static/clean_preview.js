@@ -57,7 +57,7 @@ function broadcast(message) {
 }
 
 function broadcastStates() {
-  broadcast({ type: 'states', states, renames });
+  broadcast({ type: 'states', states, renames, order: fileInfo.sheets });
 }
 
 function locked() {
@@ -275,6 +275,7 @@ function cardBodyHtml(name, sheetIndex) {
   return `
     <span class="pv-thumb">${preview}${excel}</span>
     <span class="pv-card-foot">
+      <span class="pv-drag-handle" draggable="true" title="拖动调整工作表顺序" aria-label="拖动调整工作表顺序">⋮⋮</span>
       <span class="pv-card-name" title="${escapeHtml(cardNameTitle(name))}">${cardNameHtml(name)}</span>
       <span class="pv-card-meta">${escapeHtml(meta.join(' · '))}</span>
       <span class="preview-sheet-tag is-${st}">${STATE_LABEL[st]}</span>
@@ -289,8 +290,47 @@ function renderGrid() {
       onclick="cycleState(${idx})" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); cycleState(${idx}); }">
       ${cardBodyHtml(name, idx)}
     </div>`).join('');
+  setupDragSorting(grid);
   grid.classList.toggle('is-locked', locked());
   grid.classList.remove('hidden');
+}
+
+let draggingIndex = -1;
+function setupDragSorting(grid) {
+  grid.querySelectorAll('.pv-card').forEach((card, index) => {
+    const handle = card.querySelector('.pv-drag-handle');
+    handle.addEventListener('click', event => event.stopPropagation());
+    handle.addEventListener('dragstart', event => {
+      if (locked() || editingIndex >= 0) { event.preventDefault(); return; }
+      draggingIndex = index;
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', String(index));
+      card.classList.add('is-dragging');
+    });
+    handle.addEventListener('dragend', () => {
+      draggingIndex = -1;
+      grid.querySelectorAll('.is-dragging, .is-drop-target').forEach(el => el.classList.remove('is-dragging', 'is-drop-target'));
+    });
+    card.ondragover = event => {
+      if (draggingIndex < 0 || draggingIndex === index) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      card.classList.add('is-drop-target');
+    };
+    card.ondragleave = event => {
+      if (!card.contains(event.relatedTarget)) card.classList.remove('is-drop-target');
+    };
+    card.ondrop = event => {
+      event.preventDefault();
+      if (draggingIndex < 0 || draggingIndex === index) return;
+      const [name] = fileInfo.sheets.splice(draggingIndex, 1);
+      fileInfo.sheets.splice(index, 0, name);
+      draggingIndex = -1;
+      broadcastStates();
+      renderGrid();
+      renderActionBar();
+    };
+  });
 }
 
 function updateCard(idx) {
@@ -367,7 +407,14 @@ if (channel) {
           if (typeof msg.renames[name] === 'string' && msg.renames[name]) renames[name] = msg.renames[name];
         });
       }
-      fileInfo.sheets.forEach((_, idx) => updateCard(idx));
+      if (Array.isArray(msg.order) && msg.order.length === fileInfo.sheets.length &&
+          new Set(msg.order).size === fileInfo.sheets.length && msg.order.every(n => fileInfo.sheets.includes(n))) {
+        if (editingIndex >= 0) finishRename(true);
+        fileInfo.sheets = msg.order.slice();
+        renderGrid();
+      } else {
+        fileInfo.sheets.forEach((_, idx) => updateCard(idx));
+      }
       renderActionBar();
     } else if (msg.type === 'rescanned') {
       // 精简 Sheet 页面重新扫描或恢复默认后，按那边的最新标记重新同步
@@ -466,6 +513,7 @@ async function init() {
     const card = document.getElementById(`pvCard${idx}`);
     if (card) card.innerHTML = cardBodyHtml(name, idx);
   });
+  setupDragSorting(document.getElementById('pvGrid'));
 }
 
 init();

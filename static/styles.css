@@ -3128,6 +3128,10 @@ button.preview-sheet-tag:active {
   gap: 14px;
   align-items: start;
 }
+.pv-drag-handle { cursor: grab; user-select: none; padding: 4px 7px; color: #586c9b; font-weight: bold; font-size: 18px; line-height: 1; }
+.pv-drag-handle:active { cursor: grabbing; }
+.pv-card.is-dragging { opacity: .45; }
+.pv-card.is-drop-target { outline: 4px dashed #ffad22; outline-offset: 2px; }
 
 .pv-grid.pv-size-s {
   --pv-card-width: 190px;
