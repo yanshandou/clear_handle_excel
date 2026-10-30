@@ -403,6 +403,16 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
         elif self.path == "/api/pdf_review/save":
             self._send_json({"ok": True, **pdf_review.save(payload.get("pdf") or "", payload.get("rects"))})
+        elif self.path == "/api/pdf_review/open_plan":
+            self._send_json({"ok": True, **pdf_review.open_plan()})
+        elif self.path == "/api/pdf_review/open":
+            try:
+                autofix.wait_for_writes(15)  # 后台正在保存的文件别同时打开
+            except ValueError:
+                raise ValueError("后台正在保存 Excel，请几秒后再点") from None
+            self._send_json({"ok": True, **pdf_review.open_next()})
+        elif self.path == "/api/pdf_review/open_reset":
+            self._send_json({"ok": True, "cleared": pdf_review.reset_opened(), **pdf_review.rects_snapshot()})
         elif self.path == "/api/pdf_review/apply":
             pdf_review.apply(payload.get("highlight"))
             self._send_json({"ok": True, **pdf_review.rects_snapshot()})

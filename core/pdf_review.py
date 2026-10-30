@@ -22,7 +22,8 @@ from typing import Any
 
 from core import batch, debug_log, print_layout, workflow as wf
 from core.common import EXCEL_EXTENSIONS, col_index_to_letters, sanitize_filename, strip_review_prefix, workbook_rel_name
-from core.excel_ops import normalize_workbook_view, open_workbook_checked, quit_background_excel, start_background_excel
+from core.excel_ops import (normalize_workbook_view, open_workbook_checked, open_workbook_in_excel,
+                             quit_background_excel, start_background_excel)
 from core.excel_watchdog import ExcelWatchdog
 from core.pdf_detector import fitz
 
@@ -30,8 +31,10 @@ SOURCE = "pdf_review"
 PAGE_ZOOM = 2.5  # 网页上显示的页面图：A4 竖向约 1490 像素宽，铺满屏幕也看得清字
 MAX_PROBE_LINES = 20000  # 打印范围超过这么多行 + 列就不涂色定位了（逐行涂色太慢）
 MAX_RECTS_PER_PDF = 500
+OPEN_LIMIT = batch.DEFAULT_OPEN_LIMIT  # 「打开下一批」一次最多开几份，和切字工作台一样
 RECT_ID = re.compile(r"^[0-9a-f]{8,32}$")
 _LOCK = threading.RLock()
+_OPEN_LOCK = threading.Lock()
 _STATUS: dict[str, Any] = {"running": False}
 _PAGES_CACHE: dict[tuple[str, int, int], list[list[float]]] = {}
 
@@ -42,6 +45,7 @@ def _store() -> dict[str, Any]:
     store.setdefault("rects", {})
     store.setdefault("drop", [])
     store.setdefault("trash", {})
+    store.setdefault("opened", {})
     return store
 
 
@@ -170,7 +174,7 @@ def rects_snapshot() -> dict:
             item["state"] = _rect_state(rect, marks)
             by_pdf.setdefault(rect["pdf"], []).append(item)
         drop = [cid for cid in store["drop"] if cid in marks]
-        return {"rects": by_pdf, "drop": len(drop), "job": status()}
+        return {"rects": by_pdf, "drop": len(drop), "job": status(), "opened": sorted(_opened_paths())}
 
 
 def _clean_rect(raw: Any, pages: list[list[float]]) -> dict:
@@ -236,6 +240,95 @@ def save(pdf: str, raw_rects: Any) -> dict:
         wf._persist_state()
     debug_log.event("🖍️ PDF 标记保存", PDF=path.name, 框数=len(cleaned), 新增=added, 删除=removed)
     return rects_snapshot()
+
+
+# ---------- 批量打开有标记的 Excel ----------
+# 网页上画了框的 Excel（不管写没写进 Excel）：一次最多打开五份本轮还没开过的，像切字工作台的「打开下一批」。
+# 打开过哪些按文件夹记着，关掉 Excel、重启程序都不清；「重置打开记录」从头再来。
+
+def _open_key() -> str:
+    return str(Path(_store().get("folder") or ".").resolve()).casefold()
+
+
+def _opened_paths() -> set[str]:
+    """调用方持有 STATE_LOCK"""
+    return set(_store()["opened"].get(_open_key(), []))
+
+
+def _open_targets() -> list[dict]:
+    """画了框的 Excel，按 PDF 名、页、框的上下顺序排，每份文件只算一次；
+    打开时跳到第一个框：已经标进 Excel 的跳到那一格，还没写的只切到那张表。调用方持有 STATE_LOCK"""
+    marks = batch._marks()
+    first: dict[str, dict] = {}
+    for rect in sorted(_store()["rects"].values(), key=lambda r: (r["pdf"], r["page"], r["y0"], r["x0"])):
+        path = rect.get("wb_path")
+        if not path or path in first:
+            continue
+        cell = rect["addr"].split(",")[0].split(":")[0] if rect.get("addr") and _rect_state(rect, marks) == "marked" else ""
+        first[path] = {"path": path, "sheet": rect.get("sheet") or "", "cell": cell}
+    return list(first.values())
+
+
+def open_plan() -> dict:
+    """这一批要打开哪些；后台任务还要处理的文件先不开，列出原因"""
+    with wf.STATE_LOCK:
+        root = Path(_store().get("folder") or ".")
+        targets = _open_targets()
+        opened = _opened_paths()
+        unopened = [t for t in targets if t["path"] not in opened]
+        job = wf.STATE.get("job") or {}
+        waiting, available = [], []
+        for target in unopened:
+            reason = batch.open_block_reason(job, Path(target["path"])) if wf.STATE.get("busy") else ""
+            if not Path(target["path"]).is_file():
+                reason = "文件不在了"
+            (waiting if reason else available).append({**target, "reason": reason})
+        files = available[:OPEN_LIMIT]
+        for item in files + waiting:
+            item["name"] = workbook_rel_name(Path(item["path"]), root)
+        return {"total": len(targets), "unopened": len(unopened), "files": files, "waiting": waiting,
+                "exhausted": bool(targets) and not unopened, "remaining": len(unopened) - len(files)}
+
+
+def open_next() -> dict:
+    """打开下一批：在你的 Excel 里打开，跳到第一个框；不保存、不关闭你的工作簿"""
+    if not _OPEN_LOCK.acquire(blocking=False):
+        raise ValueError("正在打开文件，请等这批打开完成后再试")
+    try:
+        plan = open_plan()
+        with wf.STATE_LOCK:
+            key = _open_key()
+        opened, errors = [], []
+        for item in plan["files"]:
+            try:
+                note = open_workbook_in_excel(Path(item["path"]), item["sheet"], item["cell"])
+                opened.append(item)
+                if note:
+                    wf.log_msg(f"ℹ️ {item['name']}：{note}")
+            except Exception as err:
+                errors.append({"name": item["name"], "reason": str(err)})
+                wf.log_msg(f"⚠️ {item['name']}：{err}")
+        if opened:
+            with wf.STATE_LOCK:
+                history = _store()["opened"]
+                history[key] = list(dict.fromkeys([*history.get(key, []), *(i["path"] for i in opened)]))
+                wf._persist_state()
+        debug_log.event("📂 PDF 复检打开下一批", 打开=[i["name"] for i in opened] or "-",
+                        打不开=[e["name"] for e in errors] or "-", 要等=len(plan["waiting"]), 还剩=plan["remaining"])
+        return {"opened": [i["name"] for i in opened], "errors": errors,
+                "waiting": [{"name": w["name"], "reason": w["reason"]} for w in plan["waiting"]],
+                "remaining": plan["remaining"] + len(errors)}
+    finally:
+        _OPEN_LOCK.release()
+
+
+def reset_opened() -> int:
+    """「重置打开记录」：只清当前文件夹的打开记录，不关 Excel、不动标记"""
+    with wf.STATE_LOCK:
+        previous = _store()["opened"].pop(_open_key(), [])
+        wf._persist_state()
+    debug_log.event("📂 PDF 复检重置打开记录", 清掉=len(previous))
+    return len(previous)
 
 
 # ---------- 框 → 单元格 ----------

@@ -19,6 +19,8 @@ const saving = {};      // pdf -> 正在进行的保存（同一份 PDF 按顺�
 let pageEls = [];       // 所有页面元素，从上到下
 let whereDoc = -1;      // 底部条上现在显示的是哪一份（换了才重建链接）
 let whereTick = 0;
+let opened = new Set(); // 这一轮已经用「打开下一批」打开过的 Excel 路径
+let opening = false;
 
 const $ = id => document.getElementById(id);
 
@@ -83,6 +85,7 @@ function takeSnapshot(data) {
   for (const doc of pdfs) rects[doc.pdf] = (data.rects[doc.pdf] || []).slice();
   dropCount = data.drop || 0;
   job = data.job || { running: false };
+  opened = new Set(data.opened || []);
 }
 
 function renderDocs() {
@@ -239,6 +242,11 @@ function updateStatus() {
   if (job.running) parts.push(`正在写进 Excel：${job.done || 0} / ${job.total || 0} 个文件${job.current ? `（${escapeHtml(job.current)}）` : ''}`);
   $('prSummary').innerHTML = parts.join(' · ');
   $('prApply').disabled = job.running || (!pending && !dropCount);
+  const files = markedFiles();
+  const unopened = files.filter(path => !opened.has(path)).length;
+  $('prOpen').textContent = opening ? '⏳ 正在打开…' : `📂 打开下一批（未开 ${unopened} / 共 ${files.length} 个）`;
+  $('prOpen').disabled = opening || job.running || !unopened;
+  $('prOpenReset').disabled = opening || job.running || !files.some(path => opened.has(path));
   $('prApply').textContent = job.running ? '⏳ 正在写进 Excel…' : '🖍️ 写进 Excel';
 }
 
@@ -273,6 +281,7 @@ function mergeStates(data) {
   }
   dropCount = data.drop || 0;
   job = data.job || job;
+  if (data.opened) opened = new Set(data.opened);
 }
 
 function addRect(pdf, rect, record = true) {
@@ -411,6 +420,59 @@ function startPolling() {
   }, 1000);
 }
 
+/* ---------- 批量打开有标记的 Excel ---------- */
+
+// 网页上画了框的 Excel（写没写进 Excel 都算），按 PDF 顺序，每份只算一次
+function markedFiles() {
+  return [...new Set(pdfs.filter(doc => doc.wb_path && (rects[doc.pdf] || []).length).map(doc => doc.wb_path))];
+}
+
+async function openNext() {
+  if (opening) return;
+  opening = true;
+  updateStatus();
+  try {
+    const plan = await api('/api/pdf_review/open_plan', {});
+    const waiting = plan.waiting.length
+      ? `\n\n还要等后台处理的 ${plan.waiting.length} 个，暂不打开：\n${plan.waiting.map(w => `· ${w.name}：${w.reason}`).join('\n')}` : '';
+    if (!plan.files.length) {
+      await appAlert(plan.exhausted ? '画了框的 Excel 这一轮都打开过了，不会自动重复打开。需要重开时，点「重置打开记录」。'
+        : `共 ${plan.total} 个画了框的 Excel，目前没有可以打开的文件。${waiting}`, { title: '打开下一批' });
+      return;
+    }
+    const message = `网页上画了框的 Excel 共 ${plan.total} 个，这一轮还没打开的 ${plan.unopened} 个。\n`
+      + `本次最多打开 5 个，实际打开 ${plan.files.length} 个；打开后还剩 ${plan.remaining} 个。\n`
+      + '已经写进 Excel 的跳到第一个框的单元格，还没写的只切到对应的工作表。'
+      + `\n\n本次文件：\n${plan.files.map(f => `· ${f.name}`).join('\n')}${waiting}`;
+    if (!(await appConfirm(message, { title: '确认打开文件', okText: `打开 ${plan.files.length} 个文件`, tone: 'info' }))) return;
+    const result = await api('/api/pdf_review/open', {});
+    const fresh = result.opened.length ? await api('/api/pdf_review/rects').catch(() => null) : null;
+    if (fresh) mergeStates(fresh); // 记下这批已打开，按钮上的「未开」跟着变
+    if (result.errors.length || result.waiting.length) {
+      const list = items => items.map(item => `· ${item.name}：${item.reason}`).join('\n');
+      const parts = [result.opened.length ? `已打开 ${result.opened.length} 个文件。` : '这次没有打开文件。'];
+      if (result.waiting.length) parts.push(`还要等后台处理的 ${result.waiting.length} 个：\n${list(result.waiting)}`);
+      if (result.errors.length) parts.push(`打不开的 ${result.errors.length} 个：\n${list(result.errors)}`);
+      await appAlert(parts.join('\n\n'), { title: '打开下一批', tone: 'warn' });
+    }
+  } catch (e) {
+    appAlert(e.message, { tone: 'error' });
+  } finally {
+    opening = false;
+    updateStatus();
+  }
+}
+
+async function resetOpened() {
+  if (!(await appConfirm('清掉这个文件夹的打开记录，下次「打开下一批」从头开始。不会关闭 Excel，标记也不动。', { title: '重置打开记录', okText: '重置' }))) return;
+  try {
+    mergeStates(await api('/api/pdf_review/open_reset', {}));
+  } catch (e) {
+    appAlert(e.message, { tone: 'error' });
+  }
+  updateStatus();
+}
+
 /* ---------- 启动 ---------- */
 
 // 页面图片加载完才能画框：没加载出来时画在空白上，看不出框住了什么。load / error 不冒泡，在捕获阶段听
@@ -445,6 +507,8 @@ $('prLoad').addEventListener('click', load);
 $('prFolder').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
 $('prApply').addEventListener('click', applyToExcel);
 $('prTrack').addEventListener('click', jumpTo);
+$('prOpen').addEventListener('click', openNext);
+$('prOpenReset').addEventListener('click', resetOpened);
 window.addEventListener('scroll', scheduleWhere, { passive: true });
 window.addEventListener('resize', scheduleWhere);
 {

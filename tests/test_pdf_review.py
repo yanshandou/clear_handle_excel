@@ -163,6 +163,54 @@ class SaveTests(unittest.TestCase):
         self.assertEqual([r["id"] for r in plan[str(self.book)]["add"]], ["aaaaaaaa"])
         self.assertEqual(plan[str(self.book)]["drop"], ["pdfcccccccc"])
 
+    def test_open_next_batch_of_files_with_rects(self):
+        # 7 份 Excel：第 1 份没画框，其余 6 份画了框；第 2 份的框已经标进 Excel
+        for i in range(1, 8):
+            (self.tmp / f"b{i}.xlsx").write_bytes(b"x")
+            doc = fitz.open()
+            doc.new_page(width=595, height=842)
+            doc.save(self.tmp / f"b{i}_S.pdf")
+        pdf_review.list_pdfs(str(self.tmp))
+        for i in range(2, 8):
+            pdf_review.save(str(self.tmp / f"b{i}_S.pdf"), [self.rect(f"{i}0000000", y0=30), self.rect(f"{i}1111111")])
+        rects = self.state["pdf_review"]["rects"]
+        rects["21111111"]["addr"] = "C5:D6,F2"
+        batch._marks()["pdf21111111"] = {"path": str(self.tmp / "b2.xlsx"), "tag": "CHE_MARK_pdf21111111", "source": "pdf_review"}
+        calls = []
+
+        def fake_open(path, sheet, cell):
+            calls.append((path.name, sheet, cell))
+            if path.name == "b4.xlsx":
+                raise ValueError("文件被占用")
+            return ""
+
+        with patch.object(pdf_review, "open_workbook_in_excel", fake_open):
+            plan = pdf_review.open_plan()
+            self.assertEqual((plan["total"], plan["unopened"], len(plan["files"]), plan["remaining"]), (6, 6, 5, 1))
+            first = pdf_review.open_next()
+            # 标进 Excel 的框（按上下顺序排第一）跳到第一格，没写的只切到表
+            self.assertEqual(calls[0], ("b2.xlsx", "S", "C5"))
+            self.assertEqual(calls[1], ("b3.xlsx", "S", ""))
+            self.assertEqual(first["opened"], ["b2.xlsx", "b3.xlsx", "b5.xlsx", "b6.xlsx"])
+            self.assertEqual(first["errors"], [{"name": "b4.xlsx", "reason": "文件被占用"}])
+            self.assertEqual(first["remaining"], 2)
+            # 打不开的下一批再试，打开过的不重复
+            calls.clear()
+            pdf_review.open_next()
+            self.assertEqual([c[0] for c in calls], ["b4.xlsx", "b7.xlsx"])
+            self.assertEqual(pdf_review.open_plan()["unopened"], 1)  # b4 还是打不开，不记成打开过
+            self.assertEqual(len(pdf_review.rects_snapshot()["opened"]), 5)
+            self.assertEqual(pdf_review.reset_opened(), 5)
+            self.assertEqual(pdf_review.open_plan()["unopened"], 6)
+
+    def test_open_waits_while_a_background_job_runs(self):
+        pdf_review.list_pdfs(str(self.tmp))
+        pdf_review.save(str(self.pdf), [self.rect("aaaaaaaa")])
+        self.state.update(busy=True, job={"kind": "batch_commit"})
+        plan = pdf_review.open_plan()
+        self.assertEqual(plan["files"], [])
+        self.assertEqual([w["name"] for w in plan["waiting"]], ["売上.xlsx"])
+
 
 class WorkbenchKeepsDrawnMarksTests(unittest.TestCase):
     def test_wanted_marks_keep_pdf_review_marks(self):
