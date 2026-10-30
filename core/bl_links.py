@@ -1,7 +1,8 @@
 """排查并清除「左边单元格含 BL、右边是内容为 @ 的超链接」这种超链接单元格。
 
 规则（两个条件必须同时满足）：
-  1. 左边单元格（同一行、紧邻左一列）的内容包含大写 ``BL``（区分大小写）；
+  1. 左边单元格（同一行、紧邻左一列）的内容包含大写 ``BL``，或者有一个以 ``Bl`` / ``bl``
+     开头的词（前面不是字母、后面不跟小写字母，如 ``Class:BlKaihoCal``；``Black``、``table`` 不算）；
   2. 右边单元格本身是一个超链接，且显示内容正好是 ``@``。
 满足时删除该超链接并清空内容。分两阶段：先扫描列清单，确认后再清除。
 """
@@ -9,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,8 @@ from core.common import workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, quit_background_excel, start_background_excel
 
 BL_MARK = "BL"
+# 驼峰类名里的 Bl（BlKaihoCal、blUtil）：前面不是字母，后面不是小写字母。
+BL_WORD = re.compile(r"(?<![A-Za-z])[Bb][Ll](?![a-z])")
 AT_MARK = "@"
 
 _LOCK = threading.RLock()
@@ -82,8 +86,9 @@ def _link_target(link: Any) -> str:
 
 
 def is_bl_left(value: Any) -> bool:
-    """左边单元格是否命中：内容包含大写 BL。"""
-    return BL_MARK in _text(value)
+    """左边单元格是否命中：内容包含大写 BL，或有 Bl/bl 开头的词。"""
+    text = _text(value)
+    return BL_MARK in text or BL_WORD.search(text) is not None
 
 
 def is_at_content(value: Any) -> bool:
