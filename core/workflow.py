@@ -3086,6 +3086,33 @@ def _export_workbook_pdfs(
         wb.Close(SaveChanges=False)
 
 
+def _clear_old_pdfs(workbooks: list[Path]) -> None:
+    """导出前先删掉旧 PDF（用户定：先清空，再生成新的，人工复检页面只看到这次导出的）。
+    只删每个 Excel 所在文件夹里名字是「Excel 文件名_….pdf」的，也就是以前导出、扫描时导出留下的；
+    别的 PDF 不动。删不掉的（被别的程序打开着）记日志，照常导出。续跑时不再删，免得删掉这次已经导出的"""
+    stems: dict[Path, set[str]] = {}
+    for wb in workbooks:
+        stems.setdefault(wb.parent, set()).add(sanitize_filename(strip_review_prefix(wb.stem)))
+    removed: list[Path] = []
+    failed: list[str] = []
+    for folder, names in stems.items():
+        for pdf in sorted(folder.iterdir()):
+            if not pdf.is_file() or pdf.suffix.lower() != ".pdf" or not any(pdf.stem.startswith(n + "_") for n in names):
+                continue
+            try:
+                pdf.unlink()
+                removed.append(pdf)
+            except OSError as err:
+                failed.append(f"{pdf.name}（{err}）")
+    debug_log.event("🗑️ 导出前删掉旧 PDF", 删掉=len(removed), 删不掉=len(failed), 文件=[p.name for p in removed][:20])
+    if removed:
+        from core import pdf_review
+        pdf_review.forget_pdfs(removed)
+        log_msg(f"🗑️ 导出前删掉了 {len(removed)} 份旧 PDF")
+    if failed:
+        log_msg(f"⚠️ {len(failed)} 份旧 PDF 删不掉（可能正在用别的程序打开），同名的会导出失败：" + "；".join(failed[:5]))
+
+
 def _normalize_workbook_file(get_excel: Callable[[], Any], wb_path: Path, root_folder: Path) -> None:
     wb_label = workbook_rel_name(wb_path, root_folder)
     excel = get_excel()
@@ -3138,6 +3165,8 @@ def quick_task_workflow(kind: str) -> None:
         )
         if kind == "export_pdf" and waiting_review:
             log_msg(f"⚠️ 还有 {waiting_review} 个文件在等稍后人工复检（单元格标着黄色），导出的 PDF 里会带黄色底色")
+        if kind == "export_pdf":
+            _clear_old_pdfs(workbooks)
     log_msg(f"{'继续' if initialized else '开始'}{task_name}：{folder}（共 {len(workbooks)} 个文件）")
 
     excel = None

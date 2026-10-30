@@ -50,6 +50,24 @@ def _exports() -> dict[str, dict]:
     return wf.STATE.setdefault("pdf_exports", {})
 
 
+def forget_pdfs(paths: list[Path]) -> None:
+    """导出前删掉了旧 PDF：它们的导出记录和画在上面的框也去掉。已经标进 Excel 的颜色留着（问题还在），
+    工作台「清除 Excel 标记颜色」可以清掉"""
+    gone = {str(p) for p in paths} | {str(Path(p).resolve()) for p in paths}
+    with wf.STATE_LOCK:
+        store = _store()
+        for pdf in gone:
+            _exports().pop(pdf, None)
+        dropped = [rid for rid, r in store["rects"].items() if r["pdf"] in gone]
+        for rid in dropped:
+            store["rects"].pop(rid)
+        for rid in [rid for rid, r in store["trash"].items() if r["pdf"] in gone]:
+            store["trash"].pop(rid)
+        wf._persist_state()
+    if dropped:
+        debug_log.event("🗑️ 旧 PDF 上的框一起去掉", 框数=len(dropped))
+
+
 def mark_id(rect_id: str) -> str:
     """框在 batch 标记记录里的 id。标识只能是字母数字（batch.MARK_TAG），不能带下划线"""
     return f"pdf{rect_id}"
