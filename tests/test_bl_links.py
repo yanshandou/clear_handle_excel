@@ -60,13 +60,14 @@ class FakeMergeArea:
 
 
 class MatchingRuleTests(unittest.TestCase):
-    """纯匹配规则：左边含大写 BL、右边内容正好是 @，两个条件同时满足才命中。"""
+    """纯匹配规则：左边含大写 BL 或 Bl 开头的词、右边内容正好是 @，两个条件同时满足才命中。"""
 
     def test_left_contains_uppercase_bl(self):
-        for value in ("BL", "BL001", "逻辑BL", "BL(論理)", "BL ", "BLK"):
+        for value in ("BL", "BL001", "逻辑BL", "BL(論理)", "BL ", "BLK",
+                      "Class:BlKaihoCal\nMethod:calcSeiykuushuuseiTouroku", "Bl", "bl", "blUtil", "Bl_01", "●Bl処理"):
             with self.subTest(value=value):
                 self.assertTrue(bl_links.is_bl_left(value))
-        for value in ("bl", "B L", "Black", "Bl", "", None, "LABEL"):
+        for value in ("B L", "Black", "black", "Table", "public", "Class:TableUtil", "", None, "LABEL"):
             with self.subTest(value=value):
                 self.assertFalse(bl_links.is_bl_left(value))
 
