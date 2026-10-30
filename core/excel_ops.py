@@ -16,6 +16,7 @@ from core.common import (
     XL_WORKSHEET,
     col_index_to_letters,
     find_backup_sheets,
+    is_blank_content,
     is_gray_tab_color,
     is_inspection_exempt_sheet,
     normalize_used_values,
@@ -522,6 +523,111 @@ def _read_xlsx_tab_colors(workbook_path: Path) -> dict[str, str]:
     return colors
 
 
+# 工作表 XML 里表示「有图片、图形、批注、嵌入对象、背景图」的元素：有这些的表不算空白
+_SHEET_OBJECT_TAGS = {"drawing", "legacyDrawing", "legacyDrawingHF", "oleObjects", "picture", "controls"}
+XL_FORMULAS = -4123  # Range.Find 的 LookIn：按公式（含常量）找
+
+
+def _shared_string(archive: zipfile.ZipFile, index: int) -> str:
+    """共享字符串表里第 index 条的文字（流式读到这一条就停）"""
+    try:
+        fh = archive.open("xl/sharedStrings.xml")
+    except KeyError:
+        return ""
+    with fh:
+        position = -1
+        for _, el in ElementTree.iterparse(fh):
+            if el.tag.rsplit("}", 1)[-1] != "si":
+                continue
+            position += 1
+            if position == index:
+                return "".join(t.text or "" for t in el.iter() if t.tag.rsplit("}", 1)[-1] == "t")
+            el.clear()
+    return ""
+
+
+def _xlsx_sheet_values(archive: zipfile.ZipFile, part: str, limit: int = 2) -> list[str] | None:
+    """工作表里前 limit 个有内容的格子的文字；有图片图形批注、公式或不是普通工作表时返回 None（不算空白）。
+    流式读取，找到 limit 个就停，大表也不会全部读完。
+    """
+    values: list[str] = []
+    shared: list[int] = []
+    with archive.open(part) as fh:
+        root_checked = False
+        for event, el in ElementTree.iterparse(fh, events=("start", "end")):
+            tag = el.tag.rsplit("}", 1)[-1]
+            if event == "start":
+                if not root_checked:
+                    root_checked = True
+                    if tag != "worksheet":
+                        return None  # 图表工作表、对话框工作表
+                if tag in _SHEET_OBJECT_TAGS:
+                    return None
+                continue
+            if tag != "c":
+                continue
+            children = {child.tag.rsplit("}", 1)[-1]: child for child in el}
+            if "f" in children:
+                return None
+            if el.get("t") == "inlineStr" and "is" in children:
+                text = "".join(t.text or "" for t in children["is"].iter() if t.tag.rsplit("}", 1)[-1] == "t")
+            elif "v" in children:
+                text = children["v"].text or ""
+                if el.get("t") == "s" and text.strip().isdigit():
+                    shared.append(len(values))  # 共享字符串几乎不会是空字符串，先按有内容计数，最后只剩一格时再查文字
+                    text = text.strip()
+            else:
+                text = ""
+            el.clear()
+            if text.strip():
+                values.append(text)
+                if len(values) >= limit:
+                    break
+    if len(values) == 1 and shared:
+        values[0] = _shared_string(archive, int(values[0]))
+    return values
+
+
+def _read_xlsx_blank_sheets(workbook_path: Path) -> set[str]:
+    """没有内容的工作表名：一格都没有，或只有一格写着「無」「なし」「－」这类占位字，且没有图片图形批注（用户 2026-10-30）"""
+    blank: set[str] = set()
+    with zipfile.ZipFile(workbook_path) as archive:
+        book = ElementTree.fromstring(archive.read("xl/workbook.xml"))
+        ns = book.tag[: book.tag.index("}") + 1] if book.tag.startswith("{") else ""
+        rels = ElementTree.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+        targets = {rel.get("Id"): rel.get("Target") for rel in rels.findall(f"{_XML_PKG_REL_NS}Relationship")}
+        for sheet in book.iter(f"{ns}sheet"):
+            target = targets.get(sheet.get(f"{_XML_REL_NS}id")) or ""
+            part = target.lstrip("/") if target.startswith("/") else f"xl/{target}"
+            try:
+                values = _xlsx_sheet_values(archive, part)
+            except (KeyError, ElementTree.ParseError):
+                continue
+            if values is not None and is_blank_content(values):
+                blank.add(sheet.get("name"))
+    return blank
+
+
+def _excel_blank_sheets(wb: Any) -> set[str]:
+    """Excel 打开的工作簿里没有内容的工作表（规则同 _read_xlsx_blank_sheets）；读不到的表不算空白"""
+    blank: set[str] = set()
+    for sh in wb.Worksheets:
+        try:
+            if int(sh.Shapes.Count) or int(sh.Comments.Count):
+                continue
+            count = int(wb.Application.WorksheetFunction.CountA(sh.Cells))
+            if count == 0:
+                blank.add(sh.Name)
+            elif count == 1:
+                cell = sh.Cells.Find(What="*", LookIn=XL_FORMULAS)
+                formula = "" if cell is None else str(cell.Formula or "")
+                if cell is not None and not formula.startswith("=") and is_blank_content([formula]):
+                    blank.add(sh.Name)
+        except Exception:
+            continue
+    return blank
+
+
 def _excel_tab_colors(wb: Any) -> dict[str, str]:
     """Excel 打开的工作簿各表标签颜色 {表名: RRGGBB}（Tab.Color 已经是换算好的颜色，BGR 整数）"""
     colors: dict[str, str] = {}
@@ -543,11 +649,13 @@ def gray_tab_sheet_names(wb: Any) -> set[str]:
 
 def scan_workbook_sheets(
     workbook_path: Path, get_excel: Callable[[], Any] | None = None, tab_colors: dict[str, str] | None = None,
+    blank_sheets: set[str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """扫描工作簿中的所有 Sheet 名与其中的备份 Sheet 名（支持 .xlsx/.xlsm/.xls）
 
     .xls 需要用 Excel 打开；批量扫描时传入 get_excel 复用同一个 Excel 进程，避免每个文件都重启 Excel。
     传入 tab_colors（空字典）时顺便填入各表标签颜色 {表名: RRGGBB}，读不到颜色不影响扫描。
+    传入 blank_sheets（空集合）时顺便填入没有内容的表名（见 _read_xlsx_blank_sheets），读不到也不影响扫描。
     """
     if workbook_path.suffix.lower() == ".xls":
         if get_excel is not None:
@@ -556,6 +664,8 @@ def scan_workbook_sheets(
                 all_sheets = [sh.Name for sh in wb.Sheets]
                 if tab_colors is not None:
                     tab_colors.update(_excel_tab_colors(wb))
+                if blank_sheets is not None:
+                    blank_sheets.update(_excel_blank_sheets(wb))
             finally:
                 wb.Close(SaveChanges=False)
             return all_sheets, find_backup_sheets(all_sheets)
@@ -568,6 +678,8 @@ def scan_workbook_sheets(
             all_sheets = [sh.Name for sh in wb.Sheets]
             if tab_colors is not None:
                 tab_colors.update(_excel_tab_colors(wb))
+            if blank_sheets is not None:
+                blank_sheets.update(_excel_blank_sheets(wb))
             return all_sheets, find_backup_sheets(all_sheets)
         finally:
             if wb is not None:
@@ -589,6 +701,11 @@ def scan_workbook_sheets(
             tab_colors.update(_read_xlsx_tab_colors(workbook_path))
         except Exception as err:
             debug_log.event("⚠️ 读取标签颜色失败", 文件=workbook_path.name, 原因=f"{type(err).__name__}: {err}")
+    if blank_sheets is not None:
+        try:
+            blank_sheets.update(_read_xlsx_blank_sheets(workbook_path))
+        except Exception as err:
+            debug_log.event("⚠️ 检查空白表失败", 文件=workbook_path.name, 原因=f"{type(err).__name__}: {err}")
     return all_sheets, find_backup_sheets(all_sheets)
 
 

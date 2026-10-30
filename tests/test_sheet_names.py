@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from openpyxl import Workbook
+from openpyxl.comments import Comment
 from openpyxl.styles.colors import Color
 
 from core import excel_ops
@@ -51,6 +52,31 @@ class XlsxSheetNameTests(unittest.TestCase):
         self.assertEqual(colors["索引灰"], "C0C0C0")
         self.assertNotIn("无色", colors)
         self.assertEqual([n for n in names if is_gray_tab_color(colors.get(n))], ["灰", "白色深色15%", "黑色浅色50%", "索引灰"])
+
+    def test_reads_blank_sheets(self):
+        # 用户 2026-10-30：只有 A1=無 的 JSONサンプル 这类没有内容的表默认删除
+        wb = Workbook()
+        wb.active.title = "概要"
+        wb["概要"]["A1"] = "概要"
+        wb["概要"]["B2"] = "説明"
+        wb.create_sheet("JSONサンプル")["A1"] = "無"
+        wb.create_sheet("空白")
+        wb.create_sheet("書式だけ")["C3"].number_format = "@"
+        wb.create_sheet("横線")["B2"] = "－"
+        wb.create_sheet("該当なし")["A1"] = "該当なし。"
+        wb.create_sheet("タイトルだけ")["A1"] = "帳票一覧"
+        wb.create_sheet("無が二つ")["A1"] = "無"
+        wb["無が二つ"]["A2"] = "無"
+        wb.create_sheet("数式")["A1"] = '=""'
+        wb.create_sheet("コメント")["A1"].comment = Comment("メモ", "XU")
+        wb.create_sheet("数字")["A1"] = 0
+        wb.create_chartsheet("グラフ")
+        path = self.folder / "blank.xlsx"
+        wb.save(path)
+
+        blank: set[str] = set()
+        excel_ops.scan_workbook_sheets(path, blank_sheets=blank)
+        self.assertEqual(blank, {"JSONサンプル", "空白", "書式だけ", "横線", "該当なし"})
 
     def test_gray_tab_color_range(self):
         for color in ["808080", "F2F2F2", "0D0D0D", "D9D9D9", "E7E6E6", "A5A5A5"]:

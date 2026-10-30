@@ -24,6 +24,7 @@ class FakeSheet:
         self.ListObjects = []
         self.UsedRange = SimpleNamespace(CountLarge=1, Formula=None, Value2=None, Row=1, Column=1)
         self.tab_color = None  # 标签颜色 RRGGBB；None = 没设
+        self.blank = False  # 没有内容（空白或只有一格「無」）
         self.ExportAsFixedFormat = Mock(side_effect=self._export)
 
     @property
@@ -138,7 +139,7 @@ class QuickTaskTests(unittest.TestCase):
         self.books[name] = FakeWorkbook(name, sheets, hidden, self.events)
         return path
 
-    def read_sheet_names(self, path, get_excel=None, tab_colors=None):
+    def read_sheet_names(self, path, get_excel=None, tab_colors=None, blank_sheets=None):
         """模拟 openpyxl 只读读取工作表名；.xls 通过传入的共享 Excel 打开"""
         if get_excel is not None:
             book = get_excel().Workbooks.Open(str(path), ReadOnly=True)
@@ -158,6 +159,8 @@ class QuickTaskTests(unittest.TestCase):
         names = [sheet.Name for sheet in book.sheets]
         if tab_colors is not None:
             tab_colors.update({s.Name: s.tab_color for s in book.sheets if s.tab_color})
+        if blank_sheets is not None:
+            blank_sheets.update(s.Name for s in book.sheets if s.blank)
         return names, self.workflow.find_backup_sheets(names)
 
     def run_task(self, kind):
@@ -786,6 +789,15 @@ class QuickTaskTests(unittest.TestCase):
         files = {f["name"]: f for f in self.workflow.preview_backup_sheets(str(self.folder))["files"]}
         self.assertEqual(files["black.xlsx"]["backups"], ["Black"])
         self.assertEqual(files["black.xlsx"]["gray_tabs"], ["Black"])
+
+    def test_blank_sheets_default_to_delete(self):
+        # 用户 2026-10-30：只有 A1=無 的 JSONサンプル 这类没有内容的表不看名字默认删除，优先于待定
+        self.add_book("blank.xlsx", ["概要", "概要JSONサンプル", "レイアウト"])
+        self.books["blank.xlsx"].sheets[1].blank = True
+        files = {f["name"]: f for f in self.workflow.preview_backup_sheets(str(self.folder))["files"]}
+        self.assertEqual(files["blank.xlsx"]["backups"], ["概要JSONサンプル"])
+        self.assertEqual(files["blank.xlsx"]["blank_sheets"], ["概要JSONサンプル"])
+        self.assertEqual(files["blank.xlsx"]["uncertain"], [])
 
     def test_gray_tab_sheets_default_to_delete_and_skip_pdf(self):
         # 灰色标签的表不看名字：精简 Sheet 默认删除，导出 PDF 也跳过（用户 2026-10-26）；橙黄问题标签不算

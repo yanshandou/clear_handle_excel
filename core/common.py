@@ -22,6 +22,16 @@ NEW_PREFIX_WORDS = (
     "新しい", "新た",
 )
 BACKUP_TEXT_PATTERN = re.compile(r"バックアップ|备份|コピー|副本|(?<![新復])旧")
+# 明确写着「备份」的表名（bk/ｂｋ/bak/backup/バックアップ/备份，后面可接编号如 ｂｋ２）：精简 Sheet 不需要原表也默认删除
+# （用户 2026-10-30）；old/旧/copy/日期 等仍要求同工作簿有原表
+EXPLICIT_BACKUP_PATTERN = re.compile(r"(?<![a-z])(?:bak|backup|bk)(?![a-z])|バックアップ|备份", re.IGNORECASE)
+# 空白表里唯一一格允许的占位字（用户 2026-10-30：只有 A1=無 的 JSONサンプル 这类表默认删除）；比较前 NFKC、去空白和句号
+BLANK_PLACEHOLDER_WORDS = {
+    "無", "無し", "なし", "ナシ", "特になし", "特に無し", "該当なし", "該当無し", "対象なし", "対象外",
+    "无", "没有", "空", "空白", "略", "省略", "n/a", "na", "none", "null", "nil", "tbd",
+}
+# 只由横线、波浪线、斜线、点组成的格子（-、－、ー、―、〜、/、・ 等）也算占位
+BLANK_PLACEHOLDER_SYMBOLS = re.compile(r"[-‐‑‒–—―ー─━~〜～/・.。…]+")
 # 复制工作表产生的「(2)」「(3)」后缀（全角括号统一为半角后判断，有无空格均可），
 # 后面还可以再接日期，如「様式１（基本情報）(2)_20221005」；仍要求同工作簿存在原表才算备份
 EXCEL_COPY_SUFFIX_PATTERN = re.compile(r"\s*\(\d+\)[\s_\-・.]*$")
@@ -111,6 +121,23 @@ def has_backup_marker(sheet_name: str) -> bool:
         or _latest_date_in(sheet_name) is not None
         or _has_mmdd_suffix(unicodedata.normalize("NFKC", sheet_name))
     )
+
+
+def has_explicit_backup_word(sheet_name: str) -> bool:
+    """表名明确写着备份：bk/ｂｋ/BK/bak/backup（前后不是英文字母，后面可接数字）、バックアップ、备份"""
+    return bool(EXPLICIT_BACKUP_PATTERN.search(unicodedata.normalize("NFKC", strip_uncertain_prefix(sheet_name))))
+
+
+def is_placeholder_text(text: Any) -> bool:
+    """格子里的字是不是「無」「なし」「－」这类表示没有内容的占位字（空字符串也算）"""
+    value = re.sub(r"[\s。、.]+$", "", unicodedata.normalize("NFKC", str(text or "")).strip()).strip().lower()
+    return not value or value in BLANK_PLACEHOLDER_WORDS or bool(BLANK_PLACEHOLDER_SYMBOLS.fullmatch(value))
+
+
+def is_blank_content(values: list[Any]) -> bool:
+    """工作表的全部非空格子（不含图片图形）算不算没有内容：一格都没有，或只有一格且是占位字（用户 2026-10-30）"""
+    filled = [v for v in values if str(v if v is not None else "").strip()]
+    return not filled or (len(filled) == 1 and is_placeholder_text(filled[0]))
 
 
 def _comparable_name(name: str) -> str:
@@ -258,13 +285,17 @@ def strip_new_prefix(sheet_name: str) -> str:
 
 
 def find_clean_targets(sheet_names: list[str]) -> list[str]:
-    """精简 Sheet 默认删除的工作表：有原表的备份表、「旧」开头的旧版表，
-    以及「自動生成」「レイアウト変更」「仕様変更」开头的表（保持原顺序）。
+    """精简 Sheet 默认删除的工作表：有原表的备份表、名称明确写着 bk/バックアップ 的表（不需要原表）、
+    「旧」开头的旧版表，以及「自動生成」「レイアウト変更」「仕様変更」开头的表（保持原顺序）。
+    同一原表 2 张以上的「(n)」编号组不算。
     """
     targets = set(find_backup_sheets(sheet_names))
+    series = copy_series_sheets(sheet_names)
     for name in sheet_names:
         key = _new_old_key(name)
         if key is not None and key[0] == OLD_PREFIX:
+            targets.add(name)
+        elif has_explicit_backup_word(name) and name not in series:
             targets.add(name)
     return [name for name in sheet_names if name in targets or is_auto_generated_sheet(name) or is_change_note_sheet(name)]
 

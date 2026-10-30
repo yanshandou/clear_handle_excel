@@ -2638,7 +2638,7 @@ def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
                 files.append(entry)
                 debug_log.event("📄 精简预览", 文件=entry["name"], 表数=entry["sheet_count"], 默认删除=entry["backups"],
                                 待定=entry["uncertain"], 新旧配对=entry["new_old_pairs"] or "-", 备注=entry["note"] or "-",
-                                灰色标签=entry["gray_tabs"] or "-",
+                                灰色标签=entry["gray_tabs"] or "-", 空白表=entry["blank_sheets"] or "-",
                                 编号组保留=[n for n in entry["sheets"] if n in copy_series_sheets(entry["sheets"])] or "-",
                                 全部表=entry["sheets"])
     finally:
@@ -2661,15 +2661,17 @@ def _preview_workbook(wb_path: Path, folder: Path, get_excel: Callable[[], Any])
         "uncertain": [],
         "new_old_pairs": {},
         "gray_tabs": [],
+        "blank_sheets": [],
         "note": "",
         "version": _version_or_none(wb_path),
     }
     tab_colors: dict[str, str] = {}
+    blank: set[str] = set()
     try:
         if wb_path.suffix.lower() == ".xls":
-            all_names, _ = scan_workbook_sheets(wb_path, get_excel, tab_colors=tab_colors)
+            all_names, _ = scan_workbook_sheets(wb_path, get_excel, tab_colors=tab_colors, blank_sheets=blank)
         else:
-            all_names, _ = scan_workbook_sheets(wb_path, tab_colors=tab_colors)
+            all_names, _ = scan_workbook_sheets(wb_path, tab_colors=tab_colors, blank_sheets=blank)
     except Exception as err:
         entry["note"] = f"无法读取: {err}"
     else:
@@ -2679,8 +2681,10 @@ def _preview_workbook(wb_path: Path, folder: Path, get_excel: Callable[[], Any])
         # 精简时纯黑标签也默认删除；其他功能仍沿用原有灰色规则。
         gray = {s for s in all_names if is_gray_tab_color(tab_colors.get(s)) or tab_colors.get(s) == "000000"}
         entry["gray_tabs"] = [s for s in all_names if s in gray]
+        # 没有内容的表（空白，或只有一格「無」「－」这类占位字）和灰色标签一样不看名字默认删除（用户 2026-10-30）
+        entry["blank_sheets"] = [s for s in all_names if s in blank]
         name_targets = set(find_clean_targets(all_names))
-        default_delete = [s for s in all_names if not has_numbered_suffix(s) and ((s in name_targets and (s not in set(uncertain) or is_change_note_sheet(s))) or s in gray)]
+        default_delete = [s for s in all_names if not has_numbered_suffix(s) and ((s in name_targets and (s not in set(uncertain) or is_change_note_sheet(s))) or s in gray or s in blank)]
         contained = set(find_contained_sheets(all_names))
         entry["uncertain"] = [s for s in all_names if (s in set(uncertain) or (s in contained and not has_numbered_suffix(s))) and s not in set(default_delete)]
         with STATE_LOCK:
