@@ -40,6 +40,8 @@ EXCEL_COPY_SUFFIX_PATTERN = re.compile(r"\s*\(\d+\)[\s_\-・.]*$")
 MMDD_SUFFIX_PATTERN = re.compile(r"(?<![a-zA-Z\d])(\d{2})(\d{2})[\s_\-・.]*$")
 # 工具自动生成的工作表（如 自動生成_引数、自動生成_JSON），没有对应原表，精简 Sheet 时默认删除
 AUTO_GENERATED_PREFIXES = ("自動生成", "自动生成")
+# 表名多出的英文词里像临时版本的（サンプル 与 サンプルtest 仍标待定），其余英文词（JSON、CSV、PDF…）算另一张表
+ENGLISH_TEMP_WORDS = {"new", "tmp", "temp", "test", "wk", "work", "draft", "org", "orig", "original", "prev", "ver"}
 # 去掉备份标记、找原表时额外去掉的写法（「Sheet1のコピー」的「の」、「Copy of 一覧」的「of」）
 COPY_PHRASE_PATTERN = re.compile(r"copy\s+of|の?コピー|的?副本", re.IGNORECASE)
 # 版本号（如 _v2.4、ver1.0），比对原表时忽略
@@ -350,10 +352,21 @@ def find_contained_sheets(sheet_names: list[str]) -> list[str]:
                 if not cuts_number:
                     break
                 start = text.find(ref, start + 1)
-            if start != -1:
+            if start != -1 and not _is_english_qualifier(text[:start] + "|" + text[start + len(ref):], ref):
                 contained.append(name)
                 break
     return contained
+
+
+def _is_english_qualifier(extra: str, ref: str) -> bool:
+    """日文表名多出的部分只是一个英文词（如 サンプル 与 JSONサンプル、一覧 与 CSV一覧）：说的是另一种东西，
+    不是同一张表的副本，不标待定（用户 2026-10-30）。new/tmp/test/work 这类像临时版本的词仍算待定。
+    """
+    parts = [p for p in extra.split("|") if p]
+    return (
+        bool(parts) and not ref.isascii()
+        and all(re.fullmatch(r"[a-z]{2,}", p) and p not in ENGLISH_TEMP_WORDS for p in parts)
+    )
 
 
 def is_uncertain_name(name: str) -> bool:
