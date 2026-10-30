@@ -9,7 +9,7 @@
 </head>
 <body>
   <header class="app-header">
-    <a href="/" class="header-brand"><div class="header-logo-badge">🖍️</div><div class="header-title"><h1>PDF 人工复检</h1><span class="subtitle">在导出的 PDF 上圈出问题 · 原 Excel 对应单元格标色</span></div></a>
+    <a href="/" class="header-brand"><div class="header-logo-badge">🔎</div><div class="header-title"><h1>PDF 人工复检</h1><span class="subtitle">在导出的 PDF 上看到问题 · 点一下用 Excel 打开那一格</span></div></a>
     <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/workbench" class="nav-link">📐 切字检查工作台</a><a href="/records" class="nav-link">📋 执行记录</a></nav>
   </header>
   <main class="container pr-container">
@@ -17,32 +17,27 @@
       <div class="pr-folder-row">
         <label class="pr-folder-label" for="prFolder">Excel 文件夹（含子文件夹，PDF 和 Excel 在一起）
           <input id="prFolder" type="text" placeholder="例如 C:\Users\...\Desktop\excel_files"></label>
+        <label class="pr-folder-label" for="prOldFolder">原始备份文件夹（可选，填了就同时打开老版本对照）
+          <input id="prOldFolder" type="text" placeholder="例如 C:\Users\...\Desktop\excel_files_备份"></label>
         <button id="prLoad" type="button" class="btn btn-primary">📂 加载 PDF</button>
       </div>
       <ul class="pr-tips">
-        <li>在页面上<b>按住鼠标拖动</b>，用圆角框圈出有问题的地方；<b>双击框</b>删除，<b>Ctrl + Z</b> 撤销上一步。</li>
-        <li>顶栏和底部条不碰 3 秒自动隐藏；<b>单击页面</b>（不拖动）显示 / 隐藏，鼠标移到窗口最上面或最下面也会出来。</li>
-        <li>标记随画随存，刷新页面也还在。点底部「写进 Excel」后，框住的单元格在原 Excel 里标色（和切字工作台同一种标记，工作表标签标橙黄色），切字工作台的「清除 Excel 标记颜色」也能一起清掉。</li>
-        <li>鼠标移到页面上，右上角显示对应的 Excel 和工作表，点一下用 Excel 打开；标好的框左上角显示单元格地址，点一下跳到那一格。</li>
+        <li>看到问题<b>点一下</b>，就用 Excel 打开对应的文件并选中那一格；鼠标移到页面上会先显示是哪一格。</li>
+        <li>填了原始备份文件夹时，老版本也一起打开（只读）、跳到同一格，左右并排对照（按相同的相对路径或唯一的文件名找）。</li>
+        <li>每张表第一次要在后台算一下行列位置（几秒到十几秒），加载后会自动按顺序先算好；每份 PDF 标题右边显示算好没有。</li>
+        <li>顶栏和底部条不碰 3 秒自动隐藏，鼠标移到窗口最上面或最下面就会出来。</li>
       </ul>
       <p id="prStatus" class="pr-status" role="status" aria-live="polite">输入文件夹后点「加载 PDF」。</p>
     </section>
 
     <section id="prDocs" class="pr-docs view-large" aria-label="PDF 列表"></section>
 
-    <!-- 悬浮在窗口底部：待写入的标记数和「写进 Excel」，内容变化不改变高度 -->
+    <!-- 悬浮在窗口底部：定位进度、现在看到哪里、页面大小；内容变化不改变高度 -->
     <section id="prBar" class="panel pr-bar hidden">
       <div id="prSummary" class="pr-summary"></div>
       <!-- 现在看到哪一份、哪一页，对应的 Excel（点了打开）；下面的进度条点一下跳过去 -->
       <div class="pr-where">
-        <div class="pr-where-row">
-          <div id="prWhereText" class="pr-where-text"></div>
-          <div class="pr-nav" role="group" aria-label="在标记之间跳转">
-            <button id="prPrev" type="button" class="btn btn-outline btn-sm" title="跳到上一个标记">◀ 上一个</button>
-            <span id="prNavPos" class="pr-nav-pos">标记 0 / 0</span>
-            <button id="prNext" type="button" class="btn btn-outline btn-sm" title="跳到下一个标记">下一个 ▶</button>
-          </div>
-        </div>
+        <div id="prWhereText" class="pr-where-text"></div>
         <div id="prTrack" class="pr-track" title="点一下跳到那里"><div id="prFill" class="pr-fill"></div></div>
       </div>
       <div id="prView" class="pv-size-switch pr-view" role="group" aria-label="页面大小">
@@ -50,15 +45,11 @@
         <button type="button" class="btn btn-outline btn-sm" data-view="medium" title="每页按窗口高度整页显示">中图</button>
         <button type="button" class="btn btn-outline btn-sm" data-view="small" title="一行放多页，放几页看屏幕和页面宽度">小图</button>
       </div>
-      <button id="prOpen" type="button" class="btn btn-outline" title="网页上画了框的 Excel（写没写进 Excel 都算），每次最多打开 5 个这一轮还没打开过的">📂 打开下一批（未开 0 / 共 0 个）</button>
-      <button id="prOpenReset" type="button" class="btn btn-outline btn-sm" title="清掉打开记录，下次从头开始打开（不关闭 Excel）">重置打开记录</button>
-      <span id="prSample" class="pr-sample" title="和切字工作台用同一个标记颜色（在工作台里可以改）">标记颜色</span>
-      <button id="prApply" type="button" class="btn btn-primary">🖍️ 写进 Excel</button>
     </section>
 
     <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
   </main>
-  <script src="/static/dialog.js"></script><script src="/static/open_excel.js"></script><script src="/static/highlight_colors.js"></script>
+  <script src="/static/dialog.js"></script><script src="/static/open_excel.js"></script>
   <script src="/static/pdf_review.js"></script><script src="/static/debug_log.js"></script>
 </body>
 </html>

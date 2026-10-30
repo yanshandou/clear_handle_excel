@@ -3449,15 +3449,13 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
 
 
 def _wanted_marks(path: str) -> set[str]:
-    """这份文件里现在应该标色的卡片：黄色人工待处理的；PDF 人工复检画的框（pdf_review）由那个页面管，这里都留着。
-    调用方持有 STATE_LOCK"""
+    """这份文件里现在应该标色的卡片：黄色人工待处理的。调用方持有 STATE_LOCK"""
     data = _data()
-    drawn = {cid for cid, m in _marks().items() if m["path"] == path and m.get("source") == "pdf_review"}
     if not data.get("highlight_files", {}).get(path):
-        return drawn
-    return drawn | {c["id"] for c in data["cards"].values()
-                    if c["wb_path"] == path and not c.get("dismissed") and c["color"] == "yellow"
-                    and c.get("manual") and _can_highlight(c)}
+        return set()
+    return {c["id"] for c in data["cards"].values()
+            if c["wb_path"] == path and not c.get("dismissed") and c["color"] == "yellow"
+            and c.get("manual") and _can_highlight(c)}
 
 
 def _leftover_mark_paths(skip: list[str]) -> list[str]:

@@ -1,11 +1,11 @@
-"""PDF 人工复检：探测底色编解码、从探测 PDF 读行列位置、框 → 单元格，以及框的保存 / 撤销。"""
+"""PDF 人工复检：探测底色编解码、从探测 PDF 读行列位置、点的位置 → 单元格、打开 Excel（和原始备份）。"""
 import copy
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core import batch, pdf_review, workflow as wf
+from core import pdf_review, workflow as wf
 from core.pdf_detector import fitz
 
 
@@ -60,174 +60,164 @@ class BandTests(unittest.TestCase):
         self.assertEqual(pdf_review.read_bands(pdf, "x")[0], {2: (50.0, 120.0), 3: (120.0, 200.0)})
 
 
-class LocateTests(unittest.TestCase):
+class CellAtTests(unittest.TestCase):
     rows = {1: (40, 60), 2: (60, 80), 3: (80, 100), 7: (100, 120), 8: (120, 140)}  # 4~6 行隐藏
     cols = {1: (50, 120), 2: (120, 200), 3: (200, 260)}
 
-    def blocks(self, x0, y0, x1, y1):
-        return pdf_review.blocks_for({"x0": x0, "y0": y0, "x1": x1, "y1": y1}, self.rows, self.cols)
+    def test_point_inside_cells(self):
+        self.assertEqual(pdf_review.cell_at(self.rows, self.cols, 60, 45), "A1")
+        self.assertEqual(pdf_review.cell_at(self.rows, self.cols, 150, 110), "B7")  # 隐藏行后面接着第 7 行
 
-    def test_rect_over_cells(self):
-        self.assertEqual(self.blocks(55, 62, 190, 98), [(2, 3, 1, 2)])
+    def test_point_on_seam_or_margin(self):
+        self.assertEqual(pdf_review.cell_at(self.rows, self.cols, 260.5, 139), "C8")  # 格线外 1 个点以内也算
+        self.assertIsNone(pdf_review.cell_at(self.rows, self.cols, 300, 50))  # 页边空白
+        self.assertIsNone(pdf_review.cell_at(self.rows, self.cols, 60, 10))
 
-    def test_slightly_touching_neighbours_are_left_out(self):
-        # 框边只压到旁边格子一点点（不到三成）不算
-        self.assertEqual(self.blocks(115, 57, 205, 83), [(2, 2, 2, 2)])
-
-    def test_small_rect_inside_one_cell(self):
-        self.assertEqual(self.blocks(130, 85, 140, 90), [(3, 3, 2, 2)])
-
-    def test_hidden_rows_split_the_block(self):
-        self.assertEqual(self.blocks(55, 82, 115, 138), [(3, 3, 1, 1), (7, 8, 1, 1)])
-        self.assertEqual(pdf_review.block_address([(3, 3, 1, 1), (7, 8, 1, 1)]), "A3,A7:A8")
-
-    def test_margin_only(self):
-        self.assertEqual(self.blocks(300, 300, 400, 400), [])
-
-    def test_long_address_falls_back_to_one_block(self):
-        blocks = [(r, r, 1, 3) for r in range(1, 200, 2)]
-        self.assertEqual(pdf_review.block_address(blocks), "A1:C199")
+    def test_overlap_takes_the_narrowest(self):
+        rows = {3: (60, 100), 4: (70, 80)}
+        self.assertEqual(pdf_review.cell_at(rows, self.cols, 60, 75), "A4")
 
 
-class SaveTests(unittest.TestCase):
+class ReviewFolderTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
-        self.book = self.tmp / "売上.xlsx"
+        self.book = self.tmp / "営業" / "売上.xlsx"
+        self.book.parent.mkdir()
         self.book.write_bytes(b"x")
-        self.pdf = self.tmp / "売上_Sheet1.pdf"
+        self.pdf = self.book.parent / "売上_Sheet1.pdf"
         doc = fitz.open()
         doc.new_page(width=595, height=842)
         doc.save(self.pdf)
         self.state = copy.deepcopy(wf.STATE)
-        self.state.update(pdf_review={}, pdf_exports={}, batch_review={"cards": {}, "rows": {}, "ignored": []})
-        patcher = patch.object(wf, "STATE", self.state)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.state.update(pdf_review={}, pdf_exports={}, busy=False, job=None)
+        for target, name, value in ((wf, "STATE", self.state), (pdf_review, "_MAPS", {}), (pdf_review, "_QUEUE", [])):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         persist = patch.object(wf, "_persist_state")
         persist.start()
         self.addCleanup(persist.stop)
+        prepare = patch.object(pdf_review, "prepare")  # 不真的起后台线程去算
+        self.prepare = prepare.start()
+        self.addCleanup(prepare.stop)
 
-    def rect(self, rid, **extra):
-        return {"id": rid, "page": 0, "x0": 10, "y0": 10, "x1": 100, "y1": 60, **extra}
+    def ready(self):
+        pdf = str(self.pdf.resolve())
+        pdf_review._MAPS[pdf] = {"v": self.pdf.stat().st_mtime_ns, "state": "ready", "sheet": "Sheet1",
+                                 "rows": [{5: (100.0, 120.0)}], "cols": [{3: (200.0, 260.0)}]}
 
-    def test_list_guesses_owner_by_file_name(self):
+    def test_list_guesses_owner_and_queues_all_pdfs(self):
         listed = pdf_review.list_pdfs(str(self.tmp))
-        self.assertEqual(len(listed["pdfs"]), 1)
         entry = listed["pdfs"][0]
-        self.assertEqual((entry["wb_name"], entry["sheet"], entry["guessed"]), ("売上.xlsx", "Sheet1", True))
+        self.assertEqual((entry["wb_name"], entry["sheet"], entry["guessed"]), ("営業/売上.xlsx", "Sheet1", True))
         self.assertEqual(entry["pages"], [[595.0, 842.0]])
+        self.prepare.assert_called_once_with([str(self.pdf)])
+        self.assertEqual(self.state["pdf_review"], {"folder": str(self.tmp.resolve())})
 
     def test_export_record_wins_over_guess(self):
         self.state["pdf_exports"][str(self.pdf)] = {"wb_path": str(self.book), "sheet": "Sheet/1"}
         entry = pdf_review.list_pdfs(str(self.tmp))["pdfs"][0]
         self.assertEqual((entry["sheet"], entry["guessed"]), ("Sheet/1", False))
 
-    def test_delete_marked_rect_then_undo(self):
+    def test_map_not_ready_is_queued_first(self):
         pdf_review.list_pdfs(str(self.tmp))
-        pdf_review.save(str(self.pdf), [self.rect("aaaaaaaa"), self.rect("bbbbbbbb")])
-        rects = self.state["pdf_review"]["rects"]
-        self.assertEqual(rects["aaaaaaaa"]["sheet"], "Sheet1")
-        self.assertEqual(rects["aaaaaaaa"]["wb_path"], str(self.book))
-        # 第一个框已经标进 Excel
-        rects["aaaaaaaa"]["addr"] = "B2:C3"
-        batch._marks()["pdfaaaaaaaa"] = {"path": str(self.book), "sheet": "Sheet1", "addr": "B2:C3",
-                                         "tag": "CHE_MARK_pdfaaaaaaaa", "source": "pdf_review", "saved": True}
-        snap = pdf_review.save(str(self.pdf), [self.rect("bbbbbbbb")])
-        self.assertEqual(snap["drop"], 1)
-        self.assertEqual([r["id"] for r in snap["rects"][str(self.pdf.resolve())]], ["bbbbbbbb"])
-        # 撤销删除：框带着定位结果回来，不用再去掉标记
-        snap = pdf_review.save(str(self.pdf), [self.rect("bbbbbbbb"), self.rect("aaaaaaaa")])
-        self.assertEqual(snap["drop"], 0)
-        states = {r["id"]: (r["state"], r["addr"]) for r in snap["rects"][str(self.pdf.resolve())]}
-        self.assertEqual(states, {"aaaaaaaa": ("marked", "B2:C3"), "bbbbbbbb": ("pending", None)})
+        self.prepare.reset_mock()
+        self.assertEqual(pdf_review.open_at(str(self.pdf), 0, 210, 110), {"pending": True})
+        self.prepare.assert_called_once_with([str(self.pdf.resolve())], first=True)
+        self.assertEqual(pdf_review.map_for(str(self.pdf))["state"], "none")
 
-    def test_rejects_pdf_outside_folder_and_bad_rects(self):
+    def test_map_is_dropped_when_pdf_changes(self):
         pdf_review.list_pdfs(str(self.tmp))
-        with self.assertRaises(ValueError):
-            pdf_review.save(str(self.pdf), [self.rect("zz")])
-        with self.assertRaises(ValueError):
-            pdf_review.save(str(self.pdf), [self.rect("aaaaaaaa", page=3)])
+        self.ready()
+        self.assertEqual(pdf_review.map_for(str(self.pdf))["pages"], [{"rows": [[5, 100.0, 120.0]], "cols": [[3, 200.0, 260.0]]}])
+        pdf_review._MAPS[str(self.pdf.resolve())]["v"] -= 1  # PDF 重新导出过
+        self.assertNotEqual(pdf_review.map_for(str(self.pdf))["state"], "ready")
+
+    def test_open_current_only(self):
+        pdf_review.list_pdfs(str(self.tmp))
+        self.ready()
+        with patch.object(pdf_review, "open_workbook_in_excel", return_value="") as opened, \
+                patch.object(pdf_review.repair_compare, "open_comparison") as compare:
+            result = pdf_review.open_at(str(self.pdf), 0, 210, 110)
+            outside = pdf_review.open_at(str(self.pdf), 0, 500, 700)
+        self.assertEqual(result, {"sheet": "Sheet1", "cell": "C5", "backup": False, "note": ""})
+        opened.assert_any_call(self.book, "Sheet1", "C5")
+        self.assertEqual(outside["cell"], "")
+        self.assertIn("不在表格里", outside["note"])
+        compare.assert_not_called()
+
+    def test_open_with_backup_jumps_to_same_cell(self):
+        old = Path(tempfile.mkdtemp())
+        (old / "営業").mkdir()
+        backup = old / "営業" / "売上.xlsx"
+        backup.write_bytes(b"old")
+        pdf_review.list_pdfs(str(self.tmp))
+        self.ready()
+        with patch.object(pdf_review.repair_compare, "open_comparison", return_value={"opened": ["current", "backup"], "note": ""}) as compare, \
+                patch.object(pdf_review, "open_workbook_in_excel") as opened:
+            result = pdf_review.open_at(str(self.pdf), 0, 210, 110, str(old))
+        self.assertTrue(result["backup"])
+        target = compare.call_args[0][0]
+        self.assertEqual((target["current"], target["backup"], target["sheet"], target["old_sheet"], target["cell"]),
+                         (self.book.resolve(), backup.resolve(), "Sheet1", "Sheet1", "C5"))
+        opened.assert_not_called()
+
+    def test_backup_not_found_still_opens_current(self):
+        old = Path(tempfile.mkdtemp())
+        pdf_review.list_pdfs(str(self.tmp))
+        self.ready()
+        with patch.object(pdf_review, "open_workbook_in_excel", return_value="") as opened:
+            result = pdf_review.open_at(str(self.pdf), 0, 210, 110, str(old))
+            missing = pdf_review.open_at(str(self.pdf), 0, 210, 110, str(old / "nope"))
+        self.assertFalse(result["backup"])
+        self.assertIn("找不到这份文件", result["note"])
+        self.assertIn("不存在", missing["note"])
+        self.assertEqual(opened.call_count, 2)
+
+    def test_open_is_blocked_while_scan_still_needs_the_file(self):
+        pdf_review.list_pdfs(str(self.tmp))
+        self.ready()
+        self.state.update(busy=True, job={"kind": "batch_commit"})
+        with patch.object(pdf_review, "open_workbook_in_excel") as opened, self.assertRaises(ValueError):
+            pdf_review.open_at(str(self.pdf), 0, 210, 110)
+        opened.assert_not_called()
+
+    def test_rejects_pdf_outside_folder(self):
+        pdf_review.list_pdfs(str(self.tmp))
         other = Path(tempfile.mkdtemp()) / "x.pdf"
         other.write_bytes(self.pdf.read_bytes())
         with self.assertRaises(ValueError):
-            pdf_review.save(str(other), [])
-
-    def test_plan_groups_new_rects_and_drops_by_file(self):
-        pdf_review.list_pdfs(str(self.tmp))
-        pdf_review.save(str(self.pdf), [self.rect("aaaaaaaa")])
-        batch._marks()["pdfcccccccc"] = {"path": str(self.book), "tag": "CHE_MARK_pdfcccccccc", "source": "pdf_review"}
-        self.state["pdf_review"]["drop"] = ["pdfcccccccc", "pdfgone0000"]
-        with wf.STATE_LOCK:
-            plan = pdf_review._plan()
-        self.assertEqual(list(plan), [str(self.book)])
-        self.assertEqual([r["id"] for r in plan[str(self.book)]["add"]], ["aaaaaaaa"])
-        self.assertEqual(plan[str(self.book)]["drop"], ["pdfcccccccc"])
-
-    def test_open_next_batch_of_files_with_rects(self):
-        # 7 份 Excel：第 1 份没画框，其余 6 份画了框；第 2 份的框已经标进 Excel
-        for i in range(1, 8):
-            (self.tmp / f"b{i}.xlsx").write_bytes(b"x")
-            doc = fitz.open()
-            doc.new_page(width=595, height=842)
-            doc.save(self.tmp / f"b{i}_S.pdf")
-        pdf_review.list_pdfs(str(self.tmp))
-        for i in range(2, 8):
-            pdf_review.save(str(self.tmp / f"b{i}_S.pdf"), [self.rect(f"{i}0000000", y0=30), self.rect(f"{i}1111111")])
-        rects = self.state["pdf_review"]["rects"]
-        rects["21111111"]["addr"] = "C5:D6,F2"
-        batch._marks()["pdf21111111"] = {"path": str(self.tmp / "b2.xlsx"), "tag": "CHE_MARK_pdf21111111", "source": "pdf_review"}
-        calls = []
-
-        def fake_open(path, sheet, cell):
-            calls.append((path.name, sheet, cell))
-            if path.name == "b4.xlsx":
-                raise ValueError("文件被占用")
-            return ""
-
-        with patch.object(pdf_review, "open_workbook_in_excel", fake_open):
-            plan = pdf_review.open_plan()
-            self.assertEqual((plan["total"], plan["unopened"], len(plan["files"]), plan["remaining"]), (6, 6, 5, 1))
-            first = pdf_review.open_next()
-            # 标进 Excel 的框（按上下顺序排第一）跳到第一格，没写的只切到表
-            self.assertEqual(calls[0], ("b2.xlsx", "S", "C5"))
-            self.assertEqual(calls[1], ("b3.xlsx", "S", ""))
-            self.assertEqual(first["opened"], ["b2.xlsx", "b3.xlsx", "b5.xlsx", "b6.xlsx"])
-            self.assertEqual(first["errors"], [{"name": "b4.xlsx", "reason": "文件被占用"}])
-            self.assertEqual(first["remaining"], 2)
-            # 打不开的下一批再试，打开过的不重复
-            calls.clear()
-            pdf_review.open_next()
-            self.assertEqual([c[0] for c in calls], ["b4.xlsx", "b7.xlsx"])
-            self.assertEqual(pdf_review.open_plan()["unopened"], 1)  # b4 还是打不开，不记成打开过
-            self.assertEqual(len(pdf_review.rects_snapshot()["opened"]), 5)
-            self.assertEqual(pdf_review.reset_opened(), 5)
-            self.assertEqual(pdf_review.open_plan()["unopened"], 6)
-
-    def test_open_waits_while_a_background_job_runs(self):
-        pdf_review.list_pdfs(str(self.tmp))
-        pdf_review.save(str(self.pdf), [self.rect("aaaaaaaa")])
-        self.state.update(busy=True, job={"kind": "batch_commit"})
-        plan = pdf_review.open_plan()
-        self.assertEqual(plan["files"], [])
-        self.assertEqual([w["name"] for w in plan["waiting"]], ["売上.xlsx"])
+            pdf_review.open_at(str(other), 0, 1, 1)
+        with self.assertRaises(ValueError):
+            pdf_review.open_at(str(self.pdf), "0", 1, 1)
 
 
-class WorkbenchKeepsDrawnMarksTests(unittest.TestCase):
-    def test_wanted_marks_keep_pdf_review_marks(self):
+class WorkQueueTests(unittest.TestCase):
+    def test_prepare_puts_clicked_pdf_first_and_skips_fresh(self):
+        tmp = Path(tempfile.mkdtemp())
+        pdfs = []
+        for name in ("a.pdf", "b.pdf", "c.pdf"):
+            (tmp / name).write_bytes(b"%PDF")
+            pdfs.append(str(tmp / name))
+        maps = {pdfs[2]: {"v": (tmp / "c.pdf").stat().st_mtime_ns, "state": "ready"}}
+        with patch.object(pdf_review, "_MAPS", maps), patch.object(pdf_review, "_QUEUE", []) as queue, \
+                patch.object(pdf_review, "_WORKER", object()):  # 当作已有线程在跑，不真的起线程
+            pdf_review.prepare(pdfs)
+            self.assertEqual(queue, pdfs[:2])
+            pdf_review.prepare([pdfs[1]], first=True)
+            self.assertEqual(queue, [pdfs[1], pdfs[0]])
+            self.assertEqual({p: s["state"] for p, s in pdf_review.maps_status().items()},
+                             {pdfs[0]: "pending", pdfs[1]: "pending", pdfs[2]: "ready"})
+
+    def test_forget_pdfs_drops_maps(self):
+        tmp = Path(tempfile.mkdtemp())
+        pdf = str(tmp / "a.pdf")
         state = copy.deepcopy(wf.STATE)
-        state["batch_review"] = {"cards": {}, "rows": {}, "ignored": [], "highlights": {
-            "pdfaaaaaaaa": {"path": "a.xlsx", "source": "pdf_review"},
-            "card1": {"path": "a.xlsx"},
-        }}
-        with patch.object(wf, "STATE", state):
-            self.assertEqual(batch._wanted_marks("a.xlsx"), {"pdfaaaaaaaa"})
-            # 标识里只能有字母数字：PDF 标记的 id 整个都在标识里
-            self.assertEqual(batch.MARK_TAG.search('=N("' + batch._mark_name("pdfaaaaaaaa") + '")=0').group(0),
-                             "CHE_MARK_pdfaaaaaaaa")
-
-
-if __name__ == "__main__":
-    unittest.main()
+        state["pdf_exports"] = {pdf: {"wb_path": "x", "sheet": "S"}}
+        with patch.object(wf, "STATE", state), patch.object(wf, "_persist_state"), \
+                patch.object(pdf_review, "_MAPS", {pdf: {"v": 1}}) as maps, patch.object(pdf_review, "_QUEUE", [pdf]) as queue:
+            pdf_review.forget_pdfs([Path(pdf)])
+            self.assertEqual((maps, queue, state["pdf_exports"]), ({}, [], {}))
 
 
 def cells_of(address: str) -> list[tuple[int, int]]:
@@ -322,16 +312,22 @@ class FakeProbeBook:
         self.Worksheets = [sheet]
         self.closed = False
 
-    def Sheets(self, name):
-        if name != self.sheet.Name:
-            raise KeyError(name)
-        return self.sheet
+    @property
+    def Sheets(self):
+        sheet = self.sheet
+
+        class Sheets(list):  # 像 COM 一样能按名字取，也能遍历
+            def __call__(self, name):
+                if name != sheet.Name:
+                    raise KeyError(name)
+                return sheet
+        return Sheets([sheet])
 
     def Close(self, SaveChanges=False):
         self.closed = True
 
 
-class LocateInExcelTests(unittest.TestCase):
+class ProbeInExcelTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.sheet = FakeProbeSheet()
@@ -345,89 +341,34 @@ class LocateInExcelTests(unittest.TestCase):
         doc.new_page(width=595, height=842)
         doc.save(self.pdf)
 
-    def locate(self, rects):
-        with patch.object(pdf_review, "open_workbook_checked", return_value=self.book), \
-                patch.object(pdf_review.print_layout, "bind"), \
-                patch.object(wf, "_export_sheet_pdf", side_effect=lambda sheet, out, *a: sheet.export(out)):
-            pdf_review._locate(object(), "売上.xlsx", rects, lambda: None)
+    def probe(self):
+        with patch.object(wf, "_export_sheet_pdf", side_effect=lambda sheet, out, *a: sheet.export(out)):
+            return pdf_review._probe_pdf(self.book, str(self.pdf), "Sheet1", lambda: None)
 
-    def rect(self, rid, page, x0, y0, x1, y1):
-        return {"id": rid, "pdf": str(self.pdf), "page": page, "sheet": "Sheet1",
-                "x0": x0, "y0": y0, "x1": x1, "y1": y1, "addr": None, "error": None}
-
-    def test_rects_map_to_cells_across_pages_hidden_rows_and_merged_cells(self):
-        rects = [
-            self.rect("a1", 0, 105, 72, 215, 108),   # 第 1 页 B2:C3
-            self.rect("a2", 1, 45, 52, 95, 68),      # 第 2 页第 1 行 = 第 7 行（第 6 行隐藏）A7
-            self.rect("a3", 1, 165, 72, 215, 88),    # 压到合并格 B8:C9 的右上角 → 扩到整个合并区域
-            self.rect("a4", 0, 500, 700, 580, 800),  # 页边空白
-        ]
-        self.locate(rects)
-        self.assertTrue(self.book.closed)
-        self.assertEqual(self.sheet.exports, 2)
-        result = {r["id"]: (r["addr"], r["error"]) for r in rects}
-        self.assertEqual(result["a1"], ("B2:C3", None))
-        self.assertEqual(result["a2"], ("A7", None))
-        self.assertEqual(result["a3"], ("B8:C9", None))
-        self.assertIsNone(result["a4"][0])
-        self.assertIn("没有表格的格子", result["a4"][1])
+    def test_points_map_to_cells_across_pages_and_hidden_rows(self):
+        found = self.probe()
+        self.assertEqual((found["state"], found["sheet"], self.sheet.exports), ("ready", "Sheet1", 2))
+        at = lambda page, x, y: pdf_review.cell_at(found["rows"][page], found["cols"][page], x, y)
+        self.assertEqual(at(0, 110, 75), "B2")     # 第 1 页第 2 行第 2 列
+        self.assertEqual(at(1, 60, 60), "A7")      # 第 2 页第 1 行 = 第 7 行（第 6 行隐藏）
+        self.assertEqual(at(1, 230, 95), "D9")
+        self.assertIsNone(at(0, 500, 700))         # 页边空白
 
     def test_page_count_mismatch_is_reported(self):
         doc = fitz.open()
         doc.new_page(width=595, height=842)
         doc.save(self.pdf)
-        rects = [self.rect("a1", 0, 105, 72, 215, 108)]
-        self.locate(rects)
-        self.assertIn("对不上", rects[0]["error"])
-        self.assertIsNone(rects[0]["addr"])
+        found = self.probe()
+        self.assertEqual(found["state"], "error")
+        self.assertIn("对不上", found["error"])
 
-
-class WriteTests(unittest.TestCase):
-    def setUp(self):
-        self.state = copy.deepcopy(wf.STATE)
-        self.state.update(pdf_review={}, batch_review={"cards": {}, "rows": {}, "ignored": [], "highlights": {
-            "pdfold00000": {"path": "a.xlsx", "sheet": "Sheet1", "addr": "A1", "tag": "CHE_MARK_pdfold00000",
-                            "source": "pdf_review", "saved": True},
-            "card1": {"path": "a.xlsx", "sheet": "Sheet1", "addr": "D4", "tag": "CHE_MARK_card1", "saved": True},
-        }})
-        for target, value in ((wf, "STATE"), (wf, "_persist_state"), (wf, "log_msg")):
-            p = patch.object(target, value, self.state) if value == "STATE" else patch.object(target, value)
-            p.start()
-            self.addCleanup(p.stop)
-
-    def test_adds_rules_drops_removed_marks_keeps_workbench_marks(self):
-        sheet = type("S", (), {"Name": "Sheet1", "Range": lambda _s, a: ("range", a)})()
-        book = type("B", (), {"ReadOnly": False, "Worksheets": [sheet], "Save": lambda _s: None,
-                              "Close": lambda _s, SaveChanges=False: None,
-                              "Sheets": lambda _s, n: sheet})()
-        dropped_keep = {}
-
-        def drop_rules(_book, keep, tick=None, holders=None):
-            dropped_keep["keep"] = set(keep)
-            return set(keep), {"CHE_MARK_pdfold00000": 1}, {}
-
-        added = []
-        with patch.object(pdf_review, "open_workbook_checked", return_value=book), \
-                patch.object(batch, "_drop_rules", side_effect=drop_rules), \
-                patch.object(batch, "_ungroup_sheets", return_value=False), \
-                patch.object(batch, "_add_rule", side_effect=lambda area, tag, mark: added.append((area, tag))), \
-                patch.object(batch, "_sync_tabs", return_value={"marked": 1, "restored": 0, "failed": 0}), \
-                patch.object(batch, "_followed_own_save"), patch.object(pdf_review, "normalize_workbook_view"):
-            rects = [{"id": "abcdef12", "sheet": "Sheet1", "addr": "B2:C3", "error": None},
-                     {"id": "abcdef13", "sheet": "Sheet1", "addr": None, "error": "框里没有表格的格子"}]
-            result = pdf_review._write(object(), "a.xlsx", rects, ["pdfold00000"],
-                                       {"fill": "#C0007A", "font": "#FFFFFF"}, lambda: None)
-        self.assertEqual(dropped_keep["keep"], {"CHE_MARK_card1"})  # 工作台的标记留着
-        self.assertEqual(result, {"added": ["abcdef12"], "dropped": ["pdfold00000"]})
-        self.assertEqual(added, [(("range", "B2:C3"), "CHE_MARK_pdfabcdef12")])
-        mark = batch._marks()["pdfabcdef12"]
-        self.assertEqual((mark["addr"], mark["source"], mark["saved"]), ("B2:C3", "pdf_review", True))
-        pdf_review._finish_file("a.xlsx", rects, result)
-        self.assertNotIn("pdfold00000", batch._marks())
+    def test_missing_sheet(self):
+        found = pdf_review._probe_pdf(self.book, str(self.pdf), "別の表", lambda: None)
+        self.assertIn("找不到工作表", found["error"])
 
 
 class ClearOldPdfTests(unittest.TestCase):
-    def test_deletes_only_this_workbooks_old_pdfs_and_their_boxes(self):
+    def test_deletes_only_this_workbooks_old_pdfs(self):
         tmp = Path(tempfile.mkdtemp())
         book = tmp / "★売上.xlsx"
         book.write_bytes(b"x")
@@ -436,13 +377,13 @@ class ClearOldPdfTests(unittest.TestCase):
         for path in old + keep:
             path.write_bytes(b"%PDF")
         state = copy.deepcopy(wf.STATE)
-        state.update(pdf_exports={str(old[0]): {"wb_path": str(book), "sheet": "Sheet1"}},
-                     pdf_review={"rects": {"aaaaaaaa": {"id": "aaaaaaaa", "pdf": str(old[0])},
-                                           "bbbbbbbb": {"id": "bbbbbbbb", "pdf": str(keep[0])}},
-                                 "drop": [], "trash": {}})
+        state.update(pdf_exports={str(old[0]): {"wb_path": str(book), "sheet": "Sheet1"}})
         with patch.object(wf, "STATE", state), patch.object(wf, "_persist_state"), patch.object(wf, "log_msg"):
             wf._clear_old_pdfs([book])
         self.assertTrue(all(not p.exists() for p in old))
         self.assertTrue(all(p.exists() for p in keep))
         self.assertEqual(state["pdf_exports"], {})
-        self.assertEqual(list(state["pdf_review"]["rects"]), ["bbbbbbbb"])
+
+
+if __name__ == "__main__":
+    unittest.main()
