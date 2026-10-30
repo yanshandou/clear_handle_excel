@@ -96,7 +96,7 @@ function renderDocs() {
         + `${doc.guessed ? '<span class="pr-doc-note" title="导出记录里没有这份 PDF，按「Excel 文件名_表名.pdf」找到的">按文件名对应</span>' : ''}</span>`
       : '<span class="pr-doc-warn">⚠ 找不到对应的 Excel，可以标记但不能写进 Excel</span>';
     const pages = doc.pages.map(([w, h], p) => `
-      <div class="pr-page" data-doc="${d}" data-page="${p}" style="aspect-ratio:${w} / ${h}">
+      <div class="pr-page is-loading" data-doc="${d}" data-page="${p}" style="aspect-ratio:${w} / ${h}">
         <img class="pr-img" loading="lazy" decoding="async" draggable="false" alt="第 ${p + 1} 页"
           src="/api/pdf_review/page?pdf=${encodeURIComponent(doc.pdf)}&p=${p}&v=${doc.v}">
         <div class="pr-layer"></div>
@@ -236,7 +236,7 @@ function pointIn(page, e) {
 
 function onPointerDown(e) {
   const layer = e.target.closest('.pr-layer');
-  if (!layer || e.button !== 0 || e.target.closest('.pr-badge')) return;
+  if (!layer || e.button !== 0 || e.target.closest('.pr-badge') || layer.closest('.is-loading, .is-failed')) return;
   const page = layer.parentElement;
   const start = pointIn(page, e);
   const ghost = document.createElement('div');
@@ -335,6 +335,16 @@ function startPolling() {
 
 /* ---------- 启动 ---------- */
 
+// 页面图片加载完才能画框：没加载出来时画在空白上，看不出框住了什么。load / error 不冒泡，在捕获阶段听
+document.addEventListener('load', e => {
+  if (e.target.classList && e.target.classList.contains('pr-img')) e.target.parentElement.classList.remove('is-loading');
+}, true);
+document.addEventListener('error', e => {
+  if (e.target.classList && e.target.classList.contains('pr-img')) {
+    e.target.parentElement.classList.remove('is-loading');
+    e.target.parentElement.classList.add('is-failed');
+  }
+}, true);
 document.addEventListener('pointerdown', onPointerDown);
 document.addEventListener('pointermove', onPointerMove);
 document.addEventListener('pointerup', onPointerUp);

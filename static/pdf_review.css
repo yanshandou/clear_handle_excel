@@ -140,6 +140,39 @@
   touch-action: none;
 }
 
+/* 图片还没加载出来 / 加载失败：不能画框，中间显示提示（浮层，不占位置） */
+.pr-page.is-loading .pr-layer,
+.pr-page.is-failed .pr-layer {
+  pointer-events: none;
+}
+
+.pr-page.is-loading .pr-img,
+.pr-page.is-failed .pr-img {
+  visibility: hidden;
+}
+
+.pr-page.is-loading::after,
+.pr-page.is-failed::after {
+  content: "加载中…";
+  position: absolute;
+  left: 50%;
+  top: min(50%, 160px); /* 页面很高时也放在一进来就看得到的地方 */
+  transform: translate(-50%, -50%);
+  padding: 8px 18px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink-3);
+  background: var(--purple-soft);
+  border-radius: 12px;
+  pointer-events: none;
+}
+
+.pr-page.is-failed::after {
+  content: "这一页没加载出来，刷新页面再试";
+  color: #9a1030;
+  background: #ffe9ee;
+}
+
 .pr-rect {
   position: absolute;
   box-sizing: border-box;
