@@ -4,6 +4,8 @@
 // 「写进 Excel」由后台找出框住的单元格，在原 Excel 里标色。
 
 const FOLDER_KEY = 'clear_handle_excel.lastFolder';
+const VIEW_KEY = 'clear_handle_excel.pdfReviewView';
+const VIEWS = ['large', 'medium', 'small'];
 const MIN_DRAG_PX = 6; // 拖得比这还小当成点了一下，不算一个框
 const STATE_LABEL = { marked: '已标进 Excel', pending: '待写入', error: '没标成' };
 
@@ -19,6 +21,8 @@ const saving = {};      // pdf -> 正在进行的保存（同一份 PDF 按顺�
 let pageEls = [];       // 所有页面元素，从上到下
 let whereDoc = -1;      // 底部条上现在显示的是哪一份（换了才重建链接）
 let whereTick = 0;
+let opened = new Set(); // 这一轮已经用「打开下一批」打开过的 Excel 路径
+let opening = false;
 
 const $ = id => document.getElementById(id);
 
@@ -83,6 +87,7 @@ function takeSnapshot(data) {
   for (const doc of pdfs) rects[doc.pdf] = (data.rects[doc.pdf] || []).slice();
   dropCount = data.drop || 0;
   job = data.job || { running: false };
+  opened = new Set(data.opened || []);
 }
 
 function renderDocs() {
@@ -100,7 +105,7 @@ function renderDocs() {
         + `${doc.guessed ? '<span class="pr-doc-note" title="导出记录里没有这份 PDF，按「Excel 文件名_表名.pdf」找到的">按文件名对应</span>' : ''}</span>`
       : '<span class="pr-doc-warn">⚠ 找不到对应的 Excel，可以标记但不能写进 Excel</span>';
     const pages = doc.pages.map(([w, h], p) => `
-      <div class="pr-page is-loading" data-doc="${d}" data-page="${p}" style="aspect-ratio:${w} / ${h}">
+      <div class="pr-page is-loading" data-doc="${d}" data-page="${p}" style="aspect-ratio:${w} / ${h};--ar:${w / h}">
         <img class="pr-img" loading="lazy" decoding="async" draggable="false" alt="第 ${p + 1} 页"
           src="/api/pdf_review/page?pdf=${encodeURIComponent(doc.pdf)}&p=${p}&v=${doc.v}">
         <div class="pr-layer"></div>
@@ -113,7 +118,7 @@ function renderDocs() {
         <span class="pr-doc-pages">${doc.pages.length} 页</span>${excel}
         <span class="pr-doc-count" data-count="${d}"></span>
       </header>
-      ${doc.error ? `<p class="pr-doc-warn">${escapeHtml(doc.error)}</p>` : pages}
+      ${doc.error ? `<p class="pr-doc-warn">${escapeHtml(doc.error)}</p>` : `<div class="pr-pages">${pages}</div>`}
     </article>`;
   }).join('');
   pdfs.forEach((_, d) => renderRects(d));
@@ -134,7 +139,7 @@ function renderTrack() {
     before += doc.error ? 0 : doc.pages.length;
     return total ? `<span class="pr-tick" style="left:${before / total * 100}%"></span>` : '';
   }).join('');
-  $('prTrack').innerHTML = `<div id="prFill" class="pr-fill"></div>${ticks}`;
+  $('prTrack').innerHTML = `<div id="prFill" class="pr-fill"></div>${ticks}<div id="prDots"></div>`;
   whereDoc = -1;
   updateWhere();
 }
@@ -142,7 +147,7 @@ function renderTrack() {
 // 读线所在的页（序号）和读线在这一页里的位置（0~1）；页面从上到下排，二分查找
 function readingPosition() {
   // 滚到页面最底下时读线到不了最后一页的末尾，直接算看完了
-  if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) {
+  if (atBottom()) {
     const last = pageEls[pageEls.length - 1].getBoundingClientRect();
     if (last.top < window.innerHeight) return { index: pageEls.length - 1, within: 1 };
   }
@@ -163,6 +168,7 @@ function updateWhere() {
     $('prWhereText').innerHTML = '<span class="pr-where-pos">没有可看的页面</span>';
     $('prFill').style.width = '0';
     whereDoc = -1;
+    renderMarkNav();
     return;
   }
   const { index, within } = readingPosition();
@@ -180,6 +186,103 @@ function updateWhere() {
     $('prWhereText').innerHTML = `<span class="pr-where-pos"></span>${excel}`;
   }
   $('prWhereText').querySelector('.pr-where-pos').textContent = pos;
+  renderMarkNav();
+}
+
+/* ---------- 大图 / 中图 / 小图 ---------- */
+
+// 换大小后停在原来看的那一页的同一位置
+function setView(view, keep = true) {
+  if (!VIEWS.includes(view)) view = 'large';
+  const at = keep && pageEls.length ? readingPosition() : null;
+  const box = $('prDocs');
+  VIEWS.forEach(v => box.classList.toggle(`view-${v}`, v === view));
+  document.querySelectorAll('#prView [data-view]').forEach(b => {
+    b.classList.toggle('is-active', b.dataset.view === view);
+    b.setAttribute('aria-pressed', b.dataset.view === view);
+  });
+  try { localStorage.setItem(VIEW_KEY, view); } catch (_) {}
+  if (at) {
+    const page = pageEls[at.index].getBoundingClientRect();
+    window.scrollBy({ top: page.top + page.height * at.within - window.innerHeight * READ_LINE });
+  }
+  scheduleWhere();
+}
+
+/* ---------- 在标记之间跳转 ---------- */
+
+// 所有框按从上到下排：第几页（全部 PDF 连起来算）+ 页内位置
+function markList() {
+  const list = [];
+  let before = 0;
+  pdfs.forEach((doc, d) => {
+    if (!doc.error) {
+      for (const rect of rects[doc.pdf] || []) {
+        const [, h] = doc.pages[rect.page] || [0, 1];
+        list.push({ d, rect, at: before + rect.page + rect.y0 / h, x: rect.x0 });
+      }
+      before += doc.pages.length;
+    }
+  });
+  return list.sort((a, b) => a.at - b.at || a.x - b.x);
+}
+
+// 框的上边在页面上的位置（相对窗口顶）
+function markTop(mark) {
+  const el = document.querySelector(`.pr-page[data-doc="${mark.d}"][data-page="${mark.rect.page}"]`);
+  if (!el) return null;
+  const box = el.getBoundingClientRect();
+  const [, h] = pdfs[mark.d].pages[mark.rect.page];
+  return box.top + box.height * mark.rect.y0 / h;
+}
+
+const NAV_SLACK = 4; // 刚跳到的框就停在读线上，差几像素也算「当前这个」
+
+function atBottom() {
+  return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+}
+
+// 读线上方（含读线上）有几个框：就是「标记 k / N」的 k。滚到最底下时，窗口里看得到的都算看过
+function marksPassed(tops) {
+  const line = atBottom() ? window.innerHeight : window.innerHeight * READ_LINE + NAV_SLACK;
+  let k = 0;
+  while (k < tops.length && tops[k] !== null && tops[k] <= line) k += 1;
+  return k;
+}
+
+// 上一个：读线上方最近的一个框
+function previousMark(tops) {
+  const line = window.innerHeight * READ_LINE - NAV_SLACK;
+  let i = -1;
+  tops.forEach((top, j) => { if (top !== null && top < line) i = j; });
+  return i;
+}
+
+function renderMarkNav() {
+  const list = markList();
+  const total = pageEls.length || 1;
+  const dots = $('prDots');
+  if (dots) dots.innerHTML = list.map(m => `<span class="pr-dot" style="left:${m.at / total * 100}%"></span>`).join('');
+  const tops = list.map(markTop);
+  const k = marksPassed(tops);
+  $('prNavPos').textContent = `标记 ${k} / ${list.length}`;
+  $('prPrev').disabled = previousMark(tops) < 0;
+  $('prNext').disabled = k >= list.length;
+}
+
+function jumpMark(step) {
+  const list = markList();
+  const tops = list.map(markTop);
+  const i = step > 0 ? marksPassed(tops) : previousMark(tops);
+  if (i < 0 || i >= list.length || tops[i] === null) return;
+  const mark = list[i];
+  window.scrollBy({ top: tops[i] - window.innerHeight * READ_LINE, behavior: 'smooth' });
+  const el = document.querySelector(`.pr-page[data-doc="${mark.d}"] .pr-rect[data-id="${mark.rect.id}"]`);
+  if (el) {
+    el.classList.remove('is-flash');
+    void el.offsetWidth; // 重新播放闪烁
+    el.classList.add('is-flash');
+  }
 }
 
 function scheduleWhere() {
@@ -227,6 +330,7 @@ function renderRects(d) {
 }
 
 function updateStatus() {
+  scheduleWhere(); // 框增删后「标记 k / N」和进度条上的点跟着变
   const all = Object.values(rects).flat();
   const pending = all.filter(r => r.state !== 'marked').length;
   const marked = all.length - pending;
@@ -239,6 +343,11 @@ function updateStatus() {
   if (job.running) parts.push(`正在写进 Excel：${job.done || 0} / ${job.total || 0} 个文件${job.current ? `（${escapeHtml(job.current)}）` : ''}`);
   $('prSummary').innerHTML = parts.join(' · ');
   $('prApply').disabled = job.running || (!pending && !dropCount);
+  const files = markedFiles();
+  const unopened = files.filter(path => !opened.has(path)).length;
+  $('prOpen').textContent = opening ? '⏳ 正在打开…' : `📂 打开下一批（未开 ${unopened} / 共 ${files.length} 个）`;
+  $('prOpen').disabled = opening || job.running || !unopened;
+  $('prOpenReset').disabled = opening || job.running || !files.some(path => opened.has(path));
   $('prApply').textContent = job.running ? '⏳ 正在写进 Excel…' : '🖍️ 写进 Excel';
 }
 
@@ -273,6 +382,7 @@ function mergeStates(data) {
   }
   dropCount = data.drop || 0;
   job = data.job || job;
+  if (data.opened) opened = new Set(data.opened);
 }
 
 function addRect(pdf, rect, record = true) {
@@ -411,6 +521,59 @@ function startPolling() {
   }, 1000);
 }
 
+/* ---------- 批量打开有标记的 Excel ---------- */
+
+// 网页上画了框的 Excel（写没写进 Excel 都算），按 PDF 顺序，每份只算一次
+function markedFiles() {
+  return [...new Set(pdfs.filter(doc => doc.wb_path && (rects[doc.pdf] || []).length).map(doc => doc.wb_path))];
+}
+
+async function openNext() {
+  if (opening) return;
+  opening = true;
+  updateStatus();
+  try {
+    const plan = await api('/api/pdf_review/open_plan', {});
+    const waiting = plan.waiting.length
+      ? `\n\n还要等后台处理的 ${plan.waiting.length} 个，暂不打开：\n${plan.waiting.map(w => `· ${w.name}：${w.reason}`).join('\n')}` : '';
+    if (!plan.files.length) {
+      await appAlert(plan.exhausted ? '画了框的 Excel 这一轮都打开过了，不会自动重复打开。需要重开时，点「重置打开记录」。'
+        : `共 ${plan.total} 个画了框的 Excel，目前没有可以打开的文件。${waiting}`, { title: '打开下一批' });
+      return;
+    }
+    const message = `网页上画了框的 Excel 共 ${plan.total} 个，这一轮还没打开的 ${plan.unopened} 个。\n`
+      + `本次最多打开 5 个，实际打开 ${plan.files.length} 个；打开后还剩 ${plan.remaining} 个。\n`
+      + '已经写进 Excel 的跳到第一个框的单元格，还没写的只切到对应的工作表。'
+      + `\n\n本次文件：\n${plan.files.map(f => `· ${f.name}`).join('\n')}${waiting}`;
+    if (!(await appConfirm(message, { title: '确认打开文件', okText: `打开 ${plan.files.length} 个文件`, tone: 'info' }))) return;
+    const result = await api('/api/pdf_review/open', {});
+    const fresh = result.opened.length ? await api('/api/pdf_review/rects').catch(() => null) : null;
+    if (fresh) mergeStates(fresh); // 记下这批已打开，按钮上的「未开」跟着变
+    if (result.errors.length || result.waiting.length) {
+      const list = items => items.map(item => `· ${item.name}：${item.reason}`).join('\n');
+      const parts = [result.opened.length ? `已打开 ${result.opened.length} 个文件。` : '这次没有打开文件。'];
+      if (result.waiting.length) parts.push(`还要等后台处理的 ${result.waiting.length} 个：\n${list(result.waiting)}`);
+      if (result.errors.length) parts.push(`打不开的 ${result.errors.length} 个：\n${list(result.errors)}`);
+      await appAlert(parts.join('\n\n'), { title: '打开下一批', tone: 'warn' });
+    }
+  } catch (e) {
+    appAlert(e.message, { tone: 'error' });
+  } finally {
+    opening = false;
+    updateStatus();
+  }
+}
+
+async function resetOpened() {
+  if (!(await appConfirm('清掉这个文件夹的打开记录，下次「打开下一批」从头开始。不会关闭 Excel，标记也不动。', { title: '重置打开记录', okText: '重置' }))) return;
+  try {
+    mergeStates(await api('/api/pdf_review/open_reset', {}));
+  } catch (e) {
+    appAlert(e.message, { tone: 'error' });
+  }
+  updateStatus();
+}
+
 /* ---------- 启动 ---------- */
 
 // 页面图片加载完才能画框：没加载出来时画在空白上，看不出框住了什么。load / error 不冒泡，在捕获阶段听
@@ -445,12 +608,25 @@ $('prLoad').addEventListener('click', load);
 $('prFolder').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
 $('prApply').addEventListener('click', applyToExcel);
 $('prTrack').addEventListener('click', jumpTo);
+$('prOpen').addEventListener('click', openNext);
+$('prPrev').addEventListener('click', () => jumpMark(-1));
+$('prView').addEventListener('click', e => {
+  const button = e.target.closest('[data-view]');
+  if (button) setView(button.dataset.view);
+});
+$('prNext').addEventListener('click', () => jumpMark(1));
+$('prOpenReset').addEventListener('click', resetOpened);
 window.addEventListener('scroll', scheduleWhere, { passive: true });
 window.addEventListener('resize', scheduleWhere);
 {
   const color = highlight();
   document.documentElement.style.setProperty('--pr-mark', color.fill);
   Object.assign($('prSample').style, { background: color.fill, color: color.font });
+}
+{
+  let view = 'large';
+  try { view = localStorage.getItem(VIEW_KEY) || view; } catch (_) {}
+  setView(view, false);
 }
 try { $('prFolder').value = localStorage.getItem(FOLDER_KEY) || ''; } catch (_) {}
 if ($('prFolder').value) load().then(() => { if (job.running) startPolling(); });
