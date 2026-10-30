@@ -180,6 +180,8 @@ function renderDialog() {
   if (busyOther && phase === 'form' && !starting) {
     hint.textContent = `后台正在执行「${overview.progress.task_name}」，完成后才能开始`;
   }
+  // 导出完成后可以直接去人工复检这些 PDF
+  document.getElementById('taskReviewBtn').classList.toggle('hidden', activeKind !== 'export_pdf' || phase !== 'done');
   if (phase === 'running' || phase === 'done') renderRunBox();
 }
 
@@ -213,7 +215,6 @@ function renderRunBox() {
     <b>${failed ? '⚠️ 部分文件未处理成功' : '✅ 已完成'}</b>
     <span>${escapeHtml(failed ? '失败原因见下方日志，可点击「继续上次任务」只重试未完成的文件。' : p.current_step)}</span>
     ${isExport && outDir ? `<span>PDF 输出位置：与各 Excel 文件在同一目录下（<code>${escapeHtml(outDir)}</code>）</span>` : ''}
-    ${isExport && !failed ? '<a href="/pdf-review">🖍️ 去人工复检这些 PDF ↗</a>' : ''}
     <a href="/records">查看执行记录 ↗</a>
   `;
   // 轮询时内容不变就不重建，避免打断用户选中复制路径

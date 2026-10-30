@@ -2044,17 +2044,6 @@ body {
 .feature-icon-colors     { background-position: 33.333% 100%; }
 .feature-icon-hidden     { background-position: 66.667% 100%; }
 .feature-icon-bl-links   { background-position: 100% 100%; }
-/* PDF 人工复检没有自己的格子：用导出 PDF 的图，右下角压一支画笔 */
-.feature-icon-pdf-review { position: relative; }
-.feature-icon-pdf-review::after {
-  content: "🖍️";
-  position: absolute;
-  right: 6px;
-  bottom: 8px;
-  font-size: 52px;
-  color: initial;
-  line-height: 1;
-}
 
 /* 白色铭牌：分类 + 名称 + 说明 + 状态 */
 .feature-text {

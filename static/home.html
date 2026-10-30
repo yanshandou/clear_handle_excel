@@ -107,14 +107,6 @@
         </span>
         <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-pdf">📄</span></span>
       </button>
-      <a href="/pdf-review" class="feature-card feature-rose">
-        <span class="feature-text">
-          <span class="feature-title">PDF 人工复检</span>
-          <span class="feature-sub">在导出的 PDF 上圈出问题 · Excel 对应格子标色</span>
-          <span class="feature-meta">拖动画框，双击删除，Ctrl+Z 撤销</span>
-        </span>
-        <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-pdf feature-icon-pdf-review">🖍️</span></span>
-      </a>
       <a href="/repair-links" class="feature-card feature-sky">
         <span class="feature-text"><span class="feature-title">修复引用错误</span>
           <span class="feature-sub">扫描 #REF! · 对照原始备份恢复值</span>
@@ -194,6 +186,7 @@
     <div class="task-dialog-foot">
       <span id="taskHint" class="task-hint"></span>
       <button type="button" class="btn btn-outline" onclick="closeTask()">关闭</button>
+      <a href="/pdf-review" id="taskReviewBtn" class="btn btn-success hidden" title="在导出的 PDF 上圈出问题，原 Excel 对应单元格标色">🖍️ 人工复检</a>
       <button type="button" class="btn btn-primary" id="taskPrimaryBtn" onclick="onPrimaryAction()">开始</button>
     </div>
   </dialog>
