@@ -1,46 +1,31 @@
 'use strict';
-// PDF 人工复检：导出的 PDF 每页铺满页面宽度，按住拖动画圆角框圈出问题，双击框删除，Ctrl+Z 撤销。
-// 框的位置按 PDF 的点（pt）记，页面缩放后照样对得上；每改一次就把这份 PDF 的全部框存到后台。
-// 「写进 Excel」由后台找出框住的单元格，在原 Excel 里标色。
+// PDF 人工复检：导出的 PDF 整页显示，看到问题点一下，就用 Excel 打开并选中那一格；
+// 填了原始备份文件夹时，备份也一起打开（只读）、跳到同一格，左右对照着改。
+// 每份 PDF 的行列位置由后台算（只算一次），点的格子也由后台按它算。
 
 const FOLDER_KEY = 'clear_handle_excel.lastFolder';
+const OLD_FOLDER_KEY = 'clear_handle_excel.oldFolder'; // 和修复颜色 / 引用 / 隐藏页共用
 const VIEW_KEY = 'clear_handle_excel.pdfReviewView';
 const VIEWS = ['large', 'medium', 'small'];
-const MIN_DRAG_PX = 6; // 拖得比这还小当成点了一下，不算一个框
-const STATE_LABEL = { marked: '已标进 Excel', pending: '待写入', error: '没标成' };
+const MIN_DRAG_PX = 6;  // 按下到松开挪动超过这么多就是在拖（选字、滚动），不算点
+const POLL_MS = 1500;
 
 let folder = '';
 let pdfs = [];          // [{pdf, name, v, pages: [[宽, 高]], wb_path, wb_name, sheet, guessed, error}]
-let rects = {};         // pdf -> [框]
-let dropCount = 0;      // 删掉了、Excel 里的标记还没去掉的框
-let job = { running: false };
-let undoStack = [];     // [{pdf, op: 'add' | 'del', rect}]
-let drawing = null;
-let polling = null;
-const saving = {};      // pdf -> 正在进行的保存（同一份 PDF 按顺序存）
+let maps = {};          // pdf -> {state: ready / error / working / pending / none, error}
 let pageEls = [];       // 所有页面元素，从上到下
 let whereDoc = -1;      // 底部条上现在显示的是哪一份（换了才重建链接）
 let whereTick = 0;
-let opened = new Set(); // 这一轮已经用「打开下一批」打开过的 Excel 路径
+let polling = 0;
+let waiting = null;     // 点了还没算好的那份：{pdf, page, x, y, el}；算好就接着打开
 let opening = false;
+let press = null;       // 按下的位置，松开时判断是不是点了一下
 
 const $ = id => document.getElementById(id);
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, ch => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
-}
-
-function newId() {
-  const bytes = new Uint8Array(8);
-  crypto.getRandomValues(bytes);
-  return [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-function highlight() {
-  let saved = null;
-  try { saved = normalizeHighlight(JSON.parse(localStorage.getItem(HIGHLIGHT_KEY) || 'null')); } catch (_) {}
-  return saved || { fill: HIGHLIGHT_PRESETS[0].fill, font: HIGHLIGHT_PRESETS[0].font };
 }
 
 async function api(url, body) {
@@ -54,6 +39,10 @@ async function api(url, body) {
 
 function excelTarget(doc, cell = '') {
   return { file: doc.wb_name, sheet: doc.sheet || '', cell, folder };
+}
+
+function toast(text, isError = false) {
+  if (window.excelToast) window.excelToast(text, isError);
 }
 
 /* ---------- 列出 PDF ---------- */
@@ -71,23 +60,16 @@ async function load() {
     folder = data.folder;
     try { localStorage.setItem(FOLDER_KEY, value); } catch (_) {}
     pdfs = data.pdfs;
-    undoStack = [];
-    takeSnapshot(data);
+    maps = {};
+    mergeMaps(data.maps);
     renderDocs();
+    startPolling();
   } catch (e) {
     $('prStatus').textContent = `读取失败：${e.message}`;
     appAlert(e.message, { tone: 'error' });
   } finally {
     $('prLoad').disabled = false;
   }
-}
-
-function takeSnapshot(data) {
-  rects = {};
-  for (const doc of pdfs) rects[doc.pdf] = (data.rects[doc.pdf] || []).slice();
-  dropCount = data.drop || 0;
-  job = data.job || { running: false };
-  opened = new Set(data.opened || []);
 }
 
 function renderDocs() {
@@ -103,34 +85,143 @@ function renderDocs() {
     const excel = doc.wb_name
       ? `<span class="pr-doc-excel">📗 ${excelLinkHtml(`${escapeHtml(doc.wb_name)} › ${escapeHtml(doc.sheet)}`, excelTarget(doc))}`
         + `${doc.guessed ? '<span class="pr-doc-note" title="导出记录里没有这份 PDF，按「Excel 文件名_表名.pdf」找到的">按文件名对应</span>' : ''}</span>`
-      : '<span class="pr-doc-warn">⚠ 找不到对应的 Excel，可以标记但不能写进 Excel</span>';
+      : '<span class="pr-doc-warn">⚠ 找不到对应的 Excel，点了也打不开</span>';
     const pages = doc.pages.map(([w, h], p) => `
       <div class="pr-page is-loading" data-doc="${d}" data-page="${p}" style="aspect-ratio:${w} / ${h};--ar:${w / h}">
         <img class="pr-img" loading="lazy" decoding="async" draggable="false" alt="第 ${p + 1} 页"
           src="/api/pdf_review/page?pdf=${encodeURIComponent(doc.pdf)}&p=${p}&v=${doc.v}">
         <div class="pr-layer"></div>
-        ${doc.wb_name ? `<div class="pr-chip">📗 ${excelLinkHtml(`${escapeHtml(doc.wb_name)} › ${escapeHtml(doc.sheet)}`, excelTarget(doc))}</div>` : ''}
         <span class="pr-pageno">${p + 1} / ${doc.pages.length}</span>
       </div>`).join('');
     return `<article class="pr-doc" id="prDoc${d}">
       <header class="pr-doc-head" title="${escapeHtml(doc.pdf)}">
         <span class="pr-doc-name">📄 ${escapeHtml(doc.name)}</span>
         <span class="pr-doc-pages">${doc.pages.length} 页</span>${excel}
-        <span class="pr-doc-count" data-count="${d}"></span>
+        <span class="pr-doc-state" data-state="${d}"></span>
       </header>
       ${doc.error ? `<p class="pr-doc-warn">${escapeHtml(doc.error)}</p>` : `<div class="pr-pages">${pages}</div>`}
     </article>`;
   }).join('');
-  pdfs.forEach((_, d) => renderRects(d));
   $('prBar').classList.remove('hidden');
   pageEls = [...box.querySelectorAll('.pr-page')];
   renderTrack();
   updateStatus();
 }
 
+/* ---------- 行列位置（后台算） ---------- */
+
+const STATE_TEXT = {
+  ready: '✓ 可以点格子', error: '⚠ 定位不了', working: '⏳ 正在定位…', pending: '⏳ 排队定位', none: '',
+};
+
+function mergeMaps(status) {
+  for (const [pdf, s] of Object.entries(status || {})) maps[pdf] = { state: s.state, error: s.error };
+}
+
+function updateStatus() {
+  const docs = pdfs.filter(doc => doc.wb_path && !doc.error);
+  const ready = docs.filter(doc => maps[doc.pdf]?.state === 'ready').length;
+  const failed = docs.filter(doc => maps[doc.pdf]?.state === 'error').length;
+  const pages = pdfs.reduce((n, doc) => n + doc.pages.length, 0);
+  if (pdfs.length) $('prStatus').textContent = `共 ${pdfs.length} 份 PDF、${pages} 页`;
+  const parts = [`已定位 <b>${ready}</b> / ${docs.length} 份`];
+  if (failed) parts.push(`<span class="pr-doc-warn">${failed} 份定位不了</span>`);
+  $('prSummary').innerHTML = parts.join(' · ');
+  pdfs.forEach((doc, d) => {
+    const el = document.querySelector(`[data-state="${d}"]`);
+    if (!el) return;
+    const m = maps[doc.pdf] || { state: 'none' };
+    el.textContent = doc.wb_path ? STATE_TEXT[m.state] || '' : '';
+    el.dataset.kind = m.state;
+    el.title = m.state === 'error' ? m.error || '' : '';
+  });
+}
+
+function startPolling() {
+  clearTimeout(polling);
+  polling = setTimeout(async () => {
+    try {
+      mergeMaps((await api('/api/pdf_review/maps')).maps);
+      updateStatus();
+      if (waiting && ['ready', 'error'].includes(maps[waiting.pdf]?.state)) {
+        const next = waiting;
+        waiting = null;
+        await openAt(next);
+      }
+    } catch (_) { /* 下一轮再试 */ }
+    if (Object.values(maps).some(m => m.state === 'pending' || m.state === 'working') || waiting) startPolling();
+  }, POLL_MS);
+}
+
+// 页面上的点 → {pdf, page, x, y}（PDF 点）
+function pointOn(pageEl, e) {
+  const doc = pdfs[Number(pageEl.dataset.doc)];
+  const p = Number(pageEl.dataset.page);
+  const box = pageEl.getBoundingClientRect();
+  const [w, h] = doc.pages[p];
+  return { doc, pdf: doc.pdf, page: p, x: (e.clientX - box.left) / box.width * w, y: (e.clientY - box.top) / box.height * h };
+}
+
+/* ---------- 点一下打开 ---------- */
+
+function flashAt(pageEl, e) {
+  const box = pageEl.getBoundingClientRect();
+  const dot = Object.assign(document.createElement('span'), { className: 'pr-click' });
+  dot.style.left = `${e.clientX - box.left}px`;
+  dot.style.top = `${e.clientY - box.top}px`;
+  pageEl.querySelector('.pr-layer').appendChild(dot);
+  setTimeout(() => dot.remove(), 700);
+}
+
+async function openAt(pt) {
+  if (opening) return;
+  const oldFolder = $('prOldFolder').value.trim();
+  opening = true;
+  toast(oldFolder ? '正在打开当前文件和备份…' : '正在用 Excel 打开…');
+  try {
+    const data = await api('/api/pdf_review/open', { pdf: pt.pdf, page: pt.page, x: pt.x, y: pt.y, old_folder: oldFolder });
+    if (data.pending) {
+      waiting = pt;
+      toast('这张表还在定位，算好就自动打开…');
+      startPolling();
+      return;
+    }
+    try { if (oldFolder) localStorage.setItem(OLD_FOLDER_KEY, oldFolder); } catch (_) {}
+    const where = data.cell ? `${data.sheet}!${data.cell}` : data.sheet;
+    toast(data.note || (data.backup ? `已打开 ${where}：左边当前文件，右边原始备份（只读）` : `已在 Excel 中打开 ${where}`), !!data.note);
+  } catch (e) {
+    toast(`无法打开：${e.message}`, true);
+  } finally {
+    opening = false;
+  }
+}
+
+function onPointerDown(e) {
+  const pageEl = e.target.closest('.pr-page');
+  if (!pageEl || e.button !== 0 || pageEl.matches('.is-loading, .is-failed') || e.target.closest('.excel-link')) return;
+  press = { pageEl, x: e.clientX, y: e.clientY };
+}
+
+function onPointerUp(e) {
+  const start = press;
+  press = null;
+  if (!start || Math.hypot(e.clientX - start.x, e.clientY - start.y) > MIN_DRAG_PX) return;
+  const pt = pointOn(start.pageEl, e);
+  if (!pt.doc.wb_path) {
+    toast('这份 PDF 找不到对应的 Excel', true);
+    return;
+  }
+  flashAt(start.pageEl, e);
+  openAt(pt);
+}
+
 /* ---------- 看到哪里（底部条） ---------- */
 
 const READ_LINE = 0.4; // 窗口上方 40% 处那条线落在哪一页，就算正在看哪一页
+
+function atBottom() {
+  return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+}
 
 function renderTrack() {
   const total = pageEls.length;
@@ -139,7 +230,7 @@ function renderTrack() {
     before += doc.error ? 0 : doc.pages.length;
     return total ? `<span class="pr-tick" style="left:${before / total * 100}%"></span>` : '';
   }).join('');
-  $('prTrack').innerHTML = `<div id="prFill" class="pr-fill"></div>${ticks}<div id="prDots"></div>`;
+  $('prTrack').innerHTML = `<div id="prFill" class="pr-fill"></div>${ticks}`;
   whereDoc = -1;
   updateWhere();
 }
@@ -168,7 +259,6 @@ function updateWhere() {
     $('prWhereText').innerHTML = '<span class="pr-where-pos">没有可看的页面</span>';
     $('prFill').style.width = '0';
     whereDoc = -1;
-    renderMarkNav();
     return;
   }
   const { index, within } = readingPosition();
@@ -186,7 +276,19 @@ function updateWhere() {
     $('prWhereText').innerHTML = `<span class="pr-where-pos"></span>${excel}`;
   }
   $('prWhereText').querySelector('.pr-where-pos').textContent = pos;
-  renderMarkNav();
+}
+
+function scheduleWhere() {
+  if (!whereTick) whereTick = requestAnimationFrame(updateWhere);
+}
+
+// 点进度条：按点的位置换算成第几页的哪里，把那里滚到读线上
+function jumpTo(e) {
+  if (!pageEls.length) return;
+  const box = $('prTrack').getBoundingClientRect();
+  const at = Math.min(0.9999, Math.max(0, (e.clientX - box.left) / box.width)) * pageEls.length;
+  const page = pageEls[Math.floor(at)].getBoundingClientRect();
+  window.scrollBy({ top: page.top + page.height * (at % 1) - window.innerHeight * READ_LINE, behavior: 'smooth' });
 }
 
 /* ---------- 大图 / 中图 / 小图 ---------- */
@@ -209,16 +311,14 @@ function setView(view, keep = true) {
   scheduleWhere();
 }
 
-/* ---------- 顶栏和底部条：自动隐藏、单击切换 ---------- */
+/* ---------- 顶栏和底部条：自动隐藏 ---------- */
 // 看 PDF 时顶栏和底部条会挡住内容：不碰它们 3 秒就藏起来（只往外滑，页面不挪）。
-// 单击页面（不拖动）切换显示 / 隐藏；双击是删框，第二下取消这次切换。鼠标移到窗口上下边缘也会出来。
+// 单击页面是打开 Excel，所以条只靠鼠标移到窗口最上 / 最下边缘叫出来。
 
 const BARS_HIDE_MS = 3000;
-const DOUBLE_CLICK_MS = 300;
 const EDGE_TOP = 50;
 const EDGE_BOTTOM = 90;
 let barsTimer = 0;
-let toggleTimer = 0;
 let barsHover = false;
 
 function barsHidden() {
@@ -232,24 +332,12 @@ function setBars(show) {
 }
 
 function autoHideBars() {
-  // 鼠标在条上、开着对话框、正在画框、还在页面顶上（顶栏没挡住 PDF）时先不藏，过一会儿再看
-  if (barsHover || drawing || document.querySelector('dialog[open]') || !pdfs.length || window.scrollY < 120) {
+  // 鼠标在条上、开着对话框、还在页面顶上（顶栏没挡住 PDF）时先不藏，过一会儿再看
+  if (barsHover || document.querySelector('dialog[open]') || !pdfs.length || window.scrollY < 120) {
     barsTimer = setTimeout(autoHideBars, BARS_HIDE_MS);
     return;
   }
   setBars(false);
-}
-
-function queueBarsToggle() {
-  if (toggleTimer) { // 第二下：是双击（删框），不切换
-    clearTimeout(toggleTimer);
-    toggleTimer = 0;
-    return;
-  }
-  toggleTimer = setTimeout(() => {
-    toggleTimer = 0;
-    setBars(barsHidden());
-  }, DOUBLE_CLICK_MS);
 }
 
 function watchBars() {
@@ -258,384 +346,15 @@ function watchBars() {
     el.addEventListener('mouseleave', () => { barsHover = false; setBars(true); });
   }
   document.addEventListener('mousemove', e => {
-    if (drawing || !barsHidden()) return;
+    if (!barsHidden()) return;
     if (e.clientY < EDGE_TOP || e.clientY > window.innerHeight - EDGE_BOTTOM) setBars(true);
   }, { passive: true });
   setBars(true);
 }
 
-/* ---------- 在标记之间跳转 ---------- */
-
-// 所有框按从上到下排：第几页（全部 PDF 连起来算）+ 页内位置
-function markList() {
-  const list = [];
-  let before = 0;
-  pdfs.forEach((doc, d) => {
-    if (!doc.error) {
-      for (const rect of rects[doc.pdf] || []) {
-        const [, h] = doc.pages[rect.page] || [0, 1];
-        list.push({ d, rect, at: before + rect.page + rect.y0 / h, x: rect.x0 });
-      }
-      before += doc.pages.length;
-    }
-  });
-  return list.sort((a, b) => a.at - b.at || a.x - b.x);
-}
-
-// 框的上边在页面上的位置（相对窗口顶）
-function markTop(mark) {
-  const el = document.querySelector(`.pr-page[data-doc="${mark.d}"][data-page="${mark.rect.page}"]`);
-  if (!el) return null;
-  const box = el.getBoundingClientRect();
-  const [, h] = pdfs[mark.d].pages[mark.rect.page];
-  return box.top + box.height * mark.rect.y0 / h;
-}
-
-const NAV_SLACK = 4; // 刚跳到的框就停在读线上，差几像素也算「当前这个」
-
-function atBottom() {
-  return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
-}
-
-// 读线上方（含读线上）有几个框：就是「标记 k / N」的 k。滚到最底下时，窗口里看得到的都算看过
-function marksPassed(tops) {
-  const line = atBottom() ? window.innerHeight : window.innerHeight * READ_LINE + NAV_SLACK;
-  let k = 0;
-  while (k < tops.length && tops[k] !== null && tops[k] <= line) k += 1;
-  return k;
-}
-
-// 上一个：读线上方最近的一个框
-function previousMark(tops) {
-  const line = window.innerHeight * READ_LINE - NAV_SLACK;
-  let i = -1;
-  tops.forEach((top, j) => { if (top !== null && top < line) i = j; });
-  return i;
-}
-
-function renderMarkNav() {
-  const list = markList();
-  const total = pageEls.length || 1;
-  const dots = $('prDots');
-  if (dots) dots.innerHTML = list.map(m => `<span class="pr-dot" style="left:${m.at / total * 100}%"></span>`).join('');
-  const tops = list.map(markTop);
-  const k = marksPassed(tops);
-  $('prNavPos').textContent = `标记 ${k} / ${list.length}`;
-  $('prPrev').disabled = previousMark(tops) < 0;
-  $('prNext').disabled = k >= list.length;
-}
-
-function jumpMark(step) {
-  const list = markList();
-  const tops = list.map(markTop);
-  const i = step > 0 ? marksPassed(tops) : previousMark(tops);
-  if (i < 0 || i >= list.length || tops[i] === null) return;
-  const mark = list[i];
-  window.scrollBy({ top: tops[i] - window.innerHeight * READ_LINE, behavior: 'smooth' });
-  const el = document.querySelector(`.pr-page[data-doc="${mark.d}"] .pr-rect[data-id="${mark.rect.id}"]`);
-  if (el) {
-    el.classList.remove('is-flash');
-    void el.offsetWidth; // 重新播放闪烁
-    el.classList.add('is-flash');
-  }
-}
-
-function scheduleWhere() {
-  if (!whereTick) whereTick = requestAnimationFrame(updateWhere);
-}
-
-// 点进度条：按点的位置换算成第几页的哪里，把那里滚到读线上
-function jumpTo(e) {
-  if (!pageEls.length) return;
-  const box = $('prTrack').getBoundingClientRect();
-  const at = Math.min(0.9999, Math.max(0, (e.clientX - box.left) / box.width)) * pageEls.length;
-  const page = pageEls[Math.floor(at)].getBoundingClientRect();
-  window.scrollBy({ top: page.top + page.height * (at % 1) - window.innerHeight * READ_LINE, behavior: 'smooth' });
-}
-
-/* ---------- 框 ---------- */
-
-function rectBadge(doc, rect) {
-  if (rect.state === 'marked' && rect.addr && doc.wb_name) {
-    const first = rect.addr.split(/[,:]/)[0];
-    return `<span class="pr-badge is-marked">${excelLinkHtml(escapeHtml(rect.addr), excelTarget({ ...doc, sheet: rect.sheet || doc.sheet }, first))}</span>`;
-  }
-  if (rect.state === 'error') return `<span class="pr-badge is-error" title="${escapeHtml(rect.error)}">⚠ 没标成</span>`;
-  return '<span class="pr-badge">待写入</span>';
-}
-
-function renderRects(d) {
-  const doc = pdfs[d];
-  const byPage = {};
-  for (const rect of rects[doc.pdf] || []) (byPage[rect.page] = byPage[rect.page] || []).push(rect);
-  document.querySelectorAll(`.pr-page[data-doc="${d}"]`).forEach(page => {
-    const p = Number(page.dataset.page);
-    const [w, h] = doc.pages[p];
-    page.querySelector('.pr-layer').innerHTML = (byPage[p] || []).map(rect => {
-      const title = rect.state === 'error' ? `没标成：${rect.error}` : `${STATE_LABEL[rect.state]}${rect.addr ? `：${rect.sheet || doc.sheet}!${rect.addr}` : ''}`;
-      const inside = rect.y0 / h < 0.04 ? ' badge-inside' : ''; // 贴着页顶的框：标签放进框里，免得被页面边缘切掉
-      return `<div class="pr-rect is-${rect.state}${inside}" data-id="${rect.id}" title="${escapeHtml(title)}（双击删除）"
-        style="left:${rect.x0 / w * 100}%;top:${rect.y0 / h * 100}%;width:${(rect.x1 - rect.x0) / w * 100}%;height:${(rect.y1 - rect.y0) / h * 100}%">
-        ${rectBadge(doc, rect)}</div>`;
-    }).join('');
-  });
-  const list = rects[doc.pdf] || [];
-  const count = document.querySelector(`[data-count="${d}"]`);
-  if (count) count.textContent = list.length ? `标记 ${list.length} 处` : '';
-}
-
-function updateStatus() {
-  scheduleWhere(); // 框增删后「标记 k / N」和进度条上的点跟着变
-  const all = Object.values(rects).flat();
-  const pending = all.filter(r => r.state !== 'marked').length;
-  const marked = all.length - pending;
-  const pages = pdfs.reduce((n, doc) => n + doc.pages.length, 0);
-  $('prStatus').textContent = pdfs.length
-    ? `共 ${pdfs.length} 份 PDF、${pages} 页 · 标记 ${all.length} 处（已标进 Excel ${marked} 处）`
-    : $('prStatus').textContent;
-  const parts = [`待写入 <b>${pending}</b> 处`];
-  if (dropCount) parts.push(`待去掉 <b>${dropCount}</b> 处`);
-  if (job.running) parts.push(`正在写进 Excel：${job.done || 0} / ${job.total || 0} 个文件${job.current ? `（${escapeHtml(job.current)}）` : ''}`);
-  $('prSummary').innerHTML = parts.join(' · ');
-  $('prApply').disabled = job.running || (!pending && !dropCount);
-  const files = markedFiles();
-  const unopened = files.filter(path => !opened.has(path)).length;
-  $('prOpen').textContent = opening ? '⏳ 正在打开…' : `📂 打开下一批（未开 ${unopened} / 共 ${files.length} 个）`;
-  $('prOpen').disabled = opening || job.running || !unopened;
-  $('prOpenReset').disabled = opening || job.running || !files.some(path => opened.has(path));
-  $('prApply').textContent = job.running ? '⏳ 正在写进 Excel…' : '🖍️ 写进 Excel';
-}
-
-function docIndex(pdf) {
-  return pdfs.findIndex(doc => doc.pdf === pdf);
-}
-
-// 同一份 PDF 的保存排队进行，后发的一定后到
-function save(pdf) {
-  const d = docIndex(pdf);
-  const body = { pdf, rects: rects[pdf].map(({ id, page, x0, y0, x1, y1 }) => ({ id, page, x0, y0, x1, y1 })) };
-  saving[pdf] = (saving[pdf] || Promise.resolve()).then(async () => {
-    try {
-      const data = await api('/api/pdf_review/save', body);
-      mergeStates(data);
-    } catch (e) {
-      appAlert(`标记没保存上：${e.message}`, { tone: 'error' });
-    }
-    renderRects(d);
-    updateStatus();
-  });
-}
-
-// 后台返回的状态（已标 / 待写入 / 没标成、单元格地址）合进来；框的增删以网页上为准（后面可能还有没存完的）
-function mergeStates(data) {
-  for (const doc of pdfs) {
-    const server = new Map((data.rects[doc.pdf] || []).map(r => [r.id, r]));
-    for (const rect of rects[doc.pdf] || []) {
-      const s = server.get(rect.id);
-      if (s) Object.assign(rect, { state: s.state, addr: s.addr, sheet: s.sheet, error: s.error });
-    }
-  }
-  dropCount = data.drop || 0;
-  job = data.job || job;
-  if (data.opened) opened = new Set(data.opened);
-}
-
-function addRect(pdf, rect, record = true) {
-  rects[pdf].push(rect);
-  if (record) undoStack.push({ pdf, op: 'add', rect });
-  renderRects(docIndex(pdf));
-  updateStatus();
-  save(pdf);
-}
-
-function removeRect(pdf, id, record = true) {
-  const list = rects[pdf];
-  const i = list.findIndex(r => r.id === id);
-  if (i < 0) return;
-  const [rect] = list.splice(i, 1);
-  if (record) undoStack.push({ pdf, op: 'del', rect });
-  renderRects(docIndex(pdf));
-  updateStatus();
-  save(pdf);
-}
-
-function undo() {
-  const step = undoStack.pop();
-  if (!step) return;
-  if (step.op === 'add') removeRect(step.pdf, step.rect.id, false);
-  else addRect(step.pdf, step.rect, false);
-}
-
-/* ---------- 拖动画框 ---------- */
-
-function pointIn(page, e) {
-  const box = page.getBoundingClientRect();
-  return {
-    x: Math.min(Math.max(e.clientX - box.left, 0), box.width),
-    y: Math.min(Math.max(e.clientY - box.top, 0), box.height),
-    w: box.width, h: box.height,
-  };
-}
-
-function onPointerDown(e) {
-  const layer = e.target.closest('.pr-layer');
-  if (!layer || e.button !== 0 || e.target.closest('.pr-badge') || layer.closest('.is-loading, .is-failed')) return;
-  const page = layer.parentElement;
-  const start = pointIn(page, e);
-  const ghost = document.createElement('div');
-  ghost.className = 'pr-rect is-drawing';
-  layer.appendChild(ghost);
-  // 不用 setPointerCapture：抓住指针后双击的目标会变成整页，双击框就删不掉了；移动和松开在 document 上听
-  drawing = { page, layer, start, ghost, pointer: e.pointerId };
-  e.preventDefault();
-}
-
-function drawnBox(e) {
-  const end = pointIn(drawing.page, e);
-  const { start } = drawing;
-  return {
-    left: Math.min(start.x, end.x), top: Math.min(start.y, end.y),
-    width: Math.abs(end.x - start.x), height: Math.abs(end.y - start.y), w: end.w, h: end.h,
-  };
-}
-
-function onPointerMove(e) {
-  if (!drawing || e.pointerId !== drawing.pointer) return;
-  const b = drawnBox(e);
-  Object.assign(drawing.ghost.style, {
-    left: `${b.left}px`, top: `${b.top}px`, width: `${b.width}px`, height: `${b.height}px`,
-  });
-}
-
-function onPointerUp(e) {
-  if (!drawing || e.pointerId !== drawing.pointer) return;
-  const b = drawnBox(e);
-  const { page, ghost } = drawing;
-  ghost.remove();
-  drawing = null;
-  if (b.width < MIN_DRAG_PX && b.height < MIN_DRAG_PX) {
-    queueBarsToggle(); // 只点了一下、没拖：切换顶栏和底部条
-    return;
-  }
-  if (b.width < MIN_DRAG_PX || b.height < MIN_DRAG_PX) return;
-  const doc = pdfs[Number(page.dataset.doc)];
-  const p = Number(page.dataset.page);
-  const [w, h] = doc.pages[p];
-  const k = w / b.w; // 网页像素 → PDF 点
-  const round = v => Math.round(v * 100) / 100;
-  addRect(doc.pdf, {
-    id: newId(), page: p, state: 'pending', addr: null, sheet: doc.sheet, error: null,
-    x0: round(b.left * k), y0: round(b.top * k),
-    x1: round(Math.min(w, (b.left + b.width) * k)), y1: round(Math.min(h, (b.top + b.height) * k)),
-  });
-}
-
-function cancelDrawing() {
-  if (!drawing) return;
-  drawing.ghost.remove();
-  drawing = null;
-}
-
-/* ---------- 写进 Excel ---------- */
-
-async function applyToExcel() {
-  const all = Object.values(rects).flat();
-  const files = new Set(pdfs.filter(doc => (rects[doc.pdf] || []).some(r => r.state !== 'marked'))
-    .map(doc => doc.wb_name).filter(Boolean));
-  const pending = all.filter(r => r.state !== 'marked').length;
-  const message = `把 ${pending} 处标记写进 Excel${dropCount ? `，并去掉 ${dropCount} 处删掉的标记` : ''}。\n`
-    + `后台会打开${files.size ? ` ${files.size} 个` : ''} Excel 文件，找出框住的单元格后标色并保存。\n请先保存并关闭这些 Excel 文件。`;
-  if (!(await appConfirm(message, { title: '写进 Excel', okText: '开始' }))) return;
-  try {
-    const data = await api('/api/pdf_review/apply', { highlight: highlight() });
-    mergeStates(data);
-  } catch (e) {
-    appAlert(e.message, { tone: 'error' });
-    return;
-  }
-  updateStatus();
-  startPolling();
-}
-
-function startPolling() {
-  clearTimeout(polling);
-  polling = setTimeout(async () => {
-    let data;
-    try {
-      data = await api('/api/pdf_review/rects');
-    } catch (_) {
-      startPolling();
-      return;
-    }
-    mergeStates(data);
-    pdfs.forEach((_, d) => renderRects(d));
-    updateStatus();
-    if (job.running) {
-      startPolling();
-    } else if (job.result) {
-      const failed = job.result.failed || 0;
-      appAlert(`${job.result.message || '已完成'}${failed ? '\n没标成的框上写着原因（鼠标移上去看）。' : ''}`,
-        { title: '写进 Excel', tone: failed ? 'warn' : undefined, icon: failed ? undefined : '✅' });
-    }
-  }, 1000);
-}
-
-/* ---------- 批量打开有标记的 Excel ---------- */
-
-// 网页上画了框的 Excel（写没写进 Excel 都算），按 PDF 顺序，每份只算一次
-function markedFiles() {
-  return [...new Set(pdfs.filter(doc => doc.wb_path && (rects[doc.pdf] || []).length).map(doc => doc.wb_path))];
-}
-
-async function openNext() {
-  if (opening) return;
-  opening = true;
-  updateStatus();
-  try {
-    const plan = await api('/api/pdf_review/open_plan', {});
-    const waiting = plan.waiting.length
-      ? `\n\n还要等后台处理的 ${plan.waiting.length} 个，暂不打开：\n${plan.waiting.map(w => `· ${w.name}：${w.reason}`).join('\n')}` : '';
-    if (!plan.files.length) {
-      await appAlert(plan.exhausted ? '画了框的 Excel 这一轮都打开过了，不会自动重复打开。需要重开时，点「重置打开记录」。'
-        : `共 ${plan.total} 个画了框的 Excel，目前没有可以打开的文件。${waiting}`, { title: '打开下一批' });
-      return;
-    }
-    const message = `网页上画了框的 Excel 共 ${plan.total} 个，这一轮还没打开的 ${plan.unopened} 个。\n`
-      + `本次最多打开 5 个，实际打开 ${plan.files.length} 个；打开后还剩 ${plan.remaining} 个。\n`
-      + '已经写进 Excel 的跳到第一个框的单元格，还没写的只切到对应的工作表。'
-      + `\n\n本次文件：\n${plan.files.map(f => `· ${f.name}`).join('\n')}${waiting}`;
-    if (!(await appConfirm(message, { title: '确认打开文件', okText: `打开 ${plan.files.length} 个文件`, tone: 'info' }))) return;
-    const result = await api('/api/pdf_review/open', {});
-    const fresh = result.opened.length ? await api('/api/pdf_review/rects').catch(() => null) : null;
-    if (fresh) mergeStates(fresh); // 记下这批已打开，按钮上的「未开」跟着变
-    if (result.errors.length || result.waiting.length) {
-      const list = items => items.map(item => `· ${item.name}：${item.reason}`).join('\n');
-      const parts = [result.opened.length ? `已打开 ${result.opened.length} 个文件。` : '这次没有打开文件。'];
-      if (result.waiting.length) parts.push(`还要等后台处理的 ${result.waiting.length} 个：\n${list(result.waiting)}`);
-      if (result.errors.length) parts.push(`打不开的 ${result.errors.length} 个：\n${list(result.errors)}`);
-      await appAlert(parts.join('\n\n'), { title: '打开下一批', tone: 'warn' });
-    }
-  } catch (e) {
-    appAlert(e.message, { tone: 'error' });
-  } finally {
-    opening = false;
-    updateStatus();
-  }
-}
-
-async function resetOpened() {
-  if (!(await appConfirm('清掉这个文件夹的打开记录，下次「打开下一批」从头开始。不会关闭 Excel，标记也不动。', { title: '重置打开记录', okText: '重置' }))) return;
-  try {
-    mergeStates(await api('/api/pdf_review/open_reset', {}));
-  } catch (e) {
-    appAlert(e.message, { tone: 'error' });
-  }
-  updateStatus();
-}
-
 /* ---------- 启动 ---------- */
 
-// 页面图片加载完才能画框：没加载出来时画在空白上，看不出框住了什么。load / error 不冒泡，在捕获阶段听
+// 页面图片加载完才能点：没加载出来时看不到点的是什么。load / error 不冒泡，在捕获阶段听
 document.addEventListener('load', e => {
   if (e.target.classList && e.target.classList.contains('pr-img')) e.target.parentElement.classList.remove('is-loading');
 }, true);
@@ -646,47 +365,25 @@ document.addEventListener('error', e => {
   }
 }, true);
 document.addEventListener('pointerdown', onPointerDown);
-document.addEventListener('pointermove', onPointerMove);
 document.addEventListener('pointerup', onPointerUp);
-document.addEventListener('pointercancel', cancelDrawing);
-document.addEventListener('dblclick', e => {
-  const el = e.target.closest('.pr-rect:not(.is-drawing)');
-  if (!el || e.target.closest('.excel-link')) return;
-  const page = el.closest('.pr-page');
-  removeRect(pdfs[Number(page.dataset.doc)].pdf, el.dataset.id);
-});
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') cancelDrawing();
-  const typing = e.target.closest && e.target.closest('input, textarea, select, [contenteditable]');
-  if (!typing && (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z' && !document.querySelector('dialog[open]')) {
-    e.preventDefault();
-    undo();
-  }
-});
+document.addEventListener('pointercancel', () => { press = null; });
 $('prLoad').addEventListener('click', load);
 $('prFolder').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
-$('prApply').addEventListener('click', applyToExcel);
 $('prTrack').addEventListener('click', jumpTo);
-$('prOpen').addEventListener('click', openNext);
-$('prPrev').addEventListener('click', () => jumpMark(-1));
-watchBars();
 $('prView').addEventListener('click', e => {
   const button = e.target.closest('[data-view]');
   if (button) setView(button.dataset.view);
 });
-$('prNext').addEventListener('click', () => jumpMark(1));
-$('prOpenReset').addEventListener('click', resetOpened);
 window.addEventListener('scroll', scheduleWhere, { passive: true });
 window.addEventListener('resize', scheduleWhere);
-{
-  const color = highlight();
-  document.documentElement.style.setProperty('--pr-mark', color.fill);
-  Object.assign($('prSample').style, { background: color.fill, color: color.font });
-}
+watchBars();
 {
   let view = 'large';
   try { view = localStorage.getItem(VIEW_KEY) || view; } catch (_) {}
   setView(view, false);
 }
-try { $('prFolder').value = localStorage.getItem(FOLDER_KEY) || ''; } catch (_) {}
-if ($('prFolder').value) load().then(() => { if (job.running) startPolling(); });
+try {
+  $('prFolder').value = localStorage.getItem(FOLDER_KEY) || '';
+  $('prOldFolder').value = localStorage.getItem(OLD_FOLDER_KEY) || '';
+} catch (_) {}
+if ($('prFolder').value) load();

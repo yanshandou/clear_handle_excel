@@ -180,8 +180,8 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, **pdf_review.list_pdfs(folder)})
             except ValueError as err:
                 self._send_json({"ok": False, "error": str(err)}, status=400)
-        elif parsed.path == "/api/pdf_review/rects":
-            self._send_json({"ok": True, **pdf_review.rects_snapshot()})
+        elif parsed.path == "/api/pdf_review/maps":
+            self._send_json({"ok": True, "maps": pdf_review.maps_status()})
         elif parsed.path == "/api/pdf_review/page":
             query = parse_qs(parsed.query)
             try:
@@ -358,12 +358,10 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def _handle_post(self, payload: dict) -> None:
         with STATE_LOCK:
-            # PDF 人工复检画框只存记录、不碰 Excel：后台任务进行中也照常保存
-            if STATE.get("maintenance") and self.path != "/api/pdf_review/save":
+            if STATE.get("maintenance"):
                 name = ("颜色" if STATE["maintenance"].startswith("color_") else
                         "隐藏状态" if STATE["maintenance"].startswith("hidden_") else
-                        "BL 超链接" if STATE["maintenance"].startswith("bl_link_") else
-                        "PDF 人工复检标记" if STATE["maintenance"].startswith("pdf_") else "引用错误")
+                        "BL 超链接" if STATE["maintenance"].startswith("bl_link_") else "引用错误")
                 raise ValueError(f"正在检查或修复{name}，请等当前任务结束")
         if self.path == "/api/batch/start":
             options = {"folder": _require_folder(payload)}
@@ -401,21 +399,14 @@ class WebHandler(BaseHTTPRequestHandler):
         elif self.path == "/api/batch/clear_marks":
             mark_finder.clear_marks(_require_folder(payload))
             self._send_json({"ok": True})
-        elif self.path == "/api/pdf_review/save":
-            self._send_json({"ok": True, **pdf_review.save(payload.get("pdf") or "", payload.get("rects"))})
-        elif self.path == "/api/pdf_review/open_plan":
-            self._send_json({"ok": True, **pdf_review.open_plan()})
         elif self.path == "/api/pdf_review/open":
             try:
-                autofix.wait_for_writes(15)  # 后台正在保存的文件别同时打开
+                autofix.wait_for_writes(15)  # 后台正在保存这个文件时别同时打开
             except ValueError:
                 raise ValueError("后台正在保存 Excel，请几秒后再点") from None
-            self._send_json({"ok": True, **pdf_review.open_next()})
-        elif self.path == "/api/pdf_review/open_reset":
-            self._send_json({"ok": True, "cleared": pdf_review.reset_opened(), **pdf_review.rects_snapshot()})
-        elif self.path == "/api/pdf_review/apply":
-            pdf_review.apply(payload.get("highlight"))
-            self._send_json({"ok": True, **pdf_review.rects_snapshot()})
+            self._send_json({"ok": True, **pdf_review.open_at(payload.get("pdf") or "", payload.get("page"),
+                                                                payload.get("x"), payload.get("y"),
+                                                                payload.get("old_folder") or "")})
         elif self.path == "/api/hidden_repair/run":
             hidden_repair.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}), payload.get("options"))
             self._send_json({"ok": True})

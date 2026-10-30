@@ -90,6 +90,8 @@
     toastTimer = setTimeout(() => box.classList.remove('is-visible'), isError ? 6000 : 2500);
   }
 
+  window.excelToast = toast; // 别的页面自己打开 Excel 时也用同一个提示条
+
   async function openExcel(link) {
     const d = link.dataset;
     const key = linkKey(d);
