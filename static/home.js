@@ -7,7 +7,7 @@ const TASKS = {
     notes: [
       '自动递归扫描所选文件夹及其所有子文件夹，以只读方式打开 Excel，不修改原文件',
       '跳过隐藏表、変更履歴和备份表',
-      '每张 Sheet 优先复用已记录的打印方向；没有有效记录时比较横向、竖向，无法判断时沿用原设置',
+      '每张 Sheet 优先复用已记录的打印方向；没有有效记录时可选择是否比较横向、竖向（不比较会快很多，直接按 Excel 里的方向导出）',
       '导出的 PDF 直接保存在对应 Excel 文件所在的同一目录下',
       '开始前先删掉同一目录里以前导出的旧 PDF（名字是「Excel 文件名_….pdf」的），其他 PDF 不动',
     ],
@@ -29,6 +29,7 @@ const TASKS = {
 // 切字工作台发起的任务类型
 const CLIP_JOB_KINDS = new Set(['scan', 'fix', 'refresh', 'recheck', 'manual_open', 'batch_scan', 'batch_commit', 'batch_recheck', 'batch_open', 'batch_unhighlight']);
 const FOLDER_STORAGE_KEY = 'clear_handle_excel.lastFolder';
+const ORIENTATION_STORAGE_KEY = 'clear_handle_excel.exportChooseOrientation';
 const STATUS_BADGES = {
   running: ['badge-selected', '🔄 正在执行'],
   completed: ['badge-fixed', '✅ 已完成'],
@@ -49,6 +50,23 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// 导出 PDF「比较打印方向」勾选与否记在本机，下次打开照旧
+function readChooseOrientation() {
+  try {
+    return localStorage.getItem(ORIENTATION_STORAGE_KEY) !== '0';
+  } catch (e) {
+    return true;
+  }
+}
+
+function saveChooseOrientation(value) {
+  try {
+    localStorage.setItem(ORIENTATION_STORAGE_KEY, value ? '1' : '0');
+  } catch (e) {
+    // 浏览器不让存就算了，默认勾选
+  }
 }
 
 function readLastFolder() {
@@ -146,6 +164,8 @@ function openTask(kind) {
 
   const input = document.getElementById('taskFolderInput');
   input.value = (phase === 'running' && overview.job.folder) || readLastFolder() || (overview && overview.folder) || '';
+  const choose = document.getElementById('taskChooseOrientation');
+  choose.checked = phase === 'running' ? overview.job.choose_orientation !== false : readChooseOrientation();
 
   renderDialog();
   document.getElementById('taskDialog').showModal();
@@ -164,6 +184,8 @@ function renderDialog() {
   const hint = document.getElementById('taskHint');
 
   document.getElementById('taskFolderInput').disabled = starting || phase === 'running';
+  document.getElementById('taskOrientationRow').classList.toggle('hidden', activeKind !== 'export_pdf');
+  document.getElementById('taskChooseOrientation').disabled = starting || phase === 'running';
   document.getElementById('taskRunBox').classList.toggle('hidden', phase !== 'running' && phase !== 'done');
   hint.textContent = '';
 
@@ -252,7 +274,12 @@ async function startTask() {
   starting = true;
   renderDialog();
   try {
-    await postAction('/api/quick_task', { kind: activeKind, folder });
+    const payload = { kind: activeKind, folder };
+    if (activeKind === 'export_pdf') {
+      payload.choose_orientation = document.getElementById('taskChooseOrientation').checked;
+      saveChooseOrientation(payload.choose_orientation);
+    }
+    await postAction('/api/quick_task', payload);
     saveLastFolder(folder);
     phase = 'running';
     minAcceptedSeq = pollSeq + 1;

@@ -356,6 +356,20 @@ class PersistenceTests(unittest.TestCase):
         with fitz.open(exported[0]) as doc:
             self.assertGreater(doc[0].rect.width, doc[0].rect.height)
 
+    def test_batch_export_without_choosing_orientation_exports_once(self):
+        book = Mock(FullName=str(self.path))
+        book.Sheets = [self.sheet]
+        excel = Mock()
+        excel.Workbooks.Open.return_value = book
+        with patch.object(self.workflow, "_exportable_sheets", return_value=[self.sheet]), \
+                patch.object(self.workflow, "update_file_progress"), \
+                patch.object(self.workflow, "prepare_print_layout") as prepare, \
+                patch.object(self.workflow, "_export_sheet_pdf") as export:
+            exported = self.workflow._export_workbook_pdfs(
+                lambda: excel, self.path, self.root, set(), choose_orientation=False)
+        prepare.assert_not_called()
+        export.assert_called_once_with(self.sheet, exported[0])
+
     def test_http_lists_and_updates_plans_and_queues_reanalysis(self):
         import web_clip_fixer
         handler = importlib.reload(web_clip_fixer).WebHandler

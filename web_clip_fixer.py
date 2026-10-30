@@ -573,6 +573,9 @@ class WebHandler(BaseHTTPRequestHandler):
                 existing = {workbook_rel_name(wb, folder) for wb in workbooks}
                 if not existing.intersection(options["files"]):
                     raise ValueError("要处理的文件已被移动或改名，请重新扫描")
+            if kind == "export_pdf":
+                # 用户可选：不比较横竖方向能省一半以上时间（2026-10-30）
+                options["choose_orientation"] = payload.get("choose_orientation", True) is not False
             self._start_job(kind, options)
 
         elif self.path == "/api/clean/preview":

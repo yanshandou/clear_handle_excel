@@ -161,6 +161,10 @@
         <input type="text" id="taskFolderInput" placeholder="例如 C:\Users\...\Desktop\excel_files">
       </div>
 
+      <label id="taskOrientationRow" class="checkbox-label task-option hidden" title="不勾选时每张表只导出一次，快很多；以前定过方向、文件没改过的表照旧用那个方向">
+        <input type="checkbox" id="taskChooseOrientation" checked> 导出前比较横向和竖向，选更合适的打印方向（每张表多导出、多比对一次，较慢）
+      </label>
+
       <div id="taskRunBox" class="task-run-box hidden">
         <div class="mini-progress-box">
           <div class="mini-progress-info">

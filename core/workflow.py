@@ -484,6 +484,7 @@ def get_overview_snapshot() -> dict[str, Any]:
                 "kind": job["kind"],
                 "status": job["status"],
                 **{key: job["options"].get(key, "") for key in ("folder", "pdf_folder", "backup_folder")},
+                "choose_orientation": job["options"].get("choose_orientation", True),
             } if job else None,
             "clips": {"total": len(STATE["items"]), "unresolved": unresolved},
             "progress": _progress_summary(report_snap),
@@ -3051,7 +3052,9 @@ def _clean_backup_sheets(
 
 def _export_workbook_pdfs(
     get_excel: Callable[[], Any], wb_path: Path, root_folder: Path, used_pdf_paths: set[Path],
+    choose_orientation: bool = True,
 ) -> list[Path]:
+    """choose_orientation=False：不比较横向竖向，直接导出一次（以前定过方向、文件没改过的照旧用那个方向）"""
     wb_label = workbook_rel_name(wb_path, root_folder)
     wb = open_workbook_checked(get_excel(), str(wb_path.resolve()), ReadOnly=True, UpdateLinks=0)
     print_layout.bind(wb, str(wb_path))
@@ -3065,7 +3068,7 @@ def _export_workbook_pdfs(
             pdf_path = unique_pdf_path(
                 wb_path.parent, file_stem, sanitize_filename(sheet.Name), used_pdf_paths
             )
-            if not prepare_print_layout(sheet, str(wb_path), pdf_path):
+            if not choose_orientation or not prepare_print_layout(sheet, str(wb_path), pdf_path):
                 _export_sheet_pdf(sheet, pdf_path)
             exported.append(pdf_path)
             with STATE_LOCK:
@@ -3168,6 +3171,8 @@ def quick_task_workflow(kind: str) -> None:
         if kind == "export_pdf":
             _clear_old_pdfs(workbooks)
     log_msg(f"{'继续' if initialized else '开始'}{task_name}：{folder}（共 {len(workbooks)} 个文件）")
+    if kind == "export_pdf" and not options.get("choose_orientation", True):
+        log_msg("📄 这次不比较打印方向：每张表按 Excel 里的方向直接导出（以前定过方向、文件没改过的照旧用那个方向）")
 
     excel = None
     watchdog = ExcelWatchdog(lambda: log_msg(
@@ -3213,7 +3218,8 @@ def quick_task_workflow(kind: str) -> None:
                     )
                 elif kind == "export_pdf":
                     exported = _export_workbook_pdfs(
-                        get_excel, wb_path, folder, used_pdf_paths
+                        get_excel, wb_path, folder, used_pdf_paths,
+                        choose_orientation=options.get("choose_orientation", True),
                     )
                 else:
                     _normalize_workbook_file(get_excel, wb_path, folder)

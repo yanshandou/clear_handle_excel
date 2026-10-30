@@ -40,6 +40,14 @@ REASON_CLIPPED = "有文字超出单元格被裁掉，打印出来看不到（�
 REASON_HASH = "列宽不够，数字显示成了 ###"
 REASON_MISSING = "PDF 中未匹配到这格文字，无法确认是否需要显示；请人工核对，不自动调整行高"
 
+# 一格文字拼 PDF 片段最多试这么多步。重复的短文字（日期、○）很多时，对不上的格子要试的组合会多到
+# 算不完（2026-10-30 导出 PDF 定方向时卡了 15 分钟以上）；超过就停，按对不上处理（宁可多报）
+SEARCH_STEP_LIMIT = 5000
+
+
+class _SearchTooLong(Exception):
+    pass
+
 
 def normalize_text(text: str) -> str:
     """比对用：统一全角半角，去掉所有空白（换行位置在 Excel 和 PDF 里不同）"""
@@ -275,7 +283,10 @@ class _Matcher:
         blank_lines = _blank_line_offsets(text)
         text = normalize_text(text)
 
+        steps = self._budget(text)
+
         def search(pos: int, prev: Piece | None, chain: list[Chunk]) -> list[Chunk] | None:
+            steps()
             for chunk in self._chunks(text, pos, prev, loose, blank_lines.get(pos, 0)):
                 piece, start, end = chunk
                 nxt = pos + end - start
@@ -287,7 +298,24 @@ class _Matcher:
                 if result:
                     return result
             return None
-        return search(0, None, []) if text else None
+        if not text:
+            return None
+        try:
+            return search(0, None, [])
+        except _SearchTooLong:
+            return None
+
+    def _budget(self, text: str) -> Callable[[], None]:
+        count = 0
+
+        def step() -> None:
+            nonlocal count
+            count += 1
+            if count > SEARCH_STEP_LIMIT:
+                from core import debug_log
+                debug_log.event("⏳ 文字比对试了太多组合，按对不上处理", 文字=text[:12], 步数=SEARCH_STEP_LIMIT)
+                raise _SearchTooLong
+        return step
 
     def find_prefix(self, text: str) -> list[Chunk] | None:
         """只能拼出 text 开头一段时，返回能拼出的最长一段（后面的没打印出来）"""
@@ -296,8 +324,11 @@ class _Matcher:
         best: list[Chunk] = []
         best_len = 0
 
+        steps = self._budget(text)
+
         def search(pos: int, prev: Piece | None, chain: list[Chunk]) -> None:
             nonlocal best, best_len
+            steps()
             for chunk in self._chunks(text, pos, prev, prev is None, blank_lines.get(pos, 0)):
                 piece, start, end = chunk
                 if end != len(piece.key):
@@ -309,7 +340,10 @@ class _Matcher:
                     best, best_len = chain + [chunk], nxt
                 search(nxt, piece, chain + [chunk])
         if text:
-            search(0, None, [])
+            try:
+                search(0, None, [])
+            except _SearchTooLong:
+                pass  # 已经找到的最长一段照样用
         return best or None
 
 
