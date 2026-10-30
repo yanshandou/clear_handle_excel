@@ -289,13 +289,84 @@
 }
 
 .pr-summary {
-  flex: 1;
-  min-width: 0;
+  flex: none;
+  max-width: 30%;
   font-size: 14px;
   color: var(--ink-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 看到哪里：一行文字 + 一条进度条，高度固定，滚动时只改文字和宽度 */
+.pr-where {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 12px;
+  border-left: 2px solid var(--line-soft);
+}
+
+.pr-where-text {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  height: 20px;
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.pr-where-pos {
+  flex: none;
+  font-weight: 700;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.pr-where-excel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 700;
+}
+
+.pr-where-text .pr-doc-warn {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pr-track {
+  position: relative;
+  height: 10px;
+  background: var(--purple-soft);
+  border: 1.5px solid var(--ink-4);
+  border-radius: 999px;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.pr-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: var(--purple);
+  border-radius: 999px;
+}
+
+/* 每份 PDF 的分界 */
+.pr-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 0 0.5px var(--ink-4);
+  pointer-events: none;
 }
 
 .pr-sample {

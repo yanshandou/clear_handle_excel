@@ -16,6 +16,9 @@ let undoStack = [];     // [{pdf, op: 'add' | 'del', rect}]
 let drawing = null;
 let polling = null;
 const saving = {};      // pdf -> 正在进行的保存（同一份 PDF 按顺序存）
+let pageEls = [];       // 所有页面元素，从上到下
+let whereDoc = -1;      // 底部条上现在显示的是哪一份（换了才重建链接）
+let whereTick = 0;
 
 const $ = id => document.getElementById(id);
 
@@ -86,6 +89,7 @@ function renderDocs() {
   const box = $('prDocs');
   if (!pdfs.length) {
     box.innerHTML = '<p class="pr-empty">这个文件夹里没有 PDF。先在主页用「导出 PDF」导出，再回来复检。</p>';
+    pageEls = [];
     $('prBar').classList.add('hidden');
     updateStatus();
     return;
@@ -114,7 +118,81 @@ function renderDocs() {
   }).join('');
   pdfs.forEach((_, d) => renderRects(d));
   $('prBar').classList.remove('hidden');
+  pageEls = [...box.querySelectorAll('.pr-page')];
+  renderTrack();
   updateStatus();
+}
+
+/* ---------- 看到哪里（底部条） ---------- */
+
+const READ_LINE = 0.4; // 窗口上方 40% 处那条线落在哪一页，就算正在看哪一页
+
+function renderTrack() {
+  const total = pageEls.length;
+  let before = 0;
+  const ticks = pdfs.slice(0, -1).map(doc => {
+    before += doc.error ? 0 : doc.pages.length;
+    return total ? `<span class="pr-tick" style="left:${before / total * 100}%"></span>` : '';
+  }).join('');
+  $('prTrack').innerHTML = `<div id="prFill" class="pr-fill"></div>${ticks}`;
+  whereDoc = -1;
+  updateWhere();
+}
+
+// 读线所在的页（序号）和读线在这一页里的位置（0~1）；页面从上到下排，二分查找
+function readingPosition() {
+  // 滚到页面最底下时读线到不了最后一页的末尾，直接算看完了
+  if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) {
+    const last = pageEls[pageEls.length - 1].getBoundingClientRect();
+    if (last.top < window.innerHeight) return { index: pageEls.length - 1, within: 1 };
+  }
+  const line = window.innerHeight * READ_LINE;
+  let lo = 0, hi = pageEls.length - 1, found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (pageEls[mid].getBoundingClientRect().top <= line) { found = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  if (found < 0) return { index: 0, within: 0 };
+  const box = pageEls[found].getBoundingClientRect();
+  return { index: found, within: Math.min(1, Math.max(0, (line - box.top) / (box.height || 1))) };
+}
+
+function updateWhere() {
+  whereTick = 0;
+  if (!pageEls.length) {
+    $('prWhereText').innerHTML = '<span class="pr-where-pos">没有可看的页面</span>';
+    $('prFill').style.width = '0';
+    whereDoc = -1;
+    return;
+  }
+  const { index, within } = readingPosition();
+  const page = pageEls[index];
+  const d = Number(page.dataset.doc);
+  const p = Number(page.dataset.page);
+  const doc = pdfs[d];
+  $('prFill').style.width = `${(index + within) / pageEls.length * 100}%`;
+  const pos = `第 ${d + 1} / ${pdfs.length} 份 · 第 ${p + 1} / ${doc.pages.length} 页`;
+  if (whereDoc !== d) {
+    whereDoc = d;
+    const excel = doc.wb_name
+      ? `<span class="pr-where-excel" title="${escapeHtml(doc.wb_name)} › ${escapeHtml(doc.sheet)}">📗 ${excelLinkHtml(`${escapeHtml(doc.wb_name)} › ${escapeHtml(doc.sheet)}`, excelTarget(doc))}</span>`
+      : `<span class="pr-doc-warn" title="${escapeHtml(doc.pdf)}">⚠ ${escapeHtml(doc.name)} 找不到对应的 Excel</span>`;
+    $('prWhereText').innerHTML = `<span class="pr-where-pos"></span>${excel}`;
+  }
+  $('prWhereText').querySelector('.pr-where-pos').textContent = pos;
+}
+
+function scheduleWhere() {
+  if (!whereTick) whereTick = requestAnimationFrame(updateWhere);
+}
+
+// 点进度条：按点的位置换算成第几页的哪里，把那里滚到读线上
+function jumpTo(e) {
+  if (!pageEls.length) return;
+  const box = $('prTrack').getBoundingClientRect();
+  const at = Math.min(0.9999, Math.max(0, (e.clientX - box.left) / box.width)) * pageEls.length;
+  const page = pageEls[Math.floor(at)].getBoundingClientRect();
+  window.scrollBy({ top: page.top + page.height * (at % 1) - window.innerHeight * READ_LINE, behavior: 'smooth' });
 }
 
 /* ---------- 框 ---------- */
@@ -366,6 +444,9 @@ document.addEventListener('keydown', e => {
 $('prLoad').addEventListener('click', load);
 $('prFolder').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
 $('prApply').addEventListener('click', applyToExcel);
+$('prTrack').addEventListener('click', jumpTo);
+window.addEventListener('scroll', scheduleWhere, { passive: true });
+window.addEventListener('resize', scheduleWhere);
 {
   const color = highlight();
   document.documentElement.style.setProperty('--pr-mark', color.fill);

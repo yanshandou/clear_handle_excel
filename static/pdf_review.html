@@ -32,6 +32,11 @@
     <!-- 悬浮在窗口底部：待写入的标记数和「写进 Excel」，内容变化不改变高度 -->
     <section id="prBar" class="panel pr-bar hidden">
       <div id="prSummary" class="pr-summary"></div>
+      <!-- 现在看到哪一份、哪一页，对应的 Excel（点了打开）；下面的进度条点一下跳过去 -->
+      <div class="pr-where">
+        <div id="prWhereText" class="pr-where-text"></div>
+        <div id="prTrack" class="pr-track" title="点一下跳到那里"><div id="prFill" class="pr-fill"></div></div>
+      </div>
       <span id="prSample" class="pr-sample" title="和切字工作台用同一个标记颜色（在工作台里可以改）">标记颜色</span>
       <button id="prApply" type="button" class="btn btn-primary">🖍️ 写进 Excel</button>
     </section>
