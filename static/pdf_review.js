@@ -209,6 +209,61 @@ function setView(view, keep = true) {
   scheduleWhere();
 }
 
+/* ---------- 顶栏和底部条：自动隐藏、单击切换 ---------- */
+// 看 PDF 时顶栏和底部条会挡住内容：不碰它们 3 秒就藏起来（只往外滑，页面不挪）。
+// 单击页面（不拖动）切换显示 / 隐藏；双击是删框，第二下取消这次切换。鼠标移到窗口上下边缘也会出来。
+
+const BARS_HIDE_MS = 3000;
+const DOUBLE_CLICK_MS = 300;
+const EDGE_TOP = 50;
+const EDGE_BOTTOM = 90;
+let barsTimer = 0;
+let toggleTimer = 0;
+let barsHover = false;
+
+function barsHidden() {
+  return document.body.classList.contains('pr-bars-hidden');
+}
+
+function setBars(show) {
+  document.body.classList.toggle('pr-bars-hidden', !show);
+  clearTimeout(barsTimer);
+  if (show) barsTimer = setTimeout(autoHideBars, BARS_HIDE_MS);
+}
+
+function autoHideBars() {
+  // 鼠标在条上、开着对话框、正在画框、还在页面顶上（顶栏没挡住 PDF）时先不藏，过一会儿再看
+  if (barsHover || drawing || document.querySelector('dialog[open]') || !pdfs.length || window.scrollY < 120) {
+    barsTimer = setTimeout(autoHideBars, BARS_HIDE_MS);
+    return;
+  }
+  setBars(false);
+}
+
+function queueBarsToggle() {
+  if (toggleTimer) { // 第二下：是双击（删框），不切换
+    clearTimeout(toggleTimer);
+    toggleTimer = 0;
+    return;
+  }
+  toggleTimer = setTimeout(() => {
+    toggleTimer = 0;
+    setBars(barsHidden());
+  }, DOUBLE_CLICK_MS);
+}
+
+function watchBars() {
+  for (const el of [document.querySelector('.app-header'), $('prBar')]) {
+    el.addEventListener('mouseenter', () => { barsHover = true; if (barsHidden()) setBars(true); });
+    el.addEventListener('mouseleave', () => { barsHover = false; setBars(true); });
+  }
+  document.addEventListener('mousemove', e => {
+    if (drawing || !barsHidden()) return;
+    if (e.clientY < EDGE_TOP || e.clientY > window.innerHeight - EDGE_BOTTOM) setBars(true);
+  }, { passive: true });
+  setBars(true);
+}
+
 /* ---------- 在标记之间跳转 ---------- */
 
 // 所有框按从上到下排：第几页（全部 PDF 连起来算）+ 页内位置
@@ -458,6 +513,10 @@ function onPointerUp(e) {
   const { page, ghost } = drawing;
   ghost.remove();
   drawing = null;
+  if (b.width < MIN_DRAG_PX && b.height < MIN_DRAG_PX) {
+    queueBarsToggle(); // 只点了一下、没拖：切换顶栏和底部条
+    return;
+  }
   if (b.width < MIN_DRAG_PX || b.height < MIN_DRAG_PX) return;
   const doc = pdfs[Number(page.dataset.doc)];
   const p = Number(page.dataset.page);
@@ -610,6 +669,7 @@ $('prApply').addEventListener('click', applyToExcel);
 $('prTrack').addEventListener('click', jumpTo);
 $('prOpen').addEventListener('click', openNext);
 $('prPrev').addEventListener('click', () => jumpMark(-1));
+watchBars();
 $('prView').addEventListener('click', e => {
   const button = e.target.closest('[data-view]');
   if (button) setView(button.dataset.view);

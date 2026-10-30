@@ -470,3 +470,21 @@
 .pr-bar .btn:disabled {
   cursor: not-allowed;
 }
+
+/* 顶栏和底部条自动隐藏：只用 transform 滑出去，不占位的变化，页面不挪 */
+.app-header,
+.pr-bar {
+  transition: transform 0.25s ease, opacity 0.25s ease;
+}
+
+.pr-bars-hidden .app-header {
+  transform: translateY(-100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pr-bars-hidden .pr-bar {
+  transform: translateY(calc(100% + 16px));
+  opacity: 0;
+  pointer-events: none;
+}
