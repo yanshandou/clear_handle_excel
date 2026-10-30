@@ -10,7 +10,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from core import autofix, batch, bl_links, debug_log, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair
+from core import autofix, batch, bl_links, debug_log, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review
 from core.common import (
     STATIC_DIR,
     console_print,
@@ -172,6 +172,25 @@ class WebHandler(BaseHTTPRequestHandler):
             self._serve_static_file("color_repair.html")
         elif parsed.path == "/repair-hidden":
             self._serve_static_file("hidden_repair.html")
+        elif parsed.path == "/pdf-review":
+            self._serve_static_file("pdf_review.html")
+        elif parsed.path == "/api/pdf_review":
+            folder = parse_qs(parsed.query).get("folder", [""])[0]
+            try:
+                self._send_json({"ok": True, **pdf_review.list_pdfs(folder)})
+            except ValueError as err:
+                self._send_json({"ok": False, "error": str(err)}, status=400)
+        elif parsed.path == "/api/pdf_review/rects":
+            self._send_json({"ok": True, **pdf_review.rects_snapshot()})
+        elif parsed.path == "/api/pdf_review/page":
+            query = parse_qs(parsed.query)
+            try:
+                image = pdf_review.page_png(query.get("pdf", [""])[0], int(query.get("p", ["0"])[0]))
+            except ValueError:
+                self.send_error(404)
+                return
+            # 地址带 PDF 的修改时间（?v=），PDF 重新导出后地址就变，可以缓存
+            self._send_bytes(image, "image/png", cacheable=True)
         elif parsed.path == "/repair-bl-links":
             self._serve_static_file("bl_links.html")
         elif parsed.path == "/api/bl_links":
@@ -339,10 +358,12 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def _handle_post(self, payload: dict) -> None:
         with STATE_LOCK:
-            if STATE.get("maintenance"):
+            # PDF 人工复检画框只存记录、不碰 Excel：后台任务进行中也照常保存
+            if STATE.get("maintenance") and self.path != "/api/pdf_review/save":
                 name = ("颜色" if STATE["maintenance"].startswith("color_") else
                         "隐藏状态" if STATE["maintenance"].startswith("hidden_") else
-                        "BL 超链接" if STATE["maintenance"].startswith("bl_link_") else "引用错误")
+                        "BL 超链接" if STATE["maintenance"].startswith("bl_link_") else
+                        "PDF 人工复检标记" if STATE["maintenance"].startswith("pdf_") else "引用错误")
                 raise ValueError(f"正在检查或修复{name}，请等当前任务结束")
         if self.path == "/api/batch/start":
             options = {"folder": _require_folder(payload)}
@@ -380,6 +401,11 @@ class WebHandler(BaseHTTPRequestHandler):
         elif self.path == "/api/batch/clear_marks":
             mark_finder.clear_marks(_require_folder(payload))
             self._send_json({"ok": True})
+        elif self.path == "/api/pdf_review/save":
+            self._send_json({"ok": True, **pdf_review.save(payload.get("pdf") or "", payload.get("rects"))})
+        elif self.path == "/api/pdf_review/apply":
+            pdf_review.apply(payload.get("highlight"))
+            self._send_json({"ok": True, **pdf_review.rects_snapshot()})
         elif self.path == "/api/hidden_repair/run":
             hidden_repair.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}), payload.get("options"))
             self._send_json({"ok": True})

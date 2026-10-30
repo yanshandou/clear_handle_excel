@@ -3068,6 +3068,9 @@ def _export_workbook_pdfs(
             if not prepare_print_layout(sheet, str(wb_path), pdf_path):
                 _export_sheet_pdf(sheet, pdf_path)
             exported.append(pdf_path)
+            with STATE_LOCK:
+                # PDF 人工复检按这个找回是哪个文件的哪张表
+                STATE.setdefault("pdf_exports", {})[str(pdf_path)] = {"wb_path": str(wb_path), "sheet": str(sheet.Name)}
             update_file_progress(
                 wb_label, exported_pdfs=len(exported),
                 current_action=f"正在导出 PDF（已导出 {len(exported)} 份）...",
