@@ -40,6 +40,13 @@ EXCEL_COPY_SUFFIX_PATTERN = re.compile(r"\s*\(\d+\)[\s_\-・.]*$")
 MMDD_SUFFIX_PATTERN = re.compile(r"(?<![a-zA-Z\d])(\d{2})(\d{2})[\s_\-・.]*$")
 # 工具自动生成的工作表（如 自動生成_引数、自動生成_JSON），没有对应原表，精简 Sheet 时默认删除
 AUTO_GENERATED_PREFIXES = ("自動生成", "自动生成")
+# 表名多出的英文词里像临时版本的（サンプル 与 サンプルtest 仍标待定），其余英文词（JSON、CSV、PDF…）算另一张表
+ENGLISH_TEMP_WORDS = {"new", "tmp", "temp", "test", "wk", "work", "draft", "org", "orig", "original", "prev", "ver"}
+# 加在表名前面、像临时版本的词（仮一覧、作業用一覧 仍标待定）；其余前缀（精神科基本療養費 与 基本療養費）算另一张表
+TEMP_PREFIX_WORDS = ENGLISH_TEMP_WORDS | {
+    "仮", "作業", "作業用", "テスト", "試し", "検証", "検証用", "確認", "確認用", "修正前", "修正後", "変更前", "変更後",
+    "元", "原本", "最新", "最終", "下書き", "ドラフト", "参考", "控え",
+}
 # 去掉备份标记、找原表时额外去掉的写法（「Sheet1のコピー」的「の」、「Copy of 一覧」的「of」）
 COPY_PHRASE_PATTERN = re.compile(r"copy\s+of|の?コピー|的?副本", re.IGNORECASE)
 # 版本号（如 _v2.4、ver1.0），比对原表时忽略
@@ -350,10 +357,26 @@ def find_contained_sheets(sheet_names: list[str]) -> list[str]:
                 if not cuts_number:
                     break
                 start = text.find(ref, start + 1)
-            if start != -1:
+            if start != -1 and not _is_different_sheet(text[:start], text[start + len(ref):], ref):
                 contained.append(name)
                 break
     return contained
+
+
+def _is_different_sheet(prefix: str, suffix: str, ref: str) -> bool:
+    """名称包含另一个表名，但多出的部分说的是另一种东西，不标待定（用户 2026-10-30）：
+    - 只在前面多出一段（精神科基本療養費 与 基本療養費、JSONサンプル 与 サンプル）：前缀是限定词，指另一类东西；
+      仮/作業用/テスト/new/tmp 这类像临时版本的前缀除外
+    - 日文表名多出的部分只是英文词（一覧 与 一覧CSV）；new/tmp/test/work 这类除外
+    后面多出日文（一覧 与 一覧詳細）仍可能是副本或明细，照旧待定。
+    """
+    if prefix and not suffix:
+        return prefix not in TEMP_PREFIX_WORDS
+    parts = [p for p in (prefix, suffix) if p]
+    return (
+        bool(parts) and not ref.isascii()
+        and all(re.fullmatch(r"[a-z]{2,}", p) and p not in ENGLISH_TEMP_WORDS for p in parts)
+    )
 
 
 def is_uncertain_name(name: str) -> bool:

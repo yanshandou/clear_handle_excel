@@ -252,6 +252,19 @@ class ContainedSheetTests(unittest.TestCase):
         self.assertEqual(find_contained_sheets(["概要", "概要_old", "概要_old詳細"]), ["概要_old詳細"])
         self.assertEqual(find_contained_sheets(["一覧1340", "一覧"]), ["一覧1340"])
 
+    def test_english_word_prefix_is_a_different_sheet(self):
+        # FLPLE0010_レンタル申込書.xlsx：サンプル 与 JSONサンプル 不是一回事，不标待定（用户 2026-10-30）
+        names = ["変更履歴", "概要", "モデル設計書", "レイアウト", "サンプル", "JSONサンプル"]
+        self.assertEqual(find_contained_sheets(names), [])
+        self.assertEqual(find_contained_sheets(["一覧", "CSV一覧", "一覧PDF"]), [])
+        # BIlryouRyouyouhiMeisai_スケジュール取込.xlsx：基本療養費 与 精神科基本療養費 也不是一回事（前面加的是限定词）
+        self.assertEqual(find_contained_sheets(["算定仕様", "基本療養費", "精神科基本療養費", "管理療養費"]), [])
+        # 像临时版本的前缀照旧待定
+        self.assertEqual(find_contained_sheets(["一覧", "仮一覧", "作業用一覧", "test一覧"]), ["仮一覧", "作業用一覧", "test一覧"])
+        # 临时版本的英文词、日文多出部分、纯英文表名照旧待定
+        self.assertEqual(find_contained_sheets(["サンプル", "サンプルtest", "一覧", "一覧詳細", "Sheet", "SheetAB"]),
+                         ["サンプルtest", "一覧詳細", "SheetAB"])
+
     def test_layout_option_is_not_uncertain(self):
         names = ["レイアウト", "レイアウト_オプション", "レイアウト詳細"]
         self.assertEqual(find_contained_sheets(names), ["レイアウト詳細"])
