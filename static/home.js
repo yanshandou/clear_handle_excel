@@ -180,6 +180,8 @@ function renderDialog() {
   if (busyOther && phase === 'form' && !starting) {
     hint.textContent = `后台正在执行「${overview.progress.task_name}」，完成后才能开始`;
   }
+  // 导出完成后可以直接去人工复检这些 PDF
+  document.getElementById('taskReviewBtn').classList.toggle('hidden', activeKind !== 'export_pdf' || phase !== 'done');
   if (phase === 'running' || phase === 'done') renderRunBox();
 }
 
