@@ -2833,6 +2833,23 @@ button.preview-sheet-tag:active {
   margin-top: 0;
 }
 
+/* 文件名长短不一，换不换行会让窗口一会儿出滚动条一会儿没有：固定一行，放不下用省略号，悬停看全文 */
+.task-run-box .mini-progress-info {
+  flex-wrap: nowrap;
+}
+
+#taskStepText {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#taskStatsText {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .task-result {
   display: flex;
   flex-direction: column;

@@ -211,7 +211,9 @@ function renderDialog() {
 function renderRunBox() {
   const p = overview.progress;
   const pct = Number(p.progress_pct || 0);
-  document.getElementById('taskStepText').textContent = p.current_step || '准备中...';
+  const stepText = document.getElementById('taskStepText');
+  stepText.textContent = p.current_step || '准备中...';
+  stepText.title = stepText.textContent;
   // 进度百分比把失败文件也计为已结束，这里分开显示完成与失败数
   document.getElementById('taskStatsText').textContent =
     `完成 ${p.completed_files}/${p.total_files}` +
