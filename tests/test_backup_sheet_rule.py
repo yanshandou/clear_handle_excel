@@ -128,6 +128,14 @@ class FindBackupSheetsTests(unittest.TestCase):
         self.assertEqual(find_backup_sheets(["写真管理bk"]), [])
         self.assertEqual(find_backup_sheets(["一覧", "Bkup一覧", "設定", "SBK設定"]), [])
 
+    def test_explicit_backup_word_needs_no_original_in_clean(self):
+        # 用户 2026-10-30：ｂｋ 也要删。精简 Sheet 里写明 bk/バックアップ 的表不需要原表，后面带编号也算
+        for name in ["写真管理ｂｋ", "写真管理ＢＫ２", "写真管理_bk1", "ｂｋ", "画面_backup", "画面バックアップ", "画面备份"]:
+            self.assertEqual(find_clean_targets(["概要", name]), [name], name)
+        self.assertEqual(find_clean_targets(["概要", "Bkup一覧", "SBK設定", "画面_old", "画面コピー"]), [])
+        # 导出 PDF 用的通用备份规则不变：没有原表照常导出
+        self.assertEqual(find_backup_sheets(["概要", "写真管理ｂｋ"]), [])
+
     def test_every_marker_requires_its_original(self):
         names = [
             "機能設計", "機能設計（バックアップ）", "旧機能設計", "Copy of 機能設計", "機能設計_old",
@@ -238,7 +246,10 @@ class ContainedSheetTests(unittest.TestCase):
 
     def test_backup_targets_are_not_used_as_reference(self):
         names = ["概要", "概要_bak", "概要_bak詳細"]
-        self.assertEqual(find_contained_sheets(names), ["概要_bak詳細"])
+        # 写明 bak 的表不需要原表也默认删除（用户 2026-10-30），所以不再落到待定
+        self.assertEqual(find_clean_targets(names), ["概要_bak", "概要_bak詳細"])
+        self.assertEqual(find_contained_sheets(names), [])
+        self.assertEqual(find_contained_sheets(["概要", "概要_old", "概要_old詳細"]), ["概要_old詳細"])
         self.assertEqual(find_contained_sheets(["一覧1340", "一覧"]), ["一覧1340"])
 
     def test_layout_option_is_not_uncertain(self):
