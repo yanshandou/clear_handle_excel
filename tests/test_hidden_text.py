@@ -398,6 +398,24 @@ class HiddenTextTests(unittest.TestCase):
         self.assertEqual(result[0]["text"], "文字列(100)")
         self.assertEqual(result[0]["reason"], REASON_TRUNCATED)
 
+    def test_many_repeated_short_pieces_give_up_quickly(self):
+        """三列紧挨着的「1」叠 20 行，一格对不上时组合有 3^19 种：超过步数上限就停，按对不上处理"""
+        import time
+        from core.hidden_text import _Matcher
+        pieces = []
+        for row in range(20):
+            for col in range(3):
+                x, y = 10 + col * 6, 10 + row * 12
+                piece = Piece(0, [("1", (x, y, x + 5, y + 10), True)])
+                piece.rules = []
+                pieces.append(piece)
+        matcher = _Matcher(pieces)
+        started = time.perf_counter()
+        self.assertIsNone(matcher.find("1" * 19 + "2", True))
+        self.assertIsNotNone(matcher.find_prefix("1" * 19 + "2"))
+        self.assertLess(time.perf_counter() - started, 5)
+        self.assertIsNotNone(matcher.find("1" * 20, True))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3677,3 +3677,9 @@ button.preview-sheet-tag:active {
 .debug-log-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
 .debug-log-select { max-width: 100%; min-width: 0; padding: 5px 8px; border: 1px solid currentColor; border-radius: 8px; background: transparent; color: inherit; font: inherit; font-size: 13px; }
 .debug-log-select option { color: #1f2340; background: #fff; }
+
+/* 导出 PDF：是否比较打印方向 */
+.task-option {
+  align-self: flex-start;
+  line-height: 1.5;
+}
