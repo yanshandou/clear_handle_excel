@@ -137,7 +137,7 @@ function renderTrack() {
     before += doc.error ? 0 : doc.pages.length;
     return total ? `<span class="pr-tick" style="left:${before / total * 100}%"></span>` : '';
   }).join('');
-  $('prTrack').innerHTML = `<div id="prFill" class="pr-fill"></div>${ticks}`;
+  $('prTrack').innerHTML = `<div id="prFill" class="pr-fill"></div>${ticks}<div id="prDots"></div>`;
   whereDoc = -1;
   updateWhere();
 }
@@ -145,7 +145,7 @@ function renderTrack() {
 // 读线所在的页（序号）和读线在这一页里的位置（0~1）；页面从上到下排，二分查找
 function readingPosition() {
   // 滚到页面最底下时读线到不了最后一页的末尾，直接算看完了
-  if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) {
+  if (atBottom()) {
     const last = pageEls[pageEls.length - 1].getBoundingClientRect();
     if (last.top < window.innerHeight) return { index: pageEls.length - 1, within: 1 };
   }
@@ -166,6 +166,7 @@ function updateWhere() {
     $('prWhereText').innerHTML = '<span class="pr-where-pos">没有可看的页面</span>';
     $('prFill').style.width = '0';
     whereDoc = -1;
+    renderMarkNav();
     return;
   }
   const { index, within } = readingPosition();
@@ -183,6 +184,83 @@ function updateWhere() {
     $('prWhereText').innerHTML = `<span class="pr-where-pos"></span>${excel}`;
   }
   $('prWhereText').querySelector('.pr-where-pos').textContent = pos;
+  renderMarkNav();
+}
+
+/* ---------- 在标记之间跳转 ---------- */
+
+// 所有框按从上到下排：第几页（全部 PDF 连起来算）+ 页内位置
+function markList() {
+  const list = [];
+  let before = 0;
+  pdfs.forEach((doc, d) => {
+    if (!doc.error) {
+      for (const rect of rects[doc.pdf] || []) {
+        const [, h] = doc.pages[rect.page] || [0, 1];
+        list.push({ d, rect, at: before + rect.page + rect.y0 / h, x: rect.x0 });
+      }
+      before += doc.pages.length;
+    }
+  });
+  return list.sort((a, b) => a.at - b.at || a.x - b.x);
+}
+
+// 框的上边在页面上的位置（相对窗口顶）
+function markTop(mark) {
+  const el = document.querySelector(`.pr-page[data-doc="${mark.d}"][data-page="${mark.rect.page}"]`);
+  if (!el) return null;
+  const box = el.getBoundingClientRect();
+  const [, h] = pdfs[mark.d].pages[mark.rect.page];
+  return box.top + box.height * mark.rect.y0 / h;
+}
+
+const NAV_SLACK = 4; // 刚跳到的框就停在读线上，差几像素也算「当前这个」
+
+function atBottom() {
+  return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+}
+
+// 读线上方（含读线上）有几个框：就是「标记 k / N」的 k。滚到最底下时，窗口里看得到的都算看过
+function marksPassed(tops) {
+  const line = atBottom() ? window.innerHeight : window.innerHeight * READ_LINE + NAV_SLACK;
+  let k = 0;
+  while (k < tops.length && tops[k] !== null && tops[k] <= line) k += 1;
+  return k;
+}
+
+// 上一个：读线上方最近的一个框
+function previousMark(tops) {
+  const line = window.innerHeight * READ_LINE - NAV_SLACK;
+  let i = -1;
+  tops.forEach((top, j) => { if (top !== null && top < line) i = j; });
+  return i;
+}
+
+function renderMarkNav() {
+  const list = markList();
+  const total = pageEls.length || 1;
+  const dots = $('prDots');
+  if (dots) dots.innerHTML = list.map(m => `<span class="pr-dot" style="left:${m.at / total * 100}%"></span>`).join('');
+  const tops = list.map(markTop);
+  const k = marksPassed(tops);
+  $('prNavPos').textContent = `标记 ${k} / ${list.length}`;
+  $('prPrev').disabled = previousMark(tops) < 0;
+  $('prNext').disabled = k >= list.length;
+}
+
+function jumpMark(step) {
+  const list = markList();
+  const tops = list.map(markTop);
+  const i = step > 0 ? marksPassed(tops) : previousMark(tops);
+  if (i < 0 || i >= list.length || tops[i] === null) return;
+  const mark = list[i];
+  window.scrollBy({ top: tops[i] - window.innerHeight * READ_LINE, behavior: 'smooth' });
+  const el = document.querySelector(`.pr-page[data-doc="${mark.d}"] .pr-rect[data-id="${mark.rect.id}"]`);
+  if (el) {
+    el.classList.remove('is-flash');
+    void el.offsetWidth; // 重新播放闪烁
+    el.classList.add('is-flash');
+  }
 }
 
 function scheduleWhere() {
@@ -230,6 +308,7 @@ function renderRects(d) {
 }
 
 function updateStatus() {
+  scheduleWhere(); // 框增删后「标记 k / N」和进度条上的点跟着变
   const all = Object.values(rects).flat();
   const pending = all.filter(r => r.state !== 'marked').length;
   const marked = all.length - pending;
@@ -508,6 +587,8 @@ $('prFolder').addEventListener('keydown', e => { if (e.key === 'Enter') load(); 
 $('prApply').addEventListener('click', applyToExcel);
 $('prTrack').addEventListener('click', jumpTo);
 $('prOpen').addEventListener('click', openNext);
+$('prPrev').addEventListener('click', () => jumpMark(-1));
+$('prNext').addEventListener('click', () => jumpMark(1));
 $('prOpenReset').addEventListener('click', resetOpened);
 window.addEventListener('scroll', scheduleWhere, { passive: true });
 window.addEventListener('resize', scheduleWhere);

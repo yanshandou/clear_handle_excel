@@ -34,7 +34,14 @@
       <div id="prSummary" class="pr-summary"></div>
       <!-- 现在看到哪一份、哪一页，对应的 Excel（点了打开）；下面的进度条点一下跳过去 -->
       <div class="pr-where">
-        <div id="prWhereText" class="pr-where-text"></div>
+        <div class="pr-where-row">
+          <div id="prWhereText" class="pr-where-text"></div>
+          <div class="pr-nav" role="group" aria-label="在标记之间跳转">
+            <button id="prPrev" type="button" class="btn btn-outline btn-sm" title="跳到上一个标记">◀ 上一个</button>
+            <span id="prNavPos" class="pr-nav-pos">标记 0 / 0</span>
+            <button id="prNext" type="button" class="btn btn-outline btn-sm" title="跳到下一个标记">下一个 ▶</button>
+          </div>
+        </div>
         <div id="prTrack" class="pr-track" title="点一下跳到那里"><div id="prFill" class="pr-fill"></div></div>
       </div>
       <button id="prOpen" type="button" class="btn btn-outline" title="网页上画了框的 Excel（写没写进 Excel 都算），每次最多打开 5 个这一轮还没打开过的">📂 打开下一批（未开 0 / 共 0 个）</button>

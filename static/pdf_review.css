@@ -309,7 +309,15 @@
   border-left: 2px solid var(--line-soft);
 }
 
+.pr-where-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
 .pr-where-text {
+  flex: 1;
   display: flex;
   align-items: baseline;
   gap: 10px;
@@ -355,6 +363,49 @@
   width: 0;
   background: var(--purple);
   border-radius: 999px;
+}
+
+/* 上一个 / 下一个标记：数字宽度固定，翻来翻去按钮不挪 */
+.pr-nav {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pr-nav .btn {
+  padding: 2px 10px;
+  font-size: 12px;
+}
+
+.pr-nav-pos {
+  min-width: 7.5em;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 进度条上每个标记一个小点 */
+.pr-dot {
+  position: absolute;
+  top: 1px;
+  width: 4px;
+  height: 5px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--pr-mark, #c0007a);
+  pointer-events: none;
+}
+
+/* 跳到的标记闪两下（只改阴影，不挪位置） */
+.pr-rect.is-flash {
+  animation: pr-flash 0.6s ease-in-out 2;
+}
+
+@keyframes pr-flash {
+  50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--pr-mark, #c0007a) 45%, transparent); }
 }
 
 /* 每份 PDF 的分界 */
