@@ -339,24 +339,6 @@ def maps_status() -> dict[str, dict]:
         return {pdf: {"state": _state(pdf), "error": (_fresh(pdf) or {}).get("error")} for pdf in pdfs}
 
 
-def map_for(pdf: str) -> dict:
-    """网页悬停时显示格子地址用：这份 PDF 每页的行列位置。还没算好就插到最前面去算"""
-    path = Path(pdf).resolve()
-    if not _in_folder(path) or path.suffix.lower() != ".pdf":
-        raise ValueError("只能查看当前文件夹里的 PDF，请先重新加载")
-    with _COND:
-        found = _fresh(str(path))
-    if not found:
-        prepare([str(path)], first=True)
-        with _COND:
-            return {"state": _state(str(path))}
-    if found["state"] == "error":
-        return {"state": "error", "error": found["error"]}
-    pages = [{"rows": [[n, a, b] for n, (a, b) in rows.items()], "cols": [[n, a, b] for n, (a, b) in cols.items()]}
-             for rows, cols in zip(found["rows"], found["cols"])]
-    return {"state": "ready", "sheet": found["sheet"], "pages": pages}
-
-
 def _owner_of(pdf: str) -> dict | None:
     if not Path(pdf).is_file():
         return None

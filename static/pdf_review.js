@@ -1,7 +1,7 @@
 'use strict';
 // PDF 人工复检：导出的 PDF 整页显示，看到问题点一下，就用 Excel 打开并选中那一格；
 // 填了原始备份文件夹时，备份也一起打开（只读）、跳到同一格，左右对照着改。
-// 每份 PDF 的行列位置由后台算（只算一次），算好后鼠标移到页面上就显示是哪一格。
+// 每份 PDF 的行列位置由后台算（只算一次），点的格子也由后台按它算。
 
 const FOLDER_KEY = 'clear_handle_excel.lastFolder';
 const OLD_FOLDER_KEY = 'clear_handle_excel.oldFolder'; // 和修复颜色 / 引用 / 隐藏页共用
@@ -12,7 +12,7 @@ const POLL_MS = 1500;
 
 let folder = '';
 let pdfs = [];          // [{pdf, name, v, pages: [[宽, 高]], wb_path, wb_name, sheet, guessed, error}]
-let maps = {};          // pdf -> {state: ready / error / working / pending / none, error, sheet, pages}
+let maps = {};          // pdf -> {state: ready / error / working / pending / none, error}
 let pageEls = [];       // 所有页面元素，从上到下
 let whereDoc = -1;      // 底部条上现在显示的是哪一份（换了才重建链接）
 let whereTick = 0;
@@ -115,11 +115,7 @@ const STATE_TEXT = {
 };
 
 function mergeMaps(status) {
-  for (const [pdf, s] of Object.entries(status || {})) {
-    const old = maps[pdf] || {};
-    // 页面上已经拿到的行列位置留着；后台说变了（PDF 重新导出）才扔掉
-    maps[pdf] = s.state === 'ready' && old.pages ? old : { state: s.state, error: s.error };
-  }
+  for (const [pdf, s] of Object.entries(status || {})) maps[pdf] = { state: s.state, error: s.error };
 }
 
 function updateStatus() {
@@ -157,42 +153,6 @@ function startPolling() {
   }, POLL_MS);
 }
 
-// 悬停显示格子地址要用：拿这份 PDF 的行列位置（一份只拿一次）
-const fetching = {};
-async function ensureMap(pdf) {
-  const m = maps[pdf];
-  if (m?.pages || fetching[pdf]) return;
-  fetching[pdf] = true;
-  try {
-    const data = await api(`/api/pdf_review/map?pdf=${encodeURIComponent(pdf)}`);
-    maps[pdf] = data.state === 'ready' ? { state: 'ready', sheet: data.sheet, pages: data.pages } : data;
-    if (data.state !== 'ready' && data.state !== 'error') startPolling();
-    updateStatus();
-  } catch (_) {
-    /* 鼠标再移过来时再拿 */
-  } finally {
-    delete fetching[pdf];
-  }
-}
-
-// 和后台 cell_at 同样的算法：点落在哪一行、哪一列（几行重叠时取最窄的，缝里 1 个点以内也算）
-function lineAt(bands, value) {
-  for (const slack of [0, 1]) {
-    let best = null;
-    for (const [n, a, b] of bands) {
-      if (a - slack <= value && value <= b + slack && (!best || b - a < best[1])) best = [n, b - a];
-    }
-    if (best) return best[0];
-  }
-  return null;
-}
-
-function columnLetters(n) {
-  let s = '';
-  for (; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s;
-  return s;
-}
-
 // 页面上的点 → {pdf, page, x, y}（PDF 点）
 function pointOn(pageEl, e) {
   const doc = pdfs[Number(pageEl.dataset.doc)];
@@ -202,50 +162,7 @@ function pointOn(pageEl, e) {
   return { doc, pdf: doc.pdf, page: p, x: (e.clientX - box.left) / box.width * w, y: (e.clientY - box.top) / box.height * h };
 }
 
-function cellAt(pt) {
-  const m = maps[pt.pdf];
-  const page = m?.pages?.[pt.page];
-  if (!page) return null;
-  const row = lineAt(page.rows, pt.y);
-  const col = lineAt(page.cols, pt.x);
-  return row && col ? `${columnLetters(col)}${row}` : null;
-}
-
-/* ---------- 悬停提示、点一下打开 ---------- */
-
-function hoverText(pt) {
-  if (!pt.doc.wb_path) return '找不到对应的 Excel';
-  const m = maps[pt.pdf] || { state: 'none' };
-  if (m.state === 'ready') {
-    if (!m.pages) return '';
-    const cell = cellAt(pt);
-    return cell ? `${m.sheet}!${cell} · 点一下打开` : '表格外 · 点一下打开工作表';
-  }
-  if (m.state === 'error') return '定位不了，点一下只打开工作表';
-  return '正在定位这张表… 点了会等算好再打开';
-}
-
-function showHover(pageEl, e) {
-  const pt = pointOn(pageEl, e);
-  const m = maps[pt.pdf];
-  if (pt.doc.wb_path && !m?.pages && !['working', 'pending', 'error'].includes(m?.state)) ensureMap(pt.pdf);
-  const tip = pageEl.querySelector('.pr-hover') || pageEl.appendChild(Object.assign(document.createElement('div'), { className: 'pr-hover' }));
-  const text = hoverText(pt);
-  tip.textContent = text;
-  tip.hidden = !text;
-  const box = pageEl.getBoundingClientRect();
-  const x = e.clientX - box.left, y = e.clientY - box.top;
-  // 提示放在鼠标右下方；靠右 / 靠下时翻到另一边，不出页面
-  tip.style.left = `${x + 14}px`;
-  tip.style.top = `${y + 16}px`;
-  tip.classList.toggle('flip-x', x > box.width - 260);
-  tip.classList.toggle('flip-y', y > box.height - 50);
-}
-
-function hideHover(pageEl) {
-  const tip = pageEl.querySelector('.pr-hover');
-  if (tip) tip.hidden = true;
-}
+/* ---------- 点一下打开 ---------- */
 
 function flashAt(pageEl, e) {
   const box = pageEl.getBoundingClientRect();
@@ -450,12 +367,6 @@ document.addEventListener('error', e => {
 document.addEventListener('pointerdown', onPointerDown);
 document.addEventListener('pointerup', onPointerUp);
 document.addEventListener('pointercancel', () => { press = null; });
-$('prDocs').addEventListener('mousemove', e => {
-  const pageEl = e.target.closest('.pr-page');
-  document.querySelectorAll('.pr-hover:not([hidden])').forEach(tip => { if (tip.parentElement !== pageEl) tip.hidden = true; });
-  if (pageEl && !pageEl.matches('.is-loading, .is-failed')) showHover(pageEl, e);
-});
-$('prDocs').addEventListener('mouseleave', () => document.querySelectorAll('.pr-page').forEach(hideHover));
 $('prLoad').addEventListener('click', load);
 $('prFolder').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
 $('prTrack').addEventListener('click', jumpTo);

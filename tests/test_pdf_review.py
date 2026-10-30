@@ -124,14 +124,14 @@ class ReviewFolderTests(unittest.TestCase):
         self.prepare.reset_mock()
         self.assertEqual(pdf_review.open_at(str(self.pdf), 0, 210, 110), {"pending": True})
         self.prepare.assert_called_once_with([str(self.pdf.resolve())], first=True)
-        self.assertEqual(pdf_review.map_for(str(self.pdf))["state"], "none")
 
     def test_map_is_dropped_when_pdf_changes(self):
         pdf_review.list_pdfs(str(self.tmp))
         self.ready()
-        self.assertEqual(pdf_review.map_for(str(self.pdf))["pages"], [{"rows": [[5, 100.0, 120.0]], "cols": [[3, 200.0, 260.0]]}])
+        self.assertEqual(pdf_review.maps_status()[str(self.pdf.resolve())]["state"], "ready")
         pdf_review._MAPS[str(self.pdf.resolve())]["v"] -= 1  # PDF 重新导出过
-        self.assertNotEqual(pdf_review.map_for(str(self.pdf))["state"], "ready")
+        self.assertEqual(pdf_review.maps_status()[str(self.pdf.resolve())]["state"], "none")
+        self.assertEqual(pdf_review.open_at(str(self.pdf), 0, 210, 110), {"pending": True})
 
     def test_open_current_only(self):
         pdf_review.list_pdfs(str(self.tmp))

@@ -179,30 +179,6 @@
   overflow: hidden;
 }
 
-/* 鼠标旁边的格子地址：浮在页面上，不占位置 */
-.pr-hover {
-  position: absolute;
-  z-index: 5;
-  padding: 3px 10px;
-  font-size: 13px;
-  font-weight: 700;
-  white-space: nowrap;
-  color: var(--ink);
-  background: rgba(255, 255, 255, 0.96);
-  border: 2px solid var(--ink);
-  border-radius: 10px;
-  box-shadow: var(--hard-sm);
-  pointer-events: none;
-}
-
-.pr-hover.flip-x {
-  transform: translateX(calc(-100% - 28px));
-}
-
-.pr-hover.flip-y {
-  margin-top: -44px;
-}
-
 /* 点下去的地方闪一圈，知道点到了 */
 .pr-click {
   position: absolute;

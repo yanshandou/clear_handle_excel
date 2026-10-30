@@ -182,11 +182,6 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": str(err)}, status=400)
         elif parsed.path == "/api/pdf_review/maps":
             self._send_json({"ok": True, "maps": pdf_review.maps_status()})
-        elif parsed.path == "/api/pdf_review/map":
-            try:
-                self._send_json({"ok": True, **pdf_review.map_for(parse_qs(parsed.query).get("pdf", [""])[0])})
-            except ValueError as err:
-                self._send_json({"ok": False, "error": str(err)}, status=400)
         elif parsed.path == "/api/pdf_review/page":
             query = parse_qs(parsed.query)
             try:
