@@ -83,6 +83,12 @@ function saveLastFolder(folder) {
   } catch (e) {}
 }
 
+// 人工复检页面打开时读这个文件夹：先记下输入框里的路径
+function openPdfReview() {
+  const folder = document.getElementById('taskFolderInput').value.trim();
+  if (folder) saveLastFolder(folder);
+}
+
 function isTaskRunning(kind) {
   return Boolean(overview && overview.busy && overview.job && overview.job.kind === kind);
 }
@@ -203,8 +209,9 @@ function renderDialog() {
   if (busyOther && phase === 'form' && !starting) {
     hint.textContent = `后台正在执行「${overview.progress.task_name}」，完成后才能开始`;
   }
-  // 导出完成后可以直接去人工复检这些 PDF
-  document.getElementById('taskReviewBtn').classList.toggle('hidden', activeKind !== 'export_pdf' || phase !== 'done');
+  // 导出窗口里一直有人工复检的入口（以前导出过、窗口关掉了也能进去）；导出进行中 PDF 还不全，先不显示
+  document.getElementById('taskReviewBtn').classList.toggle(
+    'hidden', activeKind !== 'export_pdf' || starting || phase === 'running');
   if (phase === 'running' || phase === 'done') renderRunBox();
 }
 

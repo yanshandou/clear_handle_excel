@@ -190,7 +190,7 @@
     <div class="task-dialog-foot">
       <span id="taskHint" class="task-hint"></span>
       <button type="button" class="btn btn-outline" onclick="closeTask()">关闭</button>
-      <a href="/pdf-review" id="taskReviewBtn" class="btn btn-success hidden" title="在导出的 PDF 上圈出问题，原 Excel 对应单元格标色">🖍️ 人工复检</a>
+      <a href="/pdf-review" id="taskReviewBtn" class="btn btn-success hidden" onclick="openPdfReview()" title="复检上面这个文件夹里已经导出的 PDF：在 PDF 上圈出问题，原 Excel 对应单元格标色">🖍️ 人工复检</a>
       <button type="button" class="btn btn-primary" id="taskPrimaryBtn" onclick="onPrimaryAction()">开始</button>
     </div>
   </dialog>
