@@ -126,6 +126,46 @@
   -webkit-user-select: none;
 }
 
+/* 页面大小：大图铺满宽度；中图整页放进窗口（扣掉顶栏和底部条）；小图固定高度，一行能放几页放几页。
+   --ar 是页面宽 / 高，宽度按它换算，高度跟着 aspect-ratio 走 */
+.pr-pages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.view-medium .pr-pages {
+  align-items: center;
+}
+
+.view-medium .pr-page {
+  width: min(100%, calc((100vh - 200px) * var(--ar)));
+}
+
+.view-small .pr-pages {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.view-small .pr-page {
+  width: min(100%, calc(320px * var(--ar)));
+}
+
+.view-small .pr-chip {
+  font-size: 12px;
+  padding: 3px 8px;
+}
+
+.view-small .pr-badge {
+  font-size: 11px;
+  padding: 0 5px;
+}
+
+.pr-view {
+  flex: none;
+}
+
 .pr-img {
   display: block;
   width: 100%;

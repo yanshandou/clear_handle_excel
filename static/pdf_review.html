@@ -27,7 +27,7 @@
       <p id="prStatus" class="pr-status" role="status" aria-live="polite">输入文件夹后点「加载 PDF」。</p>
     </section>
 
-    <section id="prDocs" class="pr-docs" aria-label="PDF 列表"></section>
+    <section id="prDocs" class="pr-docs view-large" aria-label="PDF 列表"></section>
 
     <!-- 悬浮在窗口底部：待写入的标记数和「写进 Excel」，内容变化不改变高度 -->
     <section id="prBar" class="panel pr-bar hidden">
@@ -43,6 +43,11 @@
           </div>
         </div>
         <div id="prTrack" class="pr-track" title="点一下跳到那里"><div id="prFill" class="pr-fill"></div></div>
+      </div>
+      <div id="prView" class="pv-size-switch pr-view" role="group" aria-label="页面大小">
+        <button type="button" class="btn btn-outline btn-sm" data-view="large" title="每页铺满页面宽度">大图</button>
+        <button type="button" class="btn btn-outline btn-sm" data-view="medium" title="每页按窗口高度整页显示">中图</button>
+        <button type="button" class="btn btn-outline btn-sm" data-view="small" title="一行放多页，放几页看屏幕和页面宽度">小图</button>
       </div>
       <button id="prOpen" type="button" class="btn btn-outline" title="网页上画了框的 Excel（写没写进 Excel 都算），每次最多打开 5 个这一轮还没打开过的">📂 打开下一批（未开 0 / 共 0 个）</button>
       <button id="prOpenReset" type="button" class="btn btn-outline btn-sm" title="清掉打开记录，下次从头开始打开（不关闭 Excel）">重置打开记录</button>

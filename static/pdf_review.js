@@ -4,6 +4,8 @@
 // 「写进 Excel」由后台找出框住的单元格，在原 Excel 里标色。
 
 const FOLDER_KEY = 'clear_handle_excel.lastFolder';
+const VIEW_KEY = 'clear_handle_excel.pdfReviewView';
+const VIEWS = ['large', 'medium', 'small'];
 const MIN_DRAG_PX = 6; // 拖得比这还小当成点了一下，不算一个框
 const STATE_LABEL = { marked: '已标进 Excel', pending: '待写入', error: '没标成' };
 
@@ -103,7 +105,7 @@ function renderDocs() {
         + `${doc.guessed ? '<span class="pr-doc-note" title="导出记录里没有这份 PDF，按「Excel 文件名_表名.pdf」找到的">按文件名对应</span>' : ''}</span>`
       : '<span class="pr-doc-warn">⚠ 找不到对应的 Excel，可以标记但不能写进 Excel</span>';
     const pages = doc.pages.map(([w, h], p) => `
-      <div class="pr-page is-loading" data-doc="${d}" data-page="${p}" style="aspect-ratio:${w} / ${h}">
+      <div class="pr-page is-loading" data-doc="${d}" data-page="${p}" style="aspect-ratio:${w} / ${h};--ar:${w / h}">
         <img class="pr-img" loading="lazy" decoding="async" draggable="false" alt="第 ${p + 1} 页"
           src="/api/pdf_review/page?pdf=${encodeURIComponent(doc.pdf)}&p=${p}&v=${doc.v}">
         <div class="pr-layer"></div>
@@ -116,7 +118,7 @@ function renderDocs() {
         <span class="pr-doc-pages">${doc.pages.length} 页</span>${excel}
         <span class="pr-doc-count" data-count="${d}"></span>
       </header>
-      ${doc.error ? `<p class="pr-doc-warn">${escapeHtml(doc.error)}</p>` : pages}
+      ${doc.error ? `<p class="pr-doc-warn">${escapeHtml(doc.error)}</p>` : `<div class="pr-pages">${pages}</div>`}
     </article>`;
   }).join('');
   pdfs.forEach((_, d) => renderRects(d));
@@ -185,6 +187,26 @@ function updateWhere() {
   }
   $('prWhereText').querySelector('.pr-where-pos').textContent = pos;
   renderMarkNav();
+}
+
+/* ---------- 大图 / 中图 / 小图 ---------- */
+
+// 换大小后停在原来看的那一页的同一位置
+function setView(view, keep = true) {
+  if (!VIEWS.includes(view)) view = 'large';
+  const at = keep && pageEls.length ? readingPosition() : null;
+  const box = $('prDocs');
+  VIEWS.forEach(v => box.classList.toggle(`view-${v}`, v === view));
+  document.querySelectorAll('#prView [data-view]').forEach(b => {
+    b.classList.toggle('is-active', b.dataset.view === view);
+    b.setAttribute('aria-pressed', b.dataset.view === view);
+  });
+  try { localStorage.setItem(VIEW_KEY, view); } catch (_) {}
+  if (at) {
+    const page = pageEls[at.index].getBoundingClientRect();
+    window.scrollBy({ top: page.top + page.height * at.within - window.innerHeight * READ_LINE });
+  }
+  scheduleWhere();
 }
 
 /* ---------- 在标记之间跳转 ---------- */
@@ -588,6 +610,10 @@ $('prApply').addEventListener('click', applyToExcel);
 $('prTrack').addEventListener('click', jumpTo);
 $('prOpen').addEventListener('click', openNext);
 $('prPrev').addEventListener('click', () => jumpMark(-1));
+$('prView').addEventListener('click', e => {
+  const button = e.target.closest('[data-view]');
+  if (button) setView(button.dataset.view);
+});
 $('prNext').addEventListener('click', () => jumpMark(1));
 $('prOpenReset').addEventListener('click', resetOpened);
 window.addEventListener('scroll', scheduleWhere, { passive: true });
@@ -596,6 +622,11 @@ window.addEventListener('resize', scheduleWhere);
   const color = highlight();
   document.documentElement.style.setProperty('--pr-mark', color.fill);
   Object.assign($('prSample').style, { background: color.fill, color: color.font });
+}
+{
+  let view = 'large';
+  try { view = localStorage.getItem(VIEW_KEY) || view; } catch (_) {}
+  setView(view, false);
 }
 try { $('prFolder').value = localStorage.getItem(FOLDER_KEY) || ''; } catch (_) {}
 if ($('prFolder').value) load().then(() => { if (job.running) startPolling(); });
