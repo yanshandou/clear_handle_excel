@@ -376,3 +376,25 @@ class WriteTests(unittest.TestCase):
         self.assertEqual((mark["addr"], mark["source"], mark["saved"]), ("B2:C3", "pdf_review", True))
         pdf_review._finish_file("a.xlsx", rects, result)
         self.assertNotIn("pdfold00000", batch._marks())
+
+
+class ClearOldPdfTests(unittest.TestCase):
+    def test_deletes_only_this_workbooks_old_pdfs_and_their_boxes(self):
+        tmp = Path(tempfile.mkdtemp())
+        book = tmp / "★売上.xlsx"
+        book.write_bytes(b"x")
+        old = [tmp / "売上_Sheet1.pdf", tmp / "売上_削除した表_2.PDF"]
+        keep = [tmp / "取扱説明書.pdf", tmp / "売上.pdf", tmp / "その他_売上_Sheet1.pdf"]
+        for path in old + keep:
+            path.write_bytes(b"%PDF")
+        state = copy.deepcopy(wf.STATE)
+        state.update(pdf_exports={str(old[0]): {"wb_path": str(book), "sheet": "Sheet1"}},
+                     pdf_review={"rects": {"aaaaaaaa": {"id": "aaaaaaaa", "pdf": str(old[0])},
+                                           "bbbbbbbb": {"id": "bbbbbbbb", "pdf": str(keep[0])}},
+                                 "drop": [], "trash": {}})
+        with patch.object(wf, "STATE", state), patch.object(wf, "_persist_state"), patch.object(wf, "log_msg"):
+            wf._clear_old_pdfs([book])
+        self.assertTrue(all(not p.exists() for p in old))
+        self.assertTrue(all(p.exists() for p in keep))
+        self.assertEqual(state["pdf_exports"], {})
+        self.assertEqual(list(state["pdf_review"]["rects"]), ["bbbbbbbb"])
