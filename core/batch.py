@@ -3693,7 +3693,7 @@ def cancel_followups() -> int:
     return len(queue)
 
 
-DEFAULT_OPEN_LIMIT = 5
+DEFAULT_OPEN_LIMIT = 10
 _OPEN_LOCK = threading.Lock()
 # 每次重置打开记录加一；打开途中轮次变了，这批结果属于旧一轮，不再记入新一轮。
 _open_round = 0
@@ -4154,7 +4154,7 @@ def run() -> list[str]:
             expected = list(dict.fromkeys(c["wb_path"] for c in cards))
             if kind == "batch_open":
                 # 后端也执行上限，旧任务续跑或直接调用接口不会绕过每次打开的数量。
-                # 先去掉别处已打开的，再取前五份，避免名额被已打开的文件占掉。
+                # 先去掉别处已打开的，再取前十份，避免名额被已打开的文件占掉。
                 selected = options.get("selected_files") is True
                 with _opening_files():
                     with wf.STATE_LOCK:

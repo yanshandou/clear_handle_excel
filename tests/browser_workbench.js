@@ -94,7 +94,7 @@ const server = http.createServer((request, response) => {
       const payload=JSON.parse(body), ids=new Set(payload.card_ids);
       const files=[...new Map(fixture.cards.filter(c=>ids.has(c.id)).map(c=>[c.wb_path,c])).values()];
       const unseen=files.filter(c=>!openedFiles.has(c.wb_path));
-      const picked=payload.selected_files?files:unseen.slice(0,5);
+      const picked=payload.selected_files?files:unseen.slice(0,10);
       response.setHeader('Content-Type','application/json');
       if(url.pathname.endsWith('open_plan')) response.end(JSON.stringify({ok:true,total:files.length,
         already_opened:files.length-unseen.length,unopened:unseen.length,exhausted:!payload.selected_files&&!unseen.length,
@@ -372,19 +372,19 @@ async function main() {
       await evaluate(`$('clearSelectedFilesBtn').click()`);
       await evaluate(`$('openAllBtn').click()`);
       for(let i=0;i<100 && !await evaluate(`!!document.querySelector('.app-dialog[open]')`);i++) await delay(30);
-      assert.match(await evaluate(`document.querySelector('#appDialogMessage').textContent`),/本次最多打开 5 个/);
+      assert.match(await evaluate(`document.querySelector('#appDialogMessage').textContent`),/本次最多打开 10 个/);
       await evaluate(`document.querySelector('.app-dialog-ok').click()`);
       for(let i=0;i<100 && openRequests.length<2;i++) await delay(30);
-      assert.equal(openRequests[1].card_ids.length,5);
+      assert.equal(openRequests[1].card_ids.length,10);
       assert.equal(openRequests[1].selected_files,false);
       for(let i=0;i<100 && !await evaluate(`!openChoosing && !requestBusy`);i++) await delay(30);
-      assert.match(await evaluate(`$('openAllBtn').textContent`),/未开 74 \/ 共 80 个/);
-      assert.equal(await evaluate(`document.querySelectorAll('[data-open="opened"]').length`),6);
+      assert.match(await evaluate(`$('openAllBtn').textContent`),/未开 69 \/ 共 80 个/);
+      assert.equal(await evaluate(`document.querySelectorAll('[data-open="opened"]').length`),11);
       await evaluate(`$('openAllBtn').click()`);
       for(let i=0;i<100 && !await evaluate(`!!document.querySelector('.app-dialog[open]')`);i++) await delay(30);
       await evaluate(`document.querySelector('.app-dialog-ok').click()`);
       for(let i=0;i<100 && openRequests.length<3;i++) await delay(30);
-      assert.equal(openRequests[2].card_ids.length,5);
+      assert.equal(openRequests[2].card_ids.length,10);
       assert.equal(openRequests[2].card_ids.some(id=>openRequests[1].card_ids.includes(id)),false);
       for(let i=0;i<100 && !await evaluate(`!openChoosing && !requestBusy`);i++) await delay(30);
       await evaluate(`$('resetOpenHistoryBtn').click()`);

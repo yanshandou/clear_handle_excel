@@ -390,12 +390,12 @@ function renderControls() {
     ? `📂 本轮已全部打开（共 ${openFiles.size} 个）`
     : `📂 打开下一批（未开 ${unopened.length} / 共 ${openFiles.size} 个）`;
   $('openAllBtn').disabled = requestBusy || openChoosing || opening || !unopened.length;
-  $('openAllBtn').title = '每次最多打开 5 个本轮尚未成功打开的文件；关闭 Excel 后仍会记住进度';
+  $('openAllBtn').title = '每次最多打开 10 个本轮尚未成功打开的文件；关闭 Excel 后仍会记住进度';
   $('resetOpenHistoryBtn').disabled = requestBusy || openChoosing || opening || !opened.size;
   $('openSelectedFilesBtn').textContent = `📂 打开选中文件（${pickedFiles.length} 个）`;
   $('openSelectedFilesBtn').disabled = requestBusy || openChoosing || opening || !pickedFiles.length;
   $('clearSelectedFilesBtn').disabled = openChoosing || !selectedFiles.size;
-  $('openFilesHint').textContent = `本轮累计已打开 ${opened.size} 个文件；当前有 ${openFiles.size} 个人工待处理文件，其中 ${unopened.length} 个本轮未打开（当前可打开 ${openAvailable} 个）。每次最多打开 5 个新文件，全部打开后不自动循环；重置打开记录可从头开始，勾选文件也可明确重新打开。`;
+  $('openFilesHint').textContent = `本轮累计已打开 ${opened.size} 个文件；当前有 ${openFiles.size} 个人工待处理文件，其中 ${unopened.length} 个本轮未打开（当前可打开 ${openAvailable} 个）。每次最多打开 10 个新文件，全部打开后不自动循环；重置打开记录可从头开始，勾选文件也可明确重新打开。`;
   // 复检进行中还能接着点复检：排进同一个任务；后台在跑别的批处理任务时排到它后面
   const held = new Set(manual.filter(c => !recheckSet.has(c)).map(fileKey)).size;
   $('recheckAllBtn').disabled = requestBusy || !recheckAll.length;
@@ -1419,7 +1419,7 @@ async function openReady(selectedOnly = false) {
       return;
     }
     const message = (selectedOnly ? `已选择 ${plan.total} 个文件。\n本次将打开 ${plan.files.length} 个选中文件。`
-      : `当前有 ${plan.total} 个人工待处理文件，本轮累计已打开 ${plan.round_opened ?? plan.already_opened ?? 0} 个。\n本次最多打开 5 个新文件，实际将打开 ${plan.files.length} 个；完成后还剩 ${plan.remaining} 个未打开，其余不会自动打开。`)
+      : `当前有 ${plan.total} 个人工待处理文件，本轮累计已打开 ${plan.round_opened ?? plan.already_opened ?? 0} 个。\n本次最多打开 10 个新文件，实际将打开 ${plan.files.length} 个；完成后还剩 ${plan.remaining} 个未打开，其余不会自动打开。`)
       + waiting + '\n\n本次文件：\n' + plan.files.map(file => `· ${file.name}`).join('\n')
       + (selectedOnly ? '\n\n同时打开较多文件会增加内存占用，可取消后减少勾选。' : '');
     if (!(await appConfirm(message, { title: '确认打开文件', okText: `打开 ${plan.files.length} 个文件`, tone: 'info' }))) return;
