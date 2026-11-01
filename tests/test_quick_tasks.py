@@ -338,6 +338,36 @@ class QuickTaskTests(unittest.TestCase):
         self.assertEqual((self.folder / "a_Sheet1.pdf").read_bytes(), b"pdf of a.xlsm")
         self.assertEqual((self.folder / "a_Sheet1_2.pdf").read_bytes(), b"pdf of a.xlsx")
 
+    def test_failed_file_waits_for_user_and_retry_reuses_same_pdf_name(self):
+        self.add_book("a.xlsx", ["Sheet1"])
+        self.books["a.xlsx"].fail_export = True
+
+        def user_fixes_file(path, label, error, **kwargs):
+            self.assertEqual(Path(path), self.folder / "a.xlsx")
+            self.assertIn("导出失败", error)
+            kwargs["tick"]()  # 等用户时不让看门狗当成卡住
+            self.books["a.xlsx"].fail_export = False
+            return "retry"
+
+        with patch.object(self.workflow.file_problem, "ask", side_effect=user_fixes_file) as ask:
+            job = self.run_task("export_pdf")
+        ask.assert_called_once()
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual((self.folder / "a_Sheet1.pdf").read_bytes(), b"pdf of a.xlsx")
+        self.assertFalse((self.folder / "a_Sheet1_2.pdf").exists())
+
+    def test_skipped_file_is_recorded_and_next_file_continues(self):
+        self.add_book("a.xlsx", ["Sheet1"])
+        self.add_book("b.xlsx", ["Sheet1"])
+        self.books["a.xlsx"].fail_export = True
+        with patch.object(self.workflow.file_problem, "ask", return_value="skip") as ask:
+            job = self.run_task("export_pdf")
+        self.assertEqual(ask.call_count, 1)
+        self.assertEqual(job["status"], "interrupted")
+        self.assertEqual(self.report_files()["a.xlsx"]["status"], "error")
+        self.assertIn("导出失败", self.report_files()["a.xlsx"]["error"])
+        self.assertTrue((self.folder / "b_Sheet1.pdf").exists())
+
     def test_normalize_view_backs_up_then_saves_each_workbook(self):
         self.add_book("a.xlsx", ["Sheet1", "Sheet2"])
         job = self.run_task("normalize_view")

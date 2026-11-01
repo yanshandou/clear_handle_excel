@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from core import autofix, debug_log, fix_images, page_breaks, print_layout, scan_analysis, workflow as wf
+from core import autofix, debug_log, file_problem, fix_images, page_breaks, print_layout, scan_analysis, workflow as wf
 from core.common import STALE_LOCK_HINT, is_inspection_exempt_sheet, workbook_locked, workbook_rel_name
 from core.excel_ops import (
     CellProbe, close_saved_workbooks, extract_sheet_snapshot, normalize_workbook_view,
@@ -3863,6 +3863,7 @@ def run() -> list[str]:
     # 每种任务都看着后台 Excel：它在看不见的地方卡住（弹了没人能点的框等）时结束它，不让任务永远卡着。
     # 清除颜色每改一格都报进度，卡 5 分钟就算卡住；检测类一张大表导出可能要很久，按默认时长
     watchdog = ExcelWatchdog(lambda: wf.log_msg(
+        "⚠️ 后台 Excel 弹出了没人能点的提示框，已结束本任务专用 Excel" if watchdog.dialog else
         "⏱ 这份文件扫描超过时间上限，已结束本任务专用 Excel，跳过这份文件" if watchdog.deadline_hit else
         "⚠️ 后台 Excel 长时间无进展，已结束本任务专用 Excel，当前文件将记录错误并重试或跳过"),
         timeout=UNHIGHLIGHT_STALL_SECONDS if kind == "batch_unhighlight" else None)
@@ -3933,7 +3934,9 @@ def run() -> list[str]:
 
             def each_file(path: str, work: Callable[[str], None]) -> bool:
                 """处理一份文件；程序出错（多半是 Excel 崩溃或卡住）重启 Excel 再试，还不行就跳过、可续跑"""
-                for tries in range(autofix.MAX_ERROR_RETRIES + 1):
+                tries = -1
+                while True:
+                    tries += 1
                     try:
                         watchdog.progress()
                         work(path)
@@ -3967,18 +3970,32 @@ def run() -> list[str]:
                                 err = restart_err
                             else:
                                 continue
-                        wf.log_msg(f"❌ {Path(path).name} 已跳过，继续其他文件，可续跑：{err}")
-                        with wf.STATE_LOCK:
-                            job.setdefault("file_errors", {})[path] = str(err)
-                            wf._persist_state()
-                        update_file_progress(workbook_rel_name(Path(path), wf.STATE["folder"]),
-                                             status="error", error=str(err), current_action="文件未完成，可续跑")
-                        # 下一个文件用新的 Excel，避免一次崩溃拖垮后面所有文件
+                        # 下一个文件用新的 Excel，避免一次崩溃拖垮后面所有文件；也别让它占着文件（用户要打开修）
                         session.close()
+                        message = file_problem.message_for(err, watchdog)
+                        label = workbook_rel_name(Path(path), wf.STATE["folder"])
+                        if file_problem.should_ask(err, message) and not _stopping(job):
+                            # 文件本身有问题（打不开、要密码、Excel 弹框卡住、被占用等）：停下来问用户
+                            wf.log_msg(f"⏸ {Path(path).name} 出错，等你选择重试还是跳过：{message}")
+                            update_file_progress(label, status="processing", error=message,
+                                                 current_action="出错了，等你选择重试还是跳过")
+                            choice = file_problem.ask(path, label, message, folder=wf.STATE["folder"],
+                                                      tick=watchdog.progress, should_stop=lambda: _stopping(job))
+                            watchdog.progress()
+                            if choice == "retry":
+                                wf.log_msg(f"🔁 重试 {Path(path).name}")
+                                update_file_progress(label, status="processing", error="",
+                                                     current_action="正在重试...")
+                                tries = -1
+                                continue
+                        wf.log_msg(f"❌ {Path(path).name} 已跳过，继续其他文件，可续跑：{message}")
+                        with wf.STATE_LOCK:
+                            job.setdefault("file_errors", {})[path] = message
+                            wf._persist_state()
+                        update_file_progress(label, status="error", error=message, current_action="文件未完成，可续跑")
                         return False
                     finally:
                         session.drop_copy(path)
-                return False
 
             def scan_body(path: str) -> None:
                 debug_log.begin(f"{'自动调整' if picked else '转回自动' if back else '扫描'} "

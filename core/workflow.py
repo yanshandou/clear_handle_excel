@@ -40,7 +40,7 @@ from core.common import (
     workbook_locked,
     workbook_rel_name,
 )
-from core import debug_log, fix_images, page_breaks, pdf_detector, print_layout, scan_analysis, sheet_history
+from core import debug_log, file_problem, fix_images, page_breaks, pdf_detector, print_layout, scan_analysis, sheet_history
 from core.excel_watchdog import ExcelWatchdog
 from core.formula_links import delete_sheets_preserving_values
 from core.excel_ops import (
@@ -277,6 +277,22 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
         return True
 
 
+_TASK_TITLES = {
+    "batch_recheck": "复检", "batch_commit": "提交审核结果", "batch_open": "打开文件",
+    "batch_unhighlight": "清除 Excel 标记颜色", "scan": "Web 切字扫描", "recheck": "复检",
+    "refresh": "刷新复检", "fix": "修复", "review_recheck": "稍后人工复检", "review_open": "打开稍后复检的文件",
+}
+
+
+def _task_title(job: dict[str, Any]) -> str:
+    """出错弹框上显示的任务名"""
+    kind, options = job.get("kind", ""), job.get("options", {})
+    if kind == "batch_scan":
+        return ("自动调整选中的格子" if options.get("picked") else "转回自动" if options.get("back_to_auto")
+                else "只扫描" if options.get("scan_only") else "全自动扫描与修复")
+    return QUICK_TASK_NAMES.get(kind) or _TASK_TITLES.get(kind, kind)
+
+
 def run_pending_workflow() -> None:
     with STATE_LOCK:
         ran = STATE["job"]  # 结束时可能换成放回来的暂停任务：排队的复检 / 提交按这次跑的任务决定做不做
@@ -285,6 +301,7 @@ def run_pending_workflow() -> None:
                               "已完成文件数": len(STATE["job"]["completed"]),
                               "写入日志": "有" if STATE["job"].get("pending_adjustment") else "无"},
                              resumed=bool(STATE["job"]["completed"]) or "workbooks" in STATE["job"])
+        file_problem.begin(_task_title(STATE["job"]))
     try:
         with STATE_LOCK:
             job = STATE["job"]
@@ -368,6 +385,7 @@ def run_pending_workflow() -> None:
         log_msg(f"❌ 任务中断，可继续上次任务: {err}")
         interrupt_execution_batch(f"任务中断: {err}")
     finally:
+        file_problem.finish()
         suspend_report_updates(False)
         with STATE_LOCK:
             job = STATE["job"] or {}
@@ -3138,6 +3156,29 @@ def _normalize_workbook_file(get_excel: Callable[[], Any], wb_path: Path, root_f
         wb.Close(SaveChanges=False)
 
 
+def _quick_task_file(kind: str, options: dict[str, Any], get_excel: Callable[[], Any], wb_path: Path,
+                     folder: Path, used_pdf_paths: set[Path], exported: list[Path]) -> None:
+    """主页单项批处理的一份文件（重试时整份重做）"""
+    wb_label = workbook_rel_name(wb_path, folder)
+    if kind == "clean_sheets":
+        clean_plan = options.get("plan")
+        file_plan = None
+        if isinstance(clean_plan, dict):
+            file_plan = (
+                clean_plan.get(wb_label)
+                if wb_label in clean_plan
+                else clean_plan.get(wb_path.name, {"delete": [], "uncertain": []})
+            )
+        _clean_backup_sheets(get_excel, wb_path, folder, file_plan=file_plan)
+    elif kind == "export_pdf":
+        exported.extend(_export_workbook_pdfs(
+            get_excel, wb_path, folder, used_pdf_paths,
+            choose_orientation=options.get("choose_orientation", True),
+        ))
+    else:
+        _normalize_workbook_file(get_excel, wb_path, folder)
+
+
 def quick_task_workflow(kind: str) -> None:
     """主页单项批处理：以 Excel 文件为检查点，续跑时跳过已完成的文件。"""
     task_name = QUICK_TASK_NAMES[kind]
@@ -3180,7 +3221,8 @@ def quick_task_workflow(kind: str) -> None:
 
     excel = None
     watchdog = ExcelWatchdog(lambda: log_msg(
-        "⚠️ 后台 Excel 长时间无进展，已结束本任务专用 Excel，记录当前文件错误后继续"))
+        "⚠️ 后台 Excel 弹出了没人能点的提示框，已结束本任务专用 Excel" if watchdog.dialog else
+        "⚠️ 后台 Excel 长时间无进展，已结束本任务专用 Excel"))
 
     def get_excel() -> Any:
         # 按需启动 Excel：精简 Sheet 时没有备份表的文件无需打开
@@ -3208,32 +3250,40 @@ def quick_task_workflow(kind: str) -> None:
             exported: list[Path] = []
             started = time.perf_counter()
             try:
-                if kind == "clean_sheets":
-                    clean_plan = options.get("plan")
-                    file_plan = None
-                    if isinstance(clean_plan, dict):
-                        file_plan = (
-                            clean_plan.get(wb_label)
-                            if wb_label in clean_plan
-                            else clean_plan.get(wb_path.name, {"delete": [], "uncertain": []})
-                        )
-                    _clean_backup_sheets(
-                        get_excel, wb_path, folder, file_plan=file_plan,
-                    )
-                elif kind == "export_pdf":
-                    exported = _export_workbook_pdfs(
-                        get_excel, wb_path, folder, used_pdf_paths,
-                        choose_orientation=options.get("choose_orientation", True),
-                    )
-                else:
-                    _normalize_workbook_file(get_excel, wb_path, folder)
+                while True:  # 出错时问用户：修好文件后「重试」就从头再做这份，「跳过」照旧记错误
+                    used_before = set(used_pdf_paths)  # 重试时 PDF 用回同样的名字，不变成「_2」
+                    try:
+                        exported = []
+                        _quick_task_file(kind, options, get_excel, wb_path, folder, used_pdf_paths, exported)
+                        break
+                    except Exception as err:
+                        used_pdf_paths.intersection_update(used_before)
+                        message = file_problem.message_for(err, watchdog)
+                        # Excel 崩溃或被看门狗结束后不把失效实例带给后续文件，也别让它占着文件（用户要打开修）
+                        if excel is not None:
+                            try:
+                                quit_background_excel(excel)
+                            except Exception:
+                                pass
+                            excel = None
+                        if not file_problem.should_ask(err, message):
+                            raise RuntimeError(message) from err
+                        log_msg(f"⏸ {wb_label} 出错，等你选择重试还是跳过：{message}")
+                        update_file_progress(wb_label, status="processing", error=message,
+                                             current_action="出错了，等你选择重试还是跳过")
+                        choice = file_problem.ask(wb_path, wb_label, message, folder=folder, tick=watchdog.progress)
+                        watchdog.progress()
+                        if choice != "retry":
+                            raise RuntimeError(message) from err
+                        log_msg(f"🔁 重试 {wb_label}")
+                        update_file_progress(wb_label, status="processing", error="",
+                                             current_action=f"正在重试{task_name}...")
                 debug_log.event("⏱ 完成", 文件=wb_label, 秒=time.perf_counter() - started, 导出PDF=len(exported))
             except Exception as err:
                 log_msg(f"❌ 处理文件出错 {wb_label}: {err}")
                 update_file_progress(
                     wb_label, status="error", error=str(err), current_action=f"处理出错: {err}",
                 )
-                # Excel 崩溃后不把失效实例带给后续文件。
                 if excel is not None:
                     try:
                         quit_background_excel(excel)

@@ -15,7 +15,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from core import debug_log, workflow as wf
+from core import debug_log, file_problem, workflow as wf
 from core.common import workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, quit_background_excel, start_background_excel
 
@@ -204,26 +204,38 @@ def _run(phase: str, folder: str, targets: list) -> None:
     excel = None
     com = False
     results: list[dict] = []
+    guard = file_problem.Guard("扫描 BL 超链接" if phase == "scan" else "清除 BL 超链接")
     try:
         wf.pythoncom.CoInitialize()
         com = True
-        excel = start_background_excel()
+        excel = guard.watch(start_background_excel())
         for index, target in enumerate(targets):
-            if phase == "scan":
-                name = workbook_rel_name(target, Path(folder))
-                entry: dict[str, Any] = {"name": name, "path": str(target), "hits": [], "cells": [], "error": None}
-            else:
-                entry = {**target, "cells": []}
-                name = entry["name"]
-            _progress(index, name, len(targets))
-            try:
+            while True:  # 出错时问用户：「重试」重开 Excel 再做这份，「跳过」记下错误
                 if phase == "scan":
-                    entry.update(scan_file(excel, target))
+                    name = workbook_rel_name(target, Path(folder))
+                    entry: dict[str, Any] = {"name": name, "path": str(target), "hits": [], "cells": [], "error": None}
                 else:
-                    entry["cells"] = clear_file(excel, entry)
-            except Exception as error:
-                entry["error"] = str(error)
-                debug_log.exception(error, f"BL 超链接 {phase} {name}")
+                    entry = {**target, "cells": []}
+                    name = entry["name"]
+                _progress(index, name, len(targets))
+                guard.progress()
+                try:
+                    if excel is None:
+                        excel = guard.watch(start_background_excel())
+                    if phase == "scan":
+                        entry.update(scan_file(excel, target))
+                    else:
+                        entry["cells"] = clear_file(excel, entry)
+                except Exception as error:
+                    debug_log.exception(error, f"BL 超链接 {phase} {name}")
+                    retry, entry["error"] = guard.problem(error, entry["path"], name, folder,
+                                                          close=lambda: file_problem.quit_quietly(excel))
+                    if guard.closed:
+                        excel = None
+                    if retry:
+                        wf.log_msg(f"🔁 重试 {name}")
+                        continue
+                break
             if phase == "scan":
                 for hit in entry["hits"]:
                     debug_log.event("🔎 BL 超链接", 位置=f"{hit['sheet']}!{hit['anchor']}",
@@ -240,8 +252,10 @@ def _run(phase: str, folder: str, targets: list) -> None:
         results.append({"name": "任务", "path": "", "hits": [], "cells": [], "error": str(error)})
     finally:
         try:
-            quit_background_excel(excel)
+            if excel is not None:
+                quit_background_excel(excel)
         finally:
+            guard.stop()
             if com:
                 wf.pythoncom.CoUninitialize()
             with _LOCK:
