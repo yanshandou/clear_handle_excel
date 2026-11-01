@@ -2128,6 +2128,15 @@ body {
   animation: fx-stripes 1.2s linear infinite;
 }
 
+/* 任务不在跑时条纹停下；全部完成后整条收起，换成完成提示，免得以为卡在最后一个 */
+.progress-track.is-paused .progress-fill { animation: none; }
+.progress-track.is-done { display: none; }
+.task-done-line { display: flex; align-items: center; gap: 0; padding: 10px 14px; border: 3px solid #1c7a10; border-radius: 14px; background: #ecfbe4; color: #134e0a; font-weight: 700; line-height: 1.5; }
+.task-done-line::before { content: "✓"; flex: none; margin-right: 10px; display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: #2f8f14; color: #fff; font-size: 18px; font-weight: 900; }
+.task-done-line.is-warn { border-color: #b26a00; background: #fff6e0; color: #5c3600; }
+.task-done-line.is-warn::before { content: "!"; background: #c77700; }
+.task-done-line strong { font-weight: 900; }
+
 @keyframes fx-stripes {
   to { background-position: 22.6px 0, 0 0; }
 }

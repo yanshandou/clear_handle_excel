@@ -476,6 +476,7 @@ const DONE_TITLES = { batch_scan: '全自动处理完成', batch_commit: '审核
 function renderDoneBanner(finished, job, total) {
   $('progressText').classList.toggle('hidden', finished);
   $('progressTrack').classList.toggle('hidden', finished);
+  $('progressTrack').classList.toggle('is-paused', !batchState.busy);  // 暂停 / 中断时条纹停下
   $('doneBanner').classList.toggle('hidden', !finished);
   if (!finished) return;
   const kind = job?.kind;

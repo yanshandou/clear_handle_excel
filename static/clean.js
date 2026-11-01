@@ -782,6 +782,8 @@ function renderRunBox() {
     `完成 ${p.completed_files}/${p.total_files}` +
     (p.error_files ? ` · 失败 ${p.error_files}` : '') + ` · ${pct}%`;
   document.getElementById('cleanProgressFill').style.width = `${Math.min(100, Math.max(0, pct))}%`;
+  // 结束后下面的结果框已写明完成 / 未完成，进度条收起
+  document.getElementById('cleanProgressFill').closest('.mini-progress-box').classList.toggle('hidden', phase === 'done');
 
   const runBtn = document.getElementById('runStateBtn');
   runBtn.classList.toggle('hidden', phase === 'done' && !canResumeClean());
