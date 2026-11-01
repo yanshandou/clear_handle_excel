@@ -2930,3 +2930,20 @@ input[type="checkbox"]:not(.hidden):checked::before {
 }
 
 .file-problem-bar[hidden] { display: none; }
+
+.file-problem-timeout {
+  margin: 10px 0 4px;
+  font-size: 13px;
+  line-height: 2;
+}
+
+.file-problem-timeout input {
+  width: 72px;
+  margin: 0 4px;
+  padding: 2px 8px;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 800;
+  text-align: center;
+}

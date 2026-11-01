@@ -195,7 +195,7 @@ class WebHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/repair-bl-links":
             self._serve_static_file("bl_links.html")
         elif parsed.path == "/api/file-problem":
-            self._send_json({"ok": True, "problem": file_problem.pending()})
+            self._send_json({"ok": True, "problem": file_problem.pending(), "settings": file_problem.get_settings()})
         elif parsed.path == "/api/bl_links":
             self._send_json(bl_links.status())
         elif parsed.path == "/api/hidden_repair":
@@ -367,6 +367,9 @@ class WebHandler(BaseHTTPRequestHandler):
                 raise ValueError("需要有效的选择")
             file_problem.answer(problem_id, choice, payload.get("auto_skip") is True)
             self._send_json({"ok": True})
+            return
+        if self.path == "/api/file-problem/settings":
+            self._send_json({"ok": True, "settings": file_problem.set_settings(payload.get("timeout_minutes"))})
             return
         if self.path == "/api/excel/open" and isinstance(payload.get("problem"), str):
             problem = file_problem.pending()

@@ -10,6 +10,9 @@ from core.excel_watchdog import ExcelWatchdog, is_dialog
 class FileProblemTests(unittest.TestCase):
     def setUp(self):
         file_problem.AUTO_ANSWER = ""  # 真的等用户选择
+        patcher = patch.object(file_problem, "_settings_cache", {"timeout_minutes": 0})
+        patcher.start()
+        self.addCleanup(patcher.stop)
         file_problem.begin("视图标准化")
 
     def tearDown(self):
@@ -67,6 +70,35 @@ class FileProblemTests(unittest.TestCase):
         thread.join(3)
         self.assertEqual(result["choice"], "skip")
         self.assertTrue(tick.called)
+
+    def test_nobody_answers_within_timeout_skips(self):
+        file_problem._settings_cache["timeout_minutes"] = 1
+        clock = iter(range(0, 10000, 30))
+        with patch.object(file_problem.time, "monotonic", side_effect=lambda: next(clock)):
+            self.assertEqual(file_problem.ask("/data/a.xlsx", "a.xlsx", "要密码"), "skip")
+        self.assertIsNone(file_problem.pending())
+
+    def test_pending_reports_countdown_and_settings_are_validated(self):
+        file_problem._settings_cache["timeout_minutes"] = 30
+        thread, _ = self.ask_in_thread()
+        problem = file_problem.pending()
+        self.assertEqual(problem["timeout_minutes"], 30)
+        self.assertGreater(problem["auto_skip_in"], 1790)
+        for bad in (-1, 1441, 1.5, True, "5"):
+            with self.assertRaises(ValueError):
+                file_problem.set_settings(bad)
+        file_problem.answer(problem["id"], "skip")
+        thread.join(3)
+
+    def test_settings_saved_and_reloaded(self):
+        import tempfile
+        from pathlib import Path
+        from core import storage
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(storage, "DATABASE_PATH", Path(folder) / "t.sqlite3"):
+            file_problem.set_settings(45)
+            file_problem._settings_cache = None
+            self.assertEqual(file_problem.get_settings(), {"timeout_minutes": 45})
 
     def test_should_ask_only_for_file_problems(self):
         self.assertTrue(file_problem.should_ask(RuntimeError("COM 错误")))
