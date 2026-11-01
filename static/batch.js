@@ -471,6 +471,24 @@ function etaText(eta) {
   const clock = `${String(done.getHours()).padStart(2, '0')}:${String(done.getMinutes()).padStart(2, '0')}`;
   return ` · 已用 ${duration(eta.elapsed)} · 预计还要约 ${duration(eta.remaining)}（${clock} 左右扫完）`;
 }
+// 任务已全部完成：收起满格进度条，换成明确的完成提示，免得以为卡在最后一个文件
+const DONE_TITLES = { batch_scan: '全自动处理完成', batch_commit: '审核已提交', batch_recheck: '复检完成', batch_open: '文件已打开', batch_unhighlight: '标记颜色已清除' };
+function renderDoneBanner(finished, job, total) {
+  $('progressText').classList.toggle('hidden', finished);
+  $('progressTrack').classList.toggle('hidden', finished);
+  $('doneBanner').classList.toggle('hidden', !finished);
+  if (!finished) return;
+  const kind = job?.kind;
+  const title = !kind || (kind === 'batch_scan' && job.options?.scan_only) ? '扫描完成'
+    : kind === 'batch_scan' && job.to_manual ? '已转人工'
+    : kind === 'batch_scan' && job.options?.picked ? '自动调整完成' : DONE_TITLES[kind] || '处理完成';
+  const left = batchState.cards.length;
+  $('doneTitle').textContent = `${title}：${total} / ${total} 个文件全部处理完`;
+  $('doneDetail').textContent = left ? `还有 ${left} 个单元格待审核，请在下方卡片里确认颜色后提交。` : '没有待审核的单元格了。';
+  $('doneGoBtn').classList.toggle('hidden', !left);
+}
+$('doneGoBtn').addEventListener('click', () => $('filters').scrollIntoView({ behavior: 'smooth', block: 'start' }));
+
 // 正在检查的文件：第几张表、这份用了多久、超过多久会跳过
 function renderScanNow(current) {
   $('scanNow').classList.toggle('hidden', !current);
@@ -1070,6 +1088,7 @@ function render() {
     : job?.options?.scan_only ? (job.auto_queue?.length ? '正在扫描（扫完后接着自动调整排队的文件）' : '正在扫描') : '正在自动处理')
     : job?.status === 'interrupted' ? '已暂停或部分文件未完成' : '当前进度';
   $('progressText').textContent = `${label}：${completed} / ${total} 个文件 · 待审核 ${batchState.cards.length} 个单元格${etaText(batchState.scan_eta)}`;
+  renderDoneBanner(!batchState.busy && total > 0 && completed >= total && (!job || job.status === 'completed'), job, total);
   renderScanNow(batchState.scan_eta?.current);
   renderSlowFiles();
   $('progressFill').style.width = `${total ? Math.round(completed * 100 / total) : 0}%`;
