@@ -7,10 +7,11 @@ import sqlite3
 import threading
 import webbrowser
 from datetime import datetime
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from core import autofix, batch, bl_links, debug_log, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review
+from core import autofix, batch, bl_links, debug_log, file_problem, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review
 from core.common import (
     STATIC_DIR,
     console_print,
@@ -193,6 +194,8 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_bytes(image, "image/png", cacheable=True)
         elif parsed.path == "/repair-bl-links":
             self._serve_static_file("bl_links.html")
+        elif parsed.path == "/api/file-problem":
+            self._send_json({"ok": True, "problem": file_problem.pending()})
         elif parsed.path == "/api/bl_links":
             self._send_json(bl_links.status())
         elif parsed.path == "/api/hidden_repair":
@@ -357,6 +360,20 @@ class WebHandler(BaseHTTPRequestHandler):
             console_print(f"ℹ️ 浏览器已断开，{path} 的结果未送达")
 
     def _handle_post(self, payload: dict) -> None:
+        # 批量任务停在出错文件上等用户：选择重试 / 跳过、打开这份文件，任务进行中也要能做
+        if self.path == "/api/file-problem":
+            choice, problem_id = payload.get("choice"), payload.get("id")
+            if not isinstance(problem_id, str) or not isinstance(choice, str):
+                raise ValueError("需要有效的选择")
+            file_problem.answer(problem_id, choice, payload.get("auto_skip") is True)
+            self._send_json({"ok": True})
+            return
+        if self.path == "/api/excel/open" and isinstance(payload.get("problem"), str):
+            problem = file_problem.pending()
+            if not problem or problem["id"] != payload["problem"]:
+                raise ValueError("这个出错的文件已经处理过了")
+            self._send_json({"ok": True, "note": open_workbook_in_excel(Path(problem["path"]), "", "")})
+            return
         with STATE_LOCK:
             if STATE.get("maintenance"):
                 name = ("颜色" if STATE["maintenance"].startswith("color_") else

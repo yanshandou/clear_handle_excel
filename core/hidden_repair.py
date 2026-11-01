@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
-from core import debug_log, workflow as wf, sheet_history
+from core import debug_log, file_problem, workflow as wf, sheet_history
 from core.backup_compare import inferred_renames, pair_files, pair_sheets, require_manual_file_check
 from core.common import EXCEL_EXTENSIONS, col_index_to_letters, workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, quit_background_excel, start_background_excel
@@ -323,6 +323,7 @@ def apply_file(excel: Any, file: dict) -> list[dict]:
 
 def _run(root: Path, paths: list[Path], old_root: Path, old_paths: list[Path], options: dict) -> None:
     files, excel, initialized = [], None, False
+    guard = file_problem.Guard("扫描并修复隐藏页")
     try:
         wf.pythoncom.CoInitialize()
         initialized = True
@@ -330,28 +331,37 @@ def _run(root: Path, paths: list[Path], old_root: Path, old_paths: list[Path], o
         pairs = pair_files(old_root, old_paths, [workbook_rel_name(path, root) for path in paths], root, inferred=inferred)
         for index, path in enumerate(paths):
             name = workbook_rel_name(path, root)
-            entry = {"name": name, "path": str(path), "cells": [], "error": None}
+            while True:  # 出错时问用户：「重试」重开 Excel 再做这份，「跳过」记下错误
+                entry = {"name": name, "path": str(path), "cells": [], "error": None}
+                with _LOCK:
+                    _STATUS.update(done=index, current=name, stage="preview")
+                guard.progress()
+                try:
+                    old_path = pairs[name]
+                    if old_path is None:
+                        raise ValueError("找不到唯一对应的备份文件，请选到对应子文件夹")
+                    entry["old"] = str(old_path)
+                    if excel is None:
+                        excel = guard.watch(start_background_excel())
+                    entry.update(plan_file(excel, path, old_path, options))
+                    if name in inferred:
+                        require_manual_file_check(entry)
+                    if any(item["action"] == "restore" for item in entry["cells"]):
+                        with _LOCK:
+                            _STATUS["stage"] = "apply"
+                        outcomes = {(item["sheet"], item["kind"], item["addr"]): item for item in apply_file(excel, entry)}
+                        entry["cells"] = [outcomes.get((item["sheet"], item["kind"], item["addr"]), item) for item in entry["cells"]]
+                except Exception as error:
+                    debug_log.exception(error, f"隐藏恢复 {name}")
+                    retry, entry["error"] = guard.problem(error, path, name, root,
+                                                          close=lambda: file_problem.quit_quietly(excel))
+                    if guard.closed:
+                        excel = None
+                    if retry:
+                        wf.log_msg(f"🔁 重试 {name}")
+                        continue
+                break
             files.append(entry)
-            with _LOCK:
-                _STATUS.update(done=index, current=name, stage="preview")
-            try:
-                old_path = pairs[name]
-                if old_path is None:
-                    raise ValueError("找不到唯一对应的备份文件，请选到对应子文件夹")
-                entry["old"] = str(old_path)
-                if excel is None:
-                    excel = start_background_excel()
-                entry.update(plan_file(excel, path, old_path, options))
-                if name in inferred:
-                    require_manual_file_check(entry)
-                if any(item["action"] == "restore" for item in entry["cells"]):
-                    with _LOCK:
-                        _STATUS["stage"] = "apply"
-                    outcomes = {(item["sheet"], item["kind"], item["addr"]): item for item in apply_file(excel, entry)}
-                    entry["cells"] = [outcomes.get((item["sheet"], item["kind"], item["addr"]), item) for item in entry["cells"]]
-            except Exception as error:
-                entry["error"] = str(error)
-                debug_log.exception(error, f"隐藏恢复 {name}")
             for item in entry["cells"]:
                 debug_log.event("🙈 隐藏恢复", 位置=f"{item['sheet']}!{item['addr']}", 类型=item["kind"],
                                 结果=entry["error"] or item["reason"])
@@ -364,6 +374,7 @@ def _run(root: Path, paths: list[Path], old_root: Path, old_paths: list[Path], o
         try:
             quit_background_excel(excel)
         finally:
+            guard.stop()
             try:
                 if initialized:
                     wf.pythoncom.CoUninitialize()

@@ -1058,6 +1058,32 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(set(job["completed"]), {paths[1], paths[2]})
         self.assertEqual(job["pending_adjustment"]["path"], paths[0])
 
+    def test_scan_asks_user_after_retries_and_retry_rescans_the_fixed_file(self):
+        second = str(self.root / "next.xlsx")
+        Path(second).write_bytes(b"workbook")
+        job = self.wf.STATE["job"]
+        job.update(workbooks=[self.path, second], options={"folder": str(self.root)})
+        session = Mock()
+        attempts, fixed = [], []
+        def refresh(excel, path, **kwargs):
+            attempts.append(path)
+            if path == self.path and not fixed:
+                raise RuntimeError("Excel 不可用")
+        def user_fixes(path, label, error, **kwargs):
+            self.assertEqual(path, self.path)
+            self.assertIn("Excel 不可用", error)
+            fixed.append(True)
+            return "retry"
+        self.refresh.side_effect = refresh
+        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch.file_problem, "ask", side_effect=user_fixes) as ask, \
+                patch.object(batch, "_repair_file"), patch.object(batch, "finish_execution_batch"):
+            batch.run()
+        ask.assert_called_once()
+        self.assertEqual(attempts, [self.path] * 4 + [second])
+        self.assertNotIn(self.path, job.get("file_errors", {}))
+        self.assertIn(self.path, job["scanned"])
+
     def test_scan_retries_errors_then_skips_file_without_marking_it_complete(self):
         second = str(self.root / "next.xlsx")
         Path(second).write_bytes(b"workbook")
