@@ -67,23 +67,23 @@ test('lazy snapshot URLs request only expanded files and reset ETag when the exp
   assert.equal(p.run(`requested[1][1]['If-None-Match']`),undefined);
 });
 
-test('ordinary open confirms at most five while selected file open sends only explicitly selected files', async () => {
+test('ordinary open confirms at most ten while selected file open sends only explicitly selected files', async () => {
   const p=page({collapsed:true});
-  p.run(`batchState.cards=Array.from({length:8},(_,i)=>({...batchState.cards[1],id:String(i),seq:i,
+  p.run(`batchState.cards=Array.from({length:12},(_,i)=>({...batchState.cards[1],id:String(i),seq:i,
     wb_path:'file-'+i,wb_name:'file-'+i+'.xlsx'}));
     confirmations=[];appConfirm=async m=>{confirmations.push(m);return true};
     post=async(url,body)=>{requests.push({url,body});if(url.endsWith('open_plan')){
-      const cards=batchState.cards.filter(c=>body.card_ids.includes(c.id));const picked=body.selected_files?cards:cards.slice(0,5);
+      const cards=batchState.cards.filter(c=>body.card_ids.includes(c.id));const picked=body.selected_files?cards:cards.slice(0,10);
       return {total:cards.length,files:picked.map(c=>({name:c.wb_name})),card_ids:picked.map(c=>c.id),waiting:[],remaining:cards.length-picked.length};
     }return {ok:true};};render();`);
   await p.run('openReady()');
-  assert.match(p.run('confirmations[0]'),/本次最多打开 5 个/);
-  assert.equal(p.requests[1].body.card_ids.length,5);
+  assert.match(p.run('confirmations[0]'),/本次最多打开 10 个/);
+  assert.equal(p.requests[1].body.card_ids.length,10);
   p.run(`requests.length=0;batchState.cards[0].color='blue';batchState.cards.forEach(c=>toggleFileChecked(fileKey(c)));`);
   await p.run('openReady(true)');
   assert.equal(p.requests[1].body.selected_files,true);
-  assert.equal(p.requests[1].body.card_ids.length,8);
-  assert.match(p.run('confirmations[1]'),/本次将打开 8 个选中文件/);
+  assert.equal(p.requests[1].body.card_ids.length,12);
+  assert.match(p.run('confirmations[1]'),/本次将打开 12 个选中文件/);
 });
 
 test('selected file open jumps to the first manual yellow card of each file', () => {
@@ -120,17 +120,17 @@ test('next batch counts skip opened files and the exhausted round does not loop'
 
 test('two next batch clicks send different files without changing review colors', async () => {
   const p=page({collapsed:true});
-  p.run(`batchState.cards=Array.from({length:12},(_,i)=>({...batchState.cards[1],id:String(i),seq:i,
+  p.run(`batchState.cards=Array.from({length:22},(_,i)=>({...batchState.cards[1],id:String(i),seq:i,
     wb_path:'file-'+i,wb_name:'file-'+i+'.xlsx'}));batchState.opened_files=[];
     post=async(url,body)=>{requests.push({url,body});const seen=new Set(batchState.opened_files);
-      if(url.endsWith('open_plan')){const picked=batchState.cards.filter(c=>!seen.has(fileKey(c))).slice(0,5);
-        return {total:12,already_opened:seen.size,files:picked.map(c=>({name:c.wb_name})),card_ids:picked.map(c=>c.id),waiting:[],remaining:12-seen.size-picked.length};}
+      if(url.endsWith('open_plan')){const picked=batchState.cards.filter(c=>!seen.has(fileKey(c))).slice(0,10);
+        return {total:22,already_opened:seen.size,files:picked.map(c=>({name:c.wb_name})),card_ids:picked.map(c=>c.id),waiting:[],remaining:22-seen.size-picked.length};}
       batchState.opened_files.push(...body.card_ids.map(id=>fileKey(batchState.cards.find(c=>c.id===id))));return {ok:true};};`);
   await p.run('openReady()');
   await p.run('openReady()');
   const opened=p.requests.filter(r=>r.url==='/api/batch/open').map(r=>Array.from(r.body.card_ids));
-  assert.deepEqual(opened,[['0','1','2','3','4'],['5','6','7','8','9']]);
-  assert.match(p.elements.get('openAllBtn').textContent,/未开 2 \/ 共 12 个/);
+  assert.deepEqual(opened,[Array.from({length:10},(_,i)=>String(i)),Array.from({length:10},(_,i)=>String(i+10))]);
+  assert.match(p.elements.get('openAllBtn').textContent,/未开 2 \/ 共 22 个/);
   assert.equal(p.run(`batchState.cards.every(c=>c.color==='yellow')`),true);
 });
 
