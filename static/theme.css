@@ -1986,6 +1986,7 @@ body {
 .feature-rose { --g-top: #ffd45e; --g-bot: #f5a623; --g-edge: #d87a0d; --g-soft: #fff3d6; }
 .feature-mint { --g-top: #c384f3; --g-bot: #9c60ed; --g-edge: #7637c3; --g-soft: #f2e8ff; }
 .feature-bl { --g-top: #f590d1; --g-bot: #e852af; --g-edge: #bd2c88; --g-soft: #ffe6f5; }
+.feature-distribute { --tile-cat: "COPY"; --g-top: #ffc56b; --g-bot: #f59a23; --g-edge: #c46a00; --g-soft: #fff1dc; }
 
 .feature-card {
   justify-content: flex-start;
@@ -2044,6 +2045,8 @@ body {
 .feature-icon-colors     { background-position: 33.333% 100%; }
 .feature-icon-hidden     { background-position: 66.667% 100%; }
 .feature-icon-bl-links   { background-position: 100% 100%; }
+/* 精灵图只有八格：「按 JSON 复制」直接用大号 emoji */
+.feature-icon-distribute { background-image: none; font-size: 96px; color: initial; line-height: 150px; text-align: center; }
 
 /* 白色铭牌：分类 + 名称 + 说明 + 状态 */
 .feature-text {

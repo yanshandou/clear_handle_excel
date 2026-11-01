@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>按 JSON 复制 Excel - Excel 整理工具箱</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/repair.css">
+  <style>
+    .dist-plan { display: grid; gap: 10px; font-weight: 600; margin: 0 0 8px; }
+    .dist-plan textarea { width: 100%; min-height: 160px; box-sizing: border-box; font-family: ui-monospace, Consolas, monospace; font-size: 13px; resize: vertical; }
+    .dist-plan-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-weight: 400; }
+    .dist-summary { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 4px; }
+    .dist-chip { font-size: 14px; font-weight: 700; padding: 6px 12px; border-radius: 999px; border: 1.5px solid; }
+    .dist-chip-info { color: var(--purple-ink); background: var(--purple-soft); border-color: #b7d4fb; }
+    .dist-chip-ok { color: #14633c; background: #e4f5ea; border-color: #b7e0c6; }
+    .dist-chip-warn { color: #6b3f00; background: #fff3d6; border-color: #e9c27a; }
+    .dist-chip-err { color: #b42318; background: #fdeaea; border-color: #f2b8b2; }
+    .dist-alert { border: 3px solid #b26a00; background: #fff6e0; color: #5c3600; border-radius: 14px; padding: 12px 16px; margin: 14px 0; font-weight: 700; line-height: 1.6; }
+    .dist-alert ul { margin: 6px 0 0; padding-left: 20px; font-weight: 400; }
+    .dist-person { font-size: 17px; margin: 22px 0 4px; color: var(--ink-2); }
+    .dist-folder summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+    .dist-route { font-weight: 700; overflow-wrap: anywhere; }
+    .dist-route small { display: block; font-weight: 400; color: var(--ink-3); }
+    .dist-nums { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+    .dist-num { font-size: 13px; font-weight: 700; padding: 3px 9px; border-radius: 8px; background: #eef1f7; color: var(--ink-2); border: 1.5px solid var(--line-soft); }
+    .dist-num.is-bad { background: #fff3d6; color: #6b3f00; border-color: #e9c27a; }
+    .dist-folder.is-bad { border-color: #e9c27a; border-width: 2px; }
+    .dist-folder.is-err { border-color: #f2b8b2; border-width: 2px; }
+    .dist-checks { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 4px; }
+    .dist-checks .bad { color: #6b3f00; font-weight: 700; }
+    .dist-checks .good { color: #14633c; }
+    .dist-sub { font-size: 14px; margin: 14px 0 4px; }
+    .dist-list { margin: 4px 0 0; padding-left: 20px; font-size: 14px; overflow-wrap: anywhere; }
+    .dist-meta { font-size: 13px; color: var(--ink-3); margin: 8px 0 0; overflow-wrap: anywhere; }
+    .dist-history { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+    .dist-history li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; border: 1px solid #c9d8e9; border-radius: 10px; padding: 10px 12px; }
+    .dist-history .dist-route { flex: 1 1 260px; }
+    .tag-overwrite { color: #7a3b00; font-weight: 700; }
+    .tag-new { color: #14633c; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <a href="/" class="header-brand"><div class="header-logo-badge">📦</div><div class="header-title"><h1>按 JSON 复制 Excel</h1><span class="subtitle">按上传记录把每个文件夹的 Excel 复制到目的地</span></div></a>
+    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/records" class="nav-link">📋 执行记录</a><a href="/workbench" class="nav-link">📐 切字检查工作台</a></nav>
+  </header>
+  <main class="container clean-container">
+    <section class="panel">
+      <h2>先生成清单，确认后再复制</h2>
+      <p class="toolbar-hint">JSON 里每个文件夹的 source 接在「来源根目录」后面，destination 接在「目的地根目录」后面。整个文件夹连子文件夹一起复制，只复制 Excel 表格文件（.xls / .xlsx / .xlsm / .xlsb / .xlt / .xltx / .xltm，~$ 临时文件不算），其他文件不管。只复制不移动，来源文件原样保留。目的地已有同名文件时直接覆盖，文件名不改，覆盖了哪些写在复制记录里。</p>
+      <div class="link-fields">
+        <label for="distSource">来源根目录<input id="distSource" type="text" placeholder="例如 D:\原始"></label>
+        <label for="distDest">目的地根目录<input id="distDest" type="text" placeholder="例如 \\server\共有\上传"></label>
+      </div>
+      <label class="dist-plan" for="distPlan">上传记录 JSON
+        <textarea id="distPlan" spellcheck="false" placeholder='粘贴 JSON，例如 {"label": "2026-10-30 上传记录", "people": [...]}'></textarea>
+      </label>
+      <div class="dist-plan-row">
+        <input id="distFile" type="file" accept=".json,application/json" hidden>
+        <button id="distPick" class="btn btn-outline btn-sm" type="button">📂 选择 .json 文件</button>
+        <span id="distFileName" class="toolbar-hint"></span>
+      </div>
+      <div class="link-actions">
+        <button id="distPreview" class="btn btn-primary" type="button" disabled>📋 生成复制清单</button>
+        <button id="distStart" class="btn btn-danger" type="button" disabled>📥 按清单开始复制</button>
+      </div>
+      <p class="toolbar-hint">生成清单只读不改。开始复制前会再查一遍来源，生成清单后来源有变化就不复制，需要重新生成。关闭网页后任务继续。</p>
+      <p id="distProgress" role="status" aria-live="polite">填好两个根目录和 JSON 后点「生成复制清单」。</p>
+      <div class="progress-track progress-track-sm"><div id="distProgressFill" class="progress-fill" style="width:0%"></div></div>
+      <p id="distError" class="batch-error" role="alert"></p>
+    </section>
+    <section class="panel"><h2 id="distResultTitle">复制清单</h2><div id="distResults"><p>尚未生成清单。</p></div></section>
+    <section class="panel"><h2>以前的复制记录</h2><div id="distHistory"><p>还没有复制记录。</p></div></section>
+    <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
+  </main>
+  <script src="/static/dialog.js"></script><script src="/static/open_excel.js"></script><script src="/static/distribute.js"></script><script src="/static/debug_log.js"></script>
+  <script src="/static/file_problem.js"></script>
+</body>
+</html>

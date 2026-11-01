@@ -8,7 +8,7 @@ LABELS = {
     "clean": "精简 Sheet", "scan": "扫描切字", "autofix": "自动修复切字",
     "pdf": "导出 PDF", "view": "视图标准化", "links": "修复引用错误",
     "colors": "修复颜色", "hidden": "修复隐藏页", "bl_scan": "排查 BL 超链接",
-    "bl_clear": "清除 BL 超链接",
+    "bl_clear": "清除 BL 超链接", "distribute": "按 JSON 复制 Excel",
 }
 
 def _connect():
