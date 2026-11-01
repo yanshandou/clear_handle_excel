@@ -5,6 +5,7 @@
 - 跳过：照以前那样记下错误，接着做下一份
 
 弹框上可以勾「这次任务后面再出错都直接跳过」，夜里挂机时不用守着。
+也可以设「没人选时多少分钟后自动跳过」（主页和弹框上都能改，0 = 一直等），存在数据库里，重启也在。
 什么错误要问见 should_ask()：Excel 打不开、卡住、弹框、崩溃、文件被占用这类「文件本身的问题」才问；
 程序自己的检查结论（找不到备份、扫描后文件变了等）不问，照旧记下错误。
 
@@ -24,6 +25,10 @@ _pending: dict[str, Any] | None = None
 _answer: dict[str, Any] | None = None
 _run: dict[str, Any] = {"task": "", "auto_skip": False, "asked": 0}
 _seq = 0
+SETTINGS_NAME = "file_problem_settings"
+MAX_TIMEOUT_MINUTES = 24 * 60
+_settings_cache: dict[str, Any] | None = None
+
 # 跑回归测试时没人点弹框：默认直接跳过（和以前一样）。测试要真等用户选择时设成 ""
 AUTO_ANSWER: str | None = None
 
@@ -38,6 +43,37 @@ def should_ask(err: BaseException, message: str = "") -> bool:
     if any(hint in text for hint in _FILE_HINTS):
         return True
     return not isinstance(err, ValueError)
+
+
+def get_settings() -> dict[str, Any]:
+    """timeout_minutes：等用户选择最多等多少分钟，到时间自动跳过；0 = 一直等"""
+    global _settings_cache
+    if _settings_cache is None:
+        saved: dict[str, Any] = {}
+        try:
+            from core import storage
+            saved = storage.load_snapshot(SETTINGS_NAME) or {}
+        except Exception as err:
+            debug_log.event("⚠️ 没能读出出错弹框设置，按一直等处理", 原因=str(err))
+        minutes = saved.get("timeout_minutes", 0)
+        _settings_cache = {"timeout_minutes": minutes if isinstance(minutes, int) and not isinstance(minutes, bool)
+                           and 0 <= minutes <= MAX_TIMEOUT_MINUTES else 0}
+    return dict(_settings_cache)
+
+
+def set_settings(timeout_minutes: Any) -> dict[str, Any]:
+    global _settings_cache
+    if (isinstance(timeout_minutes, bool) or not isinstance(timeout_minutes, int)
+            or not 0 <= timeout_minutes <= MAX_TIMEOUT_MINUTES):
+        raise ValueError(f"自动跳过的等待时间要填 0–{MAX_TIMEOUT_MINUTES} 之间的整数分钟（0 = 一直等）")
+    from core import storage
+    settings = {"timeout_minutes": timeout_minutes}
+    storage.save_snapshot(SETTINGS_NAME, settings)
+    with _COND:
+        _settings_cache = dict(settings)
+        _COND.notify_all()  # 正在等的那份文件马上按新时间算
+    debug_log.event("⚙️ 出错弹框设置", 没人选时自动跳过分钟=timeout_minutes or "一直等")
+    return dict(settings)
 
 
 def begin(name: str) -> None:
@@ -73,7 +109,11 @@ def pending() -> dict[str, Any] | None:
     with _COND:
         if _pending is None:
             return None
-        return {**_pending, "waited": round(time.time() - _pending["since"])}
+        problem = dict(_pending)
+    waited = time.time() - problem["since"]
+    minutes = get_settings()["timeout_minutes"]
+    left = max(0, round(minutes * 60 - waited)) if minutes else None
+    return {**problem, "waited": round(waited), "timeout_minutes": minutes, "auto_skip_in": left}
 
 
 def answer(problem_id: str, choice: str, auto_skip: bool = False) -> None:
@@ -113,6 +153,10 @@ def ask(path: str | Path, label: str, error: str, *, folder: str | Path = "",
     choice = "skip"
     try:
         while True:
+            minutes = get_settings()["timeout_minutes"]
+            if minutes and time.monotonic() - started >= minutes * 60:
+                debug_log.event(f"⏰ {minutes} 分钟没人选择，自动跳过这份文件", 文件=label)
+                break
             with _COND:
                 if _answer is not None and _answer["id"] == problem_id:
                     choice = _answer["choice"]

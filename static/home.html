@@ -46,6 +46,10 @@
           title="从备份文件恢复进度，会替换当前全部进度">
           ⬆ 导入进度
         </button>
+        <button type="button" class="btn btn-outline btn-sm" onclick="openFileProblemSettings()"
+          title="批量任务遇到出错的文件时：等你选择重试 / 跳过，或者多少分钟没人选就自动跳过">
+          ⏸ 出错时
+        </button>
         <input type="file" id="progressFileInput" class="hidden" accept=".json,application/json">
       </div>
     </section>

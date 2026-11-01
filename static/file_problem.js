@@ -5,6 +5,7 @@
    - 修好、保存并关闭后点「重试」；不修就点「跳过」，接着做下一份
    - 勾选「后面再出错都直接跳过」：这次任务不再弹框（夜里挂机用）
    按 Esc / × 可以先收起，页面左下角留一个提示条，点它再打开
+   「没人选时 N 分钟后自动跳过」（0 = 一直等）：弹框里和主页「⏸ 出错时」按钮都能改，存在后台，所有任务通用
    ========================================== */
 (function () {
   const POLL_MS = 2000;
@@ -14,6 +15,7 @@
   let minimized = '';     // 收起的问题 id
   let sending = false;
   let timer = null;
+  let settings = { timeout_minutes: 0 };
 
   function el(tag, cls, text) {
     const node = document.createElement(tag);
@@ -47,6 +49,7 @@
         <p class="file-problem-hint">在 Excel 里修好后，请先<b>保存并关闭</b>这份文件，再点「重试」。
           点「跳过」会记下错误，接着处理下一份文件，以后可以「继续上次任务」再做它。</p>
         <label class="file-problem-auto"><input type="checkbox"> 这次任务后面再有文件出错，都直接跳过（不再弹框，适合夜里挂机）</label>
+        <div class="file-problem-timeout">没人选时 <input type="number" min="0" max="1440" step="1" inputmode="numeric" aria-label="自动跳过的分钟数"> 分钟后自动跳过（0 = 一直等）</div>
       </div>
       <div class="app-dialog-foot">
         <span class="file-problem-waited"></span>
@@ -62,6 +65,7 @@
     dialog.querySelector('.file-problem-auto input').addEventListener('change', e => {
       dialog.querySelector('.file-problem-retry').disabled = e.target.checked;
     });
+    dialog.querySelector('.file-problem-timeout input').addEventListener('change', e => saveTimeout(e.target));
     return dialog;
   }
 
@@ -102,6 +106,61 @@
     }
   }
 
+  async function saveTimeout(input) {
+    const minutes = Number(input.value);
+    if (!Number.isInteger(minutes) || minutes < 0 || minutes > 1440) {
+      toast('请填 0–1440 之间的整数分钟（0 = 一直等）', true);
+      input.value = settings.timeout_minutes;
+      return false;
+    }
+    try {
+      const res = await fetch('/api/file-problem/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ timeout_minutes: minutes }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      settings = data.settings;
+      toast(minutes ? `已保存：出错后 ${minutes} 分钟没人选就自动跳过` : '已保存：出错后一直等你选择');
+      poll();
+      return true;
+    } catch (e) {
+      toast(`没能保存：${e.message}`, true);
+      return false;
+    }
+  }
+
+  // 主页「⏸ 出错时」按钮：任务开始前先设好（夜里挂机时用）
+  let settingsDialog = null;
+  window.openFileProblemSettings = function () {
+    if (!settingsDialog) {
+      settingsDialog = el('dialog', 'app-dialog file-problem-dialog file-problem-settings');
+      settingsDialog.dataset.tone = 'info';
+      settingsDialog.innerHTML = `
+        <div class="app-dialog-head"><span class="app-dialog-icon" aria-hidden="true">⏸</span>
+          <h2 class="app-dialog-title">文件出错时怎么办</h2></div>
+        <div class="file-problem-body">
+          <p class="file-problem-hint">批量任务处理到有问题的文件（打不开、要密码、Excel 弹框卡住、被占用等）时会暂停，
+            弹框让你修好后「重试」或「跳过」。没人在电脑前时，可以设一个时间，到时间自动跳过、接着做下一份。</p>
+          <div class="file-problem-timeout">没人选时 <input type="number" min="0" max="1440" step="1" inputmode="numeric" aria-label="自动跳过的分钟数"> 分钟后自动跳过</div>
+          <p class="file-problem-hint">填 0 = 一直等你选择。所有批量任务通用，重启程序后也保留。</p>
+        </div>
+        <div class="app-dialog-foot">
+          <button type="button" class="btn btn-outline file-problem-cancel">取消</button>
+          <button type="button" class="btn btn-primary file-problem-save">保存</button>
+        </div>`;
+      document.body.appendChild(settingsDialog);
+      settingsDialog.querySelector('.file-problem-cancel').addEventListener('click', () => settingsDialog.close());
+      settingsDialog.querySelector('.file-problem-save').addEventListener('click', async () => {
+        if (await saveTimeout(settingsDialog.querySelector('input'))) settingsDialog.close();
+      });
+    }
+    settingsDialog.querySelector('input').value = settings.timeout_minutes;
+    settingsDialog.showModal();
+    settingsDialog.querySelector('input').select();
+  };
+
   async function choose(choice) {
     if (!current || sending) return;
     sending = true;
@@ -139,7 +198,11 @@
       ? `「${problem.task}」处理到这份文件时出错，后面的文件在等你决定。` : '处理到这份文件时出错，后面的文件在等你决定。';
     d.querySelector('.file-problem-path').textContent = problem.path;
     d.querySelector('.file-problem-error').textContent = problem.error || '（没有说明）';
-    d.querySelector('.file-problem-waited').textContent = waitedText(problem.waited || 0);
+    const left = problem.auto_skip_in;
+    d.querySelector('.file-problem-waited').textContent = waitedText(problem.waited || 0)
+      + (left === null || left === undefined ? '' : `，${left < 60 ? '马上' : `${Math.ceil(left / 60)} 分钟后`}自动跳过`);
+    const input = d.querySelector('.file-problem-timeout input');
+    if (document.activeElement !== input) input.value = problem.timeout_minutes || 0;
   }
 
   function show(problem) {
@@ -177,6 +240,7 @@
     try {
       const res = await fetch('/api/file-problem', { cache: 'no-store' });
       const data = await res.json();
+      if (data.settings) settings = data.settings;
       if (!sending) render(data.problem || null);
     } catch (_) {
       // 程序关掉了或者网络断了：下次再问
