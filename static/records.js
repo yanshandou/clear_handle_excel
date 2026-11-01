@@ -189,8 +189,12 @@ async function pollRecords() {
     const done = Number(data.completed_files || 0);
 
     document.getElementById('currentStepText').textContent = data.current_step || '等待开始...';
-    document.getElementById('progressPctText').textContent = `${pct}% (${done} / ${total} 文件)`;
+    const allDone = data.status === 'completed';
+    document.getElementById('progressPctText').textContent = allDone ? `✅ 全部完成（${done} / ${total} 文件）` : `${pct}% (${done} / ${total} 文件)`;
     document.getElementById('progressBarFill').style.width = `${Math.min(100, Math.max(0, pct))}%`;
+    const track = document.getElementById('progressBarFill').parentElement;
+    track.classList.toggle('is-done', allDone);
+    track.classList.toggle('is-paused', !isRunning);
 
     const filesList = filesOf(data);
     const totalClips = filesList.reduce((acc, f) => acc + Number(f.clip_detected || 0), 0);

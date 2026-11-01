@@ -124,8 +124,12 @@ function renderStrip() {
   badge.textContent = badgeText;
   document.getElementById('stripTitle').textContent = p.task_name || '尚未开始任务';
   document.getElementById('stripStep').textContent = p.current_step || '';
-  document.getElementById('stripPct').textContent = `${pct}% · ${p.completed_files}/${p.total_files} 个文件`;
+  const stripDone = status === 'completed';
+  document.getElementById('stripPct').textContent = stripDone ? `✅ 全部完成 · ${p.completed_files}/${p.total_files} 个文件` : `${pct}% · ${p.completed_files}/${p.total_files} 个文件`;
   document.getElementById('stripFill').style.width = `${Math.min(100, Math.max(0, pct))}%`;
+  const stripTrack = document.getElementById('stripFill').parentElement;
+  stripTrack.classList.toggle('is-done', stripDone);
+  stripTrack.classList.toggle('is-paused', status !== 'running');
 
   const resumeBtn = document.getElementById('stripResumeBtn');
   resumeBtn.classList.toggle('hidden', !overview.can_resume);
@@ -226,6 +230,8 @@ function renderRunBox() {
     `完成 ${p.completed_files}/${p.total_files}` +
     (p.error_files ? ` · 失败 ${p.error_files}` : '') + ` · ${pct}%`;
   document.getElementById('taskProgressFill').style.width = `${Math.min(100, Math.max(0, pct))}%`;
+  // 结束后下面的结果框已写明完成 / 未完成，进度条收起
+  document.getElementById('taskProgressFill').closest('.mini-progress-box').classList.toggle('hidden', phase === 'done');
 
   const logBox = document.getElementById('taskLogBox');
   const logText = overview.logs.length ? overview.logs.join('\n') : '等待操作...';

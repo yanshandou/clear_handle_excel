@@ -120,6 +120,20 @@
       + (shown.length < cells.length ? `<p>当前显示${view === 'unresolved' ? '未修复项' : ''} ${shown.length} / ${cells.length} 处。 <button class="btn btn-outline btn-sm" type="button" data-repair-more="${escape(file.name)}">查看更多差异</button></p>` : '') + '</details>';
   }
 
+
+  // 进度区三种样子：跑着显示进度条；结束后收起进度条，done 时把结果写成完成提示（有失败 / 没修好的用黄色）
+  function showProgress(id, state, title = '', text = '', warn = false) {
+    const line = $(id), track = $(id + 'Fill').parentElement;
+    track.classList.toggle('is-done', state !== 'running');
+    track.classList.toggle('is-paused', state !== 'running');
+    line.classList.toggle('task-done-line', state === 'done');
+    line.classList.toggle('is-warn', state === 'done' && warn);
+    if (state !== 'done') { if (text) line.textContent = text; return; }
+    const strong = document.createElement('strong');
+    strong.textContent = title;
+    line.replaceChildren(strong, document.createTextNode(text));
+  }
+
   function renderClear(data, combined = false) {
     const filters = combined ? 'clearFilters' : 'repairFilters';
     const results = combined ? 'clearResults' : 'repairResults';
@@ -130,7 +144,7 @@
     const errors = files.filter(failed).length;
     const summary = `已清除 ${totalRules} 条标记，还原标签 ${totalTabs} 张；${errors} 份文件存在清除失败。`;
     if (combined) { $('clearResultPanel').hidden = false; $('clearResultSummary').textContent = summary; }
-    else { $('repairResultTitle').textContent = '清除标记颜色结果'; $('repairResultFolder').textContent = `当前文件夹：${data.folder}`; $('repairProgress').textContent = summary; $('repairProgressFill').style.width = '100%'; }
+    else { $('repairResultTitle').textContent = '清除标记颜色结果'; $('repairResultFolder').textContent = `当前文件夹：${data.folder}`; $('repairProgressFill').style.width = '100%'; showProgress('repairProgress', 'done', errors ? '清除结束：' : '清除完成：', summary, errors > 0); }
     const hasWork = file => !!file.leftovers || (file.tabs || []).some(tab => tab.status === 'ok');
     const categories = [['all', '全部', files], ['clear_done', '已清除', files.filter(hasWork)],
       ['clear_empty', '无需处理', files.filter(file => !hasWork(file) && !failed(file))], ['clear_failed', '处理失败', files.filter(failed)]];
@@ -170,6 +184,7 @@
       const stage = latest.phase === 'repair' ? latest.stage : latest.phase;
       if (colors) $('clearResultPanel').hidden = true;
       const progressId = 'repairProgress';
+      showProgress(progressId, 'running');
       $(progressId).textContent = `${{scan:'正在扫描', find:'正在扫描', preview:'正在对比备份', apply:'正在修复', clear:'正在清除标记'}[stage] || '正在处理'} ${Math.min((latest.done || 0) + 1, latest.total || 0)} / ${latest.total || 0}：${latest.current || '准备中…'}`;
       const fraction = latest.total ? latest.done / latest.total : 0;
       $(progressId + 'Fill').style.width = `${colors && latest.phase === 'repair' ? (clearing ? fraction * 50 : 50 + fraction * 50) : fraction * 100}%`;
@@ -184,10 +199,12 @@
     const restoredTabs = colors ? data.files.filter(file => !file.error).flatMap(file => file.cells || []).filter(cell => cell.kind === 'tab' && successful(cell)).length : 0;
     $('repairResultTitle').textContent = hidden ? '隐藏恢复结果' : colors ? '颜色修复结果' : '引用错误修复结果';
     $('repairResultFolder').textContent = `当前文件夹：${data.folder}${data.old_folder ? `；原始备份：${data.old_folder}` : ''}`;
-    $('repairProgress').textContent = phase === 'apply'
-      ? `已${hidden ? '恢复隐藏设置' : colors ? '恢复颜色' : '恢复正常'} ${count} 处；未修复 ${cells.length - count} 处；${errors} 份文件处理失败。${colors && restoredTabs ? `其中 Sheet 标签 ${restoredTabs} 张。` : ''}${hidden ? '连续列按列段计数。' : ''}`
-      : '上次检查尚未修复，点击“扫描并修复”即可重新检查并处理。';
     $('repairProgressFill').style.width = '100%';
+    if (phase === 'apply') {
+      const left = cells.length - count;
+      showProgress('repairProgress', 'done', left || errors ? '处理结束，有需要人工看的：' : cells.length ? '修复完成：' : '检查完成，没有发现问题：',
+        `已${hidden ? '恢复隐藏设置' : colors ? '恢复颜色' : '恢复正常'} ${count} 处；未修复 ${left} 处；${errors} 份文件处理失败。${colors && restoredTabs ? `其中 Sheet 标签 ${restoredTabs} 张。` : ''}${hidden ? '连续列按列段计数。' : ''}`, left > 0 || errors > 0);
+    } else showProgress('repairProgress', 'idle', '', '上次检查尚未修复，点击“扫描并修复”即可重新检查并处理。');
     let entries, view = 'all', emptyMessage = '没有待处理的文件。';
     if (colors) {
       const analyses = data.files.map(file => analyzeFile(file, phase));
