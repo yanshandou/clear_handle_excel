@@ -566,9 +566,10 @@ def open_at(pdf: str, page: Any, x: Any, y: Any, old_folder: Any = "") -> dict:
 
 # ---------- 三色标记：一键处理 ----------
 # 网页上每份 PDF（= 一张表）可以标成：蓝（默认，不用管）/ 黄（要人工改）/ 红（这张表不要了）。
-# 「一键处理」：先在后台 Excel 里把标红的表删掉并保存（同一份 Excel 的几张一起删、只开一次），
+# 网页上黄红分开两个按钮（2026-11-02）：「删除标红」只传 red，「打开标黄」只传 yellow；两个都传时先删后开。
+# 删除：在后台 Excel 里把标红的表删掉并保存（同一份 Excel 的几张一起删、只开一次），
 # 删掉的表对应的 PDF 也删掉；再把标黄的用 Excel 打开（每份 Excel 开一次，跳到标黄时右键的那一格），
-# 一次最多开 OPEN_LIMIT 份，剩下的再点一次接着开。
+# 一次最多开 OPEN_LIMIT 份 Excel（按文件算，同一份 Excel 几张标黄的表只算 1 份），剩下的再点一次接着开。
 
 OPEN_LIMIT = 10
 _PROCESS: dict[str, Any] = {"running": False}

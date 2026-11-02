@@ -5,7 +5,7 @@
 // 三色标记（借鉴精简 Sheet）：蓝 = 不用管（默认）、黄 = 这一页要人工改（按页标）、红 = 整张表不要了。
 // 单击页面换颜色（蓝 → 黄 → 红 → 蓝，标黄记住点的那一格）；用 Excel 打开那一格改成 Ctrl + 单击或右键菜单。
 // 标题行右边的三个按钮一次改整张表。
-// 看完后点底部「一键处理」：后台删掉标红的表并保存，再用 Excel 打开标黄的。
+// 看完后点底部按钮，黄红分开：「打开标黄」用 Excel 打开标黄的（一次最多 10 份 Excel），「删除标红」在后台删表并保存。
 // 改完 Excel 想看效果：标题上「🔄 重新生成」只把这一份 Excel 的 PDF 重新导出一次。
 
 const FOLDER_KEY = 'clear_handle_excel.lastFolder';
@@ -17,6 +17,7 @@ const MARK_TITLE = { blue: '整张表不用管（清掉这张表的所有标记�
 const VIEWS = ['large', 'medium', 'small'];
 const MIN_DRAG_PX = 6;  // 按下到松开挪动超过这么多就是在拖（选字、滚动），不算点
 const POLL_MS = 1500;
+const OPEN_LIMIT = 10;   // 标黄的一次最多打开几份 Excel（和后台 pdf_review.OPEN_LIMIT 一样）
 
 let folder = '';
 let pdfs = [];          // [{pdf, name, v, pages: [[宽, 高]], wb_path, wb_name, sheet, guessed, error}]
@@ -301,7 +302,7 @@ function paintMark(d) {
     const spot = color === 'yellow' ? m.pages[p] : null;
     if (spot && spot.x !== undefined) {
       const [w, h] = doc.pages[p];
-      const pin = Object.assign(document.createElement('span'), { className: 'pr-pin', title: '标黄时点的位置，一键处理时 Excel 跳到这一格' });
+      const pin = Object.assign(document.createElement('span'), { className: 'pr-pin', title: '标黄时点的位置，打开标黄时 Excel 跳到这一格' });
       pin.style.left = `${spot.x / w * 100}%`;
       pin.style.top = `${spot.y / h * 100}%`;
       pageEl.querySelector('.pr-layer').appendChild(pin);
@@ -357,7 +358,7 @@ function setPageMark(d, page, color, point = null) {
 function cyclePage(d, page, point) {
   const doc = pdfs[d];
   if (!editable(doc)) {
-    if (processing) toast('正在一键处理，处理完再改颜色', true);
+    if (processing) toast('正在处理，处理完再改颜色', true);
     return;
   }
   const now = pageColor(doc, page);
@@ -370,15 +371,18 @@ function marked(color) {
   return pdfs.filter(doc => colorOf(doc) === color);
 }
 
+const PROCESS_TEXT = { yellow: '📗 打开标黄', red: '🗑 删除标红' };
+const PROCESS_BUTTON = { yellow: 'prOpenYellow', red: 'prDeleteRed' };
+let processKind = '';  // 正在处理的是哪个按钮：yellow / red
+
 function updateProcessButton() {
-  const yellow = marked('yellow');
-  const red = marked('red');
-  const button = $('prProcess');
-  $('prCountYellow').textContent = yellow.length;
-  $('prCountRed').textContent = red.length;
-  if (!processing) {
-    $('prProcessText').textContent = '⚡ 一键处理';
-    button.disabled = !yellow.length && !red.length;
+  const counts = { yellow: marked('yellow').length, red: marked('red').length };
+  $('prCountYellow').textContent = counts.yellow;
+  $('prCountRed').textContent = counts.red;
+  if (processing) return;
+  for (const kind of ['yellow', 'red']) {
+    document.querySelector(`[data-process-text="${kind}"]`).textContent = PROCESS_TEXT[kind];
+    $(PROCESS_BUTTON[kind]).disabled = !counts[kind] || !!regenWb;
   }
 }
 
@@ -437,7 +441,7 @@ function onMenuClick(e) {
   else setPageMark(d, page, kind, point);
 }
 
-/* ---------- 一键处理 ---------- */
+/* ---------- 打开标黄 / 删除标红 ---------- */
 
 function listLines(docs, limit = 12) {
   const lines = docs.slice(0, limit).map(doc => {
@@ -449,25 +453,31 @@ function listLines(docs, limit = 12) {
   return lines.join('\n');
 }
 
-async function runProcess() {
-  if (processing) return;
-  const red = marked('red');
-  let yellow = marked('yellow').filter(doc => !marks[doc.pdf].opened);
-  if (!yellow.length && !red.length) yellow = marked('yellow'); // 都打开过了：再点一次就全部重新打开
-  if (!red.length && !yellow.length) return;
+// 黄红分开（用户 2026-11-02 定）：kind = 'yellow' 只打开标黄的，'red' 只删标红的
+async function runProcess(kind) {
+  if (processing || regenWb) return;
   const files = docs => new Set(docs.map(doc => doc.wb_path)).size;
-  const parts = [];
-  if (red.length) {
-    parts.push(`🔴 删除 ${red.length} 张表（${files(red)} 份 Excel），删完保存，对应的 PDF 也删掉：\n${listLines(red)}`);
-  }
-  if (yellow.length) {
+  let red = [];
+  let yellow = [];
+  let text;
+  if (kind === 'red') {
+    red = marked('red');
+    if (!red.length) return;
+    text = `🔴 删除 ${red.length} 张表（${files(red)} 份 Excel），删完保存，对应的 PDF 也删掉：\n${listLines(red)}`
+      + '\n\n删表前会先把别的表引用它的公式转成值；删表后出现新的引用错误时这份文件不保存。';
+  } else {
+    yellow = marked('yellow').filter(doc => !marks[doc.pdf].opened);
+    if (!yellow.length) yellow = marked('yellow'); // 都打开过了：再点一次就全部重新打开
+    if (!yellow.length) return;
     const n = files(yellow);
-    parts.push(`🟡 用 Excel 打开 ${n} 份文件（${yellow.length} 张有标黄的表${n > 10 ? '，一次最多开 10 份，剩下的再点一次' : ''}）：\n${listLines(yellow)}`);
+    // 按 Excel 文件算：同一份 Excel 有几张标黄的表也只打开一次
+    const now = Math.min(n, OPEN_LIMIT);
+    text = `🟡 用 Excel 打开 ${now} 份文件${n > OPEN_LIMIT ? `（标黄的共 ${n} 份，一次最多开 ${OPEN_LIMIT} 份，剩下 ${n - OPEN_LIMIT} 份改完后再点一次）` : ''}，`
+      + `共 ${yellow.length} 张有标黄的表：\n${listLines(yellow)}`;
   }
-  if (red.length) parts.push('删表前会先把别的表引用它的公式转成值；删表后出现新的引用错误时这份文件不保存。');
-  const ok = await appConfirm(parts.join('\n\n'), {
-    title: '一键处理', tone: red.length ? 'danger' : 'info', okText: red.length ? '删除并处理' : '打开',
-  });
+  const ok = await appConfirm(text, kind === 'red'
+    ? { title: '删除标红的表', tone: 'danger', okText: '删除' }
+    : { title: '打开标黄的文件', tone: 'info', okText: '打开' });
   if (!ok) return;
   const spots = doc => Object.entries(marks[doc.pdf].pages).map(([p, s]) => ({ page: Number(p), ...s }));
   try {
@@ -478,17 +488,23 @@ async function runProcess() {
     appAlert(e.message, { tone: 'error' });
     return;
   }
+  processKind = kind;
   setProcessing(true);
   pollProcess();
 }
 
 function setProcessing(on) {
   processing = on;
-  $('prProcess').disabled = on;
-  $('prProcess').classList.toggle('is-running', on);
+  for (const kind of ['yellow', 'red']) {
+    $(PROCESS_BUTTON[kind]).disabled = on;
+    $(PROCESS_BUTTON[kind]).classList.toggle('is-running', on && processKind === kind);
+  }
   pdfs.forEach((_, d) => paintMark(d));
   paintRegen();
-  if (!on) updateProcessButton();
+  if (!on) {
+    processKind = '';
+    updateProcessButton();
+  }
 }
 
 async function pollProcess() {
@@ -500,8 +516,10 @@ async function pollProcess() {
     return;
   }
   if (status.running) {
-    $('prProcessText').textContent = status.stage === 'delete'
-      ? `⏳ 删除中 ${status.done} / ${status.total}` : '⏳ 正在打开…';
+    if (!processKind) processKind = status.stage === 'delete' ? 'red' : 'yellow';
+    const label = document.querySelector(`[data-process-text="${processKind}"]`);
+    label.textContent = status.stage === 'delete' ? `⏳ 删除中 ${status.done} / ${status.total}` : '⏳ 正在打开…';
+    $(PROCESS_BUTTON[processKind]).classList.add('is-running');
     setTimeout(pollProcess, 1000);
     return;
   }
@@ -538,10 +556,10 @@ function finishProcess(result) {
     section(`⚠ 没删掉 ${result.failed?.length} 张（还是红色，可以再点一次）`, result.failed),
     section(`📗 已用 Excel 打开 ${files(result.opened || [])} 份，标黄的地方（点一下跳过去）`, result.opened),
     section(`⚠ 打不开 ${result.open_failed?.length} 处`, result.open_failed),
-    section(`⏸ 还有 ${files(result.later || [])} 份没打开（一次最多 10 份，改完关掉后再点「一键处理」）`, result.later),
+    section(`⏸ 还有 ${files(result.later || [])} 份没打开（一次最多 10 份，改完关掉后再点「📗 打开标黄」）`, result.later),
   ].join('');
   const bad = result.failed?.length || result.open_failed?.length;
-  toast(bad ? '一键处理完成，有没处理成功的，请看结果' : '一键处理完成', !!bad);
+  toast(bad ? '处理完成，有没处理成功的，请看结果' : '处理完成', !!bad);
   $('prResultBody').innerHTML = html || '<p>没有要处理的</p>';
   $('prResult').dataset.tone = bad ? 'warn' : 'info';
   $('prResult').showModal();
@@ -559,6 +577,7 @@ function paintRegen() {
     b.classList.toggle('is-running', !!mine);
     b.disabled = !!regenWb || processing || deleted.has(doc?.pdf);
   });
+  updateProcessButton(); // 重新生成时两个处理按钮也先不能点
 }
 
 async function regenerate(d) {
@@ -827,7 +846,8 @@ $('prDocs').addEventListener('click', e => {
   const regen = e.target.closest('[data-regen]');
   if (regen) regenerate(Number(regen.dataset.regen));
 });
-$('prProcess').addEventListener('click', runProcess);
+$('prOpenYellow').addEventListener('click', () => runProcess('yellow'));
+$('prDeleteRed').addEventListener('click', () => runProcess('red'));
 $('prFolder').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
 $('prTrack').addEventListener('click', jumpTo);
 $('prView').addEventListener('click', e => {

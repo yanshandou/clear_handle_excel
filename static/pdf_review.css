@@ -601,7 +601,7 @@
 .pr-dot.is-yellow { background: #ffc21f; }
 .pr-dot.is-red { background: #c8102e; }
 
-/* 底部「一键处理」：数字变了按钮宽度也不变 */
+/* 底部「打开标黄」「删除标红」：数字、文字变了按钮宽度也不变 */
 .pr-process {
   flex: none;
   display: inline-flex;
@@ -610,9 +610,9 @@
   white-space: nowrap;
 }
 
-#prProcessText {
+.pr-process-text {
   display: inline-block;
-  min-width: 7.5em;
+  min-width: 6.5em;
   text-align: center;
 }
 

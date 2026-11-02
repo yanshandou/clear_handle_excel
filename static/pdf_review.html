@@ -27,7 +27,7 @@
         <li>每张表第一次要在后台算一下行列位置（几秒到十几秒），加载后会自动按顺序先算好；每份 PDF 标题右边显示算好没有。</li>
         <li>顶栏和底部条不碰 3 秒自动隐藏，鼠标移到窗口最上面或最下面就会出来。</li>
         <li>在 Excel 里改完、<b>保存</b>后，点 PDF 标题右边的<b>「🔄 重新生成」</b>：只把这一份 Excel 的 PDF 重新导出一次，马上看到改完的样子。Excel 没改过（还没保存）会先提醒。</li>
-        <li>有一页黄标题就是黄，标了红整张表都是红。标题右边的三个按钮一次改整张表。看完点底部<b>「⚡ 一键处理」</b>：后台删掉标红的表并保存，再用 Excel 打开标黄的（一次最多 10 份）。</li>
+        <li>有一页黄标题就是黄，标了红整张表都是红。标题右边的三个按钮一次改整张表。看完点底部按钮，黄和红分开处理：<b>「📗 打开标黄」</b>用 Excel 打开标黄的文件（一次最多 10 份 Excel，同一份 Excel 有几张标黄的表也只算 1 份，剩下的再点一次）；<b>「🗑 删除标红」</b>在后台删掉标红的表并保存。</li>
       </ul>
       <p id="prStatus" class="pr-status" role="status" aria-live="polite">输入文件夹后点「加载 PDF」。</p>
     </section>
@@ -42,11 +42,16 @@
         <div id="prWhereText" class="pr-where-text"></div>
         <div id="prTrack" class="pr-track" title="点一下跳到那里"><div id="prFill" class="pr-fill"></div></div>
       </div>
-      <button id="prProcess" type="button" class="btn btn-primary pr-process" disabled
-        title="删掉标红的表（后台保存），再用 Excel 打开标黄的">
-        <span id="prProcessText">⚡ 一键处理</span>
-        <span class="pr-count is-yellow" title="标黄（要人工改）"><span id="prCountYellow">0</span></span>
-        <span class="pr-count is-red" title="标红（删除这张表）"><span id="prCountRed">0</span></span>
+      <!-- 标黄和标红分开处理（用户 2026-11-02 定）：打开 Excel 和删表是两回事，各一个按钮 -->
+      <button id="prOpenYellow" type="button" class="btn btn-primary pr-process" data-process="yellow" disabled
+        title="用 Excel 打开标黄的文件，跳到标黄时点的那一格（一次最多 10 份 Excel）">
+        <span class="pr-process-text" data-process-text="yellow">📗 打开标黄</span>
+        <span class="pr-count is-yellow" title="标黄的表（要人工改）"><span id="prCountYellow">0</span></span>
+      </button>
+      <button id="prDeleteRed" type="button" class="btn btn-danger pr-process" data-process="red" disabled
+        title="在后台删掉标红的表并保存，对应的 PDF 也删掉">
+        <span class="pr-process-text" data-process-text="red">🗑 删除标红</span>
+        <span class="pr-count is-red" title="标红的表（删除这张表）"><span id="prCountRed">0</span></span>
       </button>
       <div id="prView" class="pv-size-switch pr-view" role="group" aria-label="页面大小">
         <button type="button" class="btn btn-outline btn-sm" data-view="large" title="每页铺满页面宽度">大图</button>
@@ -60,14 +65,14 @@
       <div class="pr-menu-title"></div>
       <button type="button" role="menuitem" data-menu="blue"><i class="pr-dot is-blue"></i><span><b>这一页不用管</b><small>默认</small></span></button>
       <button type="button" role="menuitem" data-menu="yellow"><i class="pr-dot is-yellow"></i><span><b>这一页要人工改</b><small></small></span></button>
-      <button type="button" role="menuitem" data-menu="red"><i class="pr-dot is-red"></i><span><b>删除这张表</b><small>整张表所有页，一键处理时在后台删掉并保存</small></span></button>
+      <button type="button" role="menuitem" data-menu="red"><i class="pr-dot is-red"></i><span><b>删除这张表</b><small>整张表所有页，点「删除标红」时在后台删掉并保存</small></span></button>
       <hr>
       <button type="button" role="menuitem" data-menu="open"><i class="pr-dot is-open">📗</i><span><b>在这里打开 Excel</b><small>也可以 Ctrl + 单击</small></span></button>
     </div>
 
     <dialog id="prResult" class="app-dialog pr-result" aria-labelledby="prResultTitle">
       <div class="app-dialog-head"><span class="app-dialog-icon" aria-hidden="true">⚡</span>
-        <h2 id="prResultTitle" class="app-dialog-title">一键处理结果</h2></div>
+        <h2 id="prResultTitle" class="app-dialog-title">处理结果</h2></div>
       <div id="prResultBody" class="pr-result-body"></div>
       <div class="app-dialog-foot"><form method="dialog"><button class="btn btn-primary">知道了</button></form></div>
     </dialog>
