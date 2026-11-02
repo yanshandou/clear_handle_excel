@@ -1261,13 +1261,17 @@ class BatchTests(unittest.TestCase):
             self.excel.Workbooks.Open.assert_called_once()
             original.Close.assert_called_once()
 
-    def wrap_sheet(self, *, wrap=False, merged=True, neighbor="", align=1):
+    def wrap_sheet(self, *, wrap=False, merged=True, neighbor="", align=1, blank_value=None, row_height=13.5):
         cells = {}
         def cell(row, col):
-            return cells.setdefault((row, col), Mock(MergeCells=False, Formula=neighbor if col != 16 else "x"))
+            text = neighbor if col != 16 else "x"
+            return cells.setdefault((row, col), Mock(MergeCells=False, Formula=text,
+                                                     Value=None if blank_value is None and not text else blank_value or text))
         area = Mock(WrapText=wrap, ShrinkToFit=False, Row=146, Column=16, HorizontalAlignment=align)
         area.Cells.Count = 3 if merged else 1
+        area.Cells.return_value.Font.Size = 9.0
         sheet = Mock()
+        sheet.Rows.return_value.RowHeight = row_height
         sheet.Range.return_value.MergeArea = area
         sheet.Cells.side_effect = cell
         return sheet, area
@@ -1285,6 +1289,32 @@ class BatchTests(unittest.TestCase):
         # 右对齐看左边
         right = self.wrap_sheet(merged=False, neighbor="x", align=batch.XL_HALIGN_RIGHT)[0]
         self.assertEqual(batch._wrap_targets(right, [item]), ["P146"])
+
+    def test_unmerged_cell_cut_sideways_next_to_blank_cell_is_wrapped(self):
+        """截图里 B7 那种：没合并、右边看着是空格，PDF 上只印出开头一段 → 也要先开换行再加高"""
+        item = {"kind": "hidden", "hidden_reason": batch.REASON_TRUNCATED, "cell_addr": "P146",
+                "text": "IFNULL(MIN(T2.tekiyou_start_month_id), '9999-12-31')", "visible_text": "IFNULL(MIN(T2.tekiyou"}
+        self.assertEqual(batch._wrap_targets(self.wrap_sheet(merged=False)[0], [item]), ["P146"])
+        # 行太矮（比字号还矮）：是上下被压住，只加高
+        self.assertEqual(batch._wrap_targets(self.wrap_sheet(merged=False, row_height=6)[0], [item]), [])
+        # 没有「只印出开头一段」的证据：只加高
+        self.assertEqual(batch._wrap_targets(self.wrap_sheet(merged=False)[0], [{**item, "visible_text": ""}]), [])
+        # 右边存着空字符串（看着是空的，Excel 照样挡住文字）：算挡住
+        blank = self.wrap_sheet(merged=False, blank_value="")[0]
+        self.assertEqual(batch._wrap_targets(blank, [{**item, "visible_text": ""}]), ["P146"])
+
+    def test_autofit_height_reads_excel_and_restores_row(self):
+        sheet = Mock()
+        row = sheet.Rows.return_value
+        row.RowHeight = 13.5
+        row.AutoFit.side_effect = lambda: setattr(row, "RowHeight", 40.5)
+        self.assertEqual(batch._autofit_height(sheet, 7, 13.5), 40.5)
+        self.assertEqual(row.RowHeight, 13.5)  # 副本也改回原行高
+        row.AutoFit.side_effect = RuntimeError("merged")
+        self.assertEqual(batch._autofit_height(sheet, 7, 13.5), 0.0)
+
+    def test_text_width_counts_full_width_as_two(self):
+        self.assertEqual(batch._text_width("給与a"), 5)
 
     def test_preparation_turns_on_wrap_from_first_raise_and_restores_copy(self):
         from test_autofix import AutofixTests, FakeSheet
