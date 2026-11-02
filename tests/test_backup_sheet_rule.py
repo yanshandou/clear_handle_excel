@@ -132,9 +132,19 @@ class FindBackupSheetsTests(unittest.TestCase):
         # 用户 2026-10-30：ｂｋ 也要删。精简 Sheet 里写明 bk/バックアップ 的表不需要原表，后面带编号也算
         for name in ["写真管理ｂｋ", "写真管理ＢＫ２", "写真管理_bk1", "ｂｋ", "画面_backup", "画面バックアップ", "画面备份"]:
             self.assertEqual(find_clean_targets(["概要", name]), [name], name)
-        self.assertEqual(find_clean_targets(["概要", "Bkup一覧", "SBK設定", "画面_old", "画面コピー"]), [])
+        self.assertEqual(find_clean_targets(["概要", "Bkup一覧", "SBK設定", "画面コピー"]), [])
         # 导出 PDF 用的通用备份规则不变：没有原表照常导出
         self.assertEqual(find_backup_sheets(["概要", "写真管理ｂｋ"]), [])
+
+    def test_old_word_needs_no_original_in_clean(self):
+        # 用户 2026-11-02：标着 old 的也删。全角、大小写、括号、开头末尾、分隔符都算，不需要原表
+        for name in ["old", "OLD", "ｏｌｄ", "エラーログ出力手順 (ＯＬＤ)", "エラーログ出力手順（OLD）", "エラーログ出力手順(old)",
+                     "画面_old", "画面-Old", "画面 OLD", "OLD_一覧", "【ＯＬＤ】一覧", "一覧old", "一覧_old2"]:
+            self.assertEqual(find_clean_targets(["概要", name]), [name], name)
+        # 单词内部的 old 不算
+        self.assertEqual(find_clean_targets(["概要", "Folder一覧", "Holder設定", "Golden", "oldest", "Bold"]), [])
+        # 导出 PDF 用的通用备份规则不变：没有原表照常导出
+        self.assertEqual(find_backup_sheets(["概要", "エラーログ出力手順 (ＯＬＤ)"]), [])
 
     def test_every_marker_requires_its_original(self):
         names = [
@@ -249,7 +259,11 @@ class ContainedSheetTests(unittest.TestCase):
         # 写明 bak 的表不需要原表也默认删除（用户 2026-10-30），所以不再落到待定
         self.assertEqual(find_clean_targets(names), ["概要_bak", "概要_bak詳細"])
         self.assertEqual(find_contained_sheets(names), [])
-        self.assertEqual(find_contained_sheets(["概要", "概要_old", "概要_old詳細"]), ["概要_old詳細"])
+        # 标着 old 的同样不需要原表（用户 2026-11-02）
+        self.assertEqual(find_clean_targets(["概要", "概要_old", "概要_old詳細"]), ["概要_old", "概要_old詳細"])
+        self.assertEqual(find_contained_sheets(["概要", "概要_old", "概要_old詳細"]), [])
+        # 还要求有原表的标记（コピー）照旧：备份表不当作被包含的原表
+        self.assertEqual(find_contained_sheets(["概要", "概要コピー", "概要コピー詳細"]), ["概要コピー詳細"])
         self.assertEqual(find_contained_sheets(["一覧1340", "一覧"]), ["一覧1340"])
 
     def test_english_word_prefix_is_a_different_sheet(self):
