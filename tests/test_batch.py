@@ -1261,13 +1261,17 @@ class BatchTests(unittest.TestCase):
             self.excel.Workbooks.Open.assert_called_once()
             original.Close.assert_called_once()
 
-    def wrap_sheet(self, *, wrap=False, merged=True, neighbor="", align=1):
+    def wrap_sheet(self, *, wrap=False, merged=True, neighbor="", align=1, blank_value=None, row_height=13.5):
         cells = {}
         def cell(row, col):
-            return cells.setdefault((row, col), Mock(MergeCells=False, Formula=neighbor if col != 16 else "x"))
+            text = neighbor if col != 16 else "x"
+            return cells.setdefault((row, col), Mock(MergeCells=False, Formula=text,
+                                                     Value=None if blank_value is None and not text else blank_value or text))
         area = Mock(WrapText=wrap, ShrinkToFit=False, Row=146, Column=16, HorizontalAlignment=align)
         area.Cells.Count = 3 if merged else 1
+        area.Cells.return_value.Font.Size = 9.0
         sheet = Mock()
+        sheet.Rows.return_value.RowHeight = row_height
         sheet.Range.return_value.MergeArea = area
         sheet.Cells.side_effect = cell
         return sheet, area
@@ -1285,6 +1289,95 @@ class BatchTests(unittest.TestCase):
         # 右对齐看左边
         right = self.wrap_sheet(merged=False, neighbor="x", align=batch.XL_HALIGN_RIGHT)[0]
         self.assertEqual(batch._wrap_targets(right, [item]), ["P146"])
+
+    def test_unmerged_cell_cut_sideways_next_to_blank_cell_is_wrapped(self):
+        """截图里 B7 那种：没合并、右边看着是空格，PDF 上只印出开头一段 → 也要先开换行再加高"""
+        item = {"kind": "hidden", "hidden_reason": batch.REASON_TRUNCATED, "cell_addr": "P146",
+                "text": "IFNULL(MIN(T2.tekiyou_start_month_id), '9999-12-31')", "visible_text": "IFNULL(MIN(T2.tekiyou"}
+        self.assertEqual(batch._wrap_targets(self.wrap_sheet(merged=False)[0], [item]), ["P146"])
+        # 行太矮（比字号还矮）：是上下被压住，只加高
+        self.assertEqual(batch._wrap_targets(self.wrap_sheet(merged=False, row_height=6)[0], [item]), [])
+        # 没有「只印出开头一段」的证据：只加高
+        self.assertEqual(batch._wrap_targets(self.wrap_sheet(merged=False)[0], [{**item, "visible_text": ""}]), [])
+        # 右边存着空字符串（看着是空的，Excel 照样挡住文字）：算挡住
+        blank = self.wrap_sheet(merged=False, blank_value="")[0]
+        self.assertEqual(batch._wrap_targets(blank, [{**item, "visible_text": ""}]), ["P146"])
+
+    def test_excel_fit_measures_merged_cell_on_temp_sheet_and_deletes_it(self):
+        """合并单元格 Excel 不会自动调整行高：借临时表上一个同宽、同字体的格子算，算完删掉临时表"""
+        tmp = Mock()
+        column = tmp.Columns.return_value
+        column.ColumnWidth = 10.0
+        column.Width = 50.0
+        def set_width(value):
+            column.__dict__["ColumnWidth"] = value
+        type(column).ColumnWidth = property(lambda self: self.__dict__.get("ColumnWidth", 10.0),
+                                            lambda self, v: (set_width(v), setattr(self, "Width", v * 5.0)))
+        temp_row = tmp.Rows.return_value
+        widths = []
+        def autofit():
+            widths.append(round(column.Width))
+            # 宽 150pt 时 3 行刚好塞满（75pt），窄一个字就要 4 行（93pt）
+            temp_row.RowHeight = 75.0 if column.Width >= 150 or not tight[0] else 93.0
+        tight = [True]
+        temp_row.AutoFit.side_effect = autofit
+        sheet = Mock()
+        sheet.Parent.Worksheets.Add.return_value = tmp
+        sheet.Application.DisplayAlerts = False
+        area = sheet.Range.return_value.MergeArea
+        area.Cells.return_value.Value = "=SELECT * FROM T1 WHERE ..."
+        area.Cells.return_value.Font.Size = 9.0
+        area.Cells.Count = 3
+        area.Width = 150.0
+        area.Height = 13.5
+        area.WrapText = True
+        sheet.Rows.return_value.RowHeight = 13.5
+        # 刚好塞满：按窄一个字（9pt）量出来的高度给，多出的就是 PDF 上会多换出来的那一行
+        self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 93.0)
+        self.assertEqual(widths, [150, 141])
+        with patch.object(batch, "_cell_line_height", return_value=12.0):
+            self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}], extra_lines=2), 105.0)
+        # 最后一行没塞满（窄一个字也不变高）：PDF 一定放得下，不加余量
+        tight[0] = False
+        self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 75.0)
+        area.WrapText = False  # 不换行的不量第二次
+        widths.clear()
+        self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 75.0)
+        self.assertEqual(widths, [150])
+        cell = tmp.Cells.return_value
+        self.assertEqual(cell.NumberFormat, "@")  # = 开头的 SQL 也按文字放
+        self.assertIs(cell.WrapText, False)
+        self.assertAlmostEqual(column.Width, 150.0)
+        self.assertEqual(tmp.Delete.call_count, 4)  # 每次算完都删掉临时表
+        self.assertIs(sheet.Application.DisplayAlerts, False)
+        # 合并区域跨 3 行（另外两行共 30pt）：这一行只要 75 - 30
+        area.Height = 43.5
+        self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 45.0)
+        # 加不了临时表（工作簿结构受保护等）：返回 0，照旧用估算
+        sheet.Parent.Worksheets.Add.side_effect = RuntimeError("protected")
+        self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 0.0)
+
+    def test_prepare_row_uses_excel_height_then_estimate(self):
+        """行高先用 Excel 算的；打印出来还不够，就按估算再试一次"""
+        from test_autofix import AutofixTests, FakeSheet
+        fixture = AutofixTests("runTest")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        items = list(workflow.STATE["items"].values())
+        heights = []
+        results = iter([(False, "", 0.0), (False, "", 0.0), (True, "", 0.0)])
+        with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot), \
+                patch.object(batch, "_wrap_targets", return_value=[]), \
+                patch.object(batch, "_excel_fit", side_effect=lambda *a, extra_lines=1: 30.0 if extra_lines == 1 else 35.0), \
+                patch.object(batch, "_direct_extra_height", return_value=40.0), \
+                patch.object(batch.autofix, "_evaluate", side_effect=lambda *a, **k: next(results)):
+            base, chosen, _ = batch._prepare_row(fixture.session, str(fixture.wb_path), items,
+                                                 on_attempt=lambda i, h, s, w: heights.append(h))
+        self.assertEqual(heights[1:], [30.0, round(base + 40.0, 2)])
+        self.assertEqual(chosen["height"], round(base + 40.0, 2))
+
+    def test_text_width_counts_full_width_as_two(self):
+        self.assertEqual(batch._text_width("給与a"), 5)
 
     def test_preparation_turns_on_wrap_from_first_raise_and_restores_copy(self):
         from test_autofix import AutofixTests, FakeSheet
@@ -1308,6 +1401,40 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(chosen["wrap"], ["B5"])
         self.assertIs(area.WrapText, False)  # 副本也还原
         self.assertFalse(any(book.saved for book in fixture.books))
+
+    def test_height_only_failure_retries_once_with_wrap(self):
+        """判断成只加高、结果没修好：没开换行的格子开换行从原行高再试一次（用户 2026-11-02 选定）"""
+        from test_autofix import AutofixTests, FakeSheet
+        fixture = AutofixTests("runTest")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        items = list(workflow.STATE["items"].values())
+        area = Mock(WrapText=False, ShrinkToFit=False)
+        frames = []
+        def record(index, height, shots, wrapped):
+            frames.append((index, list(wrapped), area.WrapText))
+        results = iter([(False, "", 0.0), (False, "", 0.0), (True, "", 0.0)])
+        targets = []
+        def wrap_targets(sheet, its, *, force=False):
+            targets.append(force)
+            return ["B5"] if force else []
+        with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot), \
+                patch.object(batch, "_wrap_targets", side_effect=wrap_targets), \
+                patch.object(batch.autofix, "_evaluate", side_effect=lambda *a, **k: next(results)), \
+                patch.object(FakeSheet, "Range", create=True, new=lambda self, addr: Mock(MergeArea=area)):
+            base, chosen, _ = batch._prepare_row(fixture.session, str(fixture.wb_path), items, on_attempt=record)
+        self.assertEqual(targets, [False, True])
+        self.assertEqual([f[:2] for f in frames], [(0, []), (1, []), (2, ["B5"])])
+        self.assertIs(frames[2][2], True)
+        self.assertEqual(chosen["wrap"], ["B5"])
+        self.assertIs(area.WrapText, False)  # 副本还原
+
+    def test_force_wrap_targets_any_unwrapped_cell(self):
+        item = {"kind": "clip", "cell_addr": "P146"}
+        sheet = self.wrap_sheet(merged=False)[0]
+        self.assertEqual(batch._wrap_targets(sheet, [item]), [])
+        self.assertEqual(batch._wrap_targets(sheet, [item], force=True), ["P146"])
+        self.assertEqual(batch._wrap_targets(self.wrap_sheet(wrap=True)[0], [item], force=True), [])
 
     def test_wrapped_fix_is_saved_restored_and_reported(self):
         card, item = self.add_card(address="A5", color="yellow")

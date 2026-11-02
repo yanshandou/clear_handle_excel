@@ -1092,30 +1092,62 @@ def _group_cells(items: list[dict]) -> list[list[dict]]:
     return list(cells.values())
 
 
-def _wrap_targets(sheet: Any, items: list[dict]) -> list[str]:
+def _text_width(text: str) -> int:
+    """按显示宽度数字数：全角字（日文、中文）算 2，半角字母数字算 1"""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
+def _cut_sideways(item: dict) -> bool:
+    """PDF 上只印出了开头一段（印出来的字比全文少），说明这行字横向放不下"""
+    full = _text_width(normalize_text(item.get("text", "")))
+    shown = _text_width(normalize_text(item.get("visible_text") or ""))
+    return 0 < shown < full
+
+
+def _neighbor_blocks(sheet: Any, row: int, col: int) -> bool:
+    """旁边的格子挡住文字往外延伸：合并单元格、有内容，或者存着空字符串（看着是空的，Excel 照样挡）"""
+    cell = sheet.Cells(row, col)
+    return bool(cell.MergeCells) or str(cell.Formula) != "" or cell.Value is not None
+
+
+def _wrap_targets(sheet: Any, items: list[dict], *, force: bool = False) -> list[str]:
     """没开自动换行、整行文字横向放不下被截掉的格子：怎么加高都没用，要先开自动换行再加高。
     只改这一格（合并单元格按整个合并区域），不动列宽，整页排版不变。
-    没合并的格子旁边是空格时，文字本来会延伸到旁边显示，截断多半不是横向的，不开换行，免得改变原来的显示方式。"""
+    没合并的格子要能确认是横向截断才开换行（以下任一）：
+    - 旁边的格子挡住了文字延伸（有内容、合并、或存着空字符串）；
+    - PDF 上只印出开头一段，且行高已经够放一行字（不是行太矮压住字）。
+    force=True：只加高已经试过没修好，所有没开换行、没设缩小字体填充的格子都开换行再试。"""
     targets = []
     for item in items:
-        if item.get("kind") != "hidden" or item.get("hidden_reason") not in (REASON_TRUNCATED, REASON_CLIPPED):
+        if not force and (item.get("kind") != "hidden"
+                          or item.get("hidden_reason") not in (REASON_TRUNCATED, REASON_CLIPPED)):
             continue
         addr = item.get("cell_addr") or ""
+        why = "只加高没修好" if force else "合并单元格"
         try:
             area = sheet.Range(addr).MergeArea
             if area.WrapText is not False or area.ShrinkToFit:
+                debug_log.event("↩️ 不开换行", 格=addr, 原因="已经换行或缩小字体填充")
                 continue  # 已经换行（或合并区域里设置不一致），缩小字体填充的也不动
             row, col = int(area.Row), int(area.Column)
-            if int(area.Cells.Count) == 1:
+            if not force and int(area.Cells.Count) == 1:
                 align = area.HorizontalAlignment
                 sides = ([col - 1] if align == XL_HALIGN_RIGHT else [col - 1, col + 1] if align == XL_HALIGN_CENTER
                          else [col + 1])
-                if not any(c > 0 and (sheet.Cells(row, c).MergeCells or str(sheet.Cells(row, c).Formula) != "")
-                           for c in sides):
-                    continue
+                if any(c > 0 and _neighbor_blocks(sheet, row, c) for c in sides):
+                    why = "旁边格子挡住"
+                else:
+                    size = area.Cells(1, 1).Font.Size
+                    tall = (not isinstance(size, bool) and isinstance(size, (int, float))
+                            and float(sheet.Rows(row).RowHeight) >= float(size))
+                    if not (_cut_sideways(item) and tall):
+                        debug_log.event("↩️ 不开换行", 格=addr, 原因="旁边是空格，看不出是横向截断，只加高")
+                        continue
+                    why = "只印出开头一段，行高够一行字"
         except Exception:
             continue  # 读不到格式就按原来的方式只加高
         if addr not in targets:
+            debug_log.event("↪️ 开换行", 格=addr, 原因=why)
             targets.append(addr)
     return targets
 
@@ -1147,8 +1179,9 @@ def _direct_extra_height(sheet: Any, items: list[dict], need: float) -> float:
     line_pt = _cell_line_height(sheet, items)
     lines = 1
     for item in items:
-        full_len = len(normalize_text(item.get("text", "")))
-        vis_len = len(normalize_text(item.get("visible_text") or ""))
+        # 按显示宽度算（全角字占两个半角宽），日文和英文混在一起时估得更准
+        full_len = _text_width(normalize_text(item.get("text", "")))
+        vis_len = _text_width(normalize_text(item.get("visible_text") or ""))
         if 0 < vis_len < full_len:
             lines = max(lines, math.ceil((full_len - vis_len) / vis_len))
     if need > 0:
@@ -1156,15 +1189,108 @@ def _direct_extra_height(sheet: Any, items: list[dict], need: float) -> float:
     return round(lines * line_pt, 2)
 
 
+def _measure_cell_height(tmp: Any, area: Any, narrower: float = 0.0) -> float:
+    """把一格的文字和字体搬到临时表 A1（宽度调成和这格一样，换行设置一样），让 Excel 自动调整行高，读出要多高（pt）。
+    narrower：临时格子比原格子窄多少 pt（用来看这格是不是刚好塞满）"""
+    first = area.Cells(1, 1)
+    value = first.Value
+    text = value if isinstance(value, str) else str(first.Text or "")
+    if not text:
+        return 0.0
+    cell = tmp.Cells(1, 1)
+    cell.NumberFormat = "@"  # SQL 等以 = 开头的文字也按文字放，不当公式
+    cell.Value = text
+    font, src = cell.Font, first.Font
+    font.Name, font.Size, font.Bold, font.Italic = src.Name, src.Size, src.Bold, src.Italic
+    cell.WrapText = area.WrapText is True
+    width = float(area.Width) - narrower
+    if width <= 1:
+        raise ValueError("格子太窄")
+    column = tmp.Columns(1)
+    for _ in range(3):  # 列宽单位是字数、和 pt 不完全成比例，调几次贴近
+        now = float(column.Width)
+        if now <= 0:
+            break
+        column.ColumnWidth = min(255.0, max(0.5, float(column.ColumnWidth) * width / now))
+    if abs(float(column.Width) - width) > 3:
+        raise ValueError(f"临时格子宽度对不上（要 {width}pt，只能 {column.Width}pt）")
+    tmp.Rows(1).AutoFit()
+    height = float(tmp.Rows(1).RowHeight)
+    cell.Clear()
+    return height
+
+
+def _excel_fit(sheet: Any, row: int, items: list[dict], *, extra_lines: int = 1) -> float:
+    """让 Excel 自己算这一行要多高（不管合并没合并）：
+    Excel 的「自动调整行高」会跳过合并单元格，所以在副本里临时加一张表，放一个不合并的格子，
+    宽度、字体、换行都和问题格子一样，让 Excel 在它身上算，再拿回来用；临时表算完就删。
+    合并区域跨好几行时，减掉其他行的高度，剩下的才是这一行要的。只看问题格子，不让同一行别的格子一起变高。
+    打印余量（用户 2026-11-02 说明）：开了换行的格子，Excel 里最后一行刚好塞满时，打印成 PDF 常常差一个字放不下、
+    多换出一行（只有一两个字）被切掉；最后一行没塞满的（第二行只有几个字）PDF 一定也放得下，不用担心。
+    所以把临时格子再窄一个字（字号 pt）量一次：变高了说明刚好塞满，按窄的那个高度给（Excel 自己多算的那一行）；
+    没变高就不加余量。extra_lines=2（第一次没过再试时）再多留一行（字号 × 1.2）。
+    算不出来返回 0（照旧用估算）。"""
+    addrs = list(dict.fromkeys(it.get("cell_addr") for it in items if it.get("cell_addr")))
+    if not addrs:
+        return 0.0
+    tmp = None
+    needs: list[float] = []
+    try:
+        tmp = sheet.Parent.Worksheets.Add()
+        for addr in addrs:
+            try:
+                area = sheet.Range(addr).MergeArea
+                height = _measure_cell_height(tmp, area)
+                if height <= 0:
+                    continue
+                others = float(area.Height) - float(sheet.Rows(row).RowHeight)
+                margin, tight = 0.0, False
+                if area.WrapText is True:
+                    size = area.Cells(1, 1).Font.Size
+                    size = float(size) if isinstance(size, (int, float)) and not isinstance(size, bool) else 10.0
+                    try:
+                        margin = max(0.0, _measure_cell_height(tmp, area, narrower=size) - height)
+                    except Exception:
+                        margin = 0.0
+                    tight = margin > 0
+                    if extra_lines > 1:
+                        margin += (extra_lines - 1) * _cell_line_height(sheet, [{"cell_addr": addr}])
+                need = round(height + margin - max(0.0, others), 2)
+                debug_log.event("📏 Excel 算行高", 格=addr, 合并=int(area.Cells.Count) > 1,
+                                换行=area.WrapText is True, 格子要=height, 刚好塞满=tight, 打印余量=round(margin, 2),
+                                其他行=round(others, 2), 这一行要=need)
+                needs.append(need)
+            except Exception as error:
+                debug_log.event("📏 Excel 算不出行高", 格=addr, 原因=str(error)[:120])
+    except Exception as error:
+        debug_log.event("📏 Excel 算不出行高", 原因=str(error)[:120])
+    finally:
+        if tmp is not None:
+            app = sheet.Application
+            try:
+                alerts = app.DisplayAlerts
+                app.DisplayAlerts = False
+                try:
+                    tmp.Delete()
+                finally:
+                    app.DisplayAlerts = alerts
+            except Exception as error:
+                debug_log.event("⚠️ 临时表删不掉", 原因=str(error)[:120])  # 只在副本里，不影响原文件
+    return min(autofix.MAX_ROW_HEIGHT, max(needs)) if needs else 0.0
+
+
 def _prepare_row(
     session: Any, path: str, items: list[dict], *,
     on_attempt: Callable[[int, float, dict, list[str]], None] | None = None,
     timing: dict[str, float] | None = None,
 ) -> tuple[float, dict | None, dict]:
-    """只在副本上试一次加高并导出 1 次 PDF 核验截图：
+    """只在副本上试加高（最多两次），每次导出 1 次 PDF 核验并截图：
     - 原样那张直接复用刚才检测导出的 PDF（同一版本）；若原样已通过则不改行高、不重新导出；
-    - 原样未通过时，有不换行被横向截断的格子先开启自动换行，再按缺几行 × 字号 × 1.2 加高（不另加余白），
-      仅导出 1 次 PDF 核验效果并生成修改后截图；通过时留下那份 PDF 供写入后复查直接复用。"""
+    - 原样未通过时，有不换行被横向截断的格子先开启自动换行；行高主要让 Excel 自己算（_excel_fit，
+      合并单元格借临时格子算），算不出或不比原来高时才按缺几行 × 字号 × 1.2 估算；
+      开了换行、最后一行刚好塞满的格子多留一行（打印时差一个字就会多换一行）；
+    - 第一次没通过：有没开换行的格子就开换行再试，Excel 算的高度打印出来不够就多留一行（和估算取高的）再试；
+    - 通过时留下那份 PDF 供写入后复查直接复用。"""
     timing = {} if timing is None else timing
     sheet = session.copy_of(path).Sheets(items[0]["sheet_name"])
     exported = session.pdf_for(path, items[0]["sheet_name"])
@@ -1202,13 +1328,40 @@ def _prepare_row(
         if ok:
             return base, {"height": base, "shots": shots, "wrap": []}, before
 
-        if wrap:
-            for addr in wrap:
-                sheet.Range(addr).MergeArea.WrapText = True
-            wrapped = list(wrap)
-        extra = _direct_extra_height(sheet, items, need)
-        height = min(autofix.MAX_ROW_HEIGHT, round(base + extra, 2))
-        if height > base or wrapped:
+        estimate = min(autofix.MAX_ROW_HEIGHT, round(base + _direct_extra_height(sheet, items, need), 2))
+        tried: list[float] = []
+        height, by, more = base, "", 0.0
+        for attempt in (1, 2):
+            if attempt == 2:
+                if chosen is not None:
+                    break
+                sheet.Rows(row).RowHeight = base
+                force = [] if wrapped else _wrap_targets(sheet, items, force=True)
+                if force:
+                    # 只加高没修好：没开换行的格子开自动换行、从原行高重新算再试一次（用户 2026-11-02 选定）
+                    debug_log.event("🔁 只加高没修好，开换行再试", 格=force)
+                    wrap = force
+                elif by == "Excel":
+                    # Excel 算的高度（加一行余量）打印出来还不够：多留一行，和估算取高的，再试一次
+                    more = max(estimate, _excel_fit(sheet, row, items, extra_lines=2))
+                    debug_log.event("🔁 Excel 算的高度不够，多留一行再试", 上次=height, 这次=more, 估算=estimate)
+                    wrap = []
+                else:
+                    break
+            if wrap:
+                for addr in wrap:
+                    sheet.Range(addr).MergeArea.WrapText = True
+                wrapped = list(dict.fromkeys(wrapped + list(wrap)))
+            if attempt == 2 and not wrap:
+                height, by = (more, "Excel+余量") if more > estimate else (estimate, "估算")
+            else:
+                # 主要让 Excel 自己算正好要多高；算出来不比原来高（屏幕上够、打印出来不够）或算不出来，才用估算
+                fit = _excel_fit(sheet, row, items)
+                height, by = (fit, "Excel") if fit > base else (estimate, "估算")
+                debug_log.event("📏 行高", 次=attempt, Excel算=fit or "-", 估算=estimate, 原行高=base, 用=by)
+            if not wrap and (height <= base or height in tried):
+                break
+            tried.append(height)
             sheet.Rows(row).RowHeight = height
             started = time.perf_counter()
             wf._export_sheet_pdf(sheet, pdf)
@@ -1222,11 +1375,11 @@ def _prepare_row(
                      {_key(*_cell(group[0])): autofix._evaluate(pdf, group, cells, probe.text, probe.printed)[1]
                       for group in groups})
             timing["evaluate"] = timing.get("evaluate", 0.0) + time.perf_counter() - started
-            debug_log.event("🧪 试算", 次=1, 行高=height, 原行高=base, 通过=ok, 缺口pt=need,
+            debug_log.event("🧪 试算", 次=attempt, 行高=height, 按=by, 原行高=base, 通过=ok, 缺口pt=need,
                             打印缩放=autofix.print_scale(sheet), 换行=wrapped or "-", 用检测时的PDF=False,
                             比对秒=time.perf_counter() - started)
             if on_attempt is not None:
-                on_attempt(1, height, shots, wrapped)
+                on_attempt(attempt, height, shots, wrapped)
             if ok:
                 shutil.copyfile(pdf, session.chosen_pdf())
                 chosen = {"height": height, "shots": shots, "wrap": wrapped, "pdf": session.chosen_pdf()}
