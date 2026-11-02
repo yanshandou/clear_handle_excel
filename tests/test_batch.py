@@ -1325,12 +1325,17 @@ class BatchTests(unittest.TestCase):
         area.Height = 13.5
         area.WrapText = True
         sheet.Rows.return_value.RowHeight = 13.5
+        # 开了换行：Excel 算 75，打印时换行位置会变，多留一行（读不到字号按 12pt）
+        with patch.object(batch, "_cell_line_height", return_value=12.0):
+            self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 87.0)
+            self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}], extra_lines=2), 99.0)
+        area.WrapText = False  # 不换行的不加余量
         self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 75.0)
         cell = tmp.Cells.return_value
         self.assertEqual(cell.NumberFormat, "@")  # = 开头的 SQL 也按文字放
-        self.assertIs(cell.WrapText, True)
+        self.assertIs(cell.WrapText, False)
         self.assertAlmostEqual(column.Width, 150.0)
-        tmp.Delete.assert_called_once()
+        self.assertEqual(tmp.Delete.call_count, 3)  # 每次算完都删掉临时表
         self.assertIs(sheet.Application.DisplayAlerts, False)
         # 合并区域跨 3 行（另外两行共 30pt）：这一行只要 75 - 30
         area.Height = 43.5
@@ -1350,7 +1355,7 @@ class BatchTests(unittest.TestCase):
         results = iter([(False, "", 0.0), (False, "", 0.0), (True, "", 0.0)])
         with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot), \
                 patch.object(batch, "_wrap_targets", return_value=[]), \
-                patch.object(batch, "_excel_fit", return_value=30.0), \
+                patch.object(batch, "_excel_fit", side_effect=lambda *a, extra_lines=1: 30.0 if extra_lines == 1 else 35.0), \
                 patch.object(batch, "_direct_extra_height", return_value=40.0), \
                 patch.object(batch.autofix, "_evaluate", side_effect=lambda *a, **k: next(results)):
             base, chosen, _ = batch._prepare_row(fixture.session, str(fixture.wb_path), items,

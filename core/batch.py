@@ -1217,11 +1217,13 @@ def _measure_cell_height(tmp: Any, area: Any) -> float:
     return height
 
 
-def _excel_fit(sheet: Any, row: int, items: list[dict]) -> float:
+def _excel_fit(sheet: Any, row: int, items: list[dict], *, extra_lines: int = 1) -> float:
     """让 Excel 自己算这一行要多高（不管合并没合并）：
     Excel 的「自动调整行高」会跳过合并单元格，所以在副本里临时加一张表，放一个不合并的格子，
     宽度、字体、换行都和问题格子一样，让 Excel 在它身上算，再拿回来用；临时表算完就删。
     合并区域跨好几行时，减掉其他行的高度，剩下的才是这一行要的。只看问题格子，不让同一行别的格子一起变高。
+    开了换行的格子再多留 extra_lines 行（字号 × 1.2）：Excel 屏幕上算的高度够，打印成 PDF 时换行位置常常不同、
+    多出一行，就被切掉了（用户 2026-11-02 说这很常见）。
     算不出来返回 0（照旧用估算）。"""
     addrs = list(dict.fromkeys(it.get("cell_addr") for it in items if it.get("cell_addr")))
     if not addrs:
@@ -1237,9 +1239,12 @@ def _excel_fit(sheet: Any, row: int, items: list[dict]) -> float:
                 if height <= 0:
                     continue
                 others = float(area.Height) - float(sheet.Rows(row).RowHeight)
-                need = round(height - max(0.0, others), 2)
+                margin = (extra_lines * _cell_line_height(sheet, [{"cell_addr": addr}])
+                          if area.WrapText is True else 0.0)
+                need = round(height + margin - max(0.0, others), 2)
                 debug_log.event("📏 Excel 算行高", 格=addr, 合并=int(area.Cells.Count) > 1,
-                                换行=area.WrapText is True, 格子要=height, 其他行=round(others, 2), 这一行要=need)
+                                换行=area.WrapText is True, 格子要=height, 打印余量=round(margin, 2),
+                                其他行=round(others, 2), 这一行要=need)
                 needs.append(need)
             except Exception as error:
                 debug_log.event("📏 Excel 算不出行高", 格=addr, 原因=str(error)[:120])
@@ -1269,7 +1274,8 @@ def _prepare_row(
     - 原样那张直接复用刚才检测导出的 PDF（同一版本）；若原样已通过则不改行高、不重新导出；
     - 原样未通过时，有不换行被横向截断的格子先开启自动换行；行高主要让 Excel 自己算（_excel_fit，
       合并单元格借临时格子算），算不出或不比原来高时才按缺几行 × 字号 × 1.2 估算；
-    - 第一次没通过：有没开换行的格子就开换行再试，Excel 算的高度打印出来不够就按估算再试；
+      Excel 算的高度给开了换行的格子多留一行（字号 × 1.2），打印时换行位置不同也放得下；
+    - 第一次没通过：有没开换行的格子就开换行再试，Excel 算的高度打印出来不够就多留一行（和估算取高的）再试；
     - 通过时留下那份 PDF 供写入后复查直接复用。"""
     timing = {} if timing is None else timing
     sheet = session.copy_of(path).Sheets(items[0]["sheet_name"])
@@ -1310,7 +1316,7 @@ def _prepare_row(
 
         estimate = min(autofix.MAX_ROW_HEIGHT, round(base + _direct_extra_height(sheet, items, need), 2))
         tried: list[float] = []
-        height, by = base, ""
+        height, by, more = base, "", 0.0
         for attempt in (1, 2):
             if attempt == 2:
                 if chosen is not None:
@@ -1321,9 +1327,10 @@ def _prepare_row(
                     # 只加高没修好：没开换行的格子开自动换行、从原行高重新算再试一次（用户 2026-11-02 选定）
                     debug_log.event("🔁 只加高没修好，开换行再试", 格=force)
                     wrap = force
-                elif by == "Excel" and estimate > height:
-                    # Excel 按屏幕算的高度打印出来还不够：按估算的高度再试一次
-                    debug_log.event("🔁 Excel 算的高度不够，按估算再试", Excel=height, 估算=estimate)
+                elif by == "Excel":
+                    # Excel 算的高度（加一行余量）打印出来还不够：多留一行，和估算取高的，再试一次
+                    more = max(estimate, _excel_fit(sheet, row, items, extra_lines=2))
+                    debug_log.event("🔁 Excel 算的高度不够，多留一行再试", 上次=height, 这次=more, 估算=estimate)
                     wrap = []
                 else:
                     break
@@ -1332,7 +1339,7 @@ def _prepare_row(
                     sheet.Range(addr).MergeArea.WrapText = True
                 wrapped = list(dict.fromkeys(wrapped + list(wrap)))
             if attempt == 2 and not wrap:
-                height, by = estimate, "估算"
+                height, by = (more, "Excel+余量") if more > estimate else (estimate, "估算")
             else:
                 # 主要让 Excel 自己算正好要多高；算出来不比原来高（屏幕上够、打印出来不够）或算不出来，才用估算
                 fit = _excel_fit(sheet, row, items)
