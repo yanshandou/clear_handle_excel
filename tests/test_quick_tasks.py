@@ -813,6 +813,18 @@ class QuickTaskTests(unittest.TestCase):
         self.assertEqual(files["numbered.xlsx"]["backups"], ["Main (2)_20221005"])
         self.assertEqual(files["numbered.xlsx"]["uncertain"], [])
 
+    def test_bracketed_date_is_not_numbered_suffix(self):
+        # 用户 2026-11-02：「月次お客様実施数集計ビュー (20220916)」括号里是日期，不是复制编号，有原表时默认删除
+        names = [
+            "月次お客様実施数集計ビュー", "月次お客様実施数集計ビュー (20220916)", "月次お客様実施数集計ビュー（20221001）",
+            "一覧", "一覧（2022-09-16）", "一覧 (2)",
+        ]
+        self.add_book("dated.xlsx", names)
+        files = {f["name"]: f for f in self.workflow.preview_backup_sheets(str(self.folder))["files"]}
+        self.assertEqual(files["dated.xlsx"]["backups"], [
+            "月次お客様実施数集計ビュー (20220916)", "月次お客様実施数集計ビュー（20221001）", "一覧（2022-09-16）",
+        ])
+
     def test_black_tab_defaults_to_delete(self):
         self.add_book("black.xlsx", ["Main", "Black", "Uncolored"])
         self.books["black.xlsx"].sheets[1].tab_color = "000000"

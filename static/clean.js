@@ -80,7 +80,7 @@ function hasBackupMarker(sheetName) {
   const text = String(sheetName ?? '').normalize('NFKC');
   if (/(?<![a-z])(?:bak|backup|bk|old|copy)(?![a-z])/i.test(text)) return true;
   if (/バックアップ|备份|コピー|副本|(?<![新復])旧/.test(text)) return true;
-  if (/\s*\(\d+\)[\s_\-・.]*$/.test(text)) return true;
+  if (/\s*\(\d{1,3}\)[\s_\-・.]*$/.test(text)) return true;
   if (hasMmddSuffix(text)) return true;
   const dateRe = new RegExp(DATE_RE.source, 'g');
   let m;
@@ -148,7 +148,7 @@ function analyzeSheetName(displayName, { stripBackup = false, stripVersion = tru
 
   if (stripBackup) {
     applyStrip(DATE_RE, m => isValidYmdDate(m[1] + m[3] + m[4]), true);
-    applyStrip(/\s*\(\d+\)[\s_\-・.]*$/g, null, true);
+    applyStrip(/\s*\(\d{1,3}\)[\s_\-・.]*$/g, null, true);
     applyStrip(/copy\s+of|の?コピー|的?副本/gi, null, true);
     applyStrip(/(?<![a-z])(?:bak|backup|bk|old|copy)(?![a-z])/gi, null, true);
     applyStrip(/バックアップ|备份|コピー|副本|(?<![新復])旧/g, null, true);
