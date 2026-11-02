@@ -4,6 +4,7 @@ import logging
 import mimetypes
 import math
 import sqlite3
+import sys
 import threading
 import webbrowser
 from datetime import datetime
@@ -834,7 +835,17 @@ class WebHandler(BaseHTTPRequestHandler):
         self._send_json({"ok": True})
 
 
+def _line_buffered_console() -> None:
+    """控制台每打一行就马上显示：Git Bash（mintty）里 stdout 可能是管道，默认攒满一大块才输出，看起来像没有日志"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True)
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main() -> None:
+    _line_buffered_console()
     from core import operation_history
     operation_history.interrupt_running()
     debug_log.install()
