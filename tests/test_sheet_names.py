@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -70,13 +71,54 @@ class XlsxSheetNameTests(unittest.TestCase):
         wb.create_sheet("数式")["A1"] = '=""'
         wb.create_sheet("コメント")["A1"].comment = Comment("メモ", "XU")
         wb.create_sheet("数字")["A1"] = 0
+        # 用户 2026-11-02：A1=[、A2=] 这种空 JSON 也算没内容（TLKYE0005 的 JSONサンプル）
+        wb.create_sheet("空配列")["A1"] = "["
+        wb["空配列"]["A2"] = "]"
+        wb.create_sheet("空オブジェクト")["A1"] = "{ }"
+        wb.create_sheet("空配列一行")["B2"] = "[{}]"
+        wb.create_sheet("JSONあり")["A1"] = "["
+        wb["JSONあり"]["A2"] = '{"id": 1}'
+        wb["JSONあり"]["A3"] = "]"
+        wb.create_sheet("括弧だけ")["A1"] = "["
         wb.create_chartsheet("グラフ")
         path = self.folder / "blank.xlsx"
         wb.save(path)
 
         blank: set[str] = set()
         excel_ops.scan_workbook_sheets(path, blank_sheets=blank)
-        self.assertEqual(blank, {"JSONサンプル", "空白", "書式だけ", "横線", "該当なし"})
+        self.assertEqual(blank, {"JSONサンプル", "空白", "書式だけ", "横線", "該当なし", "空配列", "空オブジェクト", "空配列一行"})
+
+    def test_blank_sheet_ignores_furigana(self):
+        # 用户 2026-11-02：日文 Excel 输入的「無」带注音 <rPh>ナ</rPh>，以前拼成「無ナ」没认出空白（TLCWE0003 的 JSONサンプル）
+        wb = Workbook()
+        wb.active.title = "概要"
+        wb["概要"]["A1"] = "概要"
+        wb.create_sheet("JSONサンプル")["A1"] = "無"
+        src = self.folder / "src.xlsx"
+        wb.save(src)
+        sheet_xml = zipfile.ZipFile(src).read("xl/worksheets/sheet2.xml").decode()
+        cell = '<c r="A1" t="inlineStr"><is><t>&#28961;</t></is></c>'
+        self.assertIn(cell, sheet_xml)
+        phonetic = '<rPh sb="0" eb="1"><t>ナ</t></rPh><phoneticPr fontId="1" type="noConversion"/>'
+        shared = ('<?xml version="1.0" encoding="UTF-8"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                  f'count="1" uniqueCount="1"><si><t>無</t>{phonetic}</si></sst>')
+        variants = {
+            "inline.xlsx": (sheet_xml.replace(cell, f'<c r="A1" t="inlineStr"><is><t>無</t>{phonetic}</is></c>'), None),
+            "shared.xlsx": (sheet_xml.replace(cell, '<c r="A1" t="s"><v>0</v></c>'), shared),
+        }
+        for name, (new_sheet, sst) in variants.items():
+            path = self.folder / name
+            with zipfile.ZipFile(src) as zin, zipfile.ZipFile(path, "w") as zout:
+                for info in zin.infolist():
+                    data = zin.read(info.filename)
+                    if info.filename == "xl/worksheets/sheet2.xml":
+                        data = new_sheet.encode()
+                    zout.writestr(info, data)
+                if sst:
+                    zout.writestr("xl/sharedStrings.xml", sst)
+            blank: set[str] = set()
+            excel_ops.scan_workbook_sheets(path, blank_sheets=blank)
+            self.assertEqual(blank, {"JSONサンプル"}, name)
 
     def test_gray_tab_color_range(self):
         for color in ["808080", "F2F2F2", "0D0D0D", "D9D9D9", "E7E6E6", "A5A5A5"]:
