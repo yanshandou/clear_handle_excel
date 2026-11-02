@@ -51,10 +51,7 @@
 .find-marks-colors summary { cursor: pointer; }
 .find-marks-colors .batch-highlight-presets { margin-top: 8px; max-height: 150px; overflow-y: auto; }
 .find-marks-colors .batch-highlight-preset { cursor: default; }
-.batch-error-types { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.batch-error-type-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid #cbd5e1; border-radius: 999px; background: #fff; color: var(--text-main); font-size: 12.5px; font-weight: 700; cursor: pointer; user-select: none; }
-.batch-error-type-chip:hover { border-color: #64748b; }
-.batch-error-type-chip.is-manual-only { background: #f1f5f9; border-style: dashed; color: #64748b; cursor: not-allowed; }
+.batch-fix-scope { flex: 1 1 360px; color: var(--text-main); font-size: 13px; line-height: 1.6; }
 
 .batch-actions { margin-top: 16px; padding-top: 16px; border-top: 1px dashed rgba(148, 170, 205, .6); }
 

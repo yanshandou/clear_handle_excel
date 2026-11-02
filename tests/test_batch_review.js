@@ -836,25 +836,17 @@ test('open all during a background task opens finished files and lists the rest'
   assert.match(p.run('alerts[0]'), /· a\.xlsx：还没轮到这份文件，处理完才能打开/);
 });
 
-test('fix error types render all 6 types, disable the 1 manual-only one, and pass selected types to jobs', async () => {
+test('auto fix scope is fixed text: only cut text is auto fixed, no checkboxes, no types sent', async () => {
   const p = page();
-  const html = p.elements.get('fixErrorTypes').innerHTML;
-  assert.equal((html.match(/data-error-type="/g) || []).length, 5);
-  assert.equal((html.match(/is-manual-only/g) || []).length, 1);
-  assert.match(html, /### 列宽不足/);
-  assert.match(html, /PDF 未匹配到文字（固定转人工）/);
+  const el = p.elements.get('fixErrorTypes');
+  assert.match(el.textContent, /只修切字/);
+  assert.match(el.textContent, /1\.2/);
+  assert.match(el.textContent, /全部转人工/);
+  assert.doesNotMatch(el.innerHTML || '', /data-error-type/);
 
   p.elements.get('folderInput').value = 'C:/Excel';
-  p.run(`fixErrorTypes = new Set(['border_clip', 'page_break_cut'])`);
   await p.elements.get('startBtn').listeners.click();
   assert.equal(p.requests.at(-1).url, '/api/batch/start');
-  assert.equal(p.requests.at(-1).payload.fix_error_types.join(','), 'border_clip,page_break_cut');
-
-  // 全部取消勾选时点「开始全自动处理」提示至少勾选一种，不发请求
-  const beforeCount = p.requests.length;
-  p.run(`fixErrorTypes = new Set()`);
-  await p.elements.get('startBtn').listeners.click();
-  assert.equal(p.requests.length, beforeCount);
-  assert.match(p.elements.get('errorText').textContent, /至少勾选一种/);
+  assert.equal(p.requests.at(-1).payload.fix_error_types, undefined);
 });
 
