@@ -428,7 +428,7 @@ document.getElementById('progressFileInput').addEventListener('change', e => {
 setInterval(pollState, 1200);
 
 /* ==========================================
-   路线图卡片右上角的「做过了」标记
+   主页步骤卡右上角的「做过了」标记
    按上次用的文件夹（各页面共用 lastFolder）查操作历史：在这个文件夹或它的上级文件夹做完过就打 ✓；
    只有带出错文件的那次，打黄色 !。主页打开、任务跑完、切回这个页面时刷新。
    ========================================== */
@@ -452,9 +452,9 @@ async function refreshDoneMarks() {
     }
   }
   let doneCount = 0;
-  document.querySelectorAll('.route-stop[data-ops]').forEach(stop => {
+  document.querySelectorAll('.step-item[data-ops]').forEach(stop => {
     const entries = stop.dataset.ops.split(' ').map(k => done[k]).filter(Boolean);
-    const mark = stop.querySelector('.route-done');
+    const mark = stop.querySelector(".step-done");
     if (!mark) return;
     if (!entries.length) {
       mark.classList.add('hidden');
@@ -475,7 +475,7 @@ async function refreshDoneMarks() {
     stop.classList.add('is-done');
     if (completed) doneCount += 1;
   });
-  const note = document.getElementById('routeDoneNote');
+  const note = document.getElementById('stepDoneNote');
   note.classList.toggle('hidden', !folder);
   note.textContent = folder ? `✓ 表示在「${folder}」里已经做过（${doneCount} / 9 步）` : '';
   note.title = folder;

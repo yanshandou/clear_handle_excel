@@ -1,0 +1,255 @@
+/* ==========================================
+   主页：处理流程 3×3 大数字卡片
+   - 每格左边一个大号描线数字 1–9，右边是原来的游戏风卡牌（颜色跟图标底色走）
+   - 宽屏（≥ 1100px）按列排：左列 1-3、中列 4-6、右列 7-9
+   - 中等宽度两列按行排，窄屏一列 1-9
+   - 卡片悬停、点击都不位移
+   ========================================== */
+
+.home-container {
+  max-width: 1280px;
+}
+
+.step-grid-wrap {
+  padding: 22px 0 18px;
+}
+
+.step-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(3, auto);
+  grid-auto-flow: column;          /* 按列排：1 2 3 往下，再到下一列 */
+  gap: 30px 34px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* ---------- 大号描线数字：外圈深色描边 + 内圈卡片颜色，中间白色 ---------- */
+.step-num {
+  display: block;
+  width: 74px;
+  height: auto;
+  overflow: visible;
+  pointer-events: none;
+  user-select: none;
+}
+
+.step-num text {
+  font-family: "Arial Black", "Segoe UI Black", "Helvetica Neue", Arial, sans-serif;
+  font-size: 112px;
+  font-weight: 900;
+  text-anchor: middle;
+  stroke-linejoin: round;
+  paint-order: stroke;
+}
+
+/* 第一层：粗的深色外框（保证在浅底上看得清） */
+.step-num text:first-child {
+  fill: var(--ink, #1c2858);
+  stroke: var(--ink, #1c2858);
+  stroke-width: 13px;
+}
+
+/* 第二层：卡片颜色的描线，中间留白，像参考图的空心数字 */
+.step-num text:last-child {
+  fill: #ffffff;
+  stroke: var(--g-bot, #2f80ff);
+  stroke-width: 7px;
+}
+
+/* ---------- 卡牌：紧凑横版，图标在左 ---------- */
+.step-grid .feature-card {
+  position: relative;
+  z-index: 1;
+  flex-direction: row-reverse;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px 12px 18px;
+}
+
+.step-grid .feature-orb,
+.step-grid .feature-card:nth-child(even) .feature-orb {
+  flex-shrink: 0;
+  align-self: center;
+  width: 80px;
+  height: 80px;
+  margin: 0;
+}
+
+.step-grid .feature-icon {
+  width: 80px;
+  height: 80px;
+}
+
+.step-grid .feature-icon-distribute {
+  font-size: 54px;
+  line-height: 80px;
+}
+
+.step-grid .feature-text {
+  flex: 1 1 auto;
+  align-self: stretch;
+  justify-content: center;
+  min-width: 0;
+  gap: 3px;
+  padding: 9px 11px 11px;
+}
+
+/* 步骤号已经由大数字表示，分类小标签只给「按需」的一步留着 */
+.step-item:not(.step-optional) .feature-text::before {
+  display: none;
+}
+
+.step-grid .feature-text::before {
+  align-self: flex-start;
+  font-size: 11px;
+  letter-spacing: 1px;
+}
+
+.step-grid .feature-title,
+.step-grid .feature-card:nth-child(even) .feature-title {
+  font-size: 19px;
+  line-height: 1.2;
+  letter-spacing: 0.5px;
+}
+
+.step-grid .feature-sub {
+  margin-top: 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.step-grid .feature-meta {
+  margin-top: 5px;
+  padding: 2px 9px;
+  font-size: 11.5px;
+  border-radius: 8px;
+}
+
+/* 按需的一步：铭牌虚线框 + 白底「按需」标签 */
+.step-optional .feature-text {
+  border-style: dashed;
+}
+
+.step-optional .feature-text::before {
+  color: var(--ink, #1c2858);
+  background: #ffffff;
+  box-shadow: inset 0 0 0 2px var(--ink, #1c2858);
+}
+
+/* ---------- 中等宽度：两列，按行排 ---------- */
+@media (max-width: 1099px) {
+  .step-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: none;
+    grid-auto-flow: row;
+    gap: 26px 26px;
+  }
+}
+
+/* ---------- 窄屏：一列 ---------- */
+@media (max-width: 720px) {
+  .step-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+  }
+}
+
+@media (max-width: 520px) {
+  .step-item {
+    grid-template-columns: 52px minmax(0, 1fr);
+    gap: 4px;
+  }
+
+  .step-num {
+    width: 52px;
+  }
+
+  .step-grid .feature-card {
+    padding: 10px 10px 16px;
+  }
+
+  .step-grid .feature-orb,
+  .step-grid .feature-card:nth-child(even) .feature-orb,
+  .step-grid .feature-icon {
+    width: 60px;
+    height: 60px;
+  }
+
+  .step-grid .feature-icon-distribute {
+    font-size: 42px;
+    line-height: 60px;
+  }
+
+  .step-grid .feature-title,
+  .step-grid .feature-card:nth-child(even) .feature-title {
+    font-size: 17px;
+  }
+}
+
+/* ---------- 做过的一步：卡片右上角圆圈对勾 ---------- */
+.step-done {
+  position: absolute;
+  z-index: 4;
+  top: -12px;
+  right: -12px;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 3px solid var(--ink, #1c2858);
+  border-radius: 50%;
+  color: #ffffff;
+  background: #1f7a2e;      /* 白字对比度 > 5:1 */
+  box-shadow: 0 3px 0 var(--ink, #1c2858), inset 0 3px 0 rgba(255, 255, 255, 0.3);
+  font-size: 22px;
+  font-weight: 900;
+  line-height: 1;
+  cursor: help;
+}
+
+.step-done.hidden {
+  display: none;
+}
+
+/* 做过但有出错的文件：黄底深色 ! */
+.step-done.is-warn {
+  color: var(--ink, #1c2858);
+  background: #ffc21f;
+}
+
+.home-hero > div:first-child {
+  min-width: 0;
+}
+
+.home-hero .step-done-note {
+  margin-top: 6px;
+  overflow-wrap: anywhere;   /* 路径很长时换行，不出横向滚动 */
+  font-size: 13px;
+  font-weight: 800;
+  color: #1f7a2e;
+}
+
+@media (max-width: 520px) {
+  .step-done {
+    top: -10px;
+    right: -6px;
+    width: 32px;
+    height: 32px;
+    font-size: 18px;
+  }
+}
