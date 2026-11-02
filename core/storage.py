@@ -2,9 +2,10 @@ import json
 import sqlite3
 from typing import Any
 
-from core.common import PROJECT_ROOT
+from core import data_dir
 
-DATABASE_PATH = PROJECT_ROOT / "execution.sqlite3"
+# 放在程序文件夹外（见 core/data_dir.py），重新下载 ZIP 更新程序不用搬
+DATABASE_PATH = data_dir.DATA_DIR / data_dir.DATABASE_NAME
 
 # 每个数据库里已写进 blobs 表的大字段：(数据库, 快照名) -> {键: 写入时的字符串对象}
 # 字符串不可变，同一个对象就说明没改过，不用每次都重写几 MB 的截图
@@ -12,6 +13,8 @@ _WRITTEN_BLOBS: dict[tuple[str, str], dict[str, str]] = {}
 
 
 def _connect() -> sqlite3.Connection:
+    if DATABASE_PATH == data_dir.DATA_DIR / data_dir.DATABASE_NAME:
+        data_dir.ensure_migrated(DATABASE_PATH, data_dir.DATA_DIR / data_dir.IMAGES_NAME)
     connection = sqlite3.connect(DATABASE_PATH, timeout=30)
     connection.execute("PRAGMA synchronous = FULL")
     connection.execute(

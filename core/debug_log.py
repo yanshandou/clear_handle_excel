@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from core import build_info
+from core import data_dir
 from core.common import PROJECT_ROOT
 
 LOG_PATH = PROJECT_ROOT / "log.txt"
@@ -331,6 +332,7 @@ def environment() -> list[str]:
         f"终端 {getattr(sys.stdout, 'encoding', None)}",
         f"依赖: pywin32 {_package('pywin32')}，PyMuPDF {_package('PyMuPDF')}，openpyxl {_package('openpyxl')}",
         f"程序目录: {PROJECT_ROOT}",
+        f"数据目录: {data_dir.DATA_DIR}",
     ]
     try:
         usage = shutil.disk_usage(PROJECT_ROOT)

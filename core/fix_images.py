@@ -11,9 +11,10 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
-from core.common import PROJECT_ROOT
+from core import data_dir
 
-IMAGES_DIR = PROJECT_ROOT / "_report_images"
+# 和数据库一起放在程序文件夹外（见 core/data_dir.py）
+IMAGES_DIR = data_dir.DATA_DIR / data_dir.IMAGES_NAME
 
 # 还在用截图的地方（工作台卡片、问题项）：换文件夹清理时这些文件要留着
 _REFERENCE_PROVIDERS: list[Callable[[], Iterable[str]]] = []
@@ -32,7 +33,7 @@ def save(item: dict[str, Any], which: str, data_url: str, *, overwrite: bool = T
     digest = hashlib.sha1((key or f"{item.get('wb_path', '')}\0{item['id']}").encode()).hexdigest()[:16]
     name = f"{digest}_{which}.png"
     try:
-        IMAGES_DIR.mkdir(exist_ok=True)
+        IMAGES_DIR.mkdir(parents=True, exist_ok=True)
         (IMAGES_DIR / name).write_bytes(base64.b64decode(data_url.split(",", 1)[1]))
     except (OSError, ValueError):
         logging.exception("无法保存报告截图: %s", name)
@@ -94,7 +95,7 @@ def export_all(names: Iterable[str]) -> dict[str, str]:
 def import_all(images: Any) -> None:
     if not isinstance(images, dict):
         return
-    IMAGES_DIR.mkdir(exist_ok=True)
+    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     for name, data in images.items():
         if not isinstance(name, str) or Path(name).name != name or not name.endswith(".png") or not isinstance(data, str):
             continue
