@@ -1,11 +1,11 @@
 const TASKS = {
   export_pdf: {
     title: '人工复检',
-    icon: '🔎',
+    icon: '📋',
     theme: 'feature-sky',
     sub: '先把每个工作簿的可见工作表分别导出为 PDF，再逐页查看、标记、一键处理',
     notes: [
-      '每次都重新导出最新的 PDF；全部导出完后按钮变成「🔎 查看 PDF」，点了进复检页面',
+      '每次都重新导出最新的 PDF；全部导出完后按钮变成「📋 查看 PDF」，点了进复检页面',
       '自动递归扫描所选文件夹及其所有子文件夹，以只读方式打开 Excel 导出',
       '跳过隐藏表、変更履歴和备份表',
       '每张 Sheet 优先复用已记录的打印方向；没有有效记录时可选择是否比较横向、竖向（不比较会快很多，直接按 Excel 里的方向导出）',
@@ -209,11 +209,15 @@ function renderDialog() {
   } else if (phase === 'done') {
     btn.disabled = false;
     // 人工复检：导出完一个按钮变成「查看 PDF」；没导完的先继续导
-    btn.textContent = canResumeActiveTask() ? '🔁 继续上次任务' : activeKind === 'export_pdf' ? '🔎 查看 PDF' : '再执行一次';
+    btn.textContent = canResumeActiveTask() ? '🔁 继续上次任务' : activeKind === 'export_pdf' ? '📋 查看 PDF' : '再执行一次';
   } else {
     btn.disabled = busyOther;
     btn.textContent = task.runLabel;
   }
+  // 人工复检窗口：导出 PDF 是蓝色，导完的「查看 PDF」是绿色，一眼分得出是哪一步
+  const viewing = activeKind === 'export_pdf' && phase === 'done' && !canResumeActiveTask();
+  btn.classList.toggle('btn-success', activeKind === 'export_pdf' && !viewing);
+  btn.classList.toggle('btn-primary', activeKind !== 'export_pdf' || viewing);
   if (busyOther && phase === 'form' && !starting) {
     hint.textContent = `后台正在执行「${overview.progress.task_name}」，完成后才能开始`;
   }
