@@ -42,13 +42,13 @@
 </head>
 <body>
   <header class="app-header">
-    <a href="/" class="header-brand"><div class="header-logo-badge">📦</div><div class="header-title"><h1>按 JSON 复制 Excel</h1><span class="subtitle">按上传记录把每个文件夹的 Excel 复制到目的地</span></div></a>
+    <a href="/" class="header-brand"><div class="header-logo-badge">📦</div><div class="header-title"><h1>按 JSON 复制 Excel</h1><span class="subtitle">按上传记录建好目录结构、把 Excel 放进对应文件夹</span></div></a>
     <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/records" class="nav-link">📋 执行记录</a><a href="/workbench" class="nav-link">📐 切字检查工作台</a></nav>
   </header>
   <main class="container clean-container">
     <section class="panel">
       <h2>先生成清单，确认后再复制</h2>
-      <p class="toolbar-hint">JSON 里每个文件夹的 source 接在「来源根目录」后面，destination 接在「目的地根目录」后面。整个文件夹连子文件夹一起复制，只复制 Excel 表格文件（.xls / .xlsx / .xlsm / .xlsb / .xlt / .xltx / .xltm，~$ 临时文件不算），其他文件不管。只复制不移动，来源文件原样保留。目的地已有同名文件时直接覆盖，文件名不改，覆盖了哪些写在复制记录里。</p>
+      <p class="toolbar-hint">JSON 里每个文件夹的 source 接在「来源根目录」后面，destination 接在「目的地根目录」后面。先按目录结构把目的地文件夹全部建好（来源里的子文件夹、空文件夹也照样建，来源找不到的也建一个空的），再把 Excel 复制进对应的文件夹：只复制 Excel 表格文件（.xls / .xlsx / .xlsm / .xlsb / .xlt / .xltx / .xltm，~$ 临时文件不算），其他文件不管。只复制不移动，来源文件原样保留。目的地已有同名文件时直接覆盖，文件名不改，覆盖了哪些写在复制记录里。</p>
       <div class="link-fields">
         <label for="distSource">来源根目录<input id="distSource" type="text" placeholder="例如 D:\原始"></label>
         <label for="distDest">目的地根目录<input id="distDest" type="text" placeholder="例如 \\server\共有\上传"></label>

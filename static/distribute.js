@@ -18,14 +18,14 @@
 
   const size = n => n == null ? '-' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
   const badChecks = folder => (folder.checks || []).filter(c => !c.ok);
-  const isBad = folder => !!(folder.error || badChecks(folder).length || (folder.files || []).some(f => f.status && f.status !== 'ok')
+  const isBad = folder => !!(folder.error || (folder.dir_errors || []).length || badChecks(folder).length || (folder.files || []).some(f => f.status && f.status !== 'ok')
     || (folder.dest_extra || []).length);
 
   function controls() {
     const busy = loading || submitting || latest.running;
     for (const id of ['distSource', 'distDest', 'distPlan', 'distPick']) $(id).disabled = !!busy;
     $('distPreview').disabled = !!busy;
-    const canStart = !busy && latest.preview && latest.preview.folders.some(f => f.files.length);
+    const canStart = !busy && latest.preview && latest.preview.folders.some(f => f.files.length || (f.dirs_to_create || []).length);
     $('distStart').disabled = !canStart;
     $('distPreview').textContent = submitting === 'preview' ? '正在生成清单…' : '📋 生成复制清单';
     $('distStart').textContent = latest.running ? '正在复制…' : '📥 按清单开始复制';
@@ -63,7 +63,13 @@
     const open = folder.error || isBad(folder) || (folder.overlaps || []).length;
     const parts = [];
     parts.push(`<summary><span class="dist-route">${esc(folder.source_rel)} → ${esc(folder.dest_rel)}<small>${folder.owner ? `作者 ${esc(folder.owner)} · ` : ''}${applied ? '复制' : '要复制'} ${applied ? folder.files.filter(f => f.status === 'ok').length : folder.files.length} 个（覆盖 ${overwrite.length}、新建 ${fresh.length}）</small></span>${nums(folder, applied)}</summary>`);
-    if (folder.error) parts.push(`<p class="link-error">⛔ ${esc(folder.error)}，这个文件夹不复制。</p>`);
+    const madeTop = applied ? (folder.created_dirs || []).includes('.') : (folder.dirs_to_create || []).includes('.');
+    if (folder.error) parts.push(`<p class="link-error">⛔ ${esc(folder.error)}，这个文件夹不复制${madeTop ? (applied ? '，目的地已建成空文件夹' : '，只在目的地建一个空文件夹') : ''}。</p>`);
+    const subDirs = (applied ? folder.created_dirs : folder.dirs_to_create || []).filter(d => d !== '.');
+    if (!folder.error && (madeTop || subDirs.length)) {
+      parts.push(`<p class="dist-meta">📁 ${applied ? '新建了' : '要新建'}${madeTop ? '目的地文件夹' : ''}${madeTop && subDirs.length ? '和' : ''}${subDirs.length ? `子文件夹 ${subDirs.length} 个：${esc(subDirs.join('、'))}` : ''}</p>`);
+    }
+    for (const err of folder.dir_errors || []) parts.push(`<p class="link-error">❌ 文件夹没建成：${esc(err)}</p>`);
     for (const text of folder.overlaps || []) parts.push(`<p class="link-skip">⚠️ ${esc(text)}</p>`);
     const checks = folder.checks || [];
     if (checks.length) {
@@ -108,9 +114,11 @@
     const s = data.summary || {};
     const list = applied
       ? [['ok', `已复制 ${s['已复制'] ?? 0} 个`], ['info', `覆盖 ${s['覆盖'] ?? 0} · 新建 ${s['新建'] ?? 0}`],
+         ['info', `新建文件夹 ${s['新建文件夹'] ?? 0} 个`],
          [s['没复制成功'] ? 'err' : '', `没复制成功 ${s['没复制成功']} 个`], [s['没有复制'] ? 'warn' : '', `没有复制 ${s['没有复制']} 个`],
          [s['数量不一致'] ? 'warn' : '', `数量不一致 ${s['数量不一致']} 个文件夹`], [s['有问题的文件夹'] ? 'err' : '', `找不到来源等 ${s['有问题的文件夹']} 个文件夹`]]
       : [['info', `${s['文件夹'] ?? 0} 个文件夹`], ['info', `要复制 ${s['要复制'] ?? 0} 个`], ['info', `覆盖 ${s['覆盖'] ?? 0} · 新建 ${s['新建'] ?? 0}`],
+         ['info', `要新建文件夹 ${s['新建文件夹'] ?? 0} 个`],
          [s['数量不一致'] ? 'warn' : '', `JSON 和来源数量不一致 ${s['数量不一致']} 个文件夹`],
          [s['目的地多出'] ? 'warn' : '', `目的地有来源没有的 Excel ${s['目的地多出']} 个文件夹`], [s['有问题'] ? 'err' : '', `有问题 ${s['有问题']} 个文件夹`]];
     return '<div class="dist-summary">' + list.filter(([cls]) => cls).map(([cls, text]) => `<span class="dist-chip dist-chip-${cls}">${esc(text)}</span>`).join('') + '</div>';
@@ -127,6 +135,7 @@
       why.push(...badChecks(folder).map(c => c.text));
       const failed = folder.files.filter(f => f.status === 'failed').length;
       if (failed) why.push(`${failed} 个文件没复制成功`);
+      if ((folder.dir_errors || []).length) why.push(`${folder.dir_errors.length} 个文件夹没建成`);
       if (!applied && (folder.dest_extra || []).length) why.push(`目的地原来就有 ${folder.dest_extra.length} 个来源没有的 Excel（不会动它们），复制后目的地会比来源多 ${folder.dest_extra.length} 个`);
       if (why.length) items.push(`${folder.dest_rel}：${why.join('；')}`);
     }
@@ -189,14 +198,14 @@
     if (latest.preview) {
       const s = data.summary;
       $('distResultTitle').textContent = `复制清单${data.label ? '：' + data.label : ''}`;
-      showProgress('done', '清单已生成：', `${s['文件夹']} 个文件夹，要复制 ${s['要复制']} 个 Excel（覆盖 ${s['覆盖']}、新建 ${s['新建']}）。核对无误后点「📥 按清单开始复制」。`,
+      showProgress('done', '清单已生成：', `${s['文件夹']} 个文件夹，要新建文件夹 ${s['新建文件夹']} 个，要复制 ${s['要复制']} 个 Excel（覆盖 ${s['覆盖']}、新建 ${s['新建']}）。核对无误后点「📥 按清单开始复制」。`,
         !!(s['数量不一致'] || s['有问题'] || s['目的地多出'] || data.notes.length));
     } else {
       const s = applied.summary || {};
       $('distResultTitle').textContent = `复制结果${applied.label ? '：' + applied.label : ''}`;
       const warn = !!(applied.stopped || s['没复制成功'] || s['没有复制'] || s['数量不一致'] || s['有问题的文件夹'] || (applied.notes || []).length);
       showProgress('done', applied.stopped ? '没有复制：' : warn ? '复制结束，有对不上的地方：' : '复制完成：',
-        applied.stopped ? applied.stopped : `已复制 ${s['已复制']} 个（覆盖 ${s['覆盖']}、新建 ${s['新建']}）`
+        applied.stopped ? applied.stopped : `新建文件夹 ${s['新建文件夹'] ?? 0} 个，已复制 ${s['已复制']} 个（覆盖 ${s['覆盖']}、新建 ${s['新建']}）`
           + (warn ? '。请看下面标黄的文件夹，或下载复制记录。' : '，每个文件夹三个数都一致。'), warn);
     }
     $('distResults').innerHTML = renderData(data, !latest.preview);
@@ -250,7 +259,7 @@
   async function startCopy() {
     if (loading || submitting || latest.running || !latest.preview) return;
     const s = latest.preview.summary;
-    const lines = [`将复制 ${s['要复制']} 个 Excel 到「${latest.preview.dest_root}」。`,
+    const lines = [`先按目录结构新建 ${s['新建文件夹']} 个文件夹（包括空文件夹），再复制 ${s['要复制']} 个 Excel 到「${latest.preview.dest_root}」。`,
       s['覆盖'] ? `其中 ${s['覆盖']} 个会覆盖目的地的同名文件（文件名不变，复制记录里会写明）。` : '目的地没有同名文件，不会覆盖。',
       '来源文件只复制、不移动。'];
     if (s['数量不一致'] || s['有问题'] || s['目的地多出']) lines.push(`注意：有 ${s['数量不一致']} 个文件夹 JSON 和来源数量对不上、${s['目的地多出']} 个文件夹目的地有来源没有的 Excel、${s['有问题']} 个文件夹有问题，复制后都会写进记录。`);

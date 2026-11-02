@@ -144,6 +144,26 @@ class DistributeTests(unittest.TestCase):
         self.assertIn("Excel 中打开", result["folders"][0]["files"][0]["error"])
         self.assertTrue((self.src / "A" / "~$a.xlsx").exists())  # 来源一点不动
 
+    def test_creates_empty_folders_and_missing_source_folder(self):
+        write(self.src / "A" / "a.xlsx")
+        (self.src / "A" / "空的" / "更深").mkdir(parents=True)
+        write(self.src / "A" / "只有PDF" / "x.pdf")
+        prev = distribute.preview(plan([
+            {"source": ["A"], "destination": ["呉", "A"], "files": 1},
+            {"source": ["没有"], "destination": ["呉", "B"], "files": 0},
+        ]), str(self.src), str(self.dst))
+        self.assertEqual(prev["folders"][0]["dirs_to_create"], [".", "只有PDF", "空的", "空的/更深"])
+        self.assertEqual(prev["summary"]["新建文件夹"], 5)
+        result = self.run_copy()
+        self.assertTrue((self.dst / "呉" / "A" / "空的" / "更深").is_dir())
+        self.assertTrue((self.dst / "呉" / "A" / "只有PDF").is_dir())
+        self.assertFalse((self.dst / "呉" / "A" / "只有PDF" / "x.pdf").exists())
+        self.assertTrue((self.dst / "呉" / "B").is_dir())
+        self.assertEqual(result["summary"]["新建文件夹"], 5)
+        md = distribute.markdown(result)
+        self.assertIn("目的地已建成空文件夹", md)
+        self.assertIn("新建子文件夹 3 个", md)
+
     def test_same_root_rejected(self):
         with self.assertRaises(ValueError):
             distribute.preview(plan([{"source": ["A"], "destination": ["A"], "files": 1}]), str(self.src), str(self.src))

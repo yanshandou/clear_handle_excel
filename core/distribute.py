@@ -163,6 +163,7 @@ def _key(rel: str) -> str:
 def scan_folder(folder: Path) -> dict[str, Any]:
     """递归列出文件夹里的 Excel（相对路径、大小、修改时间），另外数一下 ~$ 临时文件和其他文件"""
     excel: dict[str, dict[str, Any]] = {}
+    dirs: list[str] = []
     temp: list[str] = []
     other: dict[str, int] = {}
     errors: list[str] = []
@@ -173,6 +174,7 @@ def scan_folder(folder: Path) -> dict[str, Any]:
     for dirpath, dirnames, filenames in os.walk(folder, onerror=on_error):
         dirnames.sort()
         base = Path(dirpath)
+        dirs.extend((base / name).relative_to(folder).as_posix() for name in dirnames)
         for name in sorted(filenames):
             path = base / name
             rel = path.relative_to(folder).as_posix()
@@ -191,7 +193,7 @@ def scan_folder(folder: Path) -> dict[str, Any]:
                 errors.append(f"{rel}：{err.strerror or err}")
                 continue
             excel[rel] = {"rel": rel, "size": info.st_size, "mtime": info.st_mtime}
-    return {"excel": excel, "temp": temp, "other": other, "errors": errors}
+    return {"excel": excel, "dirs": sorted(dirs), "temp": temp, "other": other, "errors": errors}
 
 
 def _inside(child: Path, parent: Path) -> bool:
@@ -264,9 +266,12 @@ def _preview_folder(item: dict[str, Any], src_root: Path, dst_root: Path) -> dic
         "source_count": None,
         "dest_count": None,
         "checks": [],
+        "dirs_to_create": [],
     }
     if not src.is_dir():
         entry["error"] = "找不到来源文件夹" if not src.exists() else "来源路径不是文件夹"
+        # 目录结构照 JSON 建：来源找不到也先把目的地的空文件夹建好，记录里写明是空的
+        entry["dirs_to_create"] = [] if dst.is_dir() else ["."]
         debug_log.event("⚠️ 复制清单：" + entry["error"], 文件夹=str(src))
         entry["checks"] = _checks(entry, None, None)
         return entry
@@ -290,6 +295,9 @@ def _preview_folder(item: dict[str, Any], src_root: Path, dst_root: Path) -> dic
             "source_open": locked,
         })
     entry["dest_extra"] = sorted(info["rel"] for key, info in have_keys.items() if key not in source_keys)
+    # 目录结构和来源一样：没有 Excel 的子文件夹（空的、只有 PDF 的）也建出来
+    entry["dirs_to_create"] = ([] if dst.is_dir() else ["."]) + [
+        rel for rel in found["dirs"] if not (dst / rel).is_dir()]
     entry["temp"] = found["temp"]
     entry["other"] = found["other"]
     entry["scan_errors"] = found["errors"] + have.get("errors", [])
@@ -345,6 +353,7 @@ def _summary(folders: list[dict[str, Any]]) -> dict[str, int]:
         "要复制": len(files),
         "覆盖": sum(f["action"] == "overwrite" for f in files),
         "新建": sum(f["action"] == "new" for f in files),
+        "新建文件夹": sum(len(folder["dirs_to_create"]) for folder in folders),
         "数量不一致": sum(any(not c["ok"] for c in folder["checks"]) for folder in folders),
         "目的地多出": sum(bool(folder["dest_extra"]) for folder in folders),
         "有问题": sum(bool(folder["error"] or folder.get("overlaps") or folder["scan_errors"]) for folder in folders),
@@ -404,6 +413,29 @@ def _progress(done: int, total: int, current: str) -> None:
         _STATUS.update(done=done, total=total, current=current)
 
 
+def _make_dirs(folder: dict[str, Any]) -> None:
+    """先按目录结构把目的地文件夹建好（包括空文件夹），建了哪些、哪些没建成都记下来"""
+    folder["created_dirs"], folder["dir_errors"] = [], []
+    dst = Path(folder["dest_path"])
+    for rel in folder.get("dirs_to_create", []):
+        path = dst if rel == "." else dst / rel
+        while True:
+            try:
+                existed = path.is_dir()
+                path.mkdir(parents=True, exist_ok=True)
+                if not existed:
+                    folder["created_dirs"].append(rel)
+                    debug_log.event("📁 新建文件夹", 文件夹=str(path))
+                break
+            except OSError as err:
+                message = _explain(err)
+                debug_log.exception(err, f"新建文件夹 {path}")
+                if file_problem.ask(path, f"{folder['dest_rel']}/{rel}", message, folder=dst.parent) == "retry":
+                    continue
+                folder["dir_errors"].append(f"{rel}：{message}")
+                break
+
+
 def _stale_sources(preview_data: dict[str, Any]) -> list[str]:
     """复制前再查一遍来源：和确认过的清单不一样（多了、少了、改过）就不复制"""
     changed = []
@@ -438,8 +470,10 @@ def _run(preview_data: dict[str, Any]) -> dict[str, Any]:
     for folder in folders:
         if stop_reason:
             break
+        _make_dirs(folder)
         if folder["error"]:
-            wf.log_msg(f"⚠️ {folder['source_rel']}：{folder['error']}，跳过")
+            wf.log_msg(f"⚠️ {folder['source_rel']}：{folder['error']}，"
+                       + ("已建好空的目的地文件夹" if folder["created_dirs"] else "跳过"))
             continue
         src_dir, dst_dir = Path(folder["source_path"]), Path(folder["dest_path"])
         debug_log.begin(f"复制文件夹 {folder['source_rel']} → {folder['dest_rel']}")
@@ -501,6 +535,8 @@ def _run(preview_data: dict[str, Any]) -> dict[str, Any]:
     }
     for folder in folders:
         folder.setdefault("missing_in_dest", [])
+        folder.setdefault("created_dirs", [])
+        folder.setdefault("dir_errors", [])
         if folder["error"] or stop_reason:
             folder["checks"] = _checks(folder, folder["source_count"], None)
     result["summary"] = run_summary(result)
@@ -513,12 +549,13 @@ def run_summary(result: dict[str, Any]) -> dict[str, int]:
     return {
         "文件夹": len(result["folders"]),
         "已复制": len(ok),
+        "新建文件夹": sum(len(folder.get("created_dirs", [])) for folder in result["folders"]),
         "覆盖": sum(f["action"] == "overwrite" for f in ok),
         "新建": sum(f["action"] == "new" for f in ok),
         "没复制成功": sum(f.get("status") == "failed" for f in files),
         "没有复制": sum("status" not in f for f in files),
         "数量不一致": sum(any(not c["ok"] for c in folder["checks"]) for folder in result["folders"]),
-        "有问题的文件夹": sum(bool(folder["error"]) for folder in result["folders"]),
+        "有问题的文件夹": sum(bool(folder["error"] or folder.get("dir_errors")) for folder in result["folders"]),
     }
 
 
@@ -539,8 +576,8 @@ def start() -> None:
                 or mark_finder.status().get("running") or hidden_repair.status().get("running")
                 or bl_links.status().get("running")):
             raise ValueError("后台任务正在执行，请等它结束（别的任务可能正在改这些文件）")
-        if not any(f["files"] for f in preview_data["folders"]):
-            raise ValueError("清单里没有要复制的 Excel 文件")
+        if not any(f["files"] or f.get("dirs_to_create") for f in preview_data["folders"]):
+            raise ValueError("清单里没有要复制的 Excel 文件，也没有要新建的文件夹")
         wf.STATE["busy"] = True
         wf.STATE["maintenance"] = "distribute"
         preview_data["_started"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -657,7 +694,7 @@ def markdown(result: dict[str, Any]) -> str:
         lines += ["## 合计", "", "| 项目 | 数量 |", "| --- | --- |"]
         lines += [f"| {k} | {v} |" for k, v in s.items()] + [""]
     attention = [f for f in result.get("folders", []) if f.get("error") or any(not c["ok"] for c in f.get("checks", []))
-                 or any(x.get("status") != "ok" for x in f["files"])]
+                 or any(x.get("status") != "ok" for x in f["files"]) or f.get("dir_errors")]
     if attention:
         lines += ["## ⚠️ 需要查看的文件夹", ""]
         for f in attention:
@@ -666,6 +703,8 @@ def markdown(result: dict[str, Any]) -> str:
             failed = sum(x.get("status") != "ok" for x in f["files"])
             if failed:
                 why.append(f"{failed} 个文件没复制成功")
+            if f.get("dir_errors"):
+                why.append(f"{len(f['dir_errors'])} 个文件夹没建成")
             lines.append(f"- `{f['source_rel']}` → `{f['dest_rel']}`：{'；'.join(why)}")
         lines.append("")
     if result.get("notes"):
@@ -681,7 +720,14 @@ def markdown(result: dict[str, Any]) -> str:
             meta.append(f"作者：{f['owner']}")
         lines += ["- " + "，".join(meta), f"- 来源：`{f['source_path']}`", f"- 目的地：`{f['dest_path']}`"]
         if f.get("error"):
-            lines += [f"- ⛔ {f['error']}，这个文件夹没有复制"]
+            lines += [f"- ⛔ {f['error']}，这个文件夹没有复制" + ("，目的地已建成空文件夹" if "." in f.get("created_dirs", []) else "")]
+        created = [d for d in f.get("created_dirs", []) if d != "."]
+        if "." in f.get("created_dirs", []) and not f.get("error"):
+            lines.append("- 📁 目的地文件夹是这次新建的")
+        if created:
+            lines.append(f"- 📁 新建子文件夹 {len(created)} 个：" + "、".join(f"`{_md(d)}`" for d in created))
+        for err in f.get("dir_errors", []):
+            lines.append(f"- ❌ 文件夹没建成：{_md(err)}")
         for text in f.get("overlaps", []):
             lines.append(f"- ⚠️ {text}")
         lines += ["", "| JSON 写的数 | 来源找到的 Excel | 复制后目的地的 Excel |", "| --- | --- | --- |",
