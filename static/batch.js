@@ -1,7 +1,7 @@
 'use strict';
 const REVIEW_COLORS = ['blue', 'green', 'yellow'];
 const REVIEW_LABELS = { blue: '蓝 · 已修复', green: '绿 · 忽略', yellow: '黄 · 人工处理' };
-const REVIEW_JOB_NAMES = { batch_commit: '提交审核', batch_recheck: '复检', batch_open: '打开文件', batch_unhighlight: '清除标记颜色' };
+const REVIEW_JOB_NAMES = { batch_commit: '提交审核', batch_recheck: '复检', batch_open: '打开文件', batch_unhighlight: '清除标记颜色', batch_learn: '学一下', batch_apply: '按规律修改' };
 let batchState = { cards: [], busy: false, job: null, progress: {}, logs: [] };
 let selectedFilter = 'all';
 let largeMode = false;
@@ -423,7 +423,7 @@ function etaText(eta) {
   return ` · 已用 ${duration(eta.elapsed)} · 预计还要约 ${duration(eta.remaining)}（${clock} 左右扫完）`;
 }
 // 任务已全部完成：收起满格进度条，换成明确的完成提示，免得以为卡在最后一个文件
-const DONE_TITLES = { batch_scan: '扫描完成', batch_commit: '审核已提交', batch_recheck: '复检完成', batch_open: '文件已打开', batch_unhighlight: '标记颜色已清除' };
+const DONE_TITLES = { batch_scan: '扫描完成', batch_commit: '审核已提交', batch_recheck: '复检完成', batch_open: '文件已打开', batch_unhighlight: '标记颜色已清除', batch_learn: '学完了', batch_apply: '按规律修改完成' };
 function renderDoneBanner(finished, job, total) {
   $('progressText').classList.toggle('hidden', finished);
   $('progressTrack').classList.toggle('hidden', finished);
@@ -437,7 +437,7 @@ function renderDoneBanner(finished, job, total) {
   $('doneDetail').textContent = left ? `还有 ${left} 个单元格待审核，请在下方卡片里确认颜色后提交。` : '没有待审核的单元格了。';
   $('doneGoBtn').classList.toggle('hidden', !left);
 }
-$('doneGoBtn').addEventListener('click', () => $('filters').scrollIntoView({ behavior: 'smooth', block: 'start' }));
+$('doneGoBtn').addEventListener('click', () => ($('learnPanel') || $('filters')).scrollIntoView({ behavior: 'smooth', block: 'start' }));
 
 // 正在检查的文件：第几张表、这份用了多久、超过多久会跳过
 function renderScanNow(current) {
@@ -999,6 +999,7 @@ function pruneRenderCaches(allByFile) {
 
 function render() {
   renderControls();
+  if (typeof renderLearn === 'function') renderLearn();
   // 只保留当前筛选下看得到的卡片的选中，批量改色不会改到看不见的卡片
   const shown = shownCards();
   const visible = new Set(shown.map(c => c.id));
@@ -1286,9 +1287,9 @@ async function startJob(url, body = {}) {
 }
 
 // 普通打开固定最多五份；文件复选框是明确选择，按勾选的文件打开。
-async function openReady(selectedOnly = false) {
+async function openReady(selectedOnly = false, only = null) {
   if (requestBusy || openChoosing) return;
-  const ids = (selectedOnly ? selectedFileCards() : manualCards()).map(c => c.id);
+  const ids = only || (selectedOnly ? selectedFileCards() : manualCards()).map(c => c.id);
   if (!ids.length) return;
   openChoosing = true;
   renderControls();

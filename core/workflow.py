@@ -209,7 +209,7 @@ def _check_decision_item(item: dict[str, Any]) -> None:
     autofix.check_row_not_writing(item)
 
 
-BATCH_REVIEW_KINDS = {"batch_commit", "batch_recheck", "batch_open", "batch_unhighlight"}
+BATCH_REVIEW_KINDS = {"batch_commit", "batch_recheck", "batch_open", "batch_unhighlight", "batch_learn", "batch_apply"}
 
 
 def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
@@ -280,7 +280,8 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
 
 _TASK_TITLES = {
     "batch_recheck": "复检", "batch_commit": "提交审核结果", "batch_open": "打开文件",
-    "batch_unhighlight": "清除 Excel 标记颜色", "scan": "Web 切字扫描", "recheck": "复检",
+    "batch_unhighlight": "清除 Excel 标记颜色", "batch_learn": "学一下（看示范总结规律）",
+    "batch_apply": "按规律修改", "scan": "Web 切字扫描", "recheck": "复检",
     "refresh": "刷新复检", "fix": "修复", "review_recheck": "稍后人工复检", "review_open": "打开稍后复检的文件",
 }
 
@@ -625,6 +626,7 @@ def _detect_sheet_results(
                 "sheet_name": sheet_name, "pdf_path": str(pdf_path),
                 "page_index": page_index, "text": found["text"], "bbox": found["bbox"],
                 "visible_text": found["visible"], "hidden_reason": found["reason"],
+                "missing_lines": found.get("missing_lines"),
                 "occurrence": ["cell", address],
                 "excel_row": found["row"], "cell_addr": address, "row_height": probe.row_height(found["row"]),
                 "image": (
