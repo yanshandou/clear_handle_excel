@@ -143,6 +143,10 @@ CELL_ERROR_SPECS: dict[str, dict[str, Any]] = {
 FIXABLE_ERROR_TYPES: tuple[str, ...] = tuple(
     code for code, spec in CELL_ERROR_SPECS.items() if spec["fixable"]
 )
+# 自动修复只处理「切字」：文字被横线切穿、只印出一部分、超出裁剪框。
+# 处理方式只有一种：加高（必要时先开自动换行），行高让 Excel 算、算不出按字号 × 1.2 估，最多试两次，通过保留，不通过还原转人工。
+# 分页切开、### 列宽不足等其他问题照常扫描，全部转人工（用户 2026-11-02 定）。
+AUTO_FIX_ERROR_TYPES: tuple[str, ...] = (ERROR_TYPE_BORDER_CLIP, ERROR_TYPE_TEXT_TRUNCATED, ERROR_TYPE_BOX_OVERFLOW)
 
 
 def item_error_type(item: dict[str, Any]) -> str:

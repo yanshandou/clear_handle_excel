@@ -247,10 +247,6 @@ async function poll(background = false) {
     fileFolder = value.folder;
     batchState = value;
     lastEtag = response.headers.get('ETag') || '';
-    if (Array.isArray(value.fix_error_types) && !hasSavedFixTypes) {
-      fixErrorTypes = new Set(FIXABLE_CODES.filter(code => value.fix_error_types.includes(code)));
-      renderFixErrorTypes();
-    }
     if (!document.activeElement || document.activeElement.id !== 'folderInput') {
       if (value.folder && !$('folderInput').value) $('folderInput').value = value.folder;
       if (value.busy && value.folder) $('folderInput').value = value.folder;
@@ -390,12 +386,12 @@ function renderControls() {
     ? `📂 本轮已全部打开（共 ${openFiles.size} 个）`
     : `📂 打开下一批（未开 ${unopened.length} / 共 ${openFiles.size} 个）`;
   $('openAllBtn').disabled = requestBusy || openChoosing || opening || !unopened.length;
-  $('openAllBtn').title = '每次最多打开 5 个本轮尚未成功打开的文件；关闭 Excel 后仍会记住进度';
+  $('openAllBtn').title = '每次最多打开 10 个本轮尚未成功打开的文件；关闭 Excel 后仍会记住进度';
   $('resetOpenHistoryBtn').disabled = requestBusy || openChoosing || opening || !opened.size;
   $('openSelectedFilesBtn').textContent = `📂 打开选中文件（${pickedFiles.length} 个）`;
   $('openSelectedFilesBtn').disabled = requestBusy || openChoosing || opening || !pickedFiles.length;
   $('clearSelectedFilesBtn').disabled = openChoosing || !selectedFiles.size;
-  $('openFilesHint').textContent = `本轮累计已打开 ${opened.size} 个文件；当前有 ${openFiles.size} 个人工待处理文件，其中 ${unopened.length} 个本轮未打开（当前可打开 ${openAvailable} 个）。每次最多打开 5 个新文件，全部打开后不自动循环；重置打开记录可从头开始，勾选文件也可明确重新打开。`;
+  $('openFilesHint').textContent = `本轮累计已打开 ${opened.size} 个文件；当前有 ${openFiles.size} 个人工待处理文件，其中 ${unopened.length} 个本轮未打开（当前可打开 ${openAvailable} 个）。每次最多打开 10 个新文件，全部打开后不自动循环；重置打开记录可从头开始，勾选文件也可明确重新打开。`;
   // 复检进行中还能接着点复检：排进同一个任务；后台在跑别的批处理任务时排到它后面
   const held = new Set(manual.filter(c => !recheckSet.has(c)).map(fileKey)).size;
   $('recheckAllBtn').disabled = requestBusy || !recheckAll.length;
@@ -471,6 +467,25 @@ function etaText(eta) {
   const clock = `${String(done.getHours()).padStart(2, '0')}:${String(done.getMinutes()).padStart(2, '0')}`;
   return ` · 已用 ${duration(eta.elapsed)} · 预计还要约 ${duration(eta.remaining)}（${clock} 左右扫完）`;
 }
+// 任务已全部完成：收起满格进度条，换成明确的完成提示，免得以为卡在最后一个文件
+const DONE_TITLES = { batch_scan: '全自动处理完成', batch_commit: '审核已提交', batch_recheck: '复检完成', batch_open: '文件已打开', batch_unhighlight: '标记颜色已清除' };
+function renderDoneBanner(finished, job, total) {
+  $('progressText').classList.toggle('hidden', finished);
+  $('progressTrack').classList.toggle('hidden', finished);
+  $('progressTrack').classList.toggle('is-paused', !batchState.busy);  // 暂停 / 中断时条纹停下
+  $('doneBanner').classList.toggle('hidden', !finished);
+  if (!finished) return;
+  const kind = job?.kind;
+  const title = !kind || (kind === 'batch_scan' && job.options?.scan_only) ? '扫描完成'
+    : kind === 'batch_scan' && job.to_manual ? '已转人工'
+    : kind === 'batch_scan' && job.options?.picked ? '自动调整完成' : DONE_TITLES[kind] || '处理完成';
+  const left = batchState.cards.length;
+  $('doneTitle').textContent = `${title}：${total} / ${total} 个文件全部处理完`;
+  $('doneDetail').textContent = left ? `还有 ${left} 个单元格待审核，请在下方卡片里确认颜色后提交。` : '没有待审核的单元格了。';
+  $('doneGoBtn').classList.toggle('hidden', !left);
+}
+$('doneGoBtn').addEventListener('click', () => $('filters').scrollIntoView({ behavior: 'smooth', block: 'start' }));
+
 // 正在检查的文件：第几张表、这份用了多久、超过多久会跳过
 function renderScanNow(current) {
   $('scanNow').classList.toggle('hidden', !current);
@@ -1070,6 +1085,7 @@ function render() {
     : job?.options?.scan_only ? (job.auto_queue?.length ? '正在扫描（扫完后接着自动调整排队的文件）' : '正在扫描') : '正在自动处理')
     : job?.status === 'interrupted' ? '已暂停或部分文件未完成' : '当前进度';
   $('progressText').textContent = `${label}：${completed} / ${total} 个文件 · 待审核 ${batchState.cards.length} 个单元格${etaText(batchState.scan_eta)}`;
+  renderDoneBanner(!batchState.busy && total > 0 && completed >= total && (!job || job.status === 'completed'), job, total);
   renderScanNow(batchState.scan_eta?.current);
   renderSlowFiles();
   $('progressFill').style.width = `${total ? Math.round(completed * 100 / total) : 0}%`;
@@ -1278,49 +1294,11 @@ for (const [id, part] of [['highlightFill', 'fill'], ['highlightFont', 'font']])
   $(id).addEventListener('change', event => setHighlight({ ...highlight, [part]: event.target.value }));
 }
 
-const FIX_ERROR_TYPES_KEY = 'clear_handle_excel.fixErrorTypes';
-const CELL_ERROR_TYPES = [
-  { code: 'border_clip', label: '边框压线', fixable: true, hint: '文字被边框横线切穿：自动加高行高' },
-  { code: 'text_truncated', label: '文字截断', fixable: true, hint: 'PDF 只印出开头一部分、后半段未显示：自动开启换行并加高行高' },
-  { code: 'box_overflow', label: '超出裁剪框', fixable: true, hint: '文字超出单元格裁剪框看不见：自动开启换行并加高行高' },
-  { code: 'page_break_cut', label: '分页切开合并单元格', fixable: true, hint: '自动分页落在多行合并区域中间：自动在上方插入手动分页' },
-  { code: 'hash_overflow', label: '### 列宽不足', fixable: true, hint: '列宽不够导致数字或日期显示成 ###：自动加宽该列（跨多列合并时平均加宽各列）' },
-  { code: 'text_missing', label: 'PDF 未匹配到文字（固定转人工）', fixable: false, hint: 'PDF 中未匹配到该格文字，无法确认是否需要显示，固定转人工' },
-];
-const FIXABLE_CODES = CELL_ERROR_TYPES.filter(t => t.fixable).map(t => t.code);
-let fixErrorTypes = new Set(FIXABLE_CODES);
-let hasSavedFixTypes = false;
-try {
-  const savedTypes = JSON.parse(localStorage.getItem(FIX_ERROR_TYPES_KEY) || 'null');
-  if (Array.isArray(savedTypes)) {
-    fixErrorTypes = new Set(FIXABLE_CODES.filter(code => savedTypes.includes(code)));
-    hasSavedFixTypes = true;
-  }
-} catch (_) {}
-
-function renderFixErrorTypes() {
-  const el = $('fixErrorTypes');
-  if (!el) return;
-  const html = CELL_ERROR_TYPES.map(t => t.fixable
-    ? `<label class="batch-error-type-chip" title="${esc(t.hint)}"><input type="checkbox" data-error-type="${t.code}"${fixErrorTypes.has(t.code) ? ' checked' : ''}><span>${esc(t.label)}</span></label>`
-    : `<label class="batch-error-type-chip is-manual-only" title="${esc(t.hint)}"><input type="checkbox" disabled><span>${esc(t.label)}</span></label>`
-  ).join('');
-  if (el.innerHTML !== html) el.innerHTML = html;
-}
-
-$('fixErrorTypes').addEventListener('change', async event => {
-  const input = event.target.closest?.('[data-error-type]');
-  if (!input) return;
-  const code = input.dataset.errorType;
-  if (input.checked) fixErrorTypes.add(code); else fixErrorTypes.delete(code);
-  hasSavedFixTypes = true;
-  try { localStorage.setItem(FIX_ERROR_TYPES_KEY, JSON.stringify([...fixErrorTypes])); } catch (_) {}
-  renderFixErrorTypes();
-  try {
-    await post('/api/batch/fix_types', { fix_error_types: [...fixErrorTypes] });
-    await poll();
-  } catch (error) { $('errorText').textContent = error.message; }
-});
+// 自动修复只处理切字（边框压线、文字截断、超出裁剪框）：横向放不下的先开自动换行，行高让 Excel 算（算不出按字号 × 1.2 估），最多试两次，
+// 通过就保留，不通过还原转人工。其他问题照常扫描、全部转人工。不再能勾选（后端也固定）。
+const AUTO_FIX_SCOPE = '只修切字（边框压线、文字截断、超出裁剪框）：横向放不下的先开自动换行，行高让 Excel 自己算正好要多高（合并单元格也算；算不出时按字号 × 1.2 × 缺几行估算）。没修好再试一次：没开换行的开换行，Excel 算的不够就按估算。通过就保留，不通过还原、转人工。分页切开、### 列宽不足、PDF 未匹配到文字等其他问题照常扫描，全部转人工。';
+if ($('fixErrorTypes')) $('fixErrorTypes').textContent = AUTO_FIX_SCOPE;
+try { localStorage.removeItem('clear_handle_excel.fixErrorTypes'); } catch (_) {}
 
 // 暂停的全自动处理在提交、复检、打开文件后会放回来，不算替换续跑点
 const KEEPS_PAUSED_SCAN = new Set(['/api/batch/commit', '/api/batch/recheck', '/api/batch/open', '/api/batch/unhighlight']);
@@ -1400,7 +1378,7 @@ async function openReady(selectedOnly = false) {
       return;
     }
     const message = (selectedOnly ? `已选择 ${plan.total} 个文件。\n本次将打开 ${plan.files.length} 个选中文件。`
-      : `当前有 ${plan.total} 个人工待处理文件，本轮累计已打开 ${plan.round_opened ?? plan.already_opened ?? 0} 个。\n本次最多打开 5 个新文件，实际将打开 ${plan.files.length} 个；完成后还剩 ${plan.remaining} 个未打开，其余不会自动打开。`)
+      : `当前有 ${plan.total} 个人工待处理文件，本轮累计已打开 ${plan.round_opened ?? plan.already_opened ?? 0} 个。\n本次最多打开 10 个新文件，实际将打开 ${plan.files.length} 个；完成后还剩 ${plan.remaining} 个未打开，其余不会自动打开。`)
       + waiting + '\n\n本次文件：\n' + plan.files.map(file => `· ${file.name}`).join('\n')
       + (selectedOnly ? '\n\n同时打开较多文件会增加内存占用，可取消后减少勾选。' : '');
     if (!(await appConfirm(message, { title: '确认打开文件', okText: `打开 ${plan.files.length} 个文件`, tone: 'info' }))) return;
@@ -1422,10 +1400,8 @@ async function autoAdjust(ids, title) {
   const queue = batchState.busy;
   const afterScan = queue && batchState.job?.options?.scan_only;
   if (requestBusy || !ids.length || !canAuto(batchState.cards.filter(c => ids.includes(c.id)))) return;
-  if (!fixErrorTypes.size) { $('errorText').textContent = '请至少勾选一种要自动修复的错误类型'; return; }
-  const selectedTypes = [...fixErrorTypes];
   let plan;
-  try { plan = await post('/api/batch/auto_plan', { card_ids: ids, fix_error_types: selectedTypes }); }
+  try { plan = await post('/api/batch/auto_plan', { card_ids: ids }); }
   catch (error) { $('errorText').textContent = error.message; return; }
   const total = plan.run.length + plan.extra.length;
   const skipped = plan.skip.length
@@ -1434,7 +1410,7 @@ async function autoAdjust(ids, title) {
     : '';
   if (!total) { await appAlert(`选中的格子都不能自动调整。${skipped}`, { title }); return; }
   const files = new Set([...plan.run, ...plan.extra].map(id => batchState.cards.find(c => c.id === id)?.wb_path)).size;
-  const message = `让程序自动加高 ${total} 格（${files} 个文件）。`
+  const message = `让程序自动加高 ${total} 格（行高让 Excel 算，最多试两次）（${files} 个文件）。`
     + (plan.extra.length ? `\n其中 ${plan.extra.length} 格是和你选的格子在同一行的黄卡：一行的行高共用，一起调整。` : '')
     + skipped
     + '\n\n请先在 Excel 里保存并关闭这些文件。扫描后改过的文件先整份重新检测。'
@@ -1443,21 +1419,17 @@ async function autoAdjust(ids, title) {
       : queue ? '\n\n现在有自动调整正在跑：这些会排在后面，前面的文件做完接着做。' : '')
     + `\n\n确定${queue ? '排队' : '开始'}自动调整吗？`;
   if (!(await appConfirm(message, { title, okText: queue ? '排队自动调整' : '开始自动调整', tone: 'info' }))) return;
-  await startJob('/api/batch/auto_adjust', { card_ids: ids, fix_error_types: selectedTypes });
+  await startJob('/api/batch/auto_adjust', { card_ids: ids });
 }
 
 async function startBatch(extra = {}) {
   const folder = $('folderInput').value.trim();
   if (!folder) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
-  if (!extra.scan_only && !fixErrorTypes.size) {
-    $('errorText').textContent = '请至少勾选一种要自动修复的错误类型，或使用「只扫描，全部转人工」';
-    return;
-  }
   const unsent = batchState.cards.filter(c => !c.finalized).length;
   if (unsent && batchState.folder && folder !== batchState.folder
       && !(await appConfirm(`当前文件夹还有 ${unsent} 张卡片没有提交审核。\n审核记录会保留，以后对原文件夹重新开始全自动处理即可继续审核。\n\n确定换到新文件夹吗？`, { title: '换文件夹', okText: '换到新文件夹' }))) return;
   const limit = Number($('scanLimit').value);  // 空 = 自动估算
-  await startJob('/api/batch/start', { folder, fix_error_types: [...fixErrorTypes], ...extra, ...(limit ? { scan_limit_minutes: limit } : {}) }).then(() => {
+  await startJob('/api/batch/start', { folder, ...extra, ...(limit ? { scan_limit_minutes: limit } : {}) }).then(() => {
     if (batchState.busy) { try { localStorage.setItem('clear_handle_excel.lastFolder', folder); } catch (_) {} }
   });
 }
@@ -1486,10 +1458,9 @@ $('toManualBtn').addEventListener('click', async () => {
   await action(() => post('/api/batch/to_manual'));
 });
 $('toAutoBtn').addEventListener('click', async () => {
-  if (!fixErrorTypes.size) { $('errorText').textContent = '请至少勾选一种要自动修复的错误类型'; return; }
   const count = batchState.cards.filter(c => c.handed_over && !c.auto_skip).length || batchState.cards.filter(c => c.handed_over).length;
-  if (!(await appConfirm(`把 ${count} 处自动还没试过的黄色问题交回自动处理。\n请先在 Excel 里保存并关闭这些文件。\n转人工后改过的文件整份重新检测；你改过行高的行、自动试过没通过的问题和未勾选的错误类型仍留给人工。\nExcel 里的标记颜色会先还原。\n\n确定转回自动吗？`, { title: '转回自动', okText: '转回自动' }))) return;
-  await startJob('/api/batch/to_auto', { fix_error_types: [...fixErrorTypes], ...($('highlightAuto').checked ? { highlight: { ...highlight } } : {}) });
+  if (!(await appConfirm(`把 ${count} 处自动还没试过的黄色问题交回自动处理。\n请先在 Excel 里保存并关闭这些文件。\n转人工后改过的文件整份重新检测；你改过行高的行、自动试过没通过的问题和不是切字的问题仍留给人工。\nExcel 里的标记颜色会先还原。\n\n确定转回自动吗？`, { title: '转回自动', okText: '转回自动' }))) return;
+  await startJob('/api/batch/to_auto', { ...($('highlightAuto').checked ? { highlight: { ...highlight } } : {}) });
 });
 $('commitBtn').addEventListener('click', async () => {
   const color = selectedFilter;
@@ -1653,6 +1624,5 @@ $('cardList').addEventListener('error', scheduleCardMeasurement, true);
 window.addEventListener('resize', () => { hideImagePreview(); renderKey = ''; render(); });
 try { $('folderInput').value = localStorage.getItem('clear_handle_excel.lastFolder') || ''; } catch (_) {}
 renderHighlight();
-renderFixErrorTypes();
 poll();
 setInterval(() => poll(true), 1800);

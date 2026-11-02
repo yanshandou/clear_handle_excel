@@ -61,6 +61,14 @@ const DATE_RE = /(?<!\d)((?:19|20)\d{2})([-/.]?)(\d{2})\2(\d{2})(?!\d)/g;
 // 名称末尾不带年份的 4 位月日（MMDD），前面不能紧挨数字或英文字母，避免把 SSSEE0114 这类表编号当成日期
 const MMDD_SUFFIX_RE = /(?<![a-zA-Z\d])(\d{2})(\d{2})[\s_\-・.]*$/;
 
+// 末尾两位年份的 6 位年月日（如 _170120 → 2017-01-20），可带括号，年份不晚于今年
+const YYMMDD_SUFFIX_RE = /(?<![a-zA-Z\d])\(?(\d{2})(\d{2})(\d{2})\)?[\s_\-・.]*$/;
+
+function isValidYymmdd(m) {
+  const ymd = `20${m[1]}${m[2]}${m[3]}`;
+  return isValidYmdDate(ymd) && Number(ymd.slice(0, 4)) <= new Date().getFullYear();
+}
+
 function hasMmddSuffix(text) {
   const m = MMDD_SUFFIX_RE.exec(text);
   return Boolean(m) && isValidYmdDate(`2000${m[1]}${m[2]}`);
@@ -80,8 +88,10 @@ function hasBackupMarker(sheetName) {
   const text = String(sheetName ?? '').normalize('NFKC');
   if (/(?<![a-z])(?:bak|backup|bk|old|copy)(?![a-z])/i.test(text)) return true;
   if (/バックアップ|备份|コピー|副本|(?<![新復])旧/.test(text)) return true;
-  if (/\s*\(\d+\)[\s_\-・.]*$/.test(text)) return true;
+  if (/\s*\(\d{1,3}\)[\s_\-・.]*$/.test(text)) return true;
   if (hasMmddSuffix(text)) return true;
+  const yymmdd = YYMMDD_SUFFIX_RE.exec(text);
+  if (yymmdd && isValidYymmdd(yymmdd)) return true;
   const dateRe = new RegExp(DATE_RE.source, 'g');
   let m;
   while ((m = dateRe.exec(text)) !== null) {
@@ -148,7 +158,8 @@ function analyzeSheetName(displayName, { stripBackup = false, stripVersion = tru
 
   if (stripBackup) {
     applyStrip(DATE_RE, m => isValidYmdDate(m[1] + m[3] + m[4]), true);
-    applyStrip(/\s*\(\d+\)[\s_\-・.]*$/g, null, true);
+    applyStrip(YYMMDD_SUFFIX_RE, isValidYymmdd, true);
+    applyStrip(/\s*\(\d{1,3}\)[\s_\-・.]*$/g, null, true);
     applyStrip(/copy\s+of|の?コピー|的?副本/gi, null, true);
     applyStrip(/(?<![a-z])(?:bak|backup|bk|old|copy)(?![a-z])/gi, null, true);
     applyStrip(/バックアップ|备份|コピー|副本|(?<![新復])旧/g, null, true);
@@ -505,14 +516,12 @@ function buildCleanPlan() {
     if (processedFiles.has(file.name)) return;
     const del = [];
     const unc = [];
-    const keep = [];
     (file.sheets || []).forEach(name => {
       const st = getSheetState(file.name, name);
       if (st === 'delete') del.push(name);
       else if (st === 'uncertain') unc.push(name);
-      else keep.push(name);
     });
-    plan[file.name] = { delete: del, uncertain: unc, keep };
+    plan[file.name] = { delete: del, uncertain: unc };
     if (sheetOrders[file.name]) plan[file.name].order = sheetOrders[file.name].slice();
     const renames = activeRenames(file);
     if (renames.length) {
@@ -589,10 +598,7 @@ function renderPage() {
     const stats = summarizeDecisions();
     renderSummary(stats);
     // 待定只是本次不删，不改文件；只去掉「新」字（没有旧表的新X）或只改名也要执行
-    const hasConfirmedKeep = previewData.files.some(file =>
-      [...(file.backups || []), ...(file.uncertain || [])]
-        .some(name => getSheetState(file.name, name) === 'keep'));
-    const hasAction = stats.deletedTotal > 0 || stats.renameTotal > 0 || stats.customRenameTotal > 0 || stats.reorderTotal > 0 || hasConfirmedKeep;
+    const hasAction = stats.deletedTotal > 0 || stats.renameTotal > 0 || stats.customRenameTotal > 0 || stats.reorderTotal > 0;
     const hasError = stats.emptyFiles.length > 0;
     execBtn.disabled = working || !hasAction || hasError || isBusyOther() || isCleanRunning();
     if (pending === 'start') {
@@ -607,8 +613,6 @@ function renderPage() {
       execBtn.textContent = `↕ 保存 ${stats.reorderTotal} 个文件的工作表顺序`;
     } else if (stats.customRenameTotal > 0) {
       execBtn.textContent = `✏️ 改名 ${stats.customRenameTotal} 个工作表`;
-    } else if (hasConfirmedKeep) {
-      execBtn.textContent = '✅ 确认保留所选工作表';
     } else {
       execBtn.textContent = '没有标记删除的工作表';
     }
@@ -673,7 +677,8 @@ function previewFileItem(file, fileIndex, extraClass = '') {
         ? '当前：待定，本次不删，等确认后再处理（单击切换为「保留」）'
         : '当前：保留（单击切换为「删除」）')) + renameTip
       + ((file.gray_tabs || []).includes(name) ? '；Excel 里标签是灰色或黑色；编号后缀的表默认保留' : '')
-      + ((file.blank_sheets || []).includes(name) ? '；表里没有内容（空白，或只有一格「無」「なし」「－」这类字）' : '');
+      + ((file.blank_sheets || []).includes(name) ? '；表里没有内容（空白，或只有一格「無」「なし」「－」这类字）' : '')
+      + ((file.default_names || []).includes(name) ? '；Sheet1 这类 Excel 默认名，可能是临时表，请确认' : '');
     if (processed) {
       return `<span class="preview-sheet-tag is-${st} is-processed" title="已在预览窗口处理，重新扫描后更新">${labelHtml}</span>`;
     }
@@ -782,6 +787,8 @@ function renderRunBox() {
     `完成 ${p.completed_files}/${p.total_files}` +
     (p.error_files ? ` · 失败 ${p.error_files}` : '') + ` · ${pct}%`;
   document.getElementById('cleanProgressFill').style.width = `${Math.min(100, Math.max(0, pct))}%`;
+  // 结束后下面的结果框已写明完成 / 未完成，进度条收起
+  document.getElementById('cleanProgressFill').closest('.mini-progress-box').classList.toggle('hidden', phase === 'done');
 
   const runBtn = document.getElementById('runStateBtn');
   runBtn.classList.toggle('hidden', phase === 'done' && !canResumeClean());

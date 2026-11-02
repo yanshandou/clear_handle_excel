@@ -1,17 +1,19 @@
 const TASKS = {
   export_pdf: {
-    title: '导出 PDF',
-    icon: '📄',
+    title: '人工复检',
+    icon: '📋',
     theme: 'feature-sky',
-    sub: '把每个工作簿的可见工作表分别导出为 PDF',
+    sub: '先把每个工作簿的可见工作表分别导出为 PDF，再逐页查看、标记、一键处理',
     notes: [
-      '自动递归扫描所选文件夹及其所有子文件夹，以只读方式打开 Excel，不修改原文件',
+      '每次都重新导出最新的 PDF；全部导出完后按钮变成「📋 查看 PDF」，点了进复检页面',
+      '自动递归扫描所选文件夹及其所有子文件夹，以只读方式打开 Excel 导出',
       '跳过隐藏表、変更履歴和备份表',
       '每张 Sheet 优先复用已记录的打印方向；没有有效记录时可选择是否比较横向、竖向（不比较会快很多，直接按 Excel 里的方向导出）',
+      '导出用的打印方向和 Excel 里设的不一样时（比如比较后横向更好），会把这个方向保存进原 Excel，打开 Excel 看到的和 PDF 一致；文件正在 Excel 里打开时保存不了，日志会提示',
       '导出的 PDF 直接保存在对应 Excel 文件所在的同一目录下',
       '开始前先删掉同一目录里以前导出的旧 PDF（名字是「Excel 文件名_….pdf」的），其他 PDF 不动',
     ],
-    runLabel: '📄 开始导出',
+    runLabel: '📄 导出 PDF',
   },
   normalize_view: {
     title: '视图标准化',
@@ -83,10 +85,11 @@ function saveLastFolder(folder) {
   } catch (e) {}
 }
 
-// 人工复检页面打开时读这个文件夹：先记下输入框里的路径
+// 导出完点「查看 PDF」：复检页面读这个文件夹，先记下输入框里的路径再过去
 function openPdfReview() {
   const folder = document.getElementById('taskFolderInput').value.trim();
   if (folder) saveLastFolder(folder);
+  window.location.href = '/pdf-review';
 }
 
 function isTaskRunning(kind) {
@@ -124,8 +127,12 @@ function renderStrip() {
   badge.textContent = badgeText;
   document.getElementById('stripTitle').textContent = p.task_name || '尚未开始任务';
   document.getElementById('stripStep').textContent = p.current_step || '';
-  document.getElementById('stripPct').textContent = `${pct}% · ${p.completed_files}/${p.total_files} 个文件`;
+  const stripDone = status === 'completed';
+  document.getElementById('stripPct').textContent = stripDone ? `✅ 全部完成 · ${p.completed_files}/${p.total_files} 个文件` : `${pct}% · ${p.completed_files}/${p.total_files} 个文件`;
   document.getElementById('stripFill').style.width = `${Math.min(100, Math.max(0, pct))}%`;
+  const stripTrack = document.getElementById('stripFill').parentElement;
+  stripTrack.classList.toggle('is-done', stripDone);
+  stripTrack.classList.toggle('is-paused', status !== 'running');
 
   const resumeBtn = document.getElementById('stripResumeBtn');
   resumeBtn.classList.toggle('hidden', !overview.can_resume);
@@ -201,17 +208,19 @@ function renderDialog() {
     hint.textContent = '可以关闭此窗口，任务会在后台继续';
   } else if (phase === 'done') {
     btn.disabled = false;
-    btn.textContent = canResumeActiveTask() ? '🔁 继续上次任务' : '再执行一次';
+    // 人工复检：导出完一个按钮变成「查看 PDF」；没导完的先继续导
+    btn.textContent = canResumeActiveTask() ? '🔁 继续上次任务' : activeKind === 'export_pdf' ? '📋 查看 PDF' : '再执行一次';
   } else {
     btn.disabled = busyOther;
     btn.textContent = task.runLabel;
   }
+  // 人工复检窗口：导出 PDF 是蓝色，导完的「查看 PDF」是绿色，一眼分得出是哪一步
+  const viewing = activeKind === 'export_pdf' && phase === 'done' && !canResumeActiveTask();
+  btn.classList.toggle('btn-success', activeKind === 'export_pdf' && !viewing);
+  btn.classList.toggle('btn-primary', activeKind !== 'export_pdf' || viewing);
   if (busyOther && phase === 'form' && !starting) {
     hint.textContent = `后台正在执行「${overview.progress.task_name}」，完成后才能开始`;
   }
-  // 导出窗口里一直有人工复检的入口（以前导出过、窗口关掉了也能进去）；导出进行中 PDF 还不全，先不显示
-  document.getElementById('taskReviewBtn').classList.toggle(
-    'hidden', activeKind !== 'export_pdf' || starting || phase === 'running');
   if (phase === 'running' || phase === 'done') renderRunBox();
 }
 
@@ -226,6 +235,8 @@ function renderRunBox() {
     `完成 ${p.completed_files}/${p.total_files}` +
     (p.error_files ? ` · 失败 ${p.error_files}` : '') + ` · ${pct}%`;
   document.getElementById('taskProgressFill').style.width = `${Math.min(100, Math.max(0, pct))}%`;
+  // 结束后下面的结果框已写明完成 / 未完成，进度条收起
+  document.getElementById('taskProgressFill').closest('.mini-progress-box').classList.toggle('hidden', phase === 'done');
 
   const logBox = document.getElementById('taskLogBox');
   const logText = overview.logs.length ? overview.logs.join('\n') : '等待操作...';
@@ -261,6 +272,8 @@ function onPrimaryAction() {
   if (!activeKind || starting || document.getElementById('taskPrimaryBtn').disabled) return;
   if (phase === 'done' && canResumeActiveTask()) {
     resumeTask();
+  } else if (phase === 'done' && activeKind === 'export_pdf') {
+    openPdfReview();
   } else if (phase === 'done') {
     phase = 'form';
     renderDialog();
@@ -384,7 +397,10 @@ async function pollState() {
     if (seq < minAcceptedSeq) return;
     const wasBusy = Boolean(overview && overview.busy);
     overview = data;
-    if (wasBusy && !data.busy) celebrateFinished();
+    if (wasBusy && !data.busy) {
+      celebrateFinished();
+      refreshDoneMarks();
+    }
 
     renderHeader();
     renderStrip();
@@ -437,4 +453,64 @@ document.getElementById('progressFileInput').addEventListener('change', e => {
 });
 
 setInterval(pollState, 1200);
+
+/* ==========================================
+   路线图卡片右上角的「做过了」标记
+   按上次用的文件夹（各页面共用 lastFolder）查操作历史：在这个文件夹或它的上级文件夹做完过就打 ✓；
+   只有带出错文件的那次，打黄色 !。主页打开、任务跑完、切回这个页面时刷新。
+   ========================================== */
+function lastFolder() {
+  try {
+    return (localStorage.getItem(FOLDER_STORAGE_KEY) || '').trim();
+  } catch (e) {
+    return '';
+  }
+}
+
+async function refreshDoneMarks() {
+  const folder = lastFolder();
+  let done = {};
+  if (folder) {
+    try {
+      const res = await fetch('/api/operation-history?folder=' + encodeURIComponent(folder));
+      if (res.ok) done = (await res.json()).done || {};
+    } catch (e) {
+      return; // 读不到就保持原样，不影响使用
+    }
+  }
+  let doneCount = 0;
+  document.querySelectorAll('.route-stop[data-ops]').forEach(stop => {
+    const entries = stop.dataset.ops.split(' ').map(k => done[k]).filter(Boolean);
+    const mark = stop.querySelector('.route-done');
+    if (!mark) return;
+    if (!entries.length) {
+      mark.classList.add('hidden');
+      stop.classList.remove('is-done');
+      return;
+    }
+    const completed = entries.some(e => e.completed);
+    const count = entries.reduce((n, e) => n + e.count, 0);
+    const last = entries.map(e => e.last).sort().pop();
+    const label = completed
+      ? `已做过 ${count} 次，最近一次 ${last}`
+      : `做过 ${count} 次，但有出错的文件，最近一次 ${last}`;
+    mark.textContent = completed ? '✓' : '!';
+    mark.classList.toggle('is-warn', !completed);
+    mark.classList.remove('hidden');
+    mark.title = label;
+    mark.setAttribute('aria-label', label);
+    stop.classList.add('is-done');
+    if (completed) doneCount += 1;
+  });
+  const note = document.getElementById('routeDoneNote');
+  note.classList.toggle('hidden', !folder);
+  note.textContent = folder ? `✓ 表示在「${folder}」里已经做过（${doneCount} / 9 步）` : '';
+  note.title = folder;
+}
+
+refreshDoneMarks();
+window.addEventListener('focus', refreshDoneMarks);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refreshDoneMarks();
+});
 pollState();

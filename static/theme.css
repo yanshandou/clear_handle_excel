@@ -1986,6 +1986,7 @@ body {
 .feature-rose { --g-top: #ffd45e; --g-bot: #f5a623; --g-edge: #d87a0d; --g-soft: #fff3d6; }
 .feature-mint { --g-top: #c384f3; --g-bot: #9c60ed; --g-edge: #7637c3; --g-soft: #f2e8ff; }
 .feature-bl { --g-top: #f590d1; --g-bot: #e852af; --g-edge: #bd2c88; --g-soft: #ffe6f5; }
+.feature-distribute { --tile-cat: "COPY"; --g-top: #ffc56b; --g-bot: #f59a23; --g-edge: #c46a00; --g-soft: #fff1dc; }
 
 .feature-card {
   justify-content: flex-start;
@@ -2044,6 +2045,8 @@ body {
 .feature-icon-colors     { background-position: 33.333% 100%; }
 .feature-icon-hidden     { background-position: 66.667% 100%; }
 .feature-icon-bl-links   { background-position: 100% 100%; }
+/* 精灵图只有八格：「按 JSON 复制」直接用大号 emoji */
+.feature-icon-distribute { background-image: none; font-size: 96px; color: initial; line-height: 150px; text-align: center; }
 
 /* 白色铭牌：分类 + 名称 + 说明 + 状态 */
 .feature-text {
@@ -2127,6 +2130,15 @@ body {
   box-shadow: inset 0 3px 0 rgba(255, 255, 255, 0.45), inset 0 -2px 0 #2c7f0c;
   animation: fx-stripes 1.2s linear infinite;
 }
+
+/* 任务不在跑时条纹停下；全部完成后整条收起，换成完成提示，免得以为卡在最后一个 */
+.progress-track.is-paused .progress-fill { animation: none; }
+.progress-track.is-done { display: none; }
+.task-done-line { display: flex; align-items: center; gap: 0; padding: 10px 14px; border: 3px solid #1c7a10; border-radius: 14px; background: #ecfbe4; color: #134e0a; font-weight: 700; line-height: 1.5; }
+.task-done-line::before { content: "✓"; flex: none; margin-right: 10px; display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: #2f8f14; color: #fff; font-size: 18px; font-weight: 900; }
+.task-done-line.is-warn { border-color: #b26a00; background: #fff6e0; color: #5c3600; }
+.task-done-line.is-warn::before { content: "!"; background: #c77700; }
+.task-done-line strong { font-weight: 900; }
 
 @keyframes fx-stripes {
   to { background-position: 22.6px 0, 0 0; }
@@ -2796,4 +2808,145 @@ input[type="checkbox"]:not(.hidden):checked::before {
   --b-edge: #d99a00;
   border-color: var(--ink);
   color: var(--ink);
+}
+
+/* ==========================================
+   批量任务出错文件：重试 / 跳过弹框（file_problem.js）
+   ========================================== */
+.file-problem-dialog {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.file-problem-dialog .app-dialog-head {
+  position: relative;
+  padding-right: 56px;
+}
+
+.file-problem-hide {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: 2px solid var(--ink);
+  background: #ffffff;
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 900;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--ink);
+}
+
+.file-problem-hide:hover { background: var(--lime); }
+
+.file-problem-body {
+  padding: 8px 22px 0;
+  overflow-y: auto;
+  color: var(--ink-2);
+}
+
+.file-problem-task {
+  margin: 4px 0 12px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.file-problem-label {
+  margin: 10px 0 4px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.file-problem-path {
+  display: block;
+  padding: 10px 12px;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  background: #eef4ff;
+  color: #1d3fbf;
+  font-weight: 700;
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+  box-shadow: 2px 2px 0 var(--ink);
+}
+
+.file-problem-path::before { content: "📂 "; text-decoration: none; }
+.file-problem-path:hover { background: #dce8ff; }
+
+.file-problem-error {
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  background: #fff1c2;
+  color: #5a3b00;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.file-problem-hint {
+  margin: 12px 0 8px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.file-problem-auto {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 13px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.file-problem-auto input { margin-top: 4px; }
+
+.file-problem-dialog .app-dialog-foot { align-items: center; }
+
+.file-problem-waited {
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.file-problem-bar {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 1000;
+  max-width: calc(100vw - 32px);
+  padding: 10px 16px;
+  border: 2.5px solid var(--ink);
+  border-radius: 14px;
+  background: #ffc93c;
+  color: var(--ink);
+  font-weight: 800;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 4px 4px 0 var(--ink);
+}
+
+.file-problem-bar[hidden] { display: none; }
+
+.file-problem-timeout {
+  margin: 10px 0 4px;
+  font-size: 13px;
+  line-height: 2;
+}
+
+.file-problem-timeout input {
+  width: 72px;
+  margin: 0 4px;
+  padding: 2px 8px;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 800;
+  text-align: center;
 }

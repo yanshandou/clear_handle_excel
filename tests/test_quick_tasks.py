@@ -171,30 +171,37 @@ class QuickTaskTests(unittest.TestCase):
     def report_files(self):
         return self.reporter.get_execution_report_snapshot()["files"]
 
-    def test_clean_confirmed_keep_survives_rescan_and_restart_until_file_changes(self):
-        path = self.add_book("a.xlsx", ["介護保険", "介護保険外"])
-        preview = lambda: self.workflow.preview_backup_sheets(str(self.folder))["files"][0]
-        self.assertIn("介護保険外", preview()["uncertain"])
-        plan = self.workflow.validate_clean_plan({"a.xlsx": {
-            "delete": [], "uncertain": [], "keep": ["介護保険", "介護保険外"]}})["a.xlsx"]
-        self.workflow._clean_backup_sheets(lambda: self.excel, path, self.folder, plan)
-        self.restart()
-        self.assertNotIn("介護保険外", preview()["uncertain"])
-        path.write_bytes(b"changed")
-        self.assertIn("介護保険外", preview()["uncertain"])
-
-    def test_new_change_note_rule_applies_to_old_confirmations_but_respects_new_ones(self):
+    def test_clean_does_not_remember_kept_sheets(self):
+        # 用户 2026-11-02：不记手动保留，下次扫描照规则重新显示（只有 A1=無 的 JSONサンプル 照样默认删除）
         from core import sheet_history
-        path = self.add_book("a.xlsx", ["概要", "レイアウト変更点", "仕様変更（#7547）", "レイアウト変更"])
-        key = sheet_history.key(path)
-        self.workflow.STATE.setdefault("clean_confirmed_keep", {})[key] = {
-            "hash": sheet_history.fingerprint(path), "sheets": ["レイアウト変更点", "仕様変更（#7547）", "レイアウト変更"]}
+        path = self.add_book("a.xlsx", ["介護保険", "介護保険外", "JSONサンプル"])
+        self.books["a.xlsx"].sheets[2].blank = True
         preview = lambda: self.workflow.preview_backup_sheets(str(self.folder))["files"][0]
-        self.assertEqual(preview()["backups"], ["レイアウト変更点", "仕様変更（#7547）", "レイアウト変更"])
-        self.workflow.STATE["clean_confirmed_keep"][key]["rule_version"] = 1
-        self.assertEqual(preview()["backups"], ["レイアウト変更"])
-        self.workflow.STATE["clean_confirmed_keep"][key]["rule_version"] = 2
-        self.assertEqual(preview()["backups"], [])
+        self.workflow.STATE["clean_confirmed_keep"] = {sheet_history.key(path): {  # 旧版本留下的记录不再起作用
+            "hash": sheet_history.fingerprint(path), "sheets": ["介護保険外", "JSONサンプル"], "rule_version": 2}}
+        plan = self.workflow.validate_clean_plan({"a.xlsx": {
+            "delete": [], "uncertain": [], "keep": ["介護保険", "介護保険外", "JSONサンプル"]}})["a.xlsx"]
+        self.workflow._clean_backup_sheets(lambda: self.excel, path, self.folder, plan)
+        entry = preview()
+        self.assertEqual(entry["uncertain"], ["介護保険外"])
+        self.assertEqual(entry["backups"], ["JSONサンプル"])
+
+    def test_change_note_sheets_follow_rule(self):
+        self.add_book("a.xlsx", ["概要", "レイアウト変更点", "仕様変更（#7547）", "レイアウト変更"])
+        entry = self.workflow.preview_backup_sheets(str(self.folder))["files"][0]
+        self.assertEqual(entry["backups"], ["レイアウト変更点", "仕様変更（#7547）", "レイアウト変更"])
+
+    def test_default_sheet_names_are_uncertain_unless_blank(self):
+        from core.common import is_default_sheet_name
+        self.assertFalse(is_default_sheet_name("SheetA"))
+        self.assertFalse(is_default_sheet_name("集計Sheet1"))
+        self.assertTrue(is_default_sheet_name("工作表1"))
+        self.add_book("a.xlsx", ["概要", "Sheet1", "Sheet 2", "ｓｈｅｅｔ３", "Sheet"])
+        self.books["a.xlsx"].sheets[4].blank = True
+        entry = self.workflow.preview_backup_sheets(str(self.folder))["files"][0]
+        self.assertEqual(entry["uncertain"], ["Sheet1", "Sheet 2", "ｓｈｅｅｔ３"])
+        self.assertEqual(entry["backups"], ["Sheet"])
+        self.assertEqual(entry["default_names"], ["Sheet1", "Sheet 2", "ｓｈｅｅｔ３", "Sheet"])
 
     def restart(self):
         loaded = storage.load_snapshot("workflow")
@@ -338,6 +345,36 @@ class QuickTaskTests(unittest.TestCase):
         self.assertEqual((self.folder / "a_Sheet1.pdf").read_bytes(), b"pdf of a.xlsm")
         self.assertEqual((self.folder / "a_Sheet1_2.pdf").read_bytes(), b"pdf of a.xlsx")
 
+    def test_failed_file_waits_for_user_and_retry_reuses_same_pdf_name(self):
+        self.add_book("a.xlsx", ["Sheet1"])
+        self.books["a.xlsx"].fail_export = True
+
+        def user_fixes_file(path, label, error, **kwargs):
+            self.assertEqual(Path(path), self.folder / "a.xlsx")
+            self.assertIn("导出失败", error)
+            kwargs["tick"]()  # 等用户时不让看门狗当成卡住
+            self.books["a.xlsx"].fail_export = False
+            return "retry"
+
+        with patch.object(self.workflow.file_problem, "ask", side_effect=user_fixes_file) as ask:
+            job = self.run_task("export_pdf")
+        ask.assert_called_once()
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual((self.folder / "a_Sheet1.pdf").read_bytes(), b"pdf of a.xlsx")
+        self.assertFalse((self.folder / "a_Sheet1_2.pdf").exists())
+
+    def test_skipped_file_is_recorded_and_next_file_continues(self):
+        self.add_book("a.xlsx", ["Sheet1"])
+        self.add_book("b.xlsx", ["Sheet1"])
+        self.books["a.xlsx"].fail_export = True
+        with patch.object(self.workflow.file_problem, "ask", return_value="skip") as ask:
+            job = self.run_task("export_pdf")
+        self.assertEqual(ask.call_count, 1)
+        self.assertEqual(job["status"], "interrupted")
+        self.assertEqual(self.report_files()["a.xlsx"]["status"], "error")
+        self.assertIn("导出失败", self.report_files()["a.xlsx"]["error"])
+        self.assertTrue((self.folder / "b_Sheet1.pdf").exists())
+
     def test_normalize_view_backs_up_then_saves_each_workbook(self):
         self.add_book("a.xlsx", ["Sheet1", "Sheet2"])
         job = self.run_task("normalize_view")
@@ -430,7 +467,7 @@ class QuickTaskTests(unittest.TestCase):
         with self.serve_api() as port:
             status, body = self.request(port, "GET", "/")
             self.assertEqual(status, 200)
-            self.assertIn("常用功能", body)
+            self.assertIn("处理流程", body)
             for path in ("/workbench", "/index.html"):
                 status, body = self.request(port, "GET", path)
                 self.assertEqual(status, 200)
@@ -782,6 +819,29 @@ class QuickTaskTests(unittest.TestCase):
         files = {f["name"]: f for f in self.workflow.preview_backup_sheets(str(self.folder))["files"]}
         self.assertEqual(files["numbered.xlsx"]["backups"], ["Main (2)_20221005"])
         self.assertEqual(files["numbered.xlsx"]["uncertain"], [])
+
+    def test_bracketed_date_is_not_numbered_suffix(self):
+        # 用户 2026-11-02：「月次お客様実施数集計ビュー (20220916)」括号里是日期，不是复制编号，有原表时默认删除
+        names = [
+            "月次お客様実施数集計ビュー", "月次お客様実施数集計ビュー (20220916)", "月次お客様実施数集計ビュー（20221001）",
+            "一覧", "一覧（2022-09-16）", "一覧 (2)",
+        ]
+        self.add_book("dated.xlsx", names)
+        files = {f["name"]: f for f in self.workflow.preview_backup_sheets(str(self.folder))["files"]}
+        self.assertEqual(files["dated.xlsx"]["backups"], [
+            "月次お客様実施数集計ビュー (20220916)", "月次お客様実施数集計ビュー（20221001）", "一覧（2022-09-16）",
+        ])
+
+    def test_two_digit_year_suffix_is_date(self):
+        # 用户 2026-11-02：「お客様介保社福軽減ビュー_170120」的 17 是 2017 年，有原表时默认删除
+        names = [
+            "お客様介保社福軽減ビュー", "お客様介保社福軽減ビュー_170120", "一覧", "一覧(180301)",
+            "帳票", "帳票_991231", "画面", "画面_123456", "SSSEE170120",
+        ]
+        self.add_book("yymmdd.xlsx", names)
+        files = {f["name"]: f for f in self.workflow.preview_backup_sheets(str(self.folder))["files"]}
+        # 2099 年晚于今年、123456 不是有效月日、字母紧接数字的是编号，都不算日期
+        self.assertEqual(files["yymmdd.xlsx"]["backups"], ["お客様介保社福軽減ビュー_170120", "一覧(180301)"])
 
     def test_black_tab_defaults_to_delete(self):
         self.add_book("black.xlsx", ["Main", "Black", "Uncolored"])

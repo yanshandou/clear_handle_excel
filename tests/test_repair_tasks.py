@@ -101,7 +101,7 @@ class RepairTasksTests(unittest.TestCase):
 
     def test_color_clear_precedes_comparison_and_retains_failures(self):
         order = []
-        def clear(root, paths, protected):
+        def clear(root, paths, protected, guard=None):
             self.assertTrue(self.state["busy"])
             self.assertIn(self.backup.resolve(), protected)
             order.append("clear")

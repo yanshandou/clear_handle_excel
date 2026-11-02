@@ -16,7 +16,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from core import batch, debug_log, workflow as wf
+from core import batch, debug_log, file_problem, workflow as wf
 from core.backup_compare import inferred_renames, norm as _norm, pair_files as _pair_files, pair_sheets, require_manual_file_check
 from core.common import workbook_locked, workbook_rel_name
 
@@ -772,10 +772,11 @@ def _run_apply(files: list[dict], folder: str = "") -> None:
 
     applied: list[dict] = []
     excel = None
+    guard = file_problem.Guard("改回旧版颜色")
     wf.pythoncom.CoInitialize()
     try:
         unsaved = close_saved_workbooks([Path(f["path"]) for f in files])
-        excel = start_background_excel()
+        excel = guard.watch(start_background_excel())
         for i, file in enumerate(files, 1):
             with _LOCK:
                 _STATUS.update(done=i - 1, current=file["name"])
@@ -785,11 +786,23 @@ def _run_apply(files: list[dict], folder: str = "") -> None:
             if Path(file["path"]) in unsaved:
                 entry["error"] = f"{unsaved[Path(file['path'])]}，请保存并关闭后再试"
                 continue
-            try:
-                entry["cells"] = apply_file(excel, file["path"], file["old"], file["cells"])
-            except Exception as err:
-                debug_log.exception(err, f"改回旧版颜色 {file['name']}")
-                entry["error"] = f"没有改：{err}"
+            while True:  # 出错时问用户：「重试」重开 Excel 再做这份，「跳过」记下错误
+                guard.progress()
+                try:
+                    if excel is None:
+                        excel = guard.watch(start_background_excel())
+                    entry["cells"] = apply_file(excel, file["path"], file["old"], file["cells"])
+                except Exception as err:
+                    debug_log.exception(err, f"改回旧版颜色 {file['name']}")
+                    retry, message = guard.problem(err, file["path"], file["name"], folder or Path(file["path"]).parent,
+                                                   close=lambda: file_problem.quit_quietly(excel))
+                    if guard.closed:
+                        excel = None
+                    if retry:
+                        wf.log_msg(f"🔁 重试 {file['name']}")
+                        continue
+                    entry["error"] = f"没有改：{message}"
+                break
             for cell in entry["cells"]:
                 debug_log.event("🎨 改回" if cell["status"] == "ok" else "⚠️ 没改", 位置=f"{cell['sheet']}!{cell['addr']}",
                                 结果=cell["reason"])
@@ -804,6 +817,7 @@ def _run_apply(files: list[dict], folder: str = "") -> None:
             quit_background_excel(excel)
         except Exception:
             pass
+        guard.stop()
         wf.pythoncom.CoUninitialize()
         ok = sum(1 for f in applied for c in f["cells"] if c["status"] == "ok")
         wf.log_msg(f"🎨 改回旧版颜色完成：{ok} 格")
@@ -845,61 +859,72 @@ def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[P
     files: list[dict] = []
     clear_files: list[dict] = []
     excel, com = None, False
+    guard = file_problem.Guard("扫描并修复颜色")
     try:
         protected = {p.resolve() for p in old_paths}
-        clear_files = _clear_mark_files(root, paths, protected=protected)
+        clear_files = _clear_mark_files(root, paths, protected=protected, guard=guard)
         wf.pythoncom.CoInitialize()
         com = True
         inferred: set[str] = set()
         pairs = _pair_files(old_root, old_paths, [workbook_rel_name(path, root) for path in paths], root, inferred=inferred)
         for index, path in enumerate(paths):
             name = workbook_rel_name(path, root)
-            entry = {"name": name, "path": str(path), "cells": [], "error": None}
-            if pairs[name] is not None:
-                entry["old"] = str(pairs[name])
+            entry: dict[str, Any] = {}
             files.append(entry)
-            with _LOCK:
-                _STATUS.update(done=index, current=name, stage="scan")
-            try:
-                if path.resolve() in protected:
-                    raise ValueError("文件同时位于备份文件夹中，未修复以保护备份")
-                stamp = fingerprint(path)
-                old_path = pairs[name]
-                if old_path is None:
-                    raise ValueError("备份文件夹里找不到唯一对应的文件")
-                if path.resolve() == old_path.resolve():
-                    raise ValueError("当前文件不能作为自己的备份，请选择原始备份")
-                entry["old"] = str(old_path)
-                old_stamp = fingerprint(old_path)
+            while True:  # 出错时问用户：「重试」重开 Excel 再做这份，「跳过」记下错误
+                entry.clear()
+                entry.update(name=name, path=str(path), cells=[], error=None)
+                if pairs[name] is not None:
+                    entry["old"] = str(pairs[name])
                 with _LOCK:
-                    _STATUS["stage"] = "preview"
-                if (path.suffix.lower() not in READABLE or old_path.suffix.lower() not in READABLE) and excel is None:
-                    excel = start_background_excel()
-                entry.update(compare_file_colors(excel, path, old_path))
-                if fingerprint(path) != stamp or fingerprint(old_path) != old_stamp:
-                    raise ValueError("当前文件或备份在检查期间发生变化，请重新扫描")
-                if name in inferred:
-                    require_manual_file_check(entry)
-                ready = [cell for cell in entry["cells"] if cell["action"] == "restore"]
-                if ready:
-                    if workbook_locked(path):
-                        raise ValueError("文件正在 Excel 中打开，请保存并关闭后再修复")
+                    _STATUS.update(done=index, current=name, stage="scan")
+                guard.progress()
+                try:
+                    if path.resolve() in protected:
+                        raise ValueError("文件同时位于备份文件夹中，未修复以保护备份")
+                    stamp = fingerprint(path)
+                    old_path = pairs[name]
+                    if old_path is None:
+                        raise ValueError("备份文件夹里找不到唯一对应的文件")
+                    if path.resolve() == old_path.resolve():
+                        raise ValueError("当前文件不能作为自己的备份，请选择原始备份")
+                    entry["old"] = str(old_path)
+                    old_stamp = fingerprint(old_path)
                     with _LOCK:
-                        _STATUS["stage"] = "apply"
-                    if excel is None:
-                        excel = start_background_excel()
-                    outcomes = {_item_key(cell): cell
-                                for cell in apply_file(excel, str(path), str(old_path), ready, versions=(stamp, old_stamp))}
-                    entry["cells"] = [outcomes.get(_item_key(cell), cell) for cell in entry["cells"]]
-            except Exception as error:
-                entry["error"] = str(error)
-                entry["code"] = _error_code(str(error))
-                debug_log.exception(error, f"颜色修复 {name}")
-            finally:
-                for cell in entry["cells"]:
-                    debug_log.event("🎨 颜色修复", 位置=f"{cell['sheet']}!{cell['addr']}", 结果=entry["error"] or cell["reason"])
-                count = sum(cell.get("status") == "ok" for cell in entry["cells"])
-                wf.log_msg(f"🎨 {name}：已恢复 {count} 处" + (f"；{entry['error']}" if entry["error"] else ""))
+                        _STATUS["stage"] = "preview"
+                    if (path.suffix.lower() not in READABLE or old_path.suffix.lower() not in READABLE) and excel is None:
+                        excel = guard.watch(start_background_excel())
+                    entry.update(compare_file_colors(excel, path, old_path))
+                    if fingerprint(path) != stamp or fingerprint(old_path) != old_stamp:
+                        raise ValueError("当前文件或备份在检查期间发生变化，请重新扫描")
+                    if name in inferred:
+                        require_manual_file_check(entry)
+                    ready = [cell for cell in entry["cells"] if cell["action"] == "restore"]
+                    if ready:
+                        if workbook_locked(path):
+                            raise ValueError("文件正在 Excel 中打开，请保存并关闭后再修复")
+                        with _LOCK:
+                            _STATUS["stage"] = "apply"
+                        if excel is None:
+                            excel = guard.watch(start_background_excel())
+                        outcomes = {_item_key(cell): cell
+                                    for cell in apply_file(excel, str(path), str(old_path), ready, versions=(stamp, old_stamp))}
+                        entry["cells"] = [outcomes.get(_item_key(cell), cell) for cell in entry["cells"]]
+                except Exception as error:
+                    debug_log.exception(error, f"颜色修复 {name}")
+                    retry, entry["error"] = guard.problem(error, path, name, root,
+                                                          close=lambda: file_problem.quit_quietly(excel))
+                    entry["code"] = _error_code(entry["error"])
+                    if guard.closed:
+                        excel = None
+                    if retry:
+                        wf.log_msg(f"🔁 重试 {name}")
+                        continue
+                break
+            for cell in entry["cells"]:
+                debug_log.event("🎨 颜色修复", 位置=f"{cell['sheet']}!{cell['addr']}", 结果=entry["error"] or cell["reason"])
+            count = sum(cell.get("status") == "ok" for cell in entry["cells"])
+            wf.log_msg(f"🎨 {name}：已恢复 {count} 处" + (f"；{entry['error']}" if entry["error"] else ""))
     except Exception as error:
         debug_log.exception(error, "颜色修复任务")
         files.append({"name": "任务", "path": "", "cells": [], "error": str(error), "code": "other"})
@@ -907,6 +932,7 @@ def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[P
         try:
             quit_background_excel(excel)
         finally:
+            guard.stop()
             try:
                 if com:
                     wf.pythoncom.CoUninitialize()
@@ -951,38 +977,51 @@ def repair(folder: str, old_folder: str, colors: Any = None) -> None:
         raise
 
 
-def _clear_mark_files(root: Path, paths: list[Path], protected: set[Path] | None = None) -> list[dict]:
+def _clear_mark_files(root: Path, paths: list[Path], protected: set[Path] | None = None,
+                      guard: Any = None) -> list[dict]:
     from core.excel_ops import quit_background_excel, start_background_excel
 
     files: list[dict] = []
     excel, com = None, False
+    own_guard = guard is None  # 「扫描并修复颜色」里先清标记：用外面那个，任务名和「后面都跳过」一致
+    if own_guard:
+        guard = file_problem.Guard("清除标记颜色")
     try:
         wf.pythoncom.CoInitialize()
         com = True
         for index, path in enumerate(paths):
             name = workbook_rel_name(path, root)
-            entry = {"name": name, "path": str(path), "cells": [], "leftovers": 0,
-                     "leftover_failed": [], "tabs": [], "error": None}
+            entry: dict[str, Any] = {}
             files.append(entry)
-            with _LOCK:
-                _STATUS.update(done=index, current=name, stage="clear")
-            try:
-                if protected and path.resolve() in protected:
-                    raise ValueError("文件同时位于备份文件夹中，未清除标记以保护备份")
-                if _is_template(path):
-                    raise ValueError("模板格式请先另存为 .xlsx / .xlsm 工作簿后再清除标记")
-                if workbook_locked(path):
-                    raise ValueError("文件正在 Excel 中打开，请保存并关闭后再清除标记")
-                if excel is None:
-                    excel = start_background_excel()
-                batch.clear_marks_in_file(excel, str(path), entry)
-            except Exception as error:
-                entry["error"] = str(error)
-                debug_log.exception(error, f"清除标记 {name}")
-            finally:
-                tabs_ok = sum(1 for t in entry["tabs"] if t["status"] == "ok")
-                wf.log_msg(f"🧽 {name}：清掉 {entry['leftovers']} 条标记，还原标签 {tabs_ok} 张"
-                           + (f"；{entry['error']}" if entry["error"] else ""))
+            while True:  # 出错时问用户：「重试」重开 Excel 再做这份，「跳过」记下错误
+                entry.clear()
+                entry.update(name=name, path=str(path), cells=[], leftovers=0, leftover_failed=[], tabs=[], error=None)
+                with _LOCK:
+                    _STATUS.update(done=index, current=name, stage="clear")
+                guard.progress()
+                try:
+                    if protected and path.resolve() in protected:
+                        raise ValueError("文件同时位于备份文件夹中，未清除标记以保护备份")
+                    if _is_template(path):
+                        raise ValueError("模板格式请先另存为 .xlsx / .xlsm 工作簿后再清除标记")
+                    if workbook_locked(path):
+                        raise ValueError("文件正在 Excel 中打开，请保存并关闭后再清除标记")
+                    if excel is None:
+                        excel = guard.watch(start_background_excel())
+                    batch.clear_marks_in_file(excel, str(path), entry)
+                except Exception as error:
+                    debug_log.exception(error, f"清除标记 {name}")
+                    retry, entry["error"] = guard.problem(error, path, name, root,
+                                                          close=lambda: file_problem.quit_quietly(excel))
+                    if guard.closed:
+                        excel = None
+                    if retry:
+                        wf.log_msg(f"🔁 重试 {name}")
+                        continue
+                break
+            tabs_ok = sum(1 for t in entry["tabs"] if t["status"] == "ok")
+            wf.log_msg(f"🧽 {name}：清掉 {entry['leftovers']} 条标记，还原标签 {tabs_ok} 张"
+                       + (f"；{entry['error']}" if entry["error"] else ""))
     except Exception as error:
         debug_log.exception(error, "清除标记任务")
         files.append({"name": "任务", "path": "", "cells": [], "leftovers": 0,
@@ -991,6 +1030,8 @@ def _clear_mark_files(root: Path, paths: list[Path], protected: set[Path] | None
         try:
             quit_background_excel(excel)
         finally:
+            if own_guard:
+                guard.stop()
             if com:
                 wf.pythoncom.CoUninitialize()
     return files

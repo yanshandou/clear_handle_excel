@@ -83,10 +83,25 @@
     return html.join('');
   }
 
+
+  // 进度区三种样子：跑着显示进度条；结束后收起进度条，done 时把结果写成完成提示（有失败 / 没修好的用黄色）
+  function showProgress(id, state, title = '', text = '', warn = false) {
+    const line = $(id), track = $(id + 'Fill').parentElement;
+    track.classList.toggle('is-done', state !== 'running');
+    track.classList.toggle('is-paused', state !== 'running');
+    line.classList.toggle('task-done-line', state === 'done');
+    line.classList.toggle('is-warn', state === 'done' && warn);
+    if (state !== 'done') { if (text) line.textContent = text; return; }
+    const strong = document.createElement('strong');
+    strong.textContent = title;
+    line.replaceChildren(strong, document.createTextNode(text));
+  }
+
   function render() {
     controls();
     if (latest.running) {
       const phase = latest.phase === 'clear' ? '清除' : '扫描';
+      showProgress('blProgress', 'running');
       $('blProgress').textContent = `正在${phase} ${Math.min((latest.done || 0) + 1, latest.total || 0)} / ${latest.total || 0}：${latest.current || '准备中…'}`;
       $('blProgressFill').style.width = `${latest.total ? latest.done / latest.total * 100 : 0}%`;
       $('blResults').textContent = `正在${phase}，完成后显示明细。`;
@@ -101,10 +116,10 @@
     const errors = files.filter(f => f.error).length;
     $('blResultTitle').textContent = applied ? '清除结果' : '扫描结果';
     $('blResultFolder').textContent = `当前文件夹：${data.folder}`;
-    $('blProgress').textContent = applied
-      ? `已清除 ${cleared} 处；${errors} 份文件处理失败。`
-      : `发现 ${total} 处待清除。核对无误后点「🧽 清除这些单元格」。`;
     $('blProgressFill').style.width = '100%';
+    showProgress('blProgress', 'done', applied ? (errors ? '清除结束：' : '清除完成：') : '扫描完成：', applied
+      ? `已清除 ${cleared} 处；${errors} 份文件处理失败。`
+      : total ? `发现 ${total} 处待清除。核对无误后点「🧽 清除这些单元格」。` : '没有发现需要清除的 BL 超链接。', errors > 0);
     const has = file => (applied ? (file.cells || []) : (file.hits || [])).length > 0;
     const groups = [['all', '全部', files], ['hit', applied ? '已处理' : '发现问题', files.filter(f => !f.error && has(f))],
       ['empty', '无问题', files.filter(f => !f.error && !has(f))], ['failed', '处理失败', files.filter(f => f.error)]];

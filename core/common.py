@@ -23,8 +23,10 @@ NEW_PREFIX_WORDS = (
 )
 BACKUP_TEXT_PATTERN = re.compile(r"バックアップ|备份|コピー|副本|(?<![新復])旧")
 # 明确写着「备份」的表名（bk/ｂｋ/bak/backup/バックアップ/备份，后面可接编号如 ｂｋ２）：精简 Sheet 不需要原表也默认删除
-# （用户 2026-10-30）；old/旧/copy/日期 等仍要求同工作簿有原表
-EXPLICIT_BACKUP_PATTERN = re.compile(r"(?<![a-z])(?:bak|backup|bk)(?![a-z])|バックアップ|备份", re.IGNORECASE)
+# （用户 2026-10-30）；独立的 old/ＯＬＤ（如「エラーログ出力手順 (ＯＬＤ)」「old」「OLD_一覧」）也一样（用户 2026-11-02），
+# Folder、Holder、Golden 这类单词内部的不算；旧/copy/日期 等仍要求同工作簿有原表
+EXPLICIT_BACKUP_PATTERN = re.compile(r"(?<![a-z])(?:bak|backup|bk|old)(?![a-z])|バックアップ|备份", re.IGNORECASE)
+OLD_WORD_PATTERN = re.compile(r"(?<![a-z])old(?![a-z])", re.IGNORECASE)
 # 空白表里唯一一格允许的占位字（用户 2026-10-30：只有 A1=無 的 JSONサンプル 这类表默认删除）；比较前 NFKC、去空白和句号
 BLANK_PLACEHOLDER_WORDS = {
     "無", "無し", "なし", "ナシ", "特になし", "特に無し", "該当なし", "該当無し", "対象なし", "対象外",
@@ -36,11 +38,15 @@ BLANK_MAX_CELLS = 4
 # 只由横线、波浪线、斜线、点组成的格子（-、－、ー、―、〜、/、・ 等）也算占位
 BLANK_PLACEHOLDER_SYMBOLS = re.compile(r"[-‐‑‒–—―ー─━~〜～/・.。…]+")
 # 复制工作表产生的「(2)」「(3)」后缀（全角括号统一为半角后判断，有无空格均可），
-# 后面还可以再接日期，如「様式１（基本情報）(2)_20221005」；仍要求同工作簿存在原表才算备份
-EXCEL_COPY_SUFFIX_PATTERN = re.compile(r"\s*\(\d+\)[\s_\-・.]*$")
+# 后面还可以再接日期，如「様式１（基本情報）(2)_20221005」；仍要求同工作簿存在原表才算备份。
+# 编号最多 3 位数字：括号里 4 位以上的是日期（如「月次集計ビュー (20220916)」，用户 2026-11-02），不是编号
+EXCEL_COPY_SUFFIX_PATTERN = re.compile(r"\s*\(\d{1,3}\)[\s_\-・.]*$")
 # 名称末尾不带年份的 4 位月日（MMDD），如「請求書1)0513」；前面不能紧挨数字或英文字母，
 # 避免把 SSSEE0114 这类表编号当成日期；只作备份标记，不参与「多个日期版本」的新旧比较
 MMDD_SUFFIX_PATTERN = re.compile(r"(?<![a-zA-Z\d])(\d{2})(\d{2})[\s_\-・.]*$")
+# 名称末尾两位年份的 6 位年月日（YYMMDD，年份按 20YY，不晚于今年），如「お客様介保社福軽減ビュー_170120」（用户 2026-11-02）；
+# 可带括号；前面不能紧挨数字或英文字母（避免把编号当成日期），月日必须有效
+YYMMDD_SUFFIX_PATTERN = re.compile(r"(?<![a-zA-Z\d])\(?(\d{2})(\d{2})(\d{2})\)?[\s_\-・.]*$")
 # 工具自动生成的工作表（如 自動生成_引数、自動生成_JSON），没有对应原表，精简 Sheet 时默认删除
 AUTO_GENERATED_PREFIXES = ("自動生成", "自动生成")
 # 表名多出的英文词里像临时版本的（サンプル 与 サンプルtest 仍标待定），其余英文词（JSON、CSV、PDF…）算另一张表
@@ -107,8 +113,20 @@ def _date_of(match: re.Match[str]) -> str | None:
     return text if _is_valid_date(text) else None
 
 
+def _yymmdd_suffix_date(text: str) -> str | None:
+    """名称末尾的两位年份日期（如 _170120 → 20170120），无效或晚于今年时返回 None"""
+    m = YYMMDD_SUFFIX_PATTERN.search(text)
+    if not m:
+        return None
+    date = f"20{m.group(1)}{m.group(2)}{m.group(3)}"
+    return date if _is_valid_date(date) and int(date[:4]) <= datetime.now().year else None
+
+
 def _latest_date_in(name: str) -> str | None:
-    dates = [d for m in DATE_PATTERN.finditer(unicodedata.normalize("NFKC", name)) if (d := _date_of(m))]
+    text = unicodedata.normalize("NFKC", name)
+    dates = [d for m in DATE_PATTERN.finditer(text) if (d := _date_of(m))]
+    if (short := _yymmdd_suffix_date(text)) is not None:
+        dates.append(short)
     return max(dates) if dates else None
 
 
@@ -118,8 +136,13 @@ def _has_mmdd_suffix(text: str) -> bool:
     return bool(m) and _is_valid_date(f"2000{m.group(1)}{m.group(2)}")
 
 
+def has_old_word(sheet_name: str) -> bool:
+    """名称里有独立的 old 标记（全角、大小写、括号都算），用于调试日志说明默认删除的原因"""
+    return bool(OLD_WORD_PATTERN.search(unicodedata.normalize("NFKC", strip_uncertain_prefix(sheet_name))))
+
+
 def has_backup_marker(sheet_name: str) -> bool:
-    """名称是否带备份标记：有效日期（YYYYMMDD 或 YYYY-MM-DD 等，或末尾的 4 位月日 MMDD）、bak/backup/old/copy、
+    """名称是否带备份标记：有效日期（YYYYMMDD 或 YYYY-MM-DD 等，末尾的 6 位 YYMMDD 或 4 位月日 MMDD）、bak/backup/old/copy、
     バックアップ/备份/旧/コピー/副本，或复制产生的「(2)」后缀。
 
     只是候选条件，是否真的是备份表见 find_backup_sheets。
@@ -167,6 +190,8 @@ def _original_name_of(backup_name: str) -> str:
     """去掉备份标记后的原表名称，如 基本情報_20241003 → 基本情報"""
     text = unicodedata.normalize("NFKC", backup_name)
     text = DATE_PATTERN.sub(lambda m: "" if _date_of(m) else m.group(0), text)
+    if _yymmdd_suffix_date(text) is not None:
+        text = YYMMDD_SUFFIX_PATTERN.sub("", text)
     text = EXCEL_COPY_SUFFIX_PATTERN.sub("", text)
     text = COPY_PHRASE_PATTERN.sub("", text)
     text = BACKUP_WORD_PATTERN.sub("", text)
@@ -301,7 +326,7 @@ def strip_new_prefix(sheet_name: str) -> str:
 
 
 def find_clean_targets(sheet_names: list[str]) -> list[str]:
-    """精简 Sheet 默认删除的工作表：有原表的备份表、名称明确写着 bk/バックアップ 的表（不需要原表）、
+    """精简 Sheet 默认删除的工作表：有原表的备份表、名称明确写着 bk/old/バックアップ 的表（不需要原表）、
     「旧」开头的旧版表，以及「自動生成」「レイアウト変更」「仕様変更」开头的表（保持原顺序）。
     同一原表 2 张以上的「(n)」编号组不算。
     """
@@ -386,6 +411,16 @@ def _is_different_sheet(prefix: str, suffix: str, ref: str) -> bool:
         bool(parts) and not ref.isascii()
         and all(re.fullmatch(r"[a-z]{2,}", p) and p not in ENGLISH_TEMP_WORDS for p in parts)
     )
+
+
+# Excel 新建工作表的默认名（Sheet1、Sheet 2、ｓｈｅｅｔ３、工作表1）：多半是临时表，精简 Sheet 默认标待定提醒（用户 2026-11-02）
+DEFAULT_SHEET_NAME_PATTERN = re.compile(r"(?:sheet|工作表)\s*\d*", re.IGNORECASE)
+
+
+def is_default_sheet_name(name: str) -> bool:
+    """表名是不是 Excel 默认名，如 Sheet1、Sheet 2、Sheet（全角半角、大小写都算）；SheetA、集計Sheet1 不算"""
+    text = unicodedata.normalize("NFKC", strip_uncertain_prefix(name)).strip()
+    return bool(DEFAULT_SHEET_NAME_PATTERN.fullmatch(text))
 
 
 def is_uncertain_name(name: str) -> bool:

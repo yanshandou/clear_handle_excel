@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 from typing import Any
 
-from core import debug_log, formula_links as links, workflow as wf, sheet_history
+from core import debug_log, file_problem, formula_links as links, workflow as wf, sheet_history
 from core.backup_compare import pair_files, pair_sheets, require_manual_file_check
 from core.common import workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, start_background_excel, quit_background_excel
@@ -235,60 +235,73 @@ def _run(phase: str, folder: Path, paths: list, old_root: Path | None = None, ol
     excel = None
     files = []
     com = False
+    guard = file_problem.Guard({"scan": "扫描引用错误", "preview": "对比备份", "apply": "修复引用错误",
+                                "repair": "扫描并修复引用错误"}[phase])
     try:
         wf.pythoncom.CoInitialize()
         com = True
-        excel = start_background_excel()
+        excel = guard.watch(start_background_excel())
         names = [workbook_rel_name(source, folder) if isinstance(source, Path) else source["name"] for source in paths]
         inferred: set[str] = set()
         pairs = pair_files(old_root, old_paths, names, folder, inferred=inferred) if phase in {"preview", "repair"} else {}
         for index, source in enumerate(paths):
-            name = workbook_rel_name(source, folder) if isinstance(source, Path) else source["name"]
-            _progress(index, name)
-            entry = {"name": name, "path": str(source) if isinstance(source, Path) else source["path"], "error": None}
-            old_path = pairs.get(name) if phase in {"repair", "preview"} else source.get("old") if isinstance(source, dict) else None
-            if old_path:
-                entry["old"] = str(old_path)
-            try:
-                if phase == "repair":
-                    with _LOCK:
-                        _STATUS["stage"] = "scan"
-                    entry.update(scan_file(excel, source))
-                    entry["cells"] = [{**hit, "status": "skip", "reason": "未修复"} for hit in entry["hits"]]
-                    if entry["hits"]:
+            while True:  # 出错时问用户：「重试」重开 Excel 再做这份，「跳过」记下错误
+                name = workbook_rel_name(source, folder) if isinstance(source, Path) else source["name"]
+                _progress(index, name)
+                entry = {"name": name, "path": str(source) if isinstance(source, Path) else source["path"], "error": None}
+                old_path = pairs.get(name) if phase in {"repair", "preview"} else source.get("old") if isinstance(source, dict) else None
+                if old_path:
+                    entry["old"] = str(old_path)
+                guard.progress()
+                try:
+                    if excel is None:
+                        excel = guard.watch(start_background_excel())
+                    if phase == "repair":
+                        with _LOCK:
+                            _STATUS["stage"] = "scan"
+                        entry.update(scan_file(excel, source))
+                        entry["cells"] = [{**hit, "status": "skip", "reason": "未修复"} for hit in entry["hits"]]
+                        if entry["hits"]:
+                            if not pairs[name]:
+                                raise ValueError("找不到唯一对应的备份文件，请选到对应子文件夹")
+                            with _LOCK:
+                                _STATUS["stage"] = "preview"
+                            entry.update(preview_file(excel, entry, pairs[name]))
+                            if name in inferred:
+                                require_manual_file_check(entry)
+                            ready = [cell for cell in entry["cells"] if cell["action"] == "restore"]
+                            if ready:
+                                with _LOCK:
+                                    _STATUS["stage"] = "apply"
+                                outcomes = {(cell["sheet"], cell["addr"]): cell
+                                            for cell in apply_file(excel, {**entry, "cells": ready})}
+                                entry["cells"] = [outcomes.get((cell["sheet"], cell["addr"]), cell) for cell in entry["cells"]]
+                            for item in entry["cells"]:
+                                debug_log.event("🔗 引用修复", 位置=f"{item['sheet']}!{item['addr']}", 结果=item["reason"])
+                    elif phase == "scan":
+                        entry.update(scan_file(excel, source))
+                    elif phase == "preview":
                         if not pairs[name]:
                             raise ValueError("找不到唯一对应的备份文件，请选到对应子文件夹")
-                        with _LOCK:
-                            _STATUS["stage"] = "preview"
-                        entry.update(preview_file(excel, entry, pairs[name]))
+                        if fingerprint(Path(source["path"])) != source["fingerprint"]:
+                            raise ValueError("当前文件在扫描后发生变化，请重新扫描")
+                        entry.update(preview_file(excel, source, pairs[name]))
                         if name in inferred:
                             require_manual_file_check(entry)
-                        ready = [cell for cell in entry["cells"] if cell["action"] == "restore"]
-                        if ready:
-                            with _LOCK:
-                                _STATUS["stage"] = "apply"
-                            outcomes = {(cell["sheet"], cell["addr"]): cell
-                                        for cell in apply_file(excel, {**entry, "cells": ready})}
-                            entry["cells"] = [outcomes.get((cell["sheet"], cell["addr"]), cell) for cell in entry["cells"]]
+                    else:
+                        entry["cells"] = apply_file(excel, source)
                         for item in entry["cells"]:
                             debug_log.event("🔗 引用修复", 位置=f"{item['sheet']}!{item['addr']}", 结果=item["reason"])
-                elif phase == "scan":
-                    entry.update(scan_file(excel, source))
-                elif phase == "preview":
-                    if not pairs[name]:
-                        raise ValueError("找不到唯一对应的备份文件，请选到对应子文件夹")
-                    if fingerprint(Path(source["path"])) != source["fingerprint"]:
-                        raise ValueError("当前文件在扫描后发生变化，请重新扫描")
-                    entry.update(preview_file(excel, source, pairs[name]))
-                    if name in inferred:
-                        require_manual_file_check(entry)
-                else:
-                    entry["cells"] = apply_file(excel, source)
-                    for item in entry["cells"]:
-                        debug_log.event("🔗 引用修复", 位置=f"{item['sheet']}!{item['addr']}", 结果=item["reason"])
-            except Exception as error:
-                entry["error"] = str(error)
-                debug_log.exception(error, f"引用修复 {phase} {name}")
+                except Exception as error:
+                    debug_log.exception(error, f"引用修复 {phase} {name}")
+                    retry, entry["error"] = guard.problem(error, entry["path"], name, folder,
+                                                          close=lambda: file_problem.quit_quietly(excel))
+                    if guard.closed:
+                        excel = None
+                    if retry:
+                        wf.log_msg(f"🔁 重试 {name}")
+                        continue
+                break
             files.append(entry)
             repaired = sum(cell.get("status") in {"ok", "resolved"} for cell in entry.get("cells", []))
             message = entry["error"] or (f"已恢复正常 {repaired} 处，未修复 {len(entry.get('cells', [])) - repaired} 处" if phase == "repair" else
@@ -299,8 +312,10 @@ def _run(phase: str, folder: Path, paths: list, old_root: Path | None = None, ol
         files.append({"name": "任务", "path": "", "error": str(error)})
     finally:
         try:
-            quit_background_excel(excel)
+            if excel is not None:
+                quit_background_excel(excel)
         finally:
+            guard.stop()
             if com:
                 wf.pythoncom.CoUninitialize()
             with _LOCK:

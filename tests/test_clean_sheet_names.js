@@ -91,3 +91,15 @@ test('status filtering selects whole files and follows current decisions', () =>
   run("setCleanFilter('all')");
   assert.equal(run('count.textContent'), '显示 3 / 3 个文件');
 });
+
+test('clean plan does not send kept sheets', () => {
+  const run = cleanPage();
+  const plan = JSON.parse(run(`JSON.stringify((() => {
+    previewData = {files:[{name:'a', sheets:['概要', 'JSONサンプル', '一覧詳細', '旧版'],
+      backups:['JSONサンプル', '旧版'], uncertain:['一覧詳細']}]};
+    initSheetDecisions();
+    sheetDecisions.a['JSONサンプル'] = 'keep';
+    return buildCleanPlan();
+  })())`));
+  assert.deepEqual(plan.a, {delete: ['旧版'], uncertain: ['一覧詳細']});
+});

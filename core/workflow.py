@@ -23,11 +23,13 @@ from core.common import (
     console_print,
     copy_series_sheets,
     find_backup_sheets,
+    is_default_sheet_name,
     has_numbered_suffix,
     is_gray_tab_color,
     is_change_note_sheet,
     is_inspection_exempt_sheet,
     find_clean_targets,
+    has_old_word,
     find_contained_sheets,
     find_new_prefix_sheets,
     has_review_prefix,
@@ -40,7 +42,7 @@ from core.common import (
     workbook_locked,
     workbook_rel_name,
 )
-from core import debug_log, fix_images, page_breaks, pdf_detector, print_layout, scan_analysis, sheet_history
+from core import debug_log, file_problem, fix_images, page_breaks, pdf_detector, print_layout, scan_analysis, sheet_history
 from core.excel_watchdog import ExcelWatchdog
 from core.formula_links import delete_sheets_preserving_values
 from core.excel_ops import (
@@ -142,7 +144,6 @@ STATE: dict[str, Any] = {
     "latest_scan_analysis": None,
     "print_layouts": {},  # 源文件 -> Sheet 身份 -> 已分析的打印方向与证据
     "sheet_history": {},  # 源文件 -> 已保存的删表、改名及引用转值记录；跨任务保留。
-    "clean_confirmed_keep": {},  # 文件内容指纹与执行精简时确认保留的表
     # 稍后人工复检：wb_path -> {"marks": [{sheet, addr, row, item_ids, state, fill, range, error}], "error"}
     # state: pending 等后台标黄 / marked 已标黄 / skipped 没能标黄（仍在队列里）
     "review_queue": {},
@@ -277,6 +278,22 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
         return True
 
 
+_TASK_TITLES = {
+    "batch_recheck": "复检", "batch_commit": "提交审核结果", "batch_open": "打开文件",
+    "batch_unhighlight": "清除 Excel 标记颜色", "scan": "Web 切字扫描", "recheck": "复检",
+    "refresh": "刷新复检", "fix": "修复", "review_recheck": "稍后人工复检", "review_open": "打开稍后复检的文件",
+}
+
+
+def _task_title(job: dict[str, Any]) -> str:
+    """出错弹框上显示的任务名"""
+    kind, options = job.get("kind", ""), job.get("options", {})
+    if kind == "batch_scan":
+        return ("自动调整选中的格子" if options.get("picked") else "转回自动" if options.get("back_to_auto")
+                else "只扫描" if options.get("scan_only") else "全自动扫描与修复")
+    return QUICK_TASK_NAMES.get(kind) or _TASK_TITLES.get(kind, kind)
+
+
 def run_pending_workflow() -> None:
     with STATE_LOCK:
         ran = STATE["job"]  # 结束时可能换成放回来的暂停任务：排队的复检 / 提交按这次跑的任务决定做不做
@@ -285,6 +302,7 @@ def run_pending_workflow() -> None:
                               "已完成文件数": len(STATE["job"]["completed"]),
                               "写入日志": "有" if STATE["job"].get("pending_adjustment") else "无"},
                              resumed=bool(STATE["job"]["completed"]) or "workbooks" in STATE["job"])
+        file_problem.begin(_task_title(STATE["job"]))
     try:
         with STATE_LOCK:
             job = STATE["job"]
@@ -368,6 +386,7 @@ def run_pending_workflow() -> None:
         log_msg(f"❌ 任务中断，可继续上次任务: {err}")
         interrupt_execution_batch(f"任务中断: {err}")
     finally:
+        file_problem.finish()
         suspend_report_updates(False)
         with STATE_LOCK:
             job = STATE["job"] or {}
@@ -1191,7 +1210,7 @@ def print_layout_snapshot(folder: str | None = None) -> list[dict]:
                                        "hidden": len(m["hidden"]), "borders": len(m["borders"]), "cuts": len(m["cuts"])}
                            for direction, m in record.get("metrics", {}).items()}
                 rows.append({"path": path, "key": key, "file": workbook_rel_name(Path(path), root),
-                             **{k: record.get(k) for k in ("sheet", "original", "selected", "manual", "reason", "revision", "review_needed")},
+                             **{k: record.get(k) for k in ("sheet", "original", "selected", "manual", "reason", "revision", "review_needed", "saved_to_excel")},
                              "metrics": metrics,
                              "stale": bool(record.get("stale") or record.get("version") != current
                                            or record.get("rule_version") != print_layout.RULE_VERSION)})
@@ -2638,7 +2657,8 @@ def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
                 files.append(entry)
                 debug_log.event("📄 精简预览", 文件=entry["name"], 表数=entry["sheet_count"], 默认删除=entry["backups"],
                                 待定=entry["uncertain"], 新旧配对=entry["new_old_pairs"] or "-", 备注=entry["note"] or "-",
-                                灰色标签=entry["gray_tabs"] or "-", 空白表=entry["blank_sheets"] or "-",
+                                OLD标记=[n for n in entry["sheets"] if has_old_word(n)] or "-",
+                                灰色标签=entry["gray_tabs"] or "-", 空白表=entry["blank_sheets"] or "-", 默认表名=entry["default_names"] or "-",
                                 编号组保留=[n for n in entry["sheets"] if n in copy_series_sheets(entry["sheets"])] or "-",
                                 全部表=entry["sheets"])
     finally:
@@ -2662,6 +2682,7 @@ def _preview_workbook(wb_path: Path, folder: Path, get_excel: Callable[[], Any])
         "new_old_pairs": {},
         "gray_tabs": [],
         "blank_sheets": [],
+        "default_names": [],  # Sheet1、Sheet 2 这类 Excel 默认名的表
         "note": "",
         "version": _version_or_none(wb_path),
     }
@@ -2686,21 +2707,9 @@ def _preview_workbook(wb_path: Path, folder: Path, get_excel: Callable[[], Any])
         name_targets = set(find_clean_targets(all_names))
         default_delete = [s for s in all_names if not has_numbered_suffix(s) and ((s in name_targets and (s not in set(uncertain) or is_change_note_sheet(s))) or s in gray or s in blank)]
         contained = set(find_contained_sheets(all_names))
-        entry["uncertain"] = [s for s in all_names if (s in set(uncertain) or (s in contained and not has_numbered_suffix(s))) and s not in set(default_delete)]
-        with STATE_LOCK:
-            confirmation = copy.deepcopy(STATE.get("clean_confirmed_keep", {}).get(sheet_history.key(wb_path)))
-        try:
-            confirmed_hash = sheet_history.fingerprint(wb_path) if confirmation else None
-        except OSError:
-            confirmed_hash = None
-        if confirmation and confirmed_hash and confirmation.get("hash") == confirmed_hash:
-            confirmed = set(confirmation.get("sheets", []))
-            version = confirmation.get("rule_version", 0)
-            if version < 2:
-                confirmed = {s for s in confirmed if not is_change_note_sheet(s) or (
-                    version >= 1 and is_change_note_sheet(s, rule_version=1))}
-            entry["uncertain"] = [s for s in entry["uncertain"] if s not in confirmed]
-            default_delete = [s for s in default_delete if s not in confirmed]
+        # Sheet1、Sheet 2 这类 Excel 默认名的表标待定提醒（用户 2026-11-02）；空白等默认删除的规则优先
+        entry["default_names"] = [s for s in all_names if is_default_sheet_name(s)]
+        entry["uncertain"] = [s for s in all_names if (s in set(uncertain) or s in set(entry["default_names"]) or (s in contained and not has_numbered_suffix(s))) and s not in set(default_delete)]
         entry["new_old_pairs"] = find_new_prefix_sheets(all_names)  # 旧表全部删除（或没有旧表）时，新表去掉「新」字
         if default_delete and len(default_delete) >= len(all_names):
             entry["note"] = "全部工作表均被识别为备份表，将跳过删除"
@@ -2949,19 +2958,6 @@ def _clean_backup_sheets(
             raise ValueError(f"{wb_label} 的工作表已发生变化，请重新扫描后排序")
         return order
 
-    def remember_kept(names: list[str], rename_map: dict[str, str] | None = None) -> None:
-        if file_plan is None or "keep" not in file_plan:
-            return
-        selected = set(file_plan["keep"])
-        renamed = rename_map or {}
-        kept = [renamed.get(n, n) for n in names if n in selected]
-        fingerprint = sheet_history.fingerprint(wb_path)
-        with STATE_LOCK:
-            STATE.setdefault("clean_confirmed_keep", {})[sheet_history.key(wb_path)] = {
-                "hash": fingerprint, "sheets": kept, "rule_version": 2,
-            }
-            _persist_state()
-
     def record(all_names: list[str], action: str, *, uncertain: list[str] | None = None) -> None:
         update_file_progress(
             wb_label,
@@ -2986,7 +2982,6 @@ def _clean_backup_sheets(
                 if uncertain_sel:
                     log_msg(f"  {action}")
                 record(pre_names, action, uncertain=uncertain_sel)
-                remember_kept(pre_names)
                 return
 
     before_hash = sheet_history.fingerprint(wb_path)
@@ -3049,8 +3044,6 @@ def _clean_backup_sheets(
 
     if rename_map:
         _sync_renamed_workbook_in_state(wb_path, wb_path, rename_map, root_folder)
-    if not del_all:
-        remember_kept(all_names, rename_map)
     record(final_names, action, uncertain=final_uncertain)
 
 
@@ -3068,12 +3061,16 @@ def _export_workbook_pdfs(
             print_layout.prune(STATE.setdefault("print_layouts", {}), str(wb_path), layout_keys)
         file_stem = sanitize_filename(strip_review_prefix(wb_path.stem))
         exported: list[Path] = []
+        to_save: dict[str, tuple[str, int]] = {}
         for sheet in _exportable_sheets(wb):
             pdf_path = unique_pdf_path(
                 wb_path.parent, file_stem, sanitize_filename(sheet.Name), used_pdf_paths
             )
             if not choose_orientation or not prepare_print_layout(sheet, str(wb_path), pdf_path):
                 _export_sheet_pdf(sheet, pdf_path)
+            target = print_layout.to_save(sheet)
+            if target is not None:
+                to_save[print_layout.identity(sheet)[0]] = (str(sheet.Name), target)
             exported.append(pdf_path)
             with STATE_LOCK:
                 # PDF 人工复检按这个找回是哪个文件的哪张表
@@ -3084,11 +3081,60 @@ def _export_workbook_pdfs(
             )
         action = f"已导出 {len(exported)} 份 PDF"
         log_msg(f"  {action}")
-        update_file_progress(
-            wb_label, status="done", exported_pdfs=len(exported), current_action=action,
-            all_sheets=[sheet.Name for sheet in wb.Sheets],
-        )
-        return exported
+        all_sheets = [sheet.Name for sheet in wb.Sheets]
+    finally:
+        wb.Close(SaveChanges=False)
+    if to_save:
+        update_file_progress(wb_label, current_action="正在把打印方向保存进 Excel...")
+        _save_print_orientations(get_excel, wb_path, to_save)
+    update_file_progress(
+        wb_label, status="done", exported_pdfs=len(exported), current_action=action,
+        all_sheets=all_sheets,
+    )
+    return exported
+
+
+def _save_print_orientations(get_excel: Callable[[], Any], wb_path: Path, to_save: dict[str, tuple[str, int]]) -> None:
+    """PDF 用的打印方向和 Excel 里设的不一样：把方向保存进原 Excel（用户 2026-11-02 定）。
+    PDF 已经导出好了，这里出错只记日志、不算导出失败。"""
+    names = "、".join(f"[{name}]→{print_layout.label(target)}" for name, target in to_save.values())
+    debug_log.event("📐 打印方向保存进 Excel", 文件=wb_path.name, 表=names)
+    if workbook_locked(wb_path):
+        log_msg(f"  ⚠️ {wb_path.name} 正在 Excel 里打开，打印方向没能保存进去（{names}）；PDF 已按这个方向导出，关掉文件后再导出一次即可保存")
+        return
+    try:
+        wb = open_workbook_checked(get_excel(), str(wb_path.resolve()), UpdateLinks=0)
+    except Exception as err:
+        log_msg(f"  ⚠️ {wb_path.name} 打不开，打印方向没能保存进去（{names}）：{err}")
+        return
+    print_layout.bind(wb, str(wb_path))
+    try:
+        changed: dict[str, dict | None] = {}
+        done: list[str] = []
+        for sheet in wb.Sheets:
+            key = print_layout.identity(sheet)
+            if not key or key[0] not in to_save:
+                continue
+            name, target = to_save[key[0]]
+            try:
+                sheet.PageSetup.Orientation = target
+                if sheet.PageSetup.Orientation != target:
+                    raise ValueError("Excel 没有接受新的方向")
+            except Exception as err:
+                log_msg(f"  ⚠️ [{name}] 打印方向没能改成{print_layout.label(target)}：{err}")
+                continue
+            changed[key[0]] = print_layout.settings(sheet)
+            done.append(f"[{name}] {print_layout.label(target)}")
+        if not changed:
+            return
+        before = _file_version(wb_path)
+        wb.Save()
+        with STATE_LOCK:
+            print_layout.saved_to_excel(STATE.setdefault("print_layouts", {}), str(wb_path), before, changed)
+            _persist_state()
+        log_msg(f"  💾 打印方向已保存进 Excel：{'、'.join(done)}")
+    except Exception as err:
+        log_msg(f"  ⚠️ {wb_path.name} 打印方向没能保存进去：{err}")
     finally:
         wb.Close(SaveChanges=False)
 
@@ -3138,6 +3184,29 @@ def _normalize_workbook_file(get_excel: Callable[[], Any], wb_path: Path, root_f
         wb.Close(SaveChanges=False)
 
 
+def _quick_task_file(kind: str, options: dict[str, Any], get_excel: Callable[[], Any], wb_path: Path,
+                     folder: Path, used_pdf_paths: set[Path], exported: list[Path]) -> None:
+    """主页单项批处理的一份文件（重试时整份重做）"""
+    wb_label = workbook_rel_name(wb_path, folder)
+    if kind == "clean_sheets":
+        clean_plan = options.get("plan")
+        file_plan = None
+        if isinstance(clean_plan, dict):
+            file_plan = (
+                clean_plan.get(wb_label)
+                if wb_label in clean_plan
+                else clean_plan.get(wb_path.name, {"delete": [], "uncertain": []})
+            )
+        _clean_backup_sheets(get_excel, wb_path, folder, file_plan=file_plan)
+    elif kind == "export_pdf":
+        exported.extend(_export_workbook_pdfs(
+            get_excel, wb_path, folder, used_pdf_paths,
+            choose_orientation=options.get("choose_orientation", True),
+        ))
+    else:
+        _normalize_workbook_file(get_excel, wb_path, folder)
+
+
 def quick_task_workflow(kind: str) -> None:
     """主页单项批处理：以 Excel 文件为检查点，续跑时跳过已完成的文件。"""
     task_name = QUICK_TASK_NAMES[kind]
@@ -3180,7 +3249,8 @@ def quick_task_workflow(kind: str) -> None:
 
     excel = None
     watchdog = ExcelWatchdog(lambda: log_msg(
-        "⚠️ 后台 Excel 长时间无进展，已结束本任务专用 Excel，记录当前文件错误后继续"))
+        "⚠️ 后台 Excel 弹出了没人能点的提示框，已结束本任务专用 Excel" if watchdog.dialog else
+        "⚠️ 后台 Excel 长时间无进展，已结束本任务专用 Excel"))
 
     def get_excel() -> Any:
         # 按需启动 Excel：精简 Sheet 时没有备份表的文件无需打开
@@ -3208,32 +3278,40 @@ def quick_task_workflow(kind: str) -> None:
             exported: list[Path] = []
             started = time.perf_counter()
             try:
-                if kind == "clean_sheets":
-                    clean_plan = options.get("plan")
-                    file_plan = None
-                    if isinstance(clean_plan, dict):
-                        file_plan = (
-                            clean_plan.get(wb_label)
-                            if wb_label in clean_plan
-                            else clean_plan.get(wb_path.name, {"delete": [], "uncertain": []})
-                        )
-                    _clean_backup_sheets(
-                        get_excel, wb_path, folder, file_plan=file_plan,
-                    )
-                elif kind == "export_pdf":
-                    exported = _export_workbook_pdfs(
-                        get_excel, wb_path, folder, used_pdf_paths,
-                        choose_orientation=options.get("choose_orientation", True),
-                    )
-                else:
-                    _normalize_workbook_file(get_excel, wb_path, folder)
+                while True:  # 出错时问用户：修好文件后「重试」就从头再做这份，「跳过」照旧记错误
+                    used_before = set(used_pdf_paths)  # 重试时 PDF 用回同样的名字，不变成「_2」
+                    try:
+                        exported = []
+                        _quick_task_file(kind, options, get_excel, wb_path, folder, used_pdf_paths, exported)
+                        break
+                    except Exception as err:
+                        used_pdf_paths.intersection_update(used_before)
+                        message = file_problem.message_for(err, watchdog)
+                        # Excel 崩溃或被看门狗结束后不把失效实例带给后续文件，也别让它占着文件（用户要打开修）
+                        if excel is not None:
+                            try:
+                                quit_background_excel(excel)
+                            except Exception:
+                                pass
+                            excel = None
+                        if not file_problem.should_ask(err, message):
+                            raise RuntimeError(message) from err
+                        log_msg(f"⏸ {wb_label} 出错，等你选择重试还是跳过：{message}")
+                        update_file_progress(wb_label, status="processing", error=message,
+                                             current_action="出错了，等你选择重试还是跳过")
+                        choice = file_problem.ask(wb_path, wb_label, message, folder=folder, tick=watchdog.progress)
+                        watchdog.progress()
+                        if choice != "retry":
+                            raise RuntimeError(message) from err
+                        log_msg(f"🔁 重试 {wb_label}")
+                        update_file_progress(wb_label, status="processing", error="",
+                                             current_action=f"正在重试{task_name}...")
                 debug_log.event("⏱ 完成", 文件=wb_label, 秒=time.perf_counter() - started, 导出PDF=len(exported))
             except Exception as err:
                 log_msg(f"❌ 处理文件出错 {wb_label}: {err}")
                 update_file_progress(
                     wb_label, status="error", error=str(err), current_action=f"处理出错: {err}",
                 )
-                # Excel 崩溃后不把失效实例带给后续文件。
                 if excel is not None:
                     try:
                         quit_background_excel(excel)

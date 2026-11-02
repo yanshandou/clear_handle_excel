@@ -1,0 +1,378 @@
+/* ==========================================
+   主页：处理流程路线图（START → FINISH）
+   - 宽屏：三行蛇形，第一行左→右，第二行右→左，第三行左→右，行尾用弯道连起来
+   - 窄屏（< 1200px）：竖排，路在左边
+   - 路是装饰，放在卡片后面，不能点、不挡操作；卡片本身沿用游戏风卡牌，悬停不位移
+   ========================================== */
+
+.home-container {
+  max-width: 1280px;
+}
+
+.route-map {
+  --road: #3b4c86;
+  --road-edge: var(--ink, #1c2858);
+  --road-line: #ffffff;
+  --road-w: 30px;          /* 路面宽 */
+  --edge: 3px;             /* 路边描边 */
+  --col-gap: 52px;
+  --row-gap: 64px;
+  --side: 72px;            /* 左右留给弯道和旗子的空间 */
+  --turn-tuck: 56px;       /* 弯道藏在卡片底下的那一截 */
+  position: relative;
+  padding: 26px 0 18px;
+}
+
+.route-steps {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-rows: 1fr;
+  column-gap: var(--col-gap);
+  row-gap: var(--row-gap);
+  margin: 0;
+  padding: 0 var(--side);
+  list-style: none;
+}
+
+/* 蛇形排列：第二行从右往左 */
+.route-stop:nth-child(1) { grid-area: 1 / 1; }
+.route-stop:nth-child(2) { grid-area: 1 / 2; }
+.route-stop:nth-child(3) { grid-area: 1 / 3; }
+.route-stop:nth-child(4) { grid-area: 2 / 3; }
+.route-stop:nth-child(5) { grid-area: 2 / 2; }
+.route-stop:nth-child(6) { grid-area: 2 / 1; }
+.route-stop:nth-child(7) { grid-area: 3 / 1; }
+.route-stop:nth-child(8) { grid-area: 3 / 2; }
+.route-stop:nth-child(9) { grid-area: 3 / 3; }
+
+.route-stop {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+/* ---------- 路面 ---------- */
+.route-road,
+.route-turn {
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* 直路：卡片中线上，左右各伸进一半间距，和旁边一段接上 */
+.route-road {
+  top: calc(50% - var(--road-w) / 2 - var(--edge));
+  height: calc(var(--road-w) + var(--edge) * 2);
+  left: calc(var(--col-gap) / -2);
+  right: calc(var(--col-gap) / -2);
+  border-block: var(--edge) solid var(--road-edge);
+  background:
+    repeating-linear-gradient(90deg, var(--road-line) 0 16px, transparent 16px 32px) center / 100% 4px no-repeat,
+    var(--road);
+}
+
+/* 起点、终点的路一直通到旗子 */
+.route-stop:nth-child(1) .route-road { left: calc(var(--side) * -1); }
+.route-stop:nth-child(9) .route-road { right: calc(var(--side) * -1); }
+
+/* 弯道：从这一行中线拐到下一行中线；外圈描边、中间路面、中心虚线三层 */
+.route-turn {
+  top: calc(50% - var(--road-w) / 2 - var(--edge));
+  height: calc(100% + var(--row-gap) + var(--road-w) + var(--edge) * 2);
+  border: var(--edge) solid var(--road-edge);
+}
+
+.route-turn::before,
+.route-turn::after {
+  content: "";
+  position: absolute;
+}
+
+.route-turn::before {
+  inset: 0;
+  border: var(--road-w) solid var(--road);
+}
+
+.route-turn::after {
+  inset: calc(var(--road-w) / 2 - 2px);
+  border: 4px dashed var(--road-line);
+}
+
+/* 弯道是一整个半椭圆：从卡片底下开始弯，露出来的部分全是弧线，不和直路叠出方角 */
+.route-turn-right {
+  left: calc(100% - var(--turn-tuck));
+  right: calc(var(--side) * -1 + 6px);
+  border-left: 0;
+}
+
+.route-turn-right,
+.route-turn-right::before,
+.route-turn-right::after {
+  border-left: 0;
+  border-radius: 0 100% 100% 0 / 0 50% 50% 0;
+}
+
+.route-turn-right::after { left: 0; }
+
+.route-turn-left {
+  right: calc(100% - var(--turn-tuck));
+  left: calc(var(--side) * -1 + 6px);
+}
+
+.route-turn-left,
+.route-turn-left::before,
+.route-turn-left::after {
+  border-right: 0;
+  border-radius: 100% 0 0 100% / 50% 0 0 50%;
+}
+
+.route-turn-left::after { right: 0; }
+
+/* 行尾的直路只铺到卡片底下，外侧交给弯道 */
+.route-stop:nth-child(3) .route-road,
+.route-stop:nth-child(4) .route-road { right: var(--turn-tuck); }
+.route-stop:nth-child(6) .route-road,
+.route-stop:nth-child(7) .route-road { left: var(--turn-tuck); }
+
+/* ---------- START / FINISH 路牌（只是标识，不像按钮） ---------- */
+.route-flag {
+  position: absolute;
+  z-index: 3;
+  top: calc(50% - var(--road-w) / 2 - var(--edge) - 32px);
+  padding: 3px 9px;
+  border: 2.5px solid var(--road-edge);
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 1.5px;
+  line-height: 1.3;
+  pointer-events: none;
+  user-select: none;
+}
+
+.route-flag-start {
+  left: calc(var(--side) * -1);
+  color: #ffffff;
+  background: #1f7a2e;      /* 白字对比度 > 5:1 */
+}
+
+.route-flag-finish {
+  right: calc(var(--side) * -1);
+  color: var(--road-edge);
+  /* 黑白格终点旗：字放在白底标签里，保证清楚 */
+  background:
+    linear-gradient(#ffffff, #ffffff) center / calc(100% - 8px) calc(100% - 8px) no-repeat,
+    repeating-conic-gradient(var(--road-edge) 0 25%, #ffffff 0 50%) 0 0 / 8px 8px;
+  padding: 5px 11px;
+}
+
+/* ---------- 站点卡片：紧凑横版，图标在左 ---------- */
+.route-map .feature-card {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  flex-direction: row-reverse;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px 12px 18px;
+}
+
+.route-map .feature-orb,
+.route-map .feature-card:nth-child(even) .feature-orb {
+  flex-shrink: 0;
+  align-self: center;
+  width: 84px;
+  height: 84px;
+  margin: 0;
+}
+
+.route-map .feature-icon {
+  width: 84px;
+  height: 84px;
+}
+
+.route-map .feature-icon-distribute {
+  font-size: 56px;
+  line-height: 84px;
+}
+
+.route-map .feature-text {
+  flex: 1 1 auto;
+  align-self: stretch;
+  justify-content: center;
+  min-width: 0;
+  gap: 3px;
+  padding: 9px 11px 11px;
+}
+
+/* 分类小标签改成步骤号 */
+.route-map .feature-text::before {
+  align-self: flex-start;
+  font-size: 11px;
+  letter-spacing: 1px;
+}
+
+.route-map .feature-title,
+.route-map .feature-card:nth-child(even) .feature-title {
+  font-size: 19px;
+  line-height: 1.2;
+  letter-spacing: 0.5px;
+}
+
+.route-map .feature-sub {
+  margin-top: 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.route-map .feature-meta {
+  margin-top: 5px;
+  padding: 2px 9px;
+  font-size: 11.5px;
+  border-radius: 8px;
+}
+
+/* 按需的一站：铭牌虚线框，标签浅色，一看就知道不是每次都要做 */
+.route-optional .feature-text {
+  border-style: dashed;
+}
+
+.route-optional .feature-text::before {
+  color: var(--ink, #1c2858);
+  background: #ffffff;
+  box-shadow: inset 0 0 0 2px var(--ink, #1c2858);
+}
+
+/* ---------- 中等宽度：三列放不下，改竖排 ---------- */
+@media (max-width: 1199px) {
+  .route-map {
+    --road-w: 22px;
+    --rail: 44px;           /* 左边路的位置宽度 */
+    padding: 40px 0 44px;
+  }
+
+  .route-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 0 0 0 var(--rail);
+  }
+
+  .route-stop:nth-child(n) {
+    grid-area: auto;
+  }
+
+  .route-turn {
+    display: none;
+  }
+
+  .route-road,
+  .route-stop:nth-child(1) .route-road,
+  .route-stop:nth-child(9) .route-road {
+    top: -11px;
+    bottom: -11px;
+    height: auto;
+    left: calc(var(--rail) * -1 + (var(--rail) - var(--road-w)) / 2 - var(--edge));
+    right: auto;
+    width: calc(var(--road-w) + var(--edge) * 2);
+    border-block: 0;
+    border-inline: var(--edge) solid var(--road-edge);
+    background:
+      repeating-linear-gradient(180deg, var(--road-line) 0 12px, transparent 12px 24px) center / 4px 100% no-repeat,
+      var(--road);
+  }
+
+  .route-stop:nth-child(1) .route-road { top: -34px; }
+  .route-stop:nth-child(9) .route-road { bottom: -34px; }
+
+  .route-flag {
+    left: calc(var(--rail) * -1) !important;
+    right: auto !important;
+  }
+
+  .route-flag-start { top: -40px; }
+  .route-flag-finish { top: auto; bottom: -44px; }
+}
+
+@media (max-width: 520px) {
+  .route-map .feature-card {
+    padding: 10px 10px 16px;
+  }
+
+  .route-map .feature-orb,
+  .route-map .feature-card:nth-child(even) .feature-orb,
+  .route-map .feature-icon {
+    width: 64px;
+    height: 64px;
+  }
+
+  .route-map .feature-icon-distribute {
+    font-size: 44px;
+    line-height: 64px;
+  }
+
+  .route-map .feature-title,
+  .route-map .feature-card:nth-child(even) .feature-title {
+    font-size: 17px;
+  }
+}
+
+/* ---------- 做过的一站：卡片右上角圆圈对勾 ---------- */
+.route-done {
+  position: absolute;
+  z-index: 4;
+  top: -12px;
+  right: -12px;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 3px solid var(--ink, #1c2858);
+  border-radius: 50%;
+  color: #ffffff;
+  background: #1f7a2e;      /* 白字对比度 > 5:1 */
+  box-shadow: 0 3px 0 var(--ink, #1c2858), inset 0 3px 0 rgba(255, 255, 255, 0.3);
+  font-size: 22px;
+  font-weight: 900;
+  line-height: 1;
+  cursor: help;
+}
+
+.route-done.hidden {
+  display: none;
+}
+
+/* 做过但有出错的文件：黄底深色 ! */
+.route-done.is-warn {
+  color: var(--ink, #1c2858);
+  background: #ffc21f;
+}
+
+.home-hero > div:first-child {
+  min-width: 0;
+}
+
+.home-hero .route-done-note {
+  margin-top: 6px;
+  overflow-wrap: anywhere;   /* 路径很长时换行，不出横向滚动 */
+  font-size: 13px;
+  font-weight: 800;
+  color: #1f7a2e;
+}
+
+@media (max-width: 520px) {
+  .route-done {
+    top: -10px;
+    right: -6px;
+    width: 32px;
+    height: 32px;
+    font-size: 18px;
+  }
+}

@@ -12,6 +12,13 @@
 /* 面板内的说明、进度、报错 */
 .batch-tools .toolbar-hint, main > .panel:first-child .toolbar-hint { margin: 10px 0 0; line-height: 1.7; font-weight: 500; }
 #progressText { margin: 16px 0 8px; font-size: 14px; font-weight: 700; color: var(--text-strong); }
+/* 完成提示：替换满格进度条，静止不动 */
+.batch-done { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 16px 0 0; padding: 12px 16px; border: 3px solid #1c7a10; border-radius: 14px; background: #ecfbe4; color: #134e0a; }
+.batch-done.hidden { display: none; }
+.batch-done-icon { flex: none; display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: #2f8f14; color: #fff; font-size: 20px; font-weight: 900; }
+.batch-done-text { flex: 1 1 260px; display: flex; flex-direction: column; gap: 2px; font-size: 14px; font-weight: 600; line-height: 1.5; }
+.batch-done-text strong { font-size: 16px; font-weight: 900; }
+
 .batch-error { margin: 8px 0 0; color: #b42318; font-weight: 600; white-space: pre-wrap; }
 .batch-error:empty { display: none; }
 
@@ -44,10 +51,7 @@
 .find-marks-colors summary { cursor: pointer; }
 .find-marks-colors .batch-highlight-presets { margin-top: 8px; max-height: 150px; overflow-y: auto; }
 .find-marks-colors .batch-highlight-preset { cursor: default; }
-.batch-error-types { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.batch-error-type-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid #cbd5e1; border-radius: 999px; background: #fff; color: var(--text-main); font-size: 12.5px; font-weight: 700; cursor: pointer; user-select: none; }
-.batch-error-type-chip:hover { border-color: #64748b; }
-.batch-error-type-chip.is-manual-only { background: #f1f5f9; border-style: dashed; color: #64748b; cursor: not-allowed; }
+.batch-fix-scope { flex: 1 1 360px; color: var(--text-main); font-size: 13px; line-height: 1.6; }
 
 .batch-actions { margin-top: 16px; padding-top: 16px; border-top: 1px dashed rgba(148, 170, 205, .6); }
 

@@ -7,7 +7,8 @@
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/print_layout.css">
-  <link rel="stylesheet" href="/static/theme.css"><script src="/static/game_fx.js"></script>
+  <link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/home_route.css"><script src="/static/game_fx.js"></script>
 </head>
 <body>
   <header class="app-header">
@@ -34,8 +35,9 @@
   <main class="container home-container">
     <section class="home-hero">
       <div>
-        <h2>常用功能</h2>
-        <p>选择一项开始。自动递归扫描所选文件夹及其所有子文件夹下的 Excel 文件，处理进度可在「执行记录与进度看板」查看。</p>
+        <h2>处理流程</h2>
+        <p>按顺序从 START 走到 FINISH，标「按需」的一站遇到对应问题再用。每一步都递归扫描所选文件夹及其子文件夹，进度可在「执行记录与进度看板」查看。</p>
+        <p id="routeDoneNote" class="route-done-note hidden"></p>
       </div>
       <div class="home-hero-actions">
         <button type="button" class="btn btn-outline btn-sm" id="exportProgressBtn" onclick="exportProgress()"
@@ -45,6 +47,10 @@
         <button type="button" class="btn btn-outline btn-sm" id="importProgressBtn" onclick="pickProgressFile()"
           title="从备份文件恢复进度，会替换当前全部进度">
           ⬆ 导入进度
+        </button>
+        <button type="button" class="btn btn-outline btn-sm" onclick="openFileProblemSettings()"
+          title="批量任务遇到出错的文件时：等你选择重试 / 跳过，或者多少分钟没人选就自动跳过">
+          ⏸ 出错时
         </button>
         <input type="file" id="progressFileInput" class="hidden" accept=".json,application/json">
       </div>
@@ -71,69 +77,116 @@
       </div>
     </section>
 
-    <section class="feature-grid" aria-label="常用功能">
-      <a href="/clean" class="feature-card feature-violet">
-        <span class="feature-text">
-          <span class="feature-title">精简 Sheet</span>
-          <span class="feature-sub">删除日期、bak、副本等备份表</span>
-          <span class="feature-meta" id="meta_clean_sheets">先预览，确认后删除</span>
-        </span>
-        <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-clean">🧹</span></span>
-      </a>
-
-      <a href="/workbench" class="feature-card feature-rose">
-        <span class="feature-text">
-          <span class="feature-title">查看切字</span>
-          <span class="feature-sub">全自动扫描修复 · 三色结果审核</span>
-          <span class="feature-meta" id="meta_clips">尚未扫描</span>
-        </span>
-        <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-inspect">🔍</span></span>
-      </a>
-
-      <button type="button" class="feature-card feature-mint" onclick="openTask('normalize_view')">
-        <span class="feature-text">
-          <span class="feature-title">视图标准化</span>
-          <span class="feature-sub">分页预览 · 定位 A1 · 缩放 100%</span>
-          <span class="feature-meta" id="meta_normalize_view">递归处理全部工作簿</span>
-        </span>
-        <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-normalize">🎯</span></span>
-      </button>
-
-      <button type="button" class="feature-card feature-sky" onclick="openTask('export_pdf')">
-        <span class="feature-text">
-          <span class="feature-title">导出 PDF</span>
-          <span class="feature-sub">批量导出可见工作表</span>
-          <span class="feature-meta" id="meta_export_pdf">只读打开，不改原文件</span>
-        </span>
-        <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-pdf">📄</span></span>
-      </button>
-      <a href="/repair-links" class="feature-card feature-sky">
-        <span class="feature-text"><span class="feature-title">修复引用错误</span>
-          <span class="feature-sub">扫描 #REF! · 对照原始备份恢复值</span>
-          <span class="feature-meta">扫描、对比、修复，一次完成</span></span>
-        <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-references">🔗</span></span>
-      </a>
-      <a href="/repair-colors" class="feature-card feature-violet">
-        <span class="feature-text"><span class="feature-title">修复颜色</span>
-          <span class="feature-sub">查找残留标记色 · 对照备份恢复配色</span>
-          <span class="feature-meta">自动核对内容，恢复底色与字色</span></span>
-        <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-colors">🎨</span></span>
-      </a>
-      <a href="/repair-hidden" class="feature-card feature-sky">
-        <span class="feature-text"><span class="feature-title">修复隐藏页</span>
-          <span class="feature-sub">对照备份恢复工作表、隐藏列与超窄列</span>
-          <span class="feature-meta">核对内容与位置，恢复原来的显示范围</span></span>
-        <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-hidden">🙈</span></span>
-      </a>
-      <a href="/repair-bl-links" class="feature-card feature-mint feature-bl">
-        <span class="feature-text"><span class="feature-title">排查 BL 超链接</span>
-          <span class="feature-sub">清空「左边含 BL · 右边是 @ 超链接」的单元格</span>
-          <span class="feature-meta">先扫描确认，再清除</span></span>
-        <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-bl-links">🔎</span></span>
-      </a>
+    <!-- 处理流程路线图：按实际处理顺序从 START 走到 FINISH。
+         宽屏三行蛇形（第二行从右往左），窄屏竖排；卡片本身和以前一样（链接、按钮、状态文字 id 都没变） -->
+    <section class="route-map" aria-label="处理流程">
+      <ol class="route-steps">
+        <li data-ops="clean" class="route-stop">
+          <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
+          <span class="route-flag route-flag-start" aria-hidden="true">START</span>
+          <a href="/clean" class="feature-card feature-violet" style="--tile-cat: 'STEP 1'">
+            <span class="feature-text">
+              <span class="feature-title">精简 Sheet</span>
+              <span class="feature-sub">删除日期、bak、副本等备份表</span>
+              <span class="feature-meta" id="meta_clean_sheets">先预览，确认后删除</span>
+            </span>
+            <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-clean">🧹</span></span>
+          </a>
+        </li>
+        <li data-ops="scan autofix" class="route-stop">
+          <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
+          <a href="/workbench" class="feature-card feature-rose" style="--tile-cat: 'STEP 2'">
+            <span class="feature-text">
+              <span class="feature-title">查看切字</span>
+              <span class="feature-sub">全自动扫描修复 · 三色结果审核</span>
+              <span class="feature-meta" id="meta_clips">尚未扫描</span>
+            </span>
+            <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-inspect">🔍</span></span>
+          </a>
+        </li>
+        <li data-ops="colors" class="route-stop route-optional">
+          <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
+          <i class="route-turn route-turn-right" aria-hidden="true"></i>
+          <a href="/repair-colors" class="feature-card feature-violet" style="--tile-cat: 'STEP 3 · 按需'">
+            <span class="feature-text"><span class="feature-title">修复颜色</span>
+              <span class="feature-sub">查找残留标记色 · 对照备份恢复配色</span>
+              <span class="feature-meta">自动核对内容，恢复底色与字色</span></span>
+            <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-colors">🎨</span></span>
+          </a>
+        </li>
+        <li data-ops="bl_scan bl_clear" class="route-stop">
+          <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
+          <a href="/repair-bl-links" class="feature-card feature-mint feature-bl" style="--tile-cat: 'STEP 4'">
+            <span class="feature-text"><span class="feature-title">排查 BL 超链接</span>
+              <span class="feature-sub">清空「左边含 BL · 右边是 @ 超链接」的单元格</span>
+              <span class="feature-meta">先扫描确认，再清除</span></span>
+            <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-bl-links">🔎</span></span>
+          </a>
+        </li>
+        <li data-ops="links" class="route-stop route-optional">
+          <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
+          <a href="/repair-links" class="feature-card feature-sky" style="--tile-cat: 'STEP 5 · 按需'">
+            <span class="feature-text"><span class="feature-title">修复引用错误</span>
+              <span class="feature-sub">扫描 #REF! · 对照原始备份恢复值</span>
+              <span class="feature-meta">扫描、对比、修复，一次完成</span></span>
+            <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-references">🔗</span></span>
+          </a>
+        </li>
+        <li data-ops="hidden" class="route-stop route-optional">
+          <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
+          <i class="route-turn route-turn-left" aria-hidden="true"></i>
+          <a href="/repair-hidden" class="feature-card feature-sky" style="--tile-cat: 'STEP 6 · 按需'">
+            <span class="feature-text"><span class="feature-title">修复隐藏页</span>
+              <span class="feature-sub">对照备份恢复工作表、隐藏列与超窄列</span>
+              <span class="feature-meta">核对内容与位置，恢复原来的显示范围</span></span>
+            <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-hidden">🙈</span></span>
+          </a>
+        </li>
+        <li data-ops="pdf" class="route-stop">
+          <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
+          <button type="button" class="feature-card feature-sky" onclick="openTask('export_pdf')" style="--tile-cat: 'STEP 7'">
+            <span class="feature-text">
+              <span class="feature-title">人工复检</span>
+              <span class="feature-sub">导出 PDF · 逐页查看 · 标记处理</span>
+              <span class="feature-meta" id="meta_export_pdf">只读打开，不改原文件</span>
+            </span>
+            <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-pdf">📄</span></span>
+          </button>
+        </li>
+        <li data-ops="view" class="route-stop">
+          <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
+          <button type="button" class="feature-card feature-mint" onclick="openTask('normalize_view')" style="--tile-cat: 'STEP 8'">
+            <span class="feature-text">
+              <span class="feature-title">视图标准化</span>
+              <span class="feature-sub">分页预览 · 定位 A1 · 缩放 100%</span>
+              <span class="feature-meta" id="meta_normalize_view">递归处理全部工作簿</span>
+            </span>
+            <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-normalize">🎯</span></span>
+          </button>
+        </li>
+        <li data-ops="distribute" class="route-stop">
+          <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
+          <span class="route-flag route-flag-finish" aria-hidden="true">FINISH</span>
+          <a href="/distribute" class="feature-card feature-sky feature-distribute" style="--tile-cat: 'STEP 9'">
+            <span class="feature-text"><span class="feature-title">按 JSON 复制 Excel</span>
+              <span class="feature-sub">按上传记录建好目录结构、把 Excel 放进对应文件夹</span>
+              <span class="feature-meta">先列清单确认 · 空文件夹也建 · 核对三个数量</span></span>
+            <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-distribute">📦</span></span>
+          </a>
+        </li>
+      </ol>
     </section>
     <section class="panel"><details id="printLayoutsDetails"><summary>📄 Sheet 打印方向记录</summary>
-      <p class="toolbar-hint">每张 Sheet 分别比较横向、竖向；分析结果供扫描和导出复用，原 Excel 的打印设置保持不变。</p>
+      <p class="toolbar-hint">每张 Sheet 分别比较横向、竖向；分析结果供扫描和导出复用；导出 PDF 时，和 Excel 里不一样的方向会保存进原 Excel。</p>
       <button type="button" id="printLayoutsRefresh" class="btn btn-outline btn-sm">刷新记录</button>
       <label>搜索文件或工作表 <input type="search" id="printLayoutsSearch"></label>
       <label>分类 <select id="printLayoutsFilter"><option value="all">全部</option><option value="stale">待重新验证</option><option value="review">建议重新分析</option><option value="manual">人工指定</option><option value="auto">自动推荐</option></select></label>
@@ -146,7 +199,7 @@
     <div id="taskDialogHead" class="task-dialog-head feature-sky">
       <span id="taskDialogIcon" class="task-dialog-icon" aria-hidden="true">📄</span>
       <div class="task-dialog-heading">
-        <h2 id="taskDialogTitle">导出 PDF</h2>
+        <h2 id="taskDialogTitle">人工复检</h2>
         <p id="taskDialogSub"></p>
       </div>
       <button type="button" class="task-dialog-close" onclick="closeTask()" aria-label="关闭">✕</button>
@@ -190,7 +243,6 @@
     <div class="task-dialog-foot">
       <span id="taskHint" class="task-hint"></span>
       <button type="button" class="btn btn-outline" onclick="closeTask()">关闭</button>
-      <a href="/pdf-review" id="taskReviewBtn" class="btn btn-success hidden" onclick="openPdfReview()" title="复检上面这个文件夹里已经导出的 PDF：看到问题点一下，用 Excel 打开那一格（可同时打开原始备份对照）">🔎 人工复检</a>
       <button type="button" class="btn btn-primary" id="taskPrimaryBtn" onclick="onPrimaryAction()">开始</button>
     </div>
   </dialog>
@@ -199,5 +251,6 @@
   <script src="/static/home.js"></script>
   <script src="/static/print_layout.js"></script>
   <script src="/static/debug_log.js"></script>
+  <script src="/static/file_problem.js"></script>
 </body>
 </html>

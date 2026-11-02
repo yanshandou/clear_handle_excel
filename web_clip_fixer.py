@@ -7,10 +7,11 @@ import sqlite3
 import threading
 import webbrowser
 from datetime import datetime
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from core import autofix, batch, bl_links, debug_log, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review
+from core import autofix, batch, bl_links, debug_log, distribute, file_problem, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review
 from core.common import (
     STATIC_DIR,
     console_print,
@@ -180,6 +181,8 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, **pdf_review.list_pdfs(folder)})
             except ValueError as err:
                 self._send_json({"ok": False, "error": str(err)}, status=400)
+        elif parsed.path == "/api/pdf_review/process":
+            self._send_json({"ok": True, **pdf_review.process_status()})
         elif parsed.path == "/api/pdf_review/maps":
             self._send_json({"ok": True, "maps": pdf_review.maps_status()})
         elif parsed.path == "/api/pdf_review/page":
@@ -193,6 +196,24 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_bytes(image, "image/png", cacheable=True)
         elif parsed.path == "/repair-bl-links":
             self._serve_static_file("bl_links.html")
+        elif parsed.path == "/distribute":
+            self._serve_static_file("distribute.html")
+        elif parsed.path == "/api/distribute":
+            self._send_json({"ok": True, **distribute.status(), "history": distribute.history()})
+        elif parsed.path in {"/api/distribute/run", "/api/distribute/markdown"}:
+            run_id = parse_qs(parsed.query).get("id", [""])[0]
+            try:
+                run = distribute.get_run(run_id)
+            except ValueError as err:
+                self._send_json({"ok": False, "error": str(err)}, status=404)
+                return
+            if parsed.path.endswith("/run"):
+                self._send_json({"ok": True, "run": run})
+            else:
+                body = distribute.markdown(run).encode("utf-8")
+                self._send_bytes(body, "text/markdown; charset=utf-8", filename="copy_record.md")
+        elif parsed.path == "/api/file-problem":
+            self._send_json({"ok": True, "problem": file_problem.pending(), "settings": file_problem.get_settings()})
         elif parsed.path == "/api/bl_links":
             self._send_json(bl_links.status())
         elif parsed.path == "/api/hidden_repair":
@@ -297,7 +318,8 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_bytes(data, "text/plain; charset=utf-8", filename="log.txt")
         elif parsed.path == "/api/operation-history":
             from core import operation_history
-            self._send_json(operation_history.summary())
+            folder = parse_qs(parsed.query).get("folder", [None])[0]
+            self._send_json({**operation_history.summary(), "done": operation_history.done_for(folder)})
         elif parsed.path == "/api/records":
             self._send_json(get_execution_report_snapshot())
         elif parsed.path == "/api/records/zip":
@@ -357,6 +379,23 @@ class WebHandler(BaseHTTPRequestHandler):
             console_print(f"ℹ️ 浏览器已断开，{path} 的结果未送达")
 
     def _handle_post(self, payload: dict) -> None:
+        # 批量任务停在出错文件上等用户：选择重试 / 跳过、打开这份文件，任务进行中也要能做
+        if self.path == "/api/file-problem":
+            choice, problem_id = payload.get("choice"), payload.get("id")
+            if not isinstance(problem_id, str) or not isinstance(choice, str):
+                raise ValueError("需要有效的选择")
+            file_problem.answer(problem_id, choice, payload.get("auto_skip") is True)
+            self._send_json({"ok": True})
+            return
+        if self.path == "/api/file-problem/settings":
+            self._send_json({"ok": True, "settings": file_problem.set_settings(payload.get("timeout_minutes"))})
+            return
+        if self.path == "/api/excel/open" and isinstance(payload.get("problem"), str):
+            problem = file_problem.pending()
+            if not problem or problem["id"] != payload["problem"]:
+                raise ValueError("这个出错的文件已经处理过了")
+            self._send_json({"ok": True, "note": open_workbook_in_excel(Path(problem["path"]), "", "")})
+            return
         with STATE_LOCK:
             if STATE.get("maintenance"):
                 name = ("颜色" if STATE["maintenance"].startswith("color_") else
@@ -407,11 +446,20 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, **pdf_review.open_at(payload.get("pdf") or "", payload.get("page"),
                                                                 payload.get("x"), payload.get("y"),
                                                                 payload.get("old_folder") or "")})
+        elif self.path == "/api/pdf_review/process":
+            pdf_review.process(payload.get("red"), payload.get("yellow"))
+            self._send_json({"ok": True})
         elif self.path == "/api/hidden_repair/run":
             hidden_repair.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}), payload.get("options"))
             self._send_json({"ok": True})
         elif self.path == "/api/bl_links/scan":
             bl_links.start(_require_folder(payload))
+            self._send_json({"ok": True})
+        elif self.path == "/api/distribute/preview":
+            self._send_json({"ok": True, "preview": distribute.preview(
+                payload.get("plan"), payload.get("source_root"), payload.get("dest_root"))})
+        elif self.path == "/api/distribute/start":
+            distribute.start()
             self._send_json({"ok": True})
         elif self.path == "/api/bl_links/clear":
             bl_links.clear()

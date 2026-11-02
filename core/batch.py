@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from core import autofix, debug_log, fix_images, page_breaks, print_layout, scan_analysis, workflow as wf
+from core import autofix, debug_log, file_problem, fix_images, page_breaks, print_layout, scan_analysis, workflow as wf
 from core.common import STALE_LOCK_HINT, is_inspection_exempt_sheet, workbook_locked, workbook_rel_name
 from core.excel_ops import (
     CellProbe, close_saved_workbooks, extract_sheet_snapshot, normalize_workbook_view,
@@ -57,18 +57,9 @@ def _data() -> dict[str, Any]:
 
 
 def fix_error_types(value: Any = None, *, require_non_empty: bool = False) -> list[str]:
-    """当前自动修复要处理的错误类型；PDF 未匹配文字固定转人工。"""
-    if value is None:
-        saved = _data().get("fix_error_types")
-        selected = (list(autofix.FIXABLE_ERROR_TYPES) if not isinstance(saved, list)
-                    else [t for t in autofix.FIXABLE_ERROR_TYPES if t in saved])
-    else:
-        if not isinstance(value, list) or any(not isinstance(t, str) or t not in autofix.CELL_ERROR_SPECS for t in value):
-            raise ValueError("请选择有效的单元格错误类型")
-        selected = [t for t in autofix.FIXABLE_ERROR_TYPES if t in value]
-    if require_non_empty and not selected:
-        raise ValueError("请至少勾选一种要自动修复的错误类型，或使用「只扫描，全部转人工」")
-    return selected
+    """自动修复要处理的错误类型：固定只修切字（autofix.AUTO_FIX_ERROR_TYPES），不再能勾选。
+    页面或旧数据传来的勾选一律忽略；其他类型照常扫描、全部转人工。"""
+    return list(autofix.AUTO_FIX_ERROR_TYPES)
 
 
 def set_fix_error_types(value: Any, *, require_non_empty: bool = False) -> list[str]:
@@ -295,7 +286,7 @@ def _unchecked_fix_reason(card: dict, items: list[dict] | None = None, enabled: 
     action = ("未修改" if autofix.ERROR_TYPE_PAGE_BREAK_CUT in fixable
               else "未调整列宽" if fixable == [autofix.ERROR_TYPE_HASH_OVERFLOW]
               else "未调整行高")
-    return f"未勾选「{labels}」自动修复，{action}，请人工处理或标绿忽略"
+    return f"自动修复只处理切字，「{labels}」{action}，请人工处理或标绿忽略"
 
 
 def _col_rid(card: dict) -> str:
@@ -1101,40 +1092,72 @@ def _group_cells(items: list[dict]) -> list[list[dict]]:
     return list(cells.values())
 
 
-def _wrap_targets(sheet: Any, items: list[dict]) -> list[str]:
+def _text_width(text: str) -> int:
+    """按显示宽度数字数：全角字（日文、中文）算 2，半角字母数字算 1"""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
+def _cut_sideways(item: dict) -> bool:
+    """PDF 上只印出了开头一段（印出来的字比全文少），说明这行字横向放不下"""
+    full = _text_width(normalize_text(item.get("text", "")))
+    shown = _text_width(normalize_text(item.get("visible_text") or ""))
+    return 0 < shown < full
+
+
+def _neighbor_blocks(sheet: Any, row: int, col: int) -> bool:
+    """旁边的格子挡住文字往外延伸：合并单元格、有内容，或者存着空字符串（看着是空的，Excel 照样挡）"""
+    cell = sheet.Cells(row, col)
+    return bool(cell.MergeCells) or str(cell.Formula) != "" or cell.Value is not None
+
+
+def _wrap_targets(sheet: Any, items: list[dict], *, force: bool = False) -> list[str]:
     """没开自动换行、整行文字横向放不下被截掉的格子：怎么加高都没用，要先开自动换行再加高。
     只改这一格（合并单元格按整个合并区域），不动列宽，整页排版不变。
-    没合并的格子旁边是空格时，文字本来会延伸到旁边显示，截断多半不是横向的，不开换行，免得改变原来的显示方式。"""
+    没合并的格子要能确认是横向截断才开换行（以下任一）：
+    - 旁边的格子挡住了文字延伸（有内容、合并、或存着空字符串）；
+    - PDF 上只印出开头一段，且行高已经够放一行字（不是行太矮压住字）。
+    force=True：只加高已经试过没修好，所有没开换行、没设缩小字体填充的格子都开换行再试。"""
     targets = []
     for item in items:
-        if item.get("kind") != "hidden" or item.get("hidden_reason") not in (REASON_TRUNCATED, REASON_CLIPPED):
+        if not force and (item.get("kind") != "hidden"
+                          or item.get("hidden_reason") not in (REASON_TRUNCATED, REASON_CLIPPED)):
             continue
         addr = item.get("cell_addr") or ""
+        why = "只加高没修好" if force else "合并单元格"
         try:
             area = sheet.Range(addr).MergeArea
             if area.WrapText is not False or area.ShrinkToFit:
+                debug_log.event("↩️ 不开换行", 格=addr, 原因="已经换行或缩小字体填充")
                 continue  # 已经换行（或合并区域里设置不一致），缩小字体填充的也不动
             row, col = int(area.Row), int(area.Column)
-            if int(area.Cells.Count) == 1:
+            if not force and int(area.Cells.Count) == 1:
                 align = area.HorizontalAlignment
                 sides = ([col - 1] if align == XL_HALIGN_RIGHT else [col - 1, col + 1] if align == XL_HALIGN_CENTER
                          else [col + 1])
-                if not any(c > 0 and (sheet.Cells(row, c).MergeCells or str(sheet.Cells(row, c).Formula) != "")
-                           for c in sides):
-                    continue
+                if any(c > 0 and _neighbor_blocks(sheet, row, c) for c in sides):
+                    why = "旁边格子挡住"
+                else:
+                    size = area.Cells(1, 1).Font.Size
+                    tall = (not isinstance(size, bool) and isinstance(size, (int, float))
+                            and float(sheet.Rows(row).RowHeight) >= float(size))
+                    if not (_cut_sideways(item) and tall):
+                        debug_log.event("↩️ 不开换行", 格=addr, 原因="旁边是空格，看不出是横向截断，只加高")
+                        continue
+                    why = "只印出开头一段，行高够一行字"
         except Exception:
             continue  # 读不到格式就按原来的方式只加高
         if addr not in targets:
+            debug_log.event("↪️ 开换行", 格=addr, 原因=why)
             targets.append(addr)
     return targets
 
 
-DIRECT_LINE_PT = 12.0  # 默认单行字高（约 10pt 字体对应的一行高度）
-DIRECT_MARGIN_PT = autofix.STEP_PT  # 一步到位额外留出的安全余白（3pt）
+DIRECT_LINE_PT = 12.0  # 读不到字号时的单行字高（约 10pt 字体 × 1.2）
+LINE_HEIGHT_RATIO = 1.2  # 一行字高 = 字号 × 1.2（Excel 默认行距；只加 1 倍字号时上下仍常被切）
 
 
 def _cell_line_height(sheet: Any, items: list[dict]) -> float:
-    """读取问题单元格字号推算单行高度（pt）；读不到时按默认单行字高 12pt 算。"""
+    """读取问题单元格字号推算单行高度（字号 × 1.2，pt）；读不到时按默认单行字高 12pt 算。"""
     sizes: list[float] = []
     for item in items:
         addr = item.get("cell_addr") or ""
@@ -1143,27 +1166,117 @@ def _cell_line_height(sheet: Any, items: list[dict]) -> float:
         try:
             size = sheet.Range(addr).MergeArea.Cells(1, 1).Font.Size
             if not isinstance(size, bool) and isinstance(size, (int, float)) and 4.0 <= float(size) <= 72.0:
-                sizes.append(float(size) * 1.2)
+                sizes.append(float(size) * LINE_HEIGHT_RATIO)
         except Exception:
             continue
     return max(sizes) if sizes else DIRECT_LINE_PT
 
 
 def _direct_extra_height(sheet: Any, items: list[dict], need: float) -> float:
-    """一步到位计算需要增加的行高（pt）：
-    - 常见情况（列宽略窄多换出 1 行或压线）：直接加 1 行字高 + 余白；
-    - 多行截断或刚开启自动换行：按缺口高度（折算打印缩放）或未显示字数估算行数，一次加够并留余白。"""
+    """要加的行高（pt）= 缺几行 × 一行字高（字号 × 1.2），只试这一次：
+    - 常见情况（压线、多换出一行）缺 1 行；
+    - 多行截断按没印出来的字数、或 PDF 上量到的缺口（折算打印缩放）估算缺几行，取多的。"""
     line_pt = _cell_line_height(sheet, items)
-    extra_lines = 1
+    lines = 1
     for item in items:
-        full_len = len(normalize_text(item.get("text", "")))
-        vis_len = len(normalize_text(item.get("visible_text") or ""))
+        # 按显示宽度算（全角字占两个半角宽），日文和英文混在一起时估得更准
+        full_len = _text_width(normalize_text(item.get("text", "")))
+        vis_len = _text_width(normalize_text(item.get("visible_text") or ""))
         if 0 < vis_len < full_len:
-            extra_lines = max(extra_lines, math.ceil((full_len - vis_len) / vis_len))
-    from_lines = extra_lines * line_pt + DIRECT_MARGIN_PT
-    from_need = (need / autofix.print_scale(sheet) + DIRECT_MARGIN_PT) if need > 0 else 0.0
-    raw = max(from_lines, from_need)
-    return math.ceil(round(raw / autofix.STEP_PT, 3)) * autofix.STEP_PT
+            lines = max(lines, math.ceil((full_len - vis_len) / vis_len))
+    if need > 0:
+        lines = max(lines, math.ceil(round(need / autofix.print_scale(sheet) / line_pt, 3)))
+    return round(lines * line_pt, 2)
+
+
+def _measure_cell_height(tmp: Any, area: Any, narrower: float = 0.0) -> float:
+    """把一格的文字和字体搬到临时表 A1（宽度调成和这格一样，换行设置一样），让 Excel 自动调整行高，读出要多高（pt）。
+    narrower：临时格子比原格子窄多少 pt（用来看这格是不是刚好塞满）"""
+    first = area.Cells(1, 1)
+    value = first.Value
+    text = value if isinstance(value, str) else str(first.Text or "")
+    if not text:
+        return 0.0
+    cell = tmp.Cells(1, 1)
+    cell.NumberFormat = "@"  # SQL 等以 = 开头的文字也按文字放，不当公式
+    cell.Value = text
+    font, src = cell.Font, first.Font
+    font.Name, font.Size, font.Bold, font.Italic = src.Name, src.Size, src.Bold, src.Italic
+    cell.WrapText = area.WrapText is True
+    width = float(area.Width) - narrower
+    if width <= 1:
+        raise ValueError("格子太窄")
+    column = tmp.Columns(1)
+    for _ in range(3):  # 列宽单位是字数、和 pt 不完全成比例，调几次贴近
+        now = float(column.Width)
+        if now <= 0:
+            break
+        column.ColumnWidth = min(255.0, max(0.5, float(column.ColumnWidth) * width / now))
+    if abs(float(column.Width) - width) > 3:
+        raise ValueError(f"临时格子宽度对不上（要 {width}pt，只能 {column.Width}pt）")
+    tmp.Rows(1).AutoFit()
+    height = float(tmp.Rows(1).RowHeight)
+    cell.Clear()
+    return height
+
+
+def _excel_fit(sheet: Any, row: int, items: list[dict], *, extra_lines: int = 1) -> float:
+    """让 Excel 自己算这一行要多高（不管合并没合并）：
+    Excel 的「自动调整行高」会跳过合并单元格，所以在副本里临时加一张表，放一个不合并的格子，
+    宽度、字体、换行都和问题格子一样，让 Excel 在它身上算，再拿回来用；临时表算完就删。
+    合并区域跨好几行时，减掉其他行的高度，剩下的才是这一行要的。只看问题格子，不让同一行别的格子一起变高。
+    打印余量（用户 2026-11-02 说明）：开了换行的格子，Excel 里最后一行刚好塞满时，打印成 PDF 常常差一个字放不下、
+    多换出一行（只有一两个字）被切掉；最后一行没塞满的（第二行只有几个字）PDF 一定也放得下，不用担心。
+    所以把临时格子再窄一个字（字号 pt）量一次：变高了说明刚好塞满，按窄的那个高度给（Excel 自己多算的那一行）；
+    没变高就不加余量。extra_lines=2（第一次没过再试时）再多留一行（字号 × 1.2）。
+    算不出来返回 0（照旧用估算）。"""
+    addrs = list(dict.fromkeys(it.get("cell_addr") for it in items if it.get("cell_addr")))
+    if not addrs:
+        return 0.0
+    tmp = None
+    needs: list[float] = []
+    try:
+        tmp = sheet.Parent.Worksheets.Add()
+        for addr in addrs:
+            try:
+                area = sheet.Range(addr).MergeArea
+                height = _measure_cell_height(tmp, area)
+                if height <= 0:
+                    continue
+                others = float(area.Height) - float(sheet.Rows(row).RowHeight)
+                margin, tight = 0.0, False
+                if area.WrapText is True:
+                    size = area.Cells(1, 1).Font.Size
+                    size = float(size) if isinstance(size, (int, float)) and not isinstance(size, bool) else 10.0
+                    try:
+                        margin = max(0.0, _measure_cell_height(tmp, area, narrower=size) - height)
+                    except Exception:
+                        margin = 0.0
+                    tight = margin > 0
+                    if extra_lines > 1:
+                        margin += (extra_lines - 1) * _cell_line_height(sheet, [{"cell_addr": addr}])
+                need = round(height + margin - max(0.0, others), 2)
+                debug_log.event("📏 Excel 算行高", 格=addr, 合并=int(area.Cells.Count) > 1,
+                                换行=area.WrapText is True, 格子要=height, 刚好塞满=tight, 打印余量=round(margin, 2),
+                                其他行=round(others, 2), 这一行要=need)
+                needs.append(need)
+            except Exception as error:
+                debug_log.event("📏 Excel 算不出行高", 格=addr, 原因=str(error)[:120])
+    except Exception as error:
+        debug_log.event("📏 Excel 算不出行高", 原因=str(error)[:120])
+    finally:
+        if tmp is not None:
+            app = sheet.Application
+            try:
+                alerts = app.DisplayAlerts
+                app.DisplayAlerts = False
+                try:
+                    tmp.Delete()
+                finally:
+                    app.DisplayAlerts = alerts
+            except Exception as error:
+                debug_log.event("⚠️ 临时表删不掉", 原因=str(error)[:120])  # 只在副本里，不影响原文件
+    return min(autofix.MAX_ROW_HEIGHT, max(needs)) if needs else 0.0
 
 
 def _prepare_row(
@@ -1171,10 +1284,13 @@ def _prepare_row(
     on_attempt: Callable[[int, float, dict, list[str]], None] | None = None,
     timing: dict[str, float] | None = None,
 ) -> tuple[float, dict | None, dict]:
-    """只在副本上一步到位调整行高并导出 1 次 PDF 核验截图：
+    """只在副本上试加高（最多两次），每次导出 1 次 PDF 核验并截图：
     - 原样那张直接复用刚才检测导出的 PDF（同一版本）；若原样已通过则不改行高、不重新导出；
-    - 原样未通过时，有不换行被横向截断的格子先开启自动换行，并直接按缺口/单行字高+余白一步加够行高，
-      仅导出 1 次 PDF 核验效果并生成修改后截图；通过时留下那份 PDF 供写入后复查直接复用。"""
+    - 原样未通过时，有不换行被横向截断的格子先开启自动换行；行高主要让 Excel 自己算（_excel_fit，
+      合并单元格借临时格子算），算不出或不比原来高时才按缺几行 × 字号 × 1.2 估算；
+      开了换行、最后一行刚好塞满的格子多留一行（打印时差一个字就会多换一行）；
+    - 第一次没通过：有没开换行的格子就开换行再试，Excel 算的高度打印出来不够就多留一行（和估算取高的）再试；
+    - 通过时留下那份 PDF 供写入后复查直接复用。"""
     timing = {} if timing is None else timing
     sheet = session.copy_of(path).Sheets(items[0]["sheet_name"])
     exported = session.pdf_for(path, items[0]["sheet_name"])
@@ -1212,13 +1328,40 @@ def _prepare_row(
         if ok:
             return base, {"height": base, "shots": shots, "wrap": []}, before
 
-        if wrap:
-            for addr in wrap:
-                sheet.Range(addr).MergeArea.WrapText = True
-            wrapped = list(wrap)
-        extra = _direct_extra_height(sheet, items, need)
-        height = min(autofix.MAX_ROW_HEIGHT, round(base + extra, 2))
-        if height > base or wrapped:
+        estimate = min(autofix.MAX_ROW_HEIGHT, round(base + _direct_extra_height(sheet, items, need), 2))
+        tried: list[float] = []
+        height, by, more = base, "", 0.0
+        for attempt in (1, 2):
+            if attempt == 2:
+                if chosen is not None:
+                    break
+                sheet.Rows(row).RowHeight = base
+                force = [] if wrapped else _wrap_targets(sheet, items, force=True)
+                if force:
+                    # 只加高没修好：没开换行的格子开自动换行、从原行高重新算再试一次（用户 2026-11-02 选定）
+                    debug_log.event("🔁 只加高没修好，开换行再试", 格=force)
+                    wrap = force
+                elif by == "Excel":
+                    # Excel 算的高度（加一行余量）打印出来还不够：多留一行，和估算取高的，再试一次
+                    more = max(estimate, _excel_fit(sheet, row, items, extra_lines=2))
+                    debug_log.event("🔁 Excel 算的高度不够，多留一行再试", 上次=height, 这次=more, 估算=estimate)
+                    wrap = []
+                else:
+                    break
+            if wrap:
+                for addr in wrap:
+                    sheet.Range(addr).MergeArea.WrapText = True
+                wrapped = list(dict.fromkeys(wrapped + list(wrap)))
+            if attempt == 2 and not wrap:
+                height, by = (more, "Excel+余量") if more > estimate else (estimate, "估算")
+            else:
+                # 主要让 Excel 自己算正好要多高；算出来不比原来高（屏幕上够、打印出来不够）或算不出来，才用估算
+                fit = _excel_fit(sheet, row, items)
+                height, by = (fit, "Excel") if fit > base else (estimate, "估算")
+                debug_log.event("📏 行高", 次=attempt, Excel算=fit or "-", 估算=estimate, 原行高=base, 用=by)
+            if not wrap and (height <= base or height in tried):
+                break
+            tried.append(height)
             sheet.Rows(row).RowHeight = height
             started = time.perf_counter()
             wf._export_sheet_pdf(sheet, pdf)
@@ -1232,11 +1375,11 @@ def _prepare_row(
                      {_key(*_cell(group[0])): autofix._evaluate(pdf, group, cells, probe.text, probe.printed)[1]
                       for group in groups})
             timing["evaluate"] = timing.get("evaluate", 0.0) + time.perf_counter() - started
-            debug_log.event("🧪 试算", 次=1, 行高=height, 原行高=base, 通过=ok, 缺口pt=need,
+            debug_log.event("🧪 试算", 次=attempt, 行高=height, 按=by, 原行高=base, 通过=ok, 缺口pt=need,
                             打印缩放=autofix.print_scale(sheet), 换行=wrapped or "-", 用检测时的PDF=False,
                             比对秒=time.perf_counter() - started)
             if on_attempt is not None:
-                on_attempt(1, height, shots, wrapped)
+                on_attempt(attempt, height, shots, wrapped)
             if ok:
                 shutil.copyfile(pdf, session.chosen_pdf())
                 chosen = {"height": height, "shots": shots, "wrap": wrapped, "pdf": session.chosen_pdf()}
@@ -2314,7 +2457,7 @@ def _back_to_auto(excel: Any, session: Any, path: str, *, picked: bool = False) 
                     card.get("marked") and card["color"] != "yellow" and not card.get("finalized")):
                 continue  # 自动试过没通过的、你已标蓝 / 绿还没提交的、这次没选的，保持原样
             if _unchecked_fix_reason(card, group, enabled_types):
-                continue  # 未勾选的错误类型继续留给人工
+                continue  # 不是切字的问题继续留给人工
             if not unchanged and any(_touched(it, rows) for it in group):
                 card.update(handed_over=False, message=TOUCHED_MESSAGE)
                 kept += 1
@@ -2390,7 +2533,7 @@ def check_auto(fix_types: Any = None) -> None:
             cards = [c for c in _data()["cards"].values() if c.get("handed_over") and not c.get("dismissed")
                      and wf.in_current_folder(c["wb_path"])]
             if cards and all(_unchecked_fix_reason(c) for c in cards):
-                raise ValueError("待交回自动的问题均属于未勾选的错误类型，请先勾选对应错误类型后再点「转回自动」")
+                raise ValueError("待交回自动的问题都不是切字，自动修复只处理切字，请人工处理")
             raise ValueError("没有可以交回自动处理的问题")
 
 
@@ -3693,7 +3836,7 @@ def cancel_followups() -> int:
     return len(queue)
 
 
-DEFAULT_OPEN_LIMIT = 5
+DEFAULT_OPEN_LIMIT = 10
 _OPEN_LOCK = threading.Lock()
 # 每次重置打开记录加一；打开途中轮次变了，这批结果属于旧一轮，不再记入新一轮。
 _open_round = 0
@@ -3863,6 +4006,7 @@ def run() -> list[str]:
     # 每种任务都看着后台 Excel：它在看不见的地方卡住（弹了没人能点的框等）时结束它，不让任务永远卡着。
     # 清除颜色每改一格都报进度，卡 5 分钟就算卡住；检测类一张大表导出可能要很久，按默认时长
     watchdog = ExcelWatchdog(lambda: wf.log_msg(
+        "⚠️ 后台 Excel 弹出了没人能点的提示框，已结束本任务专用 Excel" if watchdog.dialog else
         "⏱ 这份文件扫描超过时间上限，已结束本任务专用 Excel，跳过这份文件" if watchdog.deadline_hit else
         "⚠️ 后台 Excel 长时间无进展，已结束本任务专用 Excel，当前文件将记录错误并重试或跳过"),
         timeout=UNHIGHLIGHT_STALL_SECONDS if kind == "batch_unhighlight" else None)
@@ -3933,7 +4077,9 @@ def run() -> list[str]:
 
             def each_file(path: str, work: Callable[[str], None]) -> bool:
                 """处理一份文件；程序出错（多半是 Excel 崩溃或卡住）重启 Excel 再试，还不行就跳过、可续跑"""
-                for tries in range(autofix.MAX_ERROR_RETRIES + 1):
+                tries = -1
+                while True:
+                    tries += 1
                     try:
                         watchdog.progress()
                         work(path)
@@ -3967,18 +4113,32 @@ def run() -> list[str]:
                                 err = restart_err
                             else:
                                 continue
-                        wf.log_msg(f"❌ {Path(path).name} 已跳过，继续其他文件，可续跑：{err}")
-                        with wf.STATE_LOCK:
-                            job.setdefault("file_errors", {})[path] = str(err)
-                            wf._persist_state()
-                        update_file_progress(workbook_rel_name(Path(path), wf.STATE["folder"]),
-                                             status="error", error=str(err), current_action="文件未完成，可续跑")
-                        # 下一个文件用新的 Excel，避免一次崩溃拖垮后面所有文件
+                        # 下一个文件用新的 Excel，避免一次崩溃拖垮后面所有文件；也别让它占着文件（用户要打开修）
                         session.close()
+                        message = file_problem.message_for(err, watchdog)
+                        label = workbook_rel_name(Path(path), wf.STATE["folder"])
+                        if file_problem.should_ask(err, message) and not _stopping(job):
+                            # 文件本身有问题（打不开、要密码、Excel 弹框卡住、被占用等）：停下来问用户
+                            wf.log_msg(f"⏸ {Path(path).name} 出错，等你选择重试还是跳过：{message}")
+                            update_file_progress(label, status="processing", error=message,
+                                                 current_action="出错了，等你选择重试还是跳过")
+                            choice = file_problem.ask(path, label, message, folder=wf.STATE["folder"],
+                                                      tick=watchdog.progress, should_stop=lambda: _stopping(job))
+                            watchdog.progress()
+                            if choice == "retry":
+                                wf.log_msg(f"🔁 重试 {Path(path).name}")
+                                update_file_progress(label, status="processing", error="",
+                                                     current_action="正在重试...")
+                                tries = -1
+                                continue
+                        wf.log_msg(f"❌ {Path(path).name} 已跳过，继续其他文件，可续跑：{message}")
+                        with wf.STATE_LOCK:
+                            job.setdefault("file_errors", {})[path] = message
+                            wf._persist_state()
+                        update_file_progress(label, status="error", error=message, current_action="文件未完成，可续跑")
                         return False
                     finally:
                         session.drop_copy(path)
-                return False
 
             def scan_body(path: str) -> None:
                 debug_log.begin(f"{'自动调整' if picked else '转回自动' if back else '扫描'} "
@@ -4154,7 +4314,7 @@ def run() -> list[str]:
             expected = list(dict.fromkeys(c["wb_path"] for c in cards))
             if kind == "batch_open":
                 # 后端也执行上限，旧任务续跑或直接调用接口不会绕过每次打开的数量。
-                # 先去掉别处已打开的，再取前五份，避免名额被已打开的文件占掉。
+                # 先去掉别处已打开的，再取前十份，避免名额被已打开的文件占掉。
                 selected = options.get("selected_files") is True
                 with _opening_files():
                     with wf.STATE_LOCK:
