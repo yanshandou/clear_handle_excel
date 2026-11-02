@@ -149,18 +149,24 @@ def record_for(sheet: Any, path: str | None = None) -> dict | None:
     return _records().get(_path(path), {}).get(key[0]) if path and key else None
 
 
-@contextmanager
-def applied(sheet: Any):
-    record = None if getattr(_analysis, "active", False) else record_for(sheet)
+def _usable(sheet: Any) -> dict | None:
+    """这张表现在有效的方向记录（没过期、规则版本对、文件没被外部改过）"""
+    record = record_for(sheet)
     if record and (record.get("stale") or record.get("rule_version") != RULE_VERSION):
-        record = None
+        return None
     if record:
         try:
             if record.get("version") != version(source(sheet)):
-                record = None
+                return None
         except (OSError, TypeError):
-            record = None
-    if record and record.get("selected") in (PORTRAIT, LANDSCAPE):
+            return None
+    return record if record and record.get("selected") in (PORTRAIT, LANDSCAPE) else None
+
+
+@contextmanager
+def applied(sheet: Any):
+    record = None if getattr(_analysis, "active", False) else _usable(sheet)
+    if record:
         with orientation(sheet, record["selected"]):
             yield
     else:
@@ -173,6 +179,37 @@ def with_layout(function):
         with applied(sheet):
             return function(sheet, *args, **kwargs)
     return run
+
+
+def to_save(sheet: Any) -> int | None:
+    """导出用的方向和 Excel 里设的不一样时，返回要保存进 Excel 的方向。
+    用户 2026-11-02 定：比较出更合适的方向（或人工指定的方向）要留在原 Excel 里，
+    不然 PDF 是横向、打开 Excel 却是竖向，比较就没有意义。"""
+    record = _usable(sheet)
+    if not record:
+        return None
+    try:
+        current = sheet.PageSetup.Orientation
+    except Exception:
+        return None
+    return record["selected"] if current != record["selected"] else None
+
+
+def saved_to_excel(records: dict, path: str, before: dict, changed: dict[str, dict | None]) -> None:
+    """方向写进 Excel 并保存后：记下新的页面设置，文件版本跟上，免得下次当成外部修改重新比较"""
+    entries = records.get(_path(path), {})
+    old_version = {k: before[k] for k in ("mtime_ns", "size")}
+    after = version(path)
+    for key, record in entries.items():
+        if record.get("version") != old_version:
+            continue
+        record["version"] = after
+        if key in changed:
+            if changed[key] is None:
+                record["stale"] = True  # 读不全新的打印设置：下次重新验证
+            else:
+                record["settings"] = changed[key]
+            record["saved_to_excel"] = True
 
 
 def token(path: str, name: str) -> str:

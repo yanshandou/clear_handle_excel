@@ -1209,7 +1209,7 @@ def print_layout_snapshot(folder: str | None = None) -> list[dict]:
                                        "hidden": len(m["hidden"]), "borders": len(m["borders"]), "cuts": len(m["cuts"])}
                            for direction, m in record.get("metrics", {}).items()}
                 rows.append({"path": path, "key": key, "file": workbook_rel_name(Path(path), root),
-                             **{k: record.get(k) for k in ("sheet", "original", "selected", "manual", "reason", "revision", "review_needed")},
+                             **{k: record.get(k) for k in ("sheet", "original", "selected", "manual", "reason", "revision", "review_needed", "saved_to_excel")},
                              "metrics": metrics,
                              "stale": bool(record.get("stale") or record.get("version") != current
                                            or record.get("rule_version") != print_layout.RULE_VERSION)})
@@ -3086,12 +3086,16 @@ def _export_workbook_pdfs(
             print_layout.prune(STATE.setdefault("print_layouts", {}), str(wb_path), layout_keys)
         file_stem = sanitize_filename(strip_review_prefix(wb_path.stem))
         exported: list[Path] = []
+        to_save: dict[str, tuple[str, int]] = {}
         for sheet in _exportable_sheets(wb):
             pdf_path = unique_pdf_path(
                 wb_path.parent, file_stem, sanitize_filename(sheet.Name), used_pdf_paths
             )
             if not choose_orientation or not prepare_print_layout(sheet, str(wb_path), pdf_path):
                 _export_sheet_pdf(sheet, pdf_path)
+            target = print_layout.to_save(sheet)
+            if target is not None:
+                to_save[print_layout.identity(sheet)[0]] = (str(sheet.Name), target)
             exported.append(pdf_path)
             with STATE_LOCK:
                 # PDF 人工复检按这个找回是哪个文件的哪张表
@@ -3102,11 +3106,60 @@ def _export_workbook_pdfs(
             )
         action = f"已导出 {len(exported)} 份 PDF"
         log_msg(f"  {action}")
-        update_file_progress(
-            wb_label, status="done", exported_pdfs=len(exported), current_action=action,
-            all_sheets=[sheet.Name for sheet in wb.Sheets],
-        )
-        return exported
+        all_sheets = [sheet.Name for sheet in wb.Sheets]
+    finally:
+        wb.Close(SaveChanges=False)
+    if to_save:
+        update_file_progress(wb_label, current_action="正在把打印方向保存进 Excel...")
+        _save_print_orientations(get_excel, wb_path, to_save)
+    update_file_progress(
+        wb_label, status="done", exported_pdfs=len(exported), current_action=action,
+        all_sheets=all_sheets,
+    )
+    return exported
+
+
+def _save_print_orientations(get_excel: Callable[[], Any], wb_path: Path, to_save: dict[str, tuple[str, int]]) -> None:
+    """PDF 用的打印方向和 Excel 里设的不一样：把方向保存进原 Excel（用户 2026-11-02 定）。
+    PDF 已经导出好了，这里出错只记日志、不算导出失败。"""
+    names = "、".join(f"[{name}]→{print_layout.label(target)}" for name, target in to_save.values())
+    debug_log.event("📐 打印方向保存进 Excel", 文件=wb_path.name, 表=names)
+    if workbook_locked(wb_path):
+        log_msg(f"  ⚠️ {wb_path.name} 正在 Excel 里打开，打印方向没能保存进去（{names}）；PDF 已按这个方向导出，关掉文件后再导出一次即可保存")
+        return
+    try:
+        wb = open_workbook_checked(get_excel(), str(wb_path.resolve()), UpdateLinks=0)
+    except Exception as err:
+        log_msg(f"  ⚠️ {wb_path.name} 打不开，打印方向没能保存进去（{names}）：{err}")
+        return
+    print_layout.bind(wb, str(wb_path))
+    try:
+        changed: dict[str, dict | None] = {}
+        done: list[str] = []
+        for sheet in wb.Sheets:
+            key = print_layout.identity(sheet)
+            if not key or key[0] not in to_save:
+                continue
+            name, target = to_save[key[0]]
+            try:
+                sheet.PageSetup.Orientation = target
+                if sheet.PageSetup.Orientation != target:
+                    raise ValueError("Excel 没有接受新的方向")
+            except Exception as err:
+                log_msg(f"  ⚠️ [{name}] 打印方向没能改成{print_layout.label(target)}：{err}")
+                continue
+            changed[key[0]] = print_layout.settings(sheet)
+            done.append(f"[{name}] {print_layout.label(target)}")
+        if not changed:
+            return
+        before = _file_version(wb_path)
+        wb.Save()
+        with STATE_LOCK:
+            print_layout.saved_to_excel(STATE.setdefault("print_layouts", {}), str(wb_path), before, changed)
+            _persist_state()
+        log_msg(f"  💾 打印方向已保存进 Excel：{'、'.join(done)}")
+    except Exception as err:
+        log_msg(f"  ⚠️ {wb_path.name} 打印方向没能保存进去：{err}")
     finally:
         wb.Close(SaveChanges=False)
 

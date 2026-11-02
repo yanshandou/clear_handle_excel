@@ -4,5 +4,6 @@
 .print-layout-table th { white-space: nowrap; }
 .print-layout-table select { display: block; padding: 6px; margin-bottom: 8px; min-width: 160px; }
 .print-layout-stale { color: #a45314; }
+.print-layout-saved { color: #1d6b3a; }
 #printLayoutsDetails summary { cursor: pointer; font-weight: 600; }
 #printLayoutsStatus { margin-top: 10px; }
