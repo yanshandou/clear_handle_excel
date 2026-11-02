@@ -105,8 +105,8 @@
 
       <button type="button" class="feature-card feature-sky" onclick="openTask('export_pdf')">
         <span class="feature-text">
-          <span class="feature-title">导出 PDF</span>
-          <span class="feature-sub">批量导出可见工作表</span>
+          <span class="feature-title">人工复检</span>
+          <span class="feature-sub">导出 PDF · 逐页查看 · 标记处理</span>
           <span class="feature-meta" id="meta_export_pdf">只读打开，不改原文件</span>
         </span>
         <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-pdf">📄</span></span>
@@ -156,7 +156,7 @@
     <div id="taskDialogHead" class="task-dialog-head feature-sky">
       <span id="taskDialogIcon" class="task-dialog-icon" aria-hidden="true">📄</span>
       <div class="task-dialog-heading">
-        <h2 id="taskDialogTitle">导出 PDF</h2>
+        <h2 id="taskDialogTitle">人工复检</h2>
         <p id="taskDialogSub"></p>
       </div>
       <button type="button" class="task-dialog-close" onclick="closeTask()" aria-label="关闭">✕</button>
@@ -200,7 +200,6 @@
     <div class="task-dialog-foot">
       <span id="taskHint" class="task-hint"></span>
       <button type="button" class="btn btn-outline" onclick="closeTask()">关闭</button>
-      <a href="/pdf-review" id="taskReviewBtn" class="btn btn-success hidden" onclick="openPdfReview()" title="复检上面这个文件夹里已经导出的 PDF：看到问题点一下，用 Excel 打开那一格（可同时打开原始备份对照）">🔎 人工复检</a>
       <button type="button" class="btn btn-primary" id="taskPrimaryBtn" onclick="onPrimaryAction()">开始</button>
     </div>
   </dialog>

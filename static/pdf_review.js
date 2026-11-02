@@ -87,7 +87,7 @@ async function load() {
 function renderDocs() {
   const box = $('prDocs');
   if (!pdfs.length) {
-    box.innerHTML = '<p class="pr-empty">这个文件夹里没有 PDF。先在主页用「导出 PDF」导出，再回来复检。</p>';
+    box.innerHTML = '<p class="pr-empty">这个文件夹里没有 PDF。先在主页「人工复检」里点「导出 PDF」，导完点「查看 PDF」回来。</p>';
     pageEls = [];
     $('prBar').classList.add('hidden');
     updateStatus();
