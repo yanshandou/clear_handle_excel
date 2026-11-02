@@ -1987,6 +1987,15 @@ body {
 .feature-mint { --g-top: #c384f3; --g-bot: #9c60ed; --g-edge: #7637c3; --g-soft: #f2e8ff; }
 .feature-bl { --g-top: #f590d1; --g-bot: #e852af; --g-edge: #bd2c88; --g-soft: #ffe6f5; }
 .feature-distribute { --tile-cat: "COPY"; --g-top: #ffc56b; --g-bot: #f59a23; --g-edge: #c46a00; --g-soft: #fff1dc; }
+/* 主页卡片底色（图标已是透明底，颜色可随意选）：相邻两张卡（路线图横竖相邻、窄屏上下相邻）不同色。
+   写在上面几条之后，同权重后写的生效。 */
+.tone-green  { --g-top: #91e46a; --g-bot: #51bf39; --g-edge: #329322; --g-soft: #e6f9d8; }
+.tone-yellow { --g-top: #ffd45e; --g-bot: #f5a623; --g-edge: #d87a0d; --g-soft: #fff3d6; }
+.tone-purple { --g-top: #c384f3; --g-bot: #9c60ed; --g-edge: #7637c3; --g-soft: #f2e8ff; }
+.tone-blue   { --g-top: #50c7f5; --g-bot: #168fe6; --g-edge: #0873b9; --g-soft: #e2f3ff; }
+.tone-pink   { --g-top: #f590d1; --g-bot: #e852af; --g-edge: #bd2c88; --g-soft: #ffe6f5; }
+.tone-orange { --g-top: #ffa36b; --g-bot: #f2701f; --g-edge: #c2500c; --g-soft: #ffeadb; }
+.tone-teal   { --g-top: #5fe3cf; --g-bot: #17b5a2; --g-edge: #0b8678; --g-soft: #dcf8f3; }
 
 .feature-card {
   justify-content: flex-start;
@@ -2028,25 +2037,25 @@ body {
   transform: none;
 }
 
-/* 首页八个功能共用一张精灵图；每个格子对应一个独立功能。 */
+/* 首页九个功能共用一张精灵图（3×3，透明底）。图标在格子里不完全居中，
+   所以每个图标按自己的实际范围取一块 356×356 的区域，居中显示、大小一致。 */
 .feature-icon {
   width: 150px;
   height: 150px;
   background-image: url("/static/icons/home-features.png");
-  background-size: 400% 200%;
+  background-size: 406.742% 305.056%;
   background-repeat: no-repeat;
   filter: none;
 }
-.feature-icon-clean      { background-position: 0% 0%; }
-.feature-icon-inspect    { background-position: 33.333% 0%; }
-.feature-icon-normalize  { background-position: 66.667% 0%; }
-.feature-icon-pdf        { background-position: 100% 0%; }
-.feature-icon-references { background-position: 0% 100%; }
-.feature-icon-colors     { background-position: 33.333% 100%; }
-.feature-icon-hidden     { background-position: 66.667% 100%; }
-.feature-icon-bl-links   { background-position: 100% 100%; }
-/* 精灵图只有八格：「按 JSON 复制」直接用大号 emoji */
-.feature-icon-distribute { background-image: none; font-size: 96px; color: initial; line-height: 150px; text-align: center; }
+.feature-icon-clean      { background-position: 9.707% 3.562%; }
+.feature-icon-inspect    { background-position: 49.176% 4.110%; }
+.feature-icon-normalize  { background-position: 89.835% 4.384%; }
+.feature-icon-pdf        { background-position: 9.890% 50.137%; }
+.feature-icon-references { background-position: 48.077% 49.589%; }
+.feature-icon-colors     { background-position: 89.652% 49.589%; }
+.feature-icon-hidden     { background-position: 9.707% 97.808%; }
+.feature-icon-bl-links   { background-position: 48.626% 96.712%; }
+.feature-icon-distribute { background-position: 89.835% 97.534%; }
 
 /* 白色铭牌：分类 + 名称 + 说明 + 状态 */
 .feature-text {
