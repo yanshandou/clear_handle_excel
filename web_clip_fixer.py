@@ -11,7 +11,7 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from core import autofix, batch, bl_links, debug_log, file_problem, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review
+from core import autofix, batch, bl_links, debug_log, distribute, file_problem, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review
 from core.common import (
     STATIC_DIR,
     console_print,
@@ -194,6 +194,22 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_bytes(image, "image/png", cacheable=True)
         elif parsed.path == "/repair-bl-links":
             self._serve_static_file("bl_links.html")
+        elif parsed.path == "/distribute":
+            self._serve_static_file("distribute.html")
+        elif parsed.path == "/api/distribute":
+            self._send_json({"ok": True, **distribute.status(), "history": distribute.history()})
+        elif parsed.path in {"/api/distribute/run", "/api/distribute/markdown"}:
+            run_id = parse_qs(parsed.query).get("id", [""])[0]
+            try:
+                run = distribute.get_run(run_id)
+            except ValueError as err:
+                self._send_json({"ok": False, "error": str(err)}, status=404)
+                return
+            if parsed.path.endswith("/run"):
+                self._send_json({"ok": True, "run": run})
+            else:
+                body = distribute.markdown(run).encode("utf-8")
+                self._send_bytes(body, "text/markdown; charset=utf-8", filename="copy_record.md")
         elif parsed.path == "/api/file-problem":
             self._send_json({"ok": True, "problem": file_problem.pending(), "settings": file_problem.get_settings()})
         elif parsed.path == "/api/bl_links":
@@ -432,6 +448,12 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
         elif self.path == "/api/bl_links/scan":
             bl_links.start(_require_folder(payload))
+            self._send_json({"ok": True})
+        elif self.path == "/api/distribute/preview":
+            self._send_json({"ok": True, "preview": distribute.preview(
+                payload.get("plan"), payload.get("source_root"), payload.get("dest_root"))})
+        elif self.path == "/api/distribute/start":
+            distribute.start()
             self._send_json({"ok": True})
         elif self.path == "/api/bl_links/clear":
             bl_links.clear()
