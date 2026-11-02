@@ -531,6 +531,16 @@ class WebHandler(BaseHTTPRequestHandler):
                 if color:
                     options["color"] = color
                 self._start_job(f"batch_{action}", options)
+        elif self.path in {"/api/batch/learn", "/api/batch/apply"}:
+            # 按分类示范学习修复：学一下 = 找出你改过的格子、总结规律；按规律修 = 改这一类剩下的并复检
+            key = payload.get("category")
+            if not isinstance(key, str) or not key:
+                raise ValueError("请先选一个分类")
+            ids = batch.category_card_ids(key)
+            if not ids:
+                raise ValueError("这一类已经没有要处理的格子了")
+            self._start_job("batch_learn" if self.path.endswith("learn") else "batch_apply",
+                            {"category": key, "card_ids": ids})
         elif self.path == "/api/batch/followups/start":
             # 暂停时留着的排队复检 / 提交：现在就开始
             autofix.release_excel()

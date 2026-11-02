@@ -177,3 +177,47 @@ html:has(#largeView[open]) { overflow: hidden; }
 .batch-file-actions [data-file-action="select"][aria-pressed="true"] { border-color: #1e293b; background: #ffc21f; color: #1e293b; }
 .batch-card-title .batch-cell-link { font-family: Consolas, "Yu Gothic UI", monospace; }
 .repair-filter-buttons { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 10px; }
+
+/* 按分类处理：左边分类列表，右边三步 + 格子清单。点分类只换颜色，不挪位置 */
+.learn-layout { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 18px; align-items: start; }
+.learn-layout > * { min-width: 0; }
+.learn-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 70vh; overflow-y: auto; }
+.learn-type { margin: 10px 0 2px; font-weight: 800; color: var(--ink, #1c2858); font-size: 14px; }
+.learn-type:first-child { margin-top: 0; }
+.learn-cat { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 8px 10px; border: 2px solid var(--ink, #1c2858);
+  border-radius: 10px; background: #fff; color: var(--ink, #1c2858); font: inherit; font-size: 14px; cursor: pointer; box-shadow: 2px 2px 0 var(--ink, #1c2858); }
+.learn-cat:hover { background: var(--purple-soft, #e2eeff); }
+.learn-cat[aria-pressed="true"] { background: var(--purple-ink, #1f5fc4); color: #fff; }
+.learn-cat-name { flex: 1; min-width: 0; }
+.learn-count { flex: none; min-width: 2.2em; text-align: center; padding: 1px 6px; border: 1.5px solid var(--ink, #1c2858); border-radius: 999px;
+  background: #fff; color: var(--ink, #1c2858); font-weight: 800; font-size: 13px; text-shadow: none; -webkit-text-stroke: 0; }
+.learn-badge { flex: none; }
+.learn-empty { color: var(--ink-3, #56628f); }
+.learn-meta { color: var(--ink-3, #56628f); font-size: 14px; }
+.learn-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin-bottom: 10px; }
+.learn-head h3 { margin: 0; font-size: 18px; color: var(--ink, #1c2858); }
+.learn-steps { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.learn-steps > li { display: flex; gap: 12px; padding: 10px 12px; border: 2px solid var(--line-soft, #dbe4f3); border-radius: 12px; background: #fff; }
+.learn-steps > li > div { flex: 1; min-width: 0; }
+.learn-steps p { margin: 4px 0 8px; color: var(--ink-2, #26326a); font-size: 14px; }
+.learn-step-no { flex: none; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; background: var(--ink, #1c2858); color: #fff; font-weight: 800; }
+.learn-rule { margin-top: 10px; padding: 8px 12px; border-radius: 10px; border: 2px solid var(--line-soft, #dbe4f3); background: var(--paper, #e9f1fc); font-size: 14px; color: var(--ink, #1c2858); }
+.learn-rule.is-ok { border-color: #1e7a45; background: #e6f6ec; }
+.learn-rule.is-bad { border-color: #a35a00; background: #fff4e0; }
+.learn-rule-text { margin: 0; }
+.learn-rule ul { margin: 4px 0 0; padding-left: 20px; }
+.learn-rule details { margin-top: 6px; }
+.learn-table-wrap { overflow-x: auto; border: 2px solid var(--line-soft, #dbe4f3); border-radius: 10px; max-height: 60vh; overflow-y: auto; }
+.learn-table { width: 100%; border-collapse: collapse; font-size: 14px; background: #fff; }
+.learn-table th, .learn-table td { padding: 6px 10px; border-bottom: 1px solid var(--line-soft, #dbe4f3); text-align: left; vertical-align: top; color: var(--ink, #1c2858); }
+.learn-table th { position: sticky; top: 0; background: var(--paper, #e9f1fc); font-weight: 800; z-index: 1; }
+.learn-table td:nth-child(3) { white-space: nowrap; }
+.learn-text { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.learn-state { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; background: var(--paper, #e9f1fc); color: var(--ink, #1c2858); }
+tr[data-state="demo"] .learn-state { background: #1e7a45; color: #fff; }
+tr[data-state="applied"] .learn-state { background: var(--purple-ink, #1f5fc4); color: #fff; }
+tr[data-state="new"] .learn-state { background: #fff4e0; color: #7a4a00; }
+@media (max-width: 800px) {
+  .learn-layout { grid-template-columns: minmax(0, 1fr); }
+  .learn-list { max-height: 40vh; }
+}
