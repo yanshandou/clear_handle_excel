@@ -238,6 +238,10 @@ class PrepareTests(unittest.TestCase):
 
 class BatchBreakTests(unittest.TestCase):
     def setUp(self):
+        # 自动修复现在只修切字；旧的自动插分页代码还留着，这里放开类型限制继续测它
+        legacy = patch.object(batch.autofix, "AUTO_FIX_ERROR_TYPES", batch.autofix.FIXABLE_ERROR_TYPES)
+        legacy.start()
+        self.addCleanup(legacy.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

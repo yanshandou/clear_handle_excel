@@ -328,6 +328,23 @@
   border-radius: 999px;
 }
 
+/* 正在看的这一份 PDF 占的那一段：深色小段，份数多、不画分界线时也能看出这一份有多长 */
+.pr-cur {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 4px;
+  background: var(--ink);
+  opacity: 0.45;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+/* 份数太多、分界线挤在一起时不画分界线（否则整条变成竖条纹） */
+.pr-track.is-dense .pr-tick {
+  display: none;
+}
+
 /* 每份 PDF 的分界 */
 .pr-tick {
   position: absolute;

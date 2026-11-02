@@ -223,16 +223,31 @@ function atBottom() {
   return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
 }
 
+// 进度条上每份 PDF 之间画一条分界线；份数多了线挤成一片竖条纹，看不清，
+// 所以平均间距小于 TICK_MIN_GAP 像素就不画分界线，只用深色小段标出正在看的这一份
+const TICK_MIN_GAP = 14;
+let docSpans = [];       // 每份 PDF 在进度条上的 [起点, 终点]（0~1）
+
 function renderTrack() {
   const total = pageEls.length;
   let before = 0;
-  const ticks = pdfs.slice(0, -1).map(doc => {
+  docSpans = pdfs.map(doc => {
+    const start = before;
     before += doc.error ? 0 : doc.pages.length;
-    return total ? `<span class="pr-tick" style="left:${before / total * 100}%"></span>` : '';
-  }).join('');
-  $('prTrack').innerHTML = `<div id="prFill" class="pr-fill"></div>${ticks}`;
+    return total ? [start / total, before / total] : [0, 0];
+  });
+  const ticks = docSpans.slice(0, -1)
+    .map(([, end]) => `<span class="pr-tick" style="left:${end * 100}%"></span>`).join('');
+  $('prTrack').innerHTML = `<div id="prFill" class="pr-fill"></div><div id="prCur" class="pr-cur"></div>${ticks}`;
+  fitTicks();
   whereDoc = -1;
   updateWhere();
+}
+
+// 按进度条现在的宽度决定画不画分界线（窗口大小变了再判断一次）
+function fitTicks() {
+  const width = $('prTrack').getBoundingClientRect().width;
+  $('prTrack').classList.toggle('is-dense', pdfs.length > 1 && width / pdfs.length < TICK_MIN_GAP);
 }
 
 // 读线所在的页（序号）和读线在这一页里的位置（0~1）；页面从上到下排，二分查找
@@ -258,6 +273,7 @@ function updateWhere() {
   if (!pageEls.length) {
     $('prWhereText').innerHTML = '<span class="pr-where-pos">没有可看的页面</span>';
     $('prFill').style.width = '0';
+    if ($('prCur')) $('prCur').style.width = '0';
     whereDoc = -1;
     return;
   }
@@ -270,6 +286,9 @@ function updateWhere() {
   const pos = `第 ${d + 1} / ${pdfs.length} 份 · 第 ${p + 1} / ${doc.pages.length} 页`;
   if (whereDoc !== d) {
     whereDoc = d;
+    const [start, end] = docSpans[d] || [0, 0];
+    $('prCur').style.left = `${start * 100}%`;
+    $('prCur').style.width = `${(end - start) * 100}%`;
     const excel = doc.wb_name
       ? `<span class="pr-where-excel" title="${escapeHtml(doc.wb_name)} › ${escapeHtml(doc.sheet)}">📗 ${excelLinkHtml(`${escapeHtml(doc.wb_name)} › ${escapeHtml(doc.sheet)}`, excelTarget(doc))}</span>`
       : `<span class="pr-doc-warn" title="${escapeHtml(doc.pdf)}">⚠ ${escapeHtml(doc.name)} 找不到对应的 Excel</span>`;
@@ -375,7 +394,7 @@ $('prView').addEventListener('click', e => {
   if (button) setView(button.dataset.view);
 });
 window.addEventListener('scroll', scheduleWhere, { passive: true });
-window.addEventListener('resize', scheduleWhere);
+window.addEventListener('resize', () => { if (pageEls.length) fitTicks(); scheduleWhere(); });
 watchBars();
 {
   let view = 'large';

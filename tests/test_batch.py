@@ -247,7 +247,10 @@ class BatchTests(unittest.TestCase):
         _, other = self.add_card("B5")
         other["status"] = "pending"
         batch._data()["rows"].clear()
-        batch.set_fix_error_types(list(batch.autofix.FIXABLE_ERROR_TYPES))
+        # 旧的自动加宽代码还留着（现在不会走到）：放开类型限制，照样测它写入失败时的日志
+        legacy = patch.object(batch.autofix, "AUTO_FIX_ERROR_TYPES", batch.autofix.FIXABLE_ERROR_TYPES)
+        legacy.start()
+        self.addCleanup(legacy.stop)
         with patch.object(batch, "_prepare_column", return_value={
             "base_cols": {"1": 8.0}, "target_cols": {"1": 11.0}, "after": "", "pdf": None,
         }), patch.object(batch, "_prepare_row") as prepare, \
@@ -604,15 +607,14 @@ class BatchTests(unittest.TestCase):
             batch._repair_file(self.excel, Mock(), self.path)
         self.assertEqual(prepared, [["B5"]])  # 同行其他格照常试
         self.assertEqual((hashed["color"], hashed["manual"]), ("yellow", True))
-        self.assertEqual(hashed["message"], autofix.COLUMN_ONLY_REASON)
+        self.assertIn("自动修复只处理切字，「### 列宽不足」", hashed["message"])
 
     def test_only_column_width_problem_in_row_skips_row_prepare_and_can_widen_column(self):
         from core.hidden_text import REASON_HASH
         card, item = self.add_card("A5")
         batch._data()["rows"].clear()
         item.update(status="pending", hidden_reason=REASON_HASH)
-        # 未勾选 ### 列宽不足时：不打开副本，也不调 _prepare_row
-        batch.set_fix_error_types(["border_clip", "text_truncated", "box_overflow", "page_break_cut"])
+        # ### 列宽不足不自动修：不打开副本，也不调 _prepare_row
         session = Mock()
         with patch.object(batch, "_prepare_row") as prepare:
             batch._repair_file(self.excel, session, self.path)
@@ -620,8 +622,10 @@ class BatchTests(unittest.TestCase):
         session.copy_of.assert_not_called()
         self.assertTrue(card["manual"])
 
-        # 勾选 ### 列宽不足时：自动加宽列并保存到原文件，提交标绿/标黄时还原原列宽
-        batch.set_fix_error_types(["border_clip", "text_truncated", "box_overflow", "page_break_cut", "hash_overflow"])
+        # 旧的自动加宽代码还留着（现在不会走到）：放开类型限制，照样测加宽写入和还原
+        legacy = patch.object(batch.autofix, "AUTO_FIX_ERROR_TYPES", batch.autofix.FIXABLE_ERROR_TYPES)
+        legacy.start()
+        self.addCleanup(legacy.stop)
         self.wf.STATE["job"]["attempted_rows"] = []
         card.update(manual=False, waiting=True, handed_over=False)
         item["status"] = "pending"
@@ -1168,21 +1172,21 @@ class BatchTests(unittest.TestCase):
         with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot):
             base, chosen, before = batch._prepare_row(fixture.session, str(fixture.wb_path), items, timing=timing)
         self.assertEqual(base, 15)
-        self.assertEqual(chosen["height"], 30)  # 一步到位：直接加 1 行字高 (12pt) + 余白 (3pt) = +15pt
+        self.assertEqual(chosen["height"], 27)  # 只试一次：读不到字号按一行 12pt 加，不另加余白
         self.assertEqual(timing["exports"], 2)  # 原样 1 次 + 一步到位核验 1 次
         self.assertTrue(all(before.values()))
         cid = batch._key(*batch._cell(items[0]))
         self.assertTrue(chosen["shots"][cid])
-        # 多行截断缺口更大时按缺口 + 余白一步给够（例如缺 2 行 = 24pt，加 3pt 余白 = +27pt → 42pt）
+        # 多行截断缺口更大时按缺几行一次加够（例如缺 24pt = 2 行 × 12pt → 39pt）
         original_evaluate = fixture.autofix._evaluate
         def evaluate_multi_line(*args, **kwargs):
             ok, shot, _ = original_evaluate(*args, **kwargs)
             height = fixture.session.copy_of(str(fixture.wb_path)).heights[5]
-            return (height >= 42.0, shot, 24.0 if height == 15.0 else 0.0)
+            return (height >= 39.0, shot, 24.0 if height == 15.0 else 0.0)
         with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot), \
                 patch.object(fixture.autofix, "_evaluate", side_effect=evaluate_multi_line):
             _, chosen, _ = batch._prepare_row(fixture.session, str(fixture.wb_path), items)
-        self.assertEqual(chosen["height"], 42)
+        self.assertEqual(chosen["height"], 39)
 
     def test_preparation_reuses_checked_pdf_and_keeps_the_written_state(self):
         """原样那张用刚检测导出的 PDF；一步到位那次导出就是写入的状态，直接留下给重新检测用"""
@@ -1204,9 +1208,9 @@ class BatchTests(unittest.TestCase):
         timing = {}
         with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot):
             base, chosen, before = batch._prepare_row(session, path, items, timing=timing)
-        self.assertEqual((base, chosen["height"]), (15, 30))
+        self.assertEqual((base, chosen["height"]), (15, 27))
         self.assertTrue(all(before.values()))
-        self.assertEqual(timing["exports"], 1)  # 原样 15 复用检测 PDF，一步到位 30 仅导出 1 次
+        self.assertEqual(timing["exports"], 1)  # 原样 15 复用检测 PDF，加高到 27 仅导出 1 次
         self.assertEqual(chosen["pdf"], session.chosen_pdf())
         self.assertTrue(chosen["pdf"].is_file())
         # 原文件写入保存后：副本做同样修改继续用，这张表用通过那次的 PDF，别的表沿用
@@ -1480,7 +1484,7 @@ class BatchTests(unittest.TestCase):
                 fixture.session, str(fixture.wb_path), items,
                 on_attempt=lambda index, height, shots, wrapped: frames.append((index, height, shots)))
         self.assertIsNone(chosen)
-        self.assertEqual((base, frames[-1][0], frames[-1][1]), (15, 1, 30))
+        self.assertEqual((base, frames[-1][0], frames[-1][1]), (15, 1, 27))
         self.assertTrue(all(before.values()) and all(frames[-1][2].values()))
         self.assertEqual(fixture.real_heights[5], 15)
         self.assertEqual(fixture.session.copy_of(str(fixture.wb_path)).heights[5], 15)
@@ -2068,13 +2072,18 @@ class BatchTests(unittest.TestCase):
         sheet = Mock()
         sheet.PageSetup.Zoom = 100
         sheet.Range.return_value.MergeArea.Cells.return_value.Font.Size = 15.0
-        # 15pt 字体单行约 18pt，加 3pt 余白 = 21pt
-        self.assertEqual(batch._direct_extra_height(sheet, [{"cell_addr": "B5", "text": "あいう"}], 0.0), 21.0)
-        # 横向被裁只显示 5 个字、全文 13 个字：还差 8 个字（约 2 行），2 * 18 + 3 = 39pt
+        # 15pt 字体 × 1.2 = 一行 18pt，只加这一行，不再另加余白
+        self.assertEqual(batch._direct_extra_height(sheet, [{"cell_addr": "B5", "text": "あいう"}], 0.0), 18.0)
+        # 横向被裁只显示 5 个字、全文 13 个字：还差 8 个字（约 2 行），2 * 18 = 36pt
         self.assertEqual(
             batch._direct_extra_height(sheet, [{"cell_addr": "B5", "text": "1234567890123", "visible_text": "12345"}], 0.0),
-            39.0,
+            36.0,
         )
+        # PDF 上量到缺 20pt（100% 缩放）：一行 18pt 不够，按 2 行加
+        self.assertEqual(batch._direct_extra_height(sheet, [{"cell_addr": "B5", "text": "あいう"}], 20.0), 36.0)
+        # 读不到字号：按 12pt 一行
+        sheet.Range.side_effect = RuntimeError("no font")
+        self.assertEqual(batch._direct_extra_height(sheet, [{"cell_addr": "B5", "text": "あいう"}], 0.0), 12.0)
 
     def test_prepare_column_adds_one_and_half_char_margin_and_exports_once(self):
         from core.hidden_text import REASON_HASH

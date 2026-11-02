@@ -33,11 +33,15 @@ BLANK_PLACEHOLDER_WORDS = {
 # 只由横线、波浪线、斜线、点组成的格子（-、－、ー、―、〜、/、・ 等）也算占位
 BLANK_PLACEHOLDER_SYMBOLS = re.compile(r"[-‐‑‒–—―ー─━~〜～/・.。…]+")
 # 复制工作表产生的「(2)」「(3)」后缀（全角括号统一为半角后判断，有无空格均可），
-# 后面还可以再接日期，如「様式１（基本情報）(2)_20221005」；仍要求同工作簿存在原表才算备份
-EXCEL_COPY_SUFFIX_PATTERN = re.compile(r"\s*\(\d+\)[\s_\-・.]*$")
+# 后面还可以再接日期，如「様式１（基本情報）(2)_20221005」；仍要求同工作簿存在原表才算备份。
+# 编号最多 3 位数字：括号里 4 位以上的是日期（如「月次集計ビュー (20220916)」，用户 2026-11-02），不是编号
+EXCEL_COPY_SUFFIX_PATTERN = re.compile(r"\s*\(\d{1,3}\)[\s_\-・.]*$")
 # 名称末尾不带年份的 4 位月日（MMDD），如「請求書1)0513」；前面不能紧挨数字或英文字母，
 # 避免把 SSSEE0114 这类表编号当成日期；只作备份标记，不参与「多个日期版本」的新旧比较
 MMDD_SUFFIX_PATTERN = re.compile(r"(?<![a-zA-Z\d])(\d{2})(\d{2})[\s_\-・.]*$")
+# 名称末尾两位年份的 6 位年月日（YYMMDD，年份按 20YY，不晚于今年），如「お客様介保社福軽減ビュー_170120」（用户 2026-11-02）；
+# 可带括号；前面不能紧挨数字或英文字母（避免把编号当成日期），月日必须有效
+YYMMDD_SUFFIX_PATTERN = re.compile(r"(?<![a-zA-Z\d])\(?(\d{2})(\d{2})(\d{2})\)?[\s_\-・.]*$")
 # 工具自动生成的工作表（如 自動生成_引数、自動生成_JSON），没有对应原表，精简 Sheet 时默认删除
 AUTO_GENERATED_PREFIXES = ("自動生成", "自动生成")
 # 表名多出的英文词里像临时版本的（サンプル 与 サンプルtest 仍标待定），其余英文词（JSON、CSV、PDF…）算另一张表
@@ -104,8 +108,20 @@ def _date_of(match: re.Match[str]) -> str | None:
     return text if _is_valid_date(text) else None
 
 
+def _yymmdd_suffix_date(text: str) -> str | None:
+    """名称末尾的两位年份日期（如 _170120 → 20170120），无效或晚于今年时返回 None"""
+    m = YYMMDD_SUFFIX_PATTERN.search(text)
+    if not m:
+        return None
+    date = f"20{m.group(1)}{m.group(2)}{m.group(3)}"
+    return date if _is_valid_date(date) and int(date[:4]) <= datetime.now().year else None
+
+
 def _latest_date_in(name: str) -> str | None:
-    dates = [d for m in DATE_PATTERN.finditer(unicodedata.normalize("NFKC", name)) if (d := _date_of(m))]
+    text = unicodedata.normalize("NFKC", name)
+    dates = [d for m in DATE_PATTERN.finditer(text) if (d := _date_of(m))]
+    if (short := _yymmdd_suffix_date(text)) is not None:
+        dates.append(short)
     return max(dates) if dates else None
 
 
@@ -116,7 +132,7 @@ def _has_mmdd_suffix(text: str) -> bool:
 
 
 def has_backup_marker(sheet_name: str) -> bool:
-    """名称是否带备份标记：有效日期（YYYYMMDD 或 YYYY-MM-DD 等，或末尾的 4 位月日 MMDD）、bak/backup/old/copy、
+    """名称是否带备份标记：有效日期（YYYYMMDD 或 YYYY-MM-DD 等，末尾的 6 位 YYMMDD 或 4 位月日 MMDD）、bak/backup/old/copy、
     バックアップ/备份/旧/コピー/副本，或复制产生的「(2)」后缀。
 
     只是候选条件，是否真的是备份表见 find_backup_sheets。
@@ -158,6 +174,8 @@ def _original_name_of(backup_name: str) -> str:
     """去掉备份标记后的原表名称，如 基本情報_20241003 → 基本情報"""
     text = unicodedata.normalize("NFKC", backup_name)
     text = DATE_PATTERN.sub(lambda m: "" if _date_of(m) else m.group(0), text)
+    if _yymmdd_suffix_date(text) is not None:
+        text = YYMMDD_SUFFIX_PATTERN.sub("", text)
     text = EXCEL_COPY_SUFFIX_PATTERN.sub("", text)
     text = COPY_PHRASE_PATTERN.sub("", text)
     text = BACKUP_WORD_PATTERN.sub("", text)
