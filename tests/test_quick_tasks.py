@@ -825,6 +825,17 @@ class QuickTaskTests(unittest.TestCase):
             "月次お客様実施数集計ビュー (20220916)", "月次お客様実施数集計ビュー（20221001）", "一覧（2022-09-16）",
         ])
 
+    def test_two_digit_year_suffix_is_date(self):
+        # 用户 2026-11-02：「お客様介保社福軽減ビュー_170120」的 17 是 2017 年，有原表时默认删除
+        names = [
+            "お客様介保社福軽減ビュー", "お客様介保社福軽減ビュー_170120", "一覧", "一覧(180301)",
+            "帳票", "帳票_991231", "画面", "画面_123456", "SSSEE170120",
+        ]
+        self.add_book("yymmdd.xlsx", names)
+        files = {f["name"]: f for f in self.workflow.preview_backup_sheets(str(self.folder))["files"]}
+        # 2099 年晚于今年、123456 不是有效月日、字母紧接数字的是编号，都不算日期
+        self.assertEqual(files["yymmdd.xlsx"]["backups"], ["お客様介保社福軽減ビュー_170120", "一覧(180301)"])
+
     def test_black_tab_defaults_to_delete(self):
         self.add_book("black.xlsx", ["Main", "Black", "Uncolored"])
         self.books["black.xlsx"].sheets[1].tab_color = "000000"

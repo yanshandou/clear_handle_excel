@@ -61,6 +61,14 @@ const DATE_RE = /(?<!\d)((?:19|20)\d{2})([-/.]?)(\d{2})\2(\d{2})(?!\d)/g;
 // 名称末尾不带年份的 4 位月日（MMDD），前面不能紧挨数字或英文字母，避免把 SSSEE0114 这类表编号当成日期
 const MMDD_SUFFIX_RE = /(?<![a-zA-Z\d])(\d{2})(\d{2})[\s_\-・.]*$/;
 
+// 末尾两位年份的 6 位年月日（如 _170120 → 2017-01-20），可带括号，年份不晚于今年
+const YYMMDD_SUFFIX_RE = /(?<![a-zA-Z\d])\(?(\d{2})(\d{2})(\d{2})\)?[\s_\-・.]*$/;
+
+function isValidYymmdd(m) {
+  const ymd = `20${m[1]}${m[2]}${m[3]}`;
+  return isValidYmdDate(ymd) && Number(ymd.slice(0, 4)) <= new Date().getFullYear();
+}
+
 function hasMmddSuffix(text) {
   const m = MMDD_SUFFIX_RE.exec(text);
   return Boolean(m) && isValidYmdDate(`2000${m[1]}${m[2]}`);
@@ -82,6 +90,8 @@ function hasBackupMarker(sheetName) {
   if (/バックアップ|备份|コピー|副本|(?<![新復])旧/.test(text)) return true;
   if (/\s*\(\d{1,3}\)[\s_\-・.]*$/.test(text)) return true;
   if (hasMmddSuffix(text)) return true;
+  const yymmdd = YYMMDD_SUFFIX_RE.exec(text);
+  if (yymmdd && isValidYymmdd(yymmdd)) return true;
   const dateRe = new RegExp(DATE_RE.source, 'g');
   let m;
   while ((m = dateRe.exec(text)) !== null) {
@@ -148,6 +158,7 @@ function analyzeSheetName(displayName, { stripBackup = false, stripVersion = tru
 
   if (stripBackup) {
     applyStrip(DATE_RE, m => isValidYmdDate(m[1] + m[3] + m[4]), true);
+    applyStrip(YYMMDD_SUFFIX_RE, isValidYymmdd, true);
     applyStrip(/\s*\(\d{1,3}\)[\s_\-・.]*$/g, null, true);
     applyStrip(/copy\s+of|の?コピー|的?副本/gi, null, true);
     applyStrip(/(?<![a-z])(?:bak|backup|bk|old|copy)(?![a-z])/gi, null, true);
