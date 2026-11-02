@@ -393,10 +393,8 @@
   box-shadow: 0 3px 0 var(--mark);
 }
 
-.pr-doc[data-mark="yellow"] .pr-page,
-.pr-doc[data-mark="red"] .pr-page {
-  border-color: var(--mark);
-}
+.pr-page[data-mark="yellow"] { border-color: #f0b400; }
+.pr-page[data-mark="red"] { border-color: #c8102e; }
 
 .pr-mark {
   display: inline-flex;
@@ -441,9 +439,9 @@
 }
 
 /* 页面右上角的角标（浮层） */
-.pr-doc[data-mark="yellow"] .pr-page::before,
-.pr-doc[data-mark="red"] .pr-page::before,
-.pr-doc[data-mark="deleted"] .pr-page::before {
+.pr-page[data-mark="yellow"]::before,
+.pr-page[data-mark="red"]::before,
+.pr-page[data-mark="deleted"]::before {
   position: absolute;
   top: 8px;
   right: 8px;
@@ -455,23 +453,23 @@
   pointer-events: none;
 }
 
-.pr-doc[data-mark="yellow"] .pr-page::before {
-  content: "🟡 要人工改";
+.pr-page[data-mark="yellow"]::before {
+  content: "🟡 这一页要人工改";
   color: #3d2a00;
   background: #ffc21f;
 }
 
-.pr-doc[data-mark="yellow"].is-opened .pr-page::before {
-  content: "🟡 要人工改 · 已打开过";
+.is-opened .pr-page[data-mark="yellow"]::before {
+  content: "🟡 这一页要人工改 · 已打开过";
 }
 
-.pr-doc[data-mark="red"] .pr-page::before {
+.pr-page[data-mark="red"]::before {
   content: "🗑 一键处理时删除这张表";
   color: #fff;
   background: #c8102e;
 }
 
-.pr-doc[data-mark="deleted"] .pr-page::before {
+.pr-page[data-mark="deleted"]::before {
   content: "🗑 这张表已删除（PDF 也删了）";
   color: var(--ink-2);
   background: #e3e7f0;
@@ -634,4 +632,53 @@
 @media (max-width: 720px) {
   .pr-bar { flex-wrap: wrap; }
   .pr-summary { max-width: none; }
+}
+
+/* 一键处理结果：每一处都能点开 */
+.pr-result {
+  width: min(720px, calc(100vw - 32px));
+  padding: 0;
+}
+
+.pr-result-body {
+  max-height: 60vh;
+  overflow: auto;
+  margin: 0 22px;
+  padding: 4px 16px 12px;
+  border: 2px solid var(--ink);
+  border-radius: 14px;
+  background: #f5f8ff;
+}
+
+.pr-result-body h3 {
+  margin: 12px 0 6px;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.pr-result-body ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.9;
+  word-break: break-all;
+}
+
+.pr-result-tag {
+  margin-left: 6px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #3d2a00;
+  background: #ffc21f;
+  border-radius: 999px;
+}
+
+.pr-result-note {
+  display: block;
+  color: var(--ink-3);
+}
+
+.pr-result .app-dialog-foot form {
+  display: contents;
 }

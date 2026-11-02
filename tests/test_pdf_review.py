@@ -492,14 +492,18 @@ class ProcessTests(unittest.TestCase):
         self.assertIn("唯一", result["failed"][0]["reason"])
         self.assertTrue(self.pdfs["JSONサンプル"].exists())
 
-    def test_yellow_opens_each_file_once_at_the_marked_cell(self):
+    def test_yellow_opens_each_file_once_at_the_first_marked_cell(self):
         pdf = str(self.pdfs["一覧"].resolve())
         pdf_review._MAPS[pdf] = {"v": self.pdfs["一覧"].stat().st_mtime_ns, "state": "ready", "sheet": "一覧",
-                                 "rows": [{5: (100.0, 120.0)}], "cols": [{3: (200.0, 260.0)}]}
+                                 "rows": [{5: (100.0, 120.0)}, {9: (100.0, 120.0)}],
+                                 "cols": [{3: (200.0, 260.0)}, {2: (200.0, 260.0)}]}
         result, calls, _, opened = self.run_process(
-            yellow=[("一覧", {"page": 0, "x": 210, "y": 110}), ("明細", {})])
-        opened.assert_called_once_with(self.book_path, "一覧", "C5")
-        self.assertEqual([e["sheet"] for e in result["opened"]], ["一覧", "明細"])
+            yellow=[("一覧", {"spots": [{"page": 1, "x": 210, "y": 110}, {"page": 0, "x": 210, "y": 110}]}),
+                    ("明細", {"spots": [{"page": 0}]})])
+        opened.assert_called_once_with(self.book_path, "一覧", "C5")  # 第 1 页那处先
+        self.assertEqual([(e["sheet"], e["page"], e["cell"]) for e in result["opened"]],
+                         [("一覧", 0, "C5"), ("一覧", 1, "B9"), ("明細", 0, "")])
+        self.assertEqual([e["first"] for e in result["opened"]], [True, False, False])
         self.assertEqual(calls, [])
 
     def test_red_then_yellow_in_same_run(self):

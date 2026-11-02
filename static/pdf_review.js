@@ -2,15 +2,16 @@
 // PDF 人工复检：导出的 PDF 整页显示，看到问题点一下，就用 Excel 打开并选中那一格；
 // 填了原始备份文件夹时，备份也一起打开（只读）、跳到同一格，左右对照着改。
 // 每份 PDF 的行列位置由后台算（只算一次），点的格子也由后台按它算。
-// 三色标记（借鉴精简 Sheet）：每份 PDF（= 一张表）蓝 = 不用管（默认）、黄 = 要人工改、红 = 这张表不要了。
-// 单击页面仍是打开 Excel，所以标记用标题行右边的三个按钮，或在页面上右键选；右键标黄会记住右键的那一格。
+// 三色标记（借鉴精简 Sheet）：蓝 = 不用管（默认）、黄 = 这一页要人工改（按页标）、红 = 整张表不要了。
+// 单击页面仍是打开 Excel，所以标记用标题行右边的三个按钮（整张表），或在页面上右键（这一页）；右键标黄会记住那一格。
 // 看完后点底部「一键处理」：后台删掉标红的表并保存，再用 Excel 打开标黄的。
 
 const FOLDER_KEY = 'clear_handle_excel.lastFolder';
 const OLD_FOLDER_KEY = 'clear_handle_excel.oldFolder'; // 和修复颜色 / 引用 / 隐藏页共用
 const VIEW_KEY = 'clear_handle_excel.pdfReviewView';
-const MARKS_KEY = 'clear_handle_excel.pdfReviewMarks'; // {文件夹: {pdf: {color, v, page, x, y, opened}}}
+const MARKS_KEY = 'clear_handle_excel.pdfReviewMarks'; // {文件夹: {pdf: {v, red, pages: {页码: {x, y}}, opened}}}
 const MARK_TEXT = { blue: '不用管', yellow: '要人工改', red: '删除这张表' };
+const MARK_TITLE = { blue: '整张表不用管（清掉这张表的所有标记）', yellow: '整张表每页都标黄；只标某一页请在那一页上右键', red: '删除整张表（所有页）' };
 const VIEWS = ['large', 'medium', 'small'];
 const MIN_DRAG_PX = 6;  // 按下到松开挪动超过这么多就是在拖（选字、滚动），不算点
 const POLL_MS = 1500;
@@ -25,7 +26,7 @@ let polling = 0;
 let waiting = null;     // 点了还没算好的那份：{pdf, page, x, y, el}；算好就接着打开
 let opening = false;
 let press = null;       // 按下的位置，松开时判断是不是点了一下
-let marks = {};         // pdf -> {color: yellow / red, v, page, x, y, opened}；蓝色（默认）不记
+let marks = {};         // pdf -> {v, red, pages: {页码: {x, y}}, opened}；全蓝（默认）不记
 let deleted = new Set(); // 这次一键处理删掉的表（PDF 也删了，页面上灰掉，刷新后就不在了）
 let processing = false;
 
@@ -105,7 +106,7 @@ function renderDocs() {
       </div>`).join('');
     const markable = doc.wb_path && !doc.error;
     const buttons = markable ? `<span class="pr-mark" role="group" aria-label="标记">${['blue', 'yellow', 'red'].map(c =>
-      `<button type="button" class="pr-mark-btn" data-mark-btn="${c}" data-doc="${d}" title="${MARK_TEXT[c]}">${MARK_TEXT[c]}</button>`).join('')}</span>` : '';
+      `<button type="button" class="pr-mark-btn" data-mark-btn="${c}" data-doc="${d}" title="${MARK_TITLE[c]}">${MARK_TEXT[c]}</button>`).join('')}</span>` : '';
     return `<article class="pr-doc" id="prDoc${d}" data-doc="${d}" data-mark="blue">
       <header class="pr-doc-head" title="${escapeHtml(doc.pdf)}">
         <span class="pr-doc-name">📄 ${escapeHtml(doc.name)}</span>
@@ -230,7 +231,10 @@ function onPointerUp(e) {
   openAt(pt);
 }
 
-/* ---------- 三色标记 ---------- */
+/* ---------- 三色标记 ----------
+   黄色按页标：每页单独「要人工改」，右键标的会记住那一格；红色是整张表（Excel 只能删整张表），
+   标了红所有页都算红。标题颜色：有红 → 红；有一页黄 → 黄；所有页都是蓝 → 蓝。
+   marks[pdf] = {v, red, pages: {页码: {x, y} 或 {}}, opened} */
 
 function loadMarks() {
   marks = {};
@@ -239,7 +243,10 @@ function loadMarks() {
   for (const doc of pdfs) {
     const m = saved[doc.pdf];
     // PDF 重新导出过（修改时间变了）就不算了：看到的已经不是标记时那一版
-    if (m && m.v === doc.v && ['yellow', 'red'].includes(m.color) && doc.wb_path && !doc.error) marks[doc.pdf] = m;
+    if (!m || m.v !== doc.v || !doc.wb_path || doc.error || typeof m.pages !== 'object' || !m.pages) continue;
+    const pages = {};
+    for (const [p, spot] of Object.entries(m.pages)) if (Number(p) < doc.pages.length) pages[p] = spot || {};
+    if (m.red || Object.keys(pages).length) marks[doc.pdf] = { v: m.v, red: !!m.red, pages, opened: !!m.opened };
   }
 }
 
@@ -252,7 +259,15 @@ function saveMarks() {
 }
 
 function colorOf(doc) {
-  return deleted.has(doc.pdf) ? 'deleted' : marks[doc.pdf]?.color || 'blue';
+  if (deleted.has(doc.pdf)) return 'deleted';
+  const m = marks[doc.pdf];
+  return m?.red ? 'red' : m && Object.keys(m.pages).length ? 'yellow' : 'blue';
+}
+
+function pageColor(doc, p) {
+  const color = colorOf(doc);
+  if (color === 'deleted' || color === 'red') return color;
+  return marks[doc.pdf]?.pages[p] ? 'yellow' : 'blue';
 }
 
 // 只改颜色、角标和按钮状态；不改大小、不滚动
@@ -270,35 +285,68 @@ function paintMark(d) {
     b.setAttribute('aria-pressed', on);
     b.disabled = color === 'deleted' || processing;
   });
-  // 右键标黄时记下的位置：页面上放一个黄色小圈（浮层，不占位置）
-  article.querySelectorAll('.pr-pin').forEach(el => el.remove());
-  if (color === 'yellow' && m.page !== undefined) {
-    const page = article.querySelector(`.pr-page[data-page="${m.page}"] .pr-layer`);
-    const [w, h] = doc.pages[m.page] || [1, 1];
-    if (page) {
+  article.querySelectorAll('.pr-page').forEach(pageEl => {
+    const p = Number(pageEl.dataset.page);
+    pageEl.dataset.mark = pageColor(doc, p);
+    // 右键标黄时记下的位置：页面上放一个黄色小圈（浮层，不占位置）
+    pageEl.querySelectorAll('.pr-pin').forEach(el => el.remove());
+    const spot = color === 'yellow' ? m.pages[p] : null;
+    if (spot && spot.x !== undefined) {
+      const [w, h] = doc.pages[p];
       const pin = Object.assign(document.createElement('span'), { className: 'pr-pin', title: '标黄时右键的位置，一键处理时 Excel 跳到这一格' });
-      pin.style.left = `${m.x / w * 100}%`;
-      pin.style.top = `${m.y / h * 100}%`;
-      page.appendChild(pin);
+      pin.style.left = `${spot.x / w * 100}%`;
+      pin.style.top = `${spot.y / h * 100}%`;
+      pageEl.querySelector('.pr-layer').appendChild(pin);
     }
-  }
+  });
 }
 
-function setMark(d, color, point = null) {
+function editable(doc) {
+  return doc && doc.wb_path && !doc.error && !deleted.has(doc.pdf) && !processing;
+}
+
+function commit(d) {
   const doc = pdfs[d];
-  if (!doc || !doc.wb_path || doc.error || deleted.has(doc.pdf) || processing) return;
-  if (color === 'blue') delete marks[doc.pdf];
-  else {
-    marks[doc.pdf] = { color, v: doc.v };
-    if (point && color === 'yellow') Object.assign(marks[doc.pdf], { page: point.page, x: point.x, y: point.y });
-  }
+  const m = marks[doc.pdf];
+  if (m && !m.red && !Object.keys(m.pages).length) delete marks[doc.pdf];
   saveMarks();
   paintMark(d);
   updateProcessButton();
 }
 
+function entry(doc) {
+  if (!marks[doc.pdf]) marks[doc.pdf] = { v: doc.v, red: false, pages: {}, opened: false };
+  return marks[doc.pdf];
+}
+
+// 标题上的按钮：整张表一起改。蓝 = 全部清掉；黄 = 每页都标黄（右键记过的格子留着）；红 = 删除整张表
+function setDocMark(d, color) {
+  const doc = pdfs[d];
+  if (!editable(doc)) return;
+  if (color === 'blue') delete marks[doc.pdf];
+  else {
+    const m = entry(doc);
+    m.red = color === 'red';
+    if (color === 'yellow') doc.pages.forEach((_, p) => { m.pages[p] = m.pages[p] || {}; });
+    m.opened = false;
+  }
+  commit(d);
+}
+
+// 右键某一页：这一页标黄（记住右键的格子）或改回蓝；标过红的表这时就不删了
+function setPageMark(d, page, color, point = null) {
+  const doc = pdfs[d];
+  if (!editable(doc)) return;
+  const m = entry(doc);
+  m.red = false;
+  m.opened = false;
+  if (color === 'yellow') m.pages[page] = point ? { x: point.x, y: point.y } : (m.pages[page] || {});
+  else delete m.pages[page];
+  commit(d);
+}
+
 function marked(color) {
-  return pdfs.filter(doc => marks[doc.pdf]?.color === color && !deleted.has(doc.pdf));
+  return pdfs.filter(doc => colorOf(doc) === color);
 }
 
 function updateProcessButton() {
@@ -315,7 +363,7 @@ function updateProcessButton() {
 
 /* ---------- 右键菜单 ---------- */
 
-let menuFor = null; // {d, point}
+let menuFor = null; // {d, page, point, pageEl, x, y}
 
 function closeMenu() {
   $('prMenu').hidden = true;
@@ -330,18 +378,22 @@ function onContextMenu(e) {
   if (!doc || !doc.wb_path || doc.error) return;
   e.preventDefault();
   const pageEl = e.target.closest('.pr-page');
-  const point = pageEl && !pageEl.matches('.is-loading, .is-failed') ? pointOn(pageEl, e) : null;
-  menuFor = { d, point, pageEl, x: e.clientX, y: e.clientY };
+  const ready = pageEl && !pageEl.matches('.is-loading, .is-failed');
+  const point = ready ? pointOn(pageEl, e) : null;
+  const page = pageEl ? Number(pageEl.dataset.page) : null;
+  menuFor = { d, page, point, pageEl, x: e.clientX, y: e.clientY };
   const menu = $('prMenu');
-  const color = colorOf(doc);
-  menu.querySelector('.pr-menu-title').textContent = `${doc.wb_name ? doc.wb_name.split('/').pop() : doc.name} › ${doc.sheet || ''}`;
+  const now = page === null ? colorOf(doc) : pageColor(doc, page);
+  const where = page === null ? '整张表' : `第 ${page + 1} 页`;
+  menu.querySelector('.pr-menu-title').textContent = `${doc.wb_name ? doc.wb_name.split('/').pop() : doc.name} › ${doc.sheet || ''} · ${where}`;
+  menu.querySelector('[data-menu="blue"] b').textContent = page === null ? '整张表不用管' : '这一页不用管';
+  menu.querySelector('[data-menu="yellow"] b').textContent = page === null ? '整张表要人工改' : '这一页要人工改';
+  menu.querySelector('[data-menu="yellow"] small').textContent = point ? '记住这一格，处理时 Excel 跳过来' : '处理时打开这张表';
   menu.querySelectorAll('[data-menu]').forEach(b => {
     const kind = b.dataset.menu;
-    b.classList.toggle('is-on', kind === color);
-    b.disabled = color === 'deleted' || processing ? kind !== 'open' : false;
-    if (kind === 'open') b.disabled = !point;
+    b.classList.toggle('is-on', kind === now);
+    b.disabled = kind === 'open' ? !point : !editable(doc);
   });
-  menu.querySelector('[data-menu="yellow"] small').textContent = point ? '记住这一格，处理时 Excel 跳过来' : '处理时打开这张表';
   menu.hidden = false;
   // 放在鼠标旁边，靠窗口边缘时往里收（菜单是 fixed 浮层，不挪页面）
   const box = menu.getBoundingClientRect();
@@ -352,22 +404,26 @@ function onContextMenu(e) {
 function onMenuClick(e) {
   const item = e.target.closest('[data-menu]');
   if (!item || !menuFor) return;
-  const { d, point, pageEl, x, y } = menuFor;
+  const { d, page, point, pageEl, x, y } = menuFor;
+  const kind = item.dataset.menu;
   closeMenu();
-  if (item.dataset.menu === 'open') {
+  if (kind === 'open') {
     if (point) {
       flashAt(pageEl, { clientX: x, clientY: y });
       openAt(point);
     }
-    return;
-  }
-  setMark(d, item.dataset.menu, point);
+  } else if (kind === 'red' || page === null) setDocMark(d, kind);
+  else setPageMark(d, page, kind, point);
 }
 
 /* ---------- 一键处理 ---------- */
 
 function listLines(docs, limit = 12) {
-  const lines = docs.slice(0, limit).map(doc => `  · ${doc.wb_name} › ${doc.sheet}`);
+  const lines = docs.slice(0, limit).map(doc => {
+    const pages = colorOf(doc) === 'yellow' ? Object.keys(marks[doc.pdf].pages).map(p => Number(p) + 1) : [];
+    const which = pages.length && pages.length < doc.pages.length ? `（第 ${pages.join('、')} 页）` : '';
+    return `  · ${doc.wb_name} › ${doc.sheet}${which}`;
+  });
   if (docs.length > limit) lines.push(`  · ……另外 ${docs.length - limit} 张`);
   return lines.join('\n');
 }
@@ -376,8 +432,7 @@ async function runProcess() {
   if (processing) return;
   const red = marked('red');
   let yellow = marked('yellow').filter(doc => !marks[doc.pdf].opened);
-  const reopen = !yellow.length && !red.length;
-  if (reopen) yellow = marked('yellow'); // 都打开过了：再点一次就全部重新打开
+  if (!yellow.length && !red.length) yellow = marked('yellow'); // 都打开过了：再点一次就全部重新打开
   if (!red.length && !yellow.length) return;
   const files = docs => new Set(docs.map(doc => doc.wb_path)).size;
   const parts = [];
@@ -386,19 +441,18 @@ async function runProcess() {
   }
   if (yellow.length) {
     const n = files(yellow);
-    parts.push(`🟡 用 Excel 打开 ${n} 份文件（${yellow.length} 张标黄的表${n > 10 ? '，一次最多开 10 份，剩下的再点一次' : ''}）：\n${listLines(yellow)}`);
+    parts.push(`🟡 用 Excel 打开 ${n} 份文件（${yellow.length} 张有标黄的表${n > 10 ? '，一次最多开 10 份，剩下的再点一次' : ''}）：\n${listLines(yellow)}`);
   }
   if (red.length) parts.push('删表前会先把别的表引用它的公式转成值；删表后出现新的引用错误时这份文件不保存。');
   const ok = await appConfirm(parts.join('\n\n'), {
     title: '一键处理', tone: red.length ? 'danger' : 'info', okText: red.length ? '删除并处理' : '打开',
   });
   if (!ok) return;
-  const point = doc => {
-    const m = marks[doc.pdf] || {};
-    return m.page === undefined ? { pdf: doc.pdf } : { pdf: doc.pdf, page: m.page, x: m.x, y: m.y };
-  };
+  const spots = doc => Object.entries(marks[doc.pdf].pages).map(([p, s]) => ({ page: Number(p), ...s }));
   try {
-    await api('/api/pdf_review/process', { red: red.map(point), yellow: yellow.map(point) });
+    await api('/api/pdf_review/process', {
+      red: red.map(doc => ({ pdf: doc.pdf })), yellow: yellow.map(doc => ({ pdf: doc.pdf, spots: spots(doc) })),
+    });
   } catch (e) {
     appAlert(e.message, { tone: 'error' });
     return;
@@ -433,6 +487,16 @@ async function pollProcess() {
   if (status.result) finishProcess(status.result);
 }
 
+// 结果框：每一处都是链接，点一下 Excel 跳过去
+function resultLine(item, { link = true } = {}) {
+  const doc = pdfs.find(x => x.pdf === item.pdf);
+  const page = item.page !== undefined && item.page !== null ? ` · 第 ${item.page + 1} 页` : '';
+  const label = `${escapeHtml(item.name)} › ${escapeHtml(item.sheet)}${item.cell ? ` ${escapeHtml(item.cell)}` : ''}${page}`;
+  const body = link && doc && doc.wb_name ? excelLinkHtml(label, excelTarget({ ...doc, sheet: item.sheet }, item.cell || '')) : label;
+  const note = item.reason ? `<span class="pr-result-note">${escapeHtml(item.reason)}</span>` : '';
+  return `<li>${body}${item.first ? ' <span class="pr-result-tag">已跳到这里</span>' : ''}${note}</li>`;
+}
+
 function finishProcess(result) {
   for (const item of result.deleted || []) {
     deleted.add(item.pdf);
@@ -444,16 +508,21 @@ function finishProcess(result) {
   saveMarks();
   pdfs.forEach((_, d) => paintMark(d));
   updateProcessButton();
-  const line = item => `  · ${item.name} › ${item.sheet}${item.cell ? ` ${item.cell}` : ''}${item.reason ? `（${item.reason}）` : ''}`;
-  const parts = [];
-  if (result.deleted?.length) parts.push(`🗑 删掉了 ${result.deleted.length} 张表（已保存，PDF 也删了）：\n${result.deleted.map(line).join('\n')}`);
-  if (result.failed?.length) parts.push(`⚠ 没删掉 ${result.failed.length} 张（还是红色，可以再点一次）：\n${result.failed.map(line).join('\n')}`);
-  if (result.opened?.length) parts.push(`📗 已用 Excel 打开 ${new Set(result.opened.map(i => i.name)).size} 份：\n${result.opened.map(line).join('\n')}`);
-  if (result.open_failed?.length) parts.push(`⚠ 打不开 ${result.open_failed.length} 张：\n${result.open_failed.map(line).join('\n')}`);
-  if (result.later?.length) parts.push(`还有 ${new Set(result.later.map(i => i.name)).size} 份标黄的没打开（一次最多 10 份），改完关掉后再点「一键处理」接着开。`);
+  const files = items => new Set(items.map(i => i.name)).size;
+  const section = (title, items, opts) => items?.length
+    ? `<h3>${title}</h3><ul>${items.map(i => resultLine(i, opts)).join('')}</ul>` : '';
+  const html = [
+    section(`🗑 删掉了 ${result.deleted?.length} 张表（已保存，PDF 也删了）`, result.deleted, { link: false }),
+    section(`⚠ 没删掉 ${result.failed?.length} 张（还是红色，可以再点一次）`, result.failed),
+    section(`📗 已用 Excel 打开 ${files(result.opened || [])} 份，标黄的地方（点一下跳过去）`, result.opened),
+    section(`⚠ 打不开 ${result.open_failed?.length} 处`, result.open_failed),
+    section(`⏸ 还有 ${files(result.later || [])} 份没打开（一次最多 10 份，改完关掉后再点「一键处理」）`, result.later),
+  ].join('');
   const bad = result.failed?.length || result.open_failed?.length;
   toast(bad ? '一键处理完成，有没处理成功的，请看结果' : '一键处理完成', !!bad);
-  appAlert(parts.join('\n\n') || '没有要处理的', { title: '一键处理结果', tone: bad ? 'warn' : 'info' });
+  $('prResultBody').innerHTML = html || '<p>没有要处理的</p>';
+  $('prResult').dataset.tone = bad ? 'warn' : 'info';
+  $('prResult').showModal();
 }
 
 /* ---------- 看到哪里（底部条） ---------- */
@@ -634,7 +703,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('prMenu
 window.addEventListener('scroll', () => { if (!$('prMenu').hidden) closeMenu(); }, { passive: true });
 $('prDocs').addEventListener('click', e => {
   const button = e.target.closest('[data-mark-btn]');
-  if (button) setMark(Number(button.dataset.doc), button.dataset.markBtn);
+  if (button) setDocMark(Number(button.dataset.doc), button.dataset.markBtn);
 });
 $('prProcess').addEventListener('click', runProcess);
 $('prFolder').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });

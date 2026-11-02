@@ -576,11 +576,17 @@ def _process_item(raw: Any, color: str) -> dict:
         owner = _owner(path)
     if not owner:
         raise ValueError(f"「{path.name}」找不到对应的 Excel 文件")
-    item = {"pdf": str(path), "name": path.name, "color": color, "wb_path": owner["wb_path"], "sheet": owner["sheet"]}
-    page, x, y = raw.get("page"), raw.get("x"), raw.get("y")
-    if (isinstance(page, int) and not isinstance(page, bool)
-            and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (x, y))):
-        item.update(page=page, x=float(x), y=float(y))
+    item = {"pdf": str(path), "name": path.name, "color": color, "wb_path": owner["wb_path"], "sheet": owner["sheet"],
+            "spots": []}
+    # 标黄的页：每页一处，右键标的带点的位置（x, y），按标题按钮标的只有页码
+    for spot in raw.get("spots") or []:
+        page = spot.get("page") if isinstance(spot, dict) else None
+        if isinstance(page, bool) or not isinstance(page, int):
+            continue
+        x, y = spot.get("x"), spot.get("y")
+        has_point = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (x, y))
+        item["spots"].append({"page": page, **({"x": float(x), "y": float(y)} if has_point else {})})
+    item["spots"].sort(key=lambda spot: spot["page"])
     return item
 
 
@@ -611,7 +617,8 @@ def process(red: Any, yellow: Any) -> None:
             with debug_log.side_task("pdf_review_process", {"folder": root, "red": len(reds), "yellow": len(yellows)}):
                 for item in reds + yellows:
                     debug_log.event("🎨 PDF 复检标记", 颜色="红" if item["color"] == "red" else "黄",
-                                    PDF=item["name"], 表=item["sheet"])
+                                    PDF=item["name"], 表=item["sheet"],
+                                    页=[spot["page"] + 1 for spot in item["spots"]] or "-")
                 if reds:
                     _delete_red(reds, root, result)
                 if yellows:
@@ -776,37 +783,51 @@ def _delete_in_workbook(excel: Any, wb_path: Path, items: list[dict], label: str
     return outcome
 
 
+def _spot_cells(item: dict) -> tuple[str, list[dict]]:
+    """标黄的每一页 → 那一格（行列位置算好了、右键时点在表格里才有），返回 (工作表名, [{page, cell}])"""
+    with _COND:
+        found = _fresh(item["pdf"])
+    ready = bool(found) and found["state"] == "ready"
+    sheet = found["sheet"] if ready else item["sheet"]
+    spots = []
+    for spot in item["spots"] or [{"page": None}]:
+        cell = ""
+        page = spot.get("page")
+        if ready and "x" in spot and page is not None and 0 <= page < len(found["rows"]):
+            cell = cell_at(found["rows"][page], found["cols"][page], spot["x"], spot["y"]) or ""
+        spots.append({"page": page, "cell": cell})
+    return sheet, spots
+
+
 def _open_yellow(yellows: list[dict], root: str, result: dict) -> None:
-    """每份 Excel 打开一次，跳到这份文件里第一处标黄的位置（右键标黄时记下的格子；没有就只打开表）"""
+    """每份 Excel 打开一次，跳到这份文件里第一处标黄的格子（右键标黄时记下的；没有就只打开表）。
+    每一处都写进结果，网页上点一下跳过去"""
     groups: dict[str, list[dict]] = {}
     for item in yellows:
         groups.setdefault(item["wb_path"], []).append(item)
     for index, (wb_path, items) in enumerate(groups.items()):
         label = workbook_rel_name(Path(wb_path), Path(root)) if root else Path(wb_path).name
-        entries = [{"pdf": item["pdf"], "name": label, "sheet": item["sheet"]} for item in items]
+        entries = []
+        for item in items:
+            sheet, spots = _spot_cells(item)
+            entries += [{"pdf": item["pdf"], "name": label, "sheet": sheet, **spot} for spot in spots]
         if index >= OPEN_LIMIT:
             result["later"].extend(entries)
             continue
         with _PROCESS_LOCK:
             _PROCESS.update(current=label)
-        first = items[0]
-        sheet, cell = first["sheet"], ""
-        with _COND:
-            found = _fresh(first["pdf"])
-        if found and found["state"] == "ready":
-            sheet = found["sheet"]
-            page = first.get("page")
-            if page is not None and 0 <= page < len(found["rows"]):
-                cell = cell_at(found["rows"][page], found["cols"][page], first["x"], first["y"]) or ""
+        first = next((entry for entry in entries if entry["cell"]), entries[0])
         try:
-            note = open_workbook_in_excel(Path(wb_path), sheet, cell)
+            note = open_workbook_in_excel(Path(wb_path), first["sheet"], first["cell"])
         except Exception as err:
             debug_log.exception(err, f"PDF 复检打开标黄 {label}")
             for entry in entries:
                 result["open_failed"].append({**entry, "reason": str(err)})
             continue
-        debug_log.event("📂 PDF 复检打开标黄", 文件=label, 表=sheet, 格子=cell or "-", 同文件标黄=len(items), 说明=note or "-")
-        for n, entry in enumerate(entries):
-            entry["cell"] = cell if n == 0 else ""
-            entry["reason"] = note if n == 0 else ""
+        debug_log.event("📂 PDF 复检打开标黄", 文件=label, 表=first["sheet"], 格子=first["cell"] or "-",
+                        标黄处=[f"{e['sheet']}!{e['cell'] or '-'}(第{(e['page'] or 0) + 1}页)" for e in entries],
+                        说明=note or "-")
+        for entry in entries:
+            entry["reason"] = note if entry is first else ""
+            entry["first"] = entry is first
             result["opened"].append(entry)
