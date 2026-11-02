@@ -37,6 +37,7 @@
       <div>
         <h2>处理流程</h2>
         <p>按顺序从 START 走到 FINISH，标「按需」的一站遇到对应问题再用。每一步都递归扫描所选文件夹及其子文件夹，进度可在「执行记录与进度看板」查看。</p>
+        <p id="routeDoneNote" class="route-done-note hidden"></p>
       </div>
       <div class="home-hero-actions">
         <button type="button" class="btn btn-outline btn-sm" id="exportProgressBtn" onclick="exportProgress()"
@@ -80,8 +81,9 @@
          宽屏三行蛇形（第二行从右往左），窄屏竖排；卡片本身和以前一样（链接、按钮、状态文字 id 都没变） -->
     <section class="route-map" aria-label="处理流程">
       <ol class="route-steps">
-        <li class="route-stop">
+        <li data-ops="clean" class="route-stop">
           <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
           <span class="route-flag route-flag-start" aria-hidden="true">START</span>
           <a href="/clean" class="feature-card feature-violet" style="--tile-cat: 'STEP 1'">
             <span class="feature-text">
@@ -92,8 +94,9 @@
             <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-clean">🧹</span></span>
           </a>
         </li>
-        <li class="route-stop">
+        <li data-ops="scan autofix" class="route-stop">
           <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
           <a href="/workbench" class="feature-card feature-rose" style="--tile-cat: 'STEP 2'">
             <span class="feature-text">
               <span class="feature-title">查看切字</span>
@@ -103,8 +106,9 @@
             <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-inspect">🔍</span></span>
           </a>
         </li>
-        <li class="route-stop route-optional">
+        <li data-ops="colors" class="route-stop route-optional">
           <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
           <i class="route-turn route-turn-right" aria-hidden="true"></i>
           <a href="/repair-colors" class="feature-card feature-violet" style="--tile-cat: 'STEP 3 · 按需'">
             <span class="feature-text"><span class="feature-title">修复颜色</span>
@@ -113,8 +117,9 @@
             <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-colors">🎨</span></span>
           </a>
         </li>
-        <li class="route-stop">
+        <li data-ops="bl_scan bl_clear" class="route-stop">
           <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
           <a href="/repair-bl-links" class="feature-card feature-mint feature-bl" style="--tile-cat: 'STEP 4'">
             <span class="feature-text"><span class="feature-title">排查 BL 超链接</span>
               <span class="feature-sub">清空「左边含 BL · 右边是 @ 超链接」的单元格</span>
@@ -122,8 +127,9 @@
             <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-bl-links">🔎</span></span>
           </a>
         </li>
-        <li class="route-stop route-optional">
+        <li data-ops="links" class="route-stop route-optional">
           <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
           <a href="/repair-links" class="feature-card feature-sky" style="--tile-cat: 'STEP 5 · 按需'">
             <span class="feature-text"><span class="feature-title">修复引用错误</span>
               <span class="feature-sub">扫描 #REF! · 对照原始备份恢复值</span>
@@ -131,8 +137,9 @@
             <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-references">🔗</span></span>
           </a>
         </li>
-        <li class="route-stop route-optional">
+        <li data-ops="hidden" class="route-stop route-optional">
           <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
           <i class="route-turn route-turn-left" aria-hidden="true"></i>
           <a href="/repair-hidden" class="feature-card feature-sky" style="--tile-cat: 'STEP 6 · 按需'">
             <span class="feature-text"><span class="feature-title">修复隐藏页</span>
@@ -141,8 +148,9 @@
             <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-hidden">🙈</span></span>
           </a>
         </li>
-        <li class="route-stop">
+        <li data-ops="pdf" class="route-stop">
           <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
           <button type="button" class="feature-card feature-sky" onclick="openTask('export_pdf')" style="--tile-cat: 'STEP 7'">
             <span class="feature-text">
               <span class="feature-title">人工复检</span>
@@ -152,8 +160,9 @@
             <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-pdf">📄</span></span>
           </button>
         </li>
-        <li class="route-stop">
+        <li data-ops="view" class="route-stop">
           <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
           <button type="button" class="feature-card feature-mint" onclick="openTask('normalize_view')" style="--tile-cat: 'STEP 8'">
             <span class="feature-text">
               <span class="feature-title">视图标准化</span>
@@ -163,8 +172,9 @@
             <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-normalize">🎯</span></span>
           </button>
         </li>
-        <li class="route-stop">
+        <li data-ops="distribute" class="route-stop">
           <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
           <span class="route-flag route-flag-finish" aria-hidden="true">FINISH</span>
           <a href="/distribute" class="feature-card feature-sky feature-distribute" style="--tile-cat: 'STEP 9'">
             <span class="feature-text"><span class="feature-title">按 JSON 复制 Excel</span>

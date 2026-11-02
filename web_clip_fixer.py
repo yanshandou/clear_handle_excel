@@ -318,7 +318,8 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_bytes(data, "text/plain; charset=utf-8", filename="log.txt")
         elif parsed.path == "/api/operation-history":
             from core import operation_history
-            self._send_json(operation_history.summary())
+            folder = parse_qs(parsed.query).get("folder", [None])[0]
+            self._send_json({**operation_history.summary(), "done": operation_history.done_for(folder)})
         elif parsed.path == "/api/records":
             self._send_json(get_execution_report_snapshot())
         elif parsed.path == "/api/records/zip":
