@@ -57,18 +57,9 @@ def _data() -> dict[str, Any]:
 
 
 def fix_error_types(value: Any = None, *, require_non_empty: bool = False) -> list[str]:
-    """当前自动修复要处理的错误类型；PDF 未匹配文字固定转人工。"""
-    if value is None:
-        saved = _data().get("fix_error_types")
-        selected = (list(autofix.FIXABLE_ERROR_TYPES) if not isinstance(saved, list)
-                    else [t for t in autofix.FIXABLE_ERROR_TYPES if t in saved])
-    else:
-        if not isinstance(value, list) or any(not isinstance(t, str) or t not in autofix.CELL_ERROR_SPECS for t in value):
-            raise ValueError("请选择有效的单元格错误类型")
-        selected = [t for t in autofix.FIXABLE_ERROR_TYPES if t in value]
-    if require_non_empty and not selected:
-        raise ValueError("请至少勾选一种要自动修复的错误类型，或使用「只扫描，全部转人工」")
-    return selected
+    """自动修复要处理的错误类型：固定只修切字（autofix.AUTO_FIX_ERROR_TYPES），不再能勾选。
+    页面或旧数据传来的勾选一律忽略；其他类型照常扫描、全部转人工。"""
+    return list(autofix.AUTO_FIX_ERROR_TYPES)
 
 
 def set_fix_error_types(value: Any, *, require_non_empty: bool = False) -> list[str]:
@@ -295,7 +286,7 @@ def _unchecked_fix_reason(card: dict, items: list[dict] | None = None, enabled: 
     action = ("未修改" if autofix.ERROR_TYPE_PAGE_BREAK_CUT in fixable
               else "未调整列宽" if fixable == [autofix.ERROR_TYPE_HASH_OVERFLOW]
               else "未调整行高")
-    return f"未勾选「{labels}」自动修复，{action}，请人工处理或标绿忽略"
+    return f"自动修复只处理切字，「{labels}」{action}，请人工处理或标绿忽略"
 
 
 def _col_rid(card: dict) -> str:
@@ -1129,12 +1120,12 @@ def _wrap_targets(sheet: Any, items: list[dict]) -> list[str]:
     return targets
 
 
-DIRECT_LINE_PT = 12.0  # 默认单行字高（约 10pt 字体对应的一行高度）
-DIRECT_MARGIN_PT = autofix.STEP_PT  # 一步到位额外留出的安全余白（3pt）
+DIRECT_LINE_PT = 12.0  # 读不到字号时的单行字高（约 10pt 字体 × 1.2）
+LINE_HEIGHT_RATIO = 1.2  # 一行字高 = 字号 × 1.2（Excel 默认行距；只加 1 倍字号时上下仍常被切）
 
 
 def _cell_line_height(sheet: Any, items: list[dict]) -> float:
-    """读取问题单元格字号推算单行高度（pt）；读不到时按默认单行字高 12pt 算。"""
+    """读取问题单元格字号推算单行高度（字号 × 1.2，pt）；读不到时按默认单行字高 12pt 算。"""
     sizes: list[float] = []
     for item in items:
         addr = item.get("cell_addr") or ""
@@ -1143,27 +1134,26 @@ def _cell_line_height(sheet: Any, items: list[dict]) -> float:
         try:
             size = sheet.Range(addr).MergeArea.Cells(1, 1).Font.Size
             if not isinstance(size, bool) and isinstance(size, (int, float)) and 4.0 <= float(size) <= 72.0:
-                sizes.append(float(size) * 1.2)
+                sizes.append(float(size) * LINE_HEIGHT_RATIO)
         except Exception:
             continue
     return max(sizes) if sizes else DIRECT_LINE_PT
 
 
 def _direct_extra_height(sheet: Any, items: list[dict], need: float) -> float:
-    """一步到位计算需要增加的行高（pt）：
-    - 常见情况（列宽略窄多换出 1 行或压线）：直接加 1 行字高 + 余白；
-    - 多行截断或刚开启自动换行：按缺口高度（折算打印缩放）或未显示字数估算行数，一次加够并留余白。"""
+    """要加的行高（pt）= 缺几行 × 一行字高（字号 × 1.2），只试这一次：
+    - 常见情况（压线、多换出一行）缺 1 行；
+    - 多行截断按没印出来的字数、或 PDF 上量到的缺口（折算打印缩放）估算缺几行，取多的。"""
     line_pt = _cell_line_height(sheet, items)
-    extra_lines = 1
+    lines = 1
     for item in items:
         full_len = len(normalize_text(item.get("text", "")))
         vis_len = len(normalize_text(item.get("visible_text") or ""))
         if 0 < vis_len < full_len:
-            extra_lines = max(extra_lines, math.ceil((full_len - vis_len) / vis_len))
-    from_lines = extra_lines * line_pt + DIRECT_MARGIN_PT
-    from_need = (need / autofix.print_scale(sheet) + DIRECT_MARGIN_PT) if need > 0 else 0.0
-    raw = max(from_lines, from_need)
-    return math.ceil(round(raw / autofix.STEP_PT, 3)) * autofix.STEP_PT
+            lines = max(lines, math.ceil((full_len - vis_len) / vis_len))
+    if need > 0:
+        lines = max(lines, math.ceil(round(need / autofix.print_scale(sheet) / line_pt, 3)))
+    return round(lines * line_pt, 2)
 
 
 def _prepare_row(
@@ -1171,9 +1161,9 @@ def _prepare_row(
     on_attempt: Callable[[int, float, dict, list[str]], None] | None = None,
     timing: dict[str, float] | None = None,
 ) -> tuple[float, dict | None, dict]:
-    """只在副本上一步到位调整行高并导出 1 次 PDF 核验截图：
+    """只在副本上试一次加高并导出 1 次 PDF 核验截图：
     - 原样那张直接复用刚才检测导出的 PDF（同一版本）；若原样已通过则不改行高、不重新导出；
-    - 原样未通过时，有不换行被横向截断的格子先开启自动换行，并直接按缺口/单行字高+余白一步加够行高，
+    - 原样未通过时，有不换行被横向截断的格子先开启自动换行，再按缺几行 × 字号 × 1.2 加高（不另加余白），
       仅导出 1 次 PDF 核验效果并生成修改后截图；通过时留下那份 PDF 供写入后复查直接复用。"""
     timing = {} if timing is None else timing
     sheet = session.copy_of(path).Sheets(items[0]["sheet_name"])
@@ -2314,7 +2304,7 @@ def _back_to_auto(excel: Any, session: Any, path: str, *, picked: bool = False) 
                     card.get("marked") and card["color"] != "yellow" and not card.get("finalized")):
                 continue  # 自动试过没通过的、你已标蓝 / 绿还没提交的、这次没选的，保持原样
             if _unchecked_fix_reason(card, group, enabled_types):
-                continue  # 未勾选的错误类型继续留给人工
+                continue  # 不是切字的问题继续留给人工
             if not unchanged and any(_touched(it, rows) for it in group):
                 card.update(handed_over=False, message=TOUCHED_MESSAGE)
                 kept += 1
@@ -2390,7 +2380,7 @@ def check_auto(fix_types: Any = None) -> None:
             cards = [c for c in _data()["cards"].values() if c.get("handed_over") and not c.get("dismissed")
                      and wf.in_current_folder(c["wb_path"])]
             if cards and all(_unchecked_fix_reason(c) for c in cards):
-                raise ValueError("待交回自动的问题均属于未勾选的错误类型，请先勾选对应错误类型后再点「转回自动」")
+                raise ValueError("待交回自动的问题都不是切字，自动修复只处理切字，请人工处理")
             raise ValueError("没有可以交回自动处理的问题")
 
 
