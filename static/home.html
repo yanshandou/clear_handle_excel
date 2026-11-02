@@ -6,7 +6,6 @@
   <title>Excel 整理工具箱 - 主页</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/styles.css">
-  <link rel="stylesheet" href="/static/print_layout.css">
   <link rel="stylesheet" href="/static/theme.css">
   <link rel="stylesheet" href="/static/home_route.css"><script src="/static/game_fx.js"></script>
 </head>
@@ -185,13 +184,6 @@
         </li>
       </ol>
     </section>
-    <section class="panel"><details id="printLayoutsDetails"><summary>📄 Sheet 打印方向记录</summary>
-      <p class="toolbar-hint">每张 Sheet 分别比较横向、竖向；分析结果供扫描和导出复用；导出 PDF 时，和 Excel 里不一样的方向会保存进原 Excel。</p>
-      <button type="button" id="printLayoutsRefresh" class="btn btn-outline btn-sm">刷新记录</button>
-      <label>搜索文件或工作表 <input type="search" id="printLayoutsSearch"></label>
-      <label>分类 <select id="printLayoutsFilter"><option value="all">全部</option><option value="stale">待重新验证</option><option value="review">建议重新分析</option><option value="manual">人工指定</option><option value="auto">自动推荐</option></select></label>
-      <p id="printLayoutsStatus" role="status"></p><div id="printLayoutsList" class="print-layout-list"></div>
-    </details></section>
   </main>
 
   <!-- 单项功能对话框：填写文件夹 → 执行 → 查看结果（精简 Sheet 在独立页面 /clean） -->
@@ -213,10 +205,6 @@
         <span class="input-groove-icon" aria-hidden="true">📂</span>
         <input type="text" id="taskFolderInput" placeholder="例如 C:\Users\...\Desktop\excel_files">
       </div>
-
-      <label id="taskOrientationRow" class="checkbox-label task-option hidden" title="不勾选时每张表只导出一次，快很多；以前定过方向、文件没改过的表照旧用那个方向">
-        <input type="checkbox" id="taskChooseOrientation" checked> 导出前比较横向和竖向，选更合适的打印方向（每张表多导出、多比对一次，较慢）
-      </label>
 
       <div id="taskRunBox" class="task-run-box hidden">
         <div class="mini-progress-box">
@@ -249,7 +237,6 @@
 
   <script src="/static/dialog.js"></script>
   <script src="/static/home.js"></script>
-  <script src="/static/print_layout.js"></script>
   <script src="/static/debug_log.js"></script>
   <script src="/static/file_problem.js"></script>
 </body>

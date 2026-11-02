@@ -1,4 +1,8 @@
-"""Sheet 级打印方向：比较实际 PDF，保存证据，临时应用后恢复原设置。"""
+"""Sheet 级打印方向：比较实际 PDF，保存证据，临时应用后恢复原设置。
+
+用户 2026-11-02 定：先关掉横竖对比（ENABLED = False）。自动比较有时把竖向更好的表判成横向；
+现在每张表都按 Excel 里原来设的方向扫描、复检、导出，不试另一个方向，也不把方向写回 Excel。
+有问题照常走自动修复，修不好转人工。代码先留着，改回 True 即可恢复。"""
 from contextlib import contextmanager
 from functools import lru_cache, wraps
 from pathlib import Path
@@ -17,6 +21,7 @@ from core.excel_ops import CellProbe, extract_sheet_snapshot, snapshot_cells
 
 PORTRAIT, LANDSCAPE = 1, 2
 RULE_VERSION = 2
+ENABLED = False  # 横竖方向自动比较总开关，见文件开头说明
 MIN_FONT_PT = 8.0
 SETTINGS = (
     "PaperSize", "LeftMargin", "RightMargin", "TopMargin", "BottomMargin",
@@ -150,7 +155,9 @@ def record_for(sheet: Any, path: str | None = None) -> dict | None:
 
 
 def _usable(sheet: Any) -> dict | None:
-    """这张表现在有效的方向记录（没过期、规则版本对、文件没被外部改过）"""
+    """这张表现在有效的方向记录（没过期、规则版本对、文件没被外部改过）；功能关闭时一律没有"""
+    if not ENABLED:
+        return None  # 以前存下的横竖记录也不再套用
     record = record_for(sheet)
     if record and (record.get("stale") or record.get("rule_version") != RULE_VERSION):
         return None
@@ -305,6 +312,8 @@ def choose(original: int, metrics: dict[int, dict]) -> tuple[int, str]:
 
 def prepare(sheet: Any, path: str, records: dict, export, output: Path | None = None) -> tuple[dict | None, bool]:
     """在未修改内容的源工作表或副本上分析；返回 (记录, 是否已生成选定 PDF)。"""
+    if not ENABLED:
+        return None, False
     key, initial = identity(sheet), settings(sheet)
     if key is None or initial is None:
         return None, False

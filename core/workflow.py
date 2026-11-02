@@ -1171,7 +1171,16 @@ _export_sheet_pdf = print_layout.with_layout(_export_sheet_pdf_raw)
 
 
 def prepare_print_layout(sheet: Any, path: str, output: Path | None = None) -> bool:
-    """首次或输入变化时分析；缓存命中时复用，返回是否已生成选定方向的 PDF。"""
+    """首次或输入变化时分析；缓存命中时复用，返回是否已生成选定方向的 PDF。
+    横竖对比已关（print_layout.ENABLED）：什么都不做，调用方按 Excel 原方向导出一次。"""
+    if not print_layout.ENABLED:
+        try:
+            name, current = sheet.Name, sheet.PageSetup.Orientation
+            direction = print_layout.label(current) if current in (print_layout.PORTRAIT, print_layout.LANDSCAPE) else current
+        except Exception as error:
+            name, direction = "?", f"读不到：{error}"
+        debug_log.event("📄 打印方向按 Excel 原设置（横竖对比已关）", 表=name, 方向=direction)
+        return False
     with STATE_LOCK:
         path = str(Path(path).resolve())
         records = {path: copy.deepcopy(STATE.setdefault("print_layouts", {}).get(path, {}))}
@@ -3251,7 +3260,9 @@ def quick_task_workflow(kind: str) -> None:
         if kind == "export_pdf":
             _clear_old_pdfs(workbooks)
     log_msg(f"{'继续' if initialized else '开始'}{task_name}：{folder}（共 {len(workbooks)} 个文件）")
-    if kind == "export_pdf" and not options.get("choose_orientation", True):
+    if kind == "export_pdf" and not print_layout.ENABLED:
+        log_msg("📄 每张表按 Excel 里原来的打印方向导出，不比较横竖，也不改 Excel 里的方向")
+    elif kind == "export_pdf" and not options.get("choose_orientation", True):
         log_msg("📄 这次不比较打印方向：每张表按 Excel 里的方向直接导出（以前定过方向、文件没改过的照旧用那个方向）")
 
     excel = None

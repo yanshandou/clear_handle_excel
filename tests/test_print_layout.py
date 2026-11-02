@@ -14,6 +14,13 @@ from core import print_layout as layout, storage, page_breaks
 from core.pdf_detector import fitz
 
 
+def setUpModule():
+    # 横竖对比默认关着（用户 2026-11-02）；下面的老测试照旧验证打开时的逻辑，关着的行为见 DisabledTests
+    patcher = patch.object(layout, "ENABLED", True)
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
 def metrics(**changes):
     result = {"pages": 2, "font_pt": 11.0, "across": 1, "visible": list("Content"),
               "hidden": [], "borders": [], "cuts": [], "images": 0}
@@ -442,3 +449,66 @@ class PersistenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DisabledTests(unittest.TestCase):
+    """关掉横竖对比后：按 Excel 原方向导出一次，不试另一个方向，不套用旧记录，不写回 Excel"""
+
+    def setUp(self):
+        patcher = patch.object(layout, "ENABLED", False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        patcher = patch.object(storage, "DATABASE_PATH", self.root / "test.sqlite3")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        from core import workflow, reporter
+        for name, value in (("RECORD_PATH", self.root / "record.md"),
+                            ("REPORT_STATE_PATH", self.root / "legacy.json")):
+            patcher = patch.object(reporter, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.workflow = importlib.reload(workflow)
+        self.addCleanup(reporter.flush_execution_report)
+        self.path = self.root / "book.xlsx"
+        self.path.write_bytes(b"workbook")
+        self.workflow.STATE["folder"] = str(self.root)
+        self.sheet = Sheet(self.path)
+
+    def test_prepare_does_not_try_the_other_direction(self):
+        with patch.object(layout, "inspect_pdf") as inspect:
+            self.assertFalse(self.workflow.prepare_print_layout(self.sheet, str(self.path), self.root / "out.pdf"))
+        inspect.assert_not_called()
+        self.assertEqual(self.sheet.exports, [])
+        self.assertEqual(self.workflow.STATE["print_layouts"], {})
+
+    def test_old_landscape_record_is_ignored_and_never_saved(self):
+        # 以前比较时存下的「横向」记录（甚至人工指定）都不再套用
+        self.workflow.STATE["print_layouts"] = {str(self.path.resolve()): {"code:Sheet1": {
+            "sheet": "Wide", "identity": "code:Sheet1", "original": 1, "selected": 2, "manual": 2,
+            "settings": layout.settings(self.sheet), "version": layout.version(str(self.path)),
+            "rule_version": layout.RULE_VERSION, "revision": "x", "stale": False}}}
+        layout.configure(lambda: self.workflow.STATE["print_layouts"])
+        book = Mock(FullName=str(self.path))
+        book.Sheets = [self.sheet]
+        excel = Mock()
+        excel.Workbooks.Open.return_value = book
+        with patch.object(self.workflow, "_exportable_sheets", return_value=[self.sheet]), \
+                patch.object(self.workflow, "update_file_progress"):
+            exported = self.workflow._export_workbook_pdfs(lambda: excel, self.path, self.root, set())
+        self.assertEqual(self.sheet.exports, [1])  # 只导出一次，竖向（Excel 原设置）
+        self.assertEqual(excel.Workbooks.Open.call_count, 1)  # 没有为了保存方向再可写打开
+        book.Save.assert_not_called()
+        self.assertEqual(self.sheet.PageSetup.Orientation, 1)
+        self.assertIsNone(layout.to_save(self.sheet))
+        with fitz.open(exported[0]) as doc:
+            self.assertLess(doc[0].rect.width, doc[0].rect.height)
+
+    def test_landscape_sheet_stays_landscape(self):
+        sheet = Sheet(self.path, orientation=2)
+        with layout.applied(sheet):
+            self.assertEqual(sheet.PageSetup.Orientation, 2)
+        self.assertFalse(self.workflow.prepare_print_layout(sheet, str(self.path)))
+        self.assertEqual(sheet.exports, [])
