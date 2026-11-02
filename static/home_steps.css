@@ -27,7 +27,7 @@
 .step-item {
   position: relative;
   display: grid;
-  grid-template-columns: 124px minmax(0, 1fr);
+  grid-template-columns: 156px minmax(0, 1fr);
   align-items: center;
   min-width: 0;
   padding-top: 42px;               /* 给框顶上半露出来的图标留位置 */
@@ -38,9 +38,9 @@
   position: relative;
   z-index: 2;
   display: block;
-  width: 124px;
+  width: 156px;
   height: auto;
-  margin-right: -82px;             /* 一大半压进框里 */
+  margin-right: -112px;             /* 一大半压进框里 */
   overflow: visible;
   pointer-events: none;
   user-select: none;
@@ -86,7 +86,7 @@
   height: 100%;
   min-width: 0;
   min-height: 0;
-  padding: 50px 14px 20px 88px;    /* 左边让给数字，上边让给图标 */
+  padding: 50px 14px 20px 116px;    /* 左边让给数字，上边让给图标 */
   overflow: visible;               /* 图标要伸出框顶 */
 }
 
@@ -99,7 +99,7 @@
 .step-grid .feature-card:nth-child(even) .feature-orb {
   position: absolute;
   top: -42px;
-  left: calc(50% + 37px);
+  left: calc(50% + 51px);
   display: grid;
   place-items: center;
   width: 84px;
@@ -194,23 +194,23 @@
 
 @media (max-width: 520px) {
   .step-item {
-    grid-template-columns: 84px minmax(0, 1fr);
+    grid-template-columns: 104px minmax(0, 1fr);
     padding-top: 34px;
   }
 
   .step-num {
-    width: 84px;
-    margin-right: -52px;
+    width: 104px;
+    margin-right: -70px;
   }
 
   .step-grid .feature-card {
-    padding: 40px 10px 16px 58px;
+    padding: 40px 10px 16px 76px;
   }
 
   .step-grid .feature-orb,
   .step-grid .feature-card:nth-child(even) .feature-orb {
     top: -34px;
-    left: calc(50% + 24px);
+    left: calc(50% + 33px);
     width: 68px;
     height: 68px;
     margin-left: -34px;
