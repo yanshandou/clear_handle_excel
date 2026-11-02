@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from core import debug_log
-from core.common import PROJECT_ROOT, XL_SHEET_VISIBLE, normalize_used_values, workbook_rel_name
+from core.common import PROJECT_ROOT, XL_SHEET_VISIBLE, console_print, normalize_used_values, workbook_rel_name
 from core.excel_ops import pythoncom, quit_background_excel, start_background_excel
 from core.pdf_detector import fitz
 from core.workflow import _export_sheet_pdf, _preview_workbook, list_workbooks
@@ -46,24 +46,42 @@ def _find_workbook(folder_str: str, file_name: str) -> tuple[Path, Path]:
 
 
 def workbook_preview_info(folder_str: str, file_name: str) -> dict[str, Any]:
-    """单个文件的工作表列表与默认标记（与精简 Sheet 扫描结果一致），预览窗口先用它画出占位卡片"""
-    folder, wb_path = _find_workbook(folder_str, file_name)
+    """单个文件的工作表列表与默认标记（与精简 Sheet 扫描结果一致），预览窗口先用它画出占位卡片。
+    每一步用时写进调试日志并打印到控制台：预览卡在「正在读取工作表」时，能看出是找文件、启动 Excel 还是读表慢"""
+    started = time.monotonic()
+    console_print(f"🔎 预览：正在读取工作表 {file_name}")
     holder: dict[str, Any] = {}
+    timing: dict[str, float] = {}
 
     def get_excel() -> Any:
         if "excel" not in holder:
+            t0 = time.monotonic()
             pythoncom.CoInitialize()
             holder["excel"] = start_background_excel()
+            timing["启动Excel秒"] = time.monotonic() - t0
+            console_print(f"   ⚙️ 后台 Excel 已启动（{timing['启动Excel秒']:.1f} 秒）")
         return holder["excel"]
 
-    try:
-        entry = _preview_workbook(wb_path, folder, get_excel)
-    finally:
-        if "excel" in holder:
-            try:
-                quit_background_excel(holder["excel"])
-            finally:
-                pythoncom.CoUninitialize()
+    with debug_log.side_task("clean_file", {"file": file_name}):
+        t0 = time.monotonic()
+        folder, wb_path = _find_workbook(folder_str, file_name)
+        timing["找文件秒"] = time.monotonic() - t0
+        try:
+            entry = _preview_workbook(wb_path, folder, get_excel)
+        finally:
+            if "excel" in holder:
+                t0 = time.monotonic()
+                try:
+                    quit_background_excel(holder["excel"])
+                finally:
+                    pythoncom.CoUninitialize()
+                    timing["关闭Excel秒"] = time.monotonic() - t0
+        total = time.monotonic() - started
+        debug_log.event("⏱ 预览读取工作表", 文件=file_name, 表数=entry["sheet_count"], 总秒=total,
+                        **timing, 备注=entry["note"] or "-")
+    detail = "、".join(f"{k.removesuffix('秒')} {v:.1f}" for k, v in timing.items() if v >= 0.05)
+    console_print(f"✅ 预览：读到 {entry['sheet_count']} 张表，用时 {total:.1f} 秒"
+                  + (f"（{detail}）" if detail else "") + (f"  ⚠️ {entry['note']}" if entry["note"] else ""))
     return {"folder": str(folder), "file": entry}
 
 
@@ -300,6 +318,7 @@ def render_workbook_previews(folder_str: str, file_name: str) -> dict[str, Any]:
     with lock:
         manifest = _read_manifest(cache_dir)
         if manifest is not None:
+            console_print(f"✅ 预览：{file_name} 没改过，直接用上次的预览图")
             return {"key": key, "cached": True, **manifest}
 
         _prune_old_cache(keep=key)
@@ -308,23 +327,38 @@ def render_workbook_previews(folder_str: str, file_name: str) -> dict[str, Any]:
         shutil.rmtree(staging, ignore_errors=True)
         staging.mkdir(parents=True)
 
+        started = time.monotonic()
+        console_print(f"🖼️ 预览：正在用 Excel 生成预览图 {file_name}")
         with debug_log.side_task("clean_render", {"file": file_name}):
             sheets: list[dict[str, Any]] = []
             pythoncom.CoInitialize()
             excel = None
             wb = None
             try:
+                t0 = time.monotonic()
                 excel = start_background_excel()
                 wb = excel.Workbooks.Open(str(wb_path.resolve()), ReadOnly=True, UpdateLinks=0)
+                opened = time.monotonic() - t0
+                console_print(f"   ⚙️ 后台 Excel 已打开文件（{opened:.1f} 秒）")
+                debug_log.event("⏱ 预览打开文件", 文件=file_name, 启动并打开秒=opened)
                 contents: dict[str, dict[str, Any] | None] = {}
-                for idx, sheet in enumerate(list(wb.Sheets)):
+                all_sheets = list(wb.Sheets)
+                for idx, sheet in enumerate(all_sheets):
+                    t0 = time.monotonic()
                     content = read_sheet_content(sheet)
+                    t1 = time.monotonic()
                     entry = _render_sheet(sheet, staging / f"{idx}.pdf", staging / f"{idx}.png")
+                    t2 = time.monotonic()
                     if content is not None:
                         content["objects"] = read_sheet_objects(sheet)
                         content["images"] = pdf_image_digests(staging / entry["pdf"]) if entry["pdf"] else None
+                    t3 = time.monotonic()
                     contents[sheet.Name] = content
                     sheets.append(entry)
+                    debug_log.event("⏱ 预览一张表", 表=entry["name"], 读内容秒=t1 - t0, 导出PDF和图秒=t2 - t1,
+                                    读图形秒=t3 - t2)
+                    console_print(f"   [{idx + 1}/{len(all_sheets)}] {entry['name']}  {t3 - t0:.1f} 秒"
+                                  f"（读内容 {t1 - t0:.1f}、导出 PDF {t2 - t1:.1f}、读图形 {t3 - t2:.1f}）")
                 similar = find_similar_sheets(contents)
                 for entry in sheets:
                     entry["similar"] = similar.get(entry["name"])
@@ -346,6 +380,7 @@ def render_workbook_previews(folder_str: str, file_name: str) -> dict[str, Any]:
         manifest = {"sheets": sheets}
         (staging / MANIFEST_NAME).write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
         staging.rename(cache_dir)
+        console_print(f"✅ 预览：{len(sheets)} 张表的预览图已生成，用时 {time.monotonic() - started:.1f} 秒")
         return {"key": key, "cached": False, **manifest}
 
 

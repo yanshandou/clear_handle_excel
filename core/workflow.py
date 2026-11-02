@@ -2649,12 +2649,18 @@ def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
                 raise
         return excel
 
+    started = time.monotonic()
+    console_print(f"🔎 精简 Sheet：正在扫描 {len(workbooks)} 份 Excel（{folder}）")
     try:
         with debug_log.side_task("clean_preview", {"folder": str(folder), "files": len(workbooks)}):
-            for wb_path in workbooks:
+            for index, wb_path in enumerate(workbooks, 1):
+                t0 = time.monotonic()
                 entry = _preview_workbook(wb_path, folder, get_excel)
+                seconds = time.monotonic() - t0
                 files.append(entry)
-                debug_log.event("📄 精简预览", 文件=entry["name"], 表数=entry["sheet_count"], 默认删除=entry["backups"],
+                console_print(f"   [{index}/{len(workbooks)}] {entry['name']}  {entry['sheet_count']} 张表  {seconds:.1f} 秒"
+                              + (f"  ⚠️ {entry['note']}" if entry["note"] else ""))
+                debug_log.event("📄 精简预览", 文件=entry["name"], 用时秒=seconds, 表数=entry["sheet_count"], 默认删除=entry["backups"],
                                 待定=entry["uncertain"], 新旧配对=entry["new_old_pairs"] or "-", 备注=entry["note"] or "-",
                                 灰色标签=entry["gray_tabs"] or "-", 空白表=entry["blank_sheets"] or "-", 默认表名=entry["default_names"] or "-",
                                 编号组保留=[n for n in entry["sheets"] if n in copy_series_sheets(entry["sheets"])] or "-",
@@ -2665,6 +2671,7 @@ def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
                 quit_background_excel(excel)
             finally:
                 pythoncom.CoUninitialize()
+    console_print(f"✅ 精简 Sheet：扫描完成，{len(files)} 份文件，用时 {time.monotonic() - started:.1f} 秒")
     return {"folder": str(folder), "files": files}
 
 
