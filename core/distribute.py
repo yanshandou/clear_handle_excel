@@ -17,7 +17,7 @@ JSON 格式（用户给的上传记录）::
 - owner 是作者、startDate 只是记录，都不影响复制。
 
 分两步：先 preview() 列出清单给用户确认，再 start() 复制。复制前再查一遍来源，和清单不一样就不复制。
-复制记录存进 execution.sqlite3（更新程序时会把它复制过去，记录不丢），网页上能看、能下载 Markdown。
+复制记录存进 execution.sqlite3（放在程序文件夹外，更新程序记录不丢），网页上能看、能下载 Markdown。
 记录文档里不写日期和时间（要交出去的东西都这样），网页上可以显示。
 """
 from __future__ import annotations

@@ -823,6 +823,8 @@ def main() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", port), WebHandler)
     url = f"http://127.0.0.1:{port}"
     console_print(f"🚀 Web 界面已启动: {url}")
+    from core.data_dir import DATA_DIR
+    console_print(f"💾 数据（执行记录、审核标记、截图）保存在: {DATA_DIR}")
     console_print("正在自动打开浏览器... (按 Ctrl+C 可退出程序)")
     webbrowser.open(url)
     try:
