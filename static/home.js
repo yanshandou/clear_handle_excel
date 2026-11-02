@@ -5,12 +5,13 @@ const TASKS = {
     theme: 'feature-sky',
     sub: '先把每个工作簿的可见工作表分别导出为 PDF，再逐页查看、标记、一键处理',
     notes: [
-      '每次都重新导出最新的 PDF；全部导出完后按钮变成「📋 查看 PDF」，点了进复检页面',
+      '全部导出完后按钮变成「📋 查看 PDF」，点了进复检页面',
       '自动递归扫描所选文件夹及其所有子文件夹，以只读方式打开 Excel 导出',
       '跳过隐藏表、変更履歴和备份表',
       '每张 Sheet 按 Excel 里原来设的打印方向导出，不比较横向竖向，也不改 Excel 里的方向',
-      '导出的 PDF 直接保存在对应 Excel 文件所在的同一目录下',
-      '开始前先删掉同一目录里以前导出的旧 PDF（名字是「Excel 文件名_….pdf」的），其他 PDF 不动',
+      'PDF 统一放在所选文件夹下的「PDFS」文件夹里，子文件夹结构和 Excel 一样，不和 Excel 混在一起',
+      '导出时记下每个 Excel 的哈希值：Excel 没改过就沿用上次的 PDF，改过的才重新导出',
+      '以前和 Excel 放在一起的旧 PDF（名字是「Excel 文件名_….pdf」的）会删掉，其他 PDF 不动',
     ],
     runLabel: '📄 导出 PDF',
   },
@@ -234,7 +235,7 @@ function renderRunBox() {
   const html = `
     <b>${failed ? '⚠️ 部分文件未处理成功' : '✅ 已完成'}</b>
     <span>${escapeHtml(failed ? '失败原因见下方日志，可点击「继续上次任务」只重试未完成的文件。' : p.current_step)}</span>
-    ${isExport && outDir ? `<span>PDF 输出位置：与各 Excel 文件在同一目录下（<code>${escapeHtml(outDir)}</code>）</span>` : ''}
+    ${isExport && outDir ? `<span>PDF 输出位置：<code>${escapeHtml(outDir)}</code></span>` : ''}
     <a href="/records">查看执行记录 ↗</a>
   `;
   // 轮询时内容不变就不重建，避免打断用户选中复制路径

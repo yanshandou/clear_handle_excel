@@ -265,3 +265,36 @@ def shot_around(sheet: Any, breaks: dict[str, list], doc: Any, row: int, col: in
     if upper is None or lower is None or upper == lower:
         return "", None, []
     return render_break(doc, upper, lower, text, pieces)
+
+
+def page_area(sheet: Any, page: int, pages: int) -> str | None:
+    """PDF 第 page 页（从 0 起，共 pages 页）打印的是表里哪一块，返回 "A1:H40" 这样的区域。
+    按打印区域（没设就按已用区域）、分页和「先列后行 / 先行后列」推算；页数对不上（Excel 跳过了空白页、
+    设了几块打印区域、PDF 是旧的）就返回 None，不猜。PDF 人工复检「在 Excel 打开这一页」用"""
+    if not 0 <= page < pages:
+        return None
+    breaks = read_breaks(sheet)
+    if breaks is None:
+        return None
+    try:
+        area = str(sheet.PageSetup.PrintArea or "")
+        if "," in area:
+            return None
+        rng = sheet.Range(area) if area else sheet.UsedRange
+        top, left = int(rng.Row), int(rng.Column)
+        bottom, right = top + int(rng.Rows.Count) - 1, left + int(rng.Columns.Count) - 1
+    except Exception:
+        return None
+    h = [row for row, _ in breaks["h"] if top < row <= bottom]
+    v = [col for col in breaks["v"] if left < col <= right]
+    n_h, n_v = len(h) + 1, len(v) + 1
+    if n_h * n_v != pages:
+        return None
+    try:
+        across = int(sheet.PageSetup.Order) == XL_OVER_THEN_DOWN
+    except Exception:
+        across = False
+    i, j = (page // n_v, page % n_v) if across else (page % n_h, page // n_h)
+    rows, cols = [top] + h + [bottom + 1], [left] + v + [right + 1]
+    return (f"{col_index_to_letters(cols[j])}{rows[i]}:"
+            f"{col_index_to_letters(cols[j + 1] - 1)}{rows[i + 1] - 1}")

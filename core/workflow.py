@@ -42,7 +42,7 @@ from core.common import (
     workbook_locked,
     workbook_rel_name,
 )
-from core import debug_log, file_problem, fix_images, page_breaks, pdf_detector, print_layout, scan_analysis, sheet_history
+from core import debug_log, file_problem, fix_images, page_breaks, pdf_detector, pdf_store, print_layout, scan_analysis, sheet_history
 from core.excel_watchdog import ExcelWatchdog
 from core.formula_links import delete_sheets_preserving_values
 from core.excel_ops import (
@@ -1466,7 +1466,9 @@ def _scan_one_workbook(
             with STATE_LOCK:
                 SCAN_NOW.update(sheet=s_name, index=index, total=len(sheets))
             update_file_progress(wb_label, current_action=f"正在导出并检测 [{s_name}]...")
-            pdf_path = unique_pdf_path(wb_path.parent, file_stem, sanitize_filename(s_name), used_pdf_paths)
+            pdf_dir = pdf_store.pdf_dir(wb_path, STATE.get("folder"))  # 扫描时导出的 PDF 也不和 Excel 混在一起
+            pdf_dir.mkdir(parents=True, exist_ok=True)
+            pdf_path = unique_pdf_path(pdf_dir, file_stem, sanitize_filename(s_name), used_pdf_paths)
             started = time.perf_counter()
             with scan_analysis.operation("layout", s_name):
                 generated = prepare_print_layout(sheet, path, pdf_path)
@@ -3059,10 +3061,33 @@ def _clean_backup_sheets(
 
 def _export_workbook_pdfs(
     get_excel: Callable[[], Any], wb_path: Path, root_folder: Path, used_pdf_paths: set[Path],
-    choose_orientation: bool = True,
+    choose_orientation: bool = True, *, force: bool = False,
 ) -> list[Path]:
-    """choose_orientation=False：不比较横向竖向，直接导出一次（以前定过方向、文件没改过的照旧用那个方向）"""
+    """导出到 根目录/PDFS/<子文件夹>（pdf_store）。Excel 哈希和上次导出时一样、PDF 都还在就直接沿用，
+    不打开 Excel；force=True（人工复检页「重新生成」）不管哈希，照样重新导出。
+    choose_orientation=False：不比较横向竖向，直接导出一次（以前定过方向、文件没改过的照旧用那个方向）"""
     wb_label = workbook_rel_name(wb_path, root_folder)
+    digest = sheet_history.fingerprint(wb_path)
+    reused = None if force else pdf_store.reusable(root_folder, wb_path, digest)
+    if reused is not None:
+        paths = [pdf for pdf, _ in reused]
+        used_pdf_paths.update(paths)
+        with STATE_LOCK:
+            for pdf, sheet in reused:
+                STATE.setdefault("pdf_exports", {})[str(pdf)] = {"wb_path": str(wb_path), "sheet": sheet}
+        action = f"Excel 没改过，沿用上次导出的 {len(paths)} 份 PDF"
+        debug_log.event("♻️ PDF 沿用", 文件=wb_label, 哈希=digest[:12], PDF=len(paths))
+        log_msg(f"  ♻️ {action}")
+        update_file_progress(wb_label, status="done", exported_pdfs=len(paths), current_action=action)
+        return paths
+    removed = pdf_store.clear_workbook(root_folder, wb_path)
+    if removed:
+        from core import pdf_review
+        pdf_review.forget_pdfs(removed)
+    debug_log.event("📄 PDF 重新导出", 文件=wb_label, 哈希=digest[:12], 强制=force, 删掉旧PDF=[p.name for p in removed])
+    out_dir = pdf_store.pdf_dir(wb_path, root_folder)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    taken = pdf_store.owned_by_others(root_folder, wb_path)
     wb = open_workbook_checked(get_excel(), str(wb_path.resolve()), ReadOnly=True, UpdateLinks=0)
     print_layout.bind(wb, str(wb_path))
     try:
@@ -3071,17 +3096,19 @@ def _export_workbook_pdfs(
             print_layout.prune(STATE.setdefault("print_layouts", {}), str(wb_path), layout_keys)
         file_stem = sanitize_filename(strip_review_prefix(wb_path.stem))
         exported: list[Path] = []
+        sheets_done: list[tuple[Path, str]] = []
         to_save: dict[str, tuple[str, int]] = {}
         for sheet in _exportable_sheets(wb):
-            pdf_path = unique_pdf_path(
-                wb_path.parent, file_stem, sanitize_filename(sheet.Name), used_pdf_paths
-            )
+            # 别的 Excel 沿用着的 PDF 名字不占（极少见：a.xlsx 的表「b_c」和 a_b.xlsx 的表「c」同名）
+            pdf_path = unique_pdf_path(out_dir, file_stem, sanitize_filename(sheet.Name), used_pdf_paths | taken)
+            used_pdf_paths.add(pdf_path)
             if not choose_orientation or not prepare_print_layout(sheet, str(wb_path), pdf_path):
                 _export_sheet_pdf(sheet, pdf_path)
             target = print_layout.to_save(sheet)
             if target is not None:
                 to_save[print_layout.identity(sheet)[0]] = (str(sheet.Name), target)
             exported.append(pdf_path)
+            sheets_done.append((pdf_path, str(sheet.Name)))
             with STATE_LOCK:
                 # PDF 人工复检按这个找回是哪个文件的哪张表
                 STATE.setdefault("pdf_exports", {})[str(pdf_path)] = {"wb_path": str(wb_path), "sheet": str(sheet.Name)}
@@ -3097,6 +3124,9 @@ def _export_workbook_pdfs(
     if to_save:
         update_file_progress(wb_label, current_action="正在把打印方向保存进 Excel...")
         _save_print_orientations(get_excel, wb_path, to_save)
+        digest = sheet_history.fingerprint(wb_path)  # 方向存进 Excel 后文件变了，记保存后的
+    # 记下这次导出时 Excel 的哈希：下次没变就沿用这些 PDF
+    pdf_store.record(root_folder, wb_path, digest, sheets_done)
     update_file_progress(
         wb_label, status="done", exported_pdfs=len(exported), current_action=action,
         all_sheets=all_sheets,
@@ -3150,9 +3180,9 @@ def _save_print_orientations(get_excel: Callable[[], Any], wb_path: Path, to_sav
 
 
 def _clear_old_pdfs(workbooks: list[Path]) -> None:
-    """导出前先删掉旧 PDF（用户定：先清空，再生成新的，人工复检页面只看到这次导出的）。
-    只删每个 Excel 所在文件夹里名字是「Excel 文件名_….pdf」的，也就是以前导出、扫描时导出留下的；
-    别的 PDF 不动。删不掉的（被别的程序打开着）记日志，照常导出。续跑时不再删，免得删掉这次已经导出的"""
+    """以前的版本把 PDF 和 Excel 放在一起（2026-11-02 起统一放到 PDFS 文件夹）：导出前把这些旧 PDF 删掉，
+    Excel 文件夹里干干净净。只删每个 Excel 所在文件夹里名字是「Excel 文件名_….pdf」的，也就是以前导出、
+    扫描时导出留下的；别的 PDF 不动。删不掉的（被别的程序打开着）记日志，照常导出。续跑时不再删"""
     stems: dict[Path, set[str]] = {}
     for wb in workbooks:
         stems.setdefault(wb.parent, set()).add(sanitize_filename(strip_review_prefix(wb.stem)))
@@ -3167,13 +3197,23 @@ def _clear_old_pdfs(workbooks: list[Path]) -> None:
                 removed.append(pdf)
             except OSError as err:
                 failed.append(f"{pdf.name}（{err}）")
-    debug_log.event("🗑️ 导出前删掉旧 PDF", 删掉=len(removed), 删不掉=len(failed), 文件=[p.name for p in removed][:20])
+    debug_log.event("🗑️ 删掉和 Excel 混放的旧 PDF", 删掉=len(removed), 删不掉=len(failed), 文件=[p.name for p in removed][:20])
     if removed:
         from core import pdf_review
         pdf_review.forget_pdfs(removed)
-        log_msg(f"🗑️ 导出前删掉了 {len(removed)} 份旧 PDF")
+        log_msg(f"🗑️ 删掉了 {len(removed)} 份和 Excel 混放在一起的旧 PDF（PDF 现在统一放在 {pdf_store.DIR_NAME} 文件夹）")
     if failed:
         log_msg(f"⚠️ {len(failed)} 份旧 PDF 删不掉（可能正在用别的程序打开），同名的会导出失败：" + "；".join(failed[:5]))
+
+
+def _prune_pdf_folder(folder: Path, workbooks: list[Path]) -> None:
+    """PDFS 里已经没有对应 Excel 的 PDF（Excel 删掉、挪走、改名了）去掉，免得复检时看到不存在的表"""
+    removed = pdf_store.prune(folder, workbooks)
+    debug_log.event("🗑️ PDFS 里去掉已不在的 Excel 的 PDF", 删掉=[p.name for p in removed][:20], 共=len(removed))
+    if removed:
+        from core import pdf_review
+        pdf_review.forget_pdfs(removed)
+        log_msg(f"🗑️ {pdf_store.DIR_NAME} 里有 {len(removed)} 份 PDF 对应的 Excel 已经不在了，已删掉")
 
 
 def _normalize_workbook_file(get_excel: Callable[[], Any], wb_path: Path, root_folder: Path) -> None:
@@ -3238,7 +3278,7 @@ def quick_task_workflow(kind: str) -> None:
             waiting_review = len(current_review_queue())
             options["folder"] = str(folder)
             if kind == "export_pdf":
-                options["pdf_folder"] = str(folder)
+                options["pdf_folder"] = str(folder / pdf_store.DIR_NAME)
             job["workbooks"] = [str(path) for path in workbooks]
             job["exported"] = []
             _persist_state()
@@ -3246,13 +3286,14 @@ def quick_task_workflow(kind: str) -> None:
             task_name=task_name,
             folder=folder,
             workbooks=workbooks,
-            pdf_folder=folder if kind == "export_pdf" else None,
+            pdf_folder=folder / pdf_store.DIR_NAME if kind == "export_pdf" else None,
             backup_folder=None,
         )
         if kind == "export_pdf" and waiting_review:
             log_msg(f"⚠️ 还有 {waiting_review} 个文件在等稍后人工复检（单元格标着黄色），导出的 PDF 里会带黄色底色")
         if kind == "export_pdf":
-            _clear_old_pdfs(workbooks)
+            _clear_old_pdfs(workbooks)  # 以前和 Excel 混放的旧 PDF
+            _prune_pdf_folder(folder, workbooks)
     log_msg(f"{'继续' if initialized else '开始'}{task_name}：{folder}（共 {len(workbooks)} 个文件）")
     if kind == "export_pdf" and not print_layout.ENABLED:
         log_msg("📄 每张表按 Excel 里原来的打印方向导出，不比较横竖，也不改 Excel 里的方向")
@@ -3353,6 +3394,10 @@ def quick_task_workflow(kind: str) -> None:
             detail += f"，{uncertain_total} 个待定 Sheet 未删除（{uncertain_files} 个文件）"
     elif kind == "export_pdf":
         detail = f"共导出 {sum(int(f['exported_pdfs']) for f in files)} 份 PDF"
+        reused = [f for f in files if str(f.get("current_action") or "").startswith("Excel 没改过")]
+        if reused:
+            detail += (f"（其中 {len(reused)} 个 Excel 没改过，沿用上次的 "
+                       f"{sum(int(f['exported_pdfs']) for f in reused)} 份）")
     else:
         detail = f"{sum(bool(f['normalized_a1']) for f in files)} 个文件已完成 A1/100% 标准化"
     failed = sum(f["status"] == "error" for f in files)

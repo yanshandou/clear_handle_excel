@@ -303,9 +303,11 @@ class QuickTaskTests(unittest.TestCase):
             [s.Name for s in book.sheets if s.ExportAsFixedFormat.called], ["表紙", "基本情報_20241003"],
         )
         pdf_folder = Path(job["options"]["pdf_folder"])
-        self.assertEqual(pdf_folder, self.folder.resolve())
+        # PDF 统一放在所选文件夹下的 PDFS 里（2026-11-02），Excel 文件夹里没有 PDF
+        self.assertEqual(pdf_folder, self.folder.resolve() / "PDFS")
+        self.assertEqual(list(self.folder.glob("*.pdf")), [])
         self.assertEqual(
-            sorted(p.name for p in self.folder.glob("*.pdf")),
+            sorted(p.name for p in pdf_folder.glob("*.pdf")),
             ["spec_基本情報_20241003.pdf", "spec_表紙.pdf"],
         )
         self.assertNotIn("backup_folder", job["options"])
@@ -342,8 +344,73 @@ class QuickTaskTests(unittest.TestCase):
         job = self.workflow.STATE["job"]
         self.assertEqual(job["status"], "completed")
         self.assertEqual(self.excel.opened, [("a.xlsx", True)])
-        self.assertEqual((self.folder / "a_Sheet1.pdf").read_bytes(), b"pdf of a.xlsm")
-        self.assertEqual((self.folder / "a_Sheet1_2.pdf").read_bytes(), b"pdf of a.xlsx")
+        self.assertEqual((self.folder / "PDFS" / "a_Sheet1.pdf").read_bytes(), b"pdf of a.xlsm")
+        self.assertEqual((self.folder / "PDFS" / "a_Sheet1_2.pdf").read_bytes(), b"pdf of a.xlsx")
+
+    def test_unchanged_excel_reuses_pdfs_without_opening_excel(self):
+        # 用户 2026-11-02：导出时记下 Excel 的哈希，没变就沿用 PDF，变了才重新导出
+        self.add_book("a.xlsx", ["Sheet1", "Sheet2"])
+        b = self.add_book("sub/b.xlsx", ["Main"])
+        self.run_task("export_pdf")
+        pdfs = self.folder / "PDFS"
+        manifest = json.loads((pdfs / "PDF导出记录.json").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(manifest["files"]), ["a.xlsx", "sub/b.xlsx"])
+        self.assertEqual([p["pdf"] for p in manifest["files"]["sub/b.xlsx"]["pdfs"]], ["sub/b_Main.pdf"])
+        before = {p: p.stat().st_mtime_ns for p in pdfs.rglob("*.pdf")}
+
+        b.write_bytes(b"edited")  # 只改了 b
+        self.excel.opened.clear()
+        job = self.run_task("export_pdf")
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(self.excel.opened, [("sub/b.xlsx", True)])
+        self.assertEqual((pdfs / "a_Sheet1.pdf").stat().st_mtime_ns, before[pdfs / "a_Sheet1.pdf"])
+        self.assertEqual(self.report_files()["a.xlsx"]["exported_pdfs"], 2)
+        self.assertTrue(any("沿用上次导出的 2 份 PDF" in line for line in self.workflow.STATE["logs"]))
+        self.assertTrue(any("其中 1 个 Excel 没改过，沿用上次的 2 份" in line for line in self.workflow.STATE["logs"]))
+
+    def test_changed_excel_drops_pdfs_of_removed_sheets_and_replaced_pdf_is_exported_again(self):
+        a = self.add_book("a.xlsx", ["Sheet1", "Sheet2"])
+        self.run_task("export_pdf")
+        pdfs = self.folder / "PDFS"
+        self.books["a.xlsx"].sheets.pop()  # 删了 Sheet2 并保存
+        a.write_bytes(b"saved without Sheet2")
+        self.run_task("export_pdf")
+        self.assertEqual(sorted(p.name for p in pdfs.glob("*.pdf")), ["a_Sheet1.pdf"])
+
+        # 没改 Excel，但 PDF 被别的东西换掉了（例如扫描时导出到同一个名字）：不沿用，重新导出
+        (pdfs / "a_Sheet1.pdf").write_bytes(b"something else entirely")
+        self.excel.opened.clear()
+        self.run_task("export_pdf")
+        self.assertEqual(self.excel.opened, [("a.xlsx", True)])
+        self.assertEqual((pdfs / "a_Sheet1.pdf").read_bytes(), b"pdf of a.xlsx")
+
+    def test_export_moves_away_from_mixed_pdfs_and_prunes_removed_excel(self):
+        a = self.add_book("a.xlsx", ["Sheet1"])
+        b = self.add_book("b.xlsx", ["Sheet1"])
+        (self.folder / "a_Sheet1.pdf").write_bytes(b"old mixed")  # 以前和 Excel 混放的
+        (self.folder / "manual.pdf").write_bytes(b"not ours")
+        self.run_task("export_pdf")
+        self.assertFalse((self.folder / "a_Sheet1.pdf").exists())
+        self.assertTrue((self.folder / "manual.pdf").exists())
+        pdfs = self.folder / "PDFS"
+        self.assertTrue((pdfs / "b_Sheet1.pdf").exists())
+
+        b.unlink()  # Excel 删掉了：它的 PDF 和记录也去掉
+        del self.books["b.xlsx"]
+        self.run_task("export_pdf")
+        self.assertEqual(sorted(p.name for p in pdfs.glob("*.pdf")), ["a_Sheet1.pdf"])
+        manifest = json.loads((pdfs / "PDF导出记录.json").read_text(encoding="utf-8"))
+        self.assertEqual(list(manifest["files"]), ["a.xlsx"])
+        self.assertTrue(a.exists())
+
+    def test_force_exports_again_even_if_unchanged(self):
+        a = self.add_book("a.xlsx", ["Sheet1"])
+        self.run_task("export_pdf")
+        self.excel.opened.clear()
+        paths = self.workflow._export_workbook_pdfs(lambda: self.excel, a, self.folder.resolve(), set(), force=True)
+        self.assertEqual(self.excel.opened, [("a.xlsx", True)])
+        self.assertEqual(paths, [self.folder.resolve() / "PDFS" / "a_Sheet1.pdf"])
+        self.assertEqual(paths[0].read_bytes(), b"pdf of a.xlsx")
 
     def test_failed_file_waits_for_user_and_retry_reuses_same_pdf_name(self):
         self.add_book("a.xlsx", ["Sheet1"])
@@ -360,8 +427,8 @@ class QuickTaskTests(unittest.TestCase):
             job = self.run_task("export_pdf")
         ask.assert_called_once()
         self.assertEqual(job["status"], "completed")
-        self.assertEqual((self.folder / "a_Sheet1.pdf").read_bytes(), b"pdf of a.xlsx")
-        self.assertFalse((self.folder / "a_Sheet1_2.pdf").exists())
+        self.assertEqual((self.folder / "PDFS" / "a_Sheet1.pdf").read_bytes(), b"pdf of a.xlsx")
+        self.assertFalse((self.folder / "PDFS" / "a_Sheet1_2.pdf").exists())
 
     def test_skipped_file_is_recorded_and_next_file_continues(self):
         self.add_book("a.xlsx", ["Sheet1"])
@@ -373,7 +440,7 @@ class QuickTaskTests(unittest.TestCase):
         self.assertEqual(job["status"], "interrupted")
         self.assertEqual(self.report_files()["a.xlsx"]["status"], "error")
         self.assertIn("导出失败", self.report_files()["a.xlsx"]["error"])
-        self.assertTrue((self.folder / "b_Sheet1.pdf").exists())
+        self.assertTrue((self.folder / "PDFS" / "b_Sheet1.pdf").exists())
 
     def test_normalize_view_backs_up_then_saves_each_workbook(self):
         self.add_book("a.xlsx", ["Sheet1", "Sheet2"])
@@ -806,11 +873,13 @@ class QuickTaskTests(unittest.TestCase):
         self.assertTrue((self.folder / "02_帳票" / "spec.xlsx").exists())
         self.assertEqual(self.report_files()["02_帳票/spec.xlsx"]["uncertain_sheets"], ["Draft"])
 
-        # 导出 PDF 时，PDF 直接生成在各自的子文件夹中
+        # 导出 PDF 时，PDF 放在 PDFS 里同样的子文件夹中，Excel 文件夹里不放
         self.run_task("export_pdf")
-        self.assertTrue((self.folder / "01_画面" / "spec_Main.pdf").exists())
-        self.assertTrue((self.folder / "02_帳票" / "spec_Report.pdf").exists())
-        self.assertTrue((self.folder / "02_帳票" / "spec_Draft.pdf").exists())
+        pdfs = self.folder / "PDFS"
+        self.assertTrue((pdfs / "01_画面" / "spec_Main.pdf").exists())
+        self.assertTrue((pdfs / "02_帳票" / "spec_Report.pdf").exists())
+        self.assertTrue((pdfs / "02_帳票" / "spec_Draft.pdf").exists())
+        self.assertEqual(list((self.folder / "01_画面").glob("*.pdf")), [])
 
     def test_numbered_suffix_is_kept_in_clean_preview(self):
         self.add_book("numbered.xlsx", ["Main", "Main (2)", "Main（３）", "Main (2)_20221005"])
@@ -872,10 +941,11 @@ class QuickTaskTests(unittest.TestCase):
         self.assertEqual(files["spec.xlsx"]["uncertain"], [])  # 灰色优先于「名称包含 → 待定」
 
         self.run_task("export_pdf")
-        self.assertTrue((self.folder / "spec_Main.pdf").exists())
-        self.assertTrue((self.folder / "spec_Report.pdf").exists())
-        self.assertFalse((self.folder / "spec_Main詳細.pdf").exists())
-        self.assertEqual(sorted(p.name for p in self.folder.glob("*.pdf")), ["spec_Main.pdf", "spec_Report.pdf"])
+        pdfs = self.folder / "PDFS"
+        self.assertTrue((pdfs / "spec_Main.pdf").exists())
+        self.assertTrue((pdfs / "spec_Report.pdf").exists())
+        self.assertFalse((pdfs / "spec_Main詳細.pdf").exists())
+        self.assertEqual(sorted(p.name for p in pdfs.glob("*.pdf")), ["spec_Main.pdf", "spec_Report.pdf"])
         self.assertTrue(book.exists())
 
     def test_clean_sheets_leaves_existing_question_marks_untouched(self):

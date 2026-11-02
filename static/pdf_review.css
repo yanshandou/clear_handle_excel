@@ -81,25 +81,14 @@
   word-break: break-all;
 }
 
-.pr-doc-pages,
-.pr-doc-state {
+.pr-doc-pages {
   font-size: 13px;
   color: var(--ink-3);
 }
 
-/* 这份 PDF 算好行列位置没有；文字长短变了也只在标题行右边，不挪页面 */
-.pr-doc-state {
+/* 把标记按钮和「重新生成」推到标题行右边 */
+.pr-doc-gap {
   margin-left: auto;
-  font-weight: 700;
-}
-
-.pr-doc-state[data-kind="ready"] {
-  color: #1b7a3a;
-}
-
-.pr-doc-state[data-kind="error"] {
-  color: #9a1030;
-  cursor: help;
 }
 
 .pr-doc-excel {
@@ -135,34 +124,17 @@
   -webkit-user-select: none;
 }
 
-/* 页面大小：大图铺满宽度；中图整页放进窗口（扣掉顶栏和底部条）；小图固定高度，一行能放几页放几页。
-   --ar 是页面宽 / 高，宽度按它换算，高度跟着 aspect-ratio 走 */
+/* 只用小图（2026-11-02）：固定高度，一行能放几页放几页。--ar 是页面宽 / 高，宽度按它换算 */
 .pr-pages {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.view-medium .pr-pages {
-  align-items: center;
-}
-
-.view-medium .pr-page {
-  width: min(100%, calc((100vh - 200px) * var(--ar)));
-}
-
-.view-small .pr-pages {
   flex-direction: row;
   flex-wrap: wrap;
   align-items: flex-start;
+  gap: 10px;
 }
 
 .view-small .pr-page {
   width: min(100%, calc(320px * var(--ar)));
-}
-
-.pr-view {
-  flex: none;
 }
 
 .pr-img {
@@ -180,20 +152,14 @@
 }
 
 /* 点下去的地方闪一圈，知道点到了 */
-.pr-click {
-  position: absolute;
-  width: 26px;
-  height: 26px;
-  margin: -13px 0 0 -13px;
-  border: 3px solid var(--purple);
-  border-radius: 50%;
-  pointer-events: none;
-  animation: pr-click 0.6s ease-out forwards;
+/* Ctrl + 单击打开 Excel：整页闪一下，看得出开的是哪一页（只换外框，不挪位置） */
+.pr-page.is-flash {
+  animation: pr-flash 0.7s ease-out;
 }
 
-@keyframes pr-click {
-  from { transform: scale(0.4); opacity: 1; }
-  to { transform: scale(1.6); opacity: 0; }
+@keyframes pr-flash {
+  from { outline: 4px solid #1d4f91; outline-offset: 2px; }
+  to { outline: 4px solid transparent; outline-offset: 8px; }
 }
 
 /* 图片还没加载出来 / 加载失败：不能画框，中间显示提示（浮层，不占位置） */
@@ -601,7 +567,7 @@
 .pr-dot.is-yellow { background: #ffc21f; }
 .pr-dot.is-red { background: #c8102e; }
 
-/* 底部「一键处理」：数字变了按钮宽度也不变 */
+/* 底部「打开标黄」「删除标红」：数字、文字变了按钮宽度也不变 */
 .pr-process {
   flex: none;
   display: inline-flex;
@@ -610,9 +576,9 @@
   white-space: nowrap;
 }
 
-#prProcessText {
+.pr-process-text {
   display: inline-block;
-  min-width: 7.5em;
+  min-width: 8.5em;
   text-align: center;
 }
 
@@ -684,4 +650,79 @@
 
 .pr-result .app-dialog-foot form {
   display: contents;
+}
+
+/* 标题上的「重新生成」：只重导这一份 Excel 的 PDF。生成中文字变了宽度也不变，旁边的按钮不挪 */
+.pr-regen-btn {
+  flex: none;
+  min-width: 7.6em;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  color: #1d4f91;
+  background: #fff;
+  border: 2px solid #1d4f91;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.pr-regen-btn:hover:not(:disabled) {
+  background: #e6efff;
+}
+
+.pr-regen-btn.is-running {
+  color: #fff;
+  background: #1d4f91;
+}
+
+.pr-regen-btn:disabled {
+  cursor: not-allowed;
+}
+
+.pr-regen-btn:disabled:not(.is-running) {
+  color: var(--ink-3);
+  background: #f1f3f8;
+  border-color: var(--ink-4);
+}
+
+/* 处理结果里每一处：点一下在 Excel 打开那一页 */
+.pr-result-open {
+  padding: 0;
+  font: inherit;
+  color: #1d4f91;
+  text-align: left;
+  text-decoration: underline;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+/* 「打开标黄」用黄色按钮，和红色的「删除标红」对应（用户 2026-11-02）。黄底配深色字，对比度够；
+   不要白字描边。按钮里的数字徽章改成深底黄字，免得黄上加黄看不出来 */
+#prOpenYellow:not(:disabled) {
+  --b-top: #ffd84d;
+  --b: #ffc21f;
+  --b-edge: #c99400;
+  color: #3d2a00;
+  text-shadow: none;
+  -webkit-text-stroke: 0;
+  border-color: var(--ink);
+  background: linear-gradient(180deg, var(--b-top) 0%, var(--b) 100%);
+}
+
+#prOpenYellow:hover:not(:disabled) {
+  filter: brightness(1.04);
+  box-shadow: inset 0 -5px 0 var(--b-edge), inset 0 3px 0 rgba(255, 255, 255, 0.45), 0 3px 0 var(--ink);
+}
+
+#prOpenYellow .pr-count.is-yellow {
+  color: #ffd84d;
+  background: #3d2a00;
+}
+
+/* 「已开 / 共几个」徽章：数字位数变了按钮也不变宽 */
+#prOpenYellow .pr-count {
+  min-width: 4.2em;
 }
