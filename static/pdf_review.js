@@ -6,6 +6,7 @@
 // 单击页面换颜色（蓝 → 黄 → 红 → 蓝，标黄记住点的那一格）；用 Excel 打开那一格改成 Ctrl + 单击或右键菜单。
 // 标题行右边的三个按钮一次改整张表。
 // 看完后点底部「一键处理」：后台删掉标红的表并保存，再用 Excel 打开标黄的。
+// 改完 Excel 想看效果：标题上「🔄 重新生成」只把这一份 Excel 的 PDF 重新导出一次。
 
 const FOLDER_KEY = 'clear_handle_excel.lastFolder';
 const OLD_FOLDER_KEY = 'clear_handle_excel.oldFolder'; // 和修复颜色 / 引用 / 隐藏页共用
@@ -30,6 +31,7 @@ let press = null;       // 按下的位置，松开时判断是不是点了一�
 let marks = {};         // pdf -> {v, red, pages: {页码: {x, y}}, opened}；全蓝（默认）不记
 let deleted = new Set(); // 这次一键处理删掉的表（PDF 也删了，页面上灰掉，刷新后就不在了）
 let processing = false;
+let regenWb = '';       // 正在重新生成 PDF 的那份 Excel（wb_path）
 
 const $ = id => document.getElementById(id);
 
@@ -108,11 +110,13 @@ function renderDocs() {
     const markable = doc.wb_path && !doc.error;
     const buttons = markable ? `<span class="pr-mark" role="group" aria-label="标记">${['blue', 'yellow', 'red'].map(c =>
       `<button type="button" class="pr-mark-btn" data-mark-btn="${c}" data-doc="${d}" title="${MARK_TITLE[c]}">${MARK_TEXT[c]}</button>`).join('')}</span>` : '';
+    const regen = doc.wb_path ? `<button type="button" class="pr-regen-btn" data-regen="${d}"
+      title="改完 Excel 并保存后点这里：只把这一份 Excel 的 PDF 重新导出一次，马上看改完的效果">🔄 重新生成</button>` : '';
     return `<article class="pr-doc" id="prDoc${d}" data-doc="${d}" data-mark="blue">
       <header class="pr-doc-head" title="${escapeHtml(doc.pdf)}">
         <span class="pr-doc-name">📄 ${escapeHtml(doc.name)}</span>
         <span class="pr-doc-pages">${doc.pages.length} 页</span>${excel}
-        <span class="pr-doc-state" data-state="${d}"></span>${buttons}
+        <span class="pr-doc-state" data-state="${d}"></span>${buttons}${regen}
       </header>
       ${doc.error ? `<p class="pr-doc-warn">${escapeHtml(doc.error)}</p>` : `<div class="pr-pages">${pages}</div>`}
     </article>`;
@@ -120,6 +124,7 @@ function renderDocs() {
   $('prBar').classList.remove('hidden');
   pageEls = [...box.querySelectorAll('.pr-page')];
   pdfs.forEach((_, d) => paintMark(d));
+  paintRegen();
   renderTrack();
   updateStatus();
 }
@@ -482,6 +487,7 @@ function setProcessing(on) {
   $('prProcess').disabled = on;
   $('prProcess').classList.toggle('is-running', on);
   pdfs.forEach((_, d) => paintMark(d));
+  paintRegen();
   if (!on) updateProcessButton();
 }
 
@@ -539,6 +545,104 @@ function finishProcess(result) {
   $('prResultBody').innerHTML = html || '<p>没有要处理的</p>';
   $('prResult').dataset.tone = bad ? 'warn' : 'info';
   $('prResult').showModal();
+}
+
+/* ---------- 单份 Excel 重新生成 PDF ---------- */
+// 复检时在 Excel 里改了、保存了，想马上看改完的效果：只把这一份 Excel 的 PDF 重新导出一次。
+// 做完重新读一遍列表；页面停在原来那份上（按标题位置对齐），不跳走。
+
+function paintRegen() {
+  document.querySelectorAll('[data-regen]').forEach(b => {
+    const doc = pdfs[Number(b.dataset.regen)];
+    const mine = regenWb && doc && doc.wb_path === regenWb;
+    b.textContent = mine ? '⏳ 生成中…' : '🔄 重新生成';
+    b.classList.toggle('is-running', !!mine);
+    b.disabled = !!regenWb || processing || deleted.has(doc?.pdf);
+  });
+}
+
+async function regenerate(d) {
+  const doc = pdfs[d];
+  if (!doc || !doc.wb_path || regenWb || processing) return;
+  const siblings = pdfs.filter(x => x.wb_path === doc.wb_path);
+  if (siblings.some(x => marks[x.pdf])) {
+    const ok = await appConfirm(
+      `重新生成「${doc.wb_name}」的 PDF（${siblings.length} 张表）？\n\n这份 Excel 在 PDF 上标的黄色 / 红色会清掉：新的 PDF 是改过的一版，标记对不上了。`,
+      { title: '重新生成 PDF', tone: 'warn', okText: '重新生成' });
+    if (!ok) return;
+  }
+  let data;
+  try {
+    data = await api('/api/pdf_review/regenerate', { pdf: doc.pdf });
+    if (data.unchanged) {
+      const again = await appConfirm(
+        `「${data.name}」和上次导出 PDF 时一模一样（哈希值没变），PDF 已经是最新的。\n\n刚在 Excel 里改过的话，多半还没保存：先在 Excel 里保存，再点「重新生成」。\n\n还是要照样重新生成一次吗？`,
+        { title: 'Excel 没有改过', tone: 'warn', okText: '照样重新生成' });
+      if (!again) return;
+      data = await api('/api/pdf_review/regenerate', { pdf: doc.pdf, force: true });
+    }
+  } catch (e) {
+    appAlert(e.message, { tone: 'error' });
+    return;
+  }
+  regenWb = doc.wb_path;
+  paintRegen();
+  toast(`正在重新生成「${doc.wb_name}」的 PDF…`);
+  pollRegen(doc.pdf);
+}
+
+async function pollRegen(anchorPdf) {
+  let status;
+  try {
+    status = await api('/api/pdf_review/regenerate');
+  } catch (_) {
+    setTimeout(() => pollRegen(anchorPdf), 1500);
+    return;
+  }
+  if (status.running) {
+    regenWb = status.wb_path || regenWb;
+    paintRegen();
+    setTimeout(() => pollRegen(anchorPdf), 1000);
+    return;
+  }
+  const result = status.result;
+  const wb = regenWb;
+  regenWb = '';
+  if (!result) { paintRegen(); return; }
+  if (!result.ok) {
+    paintRegen();
+    toast(`「${result.name}」没能重新生成`, true);
+    appAlert(`「${result.name}」没能重新生成 PDF：\n${result.reason || '未知原因'}\n\n原来的 PDF 可能已经删掉了，修好后再点一次「重新生成」，或者回主页重新导出。`, { tone: 'error' });
+  }
+  await reloadKeeping(anchorPdf || status.pdf, wb || result.wb_path);
+  if (result.ok) toast(`已重新生成「${result.name}」的 ${result.pdfs.length} 份 PDF`);
+}
+
+// 重新读列表，页面停在原来那份 Excel 的标题上（同一个 PDF 还在就对齐它，不在了对齐同一份 Excel 的第一张）
+async function reloadKeeping(pdf, wbPath) {
+  const before = pdfs.findIndex(x => x.pdf === pdf);
+  const old = before >= 0 ? $(`prDoc${before}`) : null;
+  const top = old ? old.getBoundingClientRect().top : null;
+  let data;
+  try {
+    data = await api(`/api/pdf_review?folder=${encodeURIComponent(folder)}`);
+  } catch (e) {
+    appAlert(`重新读取 PDF 列表失败：${e.message}`, { tone: 'error' });
+    return;
+  }
+  pdfs = data.pdfs;
+  deleted = new Set([...deleted].filter(p => pdfs.some(x => x.pdf === p)));
+  loadMarks(); // 重新生成的 PDF 修改时间变了，它的标记自动不算了
+  saveMarks();
+  mergeMaps(data.maps);
+  renderDocs();
+  updateProcessButton();
+  startPolling();
+  let after = pdfs.findIndex(x => x.pdf === pdf);
+  if (after < 0) after = pdfs.findIndex(x => x.wb_path === wbPath);
+  const now = after >= 0 ? $(`prDoc${after}`) : null;
+  if (now && top !== null) window.scrollBy(0, now.getBoundingClientRect().top - top);
+  scheduleWhere();
 }
 
 /* ---------- 看到哪里（底部条） ---------- */
@@ -720,6 +824,8 @@ window.addEventListener('scroll', () => { if (!$('prMenu').hidden) closeMenu(); 
 $('prDocs').addEventListener('click', e => {
   const button = e.target.closest('[data-mark-btn]');
   if (button) setDocMark(Number(button.dataset.doc), button.dataset.markBtn);
+  const regen = e.target.closest('[data-regen]');
+  if (regen) regenerate(Number(regen.dataset.regen));
 });
 $('prProcess').addEventListener('click', runProcess);
 $('prFolder').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
@@ -743,3 +849,7 @@ try {
 if ($('prFolder').value) load();
 // 刷新页面时一键处理还在后台跑：接着看进度
 api('/api/pdf_review/process').then(status => { if (status.running) { setProcessing(true); pollProcess(); } }).catch(() => {});
+// 重新生成还在后台跑：接着看，做完刷新列表
+api('/api/pdf_review/regenerate').then(status => {
+  if (status.running) { regenWb = status.wb_path || ''; paintRegen(); pollRegen(status.pdf); }
+}).catch(() => {});

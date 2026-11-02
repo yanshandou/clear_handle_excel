@@ -120,6 +120,30 @@ class ReviewFolderTests(unittest.TestCase):
         entry = pdf_review.list_pdfs(str(self.tmp))["pdfs"][0]
         self.assertEqual((entry["sheet"], entry["guessed"]), ("Sheet/1", False))
 
+    def test_pdfs_folder_is_listed_alone_and_manifest_finds_excel(self):
+        # 2026-11-02 起 PDF 放在 根目录/PDFS/<子文件夹>；有 PDFS 时只看里面的，旁边混放的旧 PDF 不列
+        from core import pdf_store
+        inside = self.tmp / "PDFS" / "営業" / "売上_表_1.pdf"
+        inside.parent.mkdir(parents=True)
+        doc = fitz.open()
+        doc.new_page(width=595, height=842)
+        doc.save(inside)
+        pdf_store.record(self.tmp, self.book, "h", [(inside, "表/1")])
+        listed = pdf_review.list_pdfs(str(self.tmp))
+        self.assertEqual([e["name"] for e in listed["pdfs"]], ["営業/売上_表_1.pdf"])
+        entry = listed["pdfs"][0]
+        self.assertEqual((entry["wb_name"], entry["sheet"], entry["guessed"]), ("営業/売上.xlsx", "表/1", False))
+        self.assertTrue(listed["in_pdfs"])
+
+    def test_pdfs_folder_without_record_guesses_excel_in_matching_subfolder(self):
+        inside = self.tmp / "PDFS" / "営業" / "売上_Sheet2.pdf"
+        inside.parent.mkdir(parents=True)
+        doc = fitz.open()
+        doc.new_page(width=595, height=842)
+        doc.save(inside)
+        entry = pdf_review.list_pdfs(str(self.tmp))["pdfs"][0]
+        self.assertEqual((entry["wb_name"], entry["sheet"], entry["guessed"]), ("営業/売上.xlsx", "Sheet2", True))
+
     def test_map_not_ready_is_queued_first(self):
         pdf_review.list_pdfs(str(self.tmp))
         self.prepare.reset_mock()
@@ -546,3 +570,73 @@ class ProcessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RegenerateTests(unittest.TestCase):
+    """复检时只重新生成一份 Excel 的 PDF"""
+
+    def setUp(self):
+        from core import pdf_store
+        self.store = pdf_store
+        self.tmp = Path(tempfile.mkdtemp())
+        self.book = self.tmp / "売上.xlsx"
+        self.book.write_bytes(b"x")
+        self.pdf = self.tmp / "PDFS" / "売上_一覧.pdf"
+        self.pdf.parent.mkdir()
+        doc = fitz.open()
+        doc.new_page(width=595, height=842)
+        doc.save(self.pdf)
+        pdf_store.record(self.tmp, self.book, pdf_review.sheet_history.fingerprint(self.book), [(self.pdf, "一覧")])
+        self.state = copy.deepcopy(wf.STATE)
+        self.state.update(pdf_review={}, pdf_exports={}, busy=False, job=None)
+        for target, name, value in ((wf, "STATE", self.state), (pdf_review, "_MAPS", {}), (pdf_review, "_QUEUE", []),
+                                    (pdf_review, "_REGEN", {"running": False})):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for target, name in ((wf, "_persist_state"), (wf, "log_msg"), (pdf_review, "prepare"),
+                             (pdf_review.file_problem, "Guard"), (pdf_review, "start_background_excel")):
+            patcher = patch.object(target, name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        pdf_review.list_pdfs(str(self.tmp))
+
+    def wait(self):
+        for _ in range(200):
+            if not pdf_review.regen_status()["running"]:
+                break
+            time.sleep(0.02)
+        status = pdf_review.regen_status()
+        self.assertFalse(status["running"])
+        return status["result"]
+
+    def test_unchanged_excel_asks_first(self):
+        with patch.object(wf, "_export_workbook_pdfs") as export:
+            self.assertEqual(pdf_review.regenerate(str(self.pdf)),
+                             {"started": False, "unchanged": True, "name": "売上.xlsx"})
+        export.assert_not_called()
+
+    def test_changed_or_confirmed_exports_only_this_workbook(self):
+        self.book.write_bytes(b"edited and saved")
+        with patch.object(wf, "_export_workbook_pdfs", return_value=[self.pdf]) as export:
+            self.assertEqual(pdf_review.regenerate(str(self.pdf)), {"started": True, "name": "売上.xlsx"})
+            result = self.wait()
+        self.assertEqual(result["ok"], True)
+        self.assertEqual(result["pdfs"], [str(self.pdf)])
+        args, kwargs = export.call_args
+        self.assertEqual((args[1], args[2], kwargs), (self.book, self.tmp.resolve(), {"force": True}))
+        self.assertFalse(self.state["busy"])
+
+    def test_failure_is_reported_and_busy_released(self):
+        pdf_review.file_problem.Guard.return_value.problem.return_value = (False, "文件打不开")
+        pdf_review.file_problem.Guard.return_value.closed = False
+        with patch.object(wf, "_export_workbook_pdfs", side_effect=RuntimeError("boom")):
+            pdf_review.regenerate(str(self.pdf), True)
+            result = self.wait()
+        self.assertEqual((result["ok"], result["reason"]), (False, "文件打不开"))
+        self.assertFalse(self.state["busy"])
+
+    def test_busy_is_rejected(self):
+        self.state["busy"] = True
+        with self.assertRaises(ValueError):
+            pdf_review.regenerate(str(self.pdf), True)

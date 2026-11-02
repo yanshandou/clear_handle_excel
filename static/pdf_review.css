@@ -685,3 +685,38 @@
 .pr-result .app-dialog-foot form {
   display: contents;
 }
+
+/* 标题上的「重新生成」：只重导这一份 Excel 的 PDF。生成中文字变了宽度也不变，旁边的按钮不挪 */
+.pr-regen-btn {
+  flex: none;
+  min-width: 7.6em;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  color: #1d4f91;
+  background: #fff;
+  border: 2px solid #1d4f91;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.pr-regen-btn:hover:not(:disabled) {
+  background: #e6efff;
+}
+
+.pr-regen-btn.is-running {
+  color: #fff;
+  background: #1d4f91;
+}
+
+.pr-regen-btn:disabled {
+  cursor: not-allowed;
+}
+
+.pr-regen-btn:disabled:not(.is-running) {
+  color: var(--ink-3);
+  background: #f1f3f8;
+  border-color: var(--ink-4);
+}

@@ -15,7 +15,7 @@
   <main class="container pr-container">
     <section class="panel pr-setup">
       <div class="pr-folder-row">
-        <label class="pr-folder-label" for="prFolder">Excel 文件夹（含子文件夹，PDF 和 Excel 在一起）
+        <label class="pr-folder-label" for="prFolder">Excel 文件夹（导出的 PDF 在它下面的 PDFS 文件夹里）
           <input id="prFolder" type="text" placeholder="例如 C:\Users\...\Desktop\excel_files"></label>
         <label class="pr-folder-label" for="prOldFolder">原始备份文件夹（可选，填了就同时打开老版本对照）
           <input id="prOldFolder" type="text" placeholder="例如 C:\Users\...\Desktop\excel_files_备份"></label>
@@ -26,6 +26,7 @@
         <li>填了原始备份文件夹时，老版本也一起打开（只读）、跳到同一格，左右并排对照（按相同的相对路径或唯一的文件名找）。</li>
         <li>每张表第一次要在后台算一下行列位置（几秒到十几秒），加载后会自动按顺序先算好；每份 PDF 标题右边显示算好没有。</li>
         <li>顶栏和底部条不碰 3 秒自动隐藏，鼠标移到窗口最上面或最下面就会出来。</li>
+        <li>在 Excel 里改完、<b>保存</b>后，点 PDF 标题右边的<b>「🔄 重新生成」</b>：只把这一份 Excel 的 PDF 重新导出一次，马上看到改完的样子。Excel 没改过（还没保存）会先提醒。</li>
         <li>有一页黄标题就是黄，标了红整张表都是红。标题右边的三个按钮一次改整张表。看完点底部<b>「⚡ 一键处理」</b>：后台删掉标红的表并保存，再用 Excel 打开标黄的（一次最多 10 份）。</li>
       </ul>
       <p id="prStatus" class="pr-status" role="status" aria-live="polite">输入文件夹后点「加载 PDF」。</p>

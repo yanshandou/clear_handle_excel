@@ -20,7 +20,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from core import batch, debug_log, file_problem, print_layout, repair_compare, sheet_history, workflow as wf
+from core import batch, debug_log, file_problem, pdf_store, print_layout, repair_compare, sheet_history, workflow as wf
 from core.backup_compare import pair_files
 from core.common import (EXCEL_EXTENSIONS, col_index_to_letters, sanitize_filename, strip_review_prefix,
                          workbook_locked, workbook_rel_name)
@@ -77,9 +77,13 @@ def _resolve_folder(folder: str) -> Path:
 
 
 def _guess_owner(pdf: Path) -> dict | None:
-    """没有导出记录（旧版本导出的、扫描时导出的）：按「Excel 文件名_表名.pdf」在同一个文件夹里找 Excel"""
+    """没有导出记录（旧版本导出的、扫描时导出的）：按「Excel 文件名_表名.pdf」找 Excel。
+    PDFS 里的 PDF 到对应的 Excel 文件夹找（PDFS/sub/x.pdf → sub/），旧的混放 PDF 在同一个文件夹里找"""
     best: tuple[int, Path, str] | None = None
-    for wb in pdf.parent.iterdir():
+    folder = pdf_store.excel_folder_for(pdf)
+    if not folder.is_dir():
+        return None
+    for wb in folder.iterdir():
         if not wb.is_file() or wb.suffix.lower() not in EXCEL_EXTENSIONS | {".xlsb"} or wb.name.startswith("~$"):
             continue
         stem = sanitize_filename(strip_review_prefix(wb.stem))
@@ -93,7 +97,7 @@ def _owner(pdf: Path) -> dict | None:
     record = _exports().get(str(pdf))
     if record and Path(record["wb_path"]).is_file():
         return dict(record)
-    return _guess_owner(pdf)
+    return pdf_store.owner(pdf) or _guess_owner(pdf)
 
 
 def _page_sizes(pdf: Path) -> list[list[float]]:
@@ -107,12 +111,21 @@ def _page_sizes(pdf: Path) -> list[list[float]]:
     return _PAGES_CACHE[key]
 
 
+def _pdf_files(root: Path) -> list[Path]:
+    """有 PDFS 文件夹就只看里面的（导出的 PDF 都在这）；没有的话（旧版本导出、和 Excel 混放的）看整个文件夹"""
+    base = pdf_store.pdf_root(root)
+    where = base if base.is_dir() else root
+    return sorted((p for p in where.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf"
+                   and not p.name.startswith(("~", "."))), key=lambda p: workbook_rel_name(p, where))
+
+
 def list_pdfs(folder: str) -> dict:
-    """文件夹（含子文件夹）里的 PDF，每份带对应的 Excel 和表、各页大小（PDF 点）。
+    """文件夹里的 PDF（有 PDFS 文件夹就只看 PDFS 里的），每份带对应的 Excel 和表、各页大小（PDF 点）。
     列完就在后台按顺序算每份 PDF 的行列位置，用户点的时候多半已经算好了"""
     root = _resolve_folder(folder)
-    pdfs = sorted((p for p in root.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf"
-                   and not p.name.startswith(("~", "."))), key=lambda p: workbook_rel_name(p, root))
+    pdfs = _pdf_files(root)
+    base = pdf_store.pdf_root(root)
+    shown_from = base if base.is_dir() else root
     entries = []
     with wf.STATE_LOCK:
         wf.STATE["pdf_review"] = {"folder": str(root)}  # 以前画框标色留下的记录不要了
@@ -121,7 +134,7 @@ def list_pdfs(folder: str) -> dict:
                 _exports().pop(gone)  # PDF 已经删掉的记录不留着
         owners = {str(p): _owner(p) for p in pdfs}
     for pdf in pdfs:
-        entry: dict[str, Any] = {"pdf": str(pdf), "name": workbook_rel_name(pdf, root), "v": pdf.stat().st_mtime_ns}
+        entry: dict[str, Any] = {"pdf": str(pdf), "name": workbook_rel_name(pdf, shown_from), "v": pdf.stat().st_mtime_ns}
         try:
             entry["pages"] = _page_sizes(pdf)
         except Exception as err:
@@ -131,9 +144,10 @@ def list_pdfs(folder: str) -> dict:
             entry.update(wb_path=owner["wb_path"], wb_name=workbook_rel_name(Path(owner["wb_path"]), root),
                          sheet=owner["sheet"], guessed=bool(owner.get("guessed")))
         entries.append(entry)
-    debug_log.event("🔎 PDF 复检列出", 文件夹=root, PDF=len(entries), 找到Excel=sum(1 for e in entries if e.get("wb_path")))
+    debug_log.event("🔎 PDF 复检列出", 文件夹=root, 看的是=shown_from, PDF=len(entries), 找到Excel=sum(1 for e in entries if e.get("wb_path")))
     prepare([e["pdf"] for e in entries if e.get("wb_path") and not e.get("error")])
-    return {"folder": str(root), "pdfs": entries, "maps": maps_status()}
+    return {"folder": str(root), "pdf_folder": str(shown_from), "in_pdfs": shown_from == base,
+            "pdfs": entries, "maps": maps_status()}
 
 
 def page_png(pdf: str, page: int) -> bytes:
@@ -831,3 +845,118 @@ def _open_yellow(yellows: list[dict], root: str, result: dict) -> None:
             entry["reason"] = note if entry is first else ""
             entry["first"] = entry is first
             result["opened"].append(entry)
+
+
+# ---------- 单份 Excel 重新生成 PDF ----------
+# 复检时在 Excel 里改了内容、保存后，想马上看改完的效果：只把这一份 Excel 的 PDF 重新导出一次（它的每张表），
+# 不用整个文件夹重导。Excel 和上次导出时一样（哈希没变，多半是还没保存）就先问一句，确认了照样重导。
+
+_REGEN: dict[str, Any] = {"running": False}
+_REGEN_LOCK = threading.Lock()
+
+
+def regen_status() -> dict:
+    with _REGEN_LOCK:
+        return dict(_REGEN)
+
+
+def regenerate(pdf: Any, force: Any = False) -> dict:
+    """返回 {"started": True} 后台开始；{"unchanged": True} Excel 没改过（force=True 时不问）。网页轮询 regen_status()"""
+    if not isinstance(pdf, str) or not pdf:
+        raise ValueError("要重新生成哪一份？请刷新页面再试")
+    path = Path(pdf).resolve()
+    if not _in_folder(path) or path.suffix.lower() != ".pdf":
+        raise ValueError(f"「{path.name}」不在当前文件夹里或已经不在了，请重新加载 PDF")
+    with wf.STATE_LOCK:
+        owner = _owner(path)
+        review_root = wf.STATE.get("pdf_review", {}).get("folder") or ""
+    if not owner or not Path(owner["wb_path"]).is_file():
+        raise ValueError(f"「{path.name}」找不到对应的 Excel 文件")
+    wb_path = Path(owner["wb_path"])
+    # PDF 在哪个 PDFS 里就导回哪个；旧的混放 PDF 导到现在这个文件夹的 PDFS 里
+    root = pdf_store.export_root_of(path) or Path(review_root)
+    label = workbook_rel_name(wb_path, root)
+    digest = sheet_history.fingerprint(wb_path)
+    same = pdf_store.unchanged(root, wb_path, digest)
+    debug_log.event("🔄 PDF 复检重新生成", 文件=label, PDF=path.name, 哈希=digest[:12], 没变=same, 确认=bool(force))
+    if same and force is not True:
+        return {"started": False, "unchanged": True, "name": label}
+    from core import bl_links, hidden_repair, link_repair, mark_finder
+    with wf.STATE_LOCK, _PROCESS_LOCK, _REGEN_LOCK:
+        if (wf.STATE.get("busy") or _PROCESS.get("running") or _REGEN.get("running")
+                or link_repair.status().get("running") or mark_finder.status().get("running")
+                or hidden_repair.status().get("running") or bl_links.status().get("running")):
+            raise ValueError("后台任务正在执行，请等它结束再重新生成")
+        wf.STATE["busy"] = True  # 要写 PDFS：这时候别开导出 PDF 等任务
+        wf.STATE["maintenance"] = "pdf_review_regen"
+        _REGEN.clear()
+        _REGEN.update(running=True, name=label, pdf=str(path), wb_path=str(wb_path), result=None)
+
+    def run() -> None:
+        result: dict[str, Any] = {"ok": False, "name": label, "wb_path": str(wb_path), "pdfs": [], "reason": ""}
+        try:
+            with debug_log.side_task("pdf_review_regen", {"folder": str(root), "file": label}):
+                result.update(_regenerate_workbook(wb_path, root, label))
+                debug_log.event("✅ PDF 复检重新生成完成" if result["ok"] else "⚠️ PDF 复检重新生成没成功",
+                                文件=label, PDF=len(result["pdfs"]), 原因=result["reason"] or "-")
+        except Exception as err:
+            debug_log.exception(err, f"PDF 复检重新生成 {label}")
+            result["reason"] = f"重新生成出错：{err}"
+        finally:
+            with wf.STATE_LOCK:
+                if wf.STATE.get("maintenance") == "pdf_review_regen":
+                    wf.STATE["busy"] = False
+                    wf.STATE.pop("maintenance", None)
+            with _REGEN_LOCK:
+                _REGEN.update(running=False, result=result)
+
+    try:
+        threading.Thread(target=run, name="PDF 复检重新生成", daemon=True).start()
+    except Exception:
+        with wf.STATE_LOCK, _REGEN_LOCK:
+            if wf.STATE.get("maintenance") == "pdf_review_regen":
+                wf.STATE["busy"] = False
+                wf.STATE.pop("maintenance", None)
+            _REGEN["running"] = False
+        raise
+    return {"started": True, "name": label}
+
+
+def _regenerate_workbook(wb_path: Path, root: Path, label: str) -> dict:
+    """后台 Excel 只读打开这一份，把它要导出的表都重新导出到 PDFS（和主页导出 PDF 同一套规则），记下新的哈希"""
+    from core import reporter
+    _wait_probe_idle(str(wb_path))  # 定位线程正开着这份 Excel 算旧 PDF 的位置：等它算完，旧 PDF 要删掉了
+    guard = file_problem.Guard("PDF 复检：重新生成 PDF")
+    excel = None
+    reporter.suspend_updates(True)  # 不是主页的批量任务：不写进执行记录
+    wf.pythoncom.CoInitialize()
+
+    def get_excel() -> Any:
+        nonlocal excel
+        if excel is None:
+            excel = guard.watch(start_background_excel())
+        return excel
+
+    try:
+        while True:
+            guard.progress()
+            try:
+                paths = wf._export_workbook_pdfs(get_excel, wb_path, root, set(), force=True)
+                return {"ok": True, "pdfs": [str(p) for p in paths], "reason": ""}
+            except Exception as err:
+                debug_log.exception(err, f"PDF 复检重新生成 {label}")
+                retry, message = guard.problem(err, wb_path, label, root,
+                                               close=lambda: file_problem.quit_quietly(excel))
+                if guard.closed:
+                    excel = None
+                if retry:
+                    wf.log_msg(f"🔁 重试 {label}")
+                    continue
+                return {"ok": False, "pdfs": [], "reason": message}
+    finally:
+        reporter.suspend_updates(False)
+        try:
+            file_problem.quit_quietly(excel)
+        finally:
+            guard.stop()
+            wf.pythoncom.CoUninitialize()
