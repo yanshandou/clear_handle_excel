@@ -1110,25 +1110,27 @@ def _neighbor_blocks(sheet: Any, row: int, col: int) -> bool:
     return bool(cell.MergeCells) or str(cell.Formula) != "" or cell.Value is not None
 
 
-def _wrap_targets(sheet: Any, items: list[dict]) -> list[str]:
+def _wrap_targets(sheet: Any, items: list[dict], *, force: bool = False) -> list[str]:
     """没开自动换行、整行文字横向放不下被截掉的格子：怎么加高都没用，要先开自动换行再加高。
     只改这一格（合并单元格按整个合并区域），不动列宽，整页排版不变。
     没合并的格子要能确认是横向截断才开换行（以下任一）：
     - 旁边的格子挡住了文字延伸（有内容、合并、或存着空字符串）；
-    - PDF 上只印出开头一段，且行高已经够放一行字（不是行太矮压住字）。"""
+    - PDF 上只印出开头一段，且行高已经够放一行字（不是行太矮压住字）。
+    force=True：只加高已经试过没修好，所有没开换行、没设缩小字体填充的格子都开换行再试。"""
     targets = []
     for item in items:
-        if item.get("kind") != "hidden" or item.get("hidden_reason") not in (REASON_TRUNCATED, REASON_CLIPPED):
+        if not force and (item.get("kind") != "hidden"
+                          or item.get("hidden_reason") not in (REASON_TRUNCATED, REASON_CLIPPED)):
             continue
         addr = item.get("cell_addr") or ""
-        why = "合并单元格"
+        why = "只加高没修好" if force else "合并单元格"
         try:
             area = sheet.Range(addr).MergeArea
             if area.WrapText is not False or area.ShrinkToFit:
                 debug_log.event("↩️ 不开换行", 格=addr, 原因="已经换行或缩小字体填充")
                 continue  # 已经换行（或合并区域里设置不一致），缩小字体填充的也不动
             row, col = int(area.Row), int(area.Column)
-            if int(area.Cells.Count) == 1:
+            if not force and int(area.Cells.Count) == 1:
                 align = area.HorizontalAlignment
                 sides = ([col - 1] if align == XL_HALIGN_RIGHT else [col - 1, col + 1] if align == XL_HALIGN_CENTER
                          else [col + 1])
@@ -1211,6 +1213,7 @@ def _prepare_row(
     """只在副本上试一次加高并导出 1 次 PDF 核验截图：
     - 原样那张直接复用刚才检测导出的 PDF（同一版本）；若原样已通过则不改行高、不重新导出；
     - 原样未通过时，有不换行被横向截断的格子先开启自动换行，再按缺几行 × 字号 × 1.2 加高（不另加余白），
+      只加高没通过、又有没开换行的格子时，开换行从原行高再试第二次；
       开了换行时再让 Excel 自动调整行高算一次，两个取高的；
       仅导出 1 次 PDF 核验效果并生成修改后截图；通过时留下那份 PDF 供写入后复查直接复用。"""
     timing = {} if timing is None else timing
@@ -1250,19 +1253,31 @@ def _prepare_row(
         if ok:
             return base, {"height": base, "shots": shots, "wrap": []}, before
 
-        if wrap:
-            for addr in wrap:
-                sheet.Range(addr).MergeArea.WrapText = True
-            wrapped = list(wrap)
-        extra = _direct_extra_height(sheet, items, need)
-        height = min(autofix.MAX_ROW_HEIGHT, round(base + extra, 2))
-        if wrapped:
-            # 开了换行：再让 Excel 自己算一次这行要多高（自动调整行高），两个取高的
-            fit = _autofit_height(sheet, row, base)
-            debug_log.event("📏 换行后行高", 估算=height, Excel自动调整=fit or "-", 原行高=base)
-            if fit and fit > height:
-                height = min(autofix.MAX_ROW_HEIGHT, fit)
-        if height > base or wrapped:
+        first_need = need
+        for attempt in (1, 2):
+            if attempt == 2:
+                # 只加高没修好：没开换行的格子再开自动换行、从原行高重新加高试一次（用户 2026-11-02 选定）
+                if wrapped or chosen is not None:
+                    break
+                wrap = _wrap_targets(sheet, items, force=True)
+                if not wrap:
+                    break
+                debug_log.event("🔁 只加高没修好，开换行再试", 格=wrap)
+                sheet.Rows(row).RowHeight = base
+            if wrap:
+                for addr in wrap:
+                    sheet.Range(addr).MergeArea.WrapText = True
+                wrapped = list(wrap)
+            extra = _direct_extra_height(sheet, items, first_need)
+            height = min(autofix.MAX_ROW_HEIGHT, round(base + extra, 2))
+            if wrapped:
+                # 开了换行：再让 Excel 自己算一次这行要多高（自动调整行高），两个取高的
+                fit = _autofit_height(sheet, row, base)
+                debug_log.event("📏 换行后行高", 估算=height, Excel自动调整=fit or "-", 原行高=base)
+                if fit and fit > height:
+                    height = min(autofix.MAX_ROW_HEIGHT, fit)
+            if not (height > base or wrapped):
+                break
             sheet.Rows(row).RowHeight = height
             started = time.perf_counter()
             wf._export_sheet_pdf(sheet, pdf)
@@ -1276,11 +1291,11 @@ def _prepare_row(
                      {_key(*_cell(group[0])): autofix._evaluate(pdf, group, cells, probe.text, probe.printed)[1]
                       for group in groups})
             timing["evaluate"] = timing.get("evaluate", 0.0) + time.perf_counter() - started
-            debug_log.event("🧪 试算", 次=1, 行高=height, 原行高=base, 通过=ok, 缺口pt=need,
+            debug_log.event("🧪 试算", 次=attempt, 行高=height, 原行高=base, 通过=ok, 缺口pt=need,
                             打印缩放=autofix.print_scale(sheet), 换行=wrapped or "-", 用检测时的PDF=False,
                             比对秒=time.perf_counter() - started)
             if on_attempt is not None:
-                on_attempt(1, height, shots, wrapped)
+                on_attempt(attempt, height, shots, wrapped)
             if ok:
                 shutil.copyfile(pdf, session.chosen_pdf())
                 chosen = {"height": height, "shots": shots, "wrap": wrapped, "pdf": session.chosen_pdf()}

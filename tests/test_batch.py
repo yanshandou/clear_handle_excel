@@ -1339,6 +1339,40 @@ class BatchTests(unittest.TestCase):
         self.assertIs(area.WrapText, False)  # 副本也还原
         self.assertFalse(any(book.saved for book in fixture.books))
 
+    def test_height_only_failure_retries_once_with_wrap(self):
+        """判断成只加高、结果没修好：没开换行的格子开换行从原行高再试一次（用户 2026-11-02 选定）"""
+        from test_autofix import AutofixTests, FakeSheet
+        fixture = AutofixTests("runTest")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        items = list(workflow.STATE["items"].values())
+        area = Mock(WrapText=False, ShrinkToFit=False)
+        frames = []
+        def record(index, height, shots, wrapped):
+            frames.append((index, list(wrapped), area.WrapText))
+        results = iter([(False, "", 0.0), (False, "", 0.0), (True, "", 0.0)])
+        targets = []
+        def wrap_targets(sheet, its, *, force=False):
+            targets.append(force)
+            return ["B5"] if force else []
+        with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot), \
+                patch.object(batch, "_wrap_targets", side_effect=wrap_targets), \
+                patch.object(batch.autofix, "_evaluate", side_effect=lambda *a, **k: next(results)), \
+                patch.object(FakeSheet, "Range", create=True, new=lambda self, addr: Mock(MergeArea=area)):
+            base, chosen, _ = batch._prepare_row(fixture.session, str(fixture.wb_path), items, on_attempt=record)
+        self.assertEqual(targets, [False, True])
+        self.assertEqual([f[:2] for f in frames], [(0, []), (1, []), (2, ["B5"])])
+        self.assertIs(frames[2][2], True)
+        self.assertEqual(chosen["wrap"], ["B5"])
+        self.assertIs(area.WrapText, False)  # 副本还原
+
+    def test_force_wrap_targets_any_unwrapped_cell(self):
+        item = {"kind": "clip", "cell_addr": "P146"}
+        sheet = self.wrap_sheet(merged=False)[0]
+        self.assertEqual(batch._wrap_targets(sheet, [item]), [])
+        self.assertEqual(batch._wrap_targets(sheet, [item], force=True), ["P146"])
+        self.assertEqual(batch._wrap_targets(self.wrap_sheet(wrap=True)[0], [item], force=True), [])
+
     def test_wrapped_fix_is_saved_restored_and_reported(self):
         card, item = self.add_card(address="A5", color="yellow")
         item["status"] = "pending"
