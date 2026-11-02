@@ -84,7 +84,7 @@
           <i class="route-road" aria-hidden="true"></i>
           <span class="route-done hidden" role="img"></span>
           <span class="route-flag route-flag-start" aria-hidden="true">START</span>
-          <a href="/clean" class="feature-card feature-violet" style="--tile-cat: 'STEP 1'">
+          <a href="/clean" class="feature-card feature-violet tone-green" style="--tile-cat: 'STEP 1'">
             <span class="feature-text">
               <span class="feature-title">精简 Sheet</span>
               <span class="feature-sub">删除日期、bak、副本等备份表</span>
@@ -96,7 +96,7 @@
         <li data-ops="scan autofix" class="route-stop">
           <i class="route-road" aria-hidden="true"></i>
           <span class="route-done hidden" role="img"></span>
-          <a href="/workbench" class="feature-card feature-rose" style="--tile-cat: 'STEP 2'">
+          <a href="/workbench" class="feature-card feature-rose tone-yellow" style="--tile-cat: 'STEP 2'">
             <span class="feature-text">
               <span class="feature-title">查看切字</span>
               <span class="feature-sub">扫描标记 · 换行加高 · 三色审核</span>
@@ -109,7 +109,7 @@
           <i class="route-road" aria-hidden="true"></i>
           <span class="route-done hidden" role="img"></span>
           <i class="route-turn route-turn-right" aria-hidden="true"></i>
-          <a href="/repair-colors" class="feature-card feature-violet" style="--tile-cat: 'STEP 3 · 按需'">
+          <a href="/repair-colors" class="feature-card feature-violet tone-purple" style="--tile-cat: 'STEP 3 · 按需'">
             <span class="feature-text"><span class="feature-title">修复颜色</span>
               <span class="feature-sub">查找残留标记色 · 对照备份恢复配色</span>
               <span class="feature-meta">自动核对内容，恢复底色与字色</span></span>
@@ -119,7 +119,7 @@
         <li data-ops="bl_scan bl_clear" class="route-stop">
           <i class="route-road" aria-hidden="true"></i>
           <span class="route-done hidden" role="img"></span>
-          <a href="/repair-bl-links" class="feature-card feature-mint feature-bl" style="--tile-cat: 'STEP 4'">
+          <a href="/repair-bl-links" class="feature-card feature-mint feature-bl tone-blue" style="--tile-cat: 'STEP 4'">
             <span class="feature-text"><span class="feature-title">排查 BL 超链接</span>
               <span class="feature-sub">清空「左边含 BL · 右边是 @ 超链接」的单元格</span>
               <span class="feature-meta">先扫描确认，再清除</span></span>
@@ -129,7 +129,7 @@
         <li data-ops="links" class="route-stop route-optional">
           <i class="route-road" aria-hidden="true"></i>
           <span class="route-done hidden" role="img"></span>
-          <a href="/repair-links" class="feature-card feature-sky" style="--tile-cat: 'STEP 5 · 按需'">
+          <a href="/repair-links" class="feature-card feature-sky tone-pink" style="--tile-cat: 'STEP 5 · 按需'">
             <span class="feature-text"><span class="feature-title">修复引用错误</span>
               <span class="feature-sub">扫描 #REF! · 对照原始备份恢复值</span>
               <span class="feature-meta">扫描、对比、修复，一次完成</span></span>
@@ -140,7 +140,7 @@
           <i class="route-road" aria-hidden="true"></i>
           <span class="route-done hidden" role="img"></span>
           <i class="route-turn route-turn-left" aria-hidden="true"></i>
-          <a href="/repair-hidden" class="feature-card feature-sky" style="--tile-cat: 'STEP 6 · 按需'">
+          <a href="/repair-hidden" class="feature-card feature-sky tone-orange" style="--tile-cat: 'STEP 6 · 按需'">
             <span class="feature-text"><span class="feature-title">修复隐藏页</span>
               <span class="feature-sub">对照备份恢复工作表、隐藏列与超窄列</span>
               <span class="feature-meta">核对内容与位置，恢复原来的显示范围</span></span>
@@ -150,7 +150,7 @@
         <li data-ops="pdf" class="route-stop">
           <i class="route-road" aria-hidden="true"></i>
           <span class="route-done hidden" role="img"></span>
-          <button type="button" class="feature-card feature-sky" onclick="openTask('export_pdf')" style="--tile-cat: 'STEP 7'">
+          <button type="button" class="feature-card feature-sky tone-teal" onclick="openTask('export_pdf')" style="--tile-cat: 'STEP 7'">
             <span class="feature-text">
               <span class="feature-title">人工复检</span>
               <span class="feature-sub">导出 PDF · 逐页查看 · 标记处理</span>
@@ -162,7 +162,7 @@
         <li data-ops="view" class="route-stop">
           <i class="route-road" aria-hidden="true"></i>
           <span class="route-done hidden" role="img"></span>
-          <button type="button" class="feature-card feature-mint" onclick="openTask('normalize_view')" style="--tile-cat: 'STEP 8'">
+          <button type="button" class="feature-card feature-mint tone-blue" onclick="openTask('normalize_view')" style="--tile-cat: 'STEP 8'">
             <span class="feature-text">
               <span class="feature-title">视图标准化</span>
               <span class="feature-sub">分页预览 · 定位 A1 · 缩放 100%</span>
@@ -175,7 +175,7 @@
           <i class="route-road" aria-hidden="true"></i>
           <span class="route-done hidden" role="img"></span>
           <span class="route-flag route-flag-finish" aria-hidden="true">FINISH</span>
-          <a href="/distribute" class="feature-card feature-sky feature-distribute" style="--tile-cat: 'STEP 9'">
+          <a href="/distribute" class="feature-card feature-sky feature-distribute tone-purple" style="--tile-cat: 'STEP 9'">
             <span class="feature-text"><span class="feature-title">按 JSON 复制 Excel</span>
               <span class="feature-sub">按上传记录建好目录结构、把 Excel 放进对应文件夹</span>
               <span class="feature-meta">先列清单确认 · 空文件夹也建 · 核对三个数量</span></span>
