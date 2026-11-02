@@ -62,3 +62,25 @@ def summary():
         entry = group["operations"].setdefault(kind, {"count": 0, "last": started, "status": status})
         entry["count"] += 1
     return {"labels": LABELS, "folders": list(folders.values())}
+
+def done_for(folder):
+    """主页卡片右上角的「做过了」：这个文件夹（或它的上级文件夹）跑完过哪些操作。
+
+    completed 算做过；只有 failed（跑完但有出错的文件）时单独标出来；running / interrupted 不算。"""
+    if not folder:
+        return {}
+    key = os.path.normcase(os.path.abspath(str(folder))).rstrip("\\/")
+    db = _connect()
+    try:
+        rows = db.execute("SELECT folder_key, kind, started_at, status FROM operation_history WHERE status IN ('completed', 'failed') ORDER BY id DESC").fetchall()
+    finally:
+        db.close()
+    done = {}
+    for folder_key, kind, started, status in rows:
+        base = folder_key.rstrip("\\/")
+        if key != base and not key.startswith(base + os.sep):
+            continue
+        entry = done.setdefault(kind, {"count": 0, "last": started, "completed": False})
+        entry["count"] += 1
+        entry["completed"] = entry["completed"] or status == "completed"
+    return done

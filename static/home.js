@@ -397,7 +397,10 @@ async function pollState() {
     if (seq < minAcceptedSeq) return;
     const wasBusy = Boolean(overview && overview.busy);
     overview = data;
-    if (wasBusy && !data.busy) celebrateFinished();
+    if (wasBusy && !data.busy) {
+      celebrateFinished();
+      refreshDoneMarks();
+    }
 
     renderHeader();
     renderStrip();
@@ -450,4 +453,64 @@ document.getElementById('progressFileInput').addEventListener('change', e => {
 });
 
 setInterval(pollState, 1200);
+
+/* ==========================================
+   路线图卡片右上角的「做过了」标记
+   按上次用的文件夹（各页面共用 lastFolder）查操作历史：在这个文件夹或它的上级文件夹做完过就打 ✓；
+   只有带出错文件的那次，打黄色 !。主页打开、任务跑完、切回这个页面时刷新。
+   ========================================== */
+function lastFolder() {
+  try {
+    return (localStorage.getItem(FOLDER_STORAGE_KEY) || '').trim();
+  } catch (e) {
+    return '';
+  }
+}
+
+async function refreshDoneMarks() {
+  const folder = lastFolder();
+  let done = {};
+  if (folder) {
+    try {
+      const res = await fetch('/api/operation-history?folder=' + encodeURIComponent(folder));
+      if (res.ok) done = (await res.json()).done || {};
+    } catch (e) {
+      return; // 读不到就保持原样，不影响使用
+    }
+  }
+  let doneCount = 0;
+  document.querySelectorAll('.route-stop[data-ops]').forEach(stop => {
+    const entries = stop.dataset.ops.split(' ').map(k => done[k]).filter(Boolean);
+    const mark = stop.querySelector('.route-done');
+    if (!mark) return;
+    if (!entries.length) {
+      mark.classList.add('hidden');
+      stop.classList.remove('is-done');
+      return;
+    }
+    const completed = entries.some(e => e.completed);
+    const count = entries.reduce((n, e) => n + e.count, 0);
+    const last = entries.map(e => e.last).sort().pop();
+    const label = completed
+      ? `已做过 ${count} 次，最近一次 ${last}`
+      : `做过 ${count} 次，但有出错的文件，最近一次 ${last}`;
+    mark.textContent = completed ? '✓' : '!';
+    mark.classList.toggle('is-warn', !completed);
+    mark.classList.remove('hidden');
+    mark.title = label;
+    mark.setAttribute('aria-label', label);
+    stop.classList.add('is-done');
+    if (completed) doneCount += 1;
+  });
+  const note = document.getElementById('routeDoneNote');
+  note.classList.toggle('hidden', !folder);
+  note.textContent = folder ? `✓ 表示在「${folder}」里已经做过（${doneCount} / 9 步）` : '';
+  note.title = folder;
+}
+
+refreshDoneMarks();
+window.addEventListener('focus', refreshDoneMarks);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refreshDoneMarks();
+});
 pollState();
