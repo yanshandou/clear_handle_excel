@@ -2,8 +2,8 @@
    主页：处理流程 3×3 大数字卡片
    - 照参考图：大号空心数字压在框的左边、和框连成一体，图标卡在框顶的缺口里，文字居中
    - 框保留游戏风彩色卡牌（颜色跟图标底色走）
-   - 宽屏（≥ 1100px）按列排：左列 1-3、中列 4-6、右列 7-9
-   - 中等宽度两列按行排，窄屏一列 1-9
+   - 宽屏（≥ 1100px）三列，按行排：第一行 1-3、第二行 4-6、第三行 7-9
+   - 中等宽度两列，窄屏一列 1-9
    - 卡片悬停、点击都不位移
    ========================================== */
 
@@ -18,8 +18,6 @@
 .step-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  grid-template-rows: repeat(3, auto);
-  grid-auto-flow: column;          /* 按列排：1 2 3 往下，再到下一列 */
   gap: 26px 30px;
   margin: 0;
   padding: 0;
@@ -29,7 +27,7 @@
 .step-item {
   position: relative;
   display: grid;
-  grid-template-columns: 78px minmax(0, 1fr);
+  grid-template-columns: 96px minmax(0, 1fr);
   align-items: center;
   min-width: 0;
   padding-top: 42px;               /* 给框顶上半露出来的图标留位置 */
@@ -40,9 +38,9 @@
   position: relative;
   z-index: 2;
   display: block;
-  width: 78px;
+  width: 96px;
   height: auto;
-  margin-right: -38px;             /* 一半压进框里 */
+  margin-right: -54px;             /* 一大半压进框里 */
   overflow: visible;
   pointer-events: none;
   user-select: none;
@@ -88,7 +86,7 @@
   height: 100%;
   min-width: 0;
   min-height: 0;
-  padding: 50px 14px 20px 46px;    /* 左边让给数字，上边让给图标 */
+  padding: 50px 14px 20px 60px;    /* 左边让给数字，上边让给图标 */
   overflow: visible;               /* 图标要伸出框顶 */
 }
 
@@ -101,7 +99,7 @@
 .step-grid .feature-card:nth-child(even) .feature-orb {
   position: absolute;
   top: -42px;
-  left: calc(50% + 16px);
+  left: calc(50% + 23px);
   display: grid;
   place-items: center;
   width: 84px;
@@ -182,8 +180,6 @@
 @media (max-width: 1099px) {
   .step-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-template-rows: none;
-    grid-auto-flow: row;
     gap: 22px 26px;
   }
 }
@@ -198,23 +194,23 @@
 
 @media (max-width: 520px) {
   .step-item {
-    grid-template-columns: 56px minmax(0, 1fr);
+    grid-template-columns: 68px minmax(0, 1fr);
     padding-top: 34px;
   }
 
   .step-num {
-    width: 56px;
-    margin-right: -26px;
+    width: 68px;
+    margin-right: -36px;
   }
 
   .step-grid .feature-card {
-    padding: 40px 10px 16px 34px;
+    padding: 40px 10px 16px 42px;
   }
 
   .step-grid .feature-orb,
   .step-grid .feature-card:nth-child(even) .feature-orb {
     top: -34px;
-    left: calc(50% + 12px);
+    left: calc(50% + 16px);
     width: 68px;
     height: 68px;
     margin-left: -34px;
