@@ -1294,9 +1294,9 @@ for (const [id, part] of [['highlightFill', 'fill'], ['highlightFont', 'font']])
   $(id).addEventListener('change', event => setHighlight({ ...highlight, [part]: event.target.value }));
 }
 
-// 自动修复只处理切字（边框压线、文字截断、超出裁剪框）：按字号加 1.2 倍行高试一次（只加高不过再开换行试一次），
+// 自动修复只处理切字（边框压线、文字截断、超出裁剪框）：横向放不下的先开自动换行，行高让 Excel 算（算不出按字号 × 1.2 估），最多试两次，
 // 通过就保留，不通过还原转人工。其他问题照常扫描、全部转人工。不再能勾选（后端也固定）。
-const AUTO_FIX_SCOPE = '只修切字（边框压线、文字截断、超出裁剪框）：按字号 × 1.2 加一行字高（缺几行加几行，横向放不下的先开自动换行；只加高没修好的再开自动换行试一次），通过就保留，不通过还原、转人工。分页切开、### 列宽不足、PDF 未匹配到文字等其他问题照常扫描，全部转人工。';
+const AUTO_FIX_SCOPE = '只修切字（边框压线、文字截断、超出裁剪框）：横向放不下的先开自动换行，行高让 Excel 自己算正好要多高（合并单元格也算；算不出时按字号 × 1.2 × 缺几行估算）。没修好再试一次：没开换行的开换行，Excel 算的不够就按估算。通过就保留，不通过还原、转人工。分页切开、### 列宽不足、PDF 未匹配到文字等其他问题照常扫描，全部转人工。';
 if ($('fixErrorTypes')) $('fixErrorTypes').textContent = AUTO_FIX_SCOPE;
 try { localStorage.removeItem('clear_handle_excel.fixErrorTypes'); } catch (_) {}
 
@@ -1410,7 +1410,7 @@ async function autoAdjust(ids, title) {
     : '';
   if (!total) { await appAlert(`选中的格子都不能自动调整。${skipped}`, { title }); return; }
   const files = new Set([...plan.run, ...plan.extra].map(id => batchState.cards.find(c => c.id === id)?.wb_path)).size;
-  const message = `让程序按字号 × 1.2 自动加高 ${total} 格（只加高不行会再开自动换行试一次）（${files} 个文件）。`
+  const message = `让程序自动加高 ${total} 格（行高让 Excel 算，最多试两次）（${files} 个文件）。`
     + (plan.extra.length ? `\n其中 ${plan.extra.length} 格是和你选的格子在同一行的黄卡：一行的行高共用，一起调整。` : '')
     + skipped
     + '\n\n请先在 Excel 里保存并关闭这些文件。扫描后改过的文件先整份重新检测。'

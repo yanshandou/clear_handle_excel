@@ -1303,15 +1303,60 @@ class BatchTests(unittest.TestCase):
         blank = self.wrap_sheet(merged=False, blank_value="")[0]
         self.assertEqual(batch._wrap_targets(blank, [{**item, "visible_text": ""}]), ["P146"])
 
-    def test_autofit_height_reads_excel_and_restores_row(self):
+    def test_excel_fit_measures_merged_cell_on_temp_sheet_and_deletes_it(self):
+        """合并单元格 Excel 不会自动调整行高：借临时表上一个同宽、同字体的格子算，算完删掉临时表"""
+        tmp = Mock()
+        column = tmp.Columns.return_value
+        column.ColumnWidth = 10.0
+        column.Width = 50.0
+        def set_width(value):
+            column.__dict__["ColumnWidth"] = value
+        type(column).ColumnWidth = property(lambda self: self.__dict__.get("ColumnWidth", 10.0),
+                                            lambda self, v: (set_width(v), setattr(self, "Width", v * 5.0)))
+        temp_row = tmp.Rows.return_value
+        temp_row.AutoFit.side_effect = lambda: setattr(temp_row, "RowHeight", 75.0)
         sheet = Mock()
-        row = sheet.Rows.return_value
-        row.RowHeight = 13.5
-        row.AutoFit.side_effect = lambda: setattr(row, "RowHeight", 40.5)
-        self.assertEqual(batch._autofit_height(sheet, 7, 13.5), 40.5)
-        self.assertEqual(row.RowHeight, 13.5)  # 副本也改回原行高
-        row.AutoFit.side_effect = RuntimeError("merged")
-        self.assertEqual(batch._autofit_height(sheet, 7, 13.5), 0.0)
+        sheet.Parent.Worksheets.Add.return_value = tmp
+        sheet.Application.DisplayAlerts = False
+        area = sheet.Range.return_value.MergeArea
+        area.Cells.return_value.Value = "=SELECT * FROM T1 WHERE ..."
+        area.Cells.Count = 3
+        area.Width = 150.0
+        area.Height = 13.5
+        area.WrapText = True
+        sheet.Rows.return_value.RowHeight = 13.5
+        self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 75.0)
+        cell = tmp.Cells.return_value
+        self.assertEqual(cell.NumberFormat, "@")  # = 开头的 SQL 也按文字放
+        self.assertIs(cell.WrapText, True)
+        self.assertAlmostEqual(column.Width, 150.0)
+        tmp.Delete.assert_called_once()
+        self.assertIs(sheet.Application.DisplayAlerts, False)
+        # 合并区域跨 3 行（另外两行共 30pt）：这一行只要 75 - 30
+        area.Height = 43.5
+        self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 45.0)
+        # 加不了临时表（工作簿结构受保护等）：返回 0，照旧用估算
+        sheet.Parent.Worksheets.Add.side_effect = RuntimeError("protected")
+        self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 0.0)
+
+    def test_prepare_row_uses_excel_height_then_estimate(self):
+        """行高先用 Excel 算的；打印出来还不够，就按估算再试一次"""
+        from test_autofix import AutofixTests, FakeSheet
+        fixture = AutofixTests("runTest")
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        items = list(workflow.STATE["items"].values())
+        heights = []
+        results = iter([(False, "", 0.0), (False, "", 0.0), (True, "", 0.0)])
+        with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot), \
+                patch.object(batch, "_wrap_targets", return_value=[]), \
+                patch.object(batch, "_excel_fit", return_value=30.0), \
+                patch.object(batch, "_direct_extra_height", return_value=40.0), \
+                patch.object(batch.autofix, "_evaluate", side_effect=lambda *a, **k: next(results)):
+            base, chosen, _ = batch._prepare_row(fixture.session, str(fixture.wb_path), items,
+                                                 on_attempt=lambda i, h, s, w: heights.append(h))
+        self.assertEqual(heights[1:], [30.0, round(base + 40.0, 2)])
+        self.assertEqual(chosen["height"], round(base + 40.0, 2))
 
     def test_text_width_counts_full_width_as_two(self):
         self.assertEqual(batch._text_width("給与a"), 5)
