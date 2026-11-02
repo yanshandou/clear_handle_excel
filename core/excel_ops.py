@@ -528,6 +528,20 @@ _SHEET_OBJECT_TAGS = {"drawing", "legacyDrawing", "legacyDrawingHF", "oleObjects
 XL_FORMULAS = -4123  # Range.Find 的 LookIn：按公式（含常量）找
 
 
+def _rich_text(element: Any) -> str:
+    """<si>/<is> 里显示出来的文字：只取直属 <t> 和 <r><t>，跳过 <rPh> 里的注音假名。
+    日文 Excel 输入「無」时会顺带存注音「ナ」，全部 <t> 拼起来会变成「無ナ」，空白表就认不出来（用户 2026-11-02）。
+    """
+    parts: list[str] = []
+    for child in element:
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag == "t":
+            parts.append(child.text or "")
+        elif tag == "r":
+            parts.extend(t.text or "" for t in child if t.tag.rsplit("}", 1)[-1] == "t")
+    return "".join(parts)
+
+
 def _shared_string(archive: zipfile.ZipFile, index: int) -> str:
     """共享字符串表里第 index 条的文字（流式读到这一条就停）"""
     try:
@@ -541,7 +555,7 @@ def _shared_string(archive: zipfile.ZipFile, index: int) -> str:
                 continue
             position += 1
             if position == index:
-                return "".join(t.text or "" for t in el.iter() if t.tag.rsplit("}", 1)[-1] == "t")
+                return _rich_text(el)
             el.clear()
     return ""
 
@@ -570,7 +584,7 @@ def _xlsx_sheet_values(archive: zipfile.ZipFile, part: str, limit: int = 2) -> l
             if "f" in children:
                 return None
             if el.get("t") == "inlineStr" and "is" in children:
-                text = "".join(t.text or "" for t in children["is"].iter() if t.tag.rsplit("}", 1)[-1] == "t")
+                text = _rich_text(children["is"])
             elif "v" in children:
                 text = children["v"].text or ""
                 if el.get("t") == "s" and text.strip().isdigit():
