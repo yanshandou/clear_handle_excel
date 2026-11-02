@@ -3,7 +3,8 @@
 // 填了原始备份文件夹时，备份也一起打开（只读）、跳到同一格，左右对照着改。
 // 每份 PDF 的行列位置由后台算（只算一次），点的格子也由后台按它算。
 // 三色标记（借鉴精简 Sheet）：蓝 = 不用管（默认）、黄 = 这一页要人工改（按页标）、红 = 整张表不要了。
-// 单击页面仍是打开 Excel，所以标记用标题行右边的三个按钮（整张表），或在页面上右键（这一页）；右键标黄会记住那一格。
+// 单击页面换颜色（蓝 → 黄 → 红 → 蓝，标黄记住点的那一格）；用 Excel 打开那一格改成 Ctrl + 单击或右键菜单。
+// 标题行右边的三个按钮一次改整张表。
 // 看完后点底部「一键处理」：后台删掉标红的表并保存，再用 Excel 打开标黄的。
 
 const FOLDER_KEY = 'clear_handle_excel.lastFolder';
@@ -11,7 +12,7 @@ const OLD_FOLDER_KEY = 'clear_handle_excel.oldFolder'; // 和修复颜色 / 引�
 const VIEW_KEY = 'clear_handle_excel.pdfReviewView';
 const MARKS_KEY = 'clear_handle_excel.pdfReviewMarks'; // {文件夹: {pdf: {v, red, pages: {页码: {x, y}}, opened}}}
 const MARK_TEXT = { blue: '不用管', yellow: '要人工改', red: '删除这张表' };
-const MARK_TITLE = { blue: '整张表不用管（清掉这张表的所有标记）', yellow: '整张表每页都标黄；只标某一页请在那一页上右键', red: '删除整张表（所有页）' };
+const MARK_TITLE = { blue: '整张表不用管（清掉这张表的所有标记）', yellow: '整张表每页都标黄；只标某一页就单击那一页', red: '删除整张表（所有页）' };
 const VIEWS = ['large', 'medium', 'small'];
 const MIN_DRAG_PX = 6;  // 按下到松开挪动超过这么多就是在拖（选字、滚动），不算点
 const POLL_MS = 1500;
@@ -228,11 +229,13 @@ function onPointerUp(e) {
     return;
   }
   flashAt(start.pageEl, e);
-  openAt(pt);
+  // 单击换颜色（蓝 → 黄 → 红 → 蓝）；按住 Ctrl 单击、或右键菜单里才是用 Excel 打开这一格
+  if (e.ctrlKey || e.metaKey) openAt(pt);
+  else cyclePage(Number(start.pageEl.dataset.doc), pt.page, pt);
 }
 
 /* ---------- 三色标记 ----------
-   黄色按页标：每页单独「要人工改」，右键标的会记住那一格；红色是整张表（Excel 只能删整张表），
+   黄色按页标：每页单独「要人工改」，单击标黄会记住点的那一格；红色是整张表（Excel 只能删整张表），
    标了红所有页都算红。标题颜色：有红 → 红；有一页黄 → 黄；所有页都是蓝 → 蓝。
    marks[pdf] = {v, red, pages: {页码: {x, y} 或 {}}, opened} */
 
@@ -293,7 +296,7 @@ function paintMark(d) {
     const spot = color === 'yellow' ? m.pages[p] : null;
     if (spot && spot.x !== undefined) {
       const [w, h] = doc.pages[p];
-      const pin = Object.assign(document.createElement('span'), { className: 'pr-pin', title: '标黄时右键的位置，一键处理时 Excel 跳到这一格' });
+      const pin = Object.assign(document.createElement('span'), { className: 'pr-pin', title: '标黄时点的位置，一键处理时 Excel 跳到这一格' });
       pin.style.left = `${spot.x / w * 100}%`;
       pin.style.top = `${spot.y / h * 100}%`;
       pageEl.querySelector('.pr-layer').appendChild(pin);
@@ -333,7 +336,7 @@ function setDocMark(d, color) {
   commit(d);
 }
 
-// 右键某一页：这一页标黄（记住右键的格子）或改回蓝；标过红的表这时就不删了
+// 单击 / 右键某一页：这一页标黄（记住右键的格子）或改回蓝；标过红的表这时就不删了
 function setPageMark(d, page, color, point = null) {
   const doc = pdfs[d];
   if (!editable(doc)) return;
@@ -343,6 +346,19 @@ function setPageMark(d, page, color, point = null) {
   if (color === 'yellow') m.pages[page] = point ? { x: point.x, y: point.y } : (m.pages[page] || {});
   else delete m.pages[page];
   commit(d);
+}
+
+// 单击这一页：蓝 → 黄（记住点的格子）→ 红（整张表）→ 这一页改回蓝（别的页标的黄还在）
+function cyclePage(d, page, point) {
+  const doc = pdfs[d];
+  if (!editable(doc)) {
+    if (processing) toast('正在一键处理，处理完再改颜色', true);
+    return;
+  }
+  const now = pageColor(doc, page);
+  if (now === 'blue') setPageMark(d, page, 'yellow', point);
+  else if (now === 'yellow') setDocMark(d, 'red');
+  else setPageMark(d, page, 'blue');
 }
 
 function marked(color) {

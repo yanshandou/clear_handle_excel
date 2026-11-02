@@ -393,8 +393,11 @@
   box-shadow: 0 3px 0 var(--mark);
 }
 
-.pr-page[data-mark="yellow"] { border-color: #f0b400; }
-.pr-page[data-mark="red"] { border-color: #c8102e; }
+/* 页面卡片和标题一样：粗边框 + 实心阴影，三种颜色一眼看得出 */
+.pr-page[data-mark] { border-width: 2.5px; border-color: var(--purple); box-shadow: 0 4px 0 var(--purple); }
+.pr-page[data-mark="yellow"] { border-color: #f0b400; box-shadow: 0 4px 0 #f0b400; }
+.pr-page[data-mark="red"] { border-color: #c8102e; box-shadow: 0 4px 0 #c8102e; }
+.pr-page[data-mark="deleted"] { border-color: var(--ink-4); box-shadow: 0 4px 0 var(--ink-4); }
 
 .pr-mark {
   display: inline-flex;
