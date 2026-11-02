@@ -467,7 +467,7 @@ class QuickTaskTests(unittest.TestCase):
         with self.serve_api() as port:
             status, body = self.request(port, "GET", "/")
             self.assertEqual(status, 200)
-            self.assertIn("常用功能", body)
+            self.assertIn("处理流程", body)
             for path in ("/workbench", "/index.html"):
                 status, body = self.request(port, "GET", path)
                 self.assertEqual(status, 200)
