@@ -1189,8 +1189,9 @@ def _direct_extra_height(sheet: Any, items: list[dict], need: float) -> float:
     return round(lines * line_pt, 2)
 
 
-def _measure_cell_height(tmp: Any, area: Any) -> float:
-    """把一格的文字和字体搬到临时表 A1（宽度调成和这格一样，换行设置一样），让 Excel 自动调整行高，读出要多高（pt）"""
+def _measure_cell_height(tmp: Any, area: Any, narrower: float = 0.0) -> float:
+    """把一格的文字和字体搬到临时表 A1（宽度调成和这格一样，换行设置一样），让 Excel 自动调整行高，读出要多高（pt）。
+    narrower：临时格子比原格子窄多少 pt（用来看这格是不是刚好塞满）"""
     first = area.Cells(1, 1)
     value = first.Value
     text = value if isinstance(value, str) else str(first.Text or "")
@@ -1202,7 +1203,9 @@ def _measure_cell_height(tmp: Any, area: Any) -> float:
     font, src = cell.Font, first.Font
     font.Name, font.Size, font.Bold, font.Italic = src.Name, src.Size, src.Bold, src.Italic
     cell.WrapText = area.WrapText is True
-    width = float(area.Width)
+    width = float(area.Width) - narrower
+    if width <= 1:
+        raise ValueError("格子太窄")
     column = tmp.Columns(1)
     for _ in range(3):  # 列宽单位是字数、和 pt 不完全成比例，调几次贴近
         now = float(column.Width)
@@ -1222,8 +1225,10 @@ def _excel_fit(sheet: Any, row: int, items: list[dict], *, extra_lines: int = 1)
     Excel 的「自动调整行高」会跳过合并单元格，所以在副本里临时加一张表，放一个不合并的格子，
     宽度、字体、换行都和问题格子一样，让 Excel 在它身上算，再拿回来用；临时表算完就删。
     合并区域跨好几行时，减掉其他行的高度，剩下的才是这一行要的。只看问题格子，不让同一行别的格子一起变高。
-    开了换行的格子再多留 extra_lines 行（字号 × 1.2）：Excel 屏幕上算的高度够，打印成 PDF 时换行位置常常不同、
-    多出一行，就被切掉了（用户 2026-11-02 说这很常见）。
+    打印余量（用户 2026-11-02 说明）：开了换行的格子，Excel 里最后一行刚好塞满时，打印成 PDF 常常差一个字放不下、
+    多换出一行（只有一两个字）被切掉；最后一行没塞满的（第二行只有几个字）PDF 一定也放得下，不用担心。
+    所以把临时格子再窄一个字（字号 pt）量一次：变高了说明刚好塞满，按窄的那个高度给（Excel 自己多算的那一行）；
+    没变高就不加余量。extra_lines=2（第一次没过再试时）再多留一行（字号 × 1.2）。
     算不出来返回 0（照旧用估算）。"""
     addrs = list(dict.fromkeys(it.get("cell_addr") for it in items if it.get("cell_addr")))
     if not addrs:
@@ -1239,11 +1244,20 @@ def _excel_fit(sheet: Any, row: int, items: list[dict], *, extra_lines: int = 1)
                 if height <= 0:
                     continue
                 others = float(area.Height) - float(sheet.Rows(row).RowHeight)
-                margin = (extra_lines * _cell_line_height(sheet, [{"cell_addr": addr}])
-                          if area.WrapText is True else 0.0)
+                margin, tight = 0.0, False
+                if area.WrapText is True:
+                    size = area.Cells(1, 1).Font.Size
+                    size = float(size) if isinstance(size, (int, float)) and not isinstance(size, bool) else 10.0
+                    try:
+                        margin = max(0.0, _measure_cell_height(tmp, area, narrower=size) - height)
+                    except Exception:
+                        margin = 0.0
+                    tight = margin > 0
+                    if extra_lines > 1:
+                        margin += (extra_lines - 1) * _cell_line_height(sheet, [{"cell_addr": addr}])
                 need = round(height + margin - max(0.0, others), 2)
                 debug_log.event("📏 Excel 算行高", 格=addr, 合并=int(area.Cells.Count) > 1,
-                                换行=area.WrapText is True, 格子要=height, 打印余量=round(margin, 2),
+                                换行=area.WrapText is True, 格子要=height, 刚好塞满=tight, 打印余量=round(margin, 2),
                                 其他行=round(others, 2), 这一行要=need)
                 needs.append(need)
             except Exception as error:
@@ -1274,7 +1288,7 @@ def _prepare_row(
     - 原样那张直接复用刚才检测导出的 PDF（同一版本）；若原样已通过则不改行高、不重新导出；
     - 原样未通过时，有不换行被横向截断的格子先开启自动换行；行高主要让 Excel 自己算（_excel_fit，
       合并单元格借临时格子算），算不出或不比原来高时才按缺几行 × 字号 × 1.2 估算；
-      Excel 算的高度给开了换行的格子多留一行（字号 × 1.2），打印时换行位置不同也放得下；
+      开了换行、最后一行刚好塞满的格子多留一行（打印时差一个字就会多换一行）；
     - 第一次没通过：有没开换行的格子就开换行再试，Excel 算的高度打印出来不够就多留一行（和估算取高的）再试；
     - 通过时留下那份 PDF 供写入后复查直接复用。"""
     timing = {} if timing is None else timing

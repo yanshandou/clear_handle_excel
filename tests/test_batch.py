@@ -1314,28 +1314,41 @@ class BatchTests(unittest.TestCase):
         type(column).ColumnWidth = property(lambda self: self.__dict__.get("ColumnWidth", 10.0),
                                             lambda self, v: (set_width(v), setattr(self, "Width", v * 5.0)))
         temp_row = tmp.Rows.return_value
-        temp_row.AutoFit.side_effect = lambda: setattr(temp_row, "RowHeight", 75.0)
+        widths = []
+        def autofit():
+            widths.append(round(column.Width))
+            # 宽 150pt 时 3 行刚好塞满（75pt），窄一个字就要 4 行（93pt）
+            temp_row.RowHeight = 75.0 if column.Width >= 150 or not tight[0] else 93.0
+        tight = [True]
+        temp_row.AutoFit.side_effect = autofit
         sheet = Mock()
         sheet.Parent.Worksheets.Add.return_value = tmp
         sheet.Application.DisplayAlerts = False
         area = sheet.Range.return_value.MergeArea
         area.Cells.return_value.Value = "=SELECT * FROM T1 WHERE ..."
+        area.Cells.return_value.Font.Size = 9.0
         area.Cells.Count = 3
         area.Width = 150.0
         area.Height = 13.5
         area.WrapText = True
         sheet.Rows.return_value.RowHeight = 13.5
-        # 开了换行：Excel 算 75，打印时换行位置会变，多留一行（读不到字号按 12pt）
+        # 刚好塞满：按窄一个字（9pt）量出来的高度给，多出的就是 PDF 上会多换出来的那一行
+        self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 93.0)
+        self.assertEqual(widths, [150, 141])
         with patch.object(batch, "_cell_line_height", return_value=12.0):
-            self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 87.0)
-            self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}], extra_lines=2), 99.0)
-        area.WrapText = False  # 不换行的不加余量
+            self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}], extra_lines=2), 105.0)
+        # 最后一行没塞满（窄一个字也不变高）：PDF 一定放得下，不加余量
+        tight[0] = False
         self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 75.0)
+        area.WrapText = False  # 不换行的不量第二次
+        widths.clear()
+        self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 75.0)
+        self.assertEqual(widths, [150])
         cell = tmp.Cells.return_value
         self.assertEqual(cell.NumberFormat, "@")  # = 开头的 SQL 也按文字放
         self.assertIs(cell.WrapText, False)
         self.assertAlmostEqual(column.Width, 150.0)
-        self.assertEqual(tmp.Delete.call_count, 3)  # 每次算完都删掉临时表
+        self.assertEqual(tmp.Delete.call_count, 4)  # 每次算完都删掉临时表
         self.assertIs(sheet.Application.DisplayAlerts, False)
         # 合并区域跨 3 行（另外两行共 30pt）：这一行只要 75 - 30
         area.Height = 43.5
