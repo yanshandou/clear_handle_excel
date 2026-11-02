@@ -505,16 +505,12 @@ function buildCleanPlan() {
     if (processedFiles.has(file.name)) return;
     const del = [];
     const unc = [];
-    const keep = [];
-    // 只记住「按规则本该删除或待定、你改成保留」的表；本来就默认保留的表不记，以后加的新规则才能对它们生效
-    const flagged = new Set([...(file.backups || []), ...(file.uncertain || []), ...(file.confirmed_keep || [])]);
     (file.sheets || []).forEach(name => {
       const st = getSheetState(file.name, name);
       if (st === 'delete') del.push(name);
       else if (st === 'uncertain') unc.push(name);
-      else if (flagged.has(name)) keep.push(name);
     });
-    plan[file.name] = { delete: del, uncertain: unc, keep };
+    plan[file.name] = { delete: del, uncertain: unc };
     if (sheetOrders[file.name]) plan[file.name].order = sheetOrders[file.name].slice();
     const renames = activeRenames(file);
     if (renames.length) {
@@ -591,10 +587,7 @@ function renderPage() {
     const stats = summarizeDecisions();
     renderSummary(stats);
     // 待定只是本次不删，不改文件；只去掉「新」字（没有旧表的新X）或只改名也要执行
-    const hasConfirmedKeep = previewData.files.some(file =>
-      [...(file.backups || []), ...(file.uncertain || [])]
-        .some(name => getSheetState(file.name, name) === 'keep'));
-    const hasAction = stats.deletedTotal > 0 || stats.renameTotal > 0 || stats.customRenameTotal > 0 || stats.reorderTotal > 0 || hasConfirmedKeep;
+    const hasAction = stats.deletedTotal > 0 || stats.renameTotal > 0 || stats.customRenameTotal > 0 || stats.reorderTotal > 0;
     const hasError = stats.emptyFiles.length > 0;
     execBtn.disabled = working || !hasAction || hasError || isBusyOther() || isCleanRunning();
     if (pending === 'start') {
@@ -609,8 +602,6 @@ function renderPage() {
       execBtn.textContent = `↕ 保存 ${stats.reorderTotal} 个文件的工作表顺序`;
     } else if (stats.customRenameTotal > 0) {
       execBtn.textContent = `✏️ 改名 ${stats.customRenameTotal} 个工作表`;
-    } else if (hasConfirmedKeep) {
-      execBtn.textContent = '✅ 确认保留所选工作表';
     } else {
       execBtn.textContent = '没有标记删除的工作表';
     }
