@@ -30,6 +30,9 @@ BLANK_PLACEHOLDER_WORDS = {
     "無", "無し", "なし", "ナシ", "特になし", "特に無し", "該当なし", "該当無し", "対象なし", "対象外",
     "无", "没有", "空", "空白", "略", "省略", "n/a", "na", "none", "null", "nil", "tbd",
 }
+# 几格合起来只是空的 JSON（[]、{}、[{}]），如 A1=[、A2=]（用户 2026-11-02）；最多看这么多格，再多就算有内容
+EMPTY_JSON_PATTERN = re.compile(r"\[\]|\{\}|\[\{\}\]")
+BLANK_MAX_CELLS = 4
 # 只由横线、波浪线、斜线、点组成的格子（-、－、ー、―、〜、/、・ 等）也算占位
 BLANK_PLACEHOLDER_SYMBOLS = re.compile(r"[-‐‑‒–—―ー─━~〜～/・.。…]+")
 # 复制工作表产生的「(2)」「(3)」后缀（全角括号统一为半角后判断，有无空格均可），
@@ -142,9 +145,15 @@ def is_placeholder_text(text: Any) -> bool:
 
 
 def is_blank_content(values: list[Any]) -> bool:
-    """工作表的全部非空格子（不含图片图形）算不算没有内容：一格都没有，或只有一格且是占位字（用户 2026-10-30）"""
+    """工作表的全部非空格子（不含图片图形）算不算没有内容：一格都没有，或只有一格且是占位字（用户 2026-10-30），
+    或几格合起来只是空的 JSON 括号，如 A1=[、A2=]（用户 2026-11-02，JSONサンプル 写着空数组）"""
     filled = [v for v in values if str(v if v is not None else "").strip()]
-    return not filled or (len(filled) == 1 and is_placeholder_text(filled[0]))
+    if not filled or (len(filled) == 1 and is_placeholder_text(filled[0])):
+        return True
+    if len(filled) > BLANK_MAX_CELLS:
+        return False
+    joined = re.sub(r"\s+", "", unicodedata.normalize("NFKC", "".join(str(v) for v in filled)))
+    return bool(EMPTY_JSON_PATTERN.fullmatch(joined))
 
 
 def _comparable_name(name: str) -> str:

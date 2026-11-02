@@ -16,6 +16,7 @@ from core.common import (
     XL_WORKSHEET,
     col_index_to_letters,
     find_backup_sheets,
+    BLANK_MAX_CELLS,
     is_blank_content,
     is_gray_tab_color,
     is_inspection_exempt_sheet,
@@ -526,6 +527,7 @@ def _read_xlsx_tab_colors(workbook_path: Path) -> dict[str, str]:
 # 工作表 XML 里表示「有图片、图形、批注、嵌入对象、背景图」的元素：有这些的表不算空白
 _SHEET_OBJECT_TAGS = {"drawing", "legacyDrawing", "legacyDrawingHF", "oleObjects", "picture", "controls"}
 XL_FORMULAS = -4123  # Range.Find 的 LookIn：按公式（含常量）找
+XL_CELL_TYPE_CONSTANTS = 2  # Range.SpecialCells：只取常量格
 
 
 def _rich_text(element: Any) -> str:
@@ -542,25 +544,28 @@ def _rich_text(element: Any) -> str:
     return "".join(parts)
 
 
-def _shared_string(archive: zipfile.ZipFile, index: int) -> str:
-    """共享字符串表里第 index 条的文字（流式读到这一条就停）"""
+def _shared_strings(archive: zipfile.ZipFile, indexes: set[int]) -> dict[int, str]:
+    """共享字符串表里指定几条的文字（流式读到最后一条就停）"""
+    found: dict[int, str] = {}
     try:
         fh = archive.open("xl/sharedStrings.xml")
     except KeyError:
-        return ""
+        return found
     with fh:
         position = -1
         for _, el in ElementTree.iterparse(fh):
             if el.tag.rsplit("}", 1)[-1] != "si":
                 continue
             position += 1
-            if position == index:
-                return _rich_text(el)
+            if position in indexes:
+                found[position] = _rich_text(el)
+                if len(found) == len(indexes):
+                    break
             el.clear()
-    return ""
+    return found
 
 
-def _xlsx_sheet_values(archive: zipfile.ZipFile, part: str, limit: int = 2) -> list[str] | None:
+def _xlsx_sheet_values(archive: zipfile.ZipFile, part: str, limit: int = BLANK_MAX_CELLS + 1) -> list[str] | None:
     """工作表里前 limit 个有内容的格子的文字；有图片图形批注、公式或不是普通工作表时返回 None（不算空白）。
     流式读取，找到 limit 个就停，大表也不会全部读完。
     """
@@ -588,7 +593,7 @@ def _xlsx_sheet_values(archive: zipfile.ZipFile, part: str, limit: int = 2) -> l
             elif "v" in children:
                 text = children["v"].text or ""
                 if el.get("t") == "s" and text.strip().isdigit():
-                    shared.append(len(values))  # 共享字符串几乎不会是空字符串，先按有内容计数，最后只剩一格时再查文字
+                    shared.append(len(values))  # 共享字符串几乎不会是空字符串，先按有内容计数，格子不多时最后再查文字
                     text = text.strip()
             else:
                 text = ""
@@ -597,8 +602,10 @@ def _xlsx_sheet_values(archive: zipfile.ZipFile, part: str, limit: int = 2) -> l
                 values.append(text)
                 if len(values) >= limit:
                     break
-    if len(values) == 1 and shared:
-        values[0] = _shared_string(archive, int(values[0]))
+    if shared and len(values) < limit:
+        texts = _shared_strings(archive, {int(values[i]) for i in shared})
+        for i in shared:
+            values[i] = texts.get(int(values[i]), "")
     return values
 
 
@@ -636,6 +643,11 @@ def _excel_blank_sheets(wb: Any) -> set[str]:
                 cell = sh.Cells.Find(What="*", LookIn=XL_FORMULAS)
                 formula = "" if cell is None else str(cell.Formula or "")
                 if cell is not None and not formula.startswith("=") and is_blank_content([formula]):
+                    blank.add(sh.Name)
+            elif count <= BLANK_MAX_CELLS:
+                # 几格合起来是空 JSON（A1=[、A2=]）；只取常量格，数量对不上说明有公式，不算空白
+                cells = sh.Cells.SpecialCells(XL_CELL_TYPE_CONSTANTS)
+                if int(cells.Count) == count and is_blank_content([str(c.Formula or "") for c in cells]):
                     blank.add(sh.Name)
         except Exception:
             continue

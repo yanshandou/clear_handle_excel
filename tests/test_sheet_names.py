@@ -71,13 +71,22 @@ class XlsxSheetNameTests(unittest.TestCase):
         wb.create_sheet("数式")["A1"] = '=""'
         wb.create_sheet("コメント")["A1"].comment = Comment("メモ", "XU")
         wb.create_sheet("数字")["A1"] = 0
+        # 用户 2026-11-02：A1=[、A2=] 这种空 JSON 也算没内容（TLKYE0005 的 JSONサンプル）
+        wb.create_sheet("空配列")["A1"] = "["
+        wb["空配列"]["A2"] = "]"
+        wb.create_sheet("空オブジェクト")["A1"] = "{ }"
+        wb.create_sheet("空配列一行")["B2"] = "[{}]"
+        wb.create_sheet("JSONあり")["A1"] = "["
+        wb["JSONあり"]["A2"] = '{"id": 1}'
+        wb["JSONあり"]["A3"] = "]"
+        wb.create_sheet("括弧だけ")["A1"] = "["
         wb.create_chartsheet("グラフ")
         path = self.folder / "blank.xlsx"
         wb.save(path)
 
         blank: set[str] = set()
         excel_ops.scan_workbook_sheets(path, blank_sheets=blank)
-        self.assertEqual(blank, {"JSONサンプル", "空白", "書式だけ", "横線", "該当なし"})
+        self.assertEqual(blank, {"JSONサンプル", "空白", "書式だけ", "横線", "該当なし", "空配列", "空オブジェクト", "空配列一行"})
 
     def test_blank_sheet_ignores_furigana(self):
         # 用户 2026-11-02：日文 Excel 输入的「無」带注音 <rPh>ナ</rPh>，以前拼成「無ナ」没认出空白（TLCWE0003 的 JSONサンプル）
