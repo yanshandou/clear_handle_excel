@@ -81,25 +81,14 @@
   word-break: break-all;
 }
 
-.pr-doc-pages,
-.pr-doc-state {
+.pr-doc-pages {
   font-size: 13px;
   color: var(--ink-3);
 }
 
-/* 这份 PDF 算好行列位置没有；文字长短变了也只在标题行右边，不挪页面 */
-.pr-doc-state {
+/* 把标记按钮和「重新生成」推到标题行右边 */
+.pr-doc-gap {
   margin-left: auto;
-  font-weight: 700;
-}
-
-.pr-doc-state[data-kind="ready"] {
-  color: #1b7a3a;
-}
-
-.pr-doc-state[data-kind="error"] {
-  color: #9a1030;
-  cursor: help;
 }
 
 .pr-doc-excel {
@@ -135,34 +124,17 @@
   -webkit-user-select: none;
 }
 
-/* 页面大小：大图铺满宽度；中图整页放进窗口（扣掉顶栏和底部条）；小图固定高度，一行能放几页放几页。
-   --ar 是页面宽 / 高，宽度按它换算，高度跟着 aspect-ratio 走 */
+/* 只用小图（2026-11-02）：固定高度，一行能放几页放几页。--ar 是页面宽 / 高，宽度按它换算 */
 .pr-pages {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.view-medium .pr-pages {
-  align-items: center;
-}
-
-.view-medium .pr-page {
-  width: min(100%, calc((100vh - 200px) * var(--ar)));
-}
-
-.view-small .pr-pages {
   flex-direction: row;
   flex-wrap: wrap;
   align-items: flex-start;
+  gap: 10px;
 }
 
 .view-small .pr-page {
   width: min(100%, calc(320px * var(--ar)));
-}
-
-.pr-view {
-  flex: none;
 }
 
 .pr-img {
@@ -180,20 +152,45 @@
 }
 
 /* 点下去的地方闪一圈，知道点到了 */
-.pr-click {
-  position: absolute;
-  width: 26px;
-  height: 26px;
-  margin: -13px 0 0 -13px;
-  border: 3px solid var(--purple);
-  border-radius: 50%;
-  pointer-events: none;
-  animation: pr-click 0.6s ease-out forwards;
+/* 点了「📗」/ Ctrl + 单击：整页闪一下，看得出开的是哪一页（只换外框，不挪位置） */
+.pr-page.is-flash {
+  animation: pr-flash 0.7s ease-out;
 }
 
-@keyframes pr-click {
-  from { transform: scale(0.4); opacity: 1; }
-  to { transform: scale(1.6); opacity: 0; }
+@keyframes pr-flash {
+  from { outline: 4px solid #1d4f91; outline-offset: 2px; }
+  to { outline: 4px solid transparent; outline-offset: 8px; }
+}
+
+/* 每页左上角：用 Excel 打开这一页（浮层，不占位置） */
+.pr-open-page {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  font-size: 17px;
+  line-height: 28px;
+  text-align: center;
+  background: #fff;
+  border: 2px solid #1d4f91;
+  border-radius: 8px;
+  box-shadow: 0 2px 0 #1d4f91;
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+.pr-open-page:hover,
+.pr-open-page:focus-visible {
+  opacity: 1;
+  background: #e6efff;
+}
+
+.pr-page.is-loading .pr-open-page,
+.pr-page.is-failed .pr-open-page {
+  display: none;
 }
 
 /* 图片还没加载出来 / 加载失败：不能画框，中间显示提示（浮层，不占位置） */
@@ -719,4 +716,16 @@
   color: var(--ink-3);
   background: #f1f3f8;
   border-color: var(--ink-4);
+}
+
+/* 处理结果里每一处：点一下在 Excel 打开那一页 */
+.pr-result-open {
+  padding: 0;
+  font: inherit;
+  color: #1d4f91;
+  text-align: left;
+  text-decoration: underline;
+  background: none;
+  border: 0;
+  cursor: pointer;
 }

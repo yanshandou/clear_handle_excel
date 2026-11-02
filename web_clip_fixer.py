@@ -186,8 +186,6 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, **pdf_review.process_status()})
         elif parsed.path == "/api/pdf_review/regenerate":
             self._send_json({"ok": True, **pdf_review.regen_status()})
-        elif parsed.path == "/api/pdf_review/maps":
-            self._send_json({"ok": True, "maps": pdf_review.maps_status()})
         elif parsed.path == "/api/pdf_review/page":
             query = parse_qs(parsed.query)
             try:
@@ -434,8 +432,7 @@ class WebHandler(BaseHTTPRequestHandler):
             except ValueError:
                 raise ValueError("后台正在保存 Excel，请几秒后再点") from None
             self._send_json({"ok": True, **pdf_review.open_at(payload.get("pdf") or "", payload.get("page"),
-                                                                payload.get("x"), payload.get("y"),
-                                                                payload.get("old_folder") or "")})
+                                                                payload.get("pages"), payload.get("old_folder") or "")})
         elif self.path == "/api/pdf_review/process":
             pdf_review.process(payload.get("red"), payload.get("yellow"))
             self._send_json({"ok": True})

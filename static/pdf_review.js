@@ -1,35 +1,29 @@
 'use strict';
-// PDF 人工复检：导出的 PDF 整页显示，看到问题点一下，就用 Excel 打开并选中那一格；
-// 填了原始备份文件夹时，备份也一起打开（只读）、跳到同一格，左右对照着改。
-// 每份 PDF 的行列位置由后台算（只算一次），点的格子也由后台按它算。
+// PDF 人工复检：导出的 PDF 一页页用小图排开，快速过一遍（用户 2026-11-02 定：只用小图，不再切大 / 中图）。
 // 三色标记（借鉴精简 Sheet）：蓝 = 不用管（默认）、黄 = 这一页要人工改（按页标）、红 = 整张表不要了。
-// 单击页面换颜色（蓝 → 黄 → 红 → 蓝，标黄记住点的那一格）；用 Excel 打开那一格改成 Ctrl + 单击或右键菜单。
+// 单击页面换颜色（蓝 → 黄 → 红 → 蓝）。只记到「哪张表的第几页」，不记点的是哪一格（用户 2026-11-02 定）。
+// 用 Excel 打开：每页左上角的「📗」、Ctrl + 单击或右键菜单 → Excel 打开这张表、选中 PDF 这一页打印的范围；
+// 填了原始备份文件夹时，备份也一起打开（只读）、跳到同一块，左右对照着改。
 // 标题行右边的三个按钮一次改整张表。
 // 看完后点底部按钮，黄红分开：「打开标黄」用 Excel 打开标黄的（一次最多 10 份 Excel），「删除标红」在后台删表并保存。
 // 改完 Excel 想看效果：标题上「🔄 重新生成」只把这一份 Excel 的 PDF 重新导出一次。
 
 const FOLDER_KEY = 'clear_handle_excel.lastFolder';
 const OLD_FOLDER_KEY = 'clear_handle_excel.oldFolder'; // 和修复颜色 / 引用 / 隐藏页共用
-const VIEW_KEY = 'clear_handle_excel.pdfReviewView';
-const MARKS_KEY = 'clear_handle_excel.pdfReviewMarks'; // {文件夹: {pdf: {v, red, pages: {页码: {x, y}}, opened}}}
+const MARKS_KEY = 'clear_handle_excel.pdfReviewMarks'; // {文件夹: {pdf: {v, red, pages: {页码: {}}, opened}}}
 const MARK_TEXT = { blue: '不用管', yellow: '要人工改', red: '删除这张表' };
 const MARK_TITLE = { blue: '整张表不用管（清掉这张表的所有标记）', yellow: '整张表每页都标黄；只标某一页就单击那一页', red: '删除整张表（所有页）' };
-const VIEWS = ['large', 'medium', 'small'];
 const MIN_DRAG_PX = 6;  // 按下到松开挪动超过这么多就是在拖（选字、滚动），不算点
-const POLL_MS = 1500;
 const OPEN_LIMIT = 10;   // 标黄的一次最多打开几份 Excel（和后台 pdf_review.OPEN_LIMIT 一样）
 
 let folder = '';
 let pdfs = [];          // [{pdf, name, v, pages: [[宽, 高]], wb_path, wb_name, sheet, guessed, error}]
-let maps = {};          // pdf -> {state: ready / error / working / pending / none, error}
 let pageEls = [];       // 所有页面元素，从上到下
 let whereDoc = -1;      // 底部条上现在显示的是哪一份（换了才重建链接）
 let whereTick = 0;
-let polling = 0;
-let waiting = null;     // 点了还没算好的那份：{pdf, page, x, y, el}；算好就接着打开
 let opening = false;
 let press = null;       // 按下的位置，松开时判断是不是点了一下
-let marks = {};         // pdf -> {v, red, pages: {页码: {x, y}}, opened}；全蓝（默认）不记
+let marks = {};         // pdf -> {v, red, pages: {页码: {}}, opened}；全蓝（默认）不记
 let deleted = new Set(); // 这次一键处理删掉的表（PDF 也删了，页面上灰掉，刷新后就不在了）
 let processing = false;
 let regenWb = '';       // 正在重新生成 PDF 的那份 Excel（wb_path）
@@ -73,12 +67,9 @@ async function load() {
     folder = data.folder;
     try { localStorage.setItem(FOLDER_KEY, value); } catch (_) {}
     pdfs = data.pdfs;
-    maps = {};
     deleted = new Set();
     loadMarks();
-    mergeMaps(data.maps);
     renderDocs();
-    startPolling();
   } catch (e) {
     $('prStatus').textContent = `读取失败：${e.message}`;
     appAlert(e.message, { tone: 'error' });
@@ -106,6 +97,7 @@ function renderDocs() {
         <img class="pr-img" loading="lazy" decoding="async" draggable="false" alt="第 ${p + 1} 页"
           src="/api/pdf_review/page?pdf=${encodeURIComponent(doc.pdf)}&p=${p}&v=${doc.v}">
         <div class="pr-layer"></div>
+        ${doc.wb_path ? `<button type="button" class="pr-open-page" data-open-page="${p}" title="用 Excel 打开第 ${p + 1} 页（也可以 Ctrl + 单击页面）">📗</button>` : ''}
         <span class="pr-pageno">${p + 1} / ${doc.pages.length}</span>
       </div>`).join('');
     const markable = doc.wb_path && !doc.error;
@@ -117,7 +109,7 @@ function renderDocs() {
       <header class="pr-doc-head" title="${escapeHtml(doc.pdf)}">
         <span class="pr-doc-name">📄 ${escapeHtml(doc.name)}</span>
         <span class="pr-doc-pages">${doc.pages.length} 页</span>${excel}
-        <span class="pr-doc-state" data-state="${d}"></span>${buttons}${regen}
+        <span class="pr-doc-gap"></span>${buttons}${regen}
       </header>
       ${doc.error ? `<p class="pr-doc-warn">${escapeHtml(doc.error)}</p>` : `<div class="pr-pages">${pages}</div>`}
     </article>`;
@@ -130,86 +122,37 @@ function renderDocs() {
   updateStatus();
 }
 
-/* ---------- 行列位置（后台算） ---------- */
-
-const STATE_TEXT = {
-  ready: '✓ 可以点格子', error: '⚠ 定位不了', working: '⏳ 正在定位…', pending: '⏳ 排队定位', none: '',
-};
-
-function mergeMaps(status) {
-  for (const [pdf, s] of Object.entries(status || {})) maps[pdf] = { state: s.state, error: s.error };
-}
+/* ---------- 份数 ---------- */
 
 function updateStatus() {
-  const docs = pdfs.filter(doc => doc.wb_path && !doc.error);
-  const ready = docs.filter(doc => maps[doc.pdf]?.state === 'ready').length;
-  const failed = docs.filter(doc => maps[doc.pdf]?.state === 'error').length;
   const pages = pdfs.reduce((n, doc) => n + doc.pages.length, 0);
   if (pdfs.length) $('prStatus').textContent = `共 ${pdfs.length} 份 PDF、${pages} 页`;
-  const parts = [`已定位 <b>${ready}</b> / ${docs.length} 份`];
-  if (failed) parts.push(`<span class="pr-doc-warn">${failed} 份定位不了</span>`);
-  $('prSummary').innerHTML = parts.join(' · ');
-  pdfs.forEach((doc, d) => {
-    const el = document.querySelector(`[data-state="${d}"]`);
-    if (!el) return;
-    const m = maps[doc.pdf] || { state: 'none' };
-    el.textContent = doc.wb_path ? STATE_TEXT[m.state] || '' : '';
-    el.dataset.kind = m.state;
-    el.title = m.state === 'error' ? m.error || '' : '';
-  });
+  $('prSummary').innerHTML = `共 <b>${pdfs.length}</b> 份 · ${pages} 页`;
 }
 
-function startPolling() {
-  clearTimeout(polling);
-  polling = setTimeout(async () => {
-    try {
-      mergeMaps((await api('/api/pdf_review/maps')).maps);
-      updateStatus();
-      if (waiting && ['ready', 'error'].includes(maps[waiting.pdf]?.state)) {
-        const next = waiting;
-        waiting = null;
-        await openAt(next);
-      }
-    } catch (_) { /* 下一轮再试 */ }
-    if (Object.values(maps).some(m => m.state === 'pending' || m.state === 'working') || waiting) startPolling();
-  }, POLL_MS);
+/* ---------- 用 Excel 打开这一页 ---------- */
+
+function flashPage(pageEl) {
+  pageEl.classList.remove('is-flash');
+  void pageEl.offsetWidth; // 重新触发动画
+  pageEl.classList.add('is-flash');
 }
 
-// 页面上的点 → {pdf, page, x, y}（PDF 点）
-function pointOn(pageEl, e) {
-  const doc = pdfs[Number(pageEl.dataset.doc)];
-  const p = Number(pageEl.dataset.page);
-  const box = pageEl.getBoundingClientRect();
-  const [w, h] = doc.pages[p];
-  return { doc, pdf: doc.pdf, page: p, x: (e.clientX - box.left) / box.width * w, y: (e.clientY - box.top) / box.height * h };
-}
-
-/* ---------- 点一下打开 ---------- */
-
-function flashAt(pageEl, e) {
-  const box = pageEl.getBoundingClientRect();
-  const dot = Object.assign(document.createElement('span'), { className: 'pr-click' });
-  dot.style.left = `${e.clientX - box.left}px`;
-  dot.style.top = `${e.clientY - box.top}px`;
-  pageEl.querySelector('.pr-layer').appendChild(dot);
-  setTimeout(() => dot.remove(), 700);
-}
-
-async function openAt(pt) {
+async function openPage(d, page, pageEl = null) {
+  const doc = pdfs[d];
+  if (!doc || !doc.wb_path) {
+    toast('这份 PDF 找不到对应的 Excel', true);
+    return;
+  }
   if (opening) return;
+  if (pageEl) flashPage(pageEl);
   const oldFolder = $('prOldFolder').value.trim();
   opening = true;
-  toast(oldFolder ? '正在打开当前文件和备份…' : '正在用 Excel 打开…');
+  toast(oldFolder ? '正在打开当前文件和备份…' : `正在用 Excel 打开第 ${page + 1} 页…`);
   try {
-    const data = await api('/api/pdf_review/open', { pdf: pt.pdf, page: pt.page, x: pt.x, y: pt.y, old_folder: oldFolder });
-    if (data.pending) {
-      waiting = pt;
-      toast('这张表还在定位，算好就自动打开…');
-      startPolling();
-      return;
-    }
+    const data = await api('/api/pdf_review/open', { pdf: doc.pdf, page, pages: doc.pages.length, old_folder: oldFolder });
     try { if (oldFolder) localStorage.setItem(OLD_FOLDER_KEY, oldFolder); } catch (_) {}
-    const where = data.cell ? `${data.sheet}!${data.cell}` : data.sheet;
+    const where = `${data.sheet} 第 ${page + 1} 页${data.cell ? `（${data.cell}）` : ''}`;
     toast(data.note || (data.backup ? `已打开 ${where}：左边当前文件，右边原始备份（只读）` : `已在 Excel 中打开 ${where}`), !!data.note);
   } catch (e) {
     toast(`无法打开：${e.message}`, true);
@@ -221,7 +164,8 @@ async function openAt(pt) {
 function onPointerDown(e) {
   if (!$('prMenu').hidden && !e.target.closest('#prMenu')) closeMenu();
   const pageEl = e.target.closest('.pr-page');
-  if (!pageEl || e.button !== 0 || pageEl.matches('.is-loading, .is-failed') || e.target.closest('.excel-link')) return;
+  if (!pageEl || e.button !== 0 || pageEl.matches('.is-loading, .is-failed')
+      || e.target.closest('.excel-link, .pr-open-page')) return;
   press = { pageEl, x: e.clientX, y: e.clientY };
 }
 
@@ -229,19 +173,19 @@ function onPointerUp(e) {
   const start = press;
   press = null;
   if (!start || Math.hypot(e.clientX - start.x, e.clientY - start.y) > MIN_DRAG_PX) return;
-  const pt = pointOn(start.pageEl, e);
-  if (!pt.doc.wb_path) {
+  const d = Number(start.pageEl.dataset.doc);
+  const page = Number(start.pageEl.dataset.page);
+  if (!pdfs[d].wb_path) {
     toast('这份 PDF 找不到对应的 Excel', true);
     return;
   }
-  flashAt(start.pageEl, e);
-  // 单击换颜色（蓝 → 黄 → 红 → 蓝）；按住 Ctrl 单击、或右键菜单里才是用 Excel 打开这一格
-  if (e.ctrlKey || e.metaKey) openAt(pt);
-  else cyclePage(Number(start.pageEl.dataset.doc), pt.page, pt);
+  // 单击换颜色（蓝 → 黄 → 红 → 蓝）；按住 Ctrl 单击是用 Excel 打开这一页
+  if (e.ctrlKey || e.metaKey) openPage(d, page, start.pageEl);
+  else cyclePage(d, page);
 }
 
 /* ---------- 三色标记 ----------
-   黄色按页标：每页单独「要人工改」，单击标黄会记住点的那一格；红色是整张表（Excel 只能删整张表），
+   黄色按页标：每页单独「要人工改」（只记第几页）；红色是整张表（Excel 只能删整张表），
    标了红所有页都算红。标题颜色：有红 → 红；有一页黄 → 黄；所有页都是蓝 → 蓝。
    marks[pdf] = {v, red, pages: {页码: {x, y} 或 {}}, opened} */
 
@@ -297,16 +241,6 @@ function paintMark(d) {
   article.querySelectorAll('.pr-page').forEach(pageEl => {
     const p = Number(pageEl.dataset.page);
     pageEl.dataset.mark = pageColor(doc, p);
-    // 右键标黄时记下的位置：页面上放一个黄色小圈（浮层，不占位置）
-    pageEl.querySelectorAll('.pr-pin').forEach(el => el.remove());
-    const spot = color === 'yellow' ? m.pages[p] : null;
-    if (spot && spot.x !== undefined) {
-      const [w, h] = doc.pages[p];
-      const pin = Object.assign(document.createElement('span'), { className: 'pr-pin', title: '标黄时点的位置，打开标黄时 Excel 跳到这一格' });
-      pin.style.left = `${spot.x / w * 100}%`;
-      pin.style.top = `${spot.y / h * 100}%`;
-      pageEl.querySelector('.pr-layer').appendChild(pin);
-    }
   });
 }
 
@@ -342,27 +276,27 @@ function setDocMark(d, color) {
   commit(d);
 }
 
-// 单击 / 右键某一页：这一页标黄（记住右键的格子）或改回蓝；标过红的表这时就不删了
-function setPageMark(d, page, color, point = null) {
+// 单击 / 右键某一页：这一页标黄或改回蓝；标过红的表这时就不删了
+function setPageMark(d, page, color) {
   const doc = pdfs[d];
   if (!editable(doc)) return;
   const m = entry(doc);
   m.red = false;
   m.opened = false;
-  if (color === 'yellow') m.pages[page] = point ? { x: point.x, y: point.y } : (m.pages[page] || {});
+  if (color === 'yellow') m.pages[page] = {};
   else delete m.pages[page];
   commit(d);
 }
 
-// 单击这一页：蓝 → 黄（记住点的格子）→ 红（整张表）→ 这一页改回蓝（别的页标的黄还在）
-function cyclePage(d, page, point) {
+// 单击这一页：蓝 → 黄 → 红（整张表）→ 这一页改回蓝（别的页标的黄还在）
+function cyclePage(d, page) {
   const doc = pdfs[d];
   if (!editable(doc)) {
     if (processing) toast('正在处理，处理完再改颜色', true);
     return;
   }
   const now = pageColor(doc, page);
-  if (now === 'blue') setPageMark(d, page, 'yellow', point);
+  if (now === 'blue') setPageMark(d, page, 'yellow');
   else if (now === 'yellow') setDocMark(d, 'red');
   else setPageMark(d, page, 'blue');
 }
@@ -388,7 +322,7 @@ function updateProcessButton() {
 
 /* ---------- 右键菜单 ---------- */
 
-let menuFor = null; // {d, page, point, pageEl, x, y}
+let menuFor = null; // {d, page, pageEl}
 
 function closeMenu() {
   $('prMenu').hidden = true;
@@ -403,21 +337,20 @@ function onContextMenu(e) {
   if (!doc || !doc.wb_path || doc.error) return;
   e.preventDefault();
   const pageEl = e.target.closest('.pr-page');
-  const ready = pageEl && !pageEl.matches('.is-loading, .is-failed');
-  const point = ready ? pointOn(pageEl, e) : null;
   const page = pageEl ? Number(pageEl.dataset.page) : null;
-  menuFor = { d, page, point, pageEl, x: e.clientX, y: e.clientY };
+  menuFor = { d, page, pageEl };
   const menu = $('prMenu');
   const now = page === null ? colorOf(doc) : pageColor(doc, page);
   const where = page === null ? '整张表' : `第 ${page + 1} 页`;
   menu.querySelector('.pr-menu-title').textContent = `${doc.wb_name ? doc.wb_name.split('/').pop() : doc.name} › ${doc.sheet || ''} · ${where}`;
   menu.querySelector('[data-menu="blue"] b').textContent = page === null ? '整张表不用管' : '这一页不用管';
   menu.querySelector('[data-menu="yellow"] b').textContent = page === null ? '整张表要人工改' : '这一页要人工改';
-  menu.querySelector('[data-menu="yellow"] small').textContent = point ? '记住这一格，处理时 Excel 跳过来' : '处理时打开这张表';
+  menu.querySelector('[data-menu="yellow"] small').textContent = page === null ? '处理时打开这张表' : '「打开标黄」时 Excel 跳到这一页';
+  menu.querySelector('[data-menu="open"] b').textContent = page === null ? '在 Excel 打开这张表' : `在 Excel 打开第 ${page + 1} 页`;
   menu.querySelectorAll('[data-menu]').forEach(b => {
     const kind = b.dataset.menu;
     b.classList.toggle('is-on', kind === now);
-    b.disabled = kind === 'open' ? !point : !editable(doc);
+    b.disabled = kind === 'open' ? false : !editable(doc);
   });
   menu.hidden = false;
   // 放在鼠标旁边，靠窗口边缘时往里收（菜单是 fixed 浮层，不挪页面）
@@ -429,16 +362,12 @@ function onContextMenu(e) {
 function onMenuClick(e) {
   const item = e.target.closest('[data-menu]');
   if (!item || !menuFor) return;
-  const { d, page, point, pageEl, x, y } = menuFor;
+  const { d, page, pageEl } = menuFor;
   const kind = item.dataset.menu;
   closeMenu();
-  if (kind === 'open') {
-    if (point) {
-      flashAt(pageEl, { clientX: x, clientY: y });
-      openAt(point);
-    }
-  } else if (kind === 'red' || page === null) setDocMark(d, kind);
-  else setPageMark(d, page, kind, point);
+  if (kind === 'open') openPage(d, page ?? 0, pageEl);
+  else if (kind === 'red' || page === null) setDocMark(d, kind);
+  else setPageMark(d, page, kind);
 }
 
 /* ---------- 打开标黄 / 删除标红 ---------- */
@@ -479,7 +408,7 @@ async function runProcess(kind) {
     ? { title: '删除标红的表', tone: 'danger', okText: '删除' }
     : { title: '打开标黄的文件', tone: 'info', okText: '打开' });
   if (!ok) return;
-  const spots = doc => Object.entries(marks[doc.pdf].pages).map(([p, s]) => ({ page: Number(p), ...s }));
+  const spots = doc => Object.keys(marks[doc.pdf].pages).map(p => ({ page: Number(p) }));
   try {
     await api('/api/pdf_review/process', {
       red: red.map(doc => ({ pdf: doc.pdf })), yellow: yellow.map(doc => ({ pdf: doc.pdf, spots: spots(doc) })),
@@ -529,10 +458,12 @@ async function pollProcess() {
 
 // 结果框：每一处都是链接，点一下 Excel 跳过去
 function resultLine(item, { link = true } = {}) {
-  const doc = pdfs.find(x => x.pdf === item.pdf);
-  const page = item.page !== undefined && item.page !== null ? ` · 第 ${item.page + 1} 页` : '';
-  const label = `${escapeHtml(item.name)} › ${escapeHtml(item.sheet)}${item.cell ? ` ${escapeHtml(item.cell)}` : ''}${page}`;
-  const body = link && doc && doc.wb_name ? excelLinkHtml(label, excelTarget({ ...doc, sheet: item.sheet }, item.cell || '')) : label;
+  const d = pdfs.findIndex(x => x.pdf === item.pdf);
+  const hasPage = item.page !== undefined && item.page !== null;
+  const label = `${escapeHtml(item.name)} › ${escapeHtml(item.sheet)}${hasPage ? ` · 第 ${item.page + 1} 页` : ''}`;
+  const body = link && d >= 0 && pdfs[d].wb_path
+    ? `<button type="button" class="pr-result-open" data-result-doc="${d}" data-result-page="${hasPage ? item.page : 0}" title="在 Excel 打开这一页">📗 ${label}</button>`
+    : label;
   const note = item.reason ? `<span class="pr-result-note">${escapeHtml(item.reason)}</span>` : '';
   return `<li>${body}${item.first ? ' <span class="pr-result-tag">已跳到这里</span>' : ''}${note}</li>`;
 }
@@ -653,10 +584,8 @@ async function reloadKeeping(pdf, wbPath) {
   deleted = new Set([...deleted].filter(p => pdfs.some(x => x.pdf === p)));
   loadMarks(); // 重新生成的 PDF 修改时间变了，它的标记自动不算了
   saveMarks();
-  mergeMaps(data.maps);
   renderDocs();
   updateProcessButton();
-  startPolling();
   let after = pdfs.findIndex(x => x.pdf === pdf);
   if (after < 0) after = pdfs.findIndex(x => x.wb_path === wbPath);
   const now = after >= 0 ? $(`prDoc${after}`) : null;
@@ -762,20 +691,9 @@ function jumpTo(e) {
 /* ---------- 大图 / 中图 / 小图 ---------- */
 
 // 换大小后停在原来看的那一页的同一位置
-function setView(view, keep = true) {
-  if (!VIEWS.includes(view)) view = 'large';
-  const at = keep && pageEls.length ? readingPosition() : null;
-  const box = $('prDocs');
-  VIEWS.forEach(v => box.classList.toggle(`view-${v}`, v === view));
-  document.querySelectorAll('#prView [data-view]').forEach(b => {
-    b.classList.toggle('is-active', b.dataset.view === view);
-    b.setAttribute('aria-pressed', b.dataset.view === view);
-  });
-  try { localStorage.setItem(VIEW_KEY, view); } catch (_) {}
-  if (at) {
-    const page = pageEls[at.index].getBoundingClientRect();
-    window.scrollBy({ top: page.top + page.height * at.within - window.innerHeight * READ_LINE });
-  }
+// 只用小图（用户 2026-11-02 定）：一行放好几页，快速过一遍
+function setView() {
+  $('prDocs').classList.add('view-small');
   scheduleWhere();
 }
 
@@ -845,23 +763,21 @@ $('prDocs').addEventListener('click', e => {
   if (button) setDocMark(Number(button.dataset.doc), button.dataset.markBtn);
   const regen = e.target.closest('[data-regen]');
   if (regen) regenerate(Number(regen.dataset.regen));
+  const open = e.target.closest('[data-open-page]');
+  if (open) openPage(Number(open.closest('.pr-page').dataset.doc), Number(open.dataset.openPage), open.closest('.pr-page'));
 });
 $('prOpenYellow').addEventListener('click', () => runProcess('yellow'));
 $('prDeleteRed').addEventListener('click', () => runProcess('red'));
 $('prFolder').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
 $('prTrack').addEventListener('click', jumpTo);
-$('prView').addEventListener('click', e => {
-  const button = e.target.closest('[data-view]');
-  if (button) setView(button.dataset.view);
+$('prResultBody').addEventListener('click', e => {
+  const button = e.target.closest('[data-result-doc]');
+  if (button) openPage(Number(button.dataset.resultDoc), Number(button.dataset.resultPage));
 });
 window.addEventListener('scroll', scheduleWhere, { passive: true });
 window.addEventListener('resize', () => { if (pageEls.length) fitTicks(); scheduleWhere(); });
 watchBars();
-{
-  let view = 'large';
-  try { view = localStorage.getItem(VIEW_KEY) || view; } catch (_) {}
-  setView(view, false);
-}
+setView();
 try {
   $('prFolder').value = localStorage.getItem(FOLDER_KEY) || '';
   $('prOldFolder').value = localStorage.getItem(OLD_FOLDER_KEY) || '';

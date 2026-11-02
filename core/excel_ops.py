@@ -257,6 +257,39 @@ def open_workbook_in_excel(workbook_path: Path, sheet_name: str = "", cell_addre
         pythoncom.CoUninitialize()
 
 
+def open_workbook_at(workbook_path: Path, sheet_name: Callable[[Any], str], locate: Callable[[Any], str | None]) -> tuple[str, str, str]:
+    """在可见 Excel 打开文件，sheet_name(工作簿) 给出要切到的表，locate(工作表) 算要跳到的区域
+    （PDF 人工复检：PDF 第几页对应的范围），选中那块并把缩放调到表格宽度放进窗口。不保存。
+    返回 (表名, 区域, 提示)；区域算不出来就只切到那张表"""
+    workbook_path = workbook_path.resolve(strict=True)
+    pythoncom.CoInitialize()
+    try:
+        excel = _visible_excel()
+        book = _find_or_open(excel, workbook_path)
+        name = sheet_name(book) or ""
+        note = focus_workbook_in_excel(excel, book, name, "")
+        address = ""
+        if name and not note:
+            sheet = book.Sheets(name)
+            was_saved = book.Saved
+            try:
+                address = locate(sheet) or ""
+            except Exception as err:  # 算不出来就停在这张表上
+                debug_log.exception(err, f"算 {name} 的打印页位置")
+            if was_saved:
+                try:
+                    book.Saved = True  # 读分页时切过视图，不算改了文件
+                except Exception:
+                    pass
+            sheet.Activate()
+            if re.fullmatch(CELL_OR_RANGE, address):
+                _goto_fit_width(excel, book, sheet, address)
+        _bring_to_front(excel)
+        return name, address, note
+    finally:
+        pythoncom.CoUninitialize()
+
+
 def open_workbook_for_manual_review(
     workbook_path: Path, sheet_name: str, cell_address: str, row: int
 ) -> float:
