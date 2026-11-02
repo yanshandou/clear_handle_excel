@@ -42,38 +42,15 @@ class WorkbenchSnapshotTests(unittest.TestCase):
         card.pop("error_types")
         with patch.object(batch, "_items_at", side_effect=AssertionError("unexpected full scan")):
             result = batch.snapshot()
-        self.assertTrue(result["mode"]["to_auto"])
         self.assertEqual(len(result["cards"][0]["problems"]), 1)
-        self.assertEqual(result["cards"][0]["auto_skip"], "")
+        self.assertNotIn("auto_skip", result["cards"][0])
+        self.assertNotIn("mode", result)
 
-    def test_same_file_version_is_read_once_per_snapshot_and_refreshed_next_time(self):
-        self.card(1)
-        self.card(2)
-        current = wf._file_version(self.book)
-        batch._sheet_checks()[str(self.book)] = {"*": current}
-        with patch.object(wf, "_file_version", wraps=wf._file_version) as version:
-            first = batch.snapshot()
-            self.assertEqual(version.call_count, 1)
-            self.assertTrue(all(card["auto_skip"] for card in first["cards"]))
-            self.book.write_bytes(b"edited workbook")
-            second = batch.snapshot()
-            self.assertEqual(version.call_count, 2)
-            self.assertTrue(all(not card["auto_skip"] for card in second["cards"]))
-
-    def test_failed_version_lookup_is_cached_only_within_one_snapshot(self):
-        self.card(1)
-        self.card(2)
-        with patch.object(wf, "_file_version", side_effect=OSError("missing")) as version:
-            self.assertTrue(all(not card["auto_skip"] for card in batch.snapshot()["cards"]))
-            self.assertEqual(version.call_count, 1)
-            batch.snapshot()
-            self.assertEqual(version.call_count, 2)
-
-    def test_folder_resolution_is_shared_with_mode_and_refreshed_each_request(self):
+    def test_folder_resolution_is_cached_within_one_snapshot_and_refreshed_each_request(self):
         self.card(1)["handed_over"] = True
         self.card(2)["handed_over"] = True
         with patch.object(wf, "in_current_folder", wraps=wf.in_current_folder) as contains:
-            self.assertTrue(batch.snapshot()["mode"]["to_auto"])
+            batch.snapshot()
             self.assertEqual(contains.call_count, 1)
             batch.snapshot()
             self.assertEqual(contains.call_count, 2)

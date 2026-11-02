@@ -909,9 +909,9 @@ class ScanOnlyTests(unittest.TestCase):
         self.assertEqual(self.card("A5")["color"], "green")
         self.excel.Workbooks.Open.assert_not_called()
 
-    def test_run_scan_only_does_not_repair(self):
+    def test_run_scan_marks_cells_and_grows_once_with_chosen_ratio(self):
         self.add_item("A5")
-        self.wf.STATE["job"]["options"] = {"folder": str(self.root), "scan_only": True,
+        self.wf.STATE["job"]["options"] = {"folder": str(self.root), "grow_ratio": 1.2,
                                            "highlight": {"fill": "#6D28D9", "font": "#FFFFFF"}}
         session = Mock()
         session.app.return_value = self.excel
@@ -921,34 +921,12 @@ class ScanOnlyTests(unittest.TestCase):
                 patch.object(self.wf.pythoncom, "CoInitialize", create=True), \
                 patch.object(self.wf.pythoncom, "CoUninitialize", create=True), \
                 patch.object(batch, "init_execution_batch"), patch.object(batch, "finish_execution_batch"), \
-                patch.object(batch, "_refresh"), patch.object(batch, "_repair_file") as repair:
+                patch.object(batch, "_refresh"), patch.object(batch, "_grow_and_wrap", return_value={}) as grow:
             self.assertEqual(batch.run(), [self.path])
-        repair.assert_not_called()
+        grow.assert_called_once_with(self.excel, self.path, 1.2)
         self.assertEqual(self.card("A5")["color"], "yellow")
         self.assertEqual(self.sheet.shown("A5")[0], batch._excel_color("#6D28D9"))
         self.assertIn(self.path, self.wf.STATE["job"]["completed"])
-
-    def test_full_auto_colors_yellow_cards_only_after_commit(self):
-        self.add_item("A5")
-        self.wf.STATE["job"]["options"] = {"folder": str(self.root), "highlight": {"fill": "#006633", "font": "#FFFFFF"}}
-        session = Mock()
-        session.app.return_value = self.excel
-        mocks = dict(ExcelWatchdog=Mock(return_value=Mock(timed_out=False)), init_execution_batch=Mock(),
-                     finish_execution_batch=Mock(), _refresh=Mock())
-        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
-                patch.multiple(batch, **mocks), \
-                patch.object(self.wf, "list_workbooks", return_value=(self.root, [Path(self.path)])), \
-                patch.object(self.wf.pythoncom, "CoInitialize", create=True), \
-                patch.object(self.wf.pythoncom, "CoUninitialize", create=True), \
-                patch.object(batch, "_repair_file", side_effect=lambda *a: batch._card_for(
-                    [self.wf.STATE["items"]["iA5"]]).update(color="yellow", manual=True, waiting=False)):
-            batch.run()
-            self.excel.Workbooks.Open.assert_not_called()  # 处理过程中不改颜色
-            card = self.card("A5")
-            self.wf.STATE["job"] = {"kind": "batch_commit", "options": {"card_ids": [card["id"]]},
-                                    "completed": [], "pending_adjustment": None}
-            batch.run()
-        self.assertEqual(self.sheet.shown("A5")[0], batch._excel_color("#006633"))
 
     def test_full_auto_without_highlight_stops_coloring(self):
         self.add_item("A5")

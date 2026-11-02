@@ -411,20 +411,9 @@ class WebHandler(BaseHTTPRequestHandler):
                 if isinstance(minutes, bool) or minutes not in batch.SCAN_LIMIT_CHOICES:
                     raise ValueError("单个文件的扫描上限只能选自动或 3、5、10、15 分钟")
                 options["scan_limit_minutes"] = minutes
-            if payload.get("scan_only") is True:
-                if payload.get("fix_error_types") is not None:
-                    batch.set_fix_error_types(payload.get("fix_error_types"))
-                options.update(scan_only=True, highlight=batch.highlight_style(payload.get("highlight")))
-            else:
-                if payload.get("fix_error_types") is not None:
-                    options["fix_error_types"] = batch.set_fix_error_types(
-                        payload.get("fix_error_types"), require_non_empty=True)
-                else:
-                    options["fix_error_types"] = batch.fix_error_types(require_non_empty=True)
-                if payload.get("highlight") is not None:
-                    options["highlight"] = batch.highlight_style(payload.get("highlight"))
-                else:
-                    options["highlight_off"] = True
+            # 扫描：检出的问题全部标色、转人工；切字的格子开自动换行、行高加「字号 × 倍数」，保存（不再自动修复）
+            options.update(highlight=batch.highlight_style(payload.get("highlight")),
+                           grow_ratio=batch.grow_ratio(payload.get("grow_ratio")))
             self._start_job("batch_scan", options)
         elif self.path == "/api/print_layout":
             set_print_layout(payload.get("path"), payload.get("key"), payload.get("direction"))
@@ -432,8 +421,6 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._start_job("print_layout", {"path": payload["path"], "key": payload["key"]})
             else:
                 self._send_json({"ok": True})
-        elif self.path == "/api/batch/fix_types":
-            self._send_json({"ok": True, "fix_error_types": batch.set_fix_error_types(payload.get("fix_error_types"))})
         elif self.path == "/api/batch/unhighlight":
             self._start_job("batch_unhighlight", {"paths": batch.highlighted_paths()})
         elif self.path == "/api/batch/clear_marks":
@@ -497,37 +484,11 @@ class WebHandler(BaseHTTPRequestHandler):
         elif self.path == "/api/batch/pause":
             with STATE_LOCK:
                 if not STATE["busy"] or (STATE["job"] or {}).get("kind") != "batch_scan":
-                    raise ValueError("没有正在运行的全自动批处理")
+                    raise ValueError("没有正在运行的扫描")
                 STATE["job"]["pause_requested"] = True
                 from core.workflow import _persist_state
                 _persist_state()
             self._send_json({"ok": True})
-        elif self.path == "/api/batch/to_manual":
-            if batch.request_manual():
-                self._start_job("resume")  # 暂停中：续跑任务，不再修，直接转人工
-            else:
-                self._send_json({"ok": True})
-        elif self.path == "/api/batch/to_auto":
-            batch.check_auto(payload.get("fix_error_types"))
-            with STATE_LOCK:
-                options = {"folder": STATE["folder"], "back_to_auto": True,
-                           "fix_error_types": batch.fix_error_types(require_non_empty=True)}
-            if payload.get("highlight") is not None:
-                options["highlight"] = batch.highlight_style(payload.get("highlight"))
-            else:
-                options["highlight_off"] = True
-            self._start_job("batch_scan", options)
-        elif self.path == "/api/batch/auto_plan":
-            # 「🤖 自动调整」先问一下：哪些交给自动、同行连带哪些、哪些跳过和原因，网页确认框里列出来
-            self._send_json({"ok": True, **batch.auto_adjust_plan(
-                payload.get("card_ids"), fix_types=payload.get("fix_error_types"))})
-        elif self.path == "/api/batch/auto_adjust":
-            # 自动调整正在跑：排进同一个任务，当前文件做完接着做
-            if batch.enqueue_auto_adjust(payload.get("card_ids"), fix_types=payload.get("fix_error_types")):
-                self._send_json({"ok": True, "queued": True})
-            else:
-                self._start_job("batch_scan", batch.start_auto_adjust(
-                    payload.get("card_ids"), fix_types=payload.get("fix_error_types")))
         elif self.path == "/api/batch/abandon":
             batch.abandon_pending()
             self._send_json({"ok": True})
