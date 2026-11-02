@@ -181,6 +181,8 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, **pdf_review.list_pdfs(folder)})
             except ValueError as err:
                 self._send_json({"ok": False, "error": str(err)}, status=400)
+        elif parsed.path == "/api/pdf_review/process":
+            self._send_json({"ok": True, **pdf_review.process_status()})
         elif parsed.path == "/api/pdf_review/maps":
             self._send_json({"ok": True, "maps": pdf_review.maps_status()})
         elif parsed.path == "/api/pdf_review/page":
@@ -443,6 +445,9 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, **pdf_review.open_at(payload.get("pdf") or "", payload.get("page"),
                                                                 payload.get("x"), payload.get("y"),
                                                                 payload.get("old_folder") or "")})
+        elif self.path == "/api/pdf_review/process":
+            pdf_review.process(payload.get("red"), payload.get("yellow"))
+            self._send_json({"ok": True})
         elif self.path == "/api/hidden_repair/run":
             hidden_repair.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}), payload.get("options"))
             self._send_json({"ok": True})

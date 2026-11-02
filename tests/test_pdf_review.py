@@ -1,6 +1,7 @@
 """PDF 人工复检：探测底色编解码、从探测 PDF 读行列位置、点的位置 → 单元格、打开 Excel（和原始备份）。"""
 import copy
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -383,6 +384,160 @@ class ClearOldPdfTests(unittest.TestCase):
         self.assertTrue(all(not p.exists() for p in old))
         self.assertTrue(all(p.exists() for p in keep))
         self.assertEqual(state["pdf_exports"], {})
+
+
+class FakeSheet:
+    def __init__(self, name, visible=-1):
+        self.Name, self.Visible = name, visible
+
+
+class FakeBook:
+    def __init__(self, names, hidden=()):
+        self.sheets = [FakeSheet(n, 0 if n in hidden else -1) for n in names]
+        self.saved = 0
+        self.closed = False
+        book = self
+
+        class Sheets(list):
+            def __call__(self, key):
+                return next(s for s in book.sheets if s.Name == key)
+        self.Sheets = Sheets(self.sheets)
+        self.Worksheets = self.Sheets
+
+    def Save(self):
+        self.saved += 1
+
+    def Close(self, SaveChanges=False):
+        self.closed = True
+
+
+class ProcessTests(unittest.TestCase):
+    """一键处理：标红的表在后台删掉并保存、对应 PDF 删掉；标黄的打开 Excel"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.book_path = self.tmp / "売上.xlsx"
+        self.book_path.write_bytes(b"x")
+        self.pdfs = {}
+        for sheet in ("一覧", "JSONサンプル", "明細"):
+            pdf = self.tmp / f"売上_{sheet}.pdf"
+            doc = fitz.open()
+            doc.new_page(width=595, height=842)
+            doc.save(pdf)
+            self.pdfs[sheet] = pdf
+        self.state = copy.deepcopy(wf.STATE)
+        self.state.update(pdf_review={}, pdf_exports={}, busy=False, job=None)
+        for target, name, value in ((wf, "STATE", self.state), (pdf_review, "_MAPS", {}), (pdf_review, "_QUEUE", []),
+                                    (pdf_review, "_PROCESS", {"running": False})):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for target, name in ((wf, "_persist_state"), (wf, "log_msg"), (pdf_review, "prepare"),
+                             (pdf_review.file_problem, "Guard"), (pdf_review, "start_background_excel"),
+                             (pdf_review.sheet_history, "record")):
+            patcher = patch.object(target, name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        pdf_review.file_problem.Guard.return_value.problem.return_value = (False, "打不开")
+        pdf_review.file_problem.Guard.return_value.closed = False
+        self.fp = patch.object(pdf_review.sheet_history, "fingerprint", return_value="h")
+        self.fp.start()
+        self.addCleanup(self.fp.stop)
+        pdf_review.list_pdfs(str(self.tmp))
+
+    def run_process(self, red=(), yellow=(), book=None, deleted=None):
+        book = book or FakeBook(["一覧", "JSONサンプル", "明細"])
+        calls = []
+
+        def fake_delete(b, names):
+            calls.append(list(names))
+            b.sheets[:] = [s for s in b.sheets if s.Name not in names]
+            return []
+        with patch.object(pdf_review, "open_workbook_checked", return_value=book), \
+                patch.object(pdf_review, "delete_sheets_preserving_values", side_effect=fake_delete), \
+                patch.object(pdf_review, "open_workbook_in_excel", return_value="") as opened, \
+                patch.object(pdf_review, "workbook_locked", return_value=False):
+            pdf_review.process([{"pdf": str(self.pdfs[s])} for s in red],
+                               [{"pdf": str(self.pdfs[s]), **extra} for s, extra in yellow])
+            for _ in range(200):
+                if not pdf_review.process_status()["running"]:
+                    break
+                time.sleep(0.02)
+        status = pdf_review.process_status()
+        self.assertFalse(status["running"])
+        return status["result"], calls, book, opened
+
+    def test_red_sheets_are_deleted_and_saved_with_pdf_removed(self):
+        result, calls, book, _ = self.run_process(red=["JSONサンプル"])
+        self.assertEqual(calls, [["JSONサンプル"]])
+        self.assertEqual(book.saved, 1)
+        self.assertTrue(book.closed)
+        self.assertEqual([(e["sheet"], e["pdf_removed"]) for e in result["deleted"]], [("JSONサンプル", True)])
+        self.assertFalse(self.pdfs["JSONサンプル"].exists())
+        self.assertTrue(self.pdfs["一覧"].exists())
+        self.assertFalse(self.state["busy"])
+        pdf_review.sheet_history.record.assert_called_once()
+
+    def test_two_red_sheets_in_one_file_open_it_once(self):
+        result, calls, book, _ = self.run_process(red=["JSONサンプル", "明細"])
+        self.assertEqual(calls, [["JSONサンプル", "明細"]])
+        self.assertEqual(book.saved, 1)
+        self.assertEqual(len(result["deleted"]), 2)
+
+    def test_last_visible_sheet_is_not_deleted(self):
+        book = FakeBook(["一覧", "JSONサンプル", "明細"], hidden=("一覧", "明細"))
+        result, calls, book, _ = self.run_process(red=["JSONサンプル"], book=book)
+        self.assertEqual(calls, [])
+        self.assertEqual(book.saved, 0)
+        self.assertIn("唯一", result["failed"][0]["reason"])
+        self.assertTrue(self.pdfs["JSONサンプル"].exists())
+
+    def test_yellow_opens_each_file_once_at_the_marked_cell(self):
+        pdf = str(self.pdfs["一覧"].resolve())
+        pdf_review._MAPS[pdf] = {"v": self.pdfs["一覧"].stat().st_mtime_ns, "state": "ready", "sheet": "一覧",
+                                 "rows": [{5: (100.0, 120.0)}], "cols": [{3: (200.0, 260.0)}]}
+        result, calls, _, opened = self.run_process(
+            yellow=[("一覧", {"page": 0, "x": 210, "y": 110}), ("明細", {})])
+        opened.assert_called_once_with(self.book_path, "一覧", "C5")
+        self.assertEqual([e["sheet"] for e in result["opened"]], ["一覧", "明細"])
+        self.assertEqual(calls, [])
+
+    def test_red_then_yellow_in_same_run(self):
+        result, calls, _, opened = self.run_process(red=["JSONサンプル"], yellow=[("明細", {})])
+        self.assertEqual(calls, [["JSONサンプル"]])
+        opened.assert_called_once_with(self.book_path, "明細", "")
+
+    def test_more_than_limit_files_wait_for_next_press(self):
+        with patch.object(pdf_review, "OPEN_LIMIT", 0):
+            result, _, _, opened = self.run_process(yellow=[("明細", {})])
+        opened.assert_not_called()
+        self.assertEqual(len(result["later"]), 1)
+
+    def test_locked_file_asks_and_records_failure(self):
+        with patch.object(pdf_review, "open_workbook_checked") as open_book, \
+                patch.object(pdf_review, "workbook_locked", return_value=True):
+            pdf_review.process([{"pdf": str(self.pdfs["明細"])}], [])
+            for _ in range(200):
+                if not pdf_review.process_status()["running"]:
+                    break
+                time.sleep(0.02)
+        open_book.assert_not_called()
+        guard = pdf_review.file_problem.Guard.return_value
+        self.assertIn("Excel 中打开", str(guard.problem.call_args[0][0]))
+        self.assertEqual(pdf_review.process_status()["result"]["failed"][0]["reason"], "打不开")
+        self.assertTrue(self.pdfs["明細"].exists())
+
+    def test_rejects_busy_or_outside_pdf(self):
+        self.state["busy"] = True
+        with self.assertRaises(ValueError):
+            pdf_review.process([{"pdf": str(self.pdfs["明細"])}], [])
+        self.state["busy"] = False
+        other = Path(tempfile.mkdtemp()) / "x.pdf"
+        other.write_bytes(self.pdfs["明細"].read_bytes())
+        with self.assertRaises(ValueError):
+            pdf_review.process([{"pdf": str(other)}], [])
+        with self.assertRaises(ValueError):
+            pdf_review.process([], [])
 
 
 if __name__ == "__main__":

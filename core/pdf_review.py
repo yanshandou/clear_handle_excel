@@ -20,11 +20,13 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from core import batch, debug_log, print_layout, repair_compare, workflow as wf
+from core import batch, debug_log, file_problem, print_layout, repair_compare, sheet_history, workflow as wf
 from core.backup_compare import pair_files
-from core.common import EXCEL_EXTENSIONS, col_index_to_letters, sanitize_filename, strip_review_prefix, workbook_rel_name
+from core.common import (EXCEL_EXTENSIONS, col_index_to_letters, sanitize_filename, strip_review_prefix,
+                         workbook_locked, workbook_rel_name)
 from core.excel_ops import open_workbook_checked, open_workbook_in_excel, quit_background_excel, start_background_excel
 from core.excel_watchdog import ExcelWatchdog
+from core.formula_links import delete_sheets_preserving_values
 from core.pdf_detector import fitz
 
 PAGE_ZOOM = 2.5  # 网页上显示的页面图：A4 竖向约 1490 像素宽，铺满屏幕也看得清字
@@ -546,3 +548,265 @@ def open_at(pdf: str, page: Any, x: Any, y: Any, old_folder: Any = "") -> dict:
     debug_log.event("🔎 PDF 复检打开", PDF=path.name, 页=page + 1, 点=[round(x, 1), round(y, 1)], 表=sheet,
                     格子=cell or "-", 备份=backup.name if backup else "-", 说明="；".join(notes) or "-")
     return {"sheet": sheet, "cell": cell, "backup": bool(backup), "note": "；".join(notes)}
+
+
+# ---------- 三色标记：一键处理 ----------
+# 网页上每份 PDF（= 一张表）可以标成：蓝（默认，不用管）/ 黄（要人工改）/ 红（这张表不要了）。
+# 「一键处理」：先在后台 Excel 里把标红的表删掉并保存（同一份 Excel 的几张一起删、只开一次），
+# 删掉的表对应的 PDF 也删掉；再把标黄的用 Excel 打开（每份 Excel 开一次，跳到标黄时右键的那一格），
+# 一次最多开 OPEN_LIMIT 份，剩下的再点一次接着开。
+
+OPEN_LIMIT = 10
+_PROCESS: dict[str, Any] = {"running": False}
+_PROCESS_LOCK = threading.Lock()
+
+
+def process_status() -> dict:
+    with _PROCESS_LOCK:
+        return {**_PROCESS, "result": _PROCESS.get("result")}
+
+
+def _process_item(raw: Any, color: str) -> dict:
+    if not isinstance(raw, dict) or not isinstance(raw.get("pdf"), str):
+        raise ValueError("标记的数据不对，请刷新页面再试")
+    path = Path(raw["pdf"]).resolve()
+    if not _in_folder(path) or path.suffix.lower() != ".pdf":
+        raise ValueError(f"「{path.name}」不在当前文件夹里或已经不在了，请重新加载 PDF")
+    with wf.STATE_LOCK:
+        owner = _owner(path)
+    if not owner:
+        raise ValueError(f"「{path.name}」找不到对应的 Excel 文件")
+    item = {"pdf": str(path), "name": path.name, "color": color, "wb_path": owner["wb_path"], "sheet": owner["sheet"]}
+    page, x, y = raw.get("page"), raw.get("x"), raw.get("y")
+    if (isinstance(page, int) and not isinstance(page, bool)
+            and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (x, y))):
+        item.update(page=page, x=float(x), y=float(y))
+    return item
+
+
+def process(red: Any, yellow: Any) -> None:
+    """一键处理：后台删掉标红的表，再打开标黄的。网页轮询 process_status() 看进度和结果"""
+    reds = [_process_item(raw, "red") for raw in (red or [])]
+    yellows = [_process_item(raw, "yellow") for raw in (yellow or [])]
+    if not reds and not yellows:
+        raise ValueError("没有标黄或标红的表")
+    from core import bl_links, hidden_repair, link_repair, mark_finder
+    with wf.STATE_LOCK, _PROCESS_LOCK:
+        if (wf.STATE.get("busy") or _PROCESS.get("running") or link_repair.status().get("running")
+                or mark_finder.status().get("running") or hidden_repair.status().get("running")
+                or bl_links.status().get("running")):
+            raise ValueError("后台任务正在执行，请等它结束再处理")
+        if reds:
+            wf.STATE["busy"] = True  # 要改文件：别的任务这时候不能开
+            wf.STATE["maintenance"] = "pdf_review_process"
+        books = list(dict.fromkeys(item["wb_path"] for item in reds))
+        _PROCESS.clear()
+        _PROCESS.update(running=True, stage="delete" if reds else "open", total=len(books), done=0, current="",
+                        result=None)
+    root = wf.STATE.get("pdf_review", {}).get("folder") or ""
+
+    def run() -> None:
+        result: dict[str, list] = {"deleted": [], "failed": [], "opened": [], "open_failed": [], "later": []}
+        try:
+            with debug_log.side_task("pdf_review_process", {"folder": root, "red": len(reds), "yellow": len(yellows)}):
+                for item in reds + yellows:
+                    debug_log.event("🎨 PDF 复检标记", 颜色="红" if item["color"] == "red" else "黄",
+                                    PDF=item["name"], 表=item["sheet"])
+                if reds:
+                    _delete_red(reds, root, result)
+                if yellows:
+                    with _PROCESS_LOCK:
+                        _PROCESS.update(stage="open", current="")
+                    with wf.STATE_LOCK:
+                        wf.STATE["busy"] = False  # 删完了；打开 Excel 不用占着任务槽
+                        wf.STATE.pop("maintenance", None)
+                    _open_yellow(yellows, root, result)
+                debug_log.event("✅ PDF 复检一键处理完成", 删掉=len(result["deleted"]), 没删掉=len(result["failed"]),
+                                打开=len(result["opened"]), 没打开=len(result["open_failed"]), 下次开=len(result["later"]))
+        except Exception as err:
+            result["failed"].append({"name": "任务", "sheet": "", "reason": f"处理出错：{err}"})
+        finally:
+            with wf.STATE_LOCK:
+                if wf.STATE.get("maintenance") == "pdf_review_process":
+                    wf.STATE["busy"] = False
+                    wf.STATE.pop("maintenance", None)
+            with _PROCESS_LOCK:
+                _PROCESS.update(running=False, current="", result=result)
+
+    try:
+        threading.Thread(target=run, name="PDF 复检一键处理", daemon=True).start()
+    except Exception:
+        with wf.STATE_LOCK, _PROCESS_LOCK:
+            if wf.STATE.get("maintenance") == "pdf_review_process":
+                wf.STATE["busy"] = False
+                wf.STATE.pop("maintenance", None)
+            _PROCESS["running"] = False
+        raise
+
+
+def _wait_probe_idle(wb_path: str) -> list[str]:
+    """后台定位线程正在只读打开这份 Excel 时等它算完（最多 2 分钟）；排队里同一份 Excel 的先拿掉，
+    返回拿掉的，删完表再排回去。查对应的 Excel 要拿 STATE_LOCK，不在 _COND 里面拿"""
+    target = Path(wb_path).resolve()
+
+    def same(pdf: str) -> bool:
+        owner = _owner_of(pdf)
+        return bool(owner) and Path(owner["wb_path"]).resolve() == target
+
+    with _COND:
+        queued, working = list(_QUEUE), list(_WORKING)
+    dropped = [pdf for pdf in queued if same(pdf)]
+    busy = any(same(pdf) for pdf in working)
+    deadline = time.monotonic() + 120
+    with _COND:
+        for pdf in dropped:
+            if pdf in _QUEUE:
+                _QUEUE.remove(pdf)
+        while busy and any(pdf in _WORKING for pdf in working) and time.monotonic() < deadline:
+            _COND.wait(1)
+    return dropped
+
+
+def _delete_red(reds: list[dict], root: str, result: dict) -> None:
+    groups: dict[str, list[dict]] = {}
+    for item in reds:
+        groups.setdefault(item["wb_path"], []).append(item)
+    guard = file_problem.Guard("PDF 复检：删除标红的表")
+    excel = None
+    wf.pythoncom.CoInitialize()
+    try:
+        for index, (wb_path, items) in enumerate(groups.items()):
+            label = workbook_rel_name(Path(wb_path), Path(root)) if root else Path(wb_path).name
+            with _PROCESS_LOCK:
+                _PROCESS.update(done=index, current=label)
+            dropped = _wait_probe_idle(wb_path)
+            while True:
+                guard.progress()
+                try:
+                    if excel is None:
+                        excel = guard.watch(start_background_excel())
+                    outcome = _delete_in_workbook(excel, Path(wb_path), items, label)
+                    break
+                except Exception as err:
+                    debug_log.exception(err, f"PDF 复检删表 {label}")
+                    retry, message = guard.problem(err, wb_path, label, root,
+                                                   close=lambda: file_problem.quit_quietly(excel))
+                    if guard.closed:
+                        excel = None
+                    if retry:
+                        wf.log_msg(f"🔁 重试 {label}")
+                        continue
+                    outcome = [{**item, "ok": False, "reason": message} for item in items]
+                    break
+            for item in outcome:
+                entry = {"pdf": item["pdf"], "name": label, "sheet": item["sheet"], "reason": item.get("reason", "")}
+                if item["ok"]:
+                    entry["pdf_removed"] = item.get("pdf_removed", False)
+                result["deleted" if item["ok"] else "failed"].append(entry)
+            requeue = [pdf for pdf in dropped if Path(pdf).is_file()]
+            if requeue:
+                prepare(requeue)  # 同一份 Excel 没删的表接着算行列位置
+            with _PROCESS_LOCK:
+                _PROCESS.update(done=index + 1)
+    finally:
+        try:
+            file_problem.quit_quietly(excel)
+        finally:
+            guard.stop()
+            wf.pythoncom.CoUninitialize()
+
+
+def _delete_in_workbook(excel: Any, wb_path: Path, items: list[dict], label: str) -> list[dict]:
+    """在后台 Excel 里删掉这份文件里标红的表并保存；删表前把别的表引用它的公式转成值（和精简 Sheet 一样）。
+    返回每一项：ok、reason；删成功的 PDF 也删掉"""
+    if not wb_path.is_file():
+        return [{**item, "ok": False, "reason": "Excel 文件已经不在了"} for item in items]
+    if workbook_locked(wb_path):
+        raise ValueError("文件正在 Excel 中打开，请先在 Excel 里关掉它（改过的先保存），再点「重试」")
+    before_hash = sheet_history.fingerprint(wb_path)
+    book = open_workbook_checked(excel, str(wb_path.resolve()), UpdateLinks=0)
+    outcome: list[dict] = []
+    deleting: list[str] = []
+    try:
+        before = [str(sheet.Name) for sheet in book.Sheets]
+        for item in items:
+            sheet = _find_sheet(book, item["sheet"])
+            if sheet is None:
+                outcome.append({**item, "ok": False, "reason": "文件里已经没有这张表（可能改名或删掉了）"})
+            elif str(sheet.Name) in deleting:
+                outcome.append({**item, "ok": True, "same": True})
+            else:
+                deleting.append(str(sheet.Name))
+                outcome.append({**item, "ok": True, "real": str(sheet.Name)})
+        visible = [str(sheet.Name) for sheet in book.Sheets if int(sheet.Visible) == -1]
+        if deleting and visible and all(name in deleting for name in visible):
+            reason = "这是文件里剩下的唯一一张显示着的表，Excel 不允许删掉（整个文件不要的话请直接删文件）"
+            debug_log.event("⚠️ PDF 复检删表跳过", 文件=label, 表=deleting, 原因=reason)
+            return [{**item, "ok": False, "reason": reason} if item["ok"] else item for item in outcome]
+        if not deleting:
+            return outcome
+        kept_values = delete_sheets_preserving_values(book, deleting)
+        book.Save()
+        after = [str(sheet.Name) for sheet in book.Sheets]
+    finally:
+        book.Close(SaveChanges=False)
+    with wf.STATE_LOCK:
+        sheet_history.record(wb_path, before, after, deleting, {}, kept_values, before_hash)
+        wf._persist_state()
+    debug_log.event("🗑️ PDF 复检删表", 文件=label, 删掉=deleting, 保留引用值=len(kept_values))
+    wf.log_msg(f"🗑️ {label}：删掉了 {'、'.join(deleting)}" + (f"（另外保留引用值 {len(kept_values)} 处）" if kept_values else ""))
+    removed: list[Path] = []
+    for item in outcome:
+        if not item["ok"]:
+            continue
+        pdf = Path(item["pdf"])
+        try:
+            pdf.unlink(missing_ok=True)
+            removed.append(pdf)
+            item["pdf_removed"] = True
+        except OSError as err:
+            item["reason"] = f"表删掉了，但 PDF 删不掉（可能正在用别的程序打开）：{err}"
+            debug_log.event("⚠️ PDF 复检删 PDF 失败", PDF=pdf.name, 原因=err)
+    if removed:
+        forget_pdfs(removed)
+    if kept_values:
+        for item in outcome:
+            if item["ok"] and not item.get("reason"):
+                item["reason"] = f"别的表引用它的 {len(kept_values)} 处公式已转成值"
+    return outcome
+
+
+def _open_yellow(yellows: list[dict], root: str, result: dict) -> None:
+    """每份 Excel 打开一次，跳到这份文件里第一处标黄的位置（右键标黄时记下的格子；没有就只打开表）"""
+    groups: dict[str, list[dict]] = {}
+    for item in yellows:
+        groups.setdefault(item["wb_path"], []).append(item)
+    for index, (wb_path, items) in enumerate(groups.items()):
+        label = workbook_rel_name(Path(wb_path), Path(root)) if root else Path(wb_path).name
+        entries = [{"pdf": item["pdf"], "name": label, "sheet": item["sheet"]} for item in items]
+        if index >= OPEN_LIMIT:
+            result["later"].extend(entries)
+            continue
+        with _PROCESS_LOCK:
+            _PROCESS.update(current=label)
+        first = items[0]
+        sheet, cell = first["sheet"], ""
+        with _COND:
+            found = _fresh(first["pdf"])
+        if found and found["state"] == "ready":
+            sheet = found["sheet"]
+            page = first.get("page")
+            if page is not None and 0 <= page < len(found["rows"]):
+                cell = cell_at(found["rows"][page], found["cols"][page], first["x"], first["y"]) or ""
+        try:
+            note = open_workbook_in_excel(Path(wb_path), sheet, cell)
+        except Exception as err:
+            debug_log.exception(err, f"PDF 复检打开标黄 {label}")
+            for entry in entries:
+                result["open_failed"].append({**entry, "reason": str(err)})
+            continue
+        debug_log.event("📂 PDF 复检打开标黄", 文件=label, 表=sheet, 格子=cell or "-", 同文件标黄=len(items), 说明=note or "-")
+        for n, entry in enumerate(entries):
+            entry["cell"] = cell if n == 0 else ""
+            entry["reason"] = note if n == 0 else ""
+            result["opened"].append(entry)
