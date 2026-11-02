@@ -196,6 +196,34 @@ class QuickTaskTests(unittest.TestCase):
         self.workflow.STATE["clean_confirmed_keep"][key]["rule_version"] = 2
         self.assertEqual(preview()["backups"], [])
 
+    def test_old_confirmation_does_not_keep_sheet_that_only_has_placeholder(self):
+        # 第 3 版以前执行精简时，默认保留的表也记成确认保留；后来加的空白表规则要照样生效（JSONサンプル 只有 A1=無）
+        from core import sheet_history
+        path = self.add_book("a.xlsx", ["概要", "JSONサンプル", "介護保険", "介護保険外"])
+        self.books["a.xlsx"].sheets[1].blank = True
+        key = sheet_history.key(path)
+        self.workflow.STATE.setdefault("clean_confirmed_keep", {})[key] = {
+            "hash": sheet_history.fingerprint(path), "sheets": ["概要", "JSONサンプル", "介護保険", "介護保険外"],
+            "rule_version": 2}
+        entry = self.workflow.preview_backup_sheets(str(self.folder))["files"][0]
+        self.assertEqual(entry["backups"], ["JSONサンプル"])
+        self.assertEqual(entry["uncertain"], [])
+        self.assertEqual(entry["confirmed_keep"], ["介護保険外"])
+
+    def test_confirmation_v3_respects_manually_kept_blank_sheet(self):
+        from core import sheet_history
+        path = self.add_book("a.xlsx", ["概要", "JSONサンプル"])
+        self.books["a.xlsx"].sheets[1].blank = True
+        preview = lambda: self.workflow.preview_backup_sheets(str(self.folder))["files"][0]
+        self.assertEqual(preview()["backups"], ["JSONサンプル"])
+        plan = self.workflow.validate_clean_plan({"a.xlsx": {
+            "delete": [], "uncertain": [], "keep": ["JSONサンプル"]}})["a.xlsx"]
+        self.workflow._clean_backup_sheets(lambda: self.excel, path, self.folder, plan)
+        self.assertEqual(self.workflow.STATE["clean_confirmed_keep"][sheet_history.key(path)]["rule_version"], 3)
+        entry = preview()
+        self.assertEqual(entry["backups"], [])
+        self.assertEqual(entry["confirmed_keep"], ["JSONサンプル"])
+
     def restart(self):
         loaded = storage.load_snapshot("workflow")
         self.workflow.STATE.clear()

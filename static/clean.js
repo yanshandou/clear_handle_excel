@@ -506,11 +506,13 @@ function buildCleanPlan() {
     const del = [];
     const unc = [];
     const keep = [];
+    // 只记住「按规则本该删除或待定、你改成保留」的表；本来就默认保留的表不记，以后加的新规则才能对它们生效
+    const flagged = new Set([...(file.backups || []), ...(file.uncertain || []), ...(file.confirmed_keep || [])]);
     (file.sheets || []).forEach(name => {
       const st = getSheetState(file.name, name);
       if (st === 'delete') del.push(name);
       else if (st === 'uncertain') unc.push(name);
-      else keep.push(name);
+      else if (flagged.has(name)) keep.push(name);
     });
     plan[file.name] = { delete: del, uncertain: unc, keep };
     if (sheetOrders[file.name]) plan[file.name].order = sheetOrders[file.name].slice();

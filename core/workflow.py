@@ -23,6 +23,7 @@ from core.common import (
     console_print,
     copy_series_sheets,
     find_backup_sheets,
+    has_explicit_backup_word,
     has_numbered_suffix,
     is_gray_tab_color,
     is_change_note_sheet,
@@ -2680,6 +2681,7 @@ def _preview_workbook(wb_path: Path, folder: Path, get_excel: Callable[[], Any])
         "new_old_pairs": {},
         "gray_tabs": [],
         "blank_sheets": [],
+        "confirmed_keep": [],  # 按规则本该删除或待定、但上次执行时确认保留的表（文件没改过）
         "note": "",
         "version": _version_or_none(wb_path),
     }
@@ -2717,6 +2719,12 @@ def _preview_workbook(wb_path: Path, folder: Path, get_excel: Callable[[], Any])
             if version < 2:
                 confirmed = {s for s in confirmed if not is_change_note_sheet(s) or (
                     version >= 1 and is_change_note_sheet(s, rule_version=1))}
+            if version < 3:
+                # 第 3 版以前执行精简时，没被标记、默认保留的表也一起记成「确认保留」，
+                # 后来加的规则（空白/只有一格「無」的表、写明 bk 的表）因此不生效；这两类不再沿用旧的确认
+                confirmed = {s for s in confirmed if s not in blank and not has_explicit_backup_word(s)}
+            flagged = set(default_delete) | set(entry["uncertain"])
+            entry["confirmed_keep"] = [s for s in all_names if s in flagged and s in confirmed]
             entry["uncertain"] = [s for s in entry["uncertain"] if s not in confirmed]
             default_delete = [s for s in default_delete if s not in confirmed]
         entry["new_old_pairs"] = find_new_prefix_sheets(all_names)  # 旧表全部删除（或没有旧表）时，新表去掉「新」字
@@ -2976,7 +2984,7 @@ def _clean_backup_sheets(
         fingerprint = sheet_history.fingerprint(wb_path)
         with STATE_LOCK:
             STATE.setdefault("clean_confirmed_keep", {})[sheet_history.key(wb_path)] = {
-                "hash": fingerprint, "sheets": kept, "rule_version": 2,
+                "hash": fingerprint, "sheets": kept, "rule_version": 3,
             }
             _persist_state()
 
