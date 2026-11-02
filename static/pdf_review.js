@@ -2,7 +2,7 @@
 // PDF 人工复检：导出的 PDF 一页页用小图排开，快速过一遍（用户 2026-11-02 定：只用小图，不再切大 / 中图）。
 // 三色标记（借鉴精简 Sheet）：蓝 = 不用管（默认）、黄 = 这一页要人工改（按页标）、红 = 整张表不要了。
 // 单击页面换颜色（蓝 → 黄 → 红 → 蓝）。只记到「哪张表的第几页」，不记点的是哪一格（用户 2026-11-02 定）。
-// 用 Excel 打开：每页左上角的「📗」、Ctrl + 单击或右键菜单 → Excel 打开这张表、选中 PDF 这一页打印的范围；
+// 用 Excel 打开：Ctrl + 单击页面（或右键菜单）→ Excel 打开这张表、选中 PDF 这一页打印的范围；
 // 填了原始备份文件夹时，备份也一起打开（只读）、跳到同一块，左右对照着改。
 // 标题行右边的三个按钮一次改整张表。
 // 看完后点底部按钮，黄红分开：「打开标黄」用 Excel 打开标黄的（一次最多 10 份 Excel），「删除标红」在后台删表并保存。
@@ -97,7 +97,6 @@ function renderDocs() {
         <img class="pr-img" loading="lazy" decoding="async" draggable="false" alt="第 ${p + 1} 页"
           src="/api/pdf_review/page?pdf=${encodeURIComponent(doc.pdf)}&p=${p}&v=${doc.v}">
         <div class="pr-layer"></div>
-        ${doc.wb_path ? `<button type="button" class="pr-open-page" data-open-page="${p}" title="用 Excel 打开第 ${p + 1} 页（也可以 Ctrl + 单击页面）">📗</button>` : ''}
         <span class="pr-pageno">${p + 1} / ${doc.pages.length}</span>
       </div>`).join('');
     const markable = doc.wb_path && !doc.error;
@@ -165,7 +164,7 @@ function onPointerDown(e) {
   if (!$('prMenu').hidden && !e.target.closest('#prMenu')) closeMenu();
   const pageEl = e.target.closest('.pr-page');
   if (!pageEl || e.button !== 0 || pageEl.matches('.is-loading, .is-failed')
-      || e.target.closest('.excel-link, .pr-open-page')) return;
+      || e.target.closest('.excel-link')) return;
   press = { pageEl, x: e.clientX, y: e.clientY };
 }
 
@@ -309,15 +308,35 @@ const PROCESS_TEXT = { yellow: '📗 打开标黄', red: '🗑 删除标红' };
 const PROCESS_BUTTON = { yellow: 'prOpenYellow', red: 'prDeleteRed' };
 let processKind = '';  // 正在处理的是哪个按钮：yellow / red
 
+// 标黄的 Excel 文件：一共几个、这一轮已经打开了几个（同一份 Excel 几张标黄的表算 1 个）
+function yellowFiles() {
+  const all = new Map();
+  for (const doc of marked('yellow')) {
+    if (!all.has(doc.wb_path)) all.set(doc.wb_path, false);
+    if (marks[doc.pdf].opened) all.set(doc.wb_path, true);
+  }
+  const opened = [...all.values()].filter(Boolean).length;
+  return { total: all.size, opened };
+}
+
 function updateProcessButton() {
   const counts = { yellow: marked('yellow').length, red: marked('red').length };
-  $('prCountYellow').textContent = counts.yellow;
+  const files = yellowFiles();
+  // 和切字工作台「打开下一批」一样写明进度：已开几个 / 共几个
+  $('prCountYellow').textContent = files.total ? `${files.opened} / ${files.total}` : '0';
+  $('prCountYellow').parentElement.title = files.total
+    ? `标黄的 Excel 共 ${files.total} 个，这一轮已经打开 ${files.opened} 个（一次最多开 ${OPEN_LIMIT} 个）`
+    : '没有标黄的表';
   $('prCountRed').textContent = counts.red;
   if (processing) return;
-  for (const kind of ['yellow', 'red']) {
-    document.querySelector(`[data-process-text="${kind}"]`).textContent = PROCESS_TEXT[kind];
-    $(PROCESS_BUTTON[kind]).disabled = !counts[kind] || !!regenWb;
-  }
+  const yellowText = files.total && files.opened >= files.total ? '📗 再开一遍标黄'
+    : files.opened ? '📗 打开下一批标黄' : PROCESS_TEXT.yellow;
+  document.querySelector('[data-process-text="yellow"]').textContent = yellowText;
+  document.querySelector('[data-process-text="red"]').textContent = PROCESS_TEXT.red;
+  $('prOpenYellow').title = files.total
+    ? `标黄的 Excel 共 ${files.total} 个，已经打开 ${files.opened} 个，还剩 ${files.total - files.opened} 个；一次最多开 ${OPEN_LIMIT} 个`
+    : '用 Excel 打开标黄的文件，跳到标黄的那一页（一次最多 10 个）';
+  for (const kind of ['yellow', 'red']) $(PROCESS_BUTTON[kind]).disabled = !counts[kind] || !!regenWb;
 }
 
 /* ---------- 右键菜单 ---------- */
@@ -399,10 +418,13 @@ async function runProcess(kind) {
     if (!yellow.length) yellow = marked('yellow'); // 都打开过了：再点一次就全部重新打开
     if (!yellow.length) return;
     const n = files(yellow);
+    const { total, opened } = yellowFiles();
     // 按 Excel 文件算：同一份 Excel 有几张标黄的表也只打开一次
     const now = Math.min(n, OPEN_LIMIT);
-    text = `🟡 用 Excel 打开 ${now} 份文件${n > OPEN_LIMIT ? `（标黄的共 ${n} 份，一次最多开 ${OPEN_LIMIT} 份，剩下 ${n - OPEN_LIMIT} 份改完后再点一次）` : ''}，`
-      + `共 ${yellow.length} 张有标黄的表：\n${listLines(yellow)}`;
+    const before = opened >= total ? 0 : opened; // 全开过了再点：从头再开一遍
+    text = `🟡 这次用 Excel 打开 ${now} 个文件（标黄的共 ${total} 个，打开后已开 ${before + now} / ${total} 个`
+      + `${before + now < total ? `，还剩 ${total - before - now} 个，改完关掉后再点一次` : ''}）。\n`
+      + `这次的 ${now} 个文件：\n${listLines(yellow.filter(doc => [...new Set(yellow.map(x => x.wb_path))].slice(0, OPEN_LIMIT).includes(doc.wb_path)))}`;
   }
   const ok = await appConfirm(text, kind === 'red'
     ? { title: '删除标红的表', tone: 'danger', okText: '删除' }
@@ -485,12 +507,16 @@ function finishProcess(result) {
   const html = [
     section(`🗑 删掉了 ${result.deleted?.length} 张表（已保存，PDF 也删了）`, result.deleted, { link: false }),
     section(`⚠ 没删掉 ${result.failed?.length} 张（还是红色，可以再点一次）`, result.failed),
-    section(`📗 已用 Excel 打开 ${files(result.opened || [])} 份，标黄的地方（点一下跳过去）`, result.opened),
+    section(`📗 这次打开了 ${files(result.opened || [])} 个文件（标黄的共 ${yellowFiles().total} 个，已开 ${yellowFiles().opened} 个）。标黄的地方点一下跳过去`, result.opened),
     section(`⚠ 打不开 ${result.open_failed?.length} 处`, result.open_failed),
-    section(`⏸ 还有 ${files(result.later || [])} 份没打开（一次最多 10 份，改完关掉后再点「📗 打开标黄」）`, result.later),
+    section(`⏸ 还剩 ${files(result.later || [])} 个没打开（一次最多 ${OPEN_LIMIT} 个，改完关掉后再点「📗 打开下一批标黄」）`, result.later),
   ].join('');
   const bad = result.failed?.length || result.open_failed?.length;
-  toast(bad ? '处理完成，有没处理成功的，请看结果' : '处理完成', !!bad);
+  const yf = yellowFiles();
+  const openedNote = result.opened?.length
+    ? `已打开 ${files(result.opened)} 个，标黄共 ${yf.total} 个，已开 ${yf.opened} 个${yf.total > yf.opened ? `，还剩 ${yf.total - yf.opened} 个` : '，全部开过了'}`
+    : '';
+  toast(bad ? '处理完成，有没处理成功的，请看结果' : openedNote || '处理完成', !!bad);
   $('prResultBody').innerHTML = html || '<p>没有要处理的</p>';
   $('prResult').dataset.tone = bad ? 'warn' : 'info';
   $('prResult').showModal();
@@ -763,8 +789,7 @@ $('prDocs').addEventListener('click', e => {
   if (button) setDocMark(Number(button.dataset.doc), button.dataset.markBtn);
   const regen = e.target.closest('[data-regen]');
   if (regen) regenerate(Number(regen.dataset.regen));
-  const open = e.target.closest('[data-open-page]');
-  if (open) openPage(Number(open.closest('.pr-page').dataset.doc), Number(open.dataset.openPage), open.closest('.pr-page'));
+
 });
 $('prOpenYellow').addEventListener('click', () => runProcess('yellow'));
 $('prDeleteRed').addEventListener('click', () => runProcess('red'));

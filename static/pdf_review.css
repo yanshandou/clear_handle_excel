@@ -152,7 +152,7 @@
 }
 
 /* 点下去的地方闪一圈，知道点到了 */
-/* 点了「📗」/ Ctrl + 单击：整页闪一下，看得出开的是哪一页（只换外框，不挪位置） */
+/* Ctrl + 单击打开 Excel：整页闪一下，看得出开的是哪一页（只换外框，不挪位置） */
 .pr-page.is-flash {
   animation: pr-flash 0.7s ease-out;
 }
@@ -160,37 +160,6 @@
 @keyframes pr-flash {
   from { outline: 4px solid #1d4f91; outline-offset: 2px; }
   to { outline: 4px solid transparent; outline-offset: 8px; }
-}
-
-/* 每页左上角：用 Excel 打开这一页（浮层，不占位置） */
-.pr-open-page {
-  position: absolute;
-  top: 6px;
-  left: 6px;
-  z-index: 2;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  font-size: 17px;
-  line-height: 28px;
-  text-align: center;
-  background: #fff;
-  border: 2px solid #1d4f91;
-  border-radius: 8px;
-  box-shadow: 0 2px 0 #1d4f91;
-  cursor: pointer;
-  opacity: 0.85;
-}
-
-.pr-open-page:hover,
-.pr-open-page:focus-visible {
-  opacity: 1;
-  background: #e6efff;
-}
-
-.pr-page.is-loading .pr-open-page,
-.pr-page.is-failed .pr-open-page {
-  display: none;
 }
 
 /* 图片还没加载出来 / 加载失败：不能画框，中间显示提示（浮层，不占位置） */
@@ -609,7 +578,7 @@
 
 .pr-process-text {
   display: inline-block;
-  min-width: 6.5em;
+  min-width: 8.5em;
   text-align: center;
 }
 
@@ -751,4 +720,9 @@
 #prOpenYellow .pr-count.is-yellow {
   color: #ffd84d;
   background: #3d2a00;
+}
+
+/* 「已开 / 共几个」徽章：数字位数变了按钮也不变宽 */
+#prOpenYellow .pr-count {
+  min-width: 4.2em;
 }
