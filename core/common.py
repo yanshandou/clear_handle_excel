@@ -397,6 +397,16 @@ def _is_different_sheet(prefix: str, suffix: str, ref: str) -> bool:
     )
 
 
+# Excel 新建工作表的默认名（Sheet1、Sheet 2、ｓｈｅｅｔ３、工作表1）：多半是临时表，精简 Sheet 默认标待定提醒（用户 2026-11-02）
+DEFAULT_SHEET_NAME_PATTERN = re.compile(r"(?:sheet|工作表)\s*\d*", re.IGNORECASE)
+
+
+def is_default_sheet_name(name: str) -> bool:
+    """表名是不是 Excel 默认名，如 Sheet1、Sheet 2、Sheet（全角半角、大小写都算）；SheetA、集計Sheet1 不算"""
+    text = unicodedata.normalize("NFKC", strip_uncertain_prefix(name)).strip()
+    return bool(DEFAULT_SHEET_NAME_PATTERN.fullmatch(text))
+
+
 def is_uncertain_name(name: str) -> bool:
     """判断文件名或工作表名是否带有「❓ 待定」前缀"""
     return name.startswith(UNCERTAIN_EMOJI)

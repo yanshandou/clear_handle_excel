@@ -23,6 +23,7 @@ from core.common import (
     console_print,
     copy_series_sheets,
     find_backup_sheets,
+    is_default_sheet_name,
     has_numbered_suffix,
     is_gray_tab_color,
     is_change_note_sheet,
@@ -142,7 +143,6 @@ STATE: dict[str, Any] = {
     "latest_scan_analysis": None,
     "print_layouts": {},  # 源文件 -> Sheet 身份 -> 已分析的打印方向与证据
     "sheet_history": {},  # 源文件 -> 已保存的删表、改名及引用转值记录；跨任务保留。
-    "clean_confirmed_keep": {},  # 文件内容指纹与执行精简时确认保留的表
     # 稍后人工复检：wb_path -> {"marks": [{sheet, addr, row, item_ids, state, fill, range, error}], "error"}
     # state: pending 等后台标黄 / marked 已标黄 / skipped 没能标黄（仍在队列里）
     "review_queue": {},
@@ -2656,7 +2656,7 @@ def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
                 files.append(entry)
                 debug_log.event("📄 精简预览", 文件=entry["name"], 表数=entry["sheet_count"], 默认删除=entry["backups"],
                                 待定=entry["uncertain"], 新旧配对=entry["new_old_pairs"] or "-", 备注=entry["note"] or "-",
-                                灰色标签=entry["gray_tabs"] or "-", 空白表=entry["blank_sheets"] or "-",
+                                灰色标签=entry["gray_tabs"] or "-", 空白表=entry["blank_sheets"] or "-", 默认表名=entry["default_names"] or "-",
                                 编号组保留=[n for n in entry["sheets"] if n in copy_series_sheets(entry["sheets"])] or "-",
                                 全部表=entry["sheets"])
     finally:
@@ -2680,6 +2680,7 @@ def _preview_workbook(wb_path: Path, folder: Path, get_excel: Callable[[], Any])
         "new_old_pairs": {},
         "gray_tabs": [],
         "blank_sheets": [],
+        "default_names": [],  # Sheet1、Sheet 2 这类 Excel 默认名的表
         "note": "",
         "version": _version_or_none(wb_path),
     }
@@ -2704,21 +2705,9 @@ def _preview_workbook(wb_path: Path, folder: Path, get_excel: Callable[[], Any])
         name_targets = set(find_clean_targets(all_names))
         default_delete = [s for s in all_names if not has_numbered_suffix(s) and ((s in name_targets and (s not in set(uncertain) or is_change_note_sheet(s))) or s in gray or s in blank)]
         contained = set(find_contained_sheets(all_names))
-        entry["uncertain"] = [s for s in all_names if (s in set(uncertain) or (s in contained and not has_numbered_suffix(s))) and s not in set(default_delete)]
-        with STATE_LOCK:
-            confirmation = copy.deepcopy(STATE.get("clean_confirmed_keep", {}).get(sheet_history.key(wb_path)))
-        try:
-            confirmed_hash = sheet_history.fingerprint(wb_path) if confirmation else None
-        except OSError:
-            confirmed_hash = None
-        if confirmation and confirmed_hash and confirmation.get("hash") == confirmed_hash:
-            confirmed = set(confirmation.get("sheets", []))
-            version = confirmation.get("rule_version", 0)
-            if version < 2:
-                confirmed = {s for s in confirmed if not is_change_note_sheet(s) or (
-                    version >= 1 and is_change_note_sheet(s, rule_version=1))}
-            entry["uncertain"] = [s for s in entry["uncertain"] if s not in confirmed]
-            default_delete = [s for s in default_delete if s not in confirmed]
+        # Sheet1、Sheet 2 这类 Excel 默认名的表标待定提醒（用户 2026-11-02）；空白等默认删除的规则优先
+        entry["default_names"] = [s for s in all_names if is_default_sheet_name(s)]
+        entry["uncertain"] = [s for s in all_names if (s in set(uncertain) or s in set(entry["default_names"]) or (s in contained and not has_numbered_suffix(s))) and s not in set(default_delete)]
         entry["new_old_pairs"] = find_new_prefix_sheets(all_names)  # 旧表全部删除（或没有旧表）时，新表去掉「新」字
         if default_delete and len(default_delete) >= len(all_names):
             entry["note"] = "全部工作表均被识别为备份表，将跳过删除"
@@ -2967,19 +2956,6 @@ def _clean_backup_sheets(
             raise ValueError(f"{wb_label} 的工作表已发生变化，请重新扫描后排序")
         return order
 
-    def remember_kept(names: list[str], rename_map: dict[str, str] | None = None) -> None:
-        if file_plan is None or "keep" not in file_plan:
-            return
-        selected = set(file_plan["keep"])
-        renamed = rename_map or {}
-        kept = [renamed.get(n, n) for n in names if n in selected]
-        fingerprint = sheet_history.fingerprint(wb_path)
-        with STATE_LOCK:
-            STATE.setdefault("clean_confirmed_keep", {})[sheet_history.key(wb_path)] = {
-                "hash": fingerprint, "sheets": kept, "rule_version": 2,
-            }
-            _persist_state()
-
     def record(all_names: list[str], action: str, *, uncertain: list[str] | None = None) -> None:
         update_file_progress(
             wb_label,
@@ -3004,7 +2980,6 @@ def _clean_backup_sheets(
                 if uncertain_sel:
                     log_msg(f"  {action}")
                 record(pre_names, action, uncertain=uncertain_sel)
-                remember_kept(pre_names)
                 return
 
     before_hash = sheet_history.fingerprint(wb_path)
@@ -3067,8 +3042,6 @@ def _clean_backup_sheets(
 
     if rename_map:
         _sync_renamed_workbook_in_state(wb_path, wb_path, rename_map, root_folder)
-    if not del_all:
-        remember_kept(all_names, rename_map)
     record(final_names, action, uncertain=final_uncertain)
 
 

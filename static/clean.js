@@ -516,14 +516,12 @@ function buildCleanPlan() {
     if (processedFiles.has(file.name)) return;
     const del = [];
     const unc = [];
-    const keep = [];
     (file.sheets || []).forEach(name => {
       const st = getSheetState(file.name, name);
       if (st === 'delete') del.push(name);
       else if (st === 'uncertain') unc.push(name);
-      else keep.push(name);
     });
-    plan[file.name] = { delete: del, uncertain: unc, keep };
+    plan[file.name] = { delete: del, uncertain: unc };
     if (sheetOrders[file.name]) plan[file.name].order = sheetOrders[file.name].slice();
     const renames = activeRenames(file);
     if (renames.length) {
@@ -600,10 +598,7 @@ function renderPage() {
     const stats = summarizeDecisions();
     renderSummary(stats);
     // 待定只是本次不删，不改文件；只去掉「新」字（没有旧表的新X）或只改名也要执行
-    const hasConfirmedKeep = previewData.files.some(file =>
-      [...(file.backups || []), ...(file.uncertain || [])]
-        .some(name => getSheetState(file.name, name) === 'keep'));
-    const hasAction = stats.deletedTotal > 0 || stats.renameTotal > 0 || stats.customRenameTotal > 0 || stats.reorderTotal > 0 || hasConfirmedKeep;
+    const hasAction = stats.deletedTotal > 0 || stats.renameTotal > 0 || stats.customRenameTotal > 0 || stats.reorderTotal > 0;
     const hasError = stats.emptyFiles.length > 0;
     execBtn.disabled = working || !hasAction || hasError || isBusyOther() || isCleanRunning();
     if (pending === 'start') {
@@ -618,8 +613,6 @@ function renderPage() {
       execBtn.textContent = `↕ 保存 ${stats.reorderTotal} 个文件的工作表顺序`;
     } else if (stats.customRenameTotal > 0) {
       execBtn.textContent = `✏️ 改名 ${stats.customRenameTotal} 个工作表`;
-    } else if (hasConfirmedKeep) {
-      execBtn.textContent = '✅ 确认保留所选工作表';
     } else {
       execBtn.textContent = '没有标记删除的工作表';
     }
@@ -684,7 +677,8 @@ function previewFileItem(file, fileIndex, extraClass = '') {
         ? '当前：待定，本次不删，等确认后再处理（单击切换为「保留」）'
         : '当前：保留（单击切换为「删除」）')) + renameTip
       + ((file.gray_tabs || []).includes(name) ? '；Excel 里标签是灰色或黑色；编号后缀的表默认保留' : '')
-      + ((file.blank_sheets || []).includes(name) ? '；表里没有内容（空白，或只有一格「無」「なし」「－」这类字）' : '');
+      + ((file.blank_sheets || []).includes(name) ? '；表里没有内容（空白，或只有一格「無」「なし」「－」这类字）' : '')
+      + ((file.default_names || []).includes(name) ? '；Sheet1 这类 Excel 默认名，可能是临时表，请确认' : '');
     if (processed) {
       return `<span class="preview-sheet-tag is-${st} is-processed" title="已在预览窗口处理，重新扫描后更新">${labelHtml}</span>`;
     }
