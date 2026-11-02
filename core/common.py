@@ -23,8 +23,10 @@ NEW_PREFIX_WORDS = (
 )
 BACKUP_TEXT_PATTERN = re.compile(r"バックアップ|备份|コピー|副本|(?<![新復])旧")
 # 明确写着「备份」的表名（bk/ｂｋ/bak/backup/バックアップ/备份，后面可接编号如 ｂｋ２）：精简 Sheet 不需要原表也默认删除
-# （用户 2026-10-30）；old/旧/copy/日期 等仍要求同工作簿有原表
-EXPLICIT_BACKUP_PATTERN = re.compile(r"(?<![a-z])(?:bak|backup|bk)(?![a-z])|バックアップ|备份", re.IGNORECASE)
+# （用户 2026-10-30）；独立的 old/ＯＬＤ（如「エラーログ出力手順 (ＯＬＤ)」「old」「OLD_一覧」）也一样（用户 2026-11-02），
+# Folder、Holder、Golden 这类单词内部的不算；旧/copy/日期 等仍要求同工作簿有原表
+EXPLICIT_BACKUP_PATTERN = re.compile(r"(?<![a-z])(?:bak|backup|bk|old)(?![a-z])|バックアップ|备份", re.IGNORECASE)
+OLD_WORD_PATTERN = re.compile(r"(?<![a-z])old(?![a-z])", re.IGNORECASE)
 # 空白表里唯一一格允许的占位字（用户 2026-10-30：只有 A1=無 的 JSONサンプル 这类表默认删除）；比较前 NFKC、去空白和句号
 BLANK_PLACEHOLDER_WORDS = {
     "無", "無し", "なし", "ナシ", "特になし", "特に無し", "該当なし", "該当無し", "対象なし", "対象外",
@@ -129,6 +131,11 @@ def _has_mmdd_suffix(text: str) -> bool:
     """名称末尾是否为有效的 4 位月日（按闰年判断，0229 也算）"""
     m = MMDD_SUFFIX_PATTERN.search(text)
     return bool(m) and _is_valid_date(f"2000{m.group(1)}{m.group(2)}")
+
+
+def has_old_word(sheet_name: str) -> bool:
+    """名称里有独立的 old 标记（全角、大小写、括号都算），用于调试日志说明默认删除的原因"""
+    return bool(OLD_WORD_PATTERN.search(unicodedata.normalize("NFKC", strip_uncertain_prefix(sheet_name))))
 
 
 def has_backup_marker(sheet_name: str) -> bool:
@@ -310,7 +317,7 @@ def strip_new_prefix(sheet_name: str) -> str:
 
 
 def find_clean_targets(sheet_names: list[str]) -> list[str]:
-    """精简 Sheet 默认删除的工作表：有原表的备份表、名称明确写着 bk/バックアップ 的表（不需要原表）、
+    """精简 Sheet 默认删除的工作表：有原表的备份表、名称明确写着 bk/old/バックアップ 的表（不需要原表）、
     「旧」开头的旧版表，以及「自動生成」「レイアウト変更」「仕様変更」开头的表（保持原顺序）。
     同一原表 2 张以上的「(n)」编号组不算。
     """
