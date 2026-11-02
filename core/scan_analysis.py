@@ -13,7 +13,7 @@ from core import storage
 
 OPERATIONS = {
     "open": "打开工作簿", "layout": "打印方向分析", "export": "PDF 导出",
-    "detect": "切字检测与定位", "save_view": "保存分页预览", "highlight": "标色与转人工",
+    "detect": "切字检测与定位", "save_view": "保存分页预览", "grow": "开自动换行与加高", "highlight": "标色与转人工",
     "restart": "重启 Excel",
 }
 _current = ContextVar("scan_analysis_file", default=None)
@@ -294,6 +294,7 @@ def report(run_id=None, folder=None):
                       "detect": "优先分析慢 Sheet 的文字量、合并单元格和定位步骤，评估是否有重复检测。",
                       "open": "优先检查慢文件大小、外部链接、网络目录与 Excel 打开时的交互提示。",
                       "save_view": "优先检查保存视图涉及的文件体积与磁盘耗时，评估重复打开和保存是否可减少。",
+                      "grow": "优先检查切字格数量和文件体积，评估开换行、加高后保存的耗时。",
                       "highlight": "优先检查问题格数量和条件格式操作，评估能否按范围批量标色。",
                       "restart": "结合重试错误检查 Excel 进程退出、启动和文件占用，优先减少反复重启。"}[op["key"]]
             findings.append({"level": "medium", "title": f"优先排查：{op['name']}",

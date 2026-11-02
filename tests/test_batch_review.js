@@ -162,7 +162,7 @@ test('empty-list messaging updates when a task starts or stops', () => {
   p.run(`batchState.cards=[]; render();`);
   assert.match(p.elements.get('cardList').innerHTML, /当前没有待审核卡片/);
   p.run(`batchState.busy=true; render();`);
-  assert.match(p.elements.get('cardList').innerHTML, /正在自动扫描与修复/);
+  assert.match(p.elements.get('cardList').innerHTML, /正在扫描/);
 });
 
 test('memoization ignores logs, progress and unused job options but updates the affected file', () => {
@@ -174,15 +174,6 @@ test('memoization ignores logs, progress and unused job options but updates the 
   assert.equal(p.run('calls.length'), 0);
   p.run(`batchState.open_blocked={'B.xlsx':'processing'}; render();`);
   assert.deepEqual(Array.from(p.run('calls')), ['b']);
-});
-
-test('pause and manual requests invalidate card prompts without other state changes', () => {
-  const p = page();
-  p.run(`batchState.busy=true; batchState.job={kind:'batch_scan',phase:'repair',options:{},workbooks:[]}; render();
-    batchState.job.pause_requested=true; render();`);
-  assert.match(p.run(`cardElements.get('b').outerHTML`), /正在暂停/);
-  p.run(`batchState.job.pause_requested=false; batchState.job.to_manual=true; render();`);
-  assert.match(p.run(`cardElements.get('b').outerHTML`), /转人工/);
 });
 
 test('selection survives card and file header replacement', () => {
@@ -340,8 +331,8 @@ test('cards without an after image show only one larger before image', () => {
     assert.doesNotMatch(html, /batch-vs|暂无截图/);
     assert.match(html, /人工修改后复检通过再显示/);
   }
-  p.run(`Object.assign(batchState.cards[1], {after_kind:undefined, waiting:true})`);
-  assert.match(p.run(`cardHtml(batchState.cards[1])`), /自动处理到这一格后显示/);
+  p.run(`batchState.cards[1].grown = {wrap:true, row:5, font:11, base:18.75, applied:35.25, ratio:1.5}`);
+  assert.match(p.run(`cardHtml(batchState.cards[1])`), /已开换行、加高，复检后再显示/);
   p.run(`batchState.cards[1].images.after = '/a.png'`);
   const both = p.run(`cardHtml(batchState.cards[1])`);
   assert.equal((both.match(/<figure>/g) || []).length, 2);
@@ -555,7 +546,7 @@ test('commit leaves cards that have not been processed yet out of the submission
   await p.elements.get('commitBtn').listeners.click();
   await new Promise(resolve => setImmediate(resolve));
   const asked = p.run('globalThis.asked');
-  assert.match(asked, /另有 1 张还没轮到自动处理/);
+  assert.match(asked, /另有 1 张还没扫完/);
   assert.equal(JSON.stringify(p.requests.at(-1).payload.card_ids), '["a","b"]');
 });
 
@@ -569,26 +560,12 @@ test('committing while the automatic run is paused does not warn about losing it
   assert.equal(p.requests.at(-1).url, '/api/batch/commit');
 });
 
-test('scanning counts scanned files, and switching to manual is a plain request', async () => {
+test('scanning counts finished files and pausing is a plain request', async () => {
   const p = page();
-  p.run(`batchState.busy = true; batchState.job = {kind:'batch_scan', status:'running', options:{folder:'C:/Excel'}, workbooks:['a','b'], scanned:['a'], completed:[]}; render();`);
-  assert.match(p.elements.get('progressText').textContent, /正在扫描.*1 \/ 2 个文件/);
-  p.run(`batchState.job.phase = 'repair'; batchState.mode = {to_manual: true}; render();`);
-  assert.match(p.elements.get('progressText').textContent, /正在自动处理：0 \/ 2 个文件/);
-  await p.elements.get('toManualBtn').listeners.click();
-  assert.deepEqual(p.requests.map(r => r.url), ['/api/batch/to_manual']);
-});
-
-test('handed-over cards explain they were not tried and can go back to automatic', async () => {
-  const p = page();
-  p.run(`Object.assign(batchState.cards[1], {after_kind:'handover', handed_over:true});`);
-  const html = p.run(`cardHtml(batchState.cards[1])`);
-  assert.match(html, /转人工时自动还没处理到这一格/);
-  assert.match(html, /可转回自动/);
-  assert.match(html, /人工修改后复检通过再显示/);
-  p.run(`batchState.mode = {to_auto: true}`);
-  await p.elements.get('toAutoBtn').listeners.click();
-  assert.equal(p.requests.at(-1).url, '/api/batch/to_auto');
+  p.run(`batchState.busy = true; batchState.job = {kind:'batch_scan', status:'running', options:{folder:'C:/Excel'}, workbooks:['a','b'], scanned:['a'], completed:['a']}; render();`);
+  assert.match(p.elements.get('progressText').textContent, /正在扫描：1 \/ 2 个文件/);
+  await p.elements.get('pauseBtn').listeners.click();
+  assert.deepEqual(p.requests.map(r => r.url), ['/api/batch/pause']);
 });
 
 test('commit follows the selected filter color and names it on the button', async () => {
@@ -684,83 +661,6 @@ test('cards are grouped by file in processing order, and a file box rechecks tha
   assert.equal(p.run('selectedIds.size'), 0);
 });
 
-test('auto adjust asks for the plan first, then starts only after confirming', async () => {
-  const p = page();
-  assert.match(p.run(`cardHtml(batchState.cards[1])`), /data-action="auto"/);
-  assert.doesNotMatch(p.run(`cardHtml(batchState.cards[0])`), /data-action="auto"/);
-  p.run(`post = async (url, payload) => { requests.push({url, payload});
-    return url.endsWith('auto_plan') ? {ok:true, run:['b'], extra:[], skip:[]} : {ok:true}; }`);
-  await p.run(`autoAdjust(['b'], '自动调整这一格')`);
-  assert.deepEqual(p.requests.map(r => r.url), ['/api/batch/auto_plan', '/api/batch/auto_adjust']);
-  assert.equal(JSON.stringify(p.requests[1].payload.card_ids), '["b"]');
-});
-
-test('auto adjust does not start when nothing can be adjusted', async () => {
-  const p = page();
-  p.run(`alerts = []; appAlert = async (m) => { alerts.push(m); };`);
-  p.run(`post = async (url, payload) => { requests.push({url, payload});
-    return {ok:true, run:[], extra:[], skip:[{id:'b', reason:'列宽不够'}]}; }`);
-  await p.run(`autoAdjust(['b'], '自动调整这一格')`);
-  assert.deepEqual(p.requests.map(r => r.url), ['/api/batch/auto_plan']);
-  assert.match(p.run('alerts[0]'), /列宽不够/);
-});
-
-test('while auto adjust runs, other files can change color and queue auto adjust', () => {
-  const p = page();
-  p.run(`batchState.cards[0].wb_path = 'A.xlsx'; batchState.cards[1].wb_path = 'B.xlsx';
-    batchState.busy = true; batchState.open_blocked = {'A.xlsx': '后台正在处理这份文件，处理完才能打开'};
-    batchState.job = {kind: 'batch_scan', options: {picked: true}, workbooks: ['A.xlsx'], completed: []};`);
-  assert.equal(p.run(`canMark(batchState.cards[0])`), false);
-  assert.equal(p.run(`canMark(batchState.cards[1])`), true);
-  assert.equal(p.run(`canAuto([batchState.cards[1]])`), true);
-  assert.equal(p.run(`canAuto([batchState.cards[0], batchState.cards[1]])`), false);
-  p.run(`batchState.job.closing = true`);
-  assert.equal(p.run(`canAuto([batchState.cards[1]])`), false);
-  // 提交等其他任务：照旧全部等它结束
-  p.run(`batchState.job = {kind: 'batch_commit', options: {}, workbooks: ['A.xlsx']}`);
-  assert.equal(p.run(`canMark(batchState.cards[1])`), false);
-  p.run(`batchState.busy = false`);
-  assert.equal(p.run(`canMark(batchState.cards[0]) && canAuto([batchState.cards[0]])`), true);
-});
-
-test('file box says which files are queued for auto adjust', () => {
-  const p = page();
-  p.run(`batchState.busy = true; batchState.job = {kind: 'batch_scan', options: {picked: true},
-    workbooks: ['A.xlsx', 'B.xlsx', 'C.xlsx', 'D.xlsx'], completed: ['A.xlsx'], file_errors: {'B.xlsx': 'x'}, repairing: 'C.xlsx'};`);
-  assert.match(p.run(`autoQueueBadge('A.xlsx')`), /自动调整完成/);
-  assert.match(p.run(`autoQueueBadge('B.xlsx')`), /出错/);
-  assert.match(p.run(`autoQueueBadge('C.xlsx')`), /正在自动调整/);
-  assert.match(p.run(`autoQueueBadge('D.xlsx')`), /排队等自动调整 · 前面还有 1 个文件/);
-  assert.equal(p.run(`autoQueueBadge('E.xlsx')`), '');
-});
-
-test('while scan only runs, scanned files can queue auto adjust until all files are scanned', () => {
-  const p = page();
-  p.run(`batchState.cards[0].wb_path = 'A.xlsx'; batchState.cards[1].wb_path = 'B.xlsx';
-    batchState.cards[0].color = 'yellow'; batchState.cards[0].finalized = true;
-    batchState.busy = true; batchState.open_blocked = {'A.xlsx': '后台正在处理这份文件，处理完才能打开'};
-    batchState.job = {kind: 'batch_scan', options: {scan_only: true}, workbooks: ['B.xlsx', 'A.xlsx'], completed: ['B.xlsx']};`);
-  assert.equal(p.run(`canAuto([batchState.cards[1]])`), true);
-  assert.match(p.run(`autoButtonHtml(batchState.cards[1])`), /现在正在扫描：先排队，全部文件扫完后接着做/);
-  // 还在扫的文件：按钮不可点，提示写明原因
-  assert.equal(p.run(`canAuto([batchState.cards[0]])`), false);
-  assert.match(p.run(`autoButtonHtml(batchState.cards[0])`), /disabled title="现在不能点：book.xlsx：后台正在处理这份文件，处理完再点自动调整"/);
-  // 排上队的文件框写明扫完后开始
-  p.run(`batchState.job.auto_queue = ['b']`);
-  assert.match(p.run(`autoQueueBadge('B.xlsx')`), /排队等自动调整 · 全部文件扫完后开始/);
-  assert.equal(p.run(`autoQueueBadge('A.xlsx')`), '');
-  // 收尾、暂停、别的任务：都写明为什么不能点
-  p.run(`batchState.job.closing = true`);
-  assert.equal(p.run(`autoBlockReason([batchState.cards[1]])`), '只扫描正在收尾，结束后才能自动调整');
-  p.run(`batchState.job.closing = false; batchState.job.pause_requested = true`);
-  assert.equal(p.run(`autoBlockReason([batchState.cards[1]])`), '正在暂停，停下后才能自动调整');
-  p.run(`batchState.job = {kind: 'batch_scan', options: {}, workbooks: ['A.xlsx'], completed: []}`);
-  assert.equal(p.run(`autoBlockReason([batchState.cards[1]])`), '后台正在全自动处理，结束后才能自动调整');
-  p.run(`batchState.job = {kind: 'batch_commit', options: {}, workbooks: ['A.xlsx'], completed: []}`);
-  assert.equal(p.run(`autoBlockReason([batchState.cards[1]])`), '后台正在提交审核，结束后才能自动调整');
-  assert.match(p.run(`fileHeadHtml('B.xlsx')`), /disabled title="现在不能点：后台正在提交审核，结束后才能自动调整"/);
-});
-
 test('recheck and commit queue behind other background tasks, except files the task still needs', () => {
   const p = page();
   p.run(`batchState.cards[0].wb_path = 'A.xlsx'; batchState.cards[1].wb_path = 'B.xlsx';
@@ -768,7 +668,7 @@ test('recheck and commit queue behind other background tasks, except files the t
     batchState.busy = true; batchState.open_blocked = {'A.xlsx': '后台正在处理这份文件，处理完才能打开'};
     batchState.job = {kind: 'batch_scan', options: {scan_only: true}, workbooks: ['B.xlsx', 'A.xlsx'], completed: ['B.xlsx']};`);
   // 扫完的文件：复检可以点，提示写明先排队
-  assert.match(p.run(`fileHeadHtml('B.xlsx')`), /data-file-action="recheck" data-file="B.xlsx" title="[^"]*；后台正在只扫描：先排队，结束后接着复检"/);
+  assert.match(p.run(`fileHeadHtml('B.xlsx')`), /data-file-action="recheck" data-file="B.xlsx" title="[^"]*；后台正在扫描：先排队，结束后接着复检"/);
   assert.match(p.run(`recheckButtonHtml(batchState.cards[1])`), /^<button[^>]*data-action="recheck" title=/);
   // 还在扫的文件：不能排，写明原因
   assert.match(p.run(`recheckButtonHtml(batchState.cards[0])`), /disabled title="现在不能点：book.xlsx：后台正在处理这份文件，处理完再点复检"/);
@@ -777,7 +677,7 @@ test('recheck and commit queue behind other background tasks, except files the t
   assert.equal(p.run(`commitPlan('all').cards.map(c => c.id).join()`), 'b');
   assert.equal(p.run(`commitPlan('all').held.map(c => c.id).join()`), 'a');
   assert.equal(p.run(`queueBlockReason([], '提交')`), '');
-  assert.equal(p.run(`queueNote('提交')`), '；后台正在只扫描：先排队，结束后接着提交');
+  assert.equal(p.run(`queueNote('提交')`), '；后台正在扫描：先排队，结束后接着提交');
   // 复检正在跑：并进去，不用排到后面
   p.run(`batchState.job = {kind: 'batch_recheck', options: {}, workbooks: ['A.xlsx'], completed: []}`);
   assert.equal(p.run(`recheckBlockReason([batchState.cards[0]])`), '');
@@ -799,7 +699,7 @@ test('queued rechecks and commits are listed with start-now and cancel', () => {
     batchState.followups = [{kind: 'batch_recheck', card_ids: ['b'], full_paths: ['B.xlsx']}, {kind: 'batch_commit', card_ids: ['a', 'b'], color: 'blue'}];
     renderFollowups();`);
   assert.equal(p.elements.get('followupText').textContent,
-    '⏳ 排队中：复检 1 个文件（1 格） → 提交蓝色 2 张卡。后台正在只扫描，结束后按顺序接着做。');
+    '⏳ 排队中：复检 1 个文件（1 格） → 提交蓝色 2 张卡。后台正在扫描，结束后按顺序接着做。');
   assert.match(p.run(`followupBadge('B.xlsx')`), /排队等复检、提交 · 当前任务结束后开始/);
   assert.match(p.run(`followupBadge('A.xlsx')`), /排队等提交/);
   p.run(`batchState.busy = false; renderFollowups();`);
@@ -836,17 +736,28 @@ test('open all during a background task opens finished files and lists the rest'
   assert.match(p.run('alerts[0]'), /· a\.xlsx：还没轮到这份文件，处理完才能打开/);
 });
 
-test('auto fix scope is fixed text: only cut text is auto fixed, no checkboxes, no types sent', async () => {
-  const p = page();
-  const el = p.elements.get('fixErrorTypes');
-  assert.match(el.textContent, /只修切字/);
-  assert.match(el.textContent, /1\.2/);
-  assert.match(el.textContent, /全部转人工/);
-  assert.doesNotMatch(el.innerHTML || '', /data-error-type/);
 
+test('start scan asks once, then sends the colors and the chosen grow ratio', async () => {
+  const p = page();
   p.elements.get('folderInput').value = 'C:/Excel';
+  p.elements.get('growRatio').value = '1.2';
+  p.run(`appConfirm = async text => { globalThis.asked = text; return true; }`);
   await p.elements.get('startBtn').listeners.click();
-  assert.equal(p.requests.at(-1).url, '/api/batch/start');
-  assert.equal(p.requests.at(-1).payload.fix_error_types, undefined);
+  assert.match(p.run('globalThis.asked'), /字号 × 1\.2/);
+  const last = p.requests.at(-1);
+  assert.equal(last.url, '/api/batch/start');
+  assert.equal(last.payload.grow_ratio, 1.2);
+  assert.ok(last.payload.highlight);
+  assert.equal(last.payload.scan_only, undefined);
+  assert.equal(last.payload.fix_error_types, undefined);
 });
 
+test('grown cards say what was wrapped and how much the row was raised, and offer no auto button', () => {
+  const p = page();
+  p.run(`Object.assign(batchState.cards[1], {after_kind:'scan_only', color:'yellow', finalized:true, cell_addr:'B5',
+    grown:{wrap:true, row:5, font:11, base:18.75, applied:35.25, ratio:1.5}})`);
+  const html = p.run(`cardHtml(batchState.cards[1])`);
+  assert.match(html, /B5 开启自动换行，第 5 行行高 18\.8pt → 35\.3pt（\+16\.5pt，字号 11 × 1\.5），已保存；效果请人工确认/);
+  assert.doesNotMatch(html, /自动调整|data-action="auto"/);
+  assert.doesNotMatch(p.run(`fileHeadHtml(fileKey(batchState.cards[1]))`), /自动调整/);
+});

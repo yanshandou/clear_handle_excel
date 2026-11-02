@@ -169,43 +169,6 @@ class PrepareTests(unittest.TestCase):
         return {"sheet_name": "S1", "excel_row": top, "text": "見出し",
                 "block": {"top": top, "bottom": bottom, "left": left, "right": 6, "break_row": 11}}
 
-    def test_inserts_break_checks_and_restores_copy(self):
-        sheet = FakeSheet(merges=[(9, 2, 12, 6)], texts={(9, 2): "見出し"})
-        exported = []
-        with patch.object(batch.wf, "_export_sheet_pdf", side_effect=lambda s, pdf: exported.append(set(s.manual))), \
-                patch.object(batch, "fitz") as fake_fitz, patch.object(page_breaks, "shot_around", return_value=("img", None, [])):
-            fake_fitz.open.return_value.__enter__.return_value = Mock()
-            chosen = batch._prepare_break(self.session_for(sheet), "x.xlsx", self.item(9, 12), {})
-        self.assertEqual(exported, [{9}])  # 导出时分页已插在第 9 行上方
-        self.assertEqual(chosen["after"], "img")
-        self.assertEqual(sheet.manual, set())  # 副本改回去
-
-    def test_block_taller_than_a_page_goes_manual(self):
-        sheet = FakeSheet(merges=[(5, 2, 20, 6)], texts={(5, 2): "長い"})
-        with self.assertRaisesRegex(ValueError, "比一页还高"):
-            batch._prepare_break(self.session_for(sheet), "x.xlsx", self.item(5, 20), {})
-        self.assertEqual(sheet.manual, set())
-
-    def test_fit_to_pages_tall_is_not_touched(self):
-        sheet = FakeSheet()
-        sheet.PageSetup.Zoom, sheet.PageSetup.FitToPagesTall = False, 2
-        with self.assertRaisesRegex(ValueError, "页高"):
-            batch._prepare_break(self.session_for(sheet), "x.xlsx", self.item(9, 12), {})
-        self.assertEqual(sheet.manual, set())
-
-    def test_finds_blank_row_above_and_places_break_between_blank_and_text_rows(self):
-        # 内容在 6..12 行被切开，第 4 行空白、第 5 行开始有字 → 分页插在第 4 行和第 5 行之间（第 5 行上方）
-        sheet = FakeSheet(merges=[(6, 2, 12, 6)], texts={(2, 2): "前段", (5, 2): "第5行标题", (6, 2): "第6行内容"})
-        self.assertEqual(page_breaks.find_break_row(sheet, {"top": 6, "bottom": 12}), 5)
-        exported = []
-        with patch.object(batch.wf, "_export_sheet_pdf", side_effect=lambda s, pdf: exported.append(set(s.manual))), \
-                patch.object(batch, "fitz") as fake_fitz, patch.object(page_breaks, "shot_around", return_value=("img", None, [])):
-            fake_fitz.open.return_value.__enter__.return_value = Mock()
-            chosen = batch._prepare_break(self.session_for(sheet), "x.xlsx", self.item(6, 12), {})
-        self.assertEqual(exported, [{5}])
-        self.assertEqual(chosen["row"], 5)
-        self.assertEqual(sheet.manual, set())
-
     def test_searches_upward_across_multiple_text_rows_or_vertical_merges(self):
         # 第 3 行空白，第 4、5 行都有字（或纵向合并跨过 4..6 行），内容在 6..11 行 → 分页插在第 4 行上方
         sheet = FakeSheet(merges=[(6, 2, 11, 6)], texts={(2, 2): "前段", (4, 2): "大標題", (5, 2): "小標題", (6, 2): "本文"})
@@ -214,27 +177,6 @@ class PrepareTests(unittest.TestCase):
         merged_side = FakeSheet(merges=[(4, 1, 6, 1), (6, 2, 11, 6)],
                                 texts={(2, 2): "前段", (4, 1): "分類", (5, 2): "項目", (6, 2): "本文"})
         self.assertEqual(page_breaks.find_break_row(merged_side, {"top": 6, "bottom": 11}), 4)
-
-    def test_falls_back_to_block_top_when_no_blank_row_or_upward_break_still_cuts_block(self):
-        # 当前页 1..8 行全有字（无空白行）→ 退回在合并块顶部第 9 行上方插分页
-        no_blank = FakeSheet(merges=[(9, 2, 12, 6)], texts={(r, 2): f"行{r}" for r in range(1, 10)})
-        self.assertEqual(page_breaks.find_break_row(no_blank, {"top": 9, "bottom": 12}), 9)
-        # 第 3 行空白、第 4..8 行有字，但从第 4 行到第 14 行共 11 行（110pt > 单页 100pt），
-        # 插在第 4 行上方会导致 9..14 仍被下一页自动分页切开 → 自动退回插在第 9 行上方（9..14 共 60pt 可放下）
-        too_tall_from_blank = FakeSheet(
-            merges=[(9, 2, 14, 6)],
-            texts={(2, 2): "前段", **{((r, 2)): f"行{r}" for r in range(4, 10)}},
-        )
-        self.assertEqual(page_breaks.find_break_row(too_tall_from_blank, {"top": 9, "bottom": 14}), 4)
-        exported = []
-        with patch.object(batch.wf, "_export_sheet_pdf", side_effect=lambda s, pdf: exported.append(set(s.manual))), \
-                patch.object(batch, "fitz") as fake_fitz, patch.object(page_breaks, "shot_around", return_value=("img", None, [])):
-            fake_fitz.open.return_value.__enter__.return_value = Mock()
-            chosen = batch._prepare_break(self.session_for(too_tall_from_blank), "x.xlsx", self.item(9, 14), {})
-        self.assertEqual(exported, [{9}])
-        self.assertEqual(chosen["row"], 9)
-        self.assertEqual(too_tall_from_blank.manual, set())
-
 
 class BatchBreakTests(unittest.TestCase):
     def setUp(self):
@@ -279,88 +221,6 @@ class BatchBreakTests(unittest.TestCase):
         with patch.object(batch, "_prepare_break", return_value={"after": "data:image/png;base64,YWZ0ZXI=", "pdf": None}):
             batch._repair_file(self.excel, session, self.path)
         return session
-
-    def test_break_is_written_reported_and_reverted_by_green(self):
-        session = self.repair()
-        self.assertEqual(self.original.manual, {9})
-        self.book.Save.assert_called_once()
-        session.written_with.assert_called_once()
-        card = batch._data()["cards"][batch._key(self.path, "S1", "B9:F12")]
-        self.assertEqual((card["color"], card["verified"]), ("blue", True))
-        self.assertEqual(self.item["status"], "fixed")
-        self.assertNotIn("row_height", self.item)  # 插分页不是改行高
-        self.assertEqual(self.wf._fix_record(self.item)["reason"], page_breaks.FIX_REASON)
-        snap = batch.snapshot()["cards"][0]
-        self.assertEqual(snap["page_break"], {"row": 9, "saved": True, "applied": True})
-        self.assertNotIn("row_height", snap)
-        self.assertEqual(snap["problems"][0]["label"], "分页切开")
-
-        batch.mark(card["id"], "green")
-        self.wf.STATE["job"].update(kind="batch_commit", options={"card_ids": [card["id"]]}, completed=[])
-        batch._commit_review(self.excel)
-        self.assertEqual(self.original.manual, set())
-        self.assertTrue(card["dismissed"])
-
-    def test_resume_does_not_insert_twice_and_user_break_is_not_overwritten(self):
-        rid = batch._key(self.path, "S1", 9, "break")
-        journal = {"path": self.path, "version": "old", "rows": [
-            {"id": rid, "kind": "break", "sheet": "S1", "row": 9, "expected": 0.0, "target": 1.0}]}
-        self.original.manual.add(9)
-        batch._write_rows(self.excel, journal)  # 已到位：文件变过也不再保存
-        self.book.Save.assert_not_called()
-        restore = {**journal, "version": self.wf._file_version(Path(self.path)), "rows": [
-            {"id": rid, "kind": "break", "sheet": "S1", "row": 9, "expected": 1.0, "target": 0.0}]}
-        self.original.manual.clear()
-        self.original.manual.add(9)
-        batch._write_rows(self.excel, restore)
-        self.assertEqual(self.original.manual, set())
-
-    def test_break_and_row_height_on_same_row_are_separate_changes(self):
-        hidden = {**self.item, "id": "h1", "seq": 2, "kind": "hidden", "cell_addr": "B9", "block": None}
-        self.wf.STATE["items"]["h1"] = hidden
-        order = []
-        def prepare_row(_s, _p, items, **_):
-            order.append(items[0]["kind"])
-            return 10.0, None, {}
-        with patch.object(batch, "_prepare_break", side_effect=lambda *a, **k: order.append("pagebreak") or
-                          {"after": "", "pdf": None}), patch.object(batch, "_prepare_row", side_effect=prepare_row):
-            batch._repair_file(self.excel, Mock(), self.path)
-        self.assertEqual(order, ["pagebreak", "hidden"])  # 同一行先插分页
-        self.assertNotEqual(batch._rid(self.item), batch._rid(hidden))
-
-    def test_failure_goes_yellow_manual_without_touching_original(self):
-        with patch.object(batch, "_prepare_break", side_effect=ValueError(page_breaks.TALL_REASON)):
-            batch._repair_file(self.excel, Mock(), self.path)
-        card = batch._data()["cards"][batch._key(self.path, "S1", "B9:F12")]
-        self.assertEqual((card["color"], card["manual"]), ("yellow", True))
-        self.assertIn("比一页还高", card["message"])
-        self.assertEqual(self.original.manual, set())
-        self.book.Save.assert_not_called()
-
-    def test_upward_break_row_is_written_renamed_and_reverted_correctly(self):
-        # 内容在第 6 行（B6:F12），向上找到第 4 行空白、第 5 行有字，分页插在第 5 行上方
-        self.item.update(cell_addr="B6:F12", excel_row=6,
-                         block={"top": 6, "bottom": 12, "left": 2, "right": 6, "break_row": 11})
-        session = Mock()
-        with patch.object(batch, "_prepare_break", return_value={
-            "after": "data:image/png;base64,YWZ0ZXI=", "pdf": None, "row": 5,
-        }):
-            batch._repair_file(self.excel, session, self.path)
-        self.assertEqual(self.original.manual, {5})
-        card = batch._data()["cards"][batch._key(self.path, "S1", "B6:F12")]
-        self.assertIn("第 5 行上方插入分页", card["message"])
-        snap = batch.snapshot()["cards"][0]
-        self.assertEqual(snap["page_break"], {"row": 5, "saved": True, "applied": True})
-        # 工作表改名后仍能对上卡片的 excel_row=6，且标绿提交能把第 5 行上方的分页还原去掉
-        self.item["sheet_name"] = "S2"
-        batch.rename_sheet(self.path, "S1", "S2")
-        self.assertEqual(batch._row_record(card)["row"], 5)
-        batch.mark(card["id"], "green")
-        self.wf.STATE["job"].update(kind="batch_commit", options={"card_ids": [card["id"]]}, completed=[])
-        batch._commit_review(self.excel)
-        self.assertEqual(self.original.manual, set())
-        self.assertTrue(card["dismissed"])
-
 
 if __name__ == "__main__":
     unittest.main()

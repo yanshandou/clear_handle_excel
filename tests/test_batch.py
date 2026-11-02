@@ -63,30 +63,28 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(self.heights[5], 24)
         self.book.Save.assert_not_called()
 
-    def test_clean_scan_saves_preview_before_repair_or_handover(self):
-        for scan_only in (False, True):
-            with self.subTest(scan_only=scan_only):
-                job = {"kind": "batch_scan", "workbooks": [self.path], "completed": [],
-                       "options": {"folder": str(self.root), "scan_only": scan_only}}
-                self.wf.STATE["job"] = job
-                session = Mock()
-                session.app.return_value = self.excel
-                events = []
-                self.refresh.side_effect = lambda *_args, **_kwargs: events.append("scan")
-                self.save_scan_preview.side_effect = lambda *_: events.append("preview")
-                with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
-                        patch.object(batch, "ExcelWatchdog", return_value=Mock(timed_out=False, deadline_hit=False)), \
-                        patch.object(batch, "_repair_file", side_effect=lambda *_: events.append("repair")), \
-                        patch.object(batch, "_sync_highlights", side_effect=lambda *_args, **_kwargs: events.append("color")), \
-                        patch.object(batch, "finish_execution_batch"):
-                    batch.run()
-                self.assertEqual(events, ["scan", "preview", "color" if scan_only else "repair"])
-                self.assertEqual(job["completed"], [self.path])
-                from core import scan_analysis
-                report = scan_analysis.report(job["analysis_id"])
-                self.assertEqual(report["run"]["status"], "completed")
-                self.assertEqual(report["summary"]["completed"], 1)
-                self.assertEqual(report["files"][0]["attempts"], 1)
+    def test_clean_scan_saves_preview_then_grows_then_colors(self):
+        job = {"kind": "batch_scan", "workbooks": [self.path], "completed": [],
+               "options": {"folder": str(self.root)}}
+        self.wf.STATE["job"] = job
+        session = Mock()
+        session.app.return_value = self.excel
+        events = []
+        self.refresh.side_effect = lambda *_args, **_kwargs: events.append("scan")
+        self.save_scan_preview.side_effect = lambda *_: events.append("preview")
+        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch, "ExcelWatchdog", return_value=Mock(timed_out=False, deadline_hit=False)), \
+                patch.object(batch, "_grow_and_wrap", side_effect=lambda *_: events.append("grow") or {}), \
+                patch.object(batch, "_sync_highlights", side_effect=lambda *_args, **_kwargs: events.append("color")), \
+                patch.object(batch, "finish_execution_batch"):
+            batch.run()
+        self.assertEqual(events, ["scan", "preview", "grow", "color"])
+        self.assertEqual(job["completed"], [self.path])
+        from core import scan_analysis
+        report = scan_analysis.report(job["analysis_id"])
+        self.assertEqual(report["run"]["status"], "completed")
+        self.assertEqual(report["summary"]["completed"], 1)
+        self.assertEqual(report["files"][0]["attempts"], 1)
 
     def test_scan_skips_preview_save_when_views_are_already_page_break_preview(self):
         for needed, saves in ((False, 0), (True, 1)):
@@ -145,13 +143,11 @@ class BatchTests(unittest.TestCase):
         job.update(workbooks=[self.path], options={"folder": str(self.root)})
         self.save_scan_preview.side_effect = ValueError("无法保存分页预览")
         with patch.object(batch.autofix, "_ExcelSession", return_value=Mock()), \
-                patch.object(batch, "_repair_file") as repair, \
                 patch.object(batch, "finish_execution_batch"):
             batch.run()
         self.assertEqual(job["completed"], [])
         self.assertEqual(job["scanned"], [])
         self.assertIn(self.path, job["file_errors"])
-        repair.assert_not_called()
 
     def test_same_named_trial_and_original_use_separate_excel_instances(self):
         from core import autofix
@@ -242,27 +238,6 @@ class BatchTests(unittest.TestCase):
             batch._repair_column(self.excel, Mock(), self.path, [item], card,
                                  self.wf._file_version(Path(self.path)), {})
 
-    def test_column_write_failure_preserves_journal_and_stops_other_repairs(self):
-        card, _ = self.column_card("A5")
-        _, other = self.add_card("B5")
-        other["status"] = "pending"
-        batch._data()["rows"].clear()
-        # 旧的自动加宽代码还留着（现在不会走到）：放开类型限制，照样测它写入失败时的日志
-        legacy = patch.object(batch.autofix, "AUTO_FIX_ERROR_TYPES", batch.autofix.FIXABLE_ERROR_TYPES)
-        legacy.start()
-        self.addCleanup(legacy.stop)
-        with patch.object(batch, "_prepare_column", return_value={
-            "base_cols": {"1": 8.0}, "target_cols": {"1": 11.0}, "after": "", "pdf": None,
-        }), patch.object(batch, "_prepare_row") as prepare, \
-                patch.object(batch, "_write_rows", side_effect=ValueError("injected write conflict")):
-            with self.assertRaisesRegex(ValueError, "injected write conflict"):
-                batch._repair_file(self.excel, Mock(), self.path)
-        prepare.assert_not_called()
-        pending = self.wf.STATE["job"]["pending_adjustment"]
-        self.assertEqual(pending["cards"], [card["id"]])
-        self.assertEqual(pending["rows"][0]["kind"], "col")
-        self.assertEqual(pending["rows"][0]["cols_target"], {"1": 11.0})
-
     def check_shared_column_review(self, colors, merged=False):
         first, first_item = self.column_card("B5:D5" if merged else "C5")
         second, second_item = self.column_card("C6:E6" if merged else "C6", row=6)
@@ -283,76 +258,6 @@ class BatchTests(unittest.TestCase):
         if len(set(colors)) > 1:
             self.assertTrue(all(c["color"] == "yellow" and c["column_conflict"] for c in (first, second)))
 
-    def test_shared_column_all_green_restores_original_width(self):
-        self.check_shared_column_review(("green", "green"))
-
-    def test_shared_column_all_blue_accepts_latest_width(self):
-        self.check_shared_column_review(("blue", "blue"))
-
-    def test_shared_column_green_blue_restores_and_hands_over(self):
-        self.check_shared_column_review(("green", "blue"))
-
-    def test_shared_column_blue_green_restores_and_hands_over(self):
-        self.check_shared_column_review(("blue", "green"))
-
-    def test_overlapping_merged_columns_restore_together(self):
-        self.check_shared_column_review(("green", "green"), merged=True)
-
-    def test_overlapping_merged_columns_mixed_colors_restore_together(self):
-        self.check_shared_column_review(("blue", "green"), merged=True)
-
-    def test_overlapping_merged_columns_all_blue_keep_latest_widths(self):
-        self.check_shared_column_review(("blue", "blue"), merged=True)
-
-    def test_color_filtered_commit_skips_shared_columns_with_mixed_colors(self):
-        first, item = self.column_card()
-        second, second_item = self.column_card("C6", row=6)
-        widths = {3: 8.0}
-        self.column_widths(widths)
-        self.widen_column(first, item, widths, {3: 11.0})
-        self.widen_column(second, second_item, widths, {3: 15.0})
-        first["color"] = "green"
-        self.assertEqual(batch.commit_selection([first["id"]], "green"), ([], [first["id"]]))
-        self.assertEqual(batch.commit_selection([second["id"]], "blue"), ([], [second["id"]]))
-
-    def test_row_height_and_column_width_on_same_row_have_independent_reviews(self):
-        column, item = self.column_card()
-        height, _ = self.add_card("B5", color="green")
-        widths = {3: 8.0}
-        self.column_widths(widths)
-        self.widen_column(column, item, widths, {3: 11.0})
-        self.assertEqual(batch.commit_selection([height["id"]], "green"), ([height["id"]], []))
-        self.commit([column, height])
-        self.assertEqual(widths[3], 11.0)
-        self.assertEqual(self.heights[5], 15.0)
-        self.assertEqual((column["color"], height["color"]), ("blue", "green"))
-
-    def test_accepted_column_width_becomes_the_base_of_the_next_repair(self):
-        card, item = self.column_card()
-        widths = {3: 8.0}
-        self.column_widths(widths)
-        self.widen_column(card, item, widths, {3: 11.0})
-        self.commit([card])
-        self.assertFalse(batch._data()["rows"][batch._col_key(self.path, "S1", 3)]["saved"])
-        self.wf.STATE["job"] = {"kind": "batch_scan", "options": {}, "completed": [], "pending_adjustment": None}
-        new, new_item = self.column_card()
-        self.widen_column(new, new_item, widths, {3: 15.0})
-        new["color"] = "green"
-        self.commit([new])
-        self.assertEqual(widths[3], 11.0)
-
-    def test_new_card_does_not_restore_a_previously_accepted_width(self):
-        card, item = self.column_card()
-        widths = {3: 8.0}
-        self.column_widths(widths)
-        self.widen_column(card, item, widths, {3: 11.0})
-        self.commit([card])
-        self.wf.STATE["job"] = {"kind": "batch_commit", "options": {}, "completed": [], "pending_adjustment": None}
-        new, _ = self.column_card()
-        new["color"] = "green"
-        self.commit([new])
-        self.assertEqual(widths[3], 11.0)
-
     def test_column_resume_checks_each_width_without_summing_rounding_errors(self):
         widths = dict.fromkeys(range(1, 9), 10.1)
         self.column_widths(widths)
@@ -370,31 +275,6 @@ class BatchTests(unittest.TestCase):
             batch._write_rows(self.excel, {"path": self.path,
                 "version": self.wf._file_version(Path(self.path)), "rows": [row]})
         self.book.Save.assert_not_called()
-
-    def test_renaming_sheet_keeps_column_and_height_records_and_updates_journals(self):
-        column, item = self.column_card()
-        height, _ = self.add_card("B5", color="green")
-        widths = {3: 8.0}
-        self.column_widths(widths)
-        self.widen_column(column, item, widths, {3: 11.0})
-        old_col_id = column["col_ids"][0]
-        journal = {"path": self.path, "cards": [column["id"], height["id"]],
-                   "rows": [{"id": old_col_id, "sheet": "S1"}, {"id": batch._rid(height), "sheet": "S1"}]}
-        self.wf.STATE["job"].update(pending_adjustment=journal,
-                                    deferred_adjustments={self.path: copy.deepcopy(journal)})
-        batch.rename_sheet(self.path, "S1", "Renamed")
-        new_col_id = batch._col_key(self.path, "Renamed", 3)
-        self.assertEqual(len(batch._data()["rows"]), 2)
-        self.assertEqual(column["col_ids"], [new_col_id])
-        for pending in [journal, self.wf.STATE["job"]["deferred_adjustments"][self.path]]:
-            self.assertEqual(pending["cards"], [column["id"], height["id"]])
-            self.assertEqual([r["id"] for r in pending["rows"]], [new_col_id, batch._rid(height)])
-            self.assertTrue(all(r["sheet"] == "Renamed" for r in pending["rows"]))
-        self.wf.STATE["job"].update(pending_adjustment=None, deferred_adjustments={})
-        column["color"] = "green"
-        self.commit([column, height])
-        self.assertEqual(widths[3], 8.0)
-        self.assertEqual(self.heights[5], 15.0)
 
     def test_legacy_overlapping_column_records_migrate_and_restore_original_width(self):
         first, _ = self.column_card()
@@ -433,58 +313,6 @@ class BatchTests(unittest.TestCase):
         self.assertTrue(all(r["saved"] for r in batch._data()["rows"].values()))
         self.assertEqual(card["color"], "blue")
 
-    def test_abandoning_column_write_keeps_width_and_explains_what_to_check(self):
-        card, item = self.column_card()
-        widths = {3: 8.0}
-        self.column_widths(widths)
-        with patch.object(batch, "_write_rows", side_effect=ValueError("injected")):
-            with self.assertRaises(ValueError):
-                self.widen_column(card, item, widths, {3: 11.0})
-        batch.abandon_pending()
-        self.assertEqual(widths[3], 8.0)
-        self.assertIn("列宽", card["message"])
-        self.assertNotIn("行高", card["message"])
-        self.assertFalse(batch._data()["rows"][card["col_ids"][0]]["saved"])
-        self.assertEqual((card["color"], card["manual"]), ("yellow", True))
-
-    def test_old_reviewed_cards_do_not_block_accepting_a_new_column_adjustment(self):
-        first, item = self.column_card()
-        widths = {3: 8.0}
-        self.column_widths(widths)
-        self.widen_column(first, item, widths, {3: 11.0})
-        first["color"] = "green"
-        self.commit([first])
-        second, second_item = self.column_card("C6", row=6)
-        self.wf.STATE["job"] = {"kind": "batch_scan", "options": {}, "completed": [], "pending_adjustment": None}
-        self.widen_column(second, second_item, widths, {3: 15.0})
-        self.commit([second])
-        self.assertEqual(widths[3], 15.0)
-        self.assertFalse(batch._data()["rows"][second["col_ids"][0]]["saved"])
-
-    def test_marked_column_is_not_widened_again_before_review_is_submitted(self):
-        first, item = self.column_card()
-        second, other_item = self.column_card("C6", row=6)
-        widths = {3: 8.0}
-        self.column_widths(widths)
-        self.widen_column(first, item, widths, {3: 11.0})
-        first.update(color="green", marked=True)
-        with self.assertRaisesRegex(ValueError, "已有人工审核意见"):
-            self.widen_column(second, other_item, widths, {3: 15.0})
-        self.assertEqual(widths[3], 11.0)
-        self.assertIsNone(self.wf.STATE["job"]["pending_adjustment"])
-
-    def test_manual_column_card_does_not_block_other_cells_on_the_same_row(self):
-        column, _ = self.column_card()
-        _, item = self.add_card("B5")
-        column.update(manual=True, finalized=True)
-        item["status"] = "pending"
-        batch._data()["rows"].clear()
-        with patch.object(batch, "_prepare_column") as prepare_column, \
-                patch.object(batch, "_prepare_row", return_value=(24.0, None, {})) as prepare_row:
-            batch._repair_file(self.excel, Mock(), self.path)
-        prepare_column.assert_not_called()
-        self.assertEqual([it["cell_addr"] for it in prepare_row.call_args.args[2]], ["B5"])
-
     def test_legacy_overlapping_restore_journal_resumes_as_one_column_write(self):
         first, _ = self.column_card()
         second, _ = self.column_card("C6", row=6)
@@ -507,21 +335,6 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(widths[3], 8.0)
         self.assertEqual(len(pending["rows"]), 1)
         self.assertIsNone(self.wf.STATE["job"]["pending_adjustment"])
-
-    def test_restored_column_history_does_not_hide_a_later_height_record(self):
-        from core.hidden_text import REASON_TRUNCATED
-        card, item = self.column_card()
-        widths = {3: 8.0}
-        self.column_widths(widths)
-        self.widen_column(card, item, widths, {3: 11.0})
-        card["color"] = "yellow"
-        self.commit([card])
-        item.update(hidden_reason=REASON_TRUNCATED, status="pending")
-        batch._card_for([item])
-        self.assertFalse(batch._column_card(card))
-        record = {"id": batch._rid(card), "base": 24.0, "applied": 30.0, "saved": True}
-        batch._data()["rows"][record["id"]] = record
-        self.assertIs(batch._row_record(card), record)
 
     def test_commit_by_color_keeps_other_colors_and_mixed_rows(self):
         """筛选黄色只提交黄卡：别的颜色不动；同行混着蓝卡（共用已写入的行高）的整行先不交，不连带转黄"""
@@ -549,28 +362,6 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(batch.commit_selection([yellow["id"]], "blue"), ([blue["id"]], []))
         self.assertEqual(sorted(batch.commit_selection([yellow["id"]])[0]), sorted([yellow["id"], blue["id"]]))
 
-    def test_commit_skips_cards_not_yet_processed(self):
-        """暂停后提交：还没轮到的卡不能被转成人工项，否则以后全自动不会再修它们"""
-        done, _ = self.add_card("A5", color="blue")
-        _, waiting_item = self.add_card("A6", row=6)
-        batch._data()["rows"].pop(batch._key(self.path, "S1", 6))
-        waiting_item["status"] = "pending"
-        waiting = batch._data()["cards"][batch._key(self.path, "S1", "A6")]
-        waiting.update(color="yellow", verified=False, waiting=True, message=batch.WAITING_MESSAGE)
-        self.commit([done, waiting])
-        self.assertTrue(done["dismissed"])
-        self.assertEqual((waiting["color"], waiting["finalized"], waiting["manual"]), ("yellow", False, False))
-        self.assertEqual(waiting_item["status"], "pending")
-        self.wf.STATE["job"].update(kind="batch_scan", attempted_rows=[])
-        prepared = []
-        def prepare(_session, _path, items, **_):
-            prepared.append(items[0]["cell_addr"])
-            return 27, None, {}
-        with patch.object(batch, "_prepare_row", side_effect=prepare):
-            batch._repair_file(self.excel, Mock(), self.path)
-        self.assertEqual(prepared, ["A6"])
-        self.assertFalse(waiting["waiting"])
-
     def test_old_waiting_cards_without_flag_are_recognised(self):
         card, _ = self.add_card()
         card.pop("waiting")
@@ -590,70 +381,6 @@ class BatchTests(unittest.TestCase):
         self.assertEqual((job["kind"], job["status"], job["completed"]), ("batch_scan", "interrupted", ["x"]))
         self.assertTrue(self.wf.queue_job("resume"))
         self.assertNotIn("pause_requested", self.wf.STATE["job"])
-
-    def test_column_width_problem_goes_manual_without_trial_exports(self):
-        from core import autofix
-        from core.hidden_text import REASON_HASH
-        hashed, hash_item = self.add_card("A5")
-        other, other_item = self.add_card("B5")
-        batch._data()["rows"].clear()
-        hash_item.update(status="pending", hidden_reason=REASON_HASH)
-        other_item["status"] = "pending"
-        prepared = []
-        def prepare(_session, _path, items, **_):
-            prepared.append([it["cell_addr"] for it in items])
-            return 15, None, {}
-        with patch.object(batch, "_prepare_row", side_effect=prepare):
-            batch._repair_file(self.excel, Mock(), self.path)
-        self.assertEqual(prepared, [["B5"]])  # 同行其他格照常试
-        self.assertEqual((hashed["color"], hashed["manual"]), ("yellow", True))
-        self.assertIn("自动修复只处理切字，「### 列宽不足」", hashed["message"])
-
-    def test_only_column_width_problem_in_row_skips_row_prepare_and_can_widen_column(self):
-        from core.hidden_text import REASON_HASH
-        card, item = self.add_card("A5")
-        batch._data()["rows"].clear()
-        item.update(status="pending", hidden_reason=REASON_HASH)
-        # ### 列宽不足不自动修：不打开副本，也不调 _prepare_row
-        session = Mock()
-        with patch.object(batch, "_prepare_row") as prepare:
-            batch._repair_file(self.excel, session, self.path)
-        prepare.assert_not_called()
-        session.copy_of.assert_not_called()
-        self.assertTrue(card["manual"])
-
-        # 旧的自动加宽代码还留着（现在不会走到）：放开类型限制，照样测加宽写入和还原
-        legacy = patch.object(batch.autofix, "AUTO_FIX_ERROR_TYPES", batch.autofix.FIXABLE_ERROR_TYPES)
-        legacy.start()
-        self.addCleanup(legacy.stop)
-        self.wf.STATE["job"]["attempted_rows"] = []
-        card.update(manual=False, waiting=True, handed_over=False)
-        item["status"] = "pending"
-        col_widths = {1: 8.0}
-        class Col:
-            def __init__(self, c):
-                self.c = c
-            @property
-            def ColumnWidth(self):
-                return col_widths[self.c]
-            @ColumnWidth.setter
-            def ColumnWidth(self, val):
-                col_widths[self.c] = val
-        self.book.Sheets.return_value.Columns.side_effect = Col
-        with patch.object(batch, "_prepare_column", return_value={
-            "base_cols": {"1": 8.0}, "target_cols": {"1": 11.0}, "after": "", "pdf": None,
-        }), patch.object(batch, "_prepare_row") as prepare:
-            batch._repair_file(self.excel, session, self.path)
-        prepare.assert_not_called()
-        self.assertEqual(col_widths[1], 11.0)
-        self.assertEqual((card["color"], card["verified"]), ("blue", True))
-
-        # 标绿提交时还原原列宽
-        batch.mark(card["id"], "green")
-        self.wf.STATE["job"] = {"kind": "batch_commit", "options": {"card_ids": [card["id"]]}, "completed": [],
-                                "pending_adjustment": None}
-        batch._commit_review(self.excel)
-        self.assertEqual(col_widths[1], 8.0)
 
     def test_refresh_keeps_users_green_mark_when_cell_breaks_again(self):
         card, item = self.add_card()
@@ -903,56 +630,6 @@ class BatchTests(unittest.TestCase):
         self.assertTrue(b["dismissed"])
         self.assertEqual(item_b["status"], "accepted")
 
-    def test_row_saved_then_sheet_refreshed_before_next_row(self):
-        a, item = self.add_card()
-        item["status"] = "pending"
-        batch._data()["rows"].clear()
-        self.wf.STATE["job"].update(kind="batch_scan")
-        events = []
-        cid = a["id"]
-        def prepare(*_, **__):
-            events.append("prepare")
-            return 15, {"height": 24, "shots": {cid: ""}}, {cid: ""}
-        def finish(*_):
-            events.append("save")
-            item["status"] = "fixed"
-            self.wf.STATE["job"]["pending_adjustment"] = None
-        def refresh(_excel, _path, sheets, **kwargs):
-            source = "copy" if kwargs.get("workbook") is not None else "original"
-            events.append(f"fresh-{source}-{'reuse' if kwargs.get('reuse', True) else 'export'}-{','.join(sheets)}")
-        session = Mock()
-        with patch.object(batch, "_prepare_row", side_effect=prepare), \
-                patch.object(batch, "_finish_pending", side_effect=finish), \
-                patch.object(batch, "_refresh", side_effect=refresh):
-            batch._repair_file(self.excel, session, self.path)
-        # 写入后用改好的副本重新检测（不重开原文件）；文件处理完再用原文件重新导出复查一遍
-        self.assertEqual(events, ["prepare", "save", "fresh-copy-reuse-S1", "fresh-original-export-S1"])
-        session.written.assert_called_once()
-        self.assertEqual(session.written.call_args.args[2:6], ("S1", 5, 24, []))
-
-    def test_new_finding_after_repagination_is_processed_from_new_snapshot(self):
-        a, item = self.add_card()
-        item["status"] = "pending"
-        batch._data()["rows"].clear()
-        prepared = []
-        def prepare(_session, _path, items, **_):
-            prepared.append(items[0]["cell_addr"])
-            return 15, {"height": 24, "shots": {}}, {}
-        def finish(*_):
-            for iid in list(self.wf.STATE["items"]):
-                self.wf.STATE["items"][iid]["status"] = "fixed"
-            self.wf.STATE["job"]["pending_adjustment"] = None
-        def refresh(*_, **__):
-            if len(prepared) == 1:
-                _, new_item = self.add_card("A6", row=6)
-                batch._data()["rows"].pop(batch._key(self.path, "S1", 6))
-                new_item.update(status="pending", page_index=3, bbox=[0, 100, 20, 120])
-        with patch.object(batch, "_prepare_row", side_effect=prepare), \
-                patch.object(batch, "_finish_pending", side_effect=finish), \
-                patch.object(batch, "_refresh", side_effect=refresh):
-            batch._repair_file(self.excel, Mock(), self.path)
-        self.assertEqual(prepared, ["A5", "A6"])
-
     def test_same_cell_two_detector_findings_produce_one_card(self):
         _, item = self.add_card()
         other = {**item, "id": "clip", "kind": "clip"}
@@ -960,39 +637,6 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(len(groups), 1)
         card = batch._card_for(groups[0])
         self.assertEqual(card["item_ids"], [item["id"], "clip"])
-
-    def test_pause_keeps_remaining_files_for_resume(self):
-        self.wf.STATE["job"]["pause_requested"] = True
-        with patch.object(batch, "_prepare_row") as prepare:
-            batch._repair_file(self.excel, Mock(), self.path)
-        prepare.assert_not_called()
-
-    def test_unlocated_text_is_manual_without_creating_copy_or_saving(self):
-        card, item = self.add_card()
-        batch._data()["rows"].clear()
-        item.update(status="pending", page_index=None, bbox=None)
-        session = Mock()
-        with patch.object(batch, "_prepare_row") as prepare:
-            batch._repair_file(self.excel, session, self.path)
-        prepare.assert_not_called()
-        session.copy_of.assert_not_called()
-        self.book.Save.assert_not_called()
-        self.assertEqual(card["color"], "yellow")
-        self.assertTrue(card["manual"])
-        self.assertFalse(card["verified"])
-        self.assertIn("不能确认作者", card["message"])
-        self.assertIsNone(self.wf.STATE["job"]["pending_adjustment"])
-
-    def test_unlocated_cell_blocks_automatic_row_height_changes_for_its_peers(self):
-        a, first = self.add_card("A5")
-        b, other = self.add_card("B5")
-        first["status"] = other["status"] = "pending"
-        other.update(page_index=None, bbox=None)
-        batch._data()["rows"].clear()
-        with patch.object(batch, "_prepare_row") as prepare:
-            batch._repair_file(self.excel, Mock(), self.path)
-        prepare.assert_not_called()
-        self.assertTrue(a["manual"] and b["manual"])
 
     def test_missing_cached_image_does_not_make_located_text_low_confidence(self):
         from core import autofix
@@ -1018,50 +662,6 @@ class BatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "写入尚未结算"):
             self.wf.queue_job("batch_scan", {"folder": str(self.root)})
 
-    def test_unsettled_files_do_not_stop_later_files_and_resume_keeps_each_journal(self):
-        paths = [self.path, str(self.root / "second.xlsx"), str(self.root / "third.xlsx")]
-        for path in paths[1:]:
-            Path(path).write_bytes(b"workbook")
-        job = self.wf.STATE["job"]
-        job.update(workbooks=paths, options={"folder": str(self.root)})
-        session = Mock()
-        session.app.return_value = self.excel
-        visited = []
-        def repair(excel, session, path):
-            visited.append(path)
-            if path != paths[2]:
-                job["pending_adjustment"] = {"path": path, "cards": [], "rows": [], "action": "fix"}
-                raise RuntimeError("保存后连接断开，状态未知")
-        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
-                patch.object(batch, "_repair_file", side_effect=repair), \
-                patch.object(batch, "finish_execution_batch"):
-            self.assertEqual(batch.run(), paths)
-        self.assertEqual(visited, paths)
-        self.assertEqual(job["completed"], [paths[2]])
-        self.assertEqual(job["pending_adjustment"]["path"], paths[0])
-        self.assertEqual(set(job["deferred_adjustments"]), {paths[1]})
-        self.assertEqual(set(job["file_errors"]), set(paths[:2]))
-        saved = storage.load_snapshot("workflow")["job"]
-        self.assertEqual(saved["pending_adjustment"]["path"], paths[0])
-        self.assertIn(paths[1], saved["deferred_adjustments"])
-        # 恢复时第一份依旧失败，第二份可结算；两份都不会阻塞别的文件。
-        settled, repaired = [], []
-        def finish(excel):
-            pending = job["pending_adjustment"]
-            settled.append(pending["path"])
-            if pending["path"] == paths[0]:
-                raise ValueError("文件被占用")
-            job["pending_adjustment"] = None
-        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
-                patch.object(batch, "_finish_pending", side_effect=finish), \
-                patch.object(batch, "_repair_file", side_effect=lambda excel, session, path: repaired.append(path)), \
-                patch.object(batch, "finish_execution_batch"):
-            batch.run()
-        self.assertEqual(settled, paths[:2])
-        self.assertEqual(repaired, [paths[1]])
-        self.assertEqual(set(job["completed"]), {paths[1], paths[2]})
-        self.assertEqual(job["pending_adjustment"]["path"], paths[0])
-
     def test_scan_asks_user_after_retries_and_retry_rescans_the_fixed_file(self):
         second = str(self.root / "next.xlsx")
         Path(second).write_bytes(b"workbook")
@@ -1081,7 +681,7 @@ class BatchTests(unittest.TestCase):
         self.refresh.side_effect = refresh
         with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
                 patch.object(batch.file_problem, "ask", side_effect=user_fixes) as ask, \
-                patch.object(batch, "_repair_file"), patch.object(batch, "finish_execution_batch"):
+                patch.object(batch, "finish_execution_batch"):
             batch.run()
         ask.assert_called_once()
         self.assertEqual(attempts, [self.path] * 4 + [second])
@@ -1101,7 +701,7 @@ class BatchTests(unittest.TestCase):
                 raise RuntimeError("Excel 不可用")
         self.refresh.side_effect = refresh
         with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
-                patch.object(batch, "_repair_file"), patch.object(batch, "finish_execution_batch"):
+                patch.object(batch, "finish_execution_batch"):
             batch.run()
         self.assertEqual(attempts, [self.path] * 3 + [second])
         self.assertEqual(job["completed"], [second])
@@ -1141,88 +741,15 @@ class BatchTests(unittest.TestCase):
                 raise TimeoutError("Excel 超时")
         self.refresh.side_effect = refresh
         with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
-                patch.object(batch, "_repair_file"), patch.object(batch, "finish_execution_batch"):
+                patch.object(batch, "finish_execution_batch"):
             batch.run()
         self.assertEqual(self.refresh.call_count, 2)
         self.assertEqual(job["completed"], [next_path])
-
-    def test_timeout_during_trial_escapes_row_retry_loop(self):
-        _, item = self.add_card()
-        item["status"] = "pending"
-        batch._data()["rows"].clear()
-        session = Mock()
-        session.watchdog.timed_out = True
-        with patch.object(batch, "_prepare_row", side_effect=RuntimeError("Excel 进程被结束")) as prepare:
-            with self.assertRaises(TimeoutError):
-                batch._repair_file(self.excel, session, self.path)
-        prepare.assert_called_once()
 
     def test_formally_accepted_blue_height_is_no_longer_pending_rollback(self):
         card, _ = self.add_card()
         self.commit([card])
         self.assertFalse(next(iter(batch._data()["rows"].values()))["saved"])
-
-    def test_preparation_uses_one_extra_step_and_falls_back_if_extra_fails(self):
-        from test_autofix import AutofixTests
-        fixture = AutofixTests("runTest")
-        fixture.setUp()
-        self.addCleanup(fixture.doCleanups)
-        items = list(workflow.STATE["items"].values())
-        timing = {}
-        with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot):
-            base, chosen, before = batch._prepare_row(fixture.session, str(fixture.wb_path), items, timing=timing)
-        self.assertEqual(base, 15)
-        self.assertEqual(chosen["height"], 27)  # 只试一次：读不到字号按一行 12pt 加，不另加余白
-        self.assertEqual(timing["exports"], 2)  # 原样 1 次 + 一步到位核验 1 次
-        self.assertTrue(all(before.values()))
-        cid = batch._key(*batch._cell(items[0]))
-        self.assertTrue(chosen["shots"][cid])
-        # 多行截断缺口更大时按缺几行一次加够（例如缺 24pt = 2 行 × 12pt → 39pt）
-        original_evaluate = fixture.autofix._evaluate
-        def evaluate_multi_line(*args, **kwargs):
-            ok, shot, _ = original_evaluate(*args, **kwargs)
-            height = fixture.session.copy_of(str(fixture.wb_path)).heights[5]
-            return (height >= 39.0, shot, 24.0 if height == 15.0 else 0.0)
-        with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot), \
-                patch.object(fixture.autofix, "_evaluate", side_effect=evaluate_multi_line):
-            _, chosen, _ = batch._prepare_row(fixture.session, str(fixture.wb_path), items)
-        self.assertEqual(chosen["height"], 39)
-
-    def test_preparation_reuses_checked_pdf_and_keeps_the_written_state(self):
-        """原样那张用刚检测导出的 PDF；一步到位那次导出就是写入的状态，直接留下给重新检测用"""
-        from test_autofix import AutofixTests
-        fixture = AutofixTests("runTest")
-        fixture.setUp()
-        self.addCleanup(fixture.doCleanups)
-        items = list(workflow.STATE["items"].values())
-        session, path = fixture.session, str(fixture.wb_path)
-        book = session.copy_of(path)
-        self.assertEqual(book.path.name, fixture.wb_path.name)  # 副本和原文件同名，页眉里的文件名一样
-        version = workflow._file_version(fixture.wb_path)
-        checked = fixture.root / "checked.pdf"
-        book.Sheets("S1").ExportAsFixedFormat(Filename=str(checked))
-        session.remember_pdf(path, "S1", version, checked)
-        other = fixture.root / "other.pdf"
-        other.write_bytes(b"%PDF other sheet")
-        session.remember_pdf(path, "S2", version, other)
-        timing = {}
-        with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot):
-            base, chosen, before = batch._prepare_row(session, path, items, timing=timing)
-        self.assertEqual((base, chosen["height"]), (15, 27))
-        self.assertTrue(all(before.values()))
-        self.assertEqual(timing["exports"], 1)  # 原样 15 复用检测 PDF，加高到 27 仅导出 1 次
-        self.assertEqual(chosen["pdf"], session.chosen_pdf())
-        self.assertTrue(chosen["pdf"].is_file())
-        # 原文件写入保存后：副本做同样修改继续用，这张表用通过那次的 PDF，别的表沿用
-        fixture.wb_path.write_bytes(b"workbook saved")
-        copy = session.written(path, version, "S1", 5, 30, [], chosen["pdf"])
-        self.assertIs(copy, book)
-        self.assertEqual(book.heights[5], 30)
-        self.assertIs(session.copy_of(path), book)
-        self.assertEqual(session.pdf_for(path, "S1"), chosen["pdf"])
-        self.assertEqual(session.pdf_for(path, "S2"), other)
-        other.write_bytes(b"%PDF overwritten by another export")
-        self.assertIsNone(session.pdf_for(path, "S2"))  # 被别的导出覆盖了就不能再用
 
     def test_recheck_on_copy_uses_exported_pdf_and_leaves_copy_open(self):
         from core import autofix
@@ -1276,194 +803,8 @@ class BatchTests(unittest.TestCase):
         sheet.Cells.side_effect = cell
         return sheet, area
 
-    def test_unwrapped_text_cut_off_sideways_is_wrapped(self):
-        """文字不换行、横向被截掉（如 概要!P146）：加高没用，要先开自动换行"""
-        item = {"kind": "hidden", "hidden_reason": batch.REASON_TRUNCATED, "cell_addr": "P146"}
-        sheet, _ = self.wrap_sheet()
-        self.assertEqual(batch._wrap_targets(sheet, [item]), ["P146"])
-        # 已经换行、压线问题、没合并且右边是空格（文字本来会延伸显示）的都不动
-        self.assertEqual(batch._wrap_targets(self.wrap_sheet(wrap=True)[0], [item]), [])
-        self.assertEqual(batch._wrap_targets(sheet, [{**item, "kind": "clip"}]), [])
-        self.assertEqual(batch._wrap_targets(self.wrap_sheet(merged=False)[0], [item]), [])
-        self.assertEqual(batch._wrap_targets(self.wrap_sheet(merged=False, neighbor="備考")[0], [item]), ["P146"])
-        # 右对齐看左边
-        right = self.wrap_sheet(merged=False, neighbor="x", align=batch.XL_HALIGN_RIGHT)[0]
-        self.assertEqual(batch._wrap_targets(right, [item]), ["P146"])
-
-    def test_unmerged_cell_cut_sideways_next_to_blank_cell_is_wrapped(self):
-        """截图里 B7 那种：没合并、右边看着是空格，PDF 上只印出开头一段 → 也要先开换行再加高"""
-        item = {"kind": "hidden", "hidden_reason": batch.REASON_TRUNCATED, "cell_addr": "P146",
-                "text": "IFNULL(MIN(T2.tekiyou_start_month_id), '9999-12-31')", "visible_text": "IFNULL(MIN(T2.tekiyou"}
-        self.assertEqual(batch._wrap_targets(self.wrap_sheet(merged=False)[0], [item]), ["P146"])
-        # 行太矮（比字号还矮）：是上下被压住，只加高
-        self.assertEqual(batch._wrap_targets(self.wrap_sheet(merged=False, row_height=6)[0], [item]), [])
-        # 没有「只印出开头一段」的证据：只加高
-        self.assertEqual(batch._wrap_targets(self.wrap_sheet(merged=False)[0], [{**item, "visible_text": ""}]), [])
-        # 右边存着空字符串（看着是空的，Excel 照样挡住文字）：算挡住
-        blank = self.wrap_sheet(merged=False, blank_value="")[0]
-        self.assertEqual(batch._wrap_targets(blank, [{**item, "visible_text": ""}]), ["P146"])
-
-    def test_excel_fit_measures_merged_cell_on_temp_sheet_and_deletes_it(self):
-        """合并单元格 Excel 不会自动调整行高：借临时表上一个同宽、同字体的格子算，算完删掉临时表"""
-        tmp = Mock()
-        column = tmp.Columns.return_value
-        column.ColumnWidth = 10.0
-        column.Width = 50.0
-        def set_width(value):
-            column.__dict__["ColumnWidth"] = value
-        type(column).ColumnWidth = property(lambda self: self.__dict__.get("ColumnWidth", 10.0),
-                                            lambda self, v: (set_width(v), setattr(self, "Width", v * 5.0)))
-        temp_row = tmp.Rows.return_value
-        widths = []
-        def autofit():
-            widths.append(round(column.Width))
-            # 宽 150pt 时 3 行刚好塞满（75pt），窄一个字就要 4 行（93pt）
-            temp_row.RowHeight = 75.0 if column.Width >= 150 or not tight[0] else 93.0
-        tight = [True]
-        temp_row.AutoFit.side_effect = autofit
-        sheet = Mock()
-        sheet.Parent.Worksheets.Add.return_value = tmp
-        sheet.Application.DisplayAlerts = False
-        area = sheet.Range.return_value.MergeArea
-        area.Cells.return_value.Value = "=SELECT * FROM T1 WHERE ..."
-        area.Cells.return_value.Font.Size = 9.0
-        area.Cells.Count = 3
-        area.Width = 150.0
-        area.Height = 13.5
-        area.WrapText = True
-        sheet.Rows.return_value.RowHeight = 13.5
-        # 刚好塞满：按窄一个字（9pt）量出来的高度给，多出的就是 PDF 上会多换出来的那一行
-        self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 93.0)
-        self.assertEqual(widths, [150, 141])
-        with patch.object(batch, "_cell_line_height", return_value=12.0):
-            self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}], extra_lines=2), 105.0)
-        # 最后一行没塞满（窄一个字也不变高）：PDF 一定放得下，不加余量
-        tight[0] = False
-        self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 75.0)
-        area.WrapText = False  # 不换行的不量第二次
-        widths.clear()
-        self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 75.0)
-        self.assertEqual(widths, [150])
-        cell = tmp.Cells.return_value
-        self.assertEqual(cell.NumberFormat, "@")  # = 开头的 SQL 也按文字放
-        self.assertIs(cell.WrapText, False)
-        self.assertAlmostEqual(column.Width, 150.0)
-        self.assertEqual(tmp.Delete.call_count, 4)  # 每次算完都删掉临时表
-        self.assertIs(sheet.Application.DisplayAlerts, False)
-        # 合并区域跨 3 行（另外两行共 30pt）：这一行只要 75 - 30
-        area.Height = 43.5
-        self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 45.0)
-        # 加不了临时表（工作簿结构受保护等）：返回 0，照旧用估算
-        sheet.Parent.Worksheets.Add.side_effect = RuntimeError("protected")
-        self.assertEqual(batch._excel_fit(sheet, 7, [{"cell_addr": "B7"}]), 0.0)
-
-    def test_prepare_row_uses_excel_height_then_estimate(self):
-        """行高先用 Excel 算的；打印出来还不够，就按估算再试一次"""
-        from test_autofix import AutofixTests, FakeSheet
-        fixture = AutofixTests("runTest")
-        fixture.setUp()
-        self.addCleanup(fixture.doCleanups)
-        items = list(workflow.STATE["items"].values())
-        heights = []
-        results = iter([(False, "", 0.0), (False, "", 0.0), (True, "", 0.0)])
-        with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot), \
-                patch.object(batch, "_wrap_targets", return_value=[]), \
-                patch.object(batch, "_excel_fit", side_effect=lambda *a, extra_lines=1: 30.0 if extra_lines == 1 else 35.0), \
-                patch.object(batch, "_direct_extra_height", return_value=40.0), \
-                patch.object(batch.autofix, "_evaluate", side_effect=lambda *a, **k: next(results)):
-            base, chosen, _ = batch._prepare_row(fixture.session, str(fixture.wb_path), items,
-                                                 on_attempt=lambda i, h, s, w: heights.append(h))
-        self.assertEqual(heights[1:], [30.0, round(base + 40.0, 2)])
-        self.assertEqual(chosen["height"], round(base + 40.0, 2))
-
     def test_text_width_counts_full_width_as_two(self):
         self.assertEqual(batch._text_width("給与a"), 5)
-
-    def test_preparation_turns_on_wrap_from_first_raise_and_restores_copy(self):
-        from test_autofix import AutofixTests, FakeSheet
-        fixture = AutofixTests("runTest")
-        fixture.setUp()
-        self.addCleanup(fixture.doCleanups)
-        items = list(workflow.STATE["items"].values())
-        area = Mock(WrapText=False)
-        states = []
-        frames = []
-        def record(index, height, shots, wrapped):
-            states.append(area.WrapText)
-            frames.append((index, list(wrapped)))
-        with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot), \
-                patch.object(batch, "_wrap_targets", return_value=["B5"]), \
-                patch.object(FakeSheet, "Range", create=True, new=lambda self, addr: Mock(MergeArea=area)):
-            base, chosen, _ = batch._prepare_row(fixture.session, str(fixture.wb_path), items, on_attempt=record)
-        self.assertEqual(frames[0], (0, []))  # 修改前就是原样
-        self.assertEqual(states[:2], [False, True])
-        self.assertTrue(all(wrapped == ["B5"] for _, wrapped in frames[1:]))
-        self.assertEqual(chosen["wrap"], ["B5"])
-        self.assertIs(area.WrapText, False)  # 副本也还原
-        self.assertFalse(any(book.saved for book in fixture.books))
-
-    def test_height_only_failure_retries_once_with_wrap(self):
-        """判断成只加高、结果没修好：没开换行的格子开换行从原行高再试一次（用户 2026-11-02 选定）"""
-        from test_autofix import AutofixTests, FakeSheet
-        fixture = AutofixTests("runTest")
-        fixture.setUp()
-        self.addCleanup(fixture.doCleanups)
-        items = list(workflow.STATE["items"].values())
-        area = Mock(WrapText=False, ShrinkToFit=False)
-        frames = []
-        def record(index, height, shots, wrapped):
-            frames.append((index, list(wrapped), area.WrapText))
-        results = iter([(False, "", 0.0), (False, "", 0.0), (True, "", 0.0)])
-        targets = []
-        def wrap_targets(sheet, its, *, force=False):
-            targets.append(force)
-            return ["B5"] if force else []
-        with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot), \
-                patch.object(batch, "_wrap_targets", side_effect=wrap_targets), \
-                patch.object(batch.autofix, "_evaluate", side_effect=lambda *a, **k: next(results)), \
-                patch.object(FakeSheet, "Range", create=True, new=lambda self, addr: Mock(MergeArea=area)):
-            base, chosen, _ = batch._prepare_row(fixture.session, str(fixture.wb_path), items, on_attempt=record)
-        self.assertEqual(targets, [False, True])
-        self.assertEqual([f[:2] for f in frames], [(0, []), (1, []), (2, ["B5"])])
-        self.assertIs(frames[2][2], True)
-        self.assertEqual(chosen["wrap"], ["B5"])
-        self.assertIs(area.WrapText, False)  # 副本还原
-
-    def test_force_wrap_targets_any_unwrapped_cell(self):
-        item = {"kind": "clip", "cell_addr": "P146"}
-        sheet = self.wrap_sheet(merged=False)[0]
-        self.assertEqual(batch._wrap_targets(sheet, [item]), [])
-        self.assertEqual(batch._wrap_targets(sheet, [item], force=True), ["P146"])
-        self.assertEqual(batch._wrap_targets(self.wrap_sheet(wrap=True)[0], [item], force=True), [])
-
-    def test_wrapped_fix_is_saved_restored_and_reported(self):
-        card, item = self.add_card(address="A5", color="yellow")
-        item["status"] = "pending"
-        batch._data()["rows"].clear()
-        area = self.book.Sheets.return_value.Range.return_value.MergeArea
-        area.WrapText = False
-        def prepare(*_, on_attempt, **__):
-            on_attempt(0, 24, {card["id"]: "data:image/png;base64,YmVmb3Jl"}, [])
-            on_attempt(1, 33, {card["id"]: "data:image/png;base64,bGFzdA=="}, ["A5"])
-            return 24, {"height": 36, "shots": {}, "wrap": ["A5"]}, {}
-        with patch.object(batch, "_prepare_row", side_effect=prepare):
-            batch._repair_file(self.excel, Mock(), self.path)
-        self.assertIs(area.WrapText, True)
-        self.assertEqual(self.heights[5], 36)
-        self.assertTrue(item["wrap_text"])
-        self.assertEqual(self.wf._fix_record(item)["reason"], self.wf.WRAP_FIX_REASON)
-        self.assertTrue(batch.snapshot()["cards"][0]["row_height"]["wrap"])
-        # 续跑时换行和行高都到位：不重复保存
-        self.book.Save.reset_mock()
-        rid = batch._key(self.path, "S1", 5)
-        batch._write_rows(self.excel, {"path": self.path, "version": "old", "rows": [
-            {"id": rid, "sheet": "S1", "row": 5, "expected": 24, "target": 36, "wrap": {"A5": True}}]})
-        self.book.Save.assert_not_called()
-        # 标绿：行高和自动换行一起还原
-        batch.mark(card["id"], "green")
-        self.commit([card])
-        self.assertEqual(self.heights[5], 24)
-        self.assertIs(area.WrapText, False)
 
     def test_blue_on_failed_wrapped_attempt_writes_wrap_too(self):
         card, item = self.attempt_card()
@@ -1536,101 +877,6 @@ class BatchTests(unittest.TestCase):
         batch._card_for([item])
         fix_images.image_path(card["context"]["image_file"]).unlink()
         self.assertEqual(batch.snapshot()["cards"][0]["context"]["image"], "")
-
-    def test_failed_trials_persist_last_unapplied_picture_without_saving_original(self):
-        card, item = self.add_card()
-        item["status"] = "pending"
-        batch._data()["rows"].clear()
-        original = Path(self.path).read_bytes()
-        before = "data:image/png;base64,YmVmb3Jl"
-        last = "data:image/png;base64,bGFzdA=="
-        def prepare(*_, on_attempt, **__):
-            on_attempt(0, 24, {card["id"]: before})
-            on_attempt(1, 27, {card["id"]: "data:image/png;base64,Zmlyc3Q="})
-            on_attempt(8, 48, {card["id"]: last})
-            return 24, None, {card["id"]: before}
-        with patch.object(batch, "_prepare_row", side_effect=prepare):
-            batch._repair_file(self.excel, Mock(), self.path)
-        self.book.Save.assert_not_called()
-        self.excel.Workbooks.Open.assert_not_called()
-        self.assertEqual(Path(self.path).read_bytes(), original)
-        self.assertEqual(self.heights[5], 24)
-        self.assertEqual(card["color"], "yellow")
-        self.assertTrue(card["manual"])
-        self.assertEqual(card["after_kind"], "attempt")
-        self.assertEqual(card["attempt_height"], 48)
-        self.assertIsNone(self.wf.STATE["job"]["pending_adjustment"])
-        self.assertNotIn("after", item.get("fix_images", {}))
-        saved = storage.load_snapshot("workflow")
-        self.wf.STATE.update(saved)  # 模拟从 SQLite 恢复，不依赖临时 Excel 副本。
-        restored = batch.snapshot()["cards"][0]
-        self.assertEqual(restored["after_kind"], "attempt")
-        self.assertEqual(fix_images.image_path(restored["fix_images"]["before"]).read_bytes(), b"before")
-        self.assertEqual(fix_images.image_path(restored["fix_images"]["after"]).read_bytes(), b"last")
-        self.assertEqual(set(restored["images"]), {"before", "after"})
-
-    def test_export_error_keeps_last_completed_trial_picture(self):
-        card, item = self.add_card()
-        item["status"] = "pending"
-        batch._data()["rows"].clear()
-        def prepare(*_, on_attempt, **__):
-            on_attempt(0, 24, {card["id"]: "data:image/png;base64,YmVmb3Jl"})
-            on_attempt(1, 27, {card["id"]: "data:image/png;base64,bGFzdA=="})
-            raise RuntimeError("下一张 PDF 导出失败")
-        with patch.object(batch, "_prepare_row", side_effect=prepare):
-            batch._repair_file(self.excel, Mock(), self.path)
-        self.assertEqual(fix_images.image_path(card["fix_images"]["after"]).read_bytes(), b"last")
-        self.assertEqual(card["after_kind"], "attempt")
-        self.assertIn("PDF 导出失败", card["message"])
-        self.book.Save.assert_not_called()
-
-    def test_failure_before_first_adjustment_keeps_the_actual_original_preview(self):
-        card, item = self.add_card()
-        item["status"] = "pending"
-        batch._data()["rows"].clear()
-        def prepare(*_, on_attempt, **__):
-            on_attempt(0, 24, {card["id"]: "data:image/png;base64,YmVmb3Jl"})
-            raise RuntimeError("第一张调整图未能导出")
-        with patch.object(batch, "_prepare_row", side_effect=prepare):
-            batch._repair_file(self.excel, Mock(), self.path)
-        self.assertEqual(fix_images.image_path(card["fix_images"]["after"]).read_bytes(), b"before")
-        self.assertEqual(card["after_kind"], "attempt")
-        self.assertEqual(card["attempt_height"], 24)
-        self.book.Save.assert_not_called()
-
-    def test_failed_preview_restores_copy_height_after_all_eight_attempts(self):
-        from test_autofix import AutofixTests
-        fixture = AutofixTests("runTest")
-        fixture.setUp()
-        self.addCleanup(fixture.doCleanups)
-        fixture.needed = 999  # 行高上限内始终压线
-        items = list(workflow.STATE["items"].values())
-        frames = []
-        with patch.object(batch, "extract_sheet_snapshot", fixture.autofix.extract_sheet_snapshot):
-            base, chosen, before = batch._prepare_row(
-                fixture.session, str(fixture.wb_path), items,
-                on_attempt=lambda index, height, shots, wrapped: frames.append((index, height, shots)))
-        self.assertIsNone(chosen)
-        self.assertEqual((base, frames[-1][0], frames[-1][1]), (15, 1, 27))
-        self.assertTrue(all(before.values()) and all(frames[-1][2].values()))
-        self.assertEqual(fixture.real_heights[5], 15)
-        self.assertEqual(fixture.session.copy_of(str(fixture.wb_path)).heights[5], 15)
-        self.assertFalse(any(book.saved for book in fixture.books))
-
-    def test_successful_write_clears_unapplied_trial_label(self):
-        card, item = self.add_card()
-        item["status"] = "pending"
-        batch._data()["rows"].clear()
-        def prepare(*_, on_attempt, **__):
-            on_attempt(0, 24, {card["id"]: "data:image/png;base64,YmVmb3Jl"})
-            on_attempt(1, 27, {card["id"]: "data:image/png;base64,bGFzdA=="})
-            return 24, {"height": 27, "shots": {card["id"]: "data:image/png;base64,c2VsZWN0ZWQ="}}, {}
-        with patch.object(batch, "_prepare_row", side_effect=prepare):
-            batch._repair_file(self.excel, Mock(), self.path)
-        self.assertEqual((card["color"], card["after_kind"]), ("blue", "fixed"))
-        self.assertEqual(fix_images.image_path(card["fix_images"]["after"]).read_bytes(), b"selected")
-        self.assertEqual(self.heights[5], 27)
-        self.book.Save.assert_called_once()
 
     def test_manual_recheck_replaces_unapplied_trial_with_actual_after_image(self):
         card, item = self.add_card(color="yellow")
@@ -2078,60 +1324,6 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(len(batch._data()["ignored"]), 1)
         self.assertEqual(self.wf.STATE["items"], {})
 
-    def test_excel_error_restarts_excel_and_retries_row_before_manual(self):
-        card, item = self.add_card()
-        item["status"] = "pending"
-        batch._data()["rows"].clear()
-        calls = []
-        def prepare(*_, **__):
-            calls.append(1)
-            if len(calls) == 1:
-                raise RuntimeError("RPC 服务器不可用")
-            return 15, {"height": 24, "shots": {}}, {}
-        session = Mock()
-        session.app.return_value = self.excel
-        with patch.object(batch, "_prepare_row", side_effect=prepare):
-            batch._repair_file(self.excel, session, self.path)
-        self.assertEqual(len(calls), 2)
-        session.close.assert_called_once()
-        self.assertEqual(card["color"], "blue")
-        self.assertFalse(card.get("manual"))
-
-    def test_repeated_excel_errors_end_as_manual(self):
-        card, item = self.add_card()
-        item["status"] = "pending"
-        batch._data()["rows"].clear()
-        session = Mock()
-        with patch.object(batch, "_prepare_row", side_effect=RuntimeError("导出失败")) as prepare:
-            batch._repair_file(self.excel, session, self.path)
-        self.assertEqual(prepare.call_count, 3)
-        self.assertEqual(session.close.call_count, 2)
-        self.assertTrue(card["manual"])
-        self.assertEqual(card["color"], "yellow")
-
-    def test_detection_reason_is_not_retried(self):
-        card, item = self.add_card()
-        item["status"] = "pending"
-        batch._data()["rows"].clear()
-        session = Mock()
-        with patch.object(batch, "_prepare_row", side_effect=ValueError("单元格已隐藏")) as prepare:
-            batch._repair_file(self.excel, session, self.path)
-        self.assertEqual(prepare.call_count, 1)
-        session.close.assert_not_called()
-        self.assertTrue(card["manual"])
-
-    def test_original_already_passing_writes_nothing_and_is_not_a_fix(self):
-        card, item = self.add_card(color="yellow")
-        item["status"] = "pending"
-        batch._data()["rows"].clear()
-        with patch.object(batch, "_prepare_row", return_value=(24.0, {"height": 24.0, "shots": {}}, {})):
-            batch._repair_file(self.excel, Mock(), self.path)
-        self.excel.Workbooks.Open.assert_not_called()
-        self.assertEqual((card["color"], card["after_kind"]), ("blue", "unchanged"))
-        self.assertEqual(item["status"], "accepted")
-        self.assertEqual(batch._data()["rows"], {})
-        self.assertIsNone(self.wf._problem_counts(self.path)["fixes"][item["id"]])
-
     def test_refresh_downgrades_blue_card_whose_problem_came_back(self):
         card, item = self.add_card()
         item["status"] = "pending"
@@ -2194,70 +1386,6 @@ class BatchTests(unittest.TestCase):
         fix_images.clear()
         self.assertIsNotNone(fix_images.image_path(card["fix_images"]["before"]))
         self.assertFalse(orphan.exists())
-
-    def test_direct_extra_height_scales_by_font_size_and_visible_text(self):
-        sheet = Mock()
-        sheet.PageSetup.Zoom = 100
-        sheet.Range.return_value.MergeArea.Cells.return_value.Font.Size = 15.0
-        # 15pt 字体 × 1.2 = 一行 18pt，只加这一行，不再另加余白
-        self.assertEqual(batch._direct_extra_height(sheet, [{"cell_addr": "B5", "text": "あいう"}], 0.0), 18.0)
-        # 横向被裁只显示 5 个字、全文 13 个字：还差 8 个字（约 2 行），2 * 18 = 36pt
-        self.assertEqual(
-            batch._direct_extra_height(sheet, [{"cell_addr": "B5", "text": "1234567890123", "visible_text": "12345"}], 0.0),
-            36.0,
-        )
-        # PDF 上量到缺 20pt（100% 缩放）：一行 18pt 不够，按 2 行加
-        self.assertEqual(batch._direct_extra_height(sheet, [{"cell_addr": "B5", "text": "あいう"}], 20.0), 36.0)
-        # 读不到字号：按 12pt 一行
-        sheet.Range.side_effect = RuntimeError("no font")
-        self.assertEqual(batch._direct_extra_height(sheet, [{"cell_addr": "B5", "text": "あいう"}], 0.0), 12.0)
-
-    def test_prepare_column_adds_one_and_half_char_margin_and_exports_once(self):
-        from core.hidden_text import REASON_HASH
-        _, item = self.column_card("C5")
-        item.update(hidden_reason=REASON_HASH, status="pending")
-        widths = {3: 8.0}
-        sheet = Mock(Name="S1", Visible=-1)
-        sheet.PageSetup = Mock(PrintArea="")
-        def col_at(col):
-            class Col:
-                Hidden = False
-                @property
-                def ColumnWidth(_):
-                    return widths[col]
-                @ColumnWidth.setter
-                def ColumnWidth(_, val):
-                    widths[col] = val
-            return Col()
-        sheet.Columns.side_effect = col_at
-        sheet.Rows.return_value = Mock(Hidden=False, RowHeight=15.0)
-        area = Mock(Row=5, Column=3)
-        area.Rows.Count = area.Columns.Count = 1
-        area.Cells.return_value = Mock(Text="2026/10/28")
-        sheet.Range.return_value.MergeArea = area
-        sheet.Cells.return_value.MergeArea = area
-        session = Mock()
-        session.copy_of.return_value.Sheets.return_value = sheet
-        session.temp_pdf.return_value = self.root / "attempt.pdf"
-        session.chosen_pdf.return_value = self.root / "chosen.pdf"
-        timing = {}
-        with patch.object(self.wf, "_export_sheet_pdf", side_effect=lambda s, p: p.write_bytes(b"%PDF")), \
-                patch.object(batch, "extract_sheet_snapshot", return_value={"start_r": 5, "start_c": 3, "rows_vals": [("2026/10/28",)]}), \
-                patch.object(batch.autofix, "_evaluate", return_value=(True, "shot", 0.0)):
-            chosen = batch._prepare_column(session, self.path, [item], timing)
-        # 8.0 + 2.0 (step) + 1.5 (margin) = 11.5，只导出 1 次 PDF
-        self.assertEqual(chosen["target_cols"], {"3": 11.5})
-        self.assertEqual(timing["exports"], 1)
-        self.assertEqual(widths[3], 8.0)  # 副本还原
-        # 若核验未通过，也不再重复导出 8 次 PDF
-        timing.clear()
-        with patch.object(self.wf, "_export_sheet_pdf", side_effect=lambda s, p: p.write_bytes(b"%PDF")), \
-                patch.object(batch, "extract_sheet_snapshot", return_value={"start_r": 5, "start_c": 3, "rows_vals": [("2026/10/28",)]}), \
-                patch.object(batch.autofix, "_evaluate", return_value=(False, "shot", 0.0)):
-            with self.assertRaisesRegex(ValueError, "自动加宽未通过"):
-                batch._prepare_column(session, self.path, [item], timing)
-        self.assertEqual(timing["exports"], 1)
-        self.assertEqual(widths[3], 8.0)
 
     def test_review_tasks_do_not_write_another_folders_report(self):
         reporter.EXECUTION_STATE.update(folder=str(self.root / "elsewhere"), files={})

@@ -93,19 +93,7 @@ class OpenBlockReasonTests(unittest.TestCase):
         self.assertIn("还没轮到", self.reason(job, self.c))
         self.assertEqual(self.reason(job, Path(self.tmp.name) / "other.xlsx"), "")
 
-    def test_full_auto_scanned_file_waits_for_repair(self):
-        job = {"kind": "batch_scan", "options": {}, "workbooks": [self.a, self.b, self.c],
-               "scanned": [self.a], "completed": []}
-        self.assertIn("还要等自动修复", self.reason(job, self.a))
-        self.assertIn("正在处理", self.reason(job, self.b))
-        job.update(phase="repair", scanned=[self.a, self.b, self.c], completed=[self.a], repairing=self.b)
-        self.assertEqual(self.reason(job, self.a), "")
-        self.assertIn("正在处理", self.reason(job, self.b))
-        self.assertIn("还要等自动修复", self.reason(job, self.c))
-
     def test_scan_blocks_when_finishing_touches_finished_files(self):
-        job = {"kind": "batch_scan", "workbooks": [self.a], "completed": [self.a], "to_manual": True}
-        self.assertIn("转人工", self.reason(job, self.a))
         job = {"kind": "batch_scan", "workbooks": [self.a], "completed": [self.a],
                "deferred_adjustments": {self.a: {}}}
         self.assertIn("没写完", self.reason(job, self.a))

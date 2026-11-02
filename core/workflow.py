@@ -249,7 +249,7 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
             }
             if (kind in BATCH_REVIEW_KINDS and old_job and old_job.get("status") == "interrupted"
                     and old_job["kind"] in {"batch_scan", *BATCH_REVIEW_KINDS}):
-                # 暂停的全自动处理先收起来，审核提交 / 复检 / 打开做完后放回，仍可「继续上次任务」
+                # 暂停的扫描先收起来，审核提交 / 复检 / 打开做完后放回，仍可「继续上次任务」
                 paused = old_job.get("paused_scan") if old_job["kind"] != "batch_scan" else old_job
                 if paused:
                     STATE["job"]["paused_scan"] = paused
@@ -287,10 +287,9 @@ _TASK_TITLES = {
 
 def _task_title(job: dict[str, Any]) -> str:
     """出错弹框上显示的任务名"""
-    kind, options = job.get("kind", ""), job.get("options", {})
+    kind = job.get("kind", "")
     if kind == "batch_scan":
-        return ("自动调整选中的格子" if options.get("picked") else "转回自动" if options.get("back_to_auto")
-                else "只扫描" if options.get("scan_only") else "全自动扫描与修复")
+        return "扫描并标记"
     return QUICK_TASK_NAMES.get(kind) or _TASK_TITLES.get(kind, kind)
 
 
@@ -312,7 +311,7 @@ def run_pending_workflow() -> None:
                                    and not _report_is_for_workbench()))
         if "workbooks" in job and options.get("folder"):
             from core.reporter import resume_operation_history
-            names = ({"batch_scan": {"只扫描（全部转人工）", "全自动扫描与修复", "自动调整选中的格子"},
+            names = ({"batch_scan": {"扫描并标记", "只扫描（全部转人工）", "全自动扫描与修复", "自动调整选中的格子"},
                       "scan": {"Web 切字扫描（完整）", "Web 切字扫描（增量）"}}
                      .get(job["kind"], {QUICK_TASK_NAMES[job["kind"]]} if job["kind"] in QUICK_TASK_NAMES else set()))
             if names:
@@ -373,13 +372,8 @@ def run_pending_workflow() -> None:
             with STATE_LOCK:
                 STATE["job"] = job.pop("paused_scan")
                 STATE["job"]["status"] = "interrupted"
-            if job["kind"] == "batch_scan":
-                # 「只扫描」时排队的自动调整做完了；扫描出错没扫完的文件还能接着扫
-                log_msg("ℹ️ 自动调整已完成；只扫描还有文件没扫完，可点「继续上次任务」接着扫")
-                interrupt_execution_batch("只扫描还有文件没扫完，可点击继续上次任务")
-            else:
-                log_msg("ℹ️ 审核操作已完成；全自动处理仍处于暂停，可点「继续上次任务」")
-                interrupt_execution_batch("全自动处理已暂停，可点击继续上次任务")
+            log_msg("ℹ️ 审核操作已完成；扫描仍处于暂停，可点「继续上次任务」")
+            interrupt_execution_batch("扫描已暂停，可点击继续上次任务")
     except Exception as err:
         with STATE_LOCK:
             STATE["job"]["status"] = "interrupted"
