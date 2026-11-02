@@ -339,22 +339,57 @@ class PersistenceTests(unittest.TestCase):
         self.workflow.set_print_layout(str(self.path), "code:Sheet1", "portrait")
         self.assertIsNone(session.pdf_for(str(self.path), "Wide", version))
 
-    def test_batch_export_uses_saved_direction_without_saving_source(self):
-        source = self.path.read_bytes()
-        book = Mock(FullName=str(self.path))
-        book.Sheets = [self.sheet]
+    def _export_books(self, *, locked=False):
+        """第一次只读导出，第二次可写打开保存方向；保存时改文件内容模拟 Excel 写盘"""
+        read_book = Mock(FullName=str(self.path))
+        read_book.Sheets = [self.sheet]
+        self.saved_sheet = Sheet(self.path)
+        write_book = Mock(FullName=str(self.path))
+        write_book.Sheets = [self.saved_sheet]
+        write_book.Save.side_effect = lambda: self.path.write_bytes(b"saved with landscape")
         excel = Mock()
-        excel.Workbooks.Open.return_value = book
+        excel.Workbooks.Open.side_effect = [read_book, write_book]
         with patch.object(self.workflow, "_exportable_sheets", return_value=[self.sheet]), \
-                patch.object(self.workflow, "update_file_progress"):
+                patch.object(self.workflow, "update_file_progress"), \
+                patch.object(self.workflow, "workbook_locked", return_value=locked):
             exported = self.workflow._export_workbook_pdfs(lambda: excel, self.path, self.root, set())
-        book.Save.assert_not_called()
-        book.Close.assert_called_once_with(SaveChanges=False)
-        self.assertTrue(excel.Workbooks.Open.call_args.kwargs["ReadOnly"])
-        self.assertEqual(self.path.read_bytes(), source)
-        self.assertEqual(self.sheet.PageSetup.Orientation, 1)
+        return excel, read_book, write_book, exported
+
+    def test_batch_export_saves_chosen_direction_into_excel(self):
+        excel, read_book, write_book, exported = self._export_books()
+        read_book.Save.assert_not_called()
+        self.assertTrue(excel.Workbooks.Open.call_args_list[0].kwargs["ReadOnly"])
+        self.assertNotIn("ReadOnly", excel.Workbooks.Open.call_args_list[1].kwargs)
+        self.assertEqual(self.sheet.PageSetup.Orientation, 1)  # 只读那份用完就恢复
+        self.assertEqual(self.saved_sheet.PageSetup.Orientation, 2)
+        write_book.Save.assert_called_once()
+        write_book.Close.assert_called_once_with(SaveChanges=False)
         with fitz.open(exported[0]) as doc:
             self.assertGreater(doc[0].rect.width, doc[0].rect.height)
+        record = self.workflow.STATE["print_layouts"][str(self.path)]["code:Sheet1"]
+        self.assertTrue(record["saved_to_excel"])
+        self.assertEqual(record["settings"]["Orientation"], 2)
+        self.assertEqual(record["version"], layout.version(str(self.path)))
+        # 下次扫描 / 导出：文件是保存过的横向版本，直接复用记录，不重新比较，也不再保存
+        reopened = Sheet(self.path, orientation=2)
+        exports = len(reopened.exports)
+        self.workflow.prepare_print_layout(reopened, str(self.path))
+        self.assertEqual(len(reopened.exports), exports)
+        self.assertIsNone(layout.to_save(reopened))
+
+    def test_batch_export_skips_saving_when_file_is_open(self):
+        source = self.path.read_bytes()
+        excel, read_book, write_book, exported = self._export_books(locked=True)
+        self.assertEqual(excel.Workbooks.Open.call_count, 1)
+        write_book.Save.assert_not_called()
+        self.assertEqual(self.path.read_bytes(), source)
+        self.assertTrue(any("没能保存" in line for line in map(str, self.workflow.STATE["logs"])))
+
+    def test_batch_export_same_direction_does_not_save(self):
+        self.workflow.STATE["print_layouts"][str(self.path)]["code:Sheet1"]["selected"] = 1
+        excel, read_book, write_book, exported = self._export_books()
+        self.assertEqual(excel.Workbooks.Open.call_count, 1)
+        write_book.Save.assert_not_called()
 
     def test_batch_export_without_choosing_orientation_exports_once(self):
         book = Mock(FullName=str(self.path))
