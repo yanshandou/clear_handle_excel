@@ -328,6 +328,23 @@
   border-radius: 999px;
 }
 
+/* 正在看的这一份 PDF 占的那一段：深色小段，份数多、不画分界线时也能看出这一份有多长 */
+.pr-cur {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 4px;
+  background: var(--ink);
+  opacity: 0.45;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+/* 份数太多、分界线挤在一起时不画分界线（否则整条变成竖条纹） */
+.pr-track.is-dense .pr-tick {
+  display: none;
+}
+
 /* 每份 PDF 的分界 */
 .pr-tick {
   position: absolute;
@@ -356,4 +373,315 @@
   transform: translateY(calc(100% + 16px));
   opacity: 0;
   pointer-events: none;
+}
+
+/* ---------- 三色标记：蓝 = 不用管（默认）、黄 = 要人工改、红 = 删除这张表 ----------
+   只改颜色（边框粗细不变）、角标是浮层：标记时卡片不挪、页面不滚 */
+.pr-doc {
+  --mark: var(--ink-4);
+  --mark-soft: transparent;
+}
+
+.pr-doc[data-mark="yellow"] { --mark: #f0b400; --mark-soft: #fff6d6; }
+.pr-doc[data-mark="red"] { --mark: #c8102e; --mark-soft: #ffe6ea; }
+.pr-doc[data-mark="deleted"] { --mark: var(--ink-4); --mark-soft: #eef0f5; }
+
+.pr-doc[data-mark="yellow"] .pr-doc-head,
+.pr-doc[data-mark="red"] .pr-doc-head {
+  border-color: var(--mark);
+  background: var(--mark-soft);
+  box-shadow: 0 3px 0 var(--mark);
+}
+
+/* 页面卡片和标题一样：粗边框 + 实心阴影，三种颜色一眼看得出 */
+.pr-page[data-mark] { border-width: 2.5px; border-color: var(--purple); box-shadow: 0 4px 0 var(--purple); }
+.pr-page[data-mark="yellow"] { border-color: #f0b400; box-shadow: 0 4px 0 #f0b400; }
+.pr-page[data-mark="red"] { border-color: #c8102e; box-shadow: 0 4px 0 #c8102e; }
+.pr-page[data-mark="deleted"] { border-color: var(--ink-4); box-shadow: 0 4px 0 var(--ink-4); }
+
+.pr-mark {
+  display: inline-flex;
+  flex: none;
+  border: 2px solid var(--ink-4);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.pr-mark-btn {
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-2);
+  background: transparent;
+  border: 0;
+  border-left: 2px solid var(--line-soft);
+  cursor: pointer;
+}
+
+.pr-mark-btn:first-child {
+  border-left: 0;
+}
+
+.pr-mark-btn:hover:not(:disabled):not(.is-on) {
+  background: var(--purple-soft);
+}
+
+.pr-mark-btn.is-on[data-mark-btn="blue"] { color: #fff; background: var(--purple-ink); }
+.pr-mark-btn.is-on[data-mark-btn="yellow"] { color: #3d2a00; background: #ffc21f; }
+.pr-mark-btn.is-on[data-mark-btn="red"] { color: #fff; background: #c8102e; }
+
+.pr-mark-btn:disabled {
+  cursor: not-allowed;
+}
+
+.pr-mark-btn:disabled:not(.is-on) {
+  color: var(--ink-3);
+  background: #f1f3f8;
+}
+
+/* 页面右上角的角标（浮层） */
+.pr-page[data-mark="yellow"]::before,
+.pr-page[data-mark="red"]::before,
+.pr-page[data-mark="deleted"]::before {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  padding: 3px 12px;
+  font-size: 13px;
+  font-weight: 800;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.pr-page[data-mark="yellow"]::before {
+  content: "🟡 这一页要人工改";
+  color: #3d2a00;
+  background: #ffc21f;
+}
+
+.is-opened .pr-page[data-mark="yellow"]::before {
+  content: "🟡 这一页要人工改 · 已打开过";
+}
+
+.pr-page[data-mark="red"]::before {
+  content: "🗑 一键处理时删除这张表";
+  color: #fff;
+  background: #c8102e;
+}
+
+.pr-page[data-mark="deleted"]::before {
+  content: "🗑 这张表已删除（PDF 也删了）";
+  color: var(--ink-2);
+  background: #e3e7f0;
+}
+
+/* 删掉的表：灰掉、不能再点开 */
+.pr-doc[data-mark="deleted"] .pr-img {
+  filter: grayscale(1);
+  opacity: 0.35;
+}
+
+.pr-doc[data-mark="deleted"] .pr-layer {
+  pointer-events: none;
+}
+
+.pr-doc[data-mark="deleted"] .pr-doc-name {
+  color: var(--ink-3);
+  text-decoration: line-through;
+}
+
+/* 右键标黄时的位置 */
+.pr-pin {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  margin: -11px 0 0 -11px;
+  border: 3px solid #f0b400;
+  border-radius: 50%;
+  background: rgba(255, 194, 31, 0.25);
+  box-shadow: 0 0 0 2px #fff;
+  pointer-events: none;
+}
+
+/* 右键菜单 */
+.pr-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 250px;
+  max-width: min(360px, calc(100vw - 16px));
+  padding: 6px;
+  background: #fff;
+  border: 2.5px solid var(--ink);
+  border-radius: 14px;
+  box-shadow: 4px 4px 0 var(--ink);
+}
+
+.pr-menu[hidden] {
+  display: none;
+}
+
+.pr-menu-title {
+  padding: 4px 10px 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pr-menu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.pr-menu button span {
+  display: flex;
+  flex-direction: column;
+}
+
+.pr-menu small {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-3);
+}
+
+.pr-menu button:hover:not(:disabled) {
+  background: var(--purple-soft);
+}
+
+.pr-menu button.is-on {
+  background: #f1f3f8;
+}
+
+.pr-menu button.is-on::after {
+  content: "✓";
+  margin-left: auto;
+  color: var(--purple-ink);
+}
+
+.pr-menu button:disabled {
+  color: var(--ink-3);
+  cursor: not-allowed;
+}
+
+.pr-menu hr {
+  margin: 4px 6px;
+  border: 0;
+  border-top: 2px solid var(--line-soft);
+}
+
+.pr-dot {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-style: normal;
+  font-size: 13px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.pr-dot.is-blue { background: var(--purple); }
+.pr-dot.is-yellow { background: #ffc21f; }
+.pr-dot.is-red { background: #c8102e; }
+
+/* 底部「一键处理」：数字变了按钮宽度也不变 */
+.pr-process {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+#prProcessText {
+  display: inline-block;
+  min-width: 7.5em;
+  text-align: center;
+}
+
+.pr-count {
+  display: inline-block;
+  min-width: 2.2em;
+  padding: 0 6px;
+  font-size: 13px;
+  font-weight: 800;
+  text-align: center;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  text-shadow: none; /* 按钮的白字描边会继承下来，把徽章里的数字糊掉 */
+  line-height: 1.5;
+}
+
+.pr-count.is-yellow { color: #3d2a00; background: #ffc21f; }
+.pr-count.is-red { color: #fff; background: #c8102e; }
+
+@media (max-width: 720px) {
+  .pr-bar { flex-wrap: wrap; }
+  .pr-summary { max-width: none; }
+}
+
+/* 一键处理结果：每一处都能点开 */
+.pr-result {
+  width: min(720px, calc(100vw - 32px));
+  padding: 0;
+}
+
+.pr-result-body {
+  max-height: 60vh;
+  overflow: auto;
+  margin: 0 22px;
+  padding: 4px 16px 12px;
+  border: 2px solid var(--ink);
+  border-radius: 14px;
+  background: #f5f8ff;
+}
+
+.pr-result-body h3 {
+  margin: 12px 0 6px;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.pr-result-body ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.9;
+  word-break: break-all;
+}
+
+.pr-result-tag {
+  margin-left: 6px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #3d2a00;
+  background: #ffc21f;
+  border-radius: 999px;
+}
+
+.pr-result-note {
+  display: block;
+  color: var(--ink-3);
+}
+
+.pr-result .app-dialog-foot form {
+  display: contents;
 }

@@ -24,7 +24,7 @@
           || selected === 'manual' && row.manual || selected === 'auto' && !row.manual));
       const html = shown.length ? `<table class="print-layout-table"><thead><tr><th>文件 / Sheet</th><th>原方向</th><th>采用方向</th><th>比较与原因</th><th>调整</th></tr></thead><tbody>${shown.map(({row, index}) => `<tr>
         <td title="${escape(row.path)}">${escape(row.file)}<br><strong>${escape(row.sheet)}</strong></td>
-        <td>${label(row.original)}</td><td>${label(row.selected)}${row.manual ? '（人工）' : ''}${row.stale ? '<br><span class="print-layout-stale">待重新验证</span>' : row.review_needed ? '<br><span class="print-layout-stale">出现新的合并跨页，建议重新分析</span>' : ''}</td>
+        <td>${label(row.original)}</td><td>${label(row.selected)}${row.manual ? '（人工）' : ''}${row.saved_to_excel && !row.stale ? '<br><span class="print-layout-saved">已保存进 Excel</span>' : ''}${row.stale ? '<br><span class="print-layout-stale">待重新验证</span>' : row.review_needed ? '<br><span class="print-layout-stale">出现新的合并跨页，建议重新分析</span>' : ''}</td>
         <td>${metrics(row)}<br>${escape(row.reason)}</td><td><select data-layout-index="${index}" aria-label="${escape(row.sheet)} 的打印方向" ${disabled}>
           <option value="recommended" ${!row.manual ? 'selected' : ''}>自动推荐（${label(row.selected)}）</option>
           <option value="portrait" ${row.manual === 1 ? 'selected' : ''}>指定竖向</option>

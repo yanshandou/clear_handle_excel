@@ -1,17 +1,19 @@
 const TASKS = {
   export_pdf: {
-    title: '导出 PDF',
-    icon: '📄',
+    title: '人工复检',
+    icon: '📋',
     theme: 'feature-sky',
-    sub: '把每个工作簿的可见工作表分别导出为 PDF',
+    sub: '先把每个工作簿的可见工作表分别导出为 PDF，再逐页查看、标记、一键处理',
     notes: [
-      '自动递归扫描所选文件夹及其所有子文件夹，以只读方式打开 Excel，不修改原文件',
+      '每次都重新导出最新的 PDF；全部导出完后按钮变成「📋 查看 PDF」，点了进复检页面',
+      '自动递归扫描所选文件夹及其所有子文件夹，以只读方式打开 Excel 导出',
       '跳过隐藏表、変更履歴和备份表',
       '每张 Sheet 优先复用已记录的打印方向；没有有效记录时可选择是否比较横向、竖向（不比较会快很多，直接按 Excel 里的方向导出）',
+      '导出用的打印方向和 Excel 里设的不一样时（比如比较后横向更好），会把这个方向保存进原 Excel，打开 Excel 看到的和 PDF 一致；文件正在 Excel 里打开时保存不了，日志会提示',
       '导出的 PDF 直接保存在对应 Excel 文件所在的同一目录下',
       '开始前先删掉同一目录里以前导出的旧 PDF（名字是「Excel 文件名_….pdf」的），其他 PDF 不动',
     ],
-    runLabel: '📄 开始导出',
+    runLabel: '📄 导出 PDF',
   },
   normalize_view: {
     title: '视图标准化',
@@ -83,10 +85,11 @@ function saveLastFolder(folder) {
   } catch (e) {}
 }
 
-// 人工复检页面打开时读这个文件夹：先记下输入框里的路径
+// 导出完点「查看 PDF」：复检页面读这个文件夹，先记下输入框里的路径再过去
 function openPdfReview() {
   const folder = document.getElementById('taskFolderInput').value.trim();
   if (folder) saveLastFolder(folder);
+  window.location.href = '/pdf-review';
 }
 
 function isTaskRunning(kind) {
@@ -205,17 +208,19 @@ function renderDialog() {
     hint.textContent = '可以关闭此窗口，任务会在后台继续';
   } else if (phase === 'done') {
     btn.disabled = false;
-    btn.textContent = canResumeActiveTask() ? '🔁 继续上次任务' : '再执行一次';
+    // 人工复检：导出完一个按钮变成「查看 PDF」；没导完的先继续导
+    btn.textContent = canResumeActiveTask() ? '🔁 继续上次任务' : activeKind === 'export_pdf' ? '📋 查看 PDF' : '再执行一次';
   } else {
     btn.disabled = busyOther;
     btn.textContent = task.runLabel;
   }
+  // 人工复检窗口：导出 PDF 是蓝色，导完的「查看 PDF」是绿色，一眼分得出是哪一步
+  const viewing = activeKind === 'export_pdf' && phase === 'done' && !canResumeActiveTask();
+  btn.classList.toggle('btn-success', activeKind === 'export_pdf' && !viewing);
+  btn.classList.toggle('btn-primary', activeKind !== 'export_pdf' || viewing);
   if (busyOther && phase === 'form' && !starting) {
     hint.textContent = `后台正在执行「${overview.progress.task_name}」，完成后才能开始`;
   }
-  // 导出窗口里一直有人工复检的入口（以前导出过、窗口关掉了也能进去）；导出进行中 PDF 还不全，先不显示
-  document.getElementById('taskReviewBtn').classList.toggle(
-    'hidden', activeKind !== 'export_pdf' || starting || phase === 'running');
   if (phase === 'running' || phase === 'done') renderRunBox();
 }
 
@@ -267,6 +272,8 @@ function onPrimaryAction() {
   if (!activeKind || starting || document.getElementById('taskPrimaryBtn').disabled) return;
   if (phase === 'done' && canResumeActiveTask()) {
     resumeTask();
+  } else if (phase === 'done' && activeKind === 'export_pdf') {
+    openPdfReview();
   } else if (phase === 'done') {
     phase = 'form';
     renderDialog();

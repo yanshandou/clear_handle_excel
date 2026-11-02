@@ -171,30 +171,37 @@ class QuickTaskTests(unittest.TestCase):
     def report_files(self):
         return self.reporter.get_execution_report_snapshot()["files"]
 
-    def test_clean_confirmed_keep_survives_rescan_and_restart_until_file_changes(self):
-        path = self.add_book("a.xlsx", ["介護保険", "介護保険外"])
-        preview = lambda: self.workflow.preview_backup_sheets(str(self.folder))["files"][0]
-        self.assertIn("介護保険外", preview()["uncertain"])
-        plan = self.workflow.validate_clean_plan({"a.xlsx": {
-            "delete": [], "uncertain": [], "keep": ["介護保険", "介護保険外"]}})["a.xlsx"]
-        self.workflow._clean_backup_sheets(lambda: self.excel, path, self.folder, plan)
-        self.restart()
-        self.assertNotIn("介護保険外", preview()["uncertain"])
-        path.write_bytes(b"changed")
-        self.assertIn("介護保険外", preview()["uncertain"])
-
-    def test_new_change_note_rule_applies_to_old_confirmations_but_respects_new_ones(self):
+    def test_clean_does_not_remember_kept_sheets(self):
+        # 用户 2026-11-02：不记手动保留，下次扫描照规则重新显示（只有 A1=無 的 JSONサンプル 照样默认删除）
         from core import sheet_history
-        path = self.add_book("a.xlsx", ["概要", "レイアウト変更点", "仕様変更（#7547）", "レイアウト変更"])
-        key = sheet_history.key(path)
-        self.workflow.STATE.setdefault("clean_confirmed_keep", {})[key] = {
-            "hash": sheet_history.fingerprint(path), "sheets": ["レイアウト変更点", "仕様変更（#7547）", "レイアウト変更"]}
+        path = self.add_book("a.xlsx", ["介護保険", "介護保険外", "JSONサンプル"])
+        self.books["a.xlsx"].sheets[2].blank = True
         preview = lambda: self.workflow.preview_backup_sheets(str(self.folder))["files"][0]
-        self.assertEqual(preview()["backups"], ["レイアウト変更点", "仕様変更（#7547）", "レイアウト変更"])
-        self.workflow.STATE["clean_confirmed_keep"][key]["rule_version"] = 1
-        self.assertEqual(preview()["backups"], ["レイアウト変更"])
-        self.workflow.STATE["clean_confirmed_keep"][key]["rule_version"] = 2
-        self.assertEqual(preview()["backups"], [])
+        self.workflow.STATE["clean_confirmed_keep"] = {sheet_history.key(path): {  # 旧版本留下的记录不再起作用
+            "hash": sheet_history.fingerprint(path), "sheets": ["介護保険外", "JSONサンプル"], "rule_version": 2}}
+        plan = self.workflow.validate_clean_plan({"a.xlsx": {
+            "delete": [], "uncertain": [], "keep": ["介護保険", "介護保険外", "JSONサンプル"]}})["a.xlsx"]
+        self.workflow._clean_backup_sheets(lambda: self.excel, path, self.folder, plan)
+        entry = preview()
+        self.assertEqual(entry["uncertain"], ["介護保険外"])
+        self.assertEqual(entry["backups"], ["JSONサンプル"])
+
+    def test_change_note_sheets_follow_rule(self):
+        self.add_book("a.xlsx", ["概要", "レイアウト変更点", "仕様変更（#7547）", "レイアウト変更"])
+        entry = self.workflow.preview_backup_sheets(str(self.folder))["files"][0]
+        self.assertEqual(entry["backups"], ["レイアウト変更点", "仕様変更（#7547）", "レイアウト変更"])
+
+    def test_default_sheet_names_are_uncertain_unless_blank(self):
+        from core.common import is_default_sheet_name
+        self.assertFalse(is_default_sheet_name("SheetA"))
+        self.assertFalse(is_default_sheet_name("集計Sheet1"))
+        self.assertTrue(is_default_sheet_name("工作表1"))
+        self.add_book("a.xlsx", ["概要", "Sheet1", "Sheet 2", "ｓｈｅｅｔ３", "Sheet"])
+        self.books["a.xlsx"].sheets[4].blank = True
+        entry = self.workflow.preview_backup_sheets(str(self.folder))["files"][0]
+        self.assertEqual(entry["uncertain"], ["Sheet1", "Sheet 2", "ｓｈｅｅｔ３"])
+        self.assertEqual(entry["backups"], ["Sheet"])
+        self.assertEqual(entry["default_names"], ["Sheet1", "Sheet 2", "ｓｈｅｅｔ３", "Sheet"])
 
     def restart(self):
         loaded = storage.load_snapshot("workflow")

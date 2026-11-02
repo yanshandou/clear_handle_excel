@@ -176,7 +176,7 @@
       </ol>
     </section>
     <section class="panel"><details id="printLayoutsDetails"><summary>📄 Sheet 打印方向记录</summary>
-      <p class="toolbar-hint">每张 Sheet 分别比较横向、竖向；分析结果供扫描和导出复用，原 Excel 的打印设置保持不变。</p>
+      <p class="toolbar-hint">每张 Sheet 分别比较横向、竖向；分析结果供扫描和导出复用；导出 PDF 时，和 Excel 里不一样的方向会保存进原 Excel。</p>
       <button type="button" id="printLayoutsRefresh" class="btn btn-outline btn-sm">刷新记录</button>
       <label>搜索文件或工作表 <input type="search" id="printLayoutsSearch"></label>
       <label>分类 <select id="printLayoutsFilter"><option value="all">全部</option><option value="stale">待重新验证</option><option value="review">建议重新分析</option><option value="manual">人工指定</option><option value="auto">自动推荐</option></select></label>
@@ -189,7 +189,7 @@
     <div id="taskDialogHead" class="task-dialog-head feature-sky">
       <span id="taskDialogIcon" class="task-dialog-icon" aria-hidden="true">📄</span>
       <div class="task-dialog-heading">
-        <h2 id="taskDialogTitle">导出 PDF</h2>
+        <h2 id="taskDialogTitle">人工复检</h2>
         <p id="taskDialogSub"></p>
       </div>
       <button type="button" class="task-dialog-close" onclick="closeTask()" aria-label="关闭">✕</button>
@@ -233,7 +233,6 @@
     <div class="task-dialog-foot">
       <span id="taskHint" class="task-hint"></span>
       <button type="button" class="btn btn-outline" onclick="closeTask()">关闭</button>
-      <a href="/pdf-review" id="taskReviewBtn" class="btn btn-success hidden" onclick="openPdfReview()" title="复检上面这个文件夹里已经导出的 PDF：看到问题点一下，用 Excel 打开那一格（可同时打开原始备份对照）">🔎 人工复检</a>
       <button type="button" class="btn btn-primary" id="taskPrimaryBtn" onclick="onPrimaryAction()">开始</button>
     </div>
   </dialog>
