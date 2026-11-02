@@ -210,6 +210,18 @@ class QuickTaskTests(unittest.TestCase):
         self.assertEqual(entry["uncertain"], [])
         self.assertEqual(entry["confirmed_keep"], ["介護保険外"])
 
+    def test_default_sheet_names_are_uncertain_unless_blank(self):
+        from core.common import is_default_sheet_name
+        self.assertFalse(is_default_sheet_name("SheetA"))
+        self.assertFalse(is_default_sheet_name("集計Sheet1"))
+        self.assertTrue(is_default_sheet_name("工作表1"))
+        self.add_book("a.xlsx", ["概要", "Sheet1", "Sheet 2", "ｓｈｅｅｔ３", "Sheet"])
+        self.books["a.xlsx"].sheets[4].blank = True
+        entry = self.workflow.preview_backup_sheets(str(self.folder))["files"][0]
+        self.assertEqual(entry["uncertain"], ["Sheet1", "Sheet 2", "ｓｈｅｅｔ３"])
+        self.assertEqual(entry["backups"], ["Sheet"])
+        self.assertEqual(entry["default_names"], ["Sheet1", "Sheet 2", "ｓｈｅｅｔ３", "Sheet"])
+
     def test_confirmation_v3_respects_manually_kept_blank_sheet(self):
         from core import sheet_history
         path = self.add_book("a.xlsx", ["概要", "JSONサンプル"])
