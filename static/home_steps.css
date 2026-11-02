@@ -1,6 +1,7 @@
 /* ==========================================
    主页：处理流程 3×3 大数字卡片
-   - 每格左边一个大号描线数字 1–9，右边是原来的游戏风卡牌（颜色跟图标底色走）
+   - 照参考图：大号空心数字压在框的左边、和框连成一体，图标卡在框顶的缺口里，文字居中
+   - 框保留游戏风彩色卡牌（颜色跟图标底色走）
    - 宽屏（≥ 1100px）按列排：左列 1-3、中列 4-6、右列 7-9
    - 中等宽度两列按行排，窄屏一列 1-9
    - 卡片悬停、点击都不位移
@@ -19,7 +20,7 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
   grid-template-rows: repeat(3, auto);
   grid-auto-flow: column;          /* 按列排：1 2 3 往下，再到下一列 */
-  gap: 30px 34px;
+  gap: 26px 30px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -28,17 +29,20 @@
 .step-item {
   position: relative;
   display: grid;
-  grid-template-columns: 74px minmax(0, 1fr);
+  grid-template-columns: 78px minmax(0, 1fr);
   align-items: center;
-  gap: 6px;
   min-width: 0;
+  padding-top: 42px;               /* 给框顶上半露出来的图标留位置 */
 }
 
-/* ---------- 大号描线数字：外圈深色描边 + 内圈卡片颜色，中间白色 ---------- */
+/* ---------- 大号描线数字：压在框的左边，和框连成一体 ---------- */
 .step-num {
+  position: relative;
+  z-index: 2;
   display: block;
-  width: 74px;
+  width: 78px;
   height: auto;
+  margin-right: -38px;             /* 一半压进框里 */
   overflow: visible;
   pointer-events: none;
   user-select: none;
@@ -53,60 +57,82 @@
   paint-order: stroke;
 }
 
-/* 第一层：粗的深色外框（保证在浅底上看得清） */
-.step-num text:first-child {
+/* 第一层：页面底色的粗边，把框的描边「切开」，像参考图里数字和框连在一起 */
+.step-num text:nth-child(1) {
+  fill: var(--paper, #eef4ff);
+  stroke: var(--paper, #eef4ff);
+  stroke-width: 24px;
+}
+
+/* 第二层：深色外框（保证在浅底、彩色底上都看得清） */
+.step-num text:nth-child(2) {
   fill: var(--ink, #1c2858);
   stroke: var(--ink, #1c2858);
   stroke-width: 13px;
 }
 
-/* 第二层：卡片颜色的描线，中间留白，像参考图的空心数字 */
-.step-num text:last-child {
+/* 第三层：卡片颜色的描线，中间留白 = 空心数字 */
+.step-num text:nth-child(3) {
   fill: #ffffff;
   stroke: var(--g-bot, #2f80ff);
   stroke-width: 7px;
 }
 
-/* ---------- 卡牌：紧凑横版，图标在左 ---------- */
+/* ---------- 框：游戏风彩色卡牌，图标卡在框顶的缺口里，文字居中 ---------- */
 .step-grid .feature-card {
   position: relative;
   z-index: 1;
-  flex-direction: row-reverse;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   justify-content: flex-start;
-  gap: 8px;
   height: 100%;
   min-width: 0;
   min-height: 0;
-  padding: 12px 12px 18px;
+  padding: 50px 14px 20px 46px;    /* 左边让给数字，上边让给图标 */
+  overflow: visible;               /* 图标要伸出框顶 */
+}
+
+/* 图标伸出框外，悬停反光会露到框外，这里不用 */
+.step-grid .feature-card::after {
+  display: none;
 }
 
 .step-grid .feature-orb,
 .step-grid .feature-card:nth-child(even) .feature-orb {
-  flex-shrink: 0;
-  align-self: center;
-  width: 80px;
-  height: 80px;
-  margin: 0;
+  position: absolute;
+  top: -42px;
+  left: calc(50% + 16px);
+  display: grid;
+  place-items: center;
+  width: 84px;
+  height: 84px;
+  margin: 0 0 0 -42px;
+  border: 3px solid var(--ink, #1c2858);
+  border-radius: 50%;
+  background: #ffffff;
+  /* 外圈一道页面底色 = 框顶的缺口 */
+  box-shadow: 0 0 0 7px var(--paper, #eef4ff), 0 4px 0 7px var(--paper, #eef4ff);
+  transform: none;
 }
 
 .step-grid .feature-icon {
-  width: 80px;
-  height: 80px;
+  width: 70px;
+  height: 70px;
 }
 
 .step-grid .feature-icon-distribute {
-  font-size: 54px;
-  line-height: 80px;
+  font-size: 46px;
+  line-height: 70px;
 }
 
 .step-grid .feature-text {
   flex: 1 1 auto;
-  align-self: stretch;
+  align-items: center;
   justify-content: center;
   min-width: 0;
   gap: 3px;
-  padding: 9px 11px 11px;
+  padding: 10px 12px 12px;
+  text-align: center;
 }
 
 /* 步骤号已经由大数字表示，分类小标签只给「按需」的一步留着 */
@@ -115,7 +141,7 @@
 }
 
 .step-grid .feature-text::before {
-  align-self: flex-start;
+  align-self: center;
   font-size: 11px;
   letter-spacing: 1px;
 }
@@ -134,6 +160,7 @@
 }
 
 .step-grid .feature-meta {
+  align-self: center;
   margin-top: 5px;
   padding: 2px 9px;
   font-size: 11.5px;
@@ -157,7 +184,7 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
     grid-template-rows: none;
     grid-auto-flow: row;
-    gap: 26px 26px;
+    gap: 22px 26px;
   }
 }
 
@@ -165,34 +192,42 @@
 @media (max-width: 720px) {
   .step-grid {
     grid-template-columns: minmax(0, 1fr);
-    gap: 20px;
+    gap: 18px;
   }
 }
 
 @media (max-width: 520px) {
   .step-item {
-    grid-template-columns: 52px minmax(0, 1fr);
-    gap: 4px;
+    grid-template-columns: 56px minmax(0, 1fr);
+    padding-top: 34px;
   }
 
   .step-num {
-    width: 52px;
+    width: 56px;
+    margin-right: -26px;
   }
 
   .step-grid .feature-card {
-    padding: 10px 10px 16px;
+    padding: 40px 10px 16px 34px;
   }
 
   .step-grid .feature-orb,
-  .step-grid .feature-card:nth-child(even) .feature-orb,
+  .step-grid .feature-card:nth-child(even) .feature-orb {
+    top: -34px;
+    left: calc(50% + 12px);
+    width: 68px;
+    height: 68px;
+    margin-left: -34px;
+  }
+
   .step-grid .feature-icon {
-    width: 60px;
-    height: 60px;
+    width: 56px;
+    height: 56px;
   }
 
   .step-grid .feature-icon-distribute {
-    font-size: 42px;
-    line-height: 60px;
+    font-size: 38px;
+    line-height: 56px;
   }
 
   .step-grid .feature-title,
@@ -205,7 +240,7 @@
 .step-done {
   position: absolute;
   z-index: 4;
-  top: -12px;
+  top: 30px;                /* 框的右上角（li 上面留了 42px 给图标） */
   right: -12px;
   display: grid;
   place-items: center;
@@ -246,7 +281,7 @@
 
 @media (max-width: 520px) {
   .step-done {
-    top: -10px;
+    top: 24px;
     right: -6px;
     width: 32px;
     height: 32px;

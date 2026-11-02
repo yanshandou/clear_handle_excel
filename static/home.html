@@ -76,12 +76,12 @@
       </div>
     </section>
 
-    <!-- 处理流程：3×3 大数字卡片。宽屏按列排（左列 1-3、中列 4-6、右列 7-9），窄屏一列 1-9。
+    <!-- 处理流程：3×3 大数字卡片（照参考图：数字压在框的左边、框顶留缺口放图标）。宽屏按列排（左列 1-3、中列 4-6、右列 7-9），窄屏一列 1-9。
          卡片本身和以前一样（链接、按钮、状态文字 id 都没变） -->
     <section class="step-grid-wrap" aria-label="处理流程">
       <ol class="step-grid">
         <li data-ops="clean" class="step-item feature-violet">
-          <svg class="step-num" viewBox="0 0 80 120" aria-hidden="true"><text x="40" y="100">1</text><text x="40" y="100">1</text></svg>
+          <svg class="step-num" viewBox="0 0 80 120" aria-hidden="true"><text x="40" y="100">1</text><text x="40" y="100">1</text><text x="40" y="100">1</text></svg>
           <span class="step-done hidden" role="img"></span>
           <a href="/clean" class="feature-card feature-violet">
             <span class="feature-text">
@@ -93,7 +93,7 @@
           </a>
         </li>
         <li data-ops="scan autofix" class="step-item feature-rose">
-          <svg class="step-num" viewBox="0 0 80 120" aria-hidden="true"><text x="40" y="100">2</text><text x="40" y="100">2</text></svg>
+          <svg class="step-num" viewBox="0 0 80 120" aria-hidden="true"><text x="40" y="100">2</text><text x="40" y="100">2</text><text x="40" y="100">2</text></svg>
           <span class="step-done hidden" role="img"></span>
           <a href="/workbench" class="feature-card feature-rose">
             <span class="feature-text">
@@ -105,7 +105,7 @@
           </a>
         </li>
         <li data-ops="colors" class="step-item step-optional feature-violet">
-          <svg class="step-num" viewBox="0 0 80 120" aria-hidden="true"><text x="40" y="100">3</text><text x="40" y="100">3</text></svg>
+          <svg class="step-num" viewBox="0 0 80 120" aria-hidden="true"><text x="40" y="100">3</text><text x="40" y="100">3</text><text x="40" y="100">3</text></svg>
           <span class="step-done hidden" role="img"></span>
           <a href="/repair-colors" class="feature-card feature-violet" style="--tile-cat: '按需'">
             <span class="feature-text"><span class="feature-title">修复颜色</span>
@@ -115,7 +115,7 @@
           </a>
         </li>
         <li data-ops="bl_scan bl_clear" class="step-item feature-mint feature-bl">
-          <svg class="step-num" viewBox="0 0 80 120" aria-hidden="true"><text x="40" y="100">4</text><text x="40" y="100">4</text></svg>
+          <svg class="step-num" viewBox="0 0 80 120" aria-hidden="true"><text x="40" y="100">4</text><text x="40" y="100">4</text><text x="40" y="100">4</text></svg>
           <span class="step-done hidden" role="img"></span>
           <a href="/repair-bl-links" class="feature-card feature-mint feature-bl">
             <span class="feature-text"><span class="feature-title">排查 BL 超链接</span>
@@ -125,7 +125,7 @@
           </a>
         </li>
         <li data-ops="links" class="step-item step-optional feature-sky">
-          <svg class="step-num" viewBox="0 0 80 120" aria-hidden="true"><text x="40" y="100">5</text><text x="40" y="100">5</text></svg>
+          <svg class="step-num" viewBox="0 0 80 120" aria-hidden="true"><text x="40" y="100">5</text><text x="40" y="100">5</text><text x="40" y="100">5</text></svg>
           <span class="step-done hidden" role="img"></span>
           <a href="/repair-links" class="feature-card feature-sky" style="--tile-cat: '按需'">
             <span class="feature-text"><span class="feature-title">修复引用错误</span>
@@ -135,7 +135,7 @@
           </a>
         </li>
         <li data-ops="hidden" class="step-item step-optional feature-sky">
-          <svg class="step-num" viewBox="0 0 80 120" aria-hidden="true"><text x="40" y="100">6</text><text x="40" y="100">6</text></svg>
+          <svg class="step-num" viewBox="0 0 80 120" aria-hidden="true"><text x="40" y="100">6</text><text x="40" y="100">6</text><text x="40" y="100">6</text></svg>
           <span class="step-done hidden" role="img"></span>
           <a href="/repair-hidden" class="feature-card feature-sky" style="--tile-cat: '按需'">
             <span class="feature-text"><span class="feature-title">修复隐藏页</span>
@@ -145,7 +145,7 @@
           </a>
         </li>
         <li data-ops="pdf" class="step-item feature-sky">
-          <svg class="step-num" viewBox="0 0 80 120" aria-hidden="true"><text x="40" y="100">7</text><text x="40" y="100">7</text></svg>
+          <svg class="step-num" viewBox="0 0 80 120" aria-hidden="true"><text x="40" y="100">7</text><text x="40" y="100">7</text><text x="40" y="100">7</text></svg>
           <span class="step-done hidden" role="img"></span>
           <button type="button" class="feature-card feature-sky" onclick="openTask('export_pdf')">
             <span class="feature-text">
@@ -157,7 +157,7 @@
           </button>
         </li>
         <li data-ops="view" class="step-item feature-mint">
-          <svg class="step-num" viewBox="0 0 80 120" aria-hidden="true"><text x="40" y="100">8</text><text x="40" y="100">8</text></svg>
+          <svg class="step-num" viewBox="0 0 80 120" aria-hidden="true"><text x="40" y="100">8</text><text x="40" y="100">8</text><text x="40" y="100">8</text></svg>
           <span class="step-done hidden" role="img"></span>
           <button type="button" class="feature-card feature-mint" onclick="openTask('normalize_view')">
             <span class="feature-text">
@@ -169,7 +169,7 @@
           </button>
         </li>
         <li data-ops="distribute" class="step-item feature-sky feature-distribute">
-          <svg class="step-num" viewBox="0 0 80 120" aria-hidden="true"><text x="40" y="100">9</text><text x="40" y="100">9</text></svg>
+          <svg class="step-num" viewBox="0 0 80 120" aria-hidden="true"><text x="40" y="100">9</text><text x="40" y="100">9</text><text x="40" y="100">9</text></svg>
           <span class="step-done hidden" role="img"></span>
           <a href="/distribute" class="feature-card feature-sky feature-distribute">
             <span class="feature-text"><span class="feature-title">按 JSON 复制 Excel</span>
