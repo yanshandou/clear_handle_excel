@@ -29,6 +29,7 @@ from core.common import (
     is_change_note_sheet,
     is_inspection_exempt_sheet,
     find_clean_targets,
+    has_old_word,
     find_contained_sheets,
     find_new_prefix_sheets,
     has_review_prefix,
@@ -2662,6 +2663,7 @@ def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
                               + (f"  ⚠️ {entry['note']}" if entry["note"] else ""))
                 debug_log.event("📄 精简预览", 文件=entry["name"], 用时秒=seconds, 表数=entry["sheet_count"], 默认删除=entry["backups"],
                                 待定=entry["uncertain"], 新旧配对=entry["new_old_pairs"] or "-", 备注=entry["note"] or "-",
+                                OLD标记=[n for n in entry["sheets"] if has_old_word(n)] or "-",
                                 灰色标签=entry["gray_tabs"] or "-", 空白表=entry["blank_sheets"] or "-", 默认表名=entry["default_names"] or "-",
                                 编号组保留=[n for n in entry["sheets"] if n in copy_series_sheets(entry["sheets"])] or "-",
                                 全部表=entry["sheets"])
