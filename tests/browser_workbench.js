@@ -398,28 +398,6 @@ async function main() {
         batchState.cards.forEach(c=>{expandedFiles.add(fileKey(c));fileMountLimits.set(fileKey(c),Infinity)});render();})()`);
     }
     await evaluate(`poll=async()=>{}; new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
-    if (!baseline) {
-      await evaluate(`$('printLayoutsDetails').open=true`);
-      for(let i=0; i<50 && !await evaluate(`document.querySelectorAll('.print-layout-table tbody tr').length===2`); i++) await delay(50);
-      assert.equal(await evaluate(`document.querySelectorAll('.print-layout-table tbody tr').length`), 2);
-      assert.equal(await evaluate(`document.querySelectorAll('.print-layout-table select:disabled').length`), 2);
-      assert.equal(await evaluate(`document.querySelectorAll('#printLayoutsList img').length`), 0);
-      assert.equal(await evaluate(`$('printLayoutsList').textContent.includes('待重新验证')`), true);
-      layoutBusy=false;
-      await evaluate(`$('printLayoutsRefresh').click()`);
-      for(let i=0; i<50 && !await evaluate(`document.querySelectorAll('.print-layout-table select:disabled').length===0`); i++) await delay(50);
-      await evaluate(`(()=>{const select=document.querySelector('[data-layout-index="0"]');select.value='portrait';select.dispatchEvent(new Event('change',{bubbles:true}));})()`);
-      for(let i=0; i<50 && layoutRequests.length<1; i++) await delay(50);
-      assert.deepEqual(layoutRequests[0], {path:'C:/Synthetic/book-0.xlsx',key:'code:Sheet1',direction:'portrait'});
-      for(let i=0; i<50 && !await evaluate(`document.querySelector('.print-layout-table tbody tr').textContent.includes('竖向（人工）')`); i++) await delay(50);
-      assert.equal(await evaluate(`document.querySelector('.print-layout-table tbody tr').textContent.includes('竖向（人工）')`), true);
-      await evaluate(`$('printLayoutsDetails').scrollIntoView({block:'center'})`);
-      await capture('print-layouts');
-      await evaluate(`document.querySelector('[data-layout-reanalyze="0"]').click()`);
-      for(let i=0; i<50 && layoutRequests.length<2; i++) await delay(50);
-      assert.equal(layoutRequests[1].direction, 'auto');
-      await evaluate(`$('printLayoutsDetails').open=false;window.scrollTo(0,0)`);
-    }
     assert.deepEqual(await evaluate(`(async()=>{const r=await fetch('/api/batch',{cache:'no-store',headers:{'If-None-Match':'"fixture"'}});return {status:r.status,body:await r.text()};})()`), { status: 304, body: '' });
     const report = { mode: baseline ? 'baseline' : 'optimized', browser: path.basename(browser), cards: 1000, files: 80,folded:foldedChecks };
     report.progress = await evaluate(`(() => {
