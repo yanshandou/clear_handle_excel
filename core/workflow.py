@@ -109,9 +109,11 @@ from core.reporter import (
     suspend_updates as suspend_report_updates,
     update_file_progress,
 )
+from core.lock_timing import TimedRLock
 from core.storage import load_snapshot, save_snapshot
 
-STATE_LOCK = threading.RLock()
+# 带计时：等锁 / 占锁太久写调试日志（排查扫描中途空等）
+STATE_LOCK = TimedRLock("状态")
 
 MANUAL_CONFIRMED_REASON = "人工确认无需修复"
 MANUALLY_FIXED_REASON = "人工修改后重新检测未再检出压线"
@@ -1426,10 +1428,14 @@ def _scan_one_workbook(
                 wb.Save()
                 _record_sheet_changes(wb_path, clean_before, [s.Name for s in wb.Sheets],
                                       bkp_names, {}, kept_values, clean_hash)
+        prepared = time.perf_counter()
         update_file_progress(
             wb_label, all_sheets=all_names, deleted_backups=deleted_bkp_list,
             current_action="正在导出 PDF 并检测切字...",
         )
+        # 打开后到开始导出之间各步耗时（排查扫描中途空等，用户 2026-11-03 要求）
+        debug_log.event("🧾 打开后准备", 文件=wb_label, 从开始打开起秒=round(prepared - started, 2),
+                        写进度秒=round(time.perf_counter() - prepared, 2))
 
         scan_version = _file_version(wb_path)
         file_stem = sanitize_filename(strip_review_prefix(wb_path.stem))

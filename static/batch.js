@@ -180,8 +180,36 @@ async function post(url, payload = {}) {
   return result;
 }
 
+// 扫描期间后台只取进度（进度条、当前文件、预计时间、日志），卡片和分类点「刷新卡片」或扫描结束时再取完整的（用户 2026-11-03 定）
+const scanningLight = () => batchState.busy && batchState.job?.kind === 'batch_scan';
+
+async function pollProgress() {
+  ++pollInFlight;
+  const version = ++pollVersion;
+  let ended = false;
+  try {
+    const response = await fetch('/api/batch?light=1', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`无法读取进度：HTTP ${response.status}`);
+    const value = await response.json();
+    if (version !== pollVersion || requestBusy || colorSaving) return;
+    // 扫描结束（或换了任务、文件夹）：不合并，马上取一次完整的，完成撒花照常按「之前在扫描」判断
+    ended = !value.busy || value.job?.kind !== 'batch_scan' || value.folder !== batchState.folder;
+    if (!ended) {
+      delete value.light;
+      batchState = { ...batchState, ...value };
+      render();
+    }
+  } catch (error) {
+    if (version === pollVersion && !requestBusy && !colorSaving) $('errorText').textContent = error.message;
+  } finally {
+    --pollInFlight;
+  }
+  if (ended) { lastEtag = ''; poll(); }
+}
+
 async function poll(background = false) {
   if (background && pollInFlight) return;
+  if (background && scanningLight()) return pollProgress();
   ++pollInFlight;
   const version = ++pollVersion;
   try {
@@ -359,6 +387,7 @@ function renderControls() {
     : `整份重新检测有黄卡的 ${new Set(recheckAll.map(fileKey)).size} 个文件`
       + (held ? `（后台还要处理的 ${held} 个文件这次不排）` : '') + queueNote('复检');
   $('pauseBtn').classList.toggle('hidden', !batchState.busy || batchState.job?.kind !== 'batch_scan');
+  $('scanRefreshBtn').classList.toggle('hidden', !scanningLight());
   $('pauseBtn').disabled = requestBusy || !!batchState.job?.pause_requested;
   $('resumeBtn').classList.toggle('hidden', batchState.busy || batchState.job?.status !== 'interrupted');
   $('resumeBtn').disabled = requestBusy;
@@ -1007,7 +1036,8 @@ function render() {
   const label = batchState.busy ? (own && job.kind !== 'batch_scan' ? `正在${REVIEW_JOB_NAMES[job.kind] || '处理'}`
     : job?.pause_requested ? '当前文件做完后暂停' : '正在扫描')
     : job?.status === 'interrupted' ? '已暂停或部分文件未完成' : '当前进度';
-  $('progressText').textContent = `${label}：${completed} / ${total} 个文件 · 待审核 ${batchState.cards.length} 个单元格`;
+  $('progressText').textContent = `${label}：${completed} / ${total} 个文件 · 待审核 ${batchState.cards.length} 个单元格`
+    + (scanningLight() ? '（扫描中不自动更新，点「刷新卡片」看最新）' : '');
   renderDoneBanner(!batchState.busy && total > 0 && completed >= total && (!job || job.status === 'completed'), job, total);
   renderScanNow(batchState.scan_eta?.current);
   renderSlowFiles();
@@ -1357,6 +1387,7 @@ $('unhighlightResultBtn').addEventListener('click', showUnhighlightResult);
 $('unhighlightCloseBtn').addEventListener('click', () => $('unhighlightDialog').close());
 $('resumeBtn').addEventListener('click', () => startJob('/api/resume'));
 $('pauseBtn').addEventListener('click', () => action(() => post('/api/batch/pause')));
+$('scanRefreshBtn').addEventListener('click', () => { lastEtag = ''; poll(); });
 $('commitBtn').addEventListener('click', async () => {
   const color = selectedFilter;
   const only = color === 'all' ? '' : COLOR_NAMES[color];
