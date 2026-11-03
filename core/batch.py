@@ -3121,9 +3121,9 @@ def start_new_open_round() -> None:
 
 
 def _open_candidates(ids: list[str]) -> list[dict]:
-    """按卡片处理顺序列出文件，同一文件的多张黄卡只算一次。调用方持有 STATE_LOCK。"""
+    """按传进来的卡片顺序列出文件（人工处理面板按左边列表的顺序传），同一文件的多张黄卡只算一次。调用方持有 STATE_LOCK。"""
     first = {}
-    for card in sorted((_data()["cards"][cid] for cid in ids), key=lambda c: c["seq"]):
+    for card in (_data()["cards"][cid] for cid in dict.fromkeys(ids) if cid in _data()["cards"]):
         first.setdefault(card["wb_path"], card)
     return list(first.values())
 
