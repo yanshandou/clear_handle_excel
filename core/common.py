@@ -47,10 +47,15 @@ MMDD_SUFFIX_PATTERN = re.compile(r"(?<![a-zA-Z\d])(\d{2})(\d{2})[\s_\-・.]*$")
 # 名称末尾两位年份的 6 位年月日（YYMMDD，年份按 20YY，不晚于今年），如「お客様介保社福軽減ビュー_170120」（用户 2026-11-02）；
 # 可带括号；前面不能紧挨数字或英文字母（避免把编号当成日期），月日必须有效
 YYMMDD_SUFFIX_PATTERN = re.compile(r"(?<![a-zA-Z\d])\(?(\d{2})(\d{2})(\d{2})\)?[\s_\-・.]*$")
+# 同样的 6 位年月日写在开头，如「171013_お客様助成明細ビュー」（用户 2026-11-03）；后面不能紧挨数字或英文字母
+YYMMDD_PREFIX_PATTERN = re.compile(r"^[\s_\-・.]*\(?(\d{2})(\d{2})(\d{2})\)?(?![a-zA-Z\d])[\s_\-・.]*")
 # 工具自动生成的工作表（如 自動生成_引数、自動生成_JSON），没有对应原表，精简 Sheet 时默认删除
 AUTO_GENERATED_PREFIXES = ("自動生成", "自动生成")
 # 表名多出的英文词里像临时版本的（サンプル 与 サンプルtest 仍标待定），其余英文词（JSON、CSV、PDF…）算另一张表
-ENGLISH_TEMP_WORDS = {"new", "tmp", "temp", "test", "wk", "work", "draft", "org", "orig", "original", "prev", "ver"}
+ENGLISH_TEMP_WORDS = {
+    "new", "tmp", "temp", "test", "wk", "work", "draft", "org", "orig", "original", "prev", "ver",
+    "old", "bk", "bak", "backup", "copy",
+}
 # 加在表名前面、像临时版本的词（仮一覧、作業用一覧 仍标待定）；其余前缀（精神科基本療養費 与 基本療養費）算另一张表
 TEMP_PREFIX_WORDS = ENGLISH_TEMP_WORDS | {
     "仮", "作業", "作業用", "テスト", "試し", "検証", "検証用", "確認", "確認用", "修正前", "修正後", "変更前", "変更後",
@@ -113,19 +118,26 @@ def _date_of(match: re.Match[str]) -> str | None:
     return text if _is_valid_date(text) else None
 
 
-def _yymmdd_suffix_date(text: str) -> str | None:
-    """名称末尾的两位年份日期（如 _170120 → 20170120），无效或晚于今年时返回 None"""
-    m = YYMMDD_SUFFIX_PATTERN.search(text)
+def _yymmdd_suffix_date(text: str, pattern: re.Pattern[str] = YYMMDD_SUFFIX_PATTERN) -> str | None:
+    """名称末尾（或开头）的两位年份日期（如 _170120 → 20170120），无效或晚于今年时返回 None"""
+    m = pattern.search(text)
     if not m:
         return None
     date = f"20{m.group(1)}{m.group(2)}{m.group(3)}"
     return date if _is_valid_date(date) and int(date[:4]) <= datetime.now().year else None
 
 
+def _yymmdd_prefix_date(text: str) -> str | None:
+    """名称开头的两位年份日期（如 171013_一覧 → 20171013）"""
+    return _yymmdd_suffix_date(text, YYMMDD_PREFIX_PATTERN)
+
+
 def _latest_date_in(name: str) -> str | None:
     text = unicodedata.normalize("NFKC", name)
     dates = [d for m in DATE_PATTERN.finditer(text) if (d := _date_of(m))]
     if (short := _yymmdd_suffix_date(text)) is not None:
+        dates.append(short)
+    if (short := _yymmdd_prefix_date(text)) is not None:
         dates.append(short)
     return max(dates) if dates else None
 
@@ -192,6 +204,8 @@ def _original_name_of(backup_name: str) -> str:
     text = DATE_PATTERN.sub(lambda m: "" if _date_of(m) else m.group(0), text)
     if _yymmdd_suffix_date(text) is not None:
         text = YYMMDD_SUFFIX_PATTERN.sub("", text)
+    if _yymmdd_prefix_date(text) is not None:
+        text = YYMMDD_PREFIX_PATTERN.sub("", text)
     text = EXCEL_COPY_SUFFIX_PATTERN.sub("", text)
     text = COPY_PHRASE_PATTERN.sub("", text)
     text = BACKUP_WORD_PATTERN.sub("", text)
@@ -402,13 +416,14 @@ def _is_different_sheet(prefix: str, suffix: str, ref: str) -> bool:
     - 只在前面多出一段（精神科基本療養費 与 基本療養費、JSONサンプル 与 サンプル）：前缀是限定词，指另一类东西；
       仮/作業用/テスト/new/tmp 这类像临时版本的前缀除外
     - 日文表名多出的部分只是英文词（一覧 与 一覧CSV）；new/tmp/test/work 这类除外
-    后面多出日文（一覧 与 一覧詳細）仍可能是副本或明细，照旧待定。
+    - 前后都多出英文词（vwcmok15 与 DbVwCmok15Mapper，用户 2026-11-03）：把原名包在中间，是另一个对象；英文表名也算
+    后面多出日文（一覧 与 一覧詳細）、英文表名只在后面多出字母（Sheet 与 SheetAB）仍可能是副本或明细，照旧待定。
     """
     if prefix and not suffix:
         return prefix not in TEMP_PREFIX_WORDS
     parts = [p for p in (prefix, suffix) if p]
     return (
-        bool(parts) and not ref.isascii()
+        bool(parts) and (not ref.isascii() or len(parts) == 2)
         and all(re.fullmatch(r"[a-z]{2,}", p) and p not in ENGLISH_TEMP_WORDS for p in parts)
     )
 
