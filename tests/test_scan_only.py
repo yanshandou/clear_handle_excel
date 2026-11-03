@@ -963,6 +963,15 @@ class ScanOnlyTests(unittest.TestCase):
         self.assertEqual((b5["color"], b5["dismissed"], b5["message"]), ("yellow", False, batch.GROWN_FAILED_MESSAGE))
         self.assertIsNotNone(self.sheet.shown("B5"))
 
+    def test_scan_eta_counts_grow_and_recheck_time(self):
+        job = {"kind": "batch_scan", "workbooks": ["a", "b", "c"], "scanned": ["a"], "completed": ["a"],
+               "scan_seconds": {"a": 10.0}, "file_seconds": {"a": 25.0}, "sizes": {"a": 100, "b": 100, "c": 100}}
+        self.wf.STATE["busy"] = True
+        with self.wf.STATE_LOCK:
+            eta = batch._scan_eta(job)
+        self.assertEqual((eta["elapsed"], eta["remaining"]), (25, 50))
+        self.assertEqual(batch._scan_model(job), (10.0, 0.1))  # 超时上限仍只按检测时间
+
     def test_scan_skips_recheck_when_nothing_was_grown(self):
         self.add_item("A5")
         refreshed = self.run_scan_with_grow({}, None)

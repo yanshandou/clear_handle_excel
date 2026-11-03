@@ -1828,9 +1828,10 @@ def _scan_size(job: dict, path: str) -> int:
     return sizes[path]
 
 
-def _scan_model(job: dict) -> tuple[float, float] | None:
-    """按这次已扫完文件的耗时估算扫描速度：(平均每份秒数, 每字节秒数)；一份都没扫完时返回 None"""
-    done = job.get("scan_seconds") or {}
+def _scan_model(job: dict, key: str = "scan_seconds") -> tuple[float, float] | None:
+    """按这次已扫完文件的耗时估算扫描速度：(平均每份秒数, 每字节秒数)；一份都没扫完时返回 None。
+    key="scan_seconds" 只算检测（定超时上限用）；"file_seconds" 是整份做完（含加高、复检、标色，估剩余时间用）"""
+    done = job.get(key) or {}
     if not done:
         return None
     total = sum(done.values())
@@ -1902,10 +1903,11 @@ def _scan_eta(job: dict) -> dict | None:
     pending = [p for p in job["workbooks"] if p not in finished]
     now = wf.SCAN_NOW if wf.SCAN_NOW.get("path") in pending else {}
     running = max(0.0, time.time() - now["started"]) if now else 0.0
-    model = _scan_model(job)
+    # 剩余时间按整份做完的耗时估（加高后还要复检一次，只按检测估会少一半）
+    model = _scan_model(job, "file_seconds") or _scan_model(job)
     limit = job.get("scan_limit") or {}
     return {
-        "elapsed": round(sum((job.get("scan_seconds") or {}).values())
+        "elapsed": round(sum({**(job.get("scan_seconds") or {}), **(job.get("file_seconds") or {})}.values())
                          + sum((job.get("slow_seconds") or {}).values()) + running),
         "remaining": None if model is None
         else round(max(0.0, sum(_expected_scan_seconds(job, p, model) for p in pending) - running)),
@@ -3180,6 +3182,8 @@ def run() -> list[str]:
                         _recheck_after_grow(session, path)
                 with scan_analysis.operation("highlight"):
                     _sync_highlights(session.app, path, tick=session.touch)
+                with wf.STATE_LOCK:
+                    job.setdefault("file_seconds", {})[path] = round(time.perf_counter() - started, 1)
 
             def scan(path: str) -> None:
                 with scan_analysis.attempt(job, path):
