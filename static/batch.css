@@ -217,6 +217,8 @@ html:has(#largeView[open]) { overflow: hidden; }
 .learn-mode-btn { padding: 5px 14px; border: 0; background: #fff; color: var(--ink, #1c2858); font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
 .learn-mode-btn + .learn-mode-btn { border-left: 2px solid var(--ink, #1c2858); }
 .learn-mode-btn[aria-pressed="true"] { background: var(--purple-ink, #1f5fc4); color: #fff; }
+.learn-opened { background: #fff4e0; }
+.learn-opened[aria-pressed="true"] { background: #a35a00; color: #fff; }
 .learn-file .learn-cat-name { overflow-wrap: anywhere; }
 .learn-file-kinds { display: block; margin-top: 2px; font-size: 12px; opacity: .85; }
 .learn-others { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 999px; background: #fff4e0; color: #7a4a00; font-size: 12px; white-space: nowrap; }

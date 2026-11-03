@@ -2924,6 +2924,26 @@ def _remember_opened(paths: list[str], *, folder_key: str | None = None, round_:
             raise
 
 
+def note_opened(path: Path | str) -> None:
+    """网页上点文件名打开了一份还有问题的文件：也记成「已打开、待复检」，人工处理里各分类先不再列它"""
+    want = str(Path(path).resolve()).casefold()
+    with wf.STATE_LOCK:
+        paths = {c["wb_path"] for c in _data()["cards"].values() if not c.get("dismissed")}
+    key = next((p for p in paths if str(Path(p).resolve()).casefold() == want), None)
+    if key:
+        _remember_opened([key])
+
+
+def _forget_opened(path: str) -> None:
+    """复检完一份文件：不再算「待复检」，还有问题就回到各分类里"""
+    with wf.STATE_LOCK:
+        history = _data().get("open_history", {})
+        key = _open_folder_key()
+        if path in (history.get(key) or []):
+            history[key] = [p for p in history[key] if p != path]
+            wf._persist_state()
+
+
 def reset_open_history() -> int:
     """「重置打开记录」：只重置当前文件夹的批量打开进度，不关闭 Excel，也不改变审核结果。"""
     global _open_round
@@ -3295,6 +3315,8 @@ def run() -> list[str]:
                             if path not in job["again"]:
                                 job["completed"].append(path)
                             wf._persist_state()
+                        if cards:
+                            _forget_opened(path)
                     except Exception as err:
                         wf.log_msg(f"❌ {Path(path).name} 复检失败，可继续任务：{err}{_where(err)}")
                     finally:

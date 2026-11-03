@@ -167,6 +167,16 @@ class GrowWrapTests(unittest.TestCase):
         many = batch._card_category({"error_types": ["text_truncated"], "cell_addr": "B2:C3"}, [{"missing_lines": 4}])
         self.assertEqual(many[1], "文字截断 · 合并格 · 没加高 · 缺 3 行以上")
 
+    def test_opened_file_waits_for_recheck_then_comes_back(self):
+        self.add("A5", 5)
+        batch._hand_over(self.path)
+        batch.note_opened(Path(self.path))
+        self.assertEqual(batch.snapshot()["opened_files"], [self.path])
+        batch.note_opened(self.root / "other.xlsx")  # 没有问题的文件不记
+        self.assertEqual(batch._opened_paths(), {self.path})
+        batch._forget_opened(self.path)
+        self.assertEqual(batch._opened_paths(), set())
+
     def test_grow_ratio_only_accepts_the_two_choices(self):
         self.assertEqual(batch.grow_ratio(None), 1.5)
         self.assertEqual(batch.grow_ratio(1.2), 1.2)

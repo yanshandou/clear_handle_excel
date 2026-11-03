@@ -18,7 +18,7 @@ const shortLabel = label => label.split(' · ')[0];
 
 function fileList() {
   const groups = new Map();
-  for (const card of batchState.cards || []) {
+  for (const card of pendingCards()) {
     if (!groups.has(card.wb_path)) groups.set(card.wb_path, { key: card.wb_path, label: card.wb_name, type: 'file', cards: [] });
     groups.get(card.wb_path).cards.push(card);
   }
@@ -30,16 +30,32 @@ function fileList() {
   }).sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
 }
 
-function groupList() { return categoryMode === 'file' ? fileList() : categoryList(); }
+function groupList() {
+  const opened = openedGroup();
+  return [...(opened ? [opened] : []), ...(categoryMode === 'file' ? fileList() : categoryList())];
+}
 function groupCurrent(groups) {
   const want = categoryMode === 'file' ? fileSelected : categorySelected;
-  return groups.find(g => g.key === want) || groups[0] || null;
+  return groups.find(g => g.key === want) || groups.find(g => g.key !== OPENED_KEY) || groups[0] || null;
+}
+
+// 已打开、还没复检的文件：改完之前别的分类里先不列它，免得同一个文件反复打开；复检完回到各分类
+const OPENED_KEY = '__opened__';
+const openedSet = () => new Set(batchState.opened_files || []);
+const pendingCards = () => { const opened = openedSet(); return (batchState.cards || []).filter(c => !opened.has(c.wb_path)); };
+
+function openedGroup() {
+  const opened = openedSet();
+  const cards = (batchState.cards || []).filter(c => opened.has(c.wb_path));
+  if (!cards.length) return null;
+  return { key: OPENED_KEY, label: '已打开、待复检', type: OPENED_KEY, cards, count: cards.length,
+    files: new Set(cards.map(c => c.wb_path)).size };
 }
 
 function categoryList() {
   const order = (batchState.error_types || []).map(t => t.code);
   const groups = new Map();
-  for (const card of batchState.cards || []) {
+  for (const card of pendingCards()) {
     const [key, label] = card.category || ['other', '其他'];
     if (!groups.has(key)) groups.set(key, { key, label, type: key.split('|')[0], cards: [] });
     groups.get(key).cards.push(card);
@@ -66,9 +82,21 @@ function fileListHtml(files, current) {
     + `<span class="learn-count">${f.count}</span></button></li>`).join('');
 }
 
-function categoryListHtml(cats, current) {
-  if (!cats.length) return '<p class="learn-empty">没有要人工处理的问题。先在上面扫描一个文件夹。</p>';
-  if (categoryMode === 'file') return fileListHtml(cats, current);
+function openedItemHtml(group, current) {
+  return `<li><button type="button" class="learn-cat learn-opened" data-learn-cat="${OPENED_KEY}" aria-pressed="${group === current}" title="打开过、还没复检的文件，改完保存后复检">`
+    + `<span class="learn-cat-name">📂 已打开、待复检<small class="learn-file-kinds">${group.files} 个文件，复检后还有问题的回到下面</small></span>`
+    + `<span class="learn-count">${group.files}</span></button></li>`;
+}
+
+function categoryListHtml(all, current) {
+  if (!all.length) return '<p class="learn-empty">没有要人工处理的问题。先在上面扫描一个文件夹。</p>';
+  const opened = all[0]?.key === OPENED_KEY ? openedItemHtml(all[0], current) : '';
+  const cats = opened ? all.slice(1) : all;
+  return opened + (!cats.length ? '<p class="learn-empty">其余的文件都已经打开过了，改完复检。</p>'
+    : categoryMode === 'file' ? fileListHtml(cats, current) : categoryListOnlyHtml(cats, current));
+}
+
+function categoryListOnlyHtml(cats, current) {
   let lastType = '';
   return cats.map(cat => {
     const typeLabel = cat.label.split(' · ')[0];
@@ -87,8 +115,8 @@ function categoryState(card) {
 }
 
 function categoryCellsHtml(cat) {
-  const byFile = categoryMode === 'file' ? null : new Map();
-  if (byFile) for (const c of batchState.cards || []) byFile.set(c.wb_path, (byFile.get(c.wb_path) || 0) + 1);
+  const byFile = categoryMode === 'file' && cat.key !== OPENED_KEY ? null : new Map();
+  if (byFile) for (const c of pendingCards()) byFile.set(c.wb_path, (byFile.get(c.wb_path) || 0) + 1);
   const cards = byFile ? cat.cards : [...cat.cards].sort((a, b) => (a.category?.[1] || '').localeCompare(b.category?.[1] || '') || a.seq - b.seq);
   const rows = cards.slice(0, CATEGORY_CELL_LIMIT).map(c => {
     const [state, label] = categoryState(c);
@@ -97,7 +125,7 @@ function categoryCellsHtml(cat) {
     let second;
     if (byFile) {
       // 这个文件在别的分类里还有几处：打开时顺手一起改，复检是整份查的，会一起出结果
-      const others = byFile.get(c.wb_path) - cat.cards.filter(x => x.wb_path === c.wb_path).length;
+      const others = cat.key === OPENED_KEY ? 0 : byFile.get(c.wb_path) - cat.cards.filter(x => x.wb_path === c.wb_path).length;
       second = excelLinkHtml(esc(c.wb_name), jump) + (others > 0 ? ` <span class="learn-others" title="Excel 里这些格子也标了色，打开时可以顺手一起改">还有 ${others} 处别的问题</span>` : '');
     } else second = esc((c.category || ['', ''])[1]);
     return `<tr data-state="${state}"><td><span class="learn-state">${label}</span></td>`
@@ -113,6 +141,13 @@ function categoryDetailHtml(cat) {
   const yellow = yellowCards(cat).length;
   const grown = cat.cards.filter(c => categoryState(c)[0] === 'grown').length;
   const disabled = reason => reason ? ` disabled title="${esc(reason)}"` : '';
+  if (cat.key === OPENED_KEY) {
+    return `<div class="learn-head"><h3>已打开、待复检</h3><span class="learn-meta">${cat.files} 个文件 · ${cat.count} 格</span></div>`
+      + '<ol class="learn-steps">'
+      + `<li><span class="learn-step-no">✓</span><div><strong>这些文件已经打开过</strong><p>在 Excel 里改完保存，再复检。复检前别的分类里不再列这些文件，免得重复打开；复检后还有问题的会回到各分类。想重新打开，点清单里的文件名。</p>`
+      + `<button type="button" class="btn btn-primary" id="categoryRecheckBtn"${disabled(busy || (!yellow && '没有要复检的格子'))}>🔁 复检这 ${cat.files} 个文件</button></div></li>`
+      + '</ol>' + categoryCellsHtml(cat);
+  }
   if (categoryMode === 'file') {
     return `<div class="learn-head"><h3>${esc(cat.label)}</h3><span class="learn-meta">${cat.count} 格 · ${esc(cat.summary)}</span></div>`
       + '<ol class="learn-steps">'
@@ -137,14 +172,16 @@ function renderCategories() {
   if (!panel) return;
   const cats = groupList();
   const current = groupCurrent(cats);
-  const key = JSON.stringify([categoryMode, cats.map(c => [c.key, c.cards.map(x => [x.id, x.color, x.finalized, !!x.grown])]), current?.key,
+  const key = JSON.stringify([categoryMode, batchState.opened_files, cats.map(c => [c.key, c.cards.map(x => [x.id, x.color, x.finalized, !!x.grown])]), current?.key,
     categoryBusyReason(), batchState.folder, excelLinkHtml.revision, batchState.open_blocked]);
   if (key === categoryRenderKey) return;
   categoryRenderKey = key;
   // 重画时保留清单框的滚动位置
   const scroll = $('learnDetail').querySelector('.learn-table-wrap')?.scrollTop || 0;
+  const rest = cats.filter(c => c.key !== OPENED_KEY);
   $('learnSummary').textContent = cats.length ? `共 ${cats.reduce((n, c) => n + c.count, 0)} 格，`
-    + (categoryMode === 'file' ? `${cats.length} 个文件` : `分成 ${cats.length} 类`) : '';
+    + (categoryMode === 'file' ? `${rest.length} 个文件` : `分成 ${rest.length} 类`)
+    + (rest.length < cats.length ? `，${cats[0].files} 个文件待复检` : '') : '';
   for (const b of document.querySelectorAll('[data-learn-mode]')) b.setAttribute('aria-pressed', String(b.dataset.learnMode === categoryMode));
   $('learnList').innerHTML = categoryListHtml(cats, current);
   $('learnDetail').innerHTML = categoryDetailHtml(current);
@@ -161,16 +198,17 @@ async function categoryOpen() {
 async function categoryRecheck() {
   const cat = groupCurrent(groupList());
   if (!cat) return;
-  const what = categoryMode === 'file' ? `「${cat.label}」` : `「${cat.label}」涉及的 ${cat.files} 个文件`;
+  const what = cat.key === OPENED_KEY ? `已打开的 ${cat.files} 个文件` : categoryMode === 'file' ? `「${cat.label}」` : `「${cat.label}」涉及的 ${cat.files} 个文件`;
   if (!(await appConfirm(`复检${what}：整份重新检测，通过的移出列表、去掉标色。\n请先在 Excel 里保存修改。`,
-    { title: categoryMode === 'file' ? '复检这个文件' : '复检这一类', okText: '🔁 复检', tone: 'info' }))) return;
+    { title: cat.key === OPENED_KEY || categoryMode === 'file' ? '复检文件' : '复检这一类', okText: '🔁 复检', tone: 'info' }))) return;
   await startJob('/api/batch/recheck', { card_ids: yellowCards(cat).map(c => c.id) });
 }
 
 $('learnList').addEventListener('click', event => {
   const button = event.target.closest('[data-learn-cat]');
   if (!button) return;
-  if (categoryMode === 'file') fileSelected = button.dataset.learnCat;
+  if (button.dataset.learnCat === OPENED_KEY) { fileSelected = categorySelected = OPENED_KEY; }
+  else if (categoryMode === 'file') fileSelected = button.dataset.learnCat;
   else {
     categorySelected = button.dataset.learnCat;
     try { localStorage.setItem(CATEGORY_SELECTED_KEY, categorySelected); } catch (_) {}
