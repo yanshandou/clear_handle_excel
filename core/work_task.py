@@ -1,0 +1,163 @@
+"""新任务：只填共享文件夹路径，自动生成本地的「参考」「处理」文件夹（用户 2026-11-03 定）。
+
+一个任务对应共享文件夹里的一个文件夹（连子文件夹一起）。例：
+
+    共享  D:\\Users\\s.go\\OneDrive - 会社\\介舟ファミリー\\20基本設計\\10DB\\12.ビュー定義書
+    参考  D:\\clear_handle_excel\\参考\\介舟ファミリー\\20基本設計\\10DB\\12.ビュー定義書
+    处理  D:\\clear_handle_excel\\处理\\介舟ファミリー\\20基本設計\\10DB\\12.ビュー定義書
+
+- 「OneDrive - 公司名」后面那一段原样接到工作根目录的「参考」「处理」后面，目录结构和共享一样；
+  路径里没有 OneDrive 时只用共享文件夹自己的名字。
+- 工作根目录默认是共享路径所在盘的根目录下 clear_handle_excel（网络路径时放用户文件夹下），可以改；
+  不能放进 OneDrive（会被同步给别人），也不能放进共享文件夹里面。
+- 参考 = 拿下来的原件，不改，修复颜色 / 引用 / 隐藏页的「原始备份」用它；处理 = 1～8 步改的地方。
+- 拿文件、上传都用 core/distribute.py 的「拿最新版」「复制」，覆盖前检查别人改过没有。
+  上传不另做备份（用户 2026-11-03 定）：只有共享那份和快照一样时才覆盖，被盖掉的内容就是参考里的原件。
+任务列表存在 execution.sqlite3（快照 work_tasks），以前的任务都保留，可以切回去。
+"""
+from __future__ import annotations
+
+import json
+import re
+import threading
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from core import debug_log, storage
+
+SNAPSHOT = "work_tasks"
+APP_DIR = "clear_handle_excel"
+REFERENCE, WORK, FETCH_BACKUP = "参考", "处理", "拿最新版前的备份"
+_LOCK = threading.RLock()
+
+
+def _is_onedrive(part: str) -> bool:
+    return part.casefold().startswith("onedrive")
+
+
+def _clean(value: Any, what: str) -> Path:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"请填写{what}")
+    return Path(value.strip().strip('"').strip("'")).expanduser()
+
+
+def relative_part(shared: Path) -> list[str]:
+    """共享路径里「OneDrive - 公司名」后面的那一段；没有 OneDrive 就只用最后一级文件夹名"""
+    parts = list(shared.parts)
+    idx = max((i for i, p in enumerate(parts) if _is_onedrive(p)), default=-1)
+    rel = parts[idx + 1:] if idx >= 0 else []
+    return rel or [shared.name or "共享"]
+
+
+def default_work_root(shared: Path) -> Path:
+    drive = shared.drive
+    if re.fullmatch(r"[A-Za-z]:", drive or ""):
+        return type(shared)(drive + "\\") / APP_DIR
+    return Path.home() / APP_DIR
+
+
+def derive(shared_text: Any, work_root_text: Any = "", *, must_exist: bool = True) -> dict[str, Any]:
+    """按共享路径算出参考 / 处理 / 备份文件夹，不建任何文件夹"""
+    shared = _clean(shared_text, "共享文件夹路径")
+    if must_exist and not shared.is_dir():
+        raise ValueError(f"共享文件夹不存在：{shared}（OneDrive 的话请确认已经同步到这台电脑）")
+    if must_exist:
+        shared = shared.resolve()
+    root = _clean(work_root_text, "工作根目录") if isinstance(work_root_text, str) and work_root_text.strip() \
+        else default_work_root(shared)
+    if any(_is_onedrive(p) for p in root.parts):
+        raise ValueError(f"工作根目录不能放在 OneDrive 里面（会被同步给别人）：{root}")
+    try:
+        root_resolved = root.resolve()
+    except OSError:
+        root_resolved = root
+    if root_resolved == shared or shared in root_resolved.parents or root_resolved in shared.parents:
+        raise ValueError("工作根目录不能和共享文件夹互相包含，请换一个地方")
+    rel = relative_part(shared)
+    return {
+        "shared": str(shared),
+        "work_root": str(root),
+        "rel": "/".join(rel),
+        "name": rel[-1],
+        "reference": str(root.joinpath(REFERENCE, *rel)),
+        "work": str(root.joinpath(WORK, *rel)),
+        "fetch_backup": str(root.joinpath(FETCH_BACKUP, *rel)),
+    }
+
+
+def _load() -> dict[str, Any]:
+    try:
+        data = storage.load_snapshot(SNAPSHOT) or {}
+    except Exception as err:
+        debug_log.event("⚠️ 没能读出任务列表", 原因=str(err))
+        data = {}
+    tasks = data.get("tasks") if isinstance(data.get("tasks"), list) else []
+    return {"tasks": tasks, "current": data.get("current") or ""}
+
+
+def _save(data: dict[str, Any]) -> None:
+    storage.save_snapshot(SNAPSHOT, data)
+
+
+def overview() -> dict[str, Any]:
+    data = _load()
+    last_root = data["tasks"][0]["work_root"] if data["tasks"] else ""
+    return {**data, "last_work_root": last_root}
+
+
+def get(task_id: str) -> dict[str, Any]:
+    for task in _load()["tasks"]:
+        if task.get("id") == task_id:
+            return task
+    raise ValueError("找不到这个任务，可能已经被删除，请重新开一个新任务")
+
+
+def create(shared_text: Any, work_root_text: Any = "") -> dict[str, Any]:
+    """开新任务：建好参考、处理文件夹，设成当前任务。同一个共享文件夹 + 工作根目录的任务已经有了就沿用"""
+    paths = derive(shared_text, work_root_text)
+    for key in ("reference", "work"):
+        Path(paths[key]).mkdir(parents=True, exist_ok=True)
+    with _LOCK:
+        data = _load()
+        same = next((t for t in data["tasks"] if t.get("shared") == paths["shared"]
+                     and t.get("work_root") == paths["work_root"]), None)
+        if same:
+            data["tasks"].remove(same)
+            task = {**same, **paths}
+        else:
+            task = {"id": uuid.uuid4().hex[:12], **paths, "created": datetime.now().strftime("%Y-%m-%d %H:%M")}
+        task["used"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        data["tasks"].insert(0, task)
+        data["current"] = task["id"]
+        _save(data)
+    debug_log.event("🆕 新任务" if not same else "🔁 沿用以前的任务", 共享=paths["shared"], 参考=paths["reference"],
+                    处理=paths["work"])
+    return task
+
+
+def switch(task_id: str) -> dict[str, Any]:
+    with _LOCK:
+        data = _load()
+        task = next((t for t in data["tasks"] if t.get("id") == task_id), None)
+        if not task:
+            raise ValueError("找不到这个任务")
+        data["tasks"].remove(task)
+        task["used"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        data["tasks"].insert(0, task)
+        data["current"] = task_id
+        _save(data)
+    debug_log.event("🔀 切换任务", 共享=task["shared"], 处理=task["work"])
+    return task
+
+
+def plan_for(task: dict[str, Any]) -> dict[str, Any]:
+    """把任务换成 distribute 用的清单：来源 = 处理文件夹，目的地 = 共享文件夹"""
+    work, shared = Path(task["work"]), Path(task["shared"])
+    work.mkdir(parents=True, exist_ok=True)
+    plan = {"label": f"任务：{task['name']}", "people": [{"name": task["name"], "folders": [
+        {"source": [work.name], "destination": [shared.name]}]}]}
+    return {"plan": json.dumps(plan, ensure_ascii=False), "source_root": str(work.parent),
+            "dest_root": str(shared.parent), "reference": task["reference"],
+            "fetch_backup": task["fetch_backup"]}

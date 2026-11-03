@@ -9,6 +9,10 @@
   let viewing = null;          // 正在看的历史记录（null = 看当前清单 / 最近一次结果）
   let filter = 'all';
   let wasRunning = false;
+  // 当前任务（主页「🆕 新任务」）：有任务时按任务的处理 / 共享文件夹，不用填 JSON；?mode=json 改回 JSON 复制
+  const params = new URLSearchParams(location.search);
+  let task = null;
+  const jsonMode = params.get('mode') === 'json';
 
   const load = key => { try { return localStorage.getItem(key) || ''; } catch (_) { return ''; } };
   const save = (key, value) => { try { localStorage.setItem(key, value); } catch (_) {} };
@@ -31,9 +35,10 @@
     const fetchMode = isFetch(latest.preview) || (latest.running && latest.kind === 'fetch');
     const canStart = !busy && latest.preview && latest.preview.folders.some(f => f.files.length || (f.dirs_to_create || []).length);
     $('distStart').disabled = !canStart;
-    $('distPreview').textContent = submitting === 'preview' ? '正在生成清单…' : '📋 生成复制清单';
-    $('distFetch').textContent = submitting === 'fetch' ? '正在对比目的地和本地…' : '⬇ 从目的地拿最新版';
-    $('distStart').textContent = fetchMode ? (latest.running ? '正在拿…' : '⬇ 按清单拿文件') : (latest.running ? '正在复制…' : '📥 按清单开始复制');
+    $('distPreview').textContent = submitting === 'preview' ? '正在生成清单…' : task ? '📋 生成上传清单' : '📋 生成复制清单';
+    $('distFetch').textContent = submitting === 'fetch' ? '正在对比共享和本地…' : task ? '⬇ 从共享拿最新版' : '⬇ 从目的地拿最新版';
+    $('distStart').textContent = fetchMode ? (latest.running ? '正在拿…' : '⬇ 按清单拿文件')
+      : (latest.running ? (task ? '正在上传…' : '正在复制…') : (task ? '📥 按清单上传到共享' : '📥 按清单开始复制'));
   }
 
   // 进度区：跑着显示进度条；结束后收起进度条，结果写成完成提示（有问题用黄色）
@@ -348,9 +353,10 @@
     if (loading || submitting || latest.running) return;
     const payload = { source_root: $('distSource').value.trim(), dest_root: $('distDest').value.trim(), plan: $('distPlan').value };
     $('distError').textContent = '';
-    if (!payload.source_root || !payload.dest_root) { $('distError').textContent = '请填写来源根目录和目的地根目录'; return; }
-    if (!payload.plan.trim()) { $('distError').textContent = '请粘贴上传记录 JSON，或选择 .json 文件'; return; }
-    save(KEYS.source, payload.source_root); save(KEYS.dest, payload.dest_root); save(KEYS.plan, payload.plan);
+    if (task) payload.task_id = task.id;
+    else if (!payload.source_root || !payload.dest_root) { $('distError').textContent = '请填写来源根目录和目的地根目录'; return; }
+    else if (!payload.plan.trim()) { $('distError').textContent = '请粘贴上传记录 JSON，或选择 .json 文件'; return; }
+    if (!task) save(KEYS.source, payload.source_root); save(KEYS.dest, payload.dest_root); save(KEYS.plan, payload.plan);
     submitting = kind; viewing = null; filter = 'all'; controls();
     showProgress('running', '', kind === 'fetch' ? '正在对比目的地和本地的文件（要读每个文件算哈希，文件多时要等一会儿）…' : '正在列出来源和目的地的文件，检查要覆盖的文件别人改过没有…');
     try {
@@ -363,7 +369,8 @@
   async function startFetch() {
     const s = latest.preview.summary;
     const lines = [`从「${latest.preview.dest_root}」拿 ${s['要拿']} 个 Excel 回「${latest.preview.source_root}」：新拿 ${s['新拿']} 个，替换本地 ${s['替换']} 个。`];
-    if (s['要备份']) lines.push(`替换的文件里有 ${s['要备份']} 个你本地改过，会先备份到来源根目录旁边的「…_拿最新版前的备份」文件夹，再换成目的地的新版。`);
+    if (s['要备份']) lines.push(`替换的文件里有 ${s['要备份']} 个你本地改过，会先备份到${task ? '工作根目录下的「拿最新版前的备份」' : '来源根目录旁边的「…_拿最新版前的备份」'}文件夹，再换成目的地的新版。`);
+    if (task) lines.push('拿下来的原件同时放一份到参考文件夹（修复颜色 / 引用 / 隐藏页对照用）。');
     if (s['保留你改的']) lines.push(`${s['保留你改的']} 个你改过、目的地没人动，不拿，保留你改的。`);
     lines.push('所有文件都会记下拿到的版本，之后复制（覆盖）前用来检查别人改过没有。目的地的文件不会被改动。');
     return window.appConfirm(lines.join('\n'), { title: '按清单拿最新版', okText: '开始拿', tone: s['替换'] ? 'danger' : undefined });
@@ -425,6 +432,30 @@
     if (view) { viewRun(view.dataset.distView); return; }
     if (event.target.closest('[data-dist-back]')) { viewing = null; filter = 'all'; render(); }
   });
+  async function loadTask() {
+    try {
+      const result = await (await fetch('/api/tasks', { cache: 'no-store' })).json();
+      const current = (result.tasks || []).find(t => t.id === result.current);
+      if (current && !jsonMode) {
+        task = current;
+        $('distTaskName').textContent = current.name;
+        $('distTaskPaths').innerHTML = `<dt>共享</dt><dd>${esc(current.shared)}</dd><dt>参考</dt><dd>${esc(current.reference)}</dd><dt>处理</dt><dd>${esc(current.work)}</dd>`;
+        $('distTaskBox').hidden = false;
+        $('distJsonFields').hidden = true;
+        $('distJsonIntro').hidden = true;
+      } else if (current) {
+        $('distBackToTask').hidden = false;
+      }
+    } catch (_) {}
+  }
+
   controls();
-  refresh();
+  loadTask().then(async () => {
+    await refresh();
+    // 主页开了新任务过来：先自动生成拿取清单（确认后才真正拿）
+    if (task && params.get('fetch') === '1' && !latest.running) {
+      history.replaceState(null, '', '/distribute');
+      makePreview('fetch');
+    }
+  });
 })();

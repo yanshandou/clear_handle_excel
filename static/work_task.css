@@ -1,0 +1,18 @@
+/* 主页「当前任务」和新任务对话框（static/work_task.js） */
+.work-task-panel { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px 24px; }
+.work-task-info { flex: 1 1 420px; min-width: 0; }
+.work-task-title { font-size: 18px; margin: 0 0 6px; overflow-wrap: anywhere; }
+.work-task-hint, .work-task-note { margin: 4px 0 0; font-size: 13px; color: var(--ink-3); }
+.work-task-paths { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; margin: 6px 0 0; font-size: 13px; }
+.work-task-paths dt { font-weight: 700; color: var(--ink-2); }
+.work-task-paths dd { margin: 0; color: var(--ink-2); overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; }
+.work-task-paths:empty { display: none; }
+.work-task-actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.work-task-switch { display: grid; gap: 4px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.work-task-switch select { max-width: 320px; min-height: 36px; }
+.work-task-dialog { width: min(760px, calc(100vw - 32px)); }
+.work-task-form { display: grid; gap: 12px; margin: 8px 22px 4px; }
+.work-task-form label { display: grid; gap: 6px; font-weight: 600; }
+.work-task-form input { width: 100%; box-sizing: border-box; min-width: 0; }
+.work-task-root summary { cursor: pointer; font-size: 13px; color: var(--ink-2); }
+.work-task-root label { margin-top: 8px; }

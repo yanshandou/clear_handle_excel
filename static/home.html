@@ -7,7 +7,7 @@
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/theme.css">
-  <link rel="stylesheet" href="/static/home_route.css"><script src="/static/game_fx.js"></script>
+  <link rel="stylesheet" href="/static/home_route.css"><link rel="stylesheet" href="/static/work_task.css"><script src="/static/game_fx.js"></script>
 </head>
 <body>
   <header class="app-header">
@@ -75,6 +75,40 @@
         <a href="/records" class="btn btn-outline btn-sm">查看执行记录 ↗</a>
       </div>
     </section>
+
+    <!-- 当前任务：一个任务对应共享文件夹里的一个文件夹；只填共享路径，参考 / 处理文件夹自动生成（static/work_task.js） -->
+    <section id="workTaskPanel" class="panel work-task-panel" aria-labelledby="workTaskTitle">
+      <div class="work-task-info">
+        <h2 id="workTaskTitle" class="work-task-title">📁 当前任务：<span id="workTaskName">还没有任务</span></h2>
+        <dl id="workTaskPaths" class="work-task-paths"></dl>
+        <p id="workTaskHint" class="work-task-hint">点「🆕 新任务」填共享文件夹路径，工具会自动生成本地的参考、处理文件夹，并把 1～9 步的文件夹都填好。</p>
+      </div>
+      <div class="work-task-actions">
+        <button type="button" class="btn btn-primary" id="workTaskNew">🆕 新任务</button>
+        <label class="work-task-switch" for="workTaskSwitch">切换到以前的任务
+          <select id="workTaskSwitch"><option value="">（没有以前的任务）</option></select>
+        </label>
+      </div>
+    </section>
+
+    <dialog id="workTaskDialog" class="app-dialog work-task-dialog" aria-labelledby="workTaskDialogTitle">
+      <div class="app-dialog-head"><span class="app-dialog-icon" aria-hidden="true">🆕</span><h2 id="workTaskDialogTitle" class="app-dialog-title">新任务</h2></div>
+      <div class="work-task-form">
+        <label for="workTaskShared">共享文件夹路径（要处理的那个文件夹，子文件夹一起处理）
+          <input id="workTaskShared" type="text" spellcheck="false" placeholder="例如 D:\Users\s.go\OneDrive - 会社名\介舟ファミリー\20基本設計\10DB\12.ビュー定義書">
+        </label>
+        <details class="work-task-root"><summary>工作根目录（参考、处理文件夹放在这里下面，一般不用改）</summary>
+          <label for="workTaskRoot">工作根目录<input id="workTaskRoot" type="text" spellcheck="false" placeholder="不填：共享路径所在盘的根目录下 clear_handle_excel"></label>
+          <p class="work-task-note">不能放在 OneDrive 里面，否则会被同步给别人。</p>
+        </details>
+        <dl id="workTaskPreview" class="work-task-paths"></dl>
+        <p id="workTaskError" class="batch-error" role="alert"></p>
+      </div>
+      <div class="app-dialog-foot">
+        <button type="button" class="btn btn-outline" id="workTaskCancel">取消</button>
+        <button type="button" class="btn btn-primary" id="workTaskCreate">开始，去拿文件</button>
+      </div>
+    </dialog>
 
     <!-- 处理流程路线图：按实际处理顺序从 START 走到 FINISH。
          宽屏三行蛇形（第二行从右往左），窄屏竖排；卡片本身和以前一样（链接、按钮、状态文字 id 都没变） -->
@@ -237,6 +271,7 @@
 
   <script src="/static/dialog.js"></script>
   <script src="/static/home.js"></script>
+  <script src="/static/work_task.js"></script>
   <script src="/static/debug_log.js"></script>
   <script src="/static/file_problem.js"></script>
 </body>

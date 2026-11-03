@@ -38,6 +38,11 @@
     .dist-history .dist-route { flex: 1 1 260px; }
     .tag-overwrite { color: #7a3b00; font-weight: 700; }
     .tag-new { color: #14633c; font-weight: 700; }
+    .dist-task { border: 2px solid #b7d4fb; background: var(--purple-soft); border-radius: 14px; padding: 12px 16px; margin: 14px 0; }
+    .dist-task-head { margin: 0 0 6px; font-size: 16px; overflow-wrap: anywhere; }
+    .dist-task-paths { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; margin: 0 0 6px; font-size: 13px; }
+    .dist-task-paths dt { font-weight: 700; }
+    .dist-task-paths dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; }
     .tag-keep { color: #1d4f91; font-weight: 700; }
     .tag-same { color: var(--ink-3); font-weight: 700; }
     .dist-conflict { color: #b42318; font-weight: 700; }
@@ -56,8 +61,17 @@
   <main class="container clean-container">
     <section class="panel">
       <h2>先生成清单，确认后再复制</h2>
+      <div id="distJsonIntro">
       <p class="toolbar-hint">JSON 里每个文件夹的 source 接在「来源根目录」后面，destination 接在「目的地根目录」后面。先按目录结构把目的地文件夹全部建好（来源里的子文件夹、空文件夹也照样建，来源找不到的也建一个空的），再把 Excel 复制进对应的文件夹：只复制 Excel 表格文件（.xls / .xlsx / .xlsm / .xlsb / .xlt / .xltx / .xltm，~$ 临时文件不算），其他文件不管。只复制不移动，来源文件原样保留。目的地已有同名文件时覆盖，文件名不改，覆盖了哪些写在复制记录里。</p>
       <p class="toolbar-hint"><strong>覆盖前检查别人改过没有：</strong>用「⬇ 从目的地拿最新版」把目的地（共享文件夹）的 Excel 拿回来源时，会记下每个文件拿到的版本。复制时如果目的地的文件和记下的不一样（拿走之后被别人改过），这个文件<strong>不覆盖</strong>、标红列出来；请再拿一次最新版，在新版上改好再复制。复制成功的文件也会记下放进去的版本，下次接着检查。没有记录的文件（以前手动拿的）没法检查，照旧覆盖，清单里会标出来。</p>
+      </div>
+      <div id="distTaskBox" class="dist-task" hidden>
+        <p class="dist-task-head">📁 当前任务：<strong id="distTaskName"></strong></p>
+        <dl id="distTaskPaths" class="dist-task-paths"></dl>
+        <p class="toolbar-hint">按任务处理：「⬇ 从共享拿最新版」把共享的 Excel 拿到处理文件夹（同时放一份原件到参考文件夹、记下快照）；处理完点「📋 生成上传清单」→「📥 按清单上传到共享」，覆盖前先检查别人改过没有。<a href="/distribute?mode=json">不按任务，用上传记录 JSON 复制 →</a></p>
+      </div>
+      <div id="distJsonFields">
+      <p id="distBackToTask" class="toolbar-hint" hidden><a href="/distribute">← 回到当前任务</a></p>
       <div class="link-fields">
         <label for="distSource">来源根目录<input id="distSource" type="text" placeholder="例如 D:\原始"></label>
         <label for="distDest">目的地根目录<input id="distDest" type="text" placeholder="例如 \\server\共有\上传"></label>
@@ -69,6 +83,7 @@
         <input id="distFile" type="file" accept=".json,application/json" hidden>
         <button id="distPick" class="btn btn-outline btn-sm" type="button">📂 选择 .json 文件</button>
         <span id="distFileName" class="toolbar-hint"></span>
+      </div>
       </div>
       <div class="link-actions">
         <button id="distPreview" class="btn btn-primary" type="button" disabled>📋 生成复制清单</button>
