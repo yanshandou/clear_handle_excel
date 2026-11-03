@@ -142,7 +142,7 @@ clear_handle_excel/
    pip install -r requirements.txt
    ```
    隐藏截断检测需要 PyMuPDF 1.25 或更高版本。以前装过旧版的，更新代码后执行一次 `pip install -U -r requirements.txt` 升级。
-4. **用 ZIP 更新代码**：下载新的 ZIP 解压后直接启动即可，不用再复制数据库。`execution.sqlite3` 和 `_report_images/` 放在程序文件夹外的数据目录（Windows 是 `%LOCALAPPDATA%\clear_handle_excel`，其他系统 `~/.clear_handle_excel`；设环境变量 `CLEAR_HANDLE_EXCEL_DATA` 可改位置），删掉或替换程序文件夹都不影响。启动时控制台会打印数据目录。
+4. **用 ZIP 更新代码**：下载新的 ZIP 解压后直接启动即可，不用再复制数据库。`execution.sqlite3` 和 `_report_images/` 放在程序文件夹外的数据目录（桌面 `handle-excel\程序数据`，和任务的参考 / 处理文件夹放在一起；以前放在 `%LOCALAPPDATA%\clear_handle_excel` 的会自动复制过来；设环境变量 `CLEAR_HANDLE_EXCEL_DATA` 可改位置），删掉或替换程序文件夹都不影响。启动时控制台会打印数据目录。
    - 第一次用新版本时，数据目录里还没有数据库，程序会自动从旧位置复制过来：先找本程序文件夹，再找旁边解压的其他版本（同一个上级目录下，或 ZIP 套了一层的文件夹），用最近改过的那份；只复制不删除。
 
 ---

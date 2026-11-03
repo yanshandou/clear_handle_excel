@@ -2,12 +2,13 @@
 
 位置：
 - 设了环境变量 CLEAR_HANDLE_EXCEL_DATA 就用它；
-- Windows：%LOCALAPPDATA%\\clear_handle_excel（一般是 C:\\Users\\<用户名>\\AppData\\Local\\clear_handle_excel）；
-- 其他系统：~/.clear_handle_excel。
+- 否则：桌面\\handle-excel\\程序数据（D:\\Users\\<用户名>\\Desktop\\handle-excel\\程序数据），
+  和任务的参考 / 处理文件夹放在一起（用户 2026-11-03 定）。
 
 第一次用到数据库时（数据文件夹里还没有 execution.sqlite3），自动从旧位置复制一份过来：
-先找本程序文件夹，再找旁边解压出来的其他版本（同一个上级目录下、或 ZIP 套了一层文件夹的），
-挑最近改过的那份。只复制不删除，旧文件原样留着。
+先找以前的数据文件夹（%LOCALAPPDATA%\\clear_handle_excel、~/.clear_handle_excel），再找本程序文件夹，
+再找旁边解压出来的其他版本（同一个上级目录下、或 ZIP 套了一层文件夹的），挑最近改过的那份。
+只复制不删除，旧文件原样留着。
 """
 import logging
 import os
@@ -27,11 +28,18 @@ def _default_dir() -> Path:
     custom = os.environ.get("CLEAR_HANDLE_EXCEL_DATA", "").strip()
     if custom:
         return Path(custom).expanduser()
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA", "").strip()
-        if base:
-            return Path(base) / "clear_handle_excel"
-    return Path.home() / ".clear_handle_excel"
+    # 用户 2026-11-03 定：和任务的参考 / 处理文件夹放在一起（桌面\handle-excel）
+    return Path.home() / "Desktop" / "handle-excel" / "程序数据"
+
+
+def previous_dirs() -> list[Path]:
+    """以前版本的数据文件夹（#148 起放在 %LOCALAPPDATA%\\clear_handle_excel，其他系统 ~/.clear_handle_excel）"""
+    dirs = []
+    base = os.environ.get("LOCALAPPDATA", "").strip()
+    if sys.platform == "win32" and base:
+        dirs.append(Path(base) / "clear_handle_excel")
+    dirs.append(Path.home() / ".clear_handle_excel")
+    return dirs
 
 
 DATA_DIR = _default_dir()
@@ -54,8 +62,10 @@ def _modified(database: Path) -> float:
     return max(times, default=0.0)
 
 
-def legacy_candidates(program_root: Path = PROJECT_ROOT) -> list[Path]:
-    """可能存着旧数据库的地方：本程序文件夹优先，再按修改时间从新到旧排其他版本的程序文件夹"""
+def legacy_candidates(program_root: Path = PROJECT_ROOT, previous: list[Path] | None = None) -> list[Path]:
+    """可能存着旧数据库的地方：以前的数据文件夹最优先，再是本程序文件夹，再按修改时间从新到旧排其他版本的程序文件夹"""
+    earlier = [d / DATABASE_NAME for d in (previous_dirs() if previous is None else previous)]
+    earlier = [path for path in earlier if path.is_file()]
     own = program_root / DATABASE_NAME
     found: dict[str, Path] = {}
     parent = program_root.parent
@@ -71,7 +81,7 @@ def legacy_candidates(program_root: Path = PROJECT_ROOT) -> list[Path]:
         except OSError:
             continue
     others = sorted(found.values(), key=_modified, reverse=True)
-    return ([own] if own.is_file() else []) + others
+    return earlier + ([own] if own.is_file() else []) + others
 
 
 def _copy_database(source: Path, target: Path) -> None:
@@ -90,7 +100,8 @@ def _copy_database(source: Path, target: Path) -> None:
     os.replace(temp, target)
 
 
-def ensure_migrated(database: Path, images: Path, program_root: Path = PROJECT_ROOT) -> None:
+def ensure_migrated(database: Path, images: Path, program_root: Path = PROJECT_ROOT,
+                    previous: list[Path] | None = None) -> None:
     """数据文件夹里还没有数据库时，从旧位置复制数据库和截图过来。每个进程每个位置只检查一次。"""
     key = str(database)
     if key in _checked:
@@ -108,7 +119,9 @@ def ensure_migrated(database: Path, images: Path, program_root: Path = PROJECT_R
             if (program_root / DATABASE_NAME).is_file():
                 console_print(f"ℹ️ 数据库在 {database}，程序文件夹里的 {DATABASE_NAME} 已不再使用，可以删掉。")
             return
-        for source in legacy_candidates(program_root):
+        for source in legacy_candidates(program_root, previous):
+            if source.parent == database.parent:
+                continue
             try:
                 _copy_database(source, database)
             except (OSError, sqlite3.Error):
