@@ -176,7 +176,7 @@ html:has(#largeView[open]) { overflow: hidden; }
 .batch-card-title .batch-cell-link { font-family: Consolas, "Yu Gothic UI", monospace; }
 .repair-filter-buttons { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 10px; }
 
-/* 按分类处理：左边分类列表，右边三步 + 格子清单。点分类只换颜色，不挪位置 */
+/* 按分类处理：左边分类列表，右边两步 + 格子清单。点分类只换颜色，不挪位置 */
 .learn-layout { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 18px; align-items: start; }
 .learn-layout > * { min-width: 0; }
 .learn-list { list-style: none; margin: 0; padding: 0 6px 6px 0; display: flex; flex-direction: column; gap: 6px; }
@@ -212,6 +212,15 @@ html:has(#largeView[open]) { overflow: hidden; }
 .learn-table td:nth-child(3) { white-space: nowrap; }
 .learn-text { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .learn-state { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; background: var(--paper, #e9f1fc); color: var(--ink, #1c2858); }
-tr[data-state="demo"] .learn-state { background: #1e7a45; color: #fff; }
-tr[data-state="applied"] .learn-state { background: var(--purple-ink, #1f5fc4); color: #fff; }
-tr[data-state="new"] .learn-state { background: #fff4e0; color: #7a4a00; }
+.learn-head-right { display: flex; align-items: center; gap: 14px; }
+.learn-mode { display: inline-flex; border: 2px solid var(--ink, #1c2858); border-radius: 10px; overflow: hidden; box-shadow: 2px 2px 0 var(--ink, #1c2858); }
+.learn-mode-btn { padding: 5px 14px; border: 0; background: #fff; color: var(--ink, #1c2858); font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
+.learn-mode-btn + .learn-mode-btn { border-left: 2px solid var(--ink, #1c2858); }
+.learn-mode-btn[aria-pressed="true"] { background: var(--purple-ink, #1f5fc4); color: #fff; }
+.learn-opened { background: #fff4e0; }
+.learn-opened[aria-pressed="true"] { background: #a35a00; color: #fff; }
+.learn-file .learn-cat-name { overflow-wrap: anywhere; }
+.learn-file-kinds { display: block; margin-top: 2px; font-size: 12px; opacity: .85; }
+.learn-others { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 999px; background: #fff4e0; color: #7a4a00; font-size: 12px; white-space: nowrap; }
+tr[data-state="grown"] .learn-state { background: #fff4e0; color: #7a4a00; }
+tr[data-state="marked"] .learn-state { background: var(--purple-ink, #1f5fc4); color: #fff; }

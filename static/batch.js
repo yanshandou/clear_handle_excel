@@ -1,7 +1,7 @@
 'use strict';
 const REVIEW_COLORS = ['blue', 'green', 'yellow'];
 const REVIEW_LABELS = { blue: '蓝 · 已修复', green: '绿 · 忽略', yellow: '黄 · 人工处理' };
-const REVIEW_JOB_NAMES = { batch_commit: '提交审核', batch_recheck: '复检', batch_open: '打开文件', batch_unhighlight: '清除标记颜色', batch_learn: '学一下', batch_apply: '按规律修改' };
+const REVIEW_JOB_NAMES = { batch_commit: '提交审核', batch_recheck: '复检', batch_open: '打开文件', batch_unhighlight: '清除标记颜色' };
 let batchState = { cards: [], busy: false, job: null, progress: {}, logs: [] };
 let selectedFilter = 'all';
 let largeMode = false;
@@ -321,7 +321,7 @@ function renderControls() {
   $('scanReportBtn').classList.toggle('hidden', !analysis || analysis.folder !== batchState.folder);
   if (analysis) $('scanReportBtn').href = `/analysis?id=${encodeURIComponent(analysis.id)}&folder=${encodeURIComponent(analysis.folder)}`;
   const manual = manualCards(), recheckAll = recheckAllCards(manual), recheckSet = new Set(recheckAll);
-  for (const id of ['startBtn', 'commitBtn', 'folderInput', 'scanLimit']) $(id).disabled = busy;
+  for (const id of ['startBtn', 'growRatio', 'commitBtn', 'folderInput', 'scanLimit']) $(id).disabled = busy;
   $('unhighlightBtn').disabled = busy || !(batchState.highlighted || batchState.tab_marks);
   $('unhighlightBtn').textContent = `🧽 清除 Excel 标记颜色${batchState.highlighted ? `（${batchState.highlighted}）` : ''}`;
   $('unhighlightResultBtn').classList.toggle('hidden', batchState.busy || !unhighlightResult());
@@ -415,7 +415,7 @@ function duration(seconds) {
   return `${Math.floor(s / 3600)} 小时${Math.floor(s % 3600 / 60) ? ` ${Math.floor(s % 3600 / 60)} 分` : ''}`;
 }
 // 任务已全部完成：收起满格进度条，换成明确的完成提示，免得以为卡在最后一个文件
-const DONE_TITLES = { batch_scan: '扫描完成', batch_commit: '审核已提交', batch_recheck: '复检完成', batch_open: '文件已打开', batch_unhighlight: '标记颜色已清除', batch_learn: '学完了', batch_apply: '按规律修改完成' };
+const DONE_TITLES = { batch_scan: '扫描完成', batch_commit: '审核已提交', batch_recheck: '复检完成', batch_open: '文件已打开', batch_unhighlight: '标记颜色已清除' };
 function renderDoneBanner(finished, job, total) {
   $('progressText').classList.toggle('hidden', finished);
   $('progressTrack').classList.toggle('hidden', finished);
@@ -426,7 +426,7 @@ function renderDoneBanner(finished, job, total) {
   const title = !kind ? '扫描完成' : DONE_TITLES[kind] || '处理完成';
   const left = batchState.cards.length;
   $('doneTitle').textContent = `${title}：${total} / ${total} 个文件全部处理完`;
-  $('doneDetail').textContent = left ? `还有 ${left} 个单元格待审核，请在下方卡片里确认颜色后提交。` : '没有待审核的单元格了。';
+  $('doneDetail').textContent = left ? `还有 ${left} 个单元格要人工处理，请在下方按分类打开文件修改，保存后复检。` : '没有待审核的单元格了。';
   $('doneGoBtn').classList.toggle('hidden', !left);
 }
 $('doneGoBtn').addEventListener('click', () => ($('learnPanel') || $('filters')).scrollIntoView({ behavior: 'smooth', block: 'start' }));
@@ -525,7 +525,7 @@ function handlingText(card) {
   return '';
 }
 
-// 旧版扫描时开了自动换行、加了行高（2026-11-03 起扫描不再改格子）：写明改了什么，效果由人工看
+// 扫描时开了自动换行、加了行高：写明改了什么，效果由人工看
 function grownText(card) {
   const g = card.grown;
   if (!g || !Number.isFinite(g.applied)) return '';
@@ -991,7 +991,7 @@ function pruneRenderCaches(allByFile) {
 
 function render() {
   renderControls();
-  if (typeof renderLearn === 'function') renderLearn();
+  if (typeof renderCategories === 'function') renderCategories();
   // 只保留当前筛选下看得到的卡片的选中，批量改色不会改到看不见的卡片
   const shown = shownCards();
   const visible = new Set(shown.map(c => c.id));
@@ -1219,6 +1219,11 @@ for (const [id, part] of [['highlightFill', 'fill'], ['highlightFont', 'font']])
 // 自动修复已去掉（用户 2026-11-02）：旧版本存的设置一并清掉
 try { localStorage.removeItem('clear_handle_excel.fixErrorTypes'); localStorage.removeItem('clear_handle_excel.highlightAuto'); } catch (_) {}
 // 切字的格子加高几倍字号：1.5（默认）或 1.2，记在本机浏览器
+const GROW_RATIO_KEY = 'clear_handle_excel.growRatio';
+try { if (['1.5', '1.2'].includes(localStorage.getItem(GROW_RATIO_KEY))) $('growRatio').value = localStorage.getItem(GROW_RATIO_KEY); } catch (_) {}
+$('growRatio').addEventListener('change', event => {
+  try { localStorage.setItem(GROW_RATIO_KEY, event.target.value); } catch (_) {}
+});
 
 // 暂停的扫描在提交、复检、打开文件后会放回来，不算替换续跑点
 const KEEPS_PAUSED_SCAN = new Set(['/api/batch/commit', '/api/batch/recheck', '/api/batch/open', '/api/batch/unhighlight']);
@@ -1330,8 +1335,9 @@ $('scanLimit').addEventListener('change', event => {
 $('slowClearBtn').addEventListener('click', () => action(() => post('/api/batch/slow_files/clear')));
 $('startBtn').addEventListener('click', async () => {
   if (!$('folderInput').value.trim()) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
-  if (!(await appConfirm(`检出的问题全部转为黄色人工项，并在原 Excel 里给问题单元格标色（复检通过或提交蓝 / 绿后自动去掉）。\n扫描不改格子的换行和行高：扫完到「按分类处理」里每类示范几格，程序学会后再修剩下的。\n\n确定开始扫描吗？`, { title: '开始扫描', okText: '开始扫描' }))) return;
-  await startBatch({ highlight: { ...highlight } });
+  const ratio = $('growRatio').value;
+  if (!(await appConfirm(`检出的问题全部转为黄色人工项，并在原 Excel 里给问题单元格标色（复检通过或提交蓝 / 绿后自动去掉）。\n切字的格子（边框压线、文字截断、超出裁剪框）开自动换行，按文字长短估算行数补够行高，再加「字号 × ${ratio}」，保存后整份复检一遍：通过的去掉标色，没通过的不再改，交给人工。\n\n确定开始扫描吗？`, { title: '开始扫描', okText: '开始扫描' }))) return;
+  await startBatch({ highlight: { ...highlight }, grow_ratio: Number(ratio) });
 });
 $('unhighlightBtn').addEventListener('click', async () => {
   if (await appConfirm(`去掉当前文件夹 ${batchState.highlighted || 0} 个单元格的标记颜色？\n标记是程序加的条件格式，只删这些规则；单元格本身的颜色和表里原有的条件格式都不动。标成橙黄色的工作表标签改回原来的颜色。\n需要先在 Excel 里保存并关闭这些文件。之后提交、复检也不再自动标色，重新开始处理时才按设置标色。`, { title: '清除 Excel 标记颜色', okText: '去掉标记' })) await startJob('/api/batch/unhighlight');
