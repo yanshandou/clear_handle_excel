@@ -101,9 +101,42 @@ class GrowWrapTests(unittest.TestCase):
         self.sheet.areas["E9"] = FakeArea(9, value=sql, width=100.0, height=18.75)
         self.add("E9", 9)
         done = batch._grow_and_wrap(Mock(), self.path, 1.5)
-        # 84 × 11 × 0.55 = 508.2pt，可用宽 96pt → 6 行 × 11 × 1.25 = 82.5pt；还差 63.75，再加 16.5
-        self.assertEqual(self.sheet.rows[9].RowHeight, 99.0)
-        self.assertEqual(done[batch._key(self.path, "S1", "E9")]["lines"], 6)
+        # Excel 量不出（这里没有真 Excel）就估算：按单词换行，可用宽 96pt → 7 行 × 11 × 1.25 = 96.25pt；
+        # 还差 77.5，再加 16.5
+        self.assertEqual(self.sheet.rows[9].RowHeight, 112.75)
+        self.assertEqual(done[batch._key(self.path, "S1", "E9")]["lines"], 7)
+        self.assertEqual(done[batch._key(self.path, "S1", "E9")]["measured_by"], "估算")
+
+    def test_excel_measures_merged_cell_on_a_temp_cell_of_the_same_width(self):
+        """合并格 Excel 不会自动调整：搬到临时工作簿一个同宽的格子上量，量出来不够的补够再加倍数"""
+        self.sheet.areas["E9"] = FakeArea(9, value="SELECT a FROM b", width=220.0, height=18.75)
+        self.add("E9", 9)
+        class Column:
+            ColumnWidth = 10.0
+            @property
+            def Width(self):
+                return self.ColumnWidth * 10.0  # 每个字宽 10pt
+        col, row = Column(), Mock(RowHeight=60.0)
+        tmp = Mock()
+        tmp.Columns.return_value, tmp.Rows.return_value = col, row
+        temp_book = Mock()
+        temp_book.Worksheets.return_value = tmp
+        excel = Mock()
+        excel.Workbooks.Add.return_value = temp_book
+        done = batch._grow_and_wrap(excel, self.path, 1.5)
+        self.assertAlmostEqual(col.Width, 220.0)
+        row.AutoFit.assert_called_once()
+        # 量出 60pt，现在 18.75，补 41.25，再加 16.5
+        self.assertEqual(self.sheet.rows[9].RowHeight, 76.5)
+        self.assertEqual(done[batch._key(self.path, "S1", "E9")]["measured_by"], "Excel")
+        temp_book.Close.assert_called_once_with(SaveChanges=False)
+
+    def test_word_wrap_counts_lines_like_excel(self):
+        self.assertEqual(batch._wrapped_lines("abc", 11, 100), 1)
+        self.assertEqual(batch._wrapped_lines("給与" * 30, 11, 100), 7)
+        # 按字数 3 行，按单词放不下的整个挪到下一行就成了 4 行
+        sql = "T1.okyakusama_id = T3.okyakusama_id AND T2.eigyousho_id = T3.eigyousho_id AND T1.month_id >= T3.start_month"
+        self.assertEqual(batch._wrapped_lines(sql, 11, 216), 4)
 
     def test_short_text_that_already_fits_only_gets_the_extra(self):
         self.sheet.areas["E9"] = FakeArea(9, value="給与", width=100.0)
