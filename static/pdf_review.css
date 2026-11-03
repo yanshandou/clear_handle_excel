@@ -124,17 +124,40 @@
   -webkit-user-select: none;
 }
 
-/* 只用小图（2026-11-02）：固定高度，一行能放几页放几页。--ar 是页面宽 / 高，宽度按它换算 */
+/* 页面大小（用户 2026-11-03 定）：--ar 是页面宽 / 高，宽度按它换算，高度跟着 aspect-ratio 走
+   - 大图：宽度占满整个屏幕宽（抵掉容器左右 16px 留白），一页一行
+   - 中图：高度占满整个屏幕高，一页一行、居中
+   - 小图：固定 320px 高，一行能放几页放几页 */
 .pr-pages {
   display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.view-large .pr-pages {
+  margin-inline: -16px;
+}
+
+.view-medium .pr-pages {
+  align-items: center;
+}
+
+.view-medium .pr-page {
+  width: min(100%, calc(100vh * var(--ar)));
+}
+
+.view-small .pr-pages {
   flex-direction: row;
   flex-wrap: wrap;
   align-items: flex-start;
-  gap: 10px;
 }
 
 .view-small .pr-page {
   width: min(100%, calc(320px * var(--ar)));
+}
+
+.pr-view {
+  flex: none;
 }
 
 .pr-img {

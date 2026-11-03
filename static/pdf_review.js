@@ -9,7 +9,9 @@
 // 改完 Excel 想看效果：标题上「🔄 重新生成」只把这一份 Excel 的 PDF 重新导出一次。
 
 const FOLDER_KEY = 'clear_handle_excel.lastFolder';
-const OLD_FOLDER_KEY = 'clear_handle_excel.oldFolder'; // 和修复颜色 / 引用 / 隐藏页共用
+const OLD_FOLDER_KEY = 'clear_handle_excel.oldFolder';
+const VIEW_KEY = 'clear_handle_excel.pdfReviewView';
+const VIEWS = ['large', 'medium', 'small']; // 和修复颜色 / 引用 / 隐藏页共用
 const MARKS_KEY = 'clear_handle_excel.pdfReviewMarks'; // {文件夹: {pdf: {v, red, pages: {页码: {}}, opened}}}
 const AUTO_KEY = 'clear_handle_excel.pdfReviewAutoYellow'; // {文件夹: {pdf: v}}：导出时发现内容很少的页，这一版已经自动标过黄
 const MARK_TEXT = { blue: '不用管', yellow: '要人工改', red: '删除这张表' };
@@ -748,10 +750,22 @@ function jumpTo(e) {
 
 /* ---------- 大图 / 中图 / 小图 ---------- */
 
-// 换大小后停在原来看的那一页的同一位置
-// 只用小图（用户 2026-11-02 定）：一行放好几页，快速过一遍
-function setView() {
-  $('prDocs').classList.add('view-small');
+// 大图 = 宽度占满屏幕宽，中图 = 高度占满屏幕高，小图 = 一行放好几页（用户 2026-11-03 定）。
+// 换大小后停在原来看的那一页的同一位置；选择记在 localStorage
+function setView(view, keep = true) {
+  if (!VIEWS.includes(view)) view = 'small';
+  const at = keep && pageEls.length ? readingPosition() : null;
+  const box = $('prDocs');
+  VIEWS.forEach(v => box.classList.toggle(`view-${v}`, v === view));
+  document.querySelectorAll('#prView [data-view]').forEach(b => {
+    b.classList.toggle('is-active', b.dataset.view === view);
+    b.setAttribute('aria-pressed', b.dataset.view === view);
+  });
+  try { localStorage.setItem(VIEW_KEY, view); } catch (_) {}
+  if (at) {
+    const page = pageEls[at.index].getBoundingClientRect();
+    window.scrollBy({ top: page.top + page.height * at.within - window.innerHeight * READ_LINE });
+  }
   scheduleWhere();
 }
 
@@ -827,6 +841,10 @@ $('prOpenYellow').addEventListener('click', () => runProcess('yellow'));
 $('prDeleteRed').addEventListener('click', () => runProcess('red'));
 $('prFolder').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
 $('prTrack').addEventListener('click', jumpTo);
+$('prView').addEventListener('click', e => {
+  const button = e.target.closest('[data-view]');
+  if (button) setView(button.dataset.view);
+});
 $('prResultBody').addEventListener('click', e => {
   const button = e.target.closest('[data-result-doc]');
   if (button) openPage(Number(button.dataset.resultDoc), Number(button.dataset.resultPage));
@@ -834,7 +852,11 @@ $('prResultBody').addEventListener('click', e => {
 window.addEventListener('scroll', scheduleWhere, { passive: true });
 window.addEventListener('resize', () => { if (pageEls.length) fitTicks(); scheduleWhere(); });
 watchBars();
-setView();
+{
+  let view = 'small';
+  try { view = localStorage.getItem(VIEW_KEY) || view; } catch (_) {}
+  setView(view, false);
+}
 try {
   $('prFolder').value = localStorage.getItem(FOLDER_KEY) || '';
   $('prOldFolder').value = localStorage.getItem(OLD_FOLDER_KEY) || '';
