@@ -97,6 +97,28 @@ class WorkTaskTests(unittest.TestCase):
         self.assertEqual(again["id"], first["id"])  # 同一个共享文件夹沿用以前的任务
         self.assertEqual(len(work_task.overview()["tasks"]), 2)
 
+    def test_finish_check_blocks_until_everything_uploaded(self):
+        task = work_task.create(str(self.shared), str(self.work_root))
+        work = Path(task["work"])
+        distribute.preview_fetch("", "", "", task["id"])
+        self.wait()
+        write(work / "a.xlsx", "BBB")
+        write(work / "新.xlsx", "new")
+        result = work_task.finish(task["id"])
+        self.assertFalse(result["done"])
+        self.assertEqual(result["issues"]["没上传"], ["a.xlsx"])
+        self.assertEqual(result["issues"]["共享里没有"], ["新.xlsx"])
+        write(self.shared / "子" / "孫" / "b.xlsx", "别人改的")
+        self.assertEqual(work_task.finish_check(task["id"])["issues"]["别人改过"], ["子/孫/b.xlsx"])
+        distribute.preview_fetch("", "", "", task["id"])
+        self.wait()
+        distribute.preview("", "", "", task["id"])
+        self.wait()
+        result = work_task.finish(task["id"])
+        self.assertTrue(result["done"], result["issues"])
+        self.assertTrue(work_task.get(task["id"])["done"])
+        self.assertFalse(work_task.create(str(self.shared), str(self.work_root))["done"])  # 再开一次重新开始
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -108,12 +108,17 @@
     <!-- 处理流程路线图：按实际处理顺序从 START 走到 FINISH。
          宽屏三行蛇形（第二行从右往左），窄屏竖排；卡片本身和以前一样（链接、按钮、状态文字 id 都没变） -->
     <section class="route-map" aria-label="处理流程">
+      <!-- 起点：高速入口那样的绿色路牌 -->
+      <div class="route-sign-row route-sign-row-start">
+        <button type="button" class="route-sign route-sign-entry" id="workTaskNew" title="开一个新任务：填共享文件夹路径，自动生成参考、处理文件夹">
+          <span class="route-sign-main">🆕 新任务</span><span class="route-sign-sub">入口 ➜</span>
+        </button>
+      </div>
       <ol class="route-steps">
         <li data-ops="clean" class="route-stop">
           <i class="route-road" aria-hidden="true"></i>
           <span class="route-done hidden" role="img"></span>
           <span class="route-flag route-flag-start" aria-hidden="true">START</span>
-          <button type="button" class="route-new-task" id="workTaskNew" title="开一个新任务：填共享文件夹路径，自动生成参考、处理文件夹">🆕 新任务</button>
           <a href="/clean" class="feature-card feature-violet tone-green" style="--tile-cat: 'STEP 1'">
             <span class="feature-text">
               <span class="feature-title">精简 Sheet</span>
@@ -213,6 +218,12 @@
           </a>
         </li>
       </ol>
+      <!-- 终点：黑白格牌子，收尾检查 → 标记完成 → 撒花 -->
+      <div class="route-sign-row route-sign-row-finish">
+        <button type="button" class="route-sign route-sign-finish" id="workTaskFinish" title="收尾检查：处理好的文件都传回共享了吗？通过就标记任务完成">
+          <span class="route-sign-main">🏁 完成任务</span><span class="route-sign-sub">收尾检查</span>
+        </button>
+      </div>
     </section>
   </main>
 

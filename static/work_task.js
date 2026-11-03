@@ -20,7 +20,7 @@
 
   function render() {
     const current = data.tasks.find(t => t.id === data.current);
-    $('workTaskName').textContent = current ? current.name : '还没有任务';
+    $('workTaskName').textContent = current ? current.name + (current.done ? '（✓ 已完成）' : '') : '还没有任务';
     $('workTaskPaths').innerHTML = current ? pathsHtml(current) : '';
     $('workTaskHint').textContent = current
       ? '1～8 步的文件夹已经填成「处理」，修复颜色 / 引用 / 隐藏页的原始备份是「参考」。第 9 步把处理好的文件传回共享。'
@@ -28,7 +28,7 @@
     $('workTaskName').title = current ? `共享：${current.shared}\n参考：${current.reference}\n处理：${current.work}` : '';
     const others = data.tasks.filter(t => t.id !== data.current);
     $('workTaskSwitch').innerHTML = others.length
-      ? '<option value="">选择一个任务…</option>' + others.map(t => `<option value="${esc(t.id)}">${esc(t.name)}（${esc(t.used || t.created || '')}）</option>`).join('')
+      ? '<option value="">选择一个任务…</option>' + others.map(t => `<option value="${esc(t.id)}">${t.done ? '✓ 已完成 · ' : '进行中 · '}${esc(t.name)}（${esc(t.used || t.created || '')}）</option>`).join('')
       : '<option value="">（没有以前的任务）</option>';
     $('workTaskSwitch').disabled = !others.length;
   }
@@ -100,7 +100,44 @@
     }
   }
 
+  // 终点「🏁 完成任务」：收尾检查（处理文件夹里的修改都传回共享了吗）→ 标记完成 → 撒花
+  let finishing = false;
+  async function finishTask() {
+    if (finishing) return;
+    const current = data.tasks.find(t => t.id === data.current);
+    if (!current) { window.appAlert('还没有任务。先点 START 旁边的「🆕 新任务」开一个任务。', { title: '没有任务' }); return; }
+    finishing = true;
+    const button = $('workTaskFinish');
+    const label = button.querySelector('.route-sign-sub');
+    label.textContent = '正在检查…';
+    try {
+      const result = await post('/api/tasks/finish', { id: current.id });
+      if (result.done) {
+        await load();
+        if (window.gameFx) window.gameFx.celebrate('任务完成！', `${current.name} · ${result.files} 个文件都已传回共享`, 3);
+        else window.appAlert(`${current.name} 的 ${result.files} 个文件都已传回共享，任务已标记完成。`, { title: '任务完成' });
+      } else {
+        const names = { '没上传': '改过但还没传回共享（请到第 9 步上传）', '别人改过': '别人在共享里改过（请到第 9 步先拿最新版，改好再传）',
+          '共享里没有': '处理文件夹里有、共享里没有（新文件还没传）', '读不到': '读不到（可能正在 Excel 中打开）' };
+        const lines = [];
+        for (const [key, list] of Object.entries(result.issues)) {
+          if (!list.length) continue;
+          lines.push(`■ ${list.length} 个${names[key] || key}：`);
+          lines.push(...list.slice(0, 8).map(rel => `　${rel}`));
+          if (list.length > 8) lines.push(`　……另外 ${list.length - 8} 个`);
+        }
+        window.appAlert(lines.join('\n') + '\n\n处理完这些再点「🏁 完成任务」。', { title: '还不能完成：有文件没传回共享', tone: 'warn' });
+      }
+    } catch (error) {
+      window.appAlert(error.message, { tone: 'error' });
+    } finally {
+      label.textContent = '收尾检查';
+      finishing = false;
+    }
+  }
+
   $('workTaskNew').addEventListener('click', openDialog);
+  $('workTaskFinish').addEventListener('click', finishTask);
   $('workTaskCancel').addEventListener('click', () => $('workTaskDialog').close());
   $('workTaskCreate').addEventListener('click', create);
   $('workTaskShared').addEventListener('input', scheduleDerive);

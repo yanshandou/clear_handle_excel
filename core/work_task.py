@@ -125,7 +125,7 @@ def create(shared_text: Any, work_root_text: Any = "") -> dict[str, Any]:
                      and t.get("work_root") == paths["work_root"]), None)
         if same:
             data["tasks"].remove(same)
-            task = {**same, **paths}
+            task = {**same, **paths, "done": False}  # 同一个文件夹再开一次 = 重新开始做
         else:
             task = {"id": uuid.uuid4().hex[:12], **paths, "created": datetime.now().strftime("%Y-%m-%d %H:%M")}
         task["used"] = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -161,3 +161,55 @@ def plan_for(task: dict[str, Any]) -> dict[str, Any]:
     return {"plan": json.dumps(plan, ensure_ascii=False), "source_root": str(work.parent),
             "dest_root": str(shared.parent), "reference": task["reference"],
             "fetch_backup": task["fetch_backup"]}
+
+
+# ───────────────────────── 完成任务（主页 FINISH） ─────────────────────────
+
+def finish_check(task_id: str) -> dict[str, Any]:
+    """收尾检查：处理文件夹里还有没有没传回共享的修改。只读，不改文件。
+    - 没上传：处理里改过，和共享不一样，共享还是拿的时候的版本；
+    - 别人改过：和共享不一样，共享也被别人改过了（要先拿最新版）；
+    - 共享里没有：处理里有、共享里没有的 Excel（新文件还没传）。"""
+    from core import distribute
+    task = get(task_id)
+    work, shared = Path(task["work"]), Path(task["shared"])
+    issues: dict[str, list[str]] = {"没上传": [], "别人改过": [], "共享里没有": [], "读不到": []}
+    with debug_log.side_task("work_task_finish_check", {"shared": str(shared), "work": str(work)}):
+        if not work.is_dir() or not shared.is_dir():
+            raise ValueError("处理文件夹或共享文件夹不存在了，请确认路径")
+        baseline = distribute.load_baseline()
+        mine = distribute.scan_folder(work)["excel"]
+        theirs = {distribute._key(rel): rel for rel in distribute.scan_folder(shared)["excel"]}
+        for rel in mine:
+            other = theirs.get(distribute._key(rel))
+            if not other:
+                issues["共享里没有"].append(rel)
+                continue
+            try:
+                a, b = distribute._digest(work / rel), distribute._digest(shared / other)
+            except OSError as err:
+                issues["读不到"].append(f"{rel}：{err.strerror or err}")
+                continue
+            if a == b:
+                continue
+            base = baseline.get(distribute._base_key(shared / other))
+            issues["别人改过" if base and base.get("sha256") != b else "没上传"].append(rel)
+        result = {"passed": not any(issues.values()), "issues": issues, "files": len(mine)}
+        debug_log.event("🏁 收尾检查", 文件=len(mine), **{k: len(v) for k, v in issues.items()})
+    return result
+
+
+def finish(task_id: str) -> dict[str, Any]:
+    """收尾检查通过才标成已完成；没通过返回检查结果，不标"""
+    check = finish_check(task_id)
+    if not check["passed"]:
+        return {**check, "done": False}
+    with _LOCK:
+        data = _load()
+        for task in data["tasks"]:
+            if task.get("id") == task_id:
+                task["done"] = True
+                task["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        _save(data)
+    debug_log.event("🏁 任务完成", 任务=task_id)
+    return {**check, "done": True}
