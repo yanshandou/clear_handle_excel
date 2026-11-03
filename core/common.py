@@ -47,6 +47,8 @@ MMDD_SUFFIX_PATTERN = re.compile(r"(?<![a-zA-Z\d])(\d{2})(\d{2})[\s_\-・.]*$")
 # 名称末尾两位年份的 6 位年月日（YYMMDD，年份按 20YY，不晚于今年），如「お客様介保社福軽減ビュー_170120」（用户 2026-11-02）；
 # 可带括号；前面不能紧挨数字或英文字母（避免把编号当成日期），月日必须有效
 YYMMDD_SUFFIX_PATTERN = re.compile(r"(?<![a-zA-Z\d])\(?(\d{2})(\d{2})(\d{2})\)?[\s_\-・.]*$")
+# 同样的 6 位年月日写在开头，如「171013_お客様助成明細ビュー」（用户 2026-11-03）；后面不能紧挨数字或英文字母
+YYMMDD_PREFIX_PATTERN = re.compile(r"^[\s_\-・.]*\(?(\d{2})(\d{2})(\d{2})\)?(?![a-zA-Z\d])[\s_\-・.]*")
 # 工具自动生成的工作表（如 自動生成_引数、自動生成_JSON），没有对应原表，精简 Sheet 时默认删除
 AUTO_GENERATED_PREFIXES = ("自動生成", "自动生成")
 # 表名多出的英文词里像临时版本的（サンプル 与 サンプルtest 仍标待定），其余英文词（JSON、CSV、PDF…）算另一张表
@@ -116,19 +118,26 @@ def _date_of(match: re.Match[str]) -> str | None:
     return text if _is_valid_date(text) else None
 
 
-def _yymmdd_suffix_date(text: str) -> str | None:
-    """名称末尾的两位年份日期（如 _170120 → 20170120），无效或晚于今年时返回 None"""
-    m = YYMMDD_SUFFIX_PATTERN.search(text)
+def _yymmdd_suffix_date(text: str, pattern: re.Pattern[str] = YYMMDD_SUFFIX_PATTERN) -> str | None:
+    """名称末尾（或开头）的两位年份日期（如 _170120 → 20170120），无效或晚于今年时返回 None"""
+    m = pattern.search(text)
     if not m:
         return None
     date = f"20{m.group(1)}{m.group(2)}{m.group(3)}"
     return date if _is_valid_date(date) and int(date[:4]) <= datetime.now().year else None
 
 
+def _yymmdd_prefix_date(text: str) -> str | None:
+    """名称开头的两位年份日期（如 171013_一覧 → 20171013）"""
+    return _yymmdd_suffix_date(text, YYMMDD_PREFIX_PATTERN)
+
+
 def _latest_date_in(name: str) -> str | None:
     text = unicodedata.normalize("NFKC", name)
     dates = [d for m in DATE_PATTERN.finditer(text) if (d := _date_of(m))]
     if (short := _yymmdd_suffix_date(text)) is not None:
+        dates.append(short)
+    if (short := _yymmdd_prefix_date(text)) is not None:
         dates.append(short)
     return max(dates) if dates else None
 
@@ -195,6 +204,8 @@ def _original_name_of(backup_name: str) -> str:
     text = DATE_PATTERN.sub(lambda m: "" if _date_of(m) else m.group(0), text)
     if _yymmdd_suffix_date(text) is not None:
         text = YYMMDD_SUFFIX_PATTERN.sub("", text)
+    if _yymmdd_prefix_date(text) is not None:
+        text = YYMMDD_PREFIX_PATTERN.sub("", text)
     text = EXCEL_COPY_SUFFIX_PATTERN.sub("", text)
     text = COPY_PHRASE_PATTERN.sub("", text)
     text = BACKUP_WORD_PATTERN.sub("", text)

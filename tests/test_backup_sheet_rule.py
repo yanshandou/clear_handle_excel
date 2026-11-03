@@ -248,6 +248,15 @@ class ContainedSheetTests(unittest.TestCase):
         # 已带 ❓ 的表也可作为被包含的名称（概要メモ）；已默认删除（請求書_20240101）、已带 ❓、自動生成、数字被切开（Sheet12）、单字被包含（表紙）都不算
         self.assertEqual(find_contained_sheets(names), ["一覧詳細", "請求書明細", "概要メモ"])
 
+    def test_yymmdd_prefix_date_is_backup(self):
+        # vwcmkj251_お客様助成明細ビュー.xlsx：日期写在开头（用户 2026-11-03）
+        names = ["お客様助成明細ビュー", "171013_お客様助成明細ビュー"]
+        self.assertEqual(find_clean_targets(names), ["171013_お客様助成明細ビュー"])
+        self.assertEqual(find_clean_targets(["一覧", "(171013)一覧"]), ["(171013)一覧"])
+        # 后面紧挨字母数字、无效日期、没有原表都不算
+        self.assertEqual(find_clean_targets(["一覧", "171013ABC一覧", "991301_一覧"]), [])
+        self.assertEqual(find_clean_targets(["171013_帳票"]), [])
+
     def test_original_with_backup_is_not_uncertain(self):
         # 精神科基本療養費 有备份表 精神科基本療養費20260402，是当前在用的版本，即使包含 基本療養費 也默认保留
         names = ["基本療養費", "精神科基本療養費", "精神科基本療養費20260402", "精神科訪問看護"]

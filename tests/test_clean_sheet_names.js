@@ -103,3 +103,11 @@ test('clean plan does not send kept sheets', () => {
   })())`));
   assert.deepEqual(plan.a, {delete: ['旧版'], uncertain: ['一覧詳細']});
 });
+
+test('two-digit-year date at the start of a sheet name is a backup marker', () => {
+  const run = cleanPage();
+  assert.equal(run("hasBackupMarker('171013_お客様助成明細ビュー')"), true);
+  assert.equal(run("hasBackupMarker('171013ABC一覧')"), false);
+  assert.equal(run("analyzeSheetName('171013_お客様助成明細ビュー', {stripBackup:true}).key"),
+    run("analyzeSheetName('お客様助成明細ビュー', {stripBackup:true}).key"));
+});

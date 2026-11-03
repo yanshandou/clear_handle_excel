@@ -63,6 +63,8 @@ const MMDD_SUFFIX_RE = /(?<![a-zA-Z\d])(\d{2})(\d{2})[\s_\-・.]*$/;
 
 // 末尾两位年份的 6 位年月日（如 _170120 → 2017-01-20），可带括号，年份不晚于今年
 const YYMMDD_SUFFIX_RE = /(?<![a-zA-Z\d])\(?(\d{2})(\d{2})(\d{2})\)?[\s_\-・.]*$/;
+// 同样的 6 位年月日写在开头（如 171013_お客様助成明細ビュー），后面不能紧挨数字或英文字母
+const YYMMDD_PREFIX_RE = /^[\s_\-・.]*\(?(\d{2})(\d{2})(\d{2})\)?(?![a-zA-Z\d])[\s_\-・.]*/;
 
 function isValidYymmdd(m) {
   const ymd = `20${m[1]}${m[2]}${m[3]}`;
@@ -92,6 +94,8 @@ function hasBackupMarker(sheetName) {
   if (hasMmddSuffix(text)) return true;
   const yymmdd = YYMMDD_SUFFIX_RE.exec(text);
   if (yymmdd && isValidYymmdd(yymmdd)) return true;
+  const yymmddPrefix = YYMMDD_PREFIX_RE.exec(text);
+  if (yymmddPrefix && isValidYymmdd(yymmddPrefix)) return true;
   const dateRe = new RegExp(DATE_RE.source, 'g');
   let m;
   while ((m = dateRe.exec(text)) !== null) {
@@ -159,6 +163,7 @@ function analyzeSheetName(displayName, { stripBackup = false, stripVersion = tru
   if (stripBackup) {
     applyStrip(DATE_RE, m => isValidYmdDate(m[1] + m[3] + m[4]), true);
     applyStrip(YYMMDD_SUFFIX_RE, isValidYymmdd, true);
+    applyStrip(YYMMDD_PREFIX_RE, isValidYymmdd, true);
     applyStrip(/\s*\(\d{1,3}\)[\s_\-・.]*$/g, null, true);
     applyStrip(/copy\s+of|の?コピー|的?副本/gi, null, true);
     applyStrip(/(?<![a-z])(?:bak|backup|bk|old|copy)(?![a-z])/gi, null, true);
