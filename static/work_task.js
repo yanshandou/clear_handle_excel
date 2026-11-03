@@ -17,6 +17,7 @@
     const input = $('taskFolderInput');
     if (input) input.value = task.work;
     if (typeof window.refreshDoneMarks === 'function') window.refreshDoneMarks();
+    if (typeof window.refreshTaskFolder === 'function') window.refreshTaskFolder();
   }
 
   function render() {

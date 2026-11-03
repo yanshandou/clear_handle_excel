@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import uuid
 from datetime import datetime
@@ -30,6 +31,7 @@ SNAPSHOT = "work_tasks"
 APP_DIR = "handle-excel"
 REFERENCE, WORK, FETCH_BACKUP = "参考", "处理", "拿最新版前的备份"
 _LOCK = threading.RLock()
+ENFORCE = True  # 1～8 步只能用当前任务的文件夹；测试里关掉
 
 
 def _is_onedrive(part: str) -> bool:
@@ -147,6 +149,42 @@ def switch(task_id: str) -> dict[str, Any]:
         _save(data)
     debug_log.event("🔀 切换任务", 共享=task["shared"], 处理=task["work"])
     return task
+
+
+def _norm(path: Path) -> str:
+    try:
+        path = path.resolve()
+    except OSError:
+        pass
+    return os.path.normcase(os.path.normpath(str(path))).casefold()
+
+
+def _inside(path: Path, base: Path) -> bool:
+    a, b = _norm(path), _norm(base)
+    return a == b or a.startswith(b.rstrip("\\/") + os.sep)
+
+
+def require_folder(folder: Any, role: str = "work") -> str:
+    """1～8 步的保险（用户 2026-11-03 定）：不走新任务不能直接填路径。
+    role="work"：只能是当前任务的「处理」文件夹（或它的子文件夹）；role="reference"：只能是「参考」。
+    不管有没有任务，OneDrive 里的文件夹（就是共享文件夹）一律不让程序直接改。"""
+    what = "原始备份文件夹" if role == "reference" else "Excel 文件夹路径"
+    path = _clean(folder, what)
+    if any(_is_onedrive(p) for p in path.parts):
+        raise ValueError(f"这个文件夹在 OneDrive 里，就是共享文件夹，程序不能直接改：{path}"
+                         "。请回主页点「🆕 新任务」，在本地的处理文件夹里改，改好再用第 9 步传回去")
+    if not ENFORCE:
+        return str(folder)
+    data = _load()
+    task = next((t for t in data["tasks"] if t.get("id") == data["current"]), None)
+    if not task:
+        raise ValueError("还没有开任务：请先回主页点「🆕 新任务」，填共享文件夹路径，程序只处理任务的本地文件夹")
+    key, name = ("reference", "参考") if role == "reference" else ("work", "处理")
+    base = Path(task[key])
+    if not _inside(path, base):
+        debug_log.event("🚫 不是当前任务的文件夹", 用途=name, 填的=str(path), 应该是=str(base))
+        raise ValueError(f"只能用当前任务「{task['name']}」的{name}文件夹：{base}。要换任务请回主页切换或开新任务")
+    return str(folder)
 
 
 def plan_for(task: dict[str, Any]) -> dict[str, Any]:

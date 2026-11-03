@@ -97,6 +97,33 @@ class WorkTaskTests(unittest.TestCase):
         self.assertEqual(again["id"], first["id"])  # 同一个共享文件夹沿用以前的任务
         self.assertEqual(len(work_task.overview()["tasks"]), 2)
 
+    def test_steps_only_accept_current_task_folders(self):
+        """用户 2026-11-03：不走新任务不能直接填路径；OneDrive（共享）里的文件夹一律不让改"""
+        with self.assertRaisesRegex(ValueError, "新任务"):
+            work_task.require_folder(str(self.work_root))  # 还没有任务
+        with self.assertRaisesRegex(ValueError, "OneDrive"):
+            work_task.require_folder(str(self.shared))
+        first = work_task.create(str(self.shared), str(self.work_root))
+        sub = Path(first["work"]) / "子"
+        sub.mkdir()
+        self.assertEqual(work_task.require_folder(first["work"]), first["work"])
+        self.assertEqual(work_task.require_folder(str(sub)), str(sub))  # 子文件夹可以
+        self.assertEqual(work_task.require_folder(first["reference"], "reference"), first["reference"])
+        for bad, role in ((first["reference"], "work"), (first["work"], "reference"), (str(self.work_root), "work"),
+                          (str(self.shared), "work"), (str(self.shared / "子"), "reference")):
+            with self.assertRaises(ValueError, msg=(bad, role)):
+                work_task.require_folder(bad, role)
+        other = self.shared.parent / "13.テーブル定義書"
+        other.mkdir()
+        second = work_task.create(str(other), str(self.work_root))
+        with self.assertRaisesRegex(ValueError, "13.テーブル定義書"):
+            work_task.require_folder(first["work"])  # 换了任务，旧任务的处理文件夹不能用
+        work_task.require_folder(second["work"])
+        with patch.object(work_task, "ENFORCE", False):
+            work_task.require_folder(str(self.work_root))
+            with self.assertRaises(ValueError):
+                work_task.require_folder(str(self.shared))  # 关了任务检查，OneDrive 也照样拦
+
     def test_finish_check_blocks_until_everything_uploaded(self):
         task = work_task.create(str(self.shared), str(self.work_root))
         work = Path(task["work"])
