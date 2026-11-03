@@ -1722,6 +1722,19 @@ def _text_width_pt(text: str, size: float) -> float:
     return sum(size if unicodedata.east_asian_width(ch) in "WFA" else size * HALF_WIDTH_RATIO for ch in text)
 
 
+def _wrapped_lines(text: str, size: float, usable: float) -> int:
+    """像 Excel 一样按单词换行数行数：英数单词放不下整个挪到下一行，比一行还长的单词才拆开；全角字可以随处断"""
+    lines, used = 1, 0.0
+    for token in re.findall(r"[^\s\u3000-\u9fff\uff00-\uffef]+\s*|\s+|.", text):
+        width, full = _text_width_pt(token.rstrip(), size), _text_width_pt(token, size)
+        if used and used + width > usable:
+            lines, used = lines + 1, 0.0
+        while width > usable:  # 一个单词比一整行还长：拆开
+            lines, width, full = lines + 1, width - usable, full - usable
+        used += full
+    return lines
+
+
 def _wrap_shortfall(area: Any, size: float) -> tuple[float, int]:
     """开换行后估算要几行，返回（现在的高度还差多少 pt，估算行数）。读不到文字或宽度时返回 (0, 0)。
     合并单元格按整个区域的宽、高算。"""
@@ -1737,9 +1750,67 @@ def _wrap_shortfall(area: Any, size: float) -> tuple[float, int]:
         return 0.0, 0
     usable = max(float(width) - CELL_PADDING_PT, size)
     text = str(value).replace("\r\n", "\n").replace("\r", "\n")
-    lines = sum(max(1, math.ceil(_text_width_pt(part, size) / usable)) for part in text.split("\n"))
+    lines = sum(_wrapped_lines(part, size, usable) for part in text.split("\n"))
     need = lines * size * LINE_HEIGHT_RATIO
     return max(0.0, need - float(height)), lines
+
+
+def _measure_wrapped_height(tmp: Any, area: Any) -> float:
+    """让 Excel 自己量这格开换行后要多高（pt）：Excel 的「自动调整行高」会跳过合并单元格，
+    所以把文字和字体搬到临时工作簿的一个不合并的格子上，宽度调成和整个合并区域一样，开换行后自动调整行高，
+    读出高度。Excel 按单词换行（SQL 里长单词放不下会整个挪到下一行），比按字数估算准。量不出返回 0。"""
+    first = area.Cells(1, 1)
+    value = first.Value
+    text = value if isinstance(value, str) else str(first.Text or "")
+    if not text:
+        return 0.0
+    cell = tmp.Cells(1, 1)
+    cell.NumberFormat = "@"  # SQL 等以 = 开头的文字也按文字放，不当公式
+    cell.Value = text
+    font, src = cell.Font, first.Font
+    font.Name, font.Size, font.Bold, font.Italic = src.Name, src.Size, src.Bold, src.Italic
+    cell.WrapText = True
+    width = float(area.Width)
+    column = tmp.Columns(1)
+    for _ in range(4):  # 列宽单位是字数、和 pt 不完全成比例，调几次贴近
+        now = float(column.Width)
+        if now <= 0:
+            break
+        column.ColumnWidth = min(255.0, max(0.5, float(column.ColumnWidth) * width / now))
+    if abs(float(column.Width) - width) > 3:
+        raise ValueError(f"临时格子宽度对不上（要 {width}pt，只能 {column.Width}pt）")
+    tmp.Rows(1).AutoFit()
+    height = float(tmp.Rows(1).RowHeight)
+    cell.Clear()
+    return height
+
+
+class _Measurer:
+    """一份文件开换行加高时共用一个临时工作簿量高度（不保存、用完关掉，不碰原文件）"""
+
+    def __init__(self, excel: Any) -> None:
+        self.excel, self.book, self.failed = excel, None, False
+
+    def height(self, area: Any) -> float:
+        if self.failed:
+            return 0.0
+        try:
+            if self.book is None:
+                self.book = self.excel.Workbooks.Add()
+            return _measure_wrapped_height(self.book.Worksheets(1), area)
+        except Exception as err:
+            debug_log.event("📏 Excel 量不出行高", 原因=str(err)[:120])
+            if self.book is None:
+                self.failed = True  # 临时工作簿都开不了：这份文件后面都用估算
+            return 0.0
+
+    def close(self) -> None:
+        if self.book is not None:
+            try:
+                self.book.Close(SaveChanges=False)
+            except Exception as err:
+                debug_log.event("⚠️ 临时工作簿关不掉", 原因=str(err)[:120])
+            self.book = None
 
 
 def _grow_and_wrap(excel: Any, path: str, ratio: float) -> dict[str, dict]:
@@ -1757,6 +1828,7 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float) -> dict[str, dict]:
     debug_log.event("📐 开换行加高", 文件=name, 格数=len(cards), 倍数=ratio)
     book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
     done: dict[str, dict] = {}
+    measurer = _Measurer(excel)
     try:
         if book.ReadOnly:
             raise ValueError(f"{name} 以只读方式打开，没能开换行、加高")
@@ -1777,8 +1849,16 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float) -> dict[str, dict]:
                 else:
                     area.WrapText = True
                     wrap = "已开"
-                # 文字很长（例如一整句 SQL）时，只加一行不够：先按估算的行数补够高度，再加「字号 × 倍数」
-                shortfall, lines = (0.0, 0) if shrink else _wrap_shortfall(area, size)
+                # 文字很长（例如一整句 SQL）时，只加一行不够：先让 Excel 在临时格子上量出换行后要多高
+                # （合并单元格按整个区域的宽度），量不出才按字数估算；不够的先补够，再加「字号 × 倍数」
+                shortfall, lines, by = 0.0, 0, "-"
+                if not shrink:
+                    measured = measurer.height(area)
+                    if measured > 0:
+                        shortfall, by = max(0.0, measured - float(area.Height)), "Excel"
+                    else:
+                        shortfall, lines = _wrap_shortfall(area, size)
+                        by = "估算"
                 row = int(area.Row) + int(area.Rows.Count) - 1  # 合并单元格加在最下面一行
                 entry = rows.setdefault((sheet.Name, row), {"sheet": sheet, "size": 0.0, "extra": 0.0, "cards": []})
                 entry["size"] = max(entry["size"], size)
@@ -1787,8 +1867,10 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float) -> dict[str, dict]:
                 done[card["id"]] = {"wrap": wrap == "已开", "row": row, "font": size,
                                     "merged": int(area.Rows.Count) > 1 or int(area.Columns.Count) > 1}
                 if shortfall:
-                    done[card["id"]].update(lines=lines, shortfall=round(shortfall, 2))
-                debug_log.event("↪️ 自动换行", 格=where, 结果=wrap, 字号=size, 估算行数=lines or "-",
+                    done[card["id"]].update(shortfall=round(shortfall, 2), measured_by=by)
+                    if lines:
+                        done[card["id"]]["lines"] = lines
+                debug_log.event("↪️ 自动换行", 格=where, 结果=wrap, 字号=size, 量高=by, 估算行数=lines or "-",
                                 还差=round(shortfall, 2))
             except Exception as err:
                 done[card["id"]] = {"error": str(err)}
@@ -1810,6 +1892,7 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float) -> dict[str, dict]:
         wf.log_msg(f"📐 {name}：{changed} 格开自动换行、{len(rows)} 行加高（字号 × {ratio}），已保存")
         debug_log.event("💾 已保存", 文件=name, 行数=len(rows))
     finally:
+        measurer.close()
         book.Close(SaveChanges=False)
     return done
 
