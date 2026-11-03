@@ -2490,7 +2490,7 @@ def _sync_tabs(book: Any, path: str, holders: dict[str, Any], report: dict | Non
                 debug_log.exception(err, "读工作表标签颜色")
             with wf.STATE_LOCK:
                 records[key] = {"sheet": name, **original}
-                wf._persist_state()  # 先记下原色再改：中途崩溃时下次还能改回去
+                wf._persist_state(force=True)  # 先记下原色再改：中途崩溃时下次还能改回去
         if records[key].get("skip"):
             continue
         try:
@@ -2680,7 +2680,7 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
             for mark in added.values():
                 mark["saved"] = False  # 保存成功后才算标上了
             marks.update(added)
-            wf._persist_state()
+            wf._persist_state(force=True)
         for i, (cid, mark) in enumerate(list(added.items()), 1):
             step("标色", i, len(added))
             try:
@@ -3392,13 +3392,9 @@ def run() -> list[str]:
                 with scan_analysis.attempt(job, path):
                     scan_body(path)
 
-            for path in list(expected):
-                if path in scanned:
-                    continue
-                if job.get("pause_requested"):
-                    break
+            def scan_and_record(path: str) -> None:
                 if not each_file(path, scan):
-                    continue
+                    return
                 with wf.STATE_LOCK:
                     scanned.append(path)
                     versions[path] = wf._file_version(Path(path))
@@ -3407,6 +3403,16 @@ def run() -> list[str]:
                     wf.STATE["scan_progress"] = {"total": len(expected), "completed": len(job["completed"]),
                                                  "status": "running"}
                     wf._persist_state()
+
+            for path in list(expected):
+                if path in scanned:
+                    continue
+                if job.get("pause_requested"):
+                    break
+                # 一个文件做完才存一次记录（以前每步都存，整份几 MB，一个文件要多花四五秒；用户 2026-11-03 同意）。
+                # 出错、跳过时离开这里也会存
+                with wf.deferred_persist():
+                    scan_and_record(path)
             scan_analysis.finish(job, interrupted=bool(job.get("pause_requested")))
             with wf.STATE_LOCK:
                 job["closing"] = True
