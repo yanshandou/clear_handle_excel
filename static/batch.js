@@ -426,10 +426,10 @@ function renderDoneBanner(finished, job, total) {
   const title = !kind ? '扫描完成' : DONE_TITLES[kind] || '处理完成';
   const left = batchState.cards.length;
   $('doneTitle').textContent = `${title}：${total} / ${total} 个文件全部处理完`;
-  $('doneDetail').textContent = left ? `还有 ${left} 个单元格待审核，请在下方卡片里确认颜色后提交。` : '没有待审核的单元格了。';
+  $('doneDetail').textContent = left ? `还有 ${left} 个单元格要人工处理，请在下方按分类打开文件修改，保存后复检。` : '没有待审核的单元格了。';
   $('doneGoBtn').classList.toggle('hidden', !left);
 }
-$('doneGoBtn').addEventListener('click', () => $('filters').scrollIntoView({ behavior: 'smooth', block: 'start' }));
+$('doneGoBtn').addEventListener('click', () => ($('learnPanel') || $('filters')).scrollIntoView({ behavior: 'smooth', block: 'start' }));
 
 // 正在检查的文件：第几张表、这份用了多久、超过多久会跳过
 function renderScanNow(current) {
@@ -991,6 +991,7 @@ function pruneRenderCaches(allByFile) {
 
 function render() {
   renderControls();
+  if (typeof renderCategories === 'function') renderCategories();
   // 只保留当前筛选下看得到的卡片的选中，批量改色不会改到看不见的卡片
   const shown = shownCards();
   const visible = new Set(shown.map(c => c.id));
@@ -1282,9 +1283,9 @@ async function startJob(url, body = {}) {
 }
 
 // 普通打开固定最多五份；文件复选框是明确选择，按勾选的文件打开。
-async function openReady(selectedOnly = false) {
+async function openReady(selectedOnly = false, only = null) {
   if (requestBusy || openChoosing) return;
-  const ids = (selectedOnly ? selectedFileCards() : manualCards()).map(c => c.id);
+  const ids = only || (selectedOnly ? selectedFileCards() : manualCards()).map(c => c.id);
   if (!ids.length) return;
   openChoosing = true;
   renderControls();

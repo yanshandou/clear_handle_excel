@@ -625,6 +625,7 @@ def _detect_sheet_results(
                 "sheet_name": sheet_name, "pdf_path": str(pdf_path),
                 "page_index": page_index, "text": found["text"], "bbox": found["bbox"],
                 "visible_text": found["visible"], "hidden_reason": found["reason"],
+                "missing_lines": found.get("missing_lines"),
                 "occurrence": ["cell", address],
                 "excel_row": found["row"], "cell_addr": address, "row_height": probe.row_height(found["row"]),
                 "image": (

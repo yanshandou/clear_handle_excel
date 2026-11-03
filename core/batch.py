@@ -495,6 +495,44 @@ def _image_url(name: str) -> str:
 CARD_DETAIL_FIELDS = {"text", "problems", "fix_images", "context", "images", "message"}
 
 
+# ───────────────────── 按分类人工处理（用户 2026-11-03：留排版、去掉学一下） ─────────────────────
+
+CATEGORY_TYPE_ORDER = list(autofix.CELL_ERROR_SPECS)
+
+
+def _missing_lines(items: list[dict]) -> int | None:
+    found = [int(it["missing_lines"]) for it in items
+             if isinstance(it.get("missing_lines"), (int, float)) and not isinstance(it.get("missing_lines"), bool)
+             and it["missing_lines"] > 0]
+    return max(found) if found else None
+
+
+def _card_category(card: dict, items: list[dict]) -> tuple[str, str]:
+    """返回 (分类键, 给人看的名字)，例：「文字截断 · 合并格 · 已加高 · 缺 1 行」。
+    一格有几种问题时按 CELL_ERROR_SPECS 的顺序取第一种。只用来分组显示，不改格子。"""
+    types = [t for t in card.get("error_types") or [] if t in autofix.CELL_ERROR_SPECS]
+    if not types:
+        types = [autofix.item_error_type(it) for it in items] or [autofix.ERROR_TYPE_BORDER_CLIP]
+    kind = min(types, key=lambda t: CATEGORY_TYPE_ORDER.index(t) if t in CATEGORY_TYPE_ORDER else len(CATEGORY_TYPE_ORDER))
+    parts, names = [kind], [autofix.error_type_label(kind)]
+    if kind != autofix.ERROR_TYPE_TEXT_MISSING:
+        grown = card.get("grown") or {}
+        merged = grown["merged"] if "merged" in grown else ":" in (card.get("cell_addr") or "")
+        parts.append("merged" if merged else "single")
+        names.append("合并格" if merged else "单格")
+    if kind in autofix.CUT_ERROR_TYPES:
+        grown = card.get("grown") or {}
+        ok = bool(grown) and "error" not in grown
+        parts.append("grown" if ok else "plain")
+        names.append("已加高" if ok else "没加高")
+    if kind == autofix.ERROR_TYPE_TEXT_TRUNCATED:
+        lines = _missing_lines(items)
+        if lines:
+            parts.append(f"lines{min(lines, 3)}")
+            names.append(f"缺 {lines} 行" if lines < 3 else "缺 3 行以上")
+    return "|".join(parts), " · ".join(names)
+
+
 def snapshot(detail_paths: set[str] | None = None) -> dict:
     with wf.STATE_LOCK:
         cards = []
@@ -539,6 +577,8 @@ def snapshot(detail_paths: set[str] | None = None) -> dict:
             elif row is not None:
                 result["row_height"] = {"base": row["base"], "applied": row["applied"], "saved": row["saved"],
                                         "wrap": card.get("cell_addr") in row.get("wrap", [])}
+            result["category"] = list(_card_category(result, items))
+            result["cell_text"] = str(card.get("text") or "")[:60]  # 分类清单用，文件框收起时 text 不发
             result["adoptable"] = _adoptable(card)
             result["highlighted"] = _shows_mark(_marks().get(card["id"]))
             if detailed:
@@ -1686,7 +1726,8 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float) -> dict[str, dict]:
                 entry["size"] = max(entry["size"], size)
                 entry["extra"] = max(entry["extra"], shortfall + size * ratio)
                 entry["cards"].append(card["id"])
-                done[card["id"]] = {"wrap": wrap == "已开", "row": row, "font": size}
+                done[card["id"]] = {"wrap": wrap == "已开", "row": row, "font": size,
+                                    "merged": int(area.Rows.Count) > 1 or int(area.Columns.Count) > 1}
                 if shortfall:
                     done[card["id"]].update(lines=lines, shortfall=round(shortfall, 2))
                 debug_log.event("↪️ 自动换行", 格=where, 结果=wrap, 字号=size, 估算行数=lines or "-",
