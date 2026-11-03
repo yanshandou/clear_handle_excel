@@ -23,8 +23,9 @@
     $('workTaskName').textContent = current ? current.name : '还没有任务';
     $('workTaskPaths').innerHTML = current ? pathsHtml(current) : '';
     $('workTaskHint').textContent = current
-      ? '1～8 步的文件夹已经填成上面的「处理」文件夹，修复颜色 / 引用 / 隐藏页的原始备份是「参考」文件夹。第 9 步把处理好的文件传回共享。'
-      : '点「🆕 新任务」填共享文件夹路径，工具会自动生成本地的参考、处理文件夹，并把 1～9 步的文件夹都填好。';
+      ? '1～8 步的文件夹已经填成「处理」，修复颜色 / 引用 / 隐藏页的原始备份是「参考」。第 9 步把处理好的文件传回共享。'
+      : '点 START 旁边的「🆕 新任务」填共享文件夹路径，工具会自动生成本地的参考、处理文件夹，并把各步的文件夹都填好。';
+    $('workTaskName').title = current ? `共享：${current.shared}\n参考：${current.reference}\n处理：${current.work}` : '';
     const others = data.tasks.filter(t => t.id !== data.current);
     $('workTaskSwitch').innerHTML = others.length
       ? '<option value="">选择一个任务…</option>' + others.map(t => `<option value="${esc(t.id)}">${esc(t.name)}（${esc(t.used || t.created || '')}）</option>`).join('')

@@ -77,18 +77,13 @@
     </section>
 
     <!-- 当前任务：一个任务对应共享文件夹里的一个文件夹；只填共享路径，参考 / 处理文件夹自动生成（static/work_task.js） -->
-    <section id="workTaskPanel" class="panel work-task-panel" aria-labelledby="workTaskTitle">
-      <div class="work-task-info">
-        <h2 id="workTaskTitle" class="work-task-title">📁 当前任务：<span id="workTaskName">还没有任务</span></h2>
-        <dl id="workTaskPaths" class="work-task-paths"></dl>
-        <p id="workTaskHint" class="work-task-hint">点「🆕 新任务」填共享文件夹路径，工具会自动生成本地的参考、处理文件夹，并把 1～9 步的文件夹都填好。</p>
-      </div>
-      <div class="work-task-actions">
-        <button type="button" class="btn btn-primary" id="workTaskNew">🆕 新任务</button>
-        <label class="work-task-switch" for="workTaskSwitch">切换到以前的任务
-          <select id="workTaskSwitch"><option value="">（没有以前的任务）</option></select>
-        </label>
-      </div>
+    <section id="workTaskPanel" class="work-task-bar" aria-label="当前任务">
+      <span class="work-task-title">📁 当前任务：<strong id="workTaskName">还没有任务</strong></span>
+      <details class="work-task-more"><summary>看路径</summary><dl id="workTaskPaths" class="work-task-paths"></dl>
+        <p id="workTaskHint" class="work-task-hint"></p></details>
+      <label class="work-task-switch" for="workTaskSwitch">切换
+        <select id="workTaskSwitch"><option value="">（没有以前的任务）</option></select>
+      </label>
     </section>
 
     <dialog id="workTaskDialog" class="app-dialog work-task-dialog" aria-labelledby="workTaskDialogTitle">
@@ -118,6 +113,7 @@
           <i class="route-road" aria-hidden="true"></i>
           <span class="route-done hidden" role="img"></span>
           <span class="route-flag route-flag-start" aria-hidden="true">START</span>
+          <button type="button" class="route-new-task" id="workTaskNew" title="开一个新任务：填共享文件夹路径，自动生成参考、处理文件夹">🆕 新任务</button>
           <a href="/clean" class="feature-card feature-violet tone-green" style="--tile-cat: 'STEP 1'">
             <span class="feature-text">
               <span class="feature-title">精简 Sheet</span>
