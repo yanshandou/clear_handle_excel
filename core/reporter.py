@@ -19,7 +19,7 @@ from core.storage import load_snapshot, save_snapshot
 
 REPORT_LOCK = TimedRLock("报告")
 REPORT_STATE_PATH = PROJECT_ROOT / "record_state.json"
-WRITE_INTERVAL = 1.0  # 进度更新很频繁：数据库和 Markdown 最多每秒写一次，开始、结束、中断时立即写
+WRITE_INTERVAL = 5.0  # 进度更新很频繁：数据库和 Markdown 最多每 5 秒写一次（整份要 0.3 秒，每秒写会拖慢批量导出），开始、结束、中断时立即写
 _history_context = threading.local()
 _last_write = 0.0
 _write_timer: threading.Timer | None = None
