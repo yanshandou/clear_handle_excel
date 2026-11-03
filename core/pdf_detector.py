@@ -56,8 +56,11 @@ def _is_strikethrough_line(
     line: tuple[float, float, float], spans: list[dict[str, Any]],
     v_lines: list[tuple[float, float, float]],
 ) -> bool:
-    """删除线位于基线上方的字身中部，长度限于连续文字，且不连接表格竖边框。
+    """文字自己的删除线 / 下划线（含导出成横线的「_」）：只画在连续文字下面，不是表格边框。
 
+    删除线在基线上方的字身中部，下划线在基线下方一点；长度限于连续文字，
+    且不是两头都接着表格竖边框（那是刚好和文字一样宽的格子边框）。
+    正好落在基线上的横线不算，仍按边框压线报。
     不能只看 PDF 的 strikeout 标记：穿过字身的表格边框也可能被标为删除线。
     支持局部删除线、不同字色组成的文字以及导出为细矩形的删除线。
     """
@@ -66,7 +69,12 @@ def _is_strikethrough_line(
     for span in spans:
         size = float(span.get("size", 0))
         origin = span.get("origin")
-        if size <= 0 or origin is None or not origin[1] - size * .5 <= y <= origin[1] - size * .15:
+        if size <= 0 or origin is None:
+            continue
+        base = origin[1]
+        strike = base - size * .5 <= y <= base - size * .15
+        underline = base + size * .04 <= y <= base + size * .3
+        if not strike and not underline:
             continue
         left, _, right, _ = span["bbox"]
         tolerance = max(1.0, size * .12)
@@ -81,9 +89,17 @@ def _is_strikethrough_line(
             return False
         covered = max(covered, right)
         if covered >= x1 - tolerance:
-            return not any(x0 - 1.5 <= x <= x1 + 1.5 and top - 1 <= y <= bottom + 1
-                           for x, top, bottom in v_lines)
+            return not _ends_on_vertical_lines(y, x0, x1, v_lines)
     return False
+
+
+def _ends_on_vertical_lines(
+    y: float, x0: float, x1: float, v_lines: list[tuple[float, float, float]],
+) -> bool:
+    """横线左右两头都接着竖线：是格子边框。只有一头靠着竖线的，是格子最左/最右的文字自己的线。"""
+    def touches(end: float) -> bool:
+        return any(abs(x - end) <= 1.5 and top - 1 <= y <= bottom + 1 for x, top, bottom in v_lines)
+    return touches(x0) and touches(x1)
 
 
 def crossing_horizontal_line(
