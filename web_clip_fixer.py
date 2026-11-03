@@ -212,7 +212,8 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "run": run})
             else:
                 body = distribute.markdown(run).encode("utf-8")
-                self._send_bytes(body, "text/markdown; charset=utf-8", filename="copy_record.md")
+                self._send_bytes(body, "text/markdown; charset=utf-8",
+                                filename="fetch_record.md" if run.get("kind") == "fetch" else "copy_record.md")
         elif parsed.path == "/api/file-problem":
             self._send_json({"ok": True, "problem": file_problem.pending(), "settings": file_problem.get_settings()})
         elif parsed.path == "/api/bl_links":
@@ -450,6 +451,9 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
         elif self.path == "/api/distribute/preview":
             self._send_json({"ok": True, "preview": distribute.preview(
+                payload.get("plan"), payload.get("source_root"), payload.get("dest_root"))})
+        elif self.path == "/api/distribute/fetch_preview":
+            self._send_json({"ok": True, "preview": distribute.preview_fetch(
                 payload.get("plan"), payload.get("source_root"), payload.get("dest_root"))})
         elif self.path == "/api/distribute/start":
             distribute.start()

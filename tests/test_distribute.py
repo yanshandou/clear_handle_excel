@@ -169,5 +169,94 @@ class DistributeTests(unittest.TestCase):
             distribute.preview(plan([{"source": ["A"], "destination": ["A"], "files": 1}]), str(self.src), str(self.src))
 
 
+    # ───── 覆盖前检查别人改过没有（拿最新版时记下版本） ─────
+
+    def fetch(self, folders):
+        prev = distribute.preview_fetch(plan(folders), str(self.src), str(self.dst))
+        self.assertEqual(prev["kind"], "fetch")
+        return prev, self.run_copy()
+
+    def test_conflict_scenario_aaa_bbb_ccc_ddd(self):
+        folders = [{"source": ["A"], "destination": ["共享", "A"], "files": 2}]
+        write(self.dst / "共享" / "A" / "a.xlsx", "AAA")
+        write(self.dst / "共享" / "A" / "b.xlsx", "b1")
+        prev, fetched = self.fetch(folders)
+        self.assertEqual({f["rel"]: f["action"] for f in prev["folders"][0]["files"]}, {"a.xlsx": "copy", "b.xlsx": "copy"})
+        self.assertEqual((self.src / "A" / "a.xlsx").read_text(encoding="utf-8"), "AAA")
+        self.assertEqual(fetched["summary"]["记下版本"], 2)
+        # 我改成 BBB，同时别人把共享里的改成 CCC
+        write(self.src / "A" / "a.xlsx", "BBB")
+        write(self.src / "A" / "b.xlsx", "b2")
+        write(self.dst / "共享" / "A" / "a.xlsx", "CCC")
+        prev = distribute.preview(plan(folders), str(self.src), str(self.dst))
+        guards = {f["rel"]: f["guard"] for f in prev["folders"][0]["files"]}
+        self.assertEqual(guards, {"a.xlsx": "changed", "b.xlsx": "same"})
+        self.assertEqual(prev["summary"]["别人改过"], 1)
+        self.assertEqual(prev["summary"]["要复制"], 1)
+        result = self.run_copy()
+        self.assertEqual((self.dst / "共享" / "A" / "a.xlsx").read_text(encoding="utf-8"), "CCC")  # 别人的没被盖掉
+        self.assertEqual((self.dst / "共享" / "A" / "b.xlsx").read_text(encoding="utf-8"), "b2")
+        self.assertEqual(result["summary"]["别人改过没覆盖"], 1)
+        self.assertTrue(distribute.needs_attention(result))
+        self.assertIn("别人改过、没有覆盖", distribute.markdown(result))
+        # 拿最新版：a 被替换成 CCC（BBB 先备份），b 是我放进去的版本、本地一样，只记一下
+        prev, fetched = self.fetch(folders)
+        actions = {f["rel"]: (f["action"], f["backup"]) for f in prev["folders"][0]["files"]}
+        self.assertEqual(actions, {"a.xlsx": ("replace", True), "b.xlsx": ("same", False)})
+        self.assertEqual((self.src / "A" / "a.xlsx").read_text(encoding="utf-8"), "CCC")
+        backup = Path(fetched["folders"][0]["files"][0]["backup_path"])
+        self.assertEqual(backup.read_text(encoding="utf-8"), "BBB")
+        self.assertFalse(str(backup).startswith(str(self.src) + "/"))  # 备份不放在来源里面
+        self.assertNotRegex(distribute.markdown(fetched), r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}")
+        # 在 CCC 上改成 DDD，再复制就能覆盖
+        write(self.src / "A" / "a.xlsx", "DDD")
+        prev = distribute.preview(plan(folders), str(self.src), str(self.dst))
+        self.assertEqual(prev["summary"]["别人改过"], 0)
+        result = self.run_copy()
+        self.assertEqual((self.dst / "共享" / "A" / "a.xlsx").read_text(encoding="utf-8"), "DDD")
+        self.assertEqual(result["summary"]["别人改过没覆盖"], 0)
+
+    def test_fetch_keeps_my_edits_when_shared_unchanged(self):
+        folders = [{"source": ["A"], "destination": ["S"], "files": 1}]
+        write(self.dst / "S" / "a.xlsx", "AAA")
+        self.fetch(folders)
+        write(self.src / "A" / "a.xlsx", "BBB")
+        prev, fetched = self.fetch(folders)
+        self.assertEqual(prev["folders"][0]["files"][0]["action"], "keep")
+        self.assertEqual((self.src / "A" / "a.xlsx").read_text(encoding="utf-8"), "BBB")
+
+    def test_conflict_detected_right_before_copy(self):
+        folders = [{"source": ["A"], "destination": ["S"], "files": 1}]
+        write(self.dst / "S" / "a.xlsx", "AAA")
+        self.fetch(folders)
+        write(self.src / "A" / "a.xlsx", "BBB")
+        prev = distribute.preview(plan(folders), str(self.src), str(self.dst))
+        self.assertEqual(prev["folders"][0]["files"][0]["guard"], "same")
+        write(self.dst / "S" / "a.xlsx", "CCC")  # 生成清单之后别人刚改
+        result = self.run_copy()
+        self.assertEqual(result["folders"][0]["files"][0]["status"], "conflict")
+        self.assertEqual((self.dst / "S" / "a.xlsx").read_text(encoding="utf-8"), "CCC")
+
+    def test_no_record_still_overwrites_but_is_flagged(self):
+        write(self.src / "A" / "a.xlsx", "BBB")
+        write(self.dst / "S" / "a.xlsx", "old")
+        prev = distribute.preview(plan([{"source": ["A"], "destination": ["S"], "files": 1}]), str(self.src), str(self.dst))
+        self.assertEqual(prev["folders"][0]["files"][0]["guard"], "unknown")
+        self.assertEqual(prev["summary"]["没有版本记录"], 1)
+        self.run_copy()
+        self.assertEqual((self.dst / "S" / "a.xlsx").read_text(encoding="utf-8"), "BBB")
+        # 复制之后记下了放进去的版本，下次就能检查
+        prev = distribute.preview(plan([{"source": ["A"], "destination": ["S"], "files": 1}]), str(self.src), str(self.dst))
+        self.assertEqual(prev["folders"][0]["files"][0]["guard"], "same")
+
+    def test_same_change_by_someone_else_is_not_a_conflict(self):
+        folders = [{"source": ["A"], "destination": ["S"], "files": 1}]
+        write(self.dst / "S" / "a.xlsx", "AAA")
+        self.fetch(folders)
+        write(self.src / "A" / "a.xlsx", "BBB")
+        write(self.dst / "S" / "a.xlsx", "BBB")
+        prev = distribute.preview(plan(folders), str(self.src), str(self.dst))
+        self.assertEqual(prev["folders"][0]["files"][0]["guard"], "identical")
+
 if __name__ == "__main__":
     unittest.main()
