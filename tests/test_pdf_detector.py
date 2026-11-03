@@ -199,6 +199,57 @@ class StrikethroughTests(unittest.TestCase):
             page.draw_line((x0, 100), (x1, 100), width=0.5)
             self.assertEqual(len(find_clipped_spans_on_page(page)), 1)
 
+    def test_underline_below_baseline_is_not_clipping(self):
+        for filled in (False, True):
+            with self.subTest(filled=filled), fitz.open() as doc:
+                page = doc.new_page()
+                span = self.add_text(page)
+                x0, _, x1, _ = span["bbox"]
+                if filled:
+                    page.draw_rect(fitz.Rect(x0, 101.0, x1, 101.6), color=None, fill=(0, 0, 0))
+                else:
+                    page.draw_line((x0, 101.3), (x1, 101.3), width=0.5)
+                self.assertEqual(find_clipped_spans_on_page(page), [])
+
+    def test_underscore_drawn_as_line_is_not_clipping(self):
+        # Excel 导出时「業務ごと_区分」里的「_」可能画成一小段横线
+        with fitz.open() as doc:
+            page = doc.new_page()
+            span = self.add_text(page, "Gyomu_Kubun")
+            x0, _, x1, _ = span["bbox"]
+            mid = x0 + (x1 - x0) * .45
+            page.draw_line((mid, 101.5), (mid + 6, 101.5), width=0.6)
+            self.assertEqual(find_clipped_spans_on_page(page), [])
+
+    def test_strikethrough_next_to_left_cell_border_is_not_clipping(self):
+        with fitz.open() as doc:
+            page = doc.new_page()
+            span = self.add_text(page)
+            x0, _, x1, _ = span["bbox"]
+            page.draw_line((x0 - 1, 75), (x0 - 1, 120), width=0.5)  # 格子左边框紧挨文字
+            page.draw_line((x1 + 40, 75), (x1 + 40, 120), width=0.5)
+            page.draw_line((x0, 96.4), (x1, 96.4), width=0.5)
+            page.draw_line((x0, 101.3), (x1, 101.3), width=0.5)
+            self.assertEqual(find_clipped_spans_on_page(page), [])
+
+    def test_text_width_border_below_baseline_between_vertical_edges_is_still_clipping(self):
+        with fitz.open() as doc:
+            page = doc.new_page()
+            span = self.add_text(page)
+            x0, _, x1, _ = span["bbox"]
+            page.draw_line((x0, 101.3), (x1, 101.3), width=0.5)
+            for x in (x0, x1):
+                page.draw_line((x, 75), (x, 120), width=0.5)
+            self.assertEqual(len(find_clipped_spans_on_page(page)), 1)
+
+    def test_cell_wide_border_below_baseline_is_still_clipping(self):
+        with fitz.open() as doc:
+            page = doc.new_page()
+            span = self.add_text(page)
+            x0, _, x1, _ = span["bbox"]
+            page.draw_line((x0 - 3, 101.3), (x1 + 30, 101.3), width=0.5)
+            self.assertEqual(len(find_clipped_spans_on_page(page)), 1)
+
     def test_strikethrough_is_ignored_during_recheck(self):
         with tempfile.TemporaryDirectory() as temp, fitz.open() as doc:
             page = doc.new_page()
