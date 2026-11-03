@@ -72,10 +72,15 @@ class DeferredPersistTests(unittest.TestCase):
                 other.start()
                 other.join()
                 self.assertEqual(len(saves), 2)  # 别的线程（网页）照常马上存
+                workflow._persist_state()
             self.assertEqual(len(saves), 3)  # 文件做完存一次
             with workflow.deferred_persist():
                 pass
             self.assertEqual(len(saves), 3)  # 没改动不存
+            with workflow.deferred_persist():
+                workflow._persist_state()
+                workflow._persist_state(force=True)
+            self.assertEqual(len(saves), 4)  # 马上存那次已经把先前的改动一起存了，结束时不再存
 
     def test_saves_even_when_the_file_fails(self):
         from core import workflow
@@ -86,6 +91,23 @@ class DeferredPersistTests(unittest.TestCase):
                     workflow._persist_state()
                     raise RuntimeError("Excel 崩溃")
         self.assertEqual(saves, [1])
+
+    def test_flush_deferred_saves_only_after_the_interval(self):
+        from core import workflow
+        saves = []
+        with mock.patch.object(workflow, "save_snapshot", lambda *a, **k: saves.append(1)):
+            with workflow.deferred_persist():
+                workflow.flush_deferred(0)
+                self.assertEqual(saves, [])  # 没改动不存
+                workflow._persist_state(force=True)
+                workflow._persist_state()
+                workflow.flush_deferred(60)
+                self.assertEqual(len(saves), 1)  # 刚存过，先不存
+                workflow.flush_deferred(0)
+                self.assertEqual(len(saves), 2)
+                workflow.flush_deferred(0)
+                self.assertEqual(len(saves), 2)  # 存完不再重复存
+            self.assertEqual(len(saves), 2)
 
 
 if __name__ == "__main__":

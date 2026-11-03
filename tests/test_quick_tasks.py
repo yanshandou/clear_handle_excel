@@ -326,6 +326,27 @@ class QuickTaskTests(unittest.TestCase):
         # 新批次不沿用上一批的备份目录
         self.assertEqual(report["backup_folder"], "")
 
+    def test_export_saves_workflow_record_every_few_seconds_not_per_file(self):
+        # 工作台记录 5 MB 多，以前每份 Excel 存两次（约 1 秒）；现在隔几秒存一次、结束时存（2026-11-03）
+        for name in ("a.xlsx", "b.xlsx", "c.xlsx", "d.xlsx"):
+            self.add_book(name, ["表"])
+        real = self.workflow.save_snapshot
+        saves = []
+
+        def counting(name, *args, **kwargs):
+            if name == "workflow":
+                saves.append(list(self.workflow.STATE["job"]["completed"]) if self.workflow.STATE.get("job") else None)
+            return real(name, *args, **kwargs)
+
+        self.patch_value(self.workflow, "save_snapshot", counting)
+        job = self.run_task("export_pdf")
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(len(job["completed"]), 4)
+        exporting = [s for s in saves if s is not None and s and len(s) < 4]
+        self.assertEqual(exporting, [])  # 导出中途（几份都很快）没存
+        self.assertTrue(any(s and len(s) == 4 for s in saves))  # 做完都存进去了
+        self.assertLess(len(saves), 8)
+
     def test_standalone_pdf_export_keeps_inspection_exempt_layout_sheets(self):
         self.add_book("book.xlsx", ["レイアウト", "レイアウト(複数ページ)", "雛形", "JSONサンプル"])
         job = self.run_task("export_pdf")

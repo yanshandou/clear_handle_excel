@@ -6,7 +6,7 @@ import threading
 import time
 import zlib
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -197,9 +197,16 @@ def _persist_state(force: bool = False) -> None:
     if not force and getattr(_DEFER, "depth", 0):
         _DEFER.dirty = True
         return
+    global _LAST_SAVE
     with STATE_LOCK:
         # 截图单独存、只写变了的：每点一下不用把所有截图重写一遍
         save_snapshot("workflow", STATE, blob_field="image", blob_collections=("pages", "items"))
+        _LAST_SAVE = time.monotonic()
+        if getattr(_DEFER, "depth", 0):
+            _DEFER.dirty = False  # 刚整份存过，先前记下的「要存」也一起存进去了
+
+
+_LAST_SAVE = 0.0
 
 
 @contextmanager
@@ -213,6 +220,12 @@ def deferred_persist() -> Iterator[None]:
         if not _DEFER.depth and getattr(_DEFER, "dirty", False):
             _DEFER.dirty = False
             _persist_state()
+
+
+def flush_deferred(every: float) -> None:
+    """deferred_persist 里：有没存的改动、离上次存已经超过 every 秒就现在存一次（批量导出 PDF 每隔几秒存一次）"""
+    if getattr(_DEFER, "dirty", False) and time.monotonic() - _LAST_SAVE >= every:
+        _persist_state(force=True)
 
 
 def scan_job_active() -> bool:
@@ -3257,7 +3270,7 @@ def _save_print_orientations(get_excel: Callable[[], Any], wb_path: Path, to_sav
         wb.Save()
         with STATE_LOCK:
             print_layout.saved_to_excel(STATE.setdefault("print_layouts", {}), str(wb_path), before, changed)
-            _persist_state()
+            _persist_state(force=True)  # Excel 已经改了：马上记下
         log_msg(f"  💾 打印方向已保存进 Excel：{'、'.join(done)}")
     except Exception as err:
         log_msg(f"  ⚠️ {wb_path.name} 打印方向没能保存进去：{err}")
@@ -3343,6 +3356,9 @@ def _quick_task_file(kind: str, options: dict[str, Any], get_excel: Callable[[],
         _normalize_workbook_file(get_excel, wb_path, folder)
 
 
+PDF_SAVE_EVERY = 10.0  # 批量导出 PDF 时工作台记录最多每隔这么多秒存一次
+
+
 def quick_task_workflow(kind: str) -> None:
     """主页单项批处理：以 Excel 文件为检查点，续跑时跳过已完成的文件。"""
     task_name = QUICK_TASK_NAMES[kind]
@@ -3403,65 +3419,71 @@ def quick_task_workflow(kind: str) -> None:
     used_pdf_paths = {Path(path) for path in job["exported"]}
     pythoncom.CoInitialize()
     watchdog.start()
+    # 批量导出 PDF：工作台记录有 5 MB 多，以前每份 Excel 存两次（约 1 秒，比导出本身还久）；
+    # 现在隔几秒才存一次、结束（包括出错）时再存。崩溃时最多重做最后几份，没改过的 Excel 直接沿用 PDF
+    deferred = deferred_persist() if kind == "export_pdf" else nullcontext()
     try:
-        for wb_path in workbooks:
-            if str(wb_path) in job["completed"]:
-                continue
-            wb_label = workbook_rel_name(wb_path, folder)
-            watchdog.progress()
-            debug_log.begin(f"{task_name} {workbooks.index(wb_path) + 1} / {len(workbooks)}：{wb_label}")
-            log_msg(f"正在处理: {wb_label} ...")
-            update_file_progress(
-                wb_label, status="processing", current_action=f"正在执行{task_name}...", error="",
-            )
-            exported: list[Path] = []
-            started = time.perf_counter()
-            try:
-                while True:  # 出错时问用户：修好文件后「重试」就从头再做这份，「跳过」照旧记错误
-                    used_before = set(used_pdf_paths)  # 重试时 PDF 用回同样的名字，不变成「_2」
-                    try:
-                        exported = []
-                        _quick_task_file(kind, options, get_excel, wb_path, folder, used_pdf_paths, exported)
-                        break
-                    except Exception as err:
-                        used_pdf_paths.intersection_update(used_before)
-                        message = file_problem.message_for(err, watchdog)
-                        # Excel 崩溃或被看门狗结束后不把失效实例带给后续文件，也别让它占着文件（用户要打开修）
-                        if excel is not None:
-                            try:
-                                quit_background_excel(excel)
-                            except Exception:
-                                pass
-                            excel = None
-                        if not file_problem.should_ask(err, message):
-                            raise RuntimeError(message) from err
-                        log_msg(f"⏸ {wb_label} 出错，等你选择重试还是跳过：{message}")
-                        update_file_progress(wb_label, status="processing", error=message,
-                                             current_action="出错了，等你选择重试还是跳过")
-                        choice = file_problem.ask(wb_path, wb_label, message, folder=folder, tick=watchdog.progress)
-                        watchdog.progress()
-                        if choice != "retry":
-                            raise RuntimeError(message) from err
-                        log_msg(f"🔁 重试 {wb_label}")
-                        update_file_progress(wb_label, status="processing", error="",
-                                             current_action=f"正在重试{task_name}...")
-                debug_log.event("⏱ 完成", 文件=wb_label, 秒=time.perf_counter() - started, 导出PDF=len(exported))
-            except Exception as err:
-                log_msg(f"❌ 处理文件出错 {wb_label}: {err}")
+        with deferred:
+            for wb_path in workbooks:
+                if str(wb_path) in job["completed"]:
+                    continue
+                wb_label = workbook_rel_name(wb_path, folder)
+                watchdog.progress()
+                debug_log.begin(f"{task_name} {workbooks.index(wb_path) + 1} / {len(workbooks)}：{wb_label}")
+                log_msg(f"正在处理: {wb_label} ...")
                 update_file_progress(
-                    wb_label, status="error", error=str(err), current_action=f"处理出错: {err}",
+                    wb_label, status="processing", current_action=f"正在执行{task_name}...", error="",
                 )
-                if excel is not None:
-                    try:
-                        quit_background_excel(excel)
-                    except Exception:
-                        pass
-                    excel = None
-                continue
-            with STATE_LOCK:
-                job["completed"].append(str(wb_path))
-                job["exported"].extend(str(path) for path in exported)
-                _persist_state()
+                exported: list[Path] = []
+                started = time.perf_counter()
+                try:
+                    while True:  # 出错时问用户：修好文件后「重试」就从头再做这份，「跳过」照旧记错误
+                        used_before = set(used_pdf_paths)  # 重试时 PDF 用回同样的名字，不变成「_2」
+                        try:
+                            exported = []
+                            _quick_task_file(kind, options, get_excel, wb_path, folder, used_pdf_paths, exported)
+                            break
+                        except Exception as err:
+                            used_pdf_paths.intersection_update(used_before)
+                            message = file_problem.message_for(err, watchdog)
+                            # Excel 崩溃或被看门狗结束后不把失效实例带给后续文件，也别让它占着文件（用户要打开修）
+                            if excel is not None:
+                                try:
+                                    quit_background_excel(excel)
+                                except Exception:
+                                    pass
+                                excel = None
+                            if not file_problem.should_ask(err, message):
+                                raise RuntimeError(message) from err
+                            flush_deferred(0)  # 等人选的时候可能很久，先把记录存好
+                            log_msg(f"⏸ {wb_label} 出错，等你选择重试还是跳过：{message}")
+                            update_file_progress(wb_label, status="processing", error=message,
+                                                 current_action="出错了，等你选择重试还是跳过")
+                            choice = file_problem.ask(wb_path, wb_label, message, folder=folder, tick=watchdog.progress)
+                            watchdog.progress()
+                            if choice != "retry":
+                                raise RuntimeError(message) from err
+                            log_msg(f"🔁 重试 {wb_label}")
+                            update_file_progress(wb_label, status="processing", error="",
+                                                 current_action=f"正在重试{task_name}...")
+                    debug_log.event("⏱ 完成", 文件=wb_label, 秒=time.perf_counter() - started, 导出PDF=len(exported))
+                except Exception as err:
+                    log_msg(f"❌ 处理文件出错 {wb_label}: {err}")
+                    update_file_progress(
+                        wb_label, status="error", error=str(err), current_action=f"处理出错: {err}",
+                    )
+                    if excel is not None:
+                        try:
+                            quit_background_excel(excel)
+                        except Exception:
+                            pass
+                        excel = None
+                    continue
+                with STATE_LOCK:
+                    job["completed"].append(str(wb_path))
+                    job["exported"].extend(str(path) for path in exported)
+                    _persist_state()
+                flush_deferred(PDF_SAVE_EVERY)
     finally:
         try:
             if excel is not None:
