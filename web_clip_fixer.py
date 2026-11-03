@@ -415,8 +415,9 @@ class WebHandler(BaseHTTPRequestHandler):
                 if isinstance(minutes, bool) or minutes not in batch.SCAN_LIMIT_CHOICES:
                     raise ValueError("单个文件的扫描上限只能选自动或 3、5、10、15 分钟")
                 options["scan_limit_minutes"] = minutes
-            # 扫描：检出的问题全部标色、转人工，不改格子（换行、行高到「按分类处理」示范后学着修）
-            options.update(highlight=batch.highlight_style(payload.get("highlight")))
+            # 扫描：检出的问题全部标色、转人工；切字的格子开自动换行、行高加「字号 × 倍数」，保存（不再自动修复）
+            options.update(highlight=batch.highlight_style(payload.get("highlight")),
+                           grow_ratio=batch.grow_ratio(payload.get("grow_ratio")))
             self._start_job("batch_scan", options)
         elif self.path == "/api/print_layout":
             set_print_layout(payload.get("path"), payload.get("key"), payload.get("direction"))
@@ -546,16 +547,6 @@ class WebHandler(BaseHTTPRequestHandler):
                 if color:
                     options["color"] = color
                 self._start_job(f"batch_{action}", options)
-        elif self.path in {"/api/batch/learn", "/api/batch/apply"}:
-            # 按分类示范学习修复：学一下 = 找出你改过的格子、总结规律；按规律修 = 改这一类剩下的并复检
-            key = payload.get("category")
-            if not isinstance(key, str) or not key:
-                raise ValueError("请先选一个分类")
-            ids = batch.category_card_ids(key)
-            if not ids:
-                raise ValueError("这一类已经没有要处理的格子了")
-            self._start_job("batch_learn" if self.path.endswith("learn") else "batch_apply",
-                            {"category": key, "card_ids": ids})
         elif self.path == "/api/batch/followups/start":
             # 暂停时留着的排队复检 / 提交：现在就开始
             autofix.release_excel()

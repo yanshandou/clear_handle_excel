@@ -909,9 +909,9 @@ class ScanOnlyTests(unittest.TestCase):
         self.assertEqual(self.card("A5")["color"], "green")
         self.excel.Workbooks.Open.assert_not_called()
 
-    def test_run_scan_marks_cells_without_changing_rows(self):
+    def test_run_scan_marks_cells_and_grows_once_with_chosen_ratio(self):
         self.add_item("A5")
-        self.wf.STATE["job"]["options"] = {"folder": str(self.root),
+        self.wf.STATE["job"]["options"] = {"folder": str(self.root), "grow_ratio": 1.2,
                                            "highlight": {"fill": "#6D28D9", "font": "#FFFFFF"}}
         session = Mock()
         session.app.return_value = self.excel
@@ -921,11 +921,65 @@ class ScanOnlyTests(unittest.TestCase):
                 patch.object(self.wf.pythoncom, "CoInitialize", create=True), \
                 patch.object(self.wf.pythoncom, "CoUninitialize", create=True), \
                 patch.object(batch, "init_execution_batch"), patch.object(batch, "finish_execution_batch"), \
-                patch.object(batch, "_refresh"):
+                patch.object(batch, "_refresh"), patch.object(batch, "_grow_and_wrap", return_value={}) as grow:
             self.assertEqual(batch.run(), [self.path])
-        self.assertNotIn("grown", self.card("A5"))
+        grow.assert_called_once_with(self.excel, self.path, 1.2)
         self.assertEqual(self.card("A5")["color"], "yellow")
         self.assertEqual(self.sheet.shown("A5")[0], batch._excel_color("#6D28D9"))
+        self.assertIn(self.path, self.wf.STATE["job"]["completed"])
+
+    def run_scan_with_grow(self, grown, refresh):
+        self.wf.STATE["job"]["options"] = {"folder": str(self.root)}
+        session = Mock()
+        session.app.return_value = self.excel
+        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch, "ExcelWatchdog", return_value=Mock(timed_out=False)), \
+                patch.object(self.wf, "list_workbooks", return_value=(self.root, [Path(self.path)])), \
+                patch.object(self.wf.pythoncom, "CoInitialize", create=True), \
+                patch.object(self.wf.pythoncom, "CoUninitialize", create=True), \
+                patch.object(batch, "init_execution_batch"), patch.object(batch, "finish_execution_batch"), \
+                patch.object(batch, "_refresh", side_effect=refresh) as refreshed, \
+                patch.object(batch, "_grow_and_wrap", return_value=grown):
+            self.assertEqual(batch.run(), [self.path])
+        return refreshed
+
+    def test_scan_rechecks_after_growing_and_only_marks_what_still_fails(self):
+        """开换行加高保存后整份复检一次：通过的翻篇、不标色；没通过的不再改，标色交给人工（用户 2026-11-03 定）"""
+        self.add_item("A5")
+        self.add_item("B5")
+        grown = {batch._key(self.path, "S1", a): {"wrap": True, "row": 5, "font": 11.0, "sheet": "S1",
+                                                   "base": 13.5, "applied": 30.0, "ratio": 1.5} for a in ("A5", "B5")}
+        calls = []
+        def refresh(*_, **__):
+            calls.append(1)
+            if len(calls) == 2:  # 第二次是加高后的复检：A5 好了，B5 还有问题
+                self.wf.STATE["items"]["iA5"]["status"] = "fixed"
+        refreshed = self.run_scan_with_grow(grown, refresh)
+        self.assertEqual(refreshed.call_count, 2)
+        a5, b5 = self.card("A5"), self.card("B5")
+        self.assertTrue(a5["dismissed"])
+        self.assertEqual(a5["message"], batch.GROWN_PASSED_MESSAGE)
+        self.assertIsNone(self.sheet.shown("A5"))
+        self.assertEqual((b5["color"], b5["dismissed"], b5["message"]), ("yellow", False, batch.GROWN_FAILED_MESSAGE))
+        self.assertIsNotNone(self.sheet.shown("B5"))
+
+    def test_scan_skips_recheck_when_nothing_was_grown(self):
+        self.add_item("A5")
+        refreshed = self.run_scan_with_grow({}, None)
+        self.assertEqual(refreshed.call_count, 1)
+        self.assertIsNotNone(self.sheet.shown("A5"))
+
+    def test_recheck_error_after_grow_still_marks_everything(self):
+        self.add_item("A5")
+        grown = {batch._key(self.path, "S1", "A5"): {"wrap": True, "row": 5, "font": 11.0}}
+        calls = []
+        def refresh(*_, **__):
+            calls.append(1)
+            if len(calls) == 2:
+                raise RuntimeError("Excel 崩溃")
+        self.run_scan_with_grow(grown, refresh)
+        self.assertEqual(self.card("A5")["color"], "yellow")
+        self.assertIsNotNone(self.sheet.shown("A5"))
         self.assertIn(self.path, self.wf.STATE["job"]["completed"])
 
     def test_full_auto_without_highlight_stops_coloring(self):
