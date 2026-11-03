@@ -179,7 +179,7 @@ html:has(#largeView[open]) { overflow: hidden; }
 /* 按分类处理：左边分类列表，右边三步 + 格子清单。点分类只换颜色，不挪位置 */
 .learn-layout { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 18px; align-items: start; }
 .learn-layout > * { min-width: 0; }
-.learn-list { list-style: none; margin: 0; padding: 0 6px 6px 0; display: flex; flex-direction: column; gap: 6px; max-height: 70vh; overflow-y: auto; }
+.learn-list { list-style: none; margin: 0; padding: 0 6px 6px 0; display: flex; flex-direction: column; gap: 6px; }
 .learn-type { margin: 10px 0 2px; font-weight: 800; color: var(--ink, #1c2858); font-size: 14px; }
 .learn-type:first-child { margin-top: 0; }
 .learn-cat { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 8px 10px; border: 2px solid var(--ink, #1c2858);
