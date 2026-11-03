@@ -3370,6 +3370,7 @@ def run() -> list[str]:
                 if path in job["completed"]:
                     continue
                 with wf.STATE_LOCK:
+                    job["current"] = path  # 页面上写「正在处理第几个文件」
                     cards = [copy.deepcopy(c) for cid in options["card_ids"]
                              for c in [_data()["cards"].get(cid)]
                              if c and c["wb_path"] == path and not c.get("dismissed")]
@@ -3392,6 +3393,8 @@ def run() -> list[str]:
                 except Exception as err:
                     wf.log_msg(f"❌ {Path(path).name} 没做完，可继续任务：{err}{_where(err)}")
                     _restart_excel(session)
+            with wf.STATE_LOCK:
+                job.pop("current", None)
             if kind == "batch_learn":
                 _finish_learn(job)
         elif kind == "batch_unhighlight":

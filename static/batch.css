@@ -221,6 +221,11 @@ html:has(#largeView[open]) { overflow: hidden; }
 .learn-table th, .learn-table td { padding: 6px 10px; border-bottom: 1px solid var(--line-soft, #dbe4f3); text-align: left; vertical-align: top; color: var(--ink, #1c2858); }
 .learn-table th { position: sticky; top: 0; background: var(--paper, #e9f1fc); font-weight: 800; z-index: 1; }
 .learn-table td:nth-child(3) { white-space: nowrap; }
+.learn-file-no { display: inline-block; min-width: 3.6em; margin-right: 6px; padding: 0 6px; border-radius: 6px; background: var(--paper, #e9f1fc);
+  color: var(--ink, #1c2858); font-weight: 800; font-size: 12.5px; font-variant-numeric: tabular-nums; text-align: center; }
+.learn-table tr.is-current td { background: #fff7d6; }
+.learn-progress { margin: 0 0 12px; padding: 10px 14px; border: 2px solid var(--ink, #1c2858); border-radius: 10px; background: #fff; }
+.learn-progress p { margin: 0 0 8px; color: var(--ink, #1c2858); font-weight: 700; }
 .learn-text { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .learn-state { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; background: var(--paper, #e9f1fc); color: var(--ink, #1c2858); }
 tr[data-state="demo"] .learn-state { background: #1e7a45; color: #fff; }

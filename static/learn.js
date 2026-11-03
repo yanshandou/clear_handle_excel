@@ -2,6 +2,7 @@
 // 依赖 batch.js 里的 batchState、$、esc、post、startJob、openReady、requestBusy、busyJobName。
 let learnSelected = null;
 let learnRenderKey = '';
+let learnRenderedCat = null;
 const LEARN_CELL_LIMIT = 300; // 清单最多画这么多行，太多只是拖慢页面
 const LEARN_STATE = {
   demo: ['示范', '你改过的格子，学的时候用来总结规律'],
@@ -62,13 +63,46 @@ function learnRuleHtml(rule) {
     + '</div>';
 }
 
+// 这一类的文件编号：按格子出现的顺序，第一次出现的文件是 1。清单和进度都用这个号（11/199）
+function learnFileOrder(cat) {
+  const order = new Map();
+  for (const c of cat.cards) if (!order.has(c.wb_path)) order.set(c.wb_path, order.size + 1);
+  return order;
+}
+
+// 这一类正在跑的「学一下 / 按规律修」：{name, done, total, index, current}；没在跑返回 null
+function learnJob(cat) {
+  const job = batchState.job;
+  if (!batchState.busy || !job || !['batch_learn', 'batch_apply'].includes(job.kind) || job.options?.category !== cat.key) return null;
+  const files = job.workbooks || [];
+  const done = (job.completed || []).length;
+  const index = job.current ? files.indexOf(job.current) + 1 : 0;
+  return { name: job.kind === 'batch_learn' ? '学一下' : '按规律修', done, total: files.length, index, current: job.current || '' };
+}
+
+function learnProgressHtml(cat) {
+  const run = learnJob(cat);
+  if (!run) return '';
+  const name = run.current ? (cat.cards.find(c => c.wb_path === run.current)?.wb_name || run.current.split(/[\\/]/).pop()) : '';
+  const no = run.current ? learnFileOrder(cat).get(run.current) : 0;
+  const pct = run.total ? Math.round(run.done / run.total * 100) : 0;
+  const now = run.current ? `正在处理第 ${run.index} / ${run.total} 个文件：${no ? `<b>${no}/${cat.files}</b> ` : ''}${esc(name)}` : `准备中…`;
+  return `<div class="learn-progress" role="status"><p>${esc(run.name)}：${now}，已完成 ${run.done} / ${run.total} 个文件`
+    + (no ? ` <button type="button" class="btn btn-outline btn-sm" id="learnJumpBtn" data-path="${esc(run.current)}">↓ 在清单里看这个文件</button>` : '') + '</p>'
+    + `<div class="progress-track progress-track-sm"><div class="progress-fill" style="width:${pct}%"></div></div></div>`;
+}
+
 function learnCellsHtml(cat) {
-  const rows = cat.cards.slice(0, LEARN_CELL_LIMIT).map(c => {
+  const order = learnFileOrder(cat);
+  const current = learnJob(cat)?.current;
+  const cards = [...cat.cards].sort((a, b) => order.get(a.wb_path) - order.get(b.wb_path));
+  const rows = cards.slice(0, LEARN_CELL_LIMIT).map(c => {
     const [label, tip] = LEARN_STATE[c.state] || LEARN_STATE.todo;
     const link = excelLinkHtml(esc(c.wb_name), { file: c.wb_name, folder: batchState.folder, sheet: c.sheet_name,
       cell: (c.cell_addr || '').split(':')[0], blocked: openBlocked(c) });
-    return `<tr data-state="${esc(c.state)}"><td><span class="learn-state" title="${esc(tip)}">${label}</span></td>`
-      + `<td>${link}</td><td>${esc(c.sheet_name)}!${esc(c.cell_addr)}</td><td class="learn-text">${esc(c.text)}</td></tr>`;
+    const no = order.get(c.wb_path);
+    return `<tr data-state="${esc(c.state)}" data-path="${esc(c.wb_path)}"${c.wb_path === current ? ' class="is-current"' : ''}><td><span class="learn-state" title="${esc(tip)}">${label}</span></td>`
+      + `<td><span class="learn-file-no" title="这一类共 ${cat.files} 个文件，这是第 ${no} 个">${no}/${cat.files}</span>${link}</td><td>${esc(c.sheet_name)}!${esc(c.cell_addr)}</td><td class="learn-text">${esc(c.text)}</td></tr>`;
   }).join('');
   const more = cat.cards.length > LEARN_CELL_LIMIT ? `<p class="toolbar-hint">只列出前 ${LEARN_CELL_LIMIT} 格，还有 ${cat.cards.length - LEARN_CELL_LIMIT} 格。</p>` : '';
   return `<div class="learn-table-wrap"><table class="learn-table"><thead><tr><th>状态</th><th>文件</th><th>格子</th><th>内容</th></tr></thead><tbody>${rows}</tbody></table></div>${more}`;
@@ -94,7 +128,7 @@ function learnDetailHtml(cat) {
     + `${learnRuleHtml(cat.rule)}</div></li>`
     + `<li><span class="learn-step-no">3</span><div><strong>按规律修</strong><p>按学到的规律改这一类剩下的格子（示范的不动），保存后整份复检。通过的移出列表；没通过的留下，可以再示范几个、再学一次。</p>`
     + `<button type="button" class="btn btn-success" id="learnApplyBtn"${disabled(busy || (!ok && '还没学到规律') || (!todo && '没有剩下要改的格子'))}>⚡ 按规律修剩下的 ${todo} 格</button></div></li>`
-    + '</ol>' + learnCellsHtml(cat);
+    + '</ol>' + learnProgressHtml(cat) + learnCellsHtml(cat);
 }
 
 function renderLearn() {
@@ -102,13 +136,34 @@ function renderLearn() {
   if (!panel) return;
   const cats = learnCategories();
   const current = learnCurrent();
-  const key = JSON.stringify([cats, current?.key, learnBusyReason(), batchState.folder, excelLinkHtml.revision, batchState.open_blocked, typeColors]);
+  const run = current && learnJob(current);
+  const key = JSON.stringify([cats, current?.key, learnBusyReason(), batchState.folder, excelLinkHtml.revision, batchState.open_blocked, typeColors, run]);
   if (key === learnRenderKey) return;
   learnRenderKey = key;
+  // 重画前记下滚到哪、哪些折叠展开着：刷新后停在原处，不跳回顶上（用户 2026-11-03）
+  const sameCat = learnRenderedCat === current?.key;
+  learnRenderedCat = current?.key;
+  const listTop = $('learnList').scrollTop;
+  const wrap = $('learnDetail').querySelector?.('.learn-table-wrap');
+  const tableTop = sameCat && wrap ? wrap.scrollTop : 0;
+  const opened = sameCat ? [...($('learnDetail').querySelectorAll?.('details') || [])].map(d => d.open) : [];
   $('learnSummary').textContent = cats.length
     ? `共 ${cats.reduce((n, c) => n + c.count, 0)} 格，分成 ${cats.length} 类` : '';
   $('learnList').innerHTML = learnListHtml(cats, current);
   $('learnDetail').innerHTML = learnDetailHtml(current);
+  $('learnList').scrollTop = listTop;
+  const wrapNow = $('learnDetail').querySelector?.('.learn-table-wrap');
+  if (wrapNow) wrapNow.scrollTop = tableTop;
+  [...($('learnDetail').querySelectorAll?.('details') || [])].forEach((d, i) => { if (i < opened.length) d.open = opened[i]; });
+}
+
+// 「在清单里看这个文件」：把清单滚到正在处理的文件那几行（只滚清单框，页面不动）
+function learnJump(path) {
+  const wrap = $('learnDetail').querySelector('.learn-table-wrap');
+  const row = [...(wrap?.querySelectorAll('tr[data-path]') || [])].find(tr => tr.dataset.path === path);
+  if (!wrap || !row) return;
+  const head = wrap.querySelector('thead')?.offsetHeight || 0;
+  wrap.scrollTop = row.offsetTop - head;
 }
 
 async function learnOpen() {
@@ -148,5 +203,6 @@ $('learnDetail').addEventListener('click', event => {
   if (id === 'learnOpenBtn') learnOpen();
   else if (id === 'learnBtn') learnRun();
   else if (id === 'learnApplyBtn') learnApply();
+  else if (id === 'learnJumpBtn') learnJump(event.target.closest('button').dataset.path);
 });
 renderLearn();
