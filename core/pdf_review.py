@@ -113,6 +113,7 @@ def list_pdfs(folder: str) -> dict:
             if not Path(gone).is_file():
                 _exports().pop(gone)  # PDF 已经删掉的记录不留着
         owners = {str(p): _owner(p) for p in pdfs}
+    notes = pdf_store.notes_map(root) if base.is_dir() else {}
     for pdf in pdfs:
         entry: dict[str, Any] = {"pdf": str(pdf), "name": workbook_rel_name(pdf, shown_from), "v": pdf.stat().st_mtime_ns}
         try:
@@ -123,6 +124,8 @@ def list_pdfs(folder: str) -> dict:
         if owner:
             entry.update(wb_path=owner["wb_path"], wb_name=workbook_rel_name(Path(owner["wb_path"]), root),
                          sheet=owner["sheet"], guessed=bool(owner.get("guessed")))
+        if notes.get(str(pdf)):
+            entry["notes"] = notes[str(pdf)]  # 导出时发现的内容很少的页（page_fill）
         entries.append(entry)
     debug_log.event("🔎 PDF 复检列出", 文件夹=root, 看的是=shown_from, PDF=len(entries), 找到Excel=sum(1 for e in entries if e.get("wb_path")))
     return {"folder": str(root), "pdf_folder": str(shown_from), "in_pdfs": shown_from == base, "pdfs": entries}

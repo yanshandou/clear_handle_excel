@@ -110,14 +110,19 @@ def reusable(root: Path | str, wb_path: Path, digest: str) -> list[tuple[Path, s
     return found
 
 
-def record(root: Path | str, wb_path: Path, digest: str, exported: list[tuple[Path, str]]) -> None:
+def record(root: Path | str, wb_path: Path, digest: str, exported: list[tuple[Path, str]],
+           notes: dict[str, list[dict]] | None = None) -> None:
+    """notes：PDF -> 内容很少的页的提示（page_fill），沿用 PDF 时提示也跟着沿用"""
     base = pdf_root(root)
     pdfs = []
     for pdf, sheet in exported:
         stat = _stat(pdf)
         if stat is None:
             continue
-        pdfs.append({"pdf": pdf.relative_to(base).as_posix(), "sheet": sheet, "size": stat[0], "mtime_ns": stat[1]})
+        item = {"pdf": pdf.relative_to(base).as_posix(), "sheet": sheet, "size": stat[0], "mtime_ns": stat[1]}
+        if notes and notes.get(str(pdf)):
+            item["notes"] = notes[str(pdf)]
+        pdfs.append(item)
     with _LOCK:
         data = load(root)
         data["v"] = VERSION
@@ -127,6 +132,21 @@ def record(root: Path | str, wb_path: Path, digest: str, exported: list[tuple[Pa
             "hash": digest, "pdfs": pdfs,
         }
         _save(root, data)
+
+
+def notes_map(root: Path | str) -> dict[str, list[dict]]:
+    """记录里每份 PDF（绝对路径）的内容很少的页的提示；PDF 被换过（大小、修改时间不对）的不算"""
+    with _LOCK:
+        files = load(root)["files"]
+    found: dict[str, list[dict]] = {}
+    for entry in files.values():
+        if not isinstance(entry, dict):
+            continue
+        for pdf, _, item in _entry_pdfs(root, entry):
+            notes = item.get("notes")
+            if isinstance(notes, list) and notes and _stat(pdf) == (item.get("size"), item.get("mtime_ns")):
+                found[str(pdf)] = notes
+    return found
 
 
 def _inside(path: Path, root: Path | str) -> bool:

@@ -722,3 +722,41 @@
 #prOpenYellow .pr-count {
   min-width: 4.2em;
 }
+
+/* 导出时发现内容很少的页（page_fill）：标题下列出修好的和要人工看的；页面左上角小标签（右上角是「这一页要人工改」），悬停看原因 */
+.pr-fill-notes {
+  margin: 0;
+  padding: 8px 14px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  border: 2px solid var(--line-soft);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.pr-fill-fixed {
+  color: #17603a;
+}
+
+.pr-fill-open {
+  color: #7a4300;
+}
+
+.pr-page-note {
+  position: absolute;
+  left: 8px;
+  top: 6px;
+  z-index: 2;
+  padding: 1px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #5c3300;
+  background: #ffe28a;
+  border: 1.5px solid #a35a00;
+  border-radius: 8px;
+  pointer-events: auto;
+  cursor: help;
+}
