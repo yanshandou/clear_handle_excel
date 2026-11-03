@@ -18,10 +18,15 @@
     .task-folder-note.missing a { color: #8a1c1c; }`;
   document.head.appendChild(style);
 
-  for (const input of [...work, ...refs]) {
-    input.readOnly = true;
-    input.classList.add('task-locked');
-  }
+  const placeholders = new Map([...work, ...refs].map(input => [input, input.placeholder]));
+  const lock = on => {
+    for (const input of [...work, ...refs]) {
+      input.readOnly = on;
+      input.classList.toggle('task-locked', on);
+      if (!on) { input.placeholder = placeholders.get(input); input.title = ''; }
+    }
+  };
+  lock(true);
 
   function setValue(input, value) {
     input.title = value ? `${value}\n（跟着当前任务走，不能手改；换任务请回主页）` : '';
@@ -60,6 +65,13 @@
     if (!data) return;
     const task = (data.tasks || []).find(t => t.id === data.current);
     const first = work[0] || refs[0];
+    if (data.single === true) {
+      // 单项模式：自己填本地文件夹，后端照样拦 OneDrive
+      lock(false);
+      note(first, '🔧 单项模式：可以自己填本地文件夹；OneDrive（共享）里的文件夹不让改。要回到任务模式请去 <a href="/">主页</a>。', false);
+      return;
+    }
+    lock(true);
     if (!task) {
       for (const input of [...work, ...refs]) { setValue(input, ''); input.placeholder = '还没开任务，请先回主页点「🆕 新任务」'; }
       note(first, '⚠ 还没开任务：程序只处理任务的本地文件夹，不能直接填路径。请先回 <a href="/">主页</a> 点「🆕 新任务」。', true);

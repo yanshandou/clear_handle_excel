@@ -124,6 +124,25 @@ class WorkTaskTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 work_task.require_folder(str(self.shared))  # 关了任务检查，OneDrive 也照样拦
 
+    def test_single_mode_allows_local_folders_but_not_onedrive(self):
+        """单项模式（用户 2026-11-03 定）：可以自己填本地文件夹，OneDrive 照样拦；开任务 / 切换自动回到任务模式"""
+        local = self.work_root / "随便一个文件夹"
+        local.mkdir(parents=True)
+        with self.assertRaises(ValueError):
+            work_task.require_folder(str(local))
+        self.assertTrue(work_task.set_single(True)["single"])
+        self.assertEqual(work_task.require_folder(str(local)), str(local))
+        with self.assertRaisesRegex(ValueError, "OneDrive"):
+            work_task.require_folder(str(self.shared))
+        task = work_task.create(str(self.shared), str(self.work_root))
+        self.assertFalse(work_task.overview()["single"])
+        with self.assertRaises(ValueError):
+            work_task.require_folder(str(local))
+        work_task.set_single(True)
+        work_task.switch(task["id"])
+        self.assertFalse(work_task.overview()["single"])
+        self.assertFalse(work_task.set_single(False)["single"])
+
     def test_finish_check_blocks_until_everything_uploaded(self):
         task = work_task.create(str(self.shared), str(self.work_root))
         work = Path(task["work"])

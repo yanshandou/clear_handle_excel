@@ -11,6 +11,13 @@
 .work-task-paths:empty { display: none; }
 .work-task-switch { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
 .work-task-switch select { max-width: 280px; min-height: 30px; }
+.work-task-single {
+  min-height: 30px; padding: 3px 12px; border: 2px solid var(--ink); border-radius: 999px;
+  background: #ffffff; color: #1d3b6e; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.work-task-single:hover { background: #eef3fb; }
+.work-task-bar.single .work-task-single { background: #b45309; border-color: #7c3a06; color: #ffffff; }
+.work-task-bar.single .work-task-title strong { color: #9a3412; }
 
 /* 新任务对话框 */
 .nt-dialog {

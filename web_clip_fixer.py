@@ -465,6 +465,8 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "task": work_task.create(payload.get("shared"), payload.get("work_root") or "")})
         elif self.path == "/api/tasks/finish":
             self._send_json({"ok": True, **work_task.finish(str(payload.get("id") or ""))})
+        elif self.path == "/api/tasks/single":
+            self._send_json({"ok": True, **work_task.set_single(payload.get("on"))})
         elif self.path == "/api/tasks/switch":
             self._send_json({"ok": True, "task": work_task.switch(str(payload.get("id") or ""))})
         elif self.path == "/api/distribute/start":

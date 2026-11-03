@@ -93,7 +93,7 @@ def _load() -> dict[str, Any]:
         debug_log.event("⚠️ 没能读出任务列表", 原因=str(err))
         data = {}
     tasks = data.get("tasks") if isinstance(data.get("tasks"), list) else []
-    return {"tasks": tasks, "current": data.get("current") or ""}
+    return {"tasks": tasks, "current": data.get("current") or "", "single": data.get("single") is True}
 
 
 def _save(data: dict[str, Any]) -> None:
@@ -130,6 +130,7 @@ def create(shared_text: Any, work_root_text: Any = "") -> dict[str, Any]:
         task["used"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         data["tasks"].insert(0, task)
         data["current"] = task["id"]
+        data["single"] = False  # 开任务 = 回到任务模式
         _save(data)
     debug_log.event("🆕 新任务" if not same else "🔁 沿用以前的任务", 共享=paths["shared"], 参考=paths["reference"],
                     处理=paths["work"])
@@ -146,6 +147,7 @@ def switch(task_id: str) -> dict[str, Any]:
         task["used"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         data["tasks"].insert(0, task)
         data["current"] = task_id
+        data["single"] = False
         _save(data)
     debug_log.event("🔀 切换任务", 共享=task["shared"], 处理=task["work"])
     return task
@@ -164,8 +166,19 @@ def _inside(path: Path, base: Path) -> bool:
     return a == b or a.startswith(b.rstrip("\\/") + os.sep)
 
 
+def set_single(on: Any) -> dict[str, Any]:
+    """单项模式（用户 2026-11-03 定）：只想单独用某一个功能时，各页面可以自己填本地文件夹；
+    OneDrive 里的文件夹照样不让改。开新任务或切换任务会自动回到任务模式"""
+    with _LOCK:
+        data = _load()
+        data["single"] = on is True
+        _save(data)
+    debug_log.event("🔧 单项模式" if on is True else "📁 回到任务模式")
+    return overview()
+
+
 def require_folder(folder: Any, role: str = "work") -> str:
-    """1～8 步的保险（用户 2026-11-03 定）：不走新任务不能直接填路径。
+    """1～8 步的保险（用户 2026-11-03 定）：不走新任务不能直接填路径（单项模式除外）。
     role="work"：只能是当前任务的「处理」文件夹（或它的子文件夹）；role="reference"：只能是「参考」。
     不管有没有任务，OneDrive 里的文件夹（就是共享文件夹）一律不让程序直接改。"""
     what = "原始备份文件夹" if role == "reference" else "Excel 文件夹路径"
@@ -176,6 +189,8 @@ def require_folder(folder: Any, role: str = "work") -> str:
     if not ENFORCE:
         return str(folder)
     data = _load()
+    if data["single"]:
+        return str(folder)
     task = next((t for t in data["tasks"] if t.get("id") == data["current"]), None)
     if not task:
         raise ValueError("还没有开任务：请先回主页点「🆕 新任务」，填共享文件夹路径，程序只处理任务的本地文件夹")
