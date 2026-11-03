@@ -174,6 +174,34 @@ def write_props(sheet: Any, addr: str, current: dict, target: dict) -> None:
         sheet.Rows(current["top"]).PageBreak = XL_PAGEBREAK_MANUAL
 
 
+XL_PAGEBREAK_NONE = -4142
+
+
+def restore_props(sheet: Any, addr: str, before: dict, now: dict) -> list[str]:
+    """按规律改得不对：把这一格（合并格整块）和改之前不一样的几样改回去，返回改回了哪几样。
+    行高、列宽按整块每一行 / 每一列写回；换行、缩小填充、字号、上方分页按记下的值写回"""
+    diff = changes(before, now)
+    if "merge" in diff:
+        raise ValueError("合并范围或行列位置变了，不能按原样改回")
+    area = sheet.Range(_first_cell(addr)).MergeArea
+    top, left = before["top"], before["left"]
+    if "row" in diff:
+        for i, height in enumerate(before["heights"]):
+            sheet.Rows(top + i).RowHeight = height
+    if "col" in diff:
+        for i, width in enumerate(before["widths"]):
+            sheet.Columns(left + i).ColumnWidth = width
+    if "wrap" in diff:
+        area.WrapText = bool(before["wrap"])
+    if "shrink" in diff:
+        area.ShrinkToFit = bool(before["shrink"])
+    if "font" in diff:
+        area.Font.Size = before["font"]
+    if "break" in diff:
+        sheet.Rows(top).PageBreak = XL_PAGEBREAK_MANUAL if before["break"] else XL_PAGEBREAK_NONE
+    return list(diff)
+
+
 # ───────────────────────── 总结规律 ─────────────────────────
 
 def _params(prop: str, model: str, demo: dict) -> float | None:

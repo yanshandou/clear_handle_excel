@@ -240,3 +240,63 @@ class LearnJobTests(unittest.TestCase):
         states = {c["cell_addr"]: c["state"] for c in cat["cards"]}
         self.assertEqual(states, {"A1": "demo", "A2": "demo", "A3": "demo", "A4": "applied", "A5": "applied"})
         self.assertEqual(cat["rule"]["text"], rule["text"])
+
+
+class ReviewTests(LearnJobTests):
+    """按规律改过的格子要复核：复检通过的也列出来对比；不行的改回原样（用户 2026-11-03）"""
+
+    def apply_rule(self):
+        for card in self.cards[:3]:
+            row = int(card["cell_addr"][1:])
+            self.sheet.rows[row].RowHeight += self.sheet.Range(card["cell_addr"]).font.Size * 1.5
+        job = self.wf.STATE["job"]
+        key = self.batch._card_category(self.cards[0], [])[0]
+        job["options"] = {"category": key, "card_ids": [c["id"] for c in self.cards]}
+        self.batch._learn_file(Mock(), self.path, self.cards, job)
+        self.batch._finish_learn(job)
+        self.batch._apply_file(Mock(), self.path, self.cards, self.batch._rules()[key])
+        return key
+
+    def cat(self, key):
+        return next(c for c in self.batch.snapshot()["categories"] if c["key"] == key)
+
+    def test_applied_cells_stay_listed_for_review_even_after_passing_recheck(self):
+        key = self.apply_rule()
+        a4 = self.batch._data()["cards"][self.cards[3]["id"]]
+        self.assertEqual(a4["learn_review"]["status"], "pending")
+        self.assertEqual(a4["learn_review"]["before"]["heights"], [18.75])
+        a4.update(dismissed=True, color="blue")  # 复检通过，移出列表
+        entry = next(c for c in self.cat(key)["cards"] if c["cell_addr"] == "A4")
+        self.assertEqual((entry["state"], entry["review"], entry["passed"]), ("passed", "pending", True))
+        self.assertTrue(any("行高" in t for t in entry["changes"]))
+        self.assertNotIn(a4["id"], self.batch.category_card_ids(key))  # 通过的不会再按规律改一次
+
+    def test_marking_ok_and_bad_then_reverting_restores_only_untouched_cells(self):
+        key = self.apply_rule()
+        a4, a5 = (self.batch._data()["cards"][c["id"]] for c in self.cards[3:])
+        self.assertEqual(self.batch.set_learn_review([a4["id"], a5["id"]], "bad"), 2)
+        with self.assertRaises(ValueError):
+            self.batch.set_learn_review([a4["id"]], "blue")
+        self.assertEqual(self.batch.revert_card_ids(key), [a4["id"], a5["id"]])
+        self.sheet.rows[5].RowHeight = 50  # 按规律改完后你又改过 A5：不改回
+        self.book.Save.reset_mock()
+        done = self.batch._revert_file(Mock(), self.path, [copy.deepcopy(a4), copy.deepcopy(a5)])
+        self.assertEqual(done, [a4["id"]])
+        self.assertEqual(self.sheet.rows[4].RowHeight, 18.75)
+        self.assertEqual(self.sheet.rows[5].RowHeight, 50)
+        self.book.Save.assert_called_once()
+        self.assertEqual(a4["learn_review"]["status"], "reverted")
+        self.assertNotIn("learn_applied", a4)
+        self.assertEqual(self.batch._baselines()[a4["id"]]["heights"], [18.75])
+        self.assertEqual(a5["learn_review"]["status"], "bad")
+        self.assertIn("又改过", a5["learn_review"]["note"])
+
+    def test_category_is_done_only_after_every_applied_cell_is_ok(self):
+        key = self.apply_rule()
+        ids = [c["id"] for c in self.cards[3:]]
+        self.assertEqual({c["review"] for c in self.cat(key)["cards"] if c.get("review")}, {"pending"})
+        self.batch.set_learn_review(ids, "ok")
+        self.assertEqual({c.get("review") for c in self.cat(key)["cards"] if c["state"] != "demo"}, {"ok"})
+
+
+import copy  # noqa: E402  (ReviewTests 里复制卡片)

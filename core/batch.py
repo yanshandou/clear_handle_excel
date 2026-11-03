@@ -633,25 +633,60 @@ def _rules() -> dict[str, dict]:
 
 
 def _card_category(card: dict, items: list[dict]) -> tuple[str, str]:
+    """这一格属于哪一类。按规律改过、还在复核的格子留在当初那一类
+    （改完后原样换成了改后的样子，按现在算可能从「没开换行」跑到「已开换行」）"""
+    review = card.get("learn_review")
+    if review and review.get("status") in REVIEW_OPEN:
+        return review["category"], review["label"]
     return fix_learning.category(card, items, _baselines().get(card["id"]))
+
+
+# 按规律改过的格子要你复核（用户 2026-11-03 定）：pending 待确认 / ok 认可（蓝） / bad 不行（红，等改回）；
+# 改回后是 reverted，不再算复核中
+REVIEW_OPEN = ("pending", "ok", "bad")
+REVIEW_STATUSES = ("pending", "ok", "bad")
+
+
+def _review_entry(card: dict) -> dict:
+    """调用方持有 STATE_LOCK。分类清单里一格的复核信息：修改前后两张图、改了什么、复检过没过"""
+    review = card["learn_review"]
+    images = {}
+    for which, name in (card.get("fix_images") or {}).items():
+        if which in ("before", "after") and fix_images.image_path(name):
+            images[which] = _image_url(name)
+    if not card.get("dismissed"):
+        images.pop("after", None)  # 复检没通过：修改后的图是上一轮的，不放
+    changed = fix_learning.changes(review["before"], review["after"])
+    return {"review": review["status"], "passed": bool(card.get("dismissed")), "images": images,
+            "changes": [fix_learning._change_text(p, v) for p, v in changed.items() if p != "merge"],
+            "note": review.get("note", "")}
 
 
 def _categories(cards: list[dict], by_cell: dict) -> list[dict]:
     """调用方持有 STATE_LOCK。按分类整理没处理完的卡（snapshot 里的卡，已去掉提交过、复检通过的）"""
     groups: dict[str, dict] = {}
     rules, baselines = _rules(), _baselines()
-    for result in cards:
+    listed = {r["id"] for r in cards}
+    # 复检通过、已移出列表的格子，按规律改过还没复核完的照样列出来，给你对比修改前后
+    reviewing = [c for c in _data()["cards"].values() if c["id"] not in listed and c.get("dismissed")
+                 and (c.get("learn_review") or {}).get("status") in REVIEW_OPEN and wf.in_current_folder(c["wb_path"])]
+    for result in [*cards, *({"id": c["id"], "error_types": c.get("error_types")} for c in reviewing)]:
         card = _data()["cards"][result["id"]]
         key, label = _card_category({**card, "error_types": result.get("error_types")}, by_cell.get(_cell(card), []))
         group = groups.setdefault(key, {"key": key, "label": label, "type": key.split("|")[0], "cards": []})
         rule = rules.get(key) or {}
+        open_review = (card.get("learn_review") or {}).get("status") in REVIEW_OPEN
         state = ("demo" if card["id"] in (rule.get("demo_ids") or []) else
+                 "passed" if card.get("dismissed") else
                  "applied" if card.get("learn_applied") else
                  "new" if card["id"] not in baselines else "todo")
-        group["cards"].append({"id": card["id"], "wb_path": card["wb_path"], "wb_name": card["wb_name"],
-                               "sheet_name": card["sheet_name"], "cell_addr": card["cell_addr"],
-                               "excel_row": card.get("excel_row"), "text": str(card.get("text") or "")[:60],
-                               "state": state, "color": card["color"], "finalized": card.get("finalized", False)})
+        entry = {"id": card["id"], "wb_path": card["wb_path"], "wb_name": card["wb_name"],
+                 "sheet_name": card["sheet_name"], "cell_addr": card["cell_addr"],
+                 "excel_row": card.get("excel_row"), "text": str(card.get("text") or "")[:60],
+                 "state": state, "color": card["color"], "finalized": card.get("finalized", False)}
+        if open_review:
+            entry.update(_review_entry(card))
+        group["cards"].append(entry)
     result = []
     for key, group in groups.items():
         rule = rules.get(key)
@@ -696,6 +731,10 @@ def _read_cards(book: Any, cards: list[dict]) -> dict[str, dict | str]:
 def _capture_baselines(excel: Any, path: str, *, only_missing: bool) -> None:
     """记下这份文件问题格的原样。扫描时整份重记（新一轮开始）；复检后只补新查出的格子"""
     with wf.STATE_LOCK:
+        if not only_missing:  # 重新扫描是新的一轮：上一轮按规律改过的复核记录翻篇
+            for card in _data()["cards"].values():
+                if card["wb_path"] == path:
+                    card.pop("learn_review", None)
         cards = [copy.deepcopy(c) for c in _data()["cards"].values()
                  if c["wb_path"] == path and not c.get("dismissed") and c.get("cell_addr")
                  and not (only_missing and c["id"] in _baselines())]
@@ -781,6 +820,7 @@ def _apply_file(excel: Any, path: str, cards: list[dict], rule: dict) -> int:
     before = wf._file_version(Path(path))
     book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
     written: dict[str, dict] = {}
+    befores: dict[str, dict] = {}  # 改之前的样子：复核时你说不行，按这个改回去
     touched = 0
     try:
         if book.ReadOnly:
@@ -803,6 +843,7 @@ def _apply_file(excel: Any, path: str, cards: list[dict], rule: dict) -> int:
                 sheet = _find_sheet(book, card["sheet_name"])
                 fix_learning.write_props(sheet, card["cell_addr"], now, target)
                 written[card["id"]] = fix_learning.read_props(sheet, card["cell_addr"])
+                befores[card["id"]] = now
                 debug_log.event("⚡ 按规律修改", 格=where, 改成=target)
             except Exception as err:
                 wf.log_msg(f"⚠️ {name} / {where} 没能按规律修改：{err}")
@@ -816,11 +857,101 @@ def _apply_file(excel: Any, path: str, cards: list[dict], rule: dict) -> int:
         for cid, props in written.items():
             _baselines()[cid] = props  # 改完的样子作为新的原样：复检没过的，你再示范时只比你改的部分
             if cid in _data()["cards"]:
-                _data()["cards"][cid]["learn_applied"] = rule.get("text", "")
+                card = _data()["cards"][cid]
+                card["learn_applied"] = rule.get("text", "")
+                old = card.get("learn_review") or {}
+                # 同一格改过不止一次（复检没过、再学再修）：改回时回到最早的样子，分类也留在最早那一类
+                card["learn_review"] = {"category": old.get("category") or rule.get("category"),
+                                        "label": old.get("label") or rule.get("label"),
+                                        "before": old.get("before") or befores[cid], "after": props,
+                                        "rule": rule.get("text", ""), "status": "pending"}
         wf._persist_state()
     wf.log_msg(f"⚡ {name}：按规律改了 {len(written)} 格" + (f"，{touched} 格你改过，没动" if touched else "")
                + ("，已保存" if written else ""))
     return len(written)
+
+
+def set_learn_review(card_ids: Any, status: Any) -> int:
+    """复核按规律改过的格子：认可（ok）、不行（bad）、回到待确认（pending）。只记下来，不碰 Excel；
+    标成不行的，点「改回」时才改回原样。返回改了几格"""
+    if status not in REVIEW_STATUSES:
+        raise ValueError("复核结果只能是 待确认 / 认可 / 不行")
+    if not isinstance(card_ids, list) or not card_ids:
+        raise ValueError("请先选格子")
+    changed = 0
+    with wf.STATE_LOCK:
+        for cid in card_ids:
+            review = (_data()["cards"].get(cid) or {}).get("learn_review")
+            if review and review.get("status") in REVIEW_OPEN:
+                review["status"] = status
+                review.pop("note", None)
+                changed += 1
+        if changed:
+            wf._persist_state()
+    debug_log.event("🧐 复核按规律改的格子", 结果=status, 格数=changed)
+    return changed
+
+
+def revert_card_ids(key: str) -> list[str]:
+    """这一类里复核标成「不行」、要改回原样的格子"""
+    with wf.STATE_LOCK:
+        return [c["id"] for c in sorted(_data()["cards"].values(), key=lambda c: c["seq"])
+                if (c.get("learn_review") or {}).get("status") == "bad" and wf.in_current_folder(c["wb_path"])
+                and c["learn_review"].get("category") == key]
+
+
+def _revert_file(excel: Any, path: str, cards: list[dict]) -> list[str]:
+    """把这份文件里复核不行的格子改回按规律改之前的样子，保存。
+    你后来在 Excel 里又改过的格子（现在和按规律改完的样子不一样）不动，免得盖掉你的修改。返回改回了哪几格"""
+    _check_file(path)
+    name = Path(path).name
+    before = wf._file_version(Path(path))
+    book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
+    reverted: list[str] = []
+    notes: dict[str, str] = {}
+    try:
+        if book.ReadOnly:
+            raise ValueError(f"{name} 以只读方式打开，没能改回原样")
+        found = _read_cards(book, cards)
+        for card in cards:
+            review, now = card["learn_review"], found.get(card["id"])
+            where = f"{card['sheet_name']}!{card['cell_addr']}"
+            if not isinstance(now, dict):
+                notes[card["id"]] = f"读不到这一格：{now}"
+                continue
+            if not fix_learning.same(review["after"], now):
+                notes[card["id"]] = "按规律改完后你又改过这一格，没有改回，请在 Excel 里看一下"
+                continue
+            try:
+                done = fix_learning.restore_props(_find_sheet(book, card["sheet_name"]), card["cell_addr"],
+                                                  review["before"], now)
+                reverted.append(card["id"])
+                debug_log.event("↩️ 改回原样", 格=where, 改回=done)
+            except Exception as err:
+                notes[card["id"]] = f"没能改回：{err}"
+                debug_log.event("⚠️ 改回失败", 格=where, 原因=str(err))
+        if reverted:
+            normalize_workbook_view(excel, book)
+            book.Save()
+            _followed_own_save(path, before)
+    finally:
+        book.Close(SaveChanges=False)
+    with wf.STATE_LOCK:
+        for cid in reverted:
+            card = _data()["cards"].get(cid)
+            if card:
+                _baselines()[cid] = card["learn_review"]["before"]  # 改回去了：原样就是改之前那样
+                card["learn_review"]["status"] = "reverted"
+                card.pop("learn_applied", None)
+        for cid, note in notes.items():
+            review = (_data()["cards"].get(cid) or {}).get("learn_review")
+            if review:
+                review["note"] = note
+                wf.log_msg(f"⚠️ {name} / {_data()['cards'][cid]['sheet_name']}!{_data()['cards'][cid]['cell_addr']}：{note}")
+        wf._persist_state()
+    wf.log_msg(f"↩️ {name}：改回原样 {len(reverted)} 格" + (f"，{len(notes)} 格没改回（见上面）" if notes else "")
+               + ("，已保存" if reverted else ""))
+    return reverted
 
 
 def _mark_block_reason(path: str) -> str:
@@ -3360,6 +3491,37 @@ def run() -> list[str]:
                 for path in _leftover_mark_paths(expected):
                     if not workbook_locked(Path(path)):  # 你正在 Excel 里改的文件不动，下次再还原
                         _sync_highlights_safely(session, path)
+        elif kind == "batch_revert":
+            # 复核不行的格子改回原样，再整份复检：改回后原来的问题照样查出来、转人工、标色
+            expected = list(job["workbooks"])
+            for i, path in enumerate(expected, 1):
+                if path in job["completed"]:
+                    continue
+                with wf.STATE_LOCK:
+                    job["current"] = path
+                    cards = [copy.deepcopy(c) for cid in options["card_ids"]
+                             for c in [_data()["cards"].get(cid)]
+                             if c and c["wb_path"] == path
+                             and (c.get("learn_review") or {}).get("status") == "bad"]
+                debug_log.begin(f"改回原样 {i} / {len(expected)}：{Path(path).name}")
+                watchdog.progress()
+                try:
+                    unsaved = close_saved_workbooks([Path(path)])
+                    if Path(path) in unsaved:
+                        wf.log_msg(f"⚠️ {Path(path).name}：{unsaved[Path(path)]}，请保存后再点")
+                        continue
+                    if cards and _revert_file(session.app(), path, cards):
+                        _recheck_file(session.app(), path, cards)
+                        _capture_baselines_safely(session, path)
+                        _sync_highlights_safely(session, path)
+                    with wf.STATE_LOCK:
+                        job["completed"].append(path)
+                        wf._persist_state()
+                except Exception as err:
+                    wf.log_msg(f"❌ {Path(path).name} 没做完，可继续任务：{err}{_where(err)}")
+                    _restart_excel(session)
+            with wf.STATE_LOCK:
+                job.pop("current", None)
         elif kind in {"batch_learn", "batch_apply"}:
             expected = list(job["workbooks"])
             key = options["category"]

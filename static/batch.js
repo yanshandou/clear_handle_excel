@@ -1,7 +1,7 @@
 'use strict';
 const REVIEW_COLORS = ['blue', 'green', 'yellow'];
 const REVIEW_LABELS = { blue: '蓝 · 已修复', green: '绿 · 忽略', yellow: '黄 · 人工处理' };
-const REVIEW_JOB_NAMES = { batch_commit: '提交审核', batch_recheck: '复检', batch_open: '打开文件', batch_unhighlight: '清除标记颜色', batch_learn: '学一下', batch_apply: '按规律修改' };
+const REVIEW_JOB_NAMES = { batch_commit: '提交审核', batch_recheck: '复检', batch_open: '打开文件', batch_unhighlight: '清除标记颜色', batch_learn: '学一下', batch_apply: '按规律修改', batch_revert: '改回原样' };
 let batchState = { cards: [], busy: false, job: null, progress: {}, logs: [] };
 let selectedFilter = 'all';
 let largeMode = false;
@@ -423,7 +423,7 @@ function etaText(eta) {
   return ` · 已用 ${duration(eta.elapsed)} · 预计还要约 ${duration(eta.remaining)}（${clock} 左右扫完）`;
 }
 // 任务已全部完成：收起满格进度条，换成明确的完成提示，免得以为卡在最后一个文件
-const DONE_TITLES = { batch_scan: '扫描完成', batch_commit: '审核已提交', batch_recheck: '复检完成', batch_open: '文件已打开', batch_unhighlight: '标记颜色已清除', batch_learn: '学完了', batch_apply: '按规律修改完成' };
+const DONE_TITLES = { batch_scan: '扫描完成', batch_commit: '审核已提交', batch_recheck: '复检完成', batch_open: '文件已打开', batch_unhighlight: '标记颜色已清除', batch_learn: '学完了', batch_apply: '按规律修改完成', batch_revert: '已改回原样' };
 function renderDoneBanner(finished, job, total) {
   $('progressText').classList.toggle('hidden', finished);
   $('progressTrack').classList.toggle('hidden', finished);

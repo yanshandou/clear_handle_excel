@@ -546,6 +546,18 @@ class WebHandler(BaseHTTPRequestHandler):
                 if color:
                     options["color"] = color
                 self._start_job(f"batch_{action}", options)
+        elif self.path == "/api/batch/learn_review":
+            # 复核按规律改过的格子：认可 / 不行 / 待确认，只记下来
+            self._send_json({"ok": True, "changed": batch.set_learn_review(payload.get("card_ids"), payload.get("status"))})
+        elif self.path == "/api/batch/learn_revert":
+            # 复核不行的格子改回按规律改之前的样子，再整份复检
+            key = payload.get("category")
+            if not isinstance(key, str) or not key:
+                raise ValueError("请先选一个分类")
+            ids = batch.revert_card_ids(key)
+            if not ids:
+                raise ValueError("这一类没有标成「不行」的格子")
+            self._start_job("batch_revert", {"category": key, "card_ids": ids})
         elif self.path in {"/api/batch/learn", "/api/batch/apply"}:
             # 按分类示范学习修复：学一下 = 找出你改过的格子、总结规律；按规律修 = 改这一类剩下的并复检
             key = payload.get("category")

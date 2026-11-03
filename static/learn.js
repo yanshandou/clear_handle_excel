@@ -7,6 +7,7 @@ const LEARN_CELL_LIMIT = 300; // 清单最多画这么多行，太多只是拖�
 const LEARN_STATE = {
   demo: ['示范', '你改过的格子，学的时候用来总结规律'],
   applied: ['已按规律改', '按规律改过、复检还没过：可以在 Excel 里再改，当作新的示范'],
+  passed: ['复检通过', '按规律改过、复检通过：在下面对比修改前后，认可标蓝，不行标红'],
   todo: ['待处理', ''],
   new: ['没记原样', '以前扫描的格子没记下原样：点「学一下」时先记下现在的样子，下一次才能当示范'],
 };
@@ -45,11 +46,72 @@ function learnListHtml(cats, current) {
 
 // 这一类改完了没有：学到了规律，而且剩下的格子都是示范或已按规律改过（没有待处理、没记原样的）。
 // 改完的格子复检通过后移出列表；整类都通过，这一类就不再显示。返回悬停说明，没改完返回空字符串
+// 按规律改过的格子要你复核完（全部认可）才算改完（用户 2026-11-03）
 function learnDone(cat) {
   if (!cat.rule?.ok || !cat.cards.length) return '';
-  if (cat.cards.some(c => c.state !== 'demo' && c.state !== 'applied')) return '';
+  if (cat.cards.some(c => c.state !== 'demo' && c.review !== 'ok')) return '';
   const demo = cat.cards.filter(c => c.state === 'demo').length;
-  return `这一类已经改完：示范 ${demo} 格，按规律改 ${cat.cards.length - demo} 格。复检通过的会移出列表`;
+  return `这一类已经改完：示范 ${demo} 格，按规律改了 ${cat.cards.length - demo} 格，你都认可了`;
+}
+
+// ───────── 复核：按规律改过的格子，对比修改前 / 修改后，认可标蓝、不行标红 ─────────
+const REVIEW_TAG = { pending: '待确认', ok: '认可', bad: '不行' };
+const REVIEW_NEXT = { pending: 'ok', ok: 'bad', bad: 'pending' };
+const LEARN_REVIEW_LIMIT = 120; // 一次最多画这么多张对比卡，其余点「再显示」
+let learnReviewShown = LEARN_REVIEW_LIMIT;
+let learnReviewFilter = 'all';
+
+function learnReviewHtml(cat) {
+  const all = cat.cards.filter(c => c.review);
+  if (!all.length) return '';
+  const order = learnFileOrder(cat);
+  const n = status => all.filter(c => c.review === status).length;
+  const busy = learnBusyReason();
+  const shown = all.filter(c => learnReviewFilter === 'all' || c.review === learnReviewFilter);
+  const filters = [['all', `全部 ${all.length}`], ['pending', `待确认 ${n('pending')}`], ['ok', `认可 ${n('ok')}`], ['bad', `不行 ${n('bad')}`]];
+  const cards = shown.slice(0, learnReviewShown).map(c => {
+    const shot = (which, label) => c.images?.[which]
+      ? `<figure><img src="${esc(c.images[which])}" alt="${label}" loading="lazy"><figcaption>${label}</figcaption></figure>`
+      : `<figure><div class="batch-missing">${which === 'after' ? '复检没通过，没有修改后的图' : '没有截到图'}</div><figcaption>${label}</figcaption></figure>`;
+    const link = excelLinkHtml(esc(c.wb_name), { file: c.wb_name, folder: batchState.folder, sheet: c.sheet_name,
+      cell: (c.cell_addr || '').split(':')[0], blocked: openBlocked(c) });
+    return `<article class="learn-review-card is-${esc(c.review)}" data-review-id="${esc(c.id)}" tabindex="0" title="单击换色：待确认 → 蓝·认可 → 红·不行">`
+      + `<header><span class="learn-file-no">${order.get(c.wb_path)}/${cat.files}</span>${link}<span class="learn-review-cell">${esc(c.sheet_name)}!${esc(c.cell_addr)}</span>`
+      + `<span class="learn-review-tag">${REVIEW_TAG[c.review]}</span></header>`
+      + `<div class="batch-shots">${shot('before', '修改前')}<span class="batch-vs">VS</span>${shot('after', '修改后')}</div>`
+      + `<p class="learn-review-note">${c.passed ? '✅ 复检通过' : '⚠️ 复检还有问题'}${c.changes?.length ? `；改了：${esc(c.changes.join('，'))}` : ''}`
+      + `${c.note ? `<br><b>${esc(c.note)}</b>` : ''}</p></article>`;
+  }).join('');
+  const more = shown.length > learnReviewShown ? `<button type="button" class="btn btn-outline" id="learnReviewMore">再显示 ${Math.min(LEARN_REVIEW_LIMIT, shown.length - learnReviewShown)} 张（还有 ${shown.length - learnReviewShown} 张）</button>` : '';
+  const disabled = reason => reason ? ` disabled title="${esc(reason)}"` : '';
+  return `<section class="learn-review" aria-label="复核按规律改的格子"><h4>复核按规律改的格子</h4>`
+    + `<p class="toolbar-hint">对比修改前和修改后，单击卡片换色：<b>蓝 = 认可</b>，<b>红 = 不行</b>。标红的点「改回原样」，程序把这几格改回按规律改之前的样子、整份复检后转人工；按规律改完后你又在 Excel 里改过的格子不动。全部认可后这一类打 ✓。</p>`
+    + `<div class="learn-review-bar"><span class="repair-filter-buttons" role="group" aria-label="复核筛选">${filters.map(([k, label]) => `<button type="button" class="btn btn-sm ${k === learnReviewFilter ? 'btn-primary' : 'btn-outline'}" data-review-filter="${k}" aria-pressed="${k === learnReviewFilter}">${label}</button>`).join('')}</span>`
+    + `<button type="button" class="btn btn-outline btn-sm" id="learnReviewAllOk"${disabled(!n('pending') && '没有待确认的格子')}>👍 待确认的全部认可（${n('pending')}）</button>`
+    + `<button type="button" class="btn btn-danger btn-sm" id="learnRevertBtn"${disabled(busy || (!n('bad') && '没有标红的格子'))}>↩ 改回原样（标红的 ${n('bad')} 格）</button></div>`
+    + `<div class="learn-review-grid">${cards || '<p>这个筛选下没有格子。</p>'}</div>${more}</section>`;
+}
+
+async function learnReviewSet(ids, status) {
+  const cat = learnCurrent();
+  if (!cat || !ids.length) return;
+  for (const c of cat.cards) if (ids.includes(c.id)) c.review = status; // 先在页面上换色，不等后台
+  learnRenderKey = '';
+  renderLearn();
+  try { await post('/api/batch/learn_review', { card_ids: ids, status }); }
+  catch (error) { $('errorText').textContent = error.message; }
+  lastEtag = '';
+  await poll();
+}
+
+async function learnRevert() {
+  const cat = learnCurrent();
+  if (!cat) return;
+  const bad = cat.cards.filter(c => c.review === 'bad');
+  const files = new Set(bad.map(c => c.wb_path)).size;
+  if (!(await appConfirm(`把标红的 ${bad.length} 格（${files} 个文件）改回按规律改之前的样子，保存后整份复检，原来的问题转人工、在 Excel 里标色。\n按规律改完后你又在 Excel 里改过的格子不动。请先在 Excel 里保存并关闭这些文件。`,
+    { title: '改回原样', okText: `↩ 改回 ${bad.length} 格`, tone: 'danger' }))) return;
+  await startJob('/api/batch/learn_revert', { category: cat.key });
 }
 
 function learnRuleHtml(rule) {
@@ -73,11 +135,11 @@ function learnFileOrder(cat) {
 // 这一类正在跑的「学一下 / 按规律修」：{name, done, total, index, current}；没在跑返回 null
 function learnJob(cat) {
   const job = batchState.job;
-  if (!batchState.busy || !job || !['batch_learn', 'batch_apply'].includes(job.kind) || job.options?.category !== cat.key) return null;
+  if (!batchState.busy || !job || !['batch_learn', 'batch_apply', 'batch_revert'].includes(job.kind) || job.options?.category !== cat.key) return null;
   const files = job.workbooks || [];
   const done = (job.completed || []).length;
   const index = job.current ? files.indexOf(job.current) + 1 : 0;
-  return { name: job.kind === 'batch_learn' ? '学一下' : '按规律修', done, total: files.length, index, current: job.current || '' };
+  return { name: { batch_learn: '学一下', batch_apply: '按规律修', batch_revert: '改回原样' }[job.kind], done, total: files.length, index, current: job.current || '' };
 }
 
 function learnProgressHtml(cat) {
@@ -112,7 +174,7 @@ function learnDetailHtml(cat) {
   if (!cat) return '';
   const count = state => cat.cards.filter(c => c.state === state).length;
   const busy = learnBusyReason();
-  const todo = count('todo') + count('applied');
+  const todo = count('todo') + count('applied');  // 复检通过的（passed）不再改
   const ok = cat.rule?.ok;
   const openIds = cat.cards.filter(c => c.color === 'yellow' && c.finalized).length;
   const disabled = reason => reason ? ` disabled title="${esc(reason)}"` : '';
@@ -128,7 +190,7 @@ function learnDetailHtml(cat) {
     + `${learnRuleHtml(cat.rule)}</div></li>`
     + `<li><span class="learn-step-no">3</span><div><strong>按规律修</strong><p>按学到的规律改这一类剩下的格子（示范的不动），保存后整份复检。通过的移出列表；没通过的留下，可以再示范几个、再学一次。</p>`
     + `<button type="button" class="btn btn-success" id="learnApplyBtn"${disabled(busy || (!ok && '还没学到规律') || (!todo && '没有剩下要改的格子'))}>⚡ 按规律修剩下的 ${todo} 格</button></div></li>`
-    + '</ol>' + learnProgressHtml(cat) + learnCellsHtml(cat);
+    + '</ol>' + learnProgressHtml(cat) + learnReviewHtml(cat) + learnCellsHtml(cat);
 }
 
 function renderLearn() {
@@ -137,15 +199,18 @@ function renderLearn() {
   const cats = learnCategories();
   const current = learnCurrent();
   const run = current && learnJob(current);
-  const key = JSON.stringify([cats, current?.key, learnBusyReason(), batchState.folder, excelLinkHtml.revision, batchState.open_blocked, typeColors, run]);
+  const key = JSON.stringify([cats, current?.key, learnBusyReason(), batchState.folder, excelLinkHtml.revision, batchState.open_blocked, typeColors, run, learnReviewShown, learnReviewFilter]);
   if (key === learnRenderKey) return;
   learnRenderKey = key;
   // 重画前记下滚到哪、哪些折叠展开着：刷新后停在原处，不跳回顶上（用户 2026-11-03）
   const sameCat = learnRenderedCat === current?.key;
   learnRenderedCat = current?.key;
   const listTop = $('learnList').scrollTop;
+  if (!sameCat) { learnReviewShown = LEARN_REVIEW_LIMIT; learnReviewFilter = 'all'; }
   const wrap = $('learnDetail').querySelector?.('.learn-table-wrap');
   const tableTop = sameCat && wrap ? wrap.scrollTop : 0;
+  const grid = $('learnDetail').querySelector?.('.learn-review-grid');
+  const gridTop = sameCat && grid ? grid.scrollTop : 0;
   const opened = sameCat ? [...($('learnDetail').querySelectorAll?.('details') || [])].map(d => d.open) : [];
   $('learnSummary').textContent = cats.length
     ? `共 ${cats.reduce((n, c) => n + c.count, 0)} 格，分成 ${cats.length} 类` : '';
@@ -154,6 +219,8 @@ function renderLearn() {
   $('learnList').scrollTop = listTop;
   const wrapNow = $('learnDetail').querySelector?.('.learn-table-wrap');
   if (wrapNow) wrapNow.scrollTop = tableTop;
+  const gridNow = $('learnDetail').querySelector?.('.learn-review-grid');
+  if (gridNow) gridNow.scrollTop = gridTop;
   [...($('learnDetail').querySelectorAll?.('details') || [])].forEach((d, i) => { if (i < opened.length) d.open = opened[i]; });
 }
 
@@ -198,8 +265,27 @@ $('learnList').addEventListener('click', event => {
   try { localStorage.setItem(LEARN_SELECTED_KEY, learnSelected); } catch (_) {}
   renderLearn();
 });
+// 对比卡可以用键盘：Tab 选中，回车或空格换色
+$('learnDetail').addEventListener('keydown', event => {
+  const card = event.target?.closest?.('[data-review-id]');
+  if (!card || event.target !== card || !['Enter', ' '].includes(event.key)) return;
+  event.preventDefault();
+  const c = learnCurrent()?.cards.find(x => x.id === card.dataset.reviewId);
+  if (c) learnReviewSet([c.id], REVIEW_NEXT[c.review] || 'pending');
+});
 $('learnDetail').addEventListener('click', event => {
+  const filter = event.target.closest('[data-review-filter]');
+  if (filter) { learnReviewFilter = filter.dataset.reviewFilter; learnReviewShown = LEARN_REVIEW_LIMIT; renderLearn(); return; }
+  const card = event.target.closest('[data-review-id]');
+  if (card && !event.target.closest('a, button')) {
+    const c = learnCurrent()?.cards.find(x => x.id === card.dataset.reviewId);
+    if (c) learnReviewSet([c.id], REVIEW_NEXT[c.review] || 'pending');
+    return;
+  }
   const id = event.target.closest('button')?.id;
+  if (id === 'learnReviewMore') { learnReviewShown += LEARN_REVIEW_LIMIT; renderLearn(); return; }
+  if (id === 'learnReviewAllOk') { learnReviewSet((learnCurrent()?.cards || []).filter(c => c.review === 'pending').map(c => c.id), 'ok'); return; }
+  if (id === 'learnRevertBtn') { learnRevert(); return; }
   if (id === 'learnOpenBtn') learnOpen();
   else if (id === 'learnBtn') learnRun();
   else if (id === 'learnApplyBtn') learnApply();
