@@ -9,7 +9,7 @@
 </head>
 <body>
   <header class="app-header">
-    <a href="/" class="header-brand"><div class="header-logo-badge">📋</div><div class="header-title"><h1>PDF 人工复检</h1><span class="subtitle">小图快速过一遍 · 单击换颜色标记 · Ctrl + 单击用 Excel 打开那一页</span></div></a>
+    <a href="/" class="header-brand"><div class="header-logo-badge">📋</div><div class="header-title"><h1>PDF 人工复检</h1><span class="subtitle">大 / 中 / 小图切换 · 单击换颜色标记 · Ctrl + 单击用 Excel 打开那一页</span></div></a>
     <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/workbench" class="nav-link">📐 切字检查工作台</a><a href="/records" class="nav-link">📋 执行记录</a></nav>
   </header>
   <main class="container pr-container">
@@ -53,6 +53,11 @@
         <span class="pr-process-text" data-process-text="red">🗑 删除标红</span>
         <span class="pr-count is-red" title="标红的表（删除这张表）"><span id="prCountRed">0</span></span>
       </button>
+      <div id="prView" class="pv-size-switch pr-view" role="group" aria-label="页面大小">
+        <button type="button" class="btn btn-outline btn-sm" data-view="large" title="每页宽度占满整个屏幕宽">大图</button>
+        <button type="button" class="btn btn-outline btn-sm" data-view="medium" title="每页高度占满整个屏幕高，整页看得到">中图</button>
+        <button type="button" class="btn btn-outline btn-sm" data-view="small" title="一行放好几页，快速过一遍">小图</button>
+      </div>
     </section>
 
     <!-- 右键菜单：fixed 浮层，开关都不挪页面 -->
