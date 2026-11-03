@@ -297,24 +297,6 @@
   .route-flag-finish { top: auto; bottom: -44px; }
 }
 
-@media (max-width: 520px) {
-  .route-map .feature-card {
-    padding: 10px 10px 16px;
-  }
-
-  .route-map .feature-orb,
-  .route-map .feature-card:nth-child(even) .feature-orb,
-  .route-map .feature-icon {
-    width: 64px;
-    height: 64px;
-  }
-
-
-  .route-map .feature-title,
-  .route-map .feature-card:nth-child(even) .feature-title {
-    font-size: 17px;
-  }
-}
 
 /* ---------- 做过的一站：卡片右上角圆圈对勾 ---------- */
 .route-done {
@@ -359,12 +341,3 @@
   color: #1f7a2e;
 }
 
-@media (max-width: 520px) {
-  .route-done {
-    top: -10px;
-    right: -6px;
-    width: 32px;
-    height: 32px;
-    font-size: 18px;
-  }
-}

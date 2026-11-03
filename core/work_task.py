@@ -62,16 +62,16 @@ def derive(shared_text: Any, work_root_text: Any = "", *, must_exist: bool = Tru
         raise ValueError(f"共享文件夹不存在：{shared}（OneDrive 的话请确认已经同步到这台电脑）")
     if must_exist:
         shared = shared.resolve()
-    root = _clean(work_root_text, "工作根目录") if isinstance(work_root_text, str) and work_root_text.strip() \
+    root = _clean(work_root_text, "本地工作文件夹") if isinstance(work_root_text, str) and work_root_text.strip() \
         else default_work_root(shared)
     if any(_is_onedrive(p) for p in root.parts):
-        raise ValueError(f"工作根目录不能放在 OneDrive 里面（会被同步给别人）：{root}")
+        raise ValueError(f"本地工作文件夹不能放在 OneDrive 里面（会被同步给别人）：{root}")
     try:
         root_resolved = root.resolve()
     except OSError:
         root_resolved = root
     if root_resolved == shared or shared in root_resolved.parents or root_resolved in shared.parents:
-        raise ValueError("工作根目录不能和共享文件夹互相包含，请换一个地方")
+        raise ValueError("本地工作文件夹不能和共享文件夹互相包含，请换一个地方")
     rel = relative_part(shared)
     return {
         "shared": str(shared),

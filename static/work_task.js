@@ -4,6 +4,7 @@
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[ch]));
   let data = { tasks: [], current: '' };
+  const EMPTY = '<div class="nt-empty">填好共享文件夹路径后，这里显示参考、处理文件夹的位置。</div>';
   let deriveTimer = 0, deriveSeq = 0, creating = false;
 
   const pathsHtml = t => `<dt>共享</dt><dd>${esc(t.shared)}</dd><dt>参考</dt><dd>${esc(t.reference)}</dd><dt>处理</dt><dd>${esc(t.work)}</dd>`;
@@ -54,7 +55,7 @@
       const seq = ++deriveSeq;
       const shared = $('workTaskShared').value.trim();
       $('workTaskError').textContent = '';
-      if (!shared) { $('workTaskPreview').innerHTML = ''; return; }
+      if (!shared) { $('workTaskPreview').innerHTML = EMPTY; return; }
       try {
         const result = await post('/api/tasks/derive', { shared, work_root: $('workTaskRoot').value.trim() });
         if (seq !== deriveSeq) return;
@@ -62,7 +63,7 @@
         if (!$('workTaskRoot').value.trim()) $('workTaskRoot').placeholder = result.paths.work_root;
       } catch (error) {
         if (seq !== deriveSeq) return;
-        $('workTaskPreview').innerHTML = '';
+        $('workTaskPreview').innerHTML = EMPTY;
         $('workTaskError').textContent = error.message;
       }
     }, 350);
@@ -73,7 +74,7 @@
     $('workTaskShared').value = current ? current.shared : '';
     $('workTaskRoot').value = data.last_work_root || '';
     $('workTaskError').textContent = '';
-    $('workTaskPreview').innerHTML = '';
+    $('workTaskPreview').innerHTML = EMPTY;
     $('workTaskDialog').showModal();
     $('workTaskShared').focus();
     $('workTaskShared').select();
@@ -95,7 +96,7 @@
     } catch (error) {
       $('workTaskError').textContent = error.message;
       $('workTaskCreate').disabled = false;
-      $('workTaskCreate').textContent = '开始，去拿文件';
+      $('workTaskCreate').textContent = '开始，去拿文件 ➜';
       creating = false;
     }
   }

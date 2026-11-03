@@ -598,10 +598,6 @@
 .pr-count.is-yellow { color: #3d2a00; background: #ffc21f; }
 .pr-count.is-red { color: #fff; background: #c8102e; }
 
-@media (max-width: 720px) {
-  .pr-bar { flex-wrap: wrap; }
-  .pr-summary { max-width: none; }
-}
 
 /* 一键处理结果：每一处都能点开 */
 .pr-result {

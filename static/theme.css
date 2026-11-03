@@ -1502,38 +1502,6 @@ button.preview-sheet-tag:active {
   font-size: 36px;
 }
 
-@media (max-width: 700px) {
-  .batch-shots {
-    gap: 0;
-  }
-
-  .batch-shots figure:first-of-type {
-    --vs-clip: polygon(0 0, 100% 0, 100% calc(100% - var(--vs-slant)), 0 100%);
-  --vs-r1: 1; --vs-r2: 1; --vs-r3: 0; --vs-r4: 0;
-    padding: 10px 12px calc(var(--vs-slant) + 10px) 12px;
-  }
-
-  .batch-shots figure:last-of-type {
-    --vs-clip: polygon(0 var(--vs-slant), 100% 0, 100% 100%, 0 100%);
-  --vs-r1: 0; --vs-r2: 0; --vs-r3: 1; --vs-r4: 1;
-    padding: calc(var(--vs-slant) + 8px) 12px 12px 12px;
-  }
-
-  .batch-shots figure:first-of-type figcaption,
-  .batch-shots figure:last-of-type figcaption {
-    padding: 0;
-    text-align: left;
-  }
-
-  .batch-shots .batch-vs {
-    position: relative;
-    top: auto;
-    left: auto;
-    justify-self: center;
-    transform: none;
-    margin: -12px 0;
-  }
-}
 
 /* 还没有修改后的图：只放一张修改前图，占满整行、四角圆角、不斜切不放 VS，图放大一些方便判断。
    这张图既是 first-of-type 也是 last-of-type，用 :only-of-type 盖过左右两块和窄屏 / 大图审核的规则 */
@@ -1681,35 +1649,7 @@ button.preview-sheet-tag:active {
   color: var(--ink-2);
 }
 
-@media (max-width: 760px) {
-  .app-header {
-    padding: 10px 16px;
-  }
 
-  .feature-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .feature-card {
-    min-height: 380px;
-  }
-
-  .home-hero h2 {
-    font-size: 28px;
-  }
-}
-
-@media (max-width: 420px) {
-  .feature-orb {
-    width: 100px;
-    height: 100px;
-  }
-
-  .feature-icon {
-    width: 82px;
-    height: 82px;
-  }
-}
 
 /* ==========================================
    手游 UI 风格（参考手游界面素材）
@@ -2670,10 +2610,6 @@ input[type="checkbox"]:not(.hidden):checked::before {
   border-radius: 6px;
 }
 
-@media (max-width: 560px) {
-  .unhighlight-file li { grid-template-columns: 1.6em 1fr; }
-  .unhighlight-reason { grid-column: 2; }
-}
 
 .find-marks-swatch {
   display: inline-block;
