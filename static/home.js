@@ -115,6 +115,7 @@ function renderStrip() {
   const stripTrack = document.getElementById('stripFill').parentElement;
   stripTrack.classList.toggle('is-done', stripDone);
   stripTrack.classList.toggle('is-paused', status !== 'running');
+  window.ProgressEta?.update('stripFill', 'task', pct / 100, status === 'running');
 
   const resumeBtn = document.getElementById('stripResumeBtn');
   resumeBtn.classList.toggle('hidden', !overview.can_resume);
@@ -215,6 +216,7 @@ function renderRunBox() {
   document.getElementById('taskProgressFill').style.width = `${Math.min(100, Math.max(0, pct))}%`;
   // 结束后下面的结果框已写明完成 / 未完成，进度条收起
   document.getElementById('taskProgressFill').closest('.mini-progress-box').classList.toggle('hidden', phase === 'done');
+  window.ProgressEta?.update('taskProgressFill', 'task', pct / 100, phase === 'running' && overview.busy);
 
   const logBox = document.getElementById('taskLogBox');
   const logText = overview.logs.length ? overview.logs.join('\n') : '等待操作...';

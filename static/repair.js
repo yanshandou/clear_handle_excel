@@ -187,10 +187,13 @@
       showProgress(progressId, 'running');
       $(progressId).textContent = `${{scan:'正在扫描', find:'正在扫描', preview:'正在对比备份', apply:'正在修复', clear:'正在清除标记'}[stage] || '正在处理'} ${Math.min((latest.done || 0) + 1, latest.total || 0)} / ${latest.total || 0}：${latest.current || '准备中…'}`;
       const fraction = latest.total ? latest.done / latest.total : 0;
-      $(progressId + 'Fill').style.width = `${colors && latest.phase === 'repair' ? (clearing ? fraction * 50 : 50 + fraction * 50) : fraction * 100}%`;
+      const barPct = colors && latest.phase === 'repair' ? (clearing ? fraction * 50 : 50 + fraction * 50) : fraction * 100;
+      $(progressId + 'Fill').style.width = `${barPct}%`;
+      window.ProgressEta?.update(progressId + 'Fill', `repair:${document.body.dataset.repairKind || "links"}:${latest.phase}`, barPct / 100, true);
       $('repairResults').textContent = clearing ? '正在清除标记，完成后显示明细。' : '正在扫描并修复，完成后显示明细。';
       return;
     }
+    window.ProgressEta?.update('repairProgressFill', `repair:${document.body.dataset.repairKind || "links"}:${latest.phase}`, 0, false);
     if (!data) return;
     if (colors && latest.phase === 'clear') { renderClear(data); return; }
     const cells = data.files.flatMap(file => file.cells || file.hits || []);
