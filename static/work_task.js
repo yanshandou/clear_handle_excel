@@ -22,7 +22,11 @@
 
   function render() {
     const current = data.tasks.find(t => t.id === data.current);
-    $('workTaskName').textContent = current ? current.name + (current.done ? '（✓ 已完成）' : '') : '还没有任务';
+    const single = data.single === true;
+    $('workTaskPanel').classList.toggle('single', single);
+    $('workTaskSingle').textContent = single ? '📁 回到任务模式' : '🔧 单项模式';
+    $('workTaskName').textContent = single ? '🔧 单项模式（各页面自己填本地文件夹）'
+      : current ? current.name + (current.done ? '（✓ 已完成）' : '') : '还没有任务';
     $('workTaskPaths').innerHTML = current ? pathsHtml(current) : '';
     $('workTaskHint').textContent = current
       ? '1～8 步的文件夹已经填成「处理」，修复颜色 / 引用 / 隐藏页的原始备份是「参考」。第 9 步把处理好的文件传回共享。'
@@ -145,6 +149,20 @@
   $('workTaskShared').addEventListener('input', scheduleDerive);
   $('workTaskRoot').addEventListener('input', scheduleDerive);
   $('workTaskShared').addEventListener('keydown', event => { if (event.key === 'Enter') create(); });
+  // 单项模式：只想单独用某一个功能时打开；OneDrive 里的文件夹照样不让改（后端 work_task.set_single）
+  $('workTaskSingle').addEventListener('click', async () => {
+    const on = data.single !== true;
+    if (on && !await window.appConfirm('打开后，各页面的文件夹可以自己填，不用先开任务。\nOneDrive（共享）里的文件夹照样不让程序改。\n\n开新任务或切换任务时会自动回到任务模式。',
+      { title: '🔧 单项模式', okText: '打开' })) return;
+    try {
+      data = { ...data, ...await post('/api/tasks/single', { on }) };
+      render();
+      if (!on) { const current = data.tasks.find(t => t.id === data.current); if (current) applyTask(current); }
+      else if (typeof window.refreshTaskFolder === 'function') window.refreshTaskFolder();
+    } catch (error) {
+      window.appAlert(error.message, { tone: 'error' });
+    }
+  });
   $('workTaskSwitch').addEventListener('change', async event => {
     const id = event.target.value;
     if (!id) return;
