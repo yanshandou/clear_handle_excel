@@ -197,6 +197,10 @@ html:has(#largeView[open]) { overflow: hidden; }
 .learn-count { flex: none; min-width: 2.2em; text-align: center; padding: 1px 6px; border: 1.5px solid var(--ink, #1c2858); border-radius: 999px;
   background: #fff; color: var(--ink, #1c2858); font-weight: 800; font-size: 13px; text-shadow: none; -webkit-text-stroke: 0; }
 .learn-badge { flex: none; }
+/* 改完的分类：右边绿圈白勾（同主页卡片做过的步骤），整行不变位置 */
+.learn-done { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: 2px solid var(--ink, #1c2858);
+  border-radius: 50%; background: #15803d; color: #fff; font-size: 13px; font-weight: 900; line-height: 1; text-shadow: none; -webkit-text-stroke: 0; }
+.learn-cat.is-done:not([aria-pressed="true"]) { background: #ecfdf3; }
 .learn-empty { color: var(--ink-3, #56628f); }
 .learn-meta { color: var(--ink-3, #56628f); font-size: 14px; }
 .learn-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin-bottom: 10px; }

@@ -34,10 +34,21 @@ function learnListHtml(cats, current) {
     const head = cat.type !== lastType ? `<li class="learn-type" aria-hidden="true"><span class="learn-type-chip" style="background:${color.fill};color:${color.font}" title="Excel 里这种问题的标记颜色">${esc(many + typeLabel)}</span></li>` : '';
     lastType = cat.type;
     const rest = cat.label.split(' · ').slice(1).join(' · ') || typeLabel;
-    const badge = cat.rule?.ok ? '<span class="learn-badge" title="已经学到规律">🎓</span>' : '';
-    return `${head}<li><button type="button" class="learn-cat" data-learn-cat="${esc(cat.key)}" aria-pressed="${cat === current}">`
-      + `<span class="learn-cat-name">${esc(rest)}</span>${badge}<span class="learn-count">${cat.count}</span></button></li>`;
+    const done = learnDone(cat);
+    const badge = cat.rule?.ok && !done ? '<span class="learn-badge" title="已经学到规律">🎓</span>' : '';
+    const mark = done ? `<span class="learn-done" title="${esc(done)}" aria-label="已改完">✓</span>` : '';
+    return `${head}<li><button type="button" class="learn-cat${done ? ' is-done' : ''}" data-learn-cat="${esc(cat.key)}" aria-pressed="${cat === current}">`
+      + `<span class="learn-cat-name">${esc(rest)}</span>${badge}<span class="learn-count">${cat.count}</span>${mark}</button></li>`;
   }).join('');
+}
+
+// 这一类改完了没有：学到了规律，而且剩下的格子都是示范或已按规律改过（没有待处理、没记原样的）。
+// 改完的格子复检通过后移出列表；整类都通过，这一类就不再显示。返回悬停说明，没改完返回空字符串
+function learnDone(cat) {
+  if (!cat.rule?.ok || !cat.cards.length) return '';
+  if (cat.cards.some(c => c.state !== 'demo' && c.state !== 'applied')) return '';
+  const demo = cat.cards.filter(c => c.state === 'demo').length;
+  return `这一类已经改完：示范 ${demo} 格，按规律改 ${cat.cards.length - demo} 格。复检通过的会移出列表`;
 }
 
 function learnRuleHtml(rule) {
