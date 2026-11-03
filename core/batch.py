@@ -1755,10 +1755,11 @@ def _wrap_shortfall(area: Any, size: float) -> tuple[float, int]:
     return max(0.0, need - float(height)), lines
 
 
-def _measure_wrapped_height(tmp: Any, area: Any) -> float:
+def _measure_wrapped_height(tmp: Any, area: Any, wrap: bool = True) -> float:
     """让 Excel 自己量这格开换行后要多高（pt）：Excel 的「自动调整行高」会跳过合并单元格，
     所以把文字和字体搬到临时工作簿的一个不合并的格子上，宽度调成和整个合并区域一样，开换行后自动调整行高，
-    读出高度。Excel 按单词换行（SQL 里长单词放不下会整个挪到下一行），比按字数估算准。量不出返回 0。"""
+    读出高度。Excel 按单词换行（SQL 里长单词放不下会整个挪到下一行），比按字数估算准。量不出返回 0。
+    wrap=False：不换行的格子（收紧行高时量同一行别的格子），只量一行字要多高，不用对宽度。"""
     first = area.Cells(1, 1)
     value = first.Value
     text = value if isinstance(value, str) else str(first.Text or "")
@@ -1769,7 +1770,12 @@ def _measure_wrapped_height(tmp: Any, area: Any) -> float:
     cell.Value = text
     font, src = cell.Font, first.Font
     font.Name, font.Size, font.Bold, font.Italic = src.Name, src.Size, src.Bold, src.Italic
-    cell.WrapText = True
+    cell.WrapText = wrap
+    if not wrap:
+        tmp.Rows(1).AutoFit()
+        height = float(tmp.Rows(1).RowHeight)
+        cell.Clear()
+        return height
     width = float(area.Width)
     column = tmp.Columns(1)
     for _ in range(4):  # 列宽单位是字数、和 pt 不完全成比例，调几次贴近
@@ -1791,13 +1797,13 @@ class _Measurer:
     def __init__(self, excel: Any) -> None:
         self.excel, self.book, self.failed = excel, None, False
 
-    def height(self, area: Any) -> float:
+    def height(self, area: Any, wrap: bool = True) -> float:
         if self.failed:
             return 0.0
         try:
             if self.book is None:
                 self.book = self.excel.Workbooks.Add()
-            return _measure_wrapped_height(self.book.Worksheets(1), area)
+            return _measure_wrapped_height(self.book.Worksheets(1), area, wrap)
         except Exception as err:
             debug_log.event("📏 Excel 量不出行高", 原因=str(err)[:120])
             if self.book is None:
@@ -1914,6 +1920,219 @@ def _recheck_after_grow(session: Any, path: str) -> None:
         wf.log_msg(f"⚠️ {Path(path).name} 加高后复检没做完，问题照旧标色转人工，可稍后点复检：{err}{_where(err)}")
         debug_log.event("⚠️ 加高后复检失败", 文件=Path(path).name, 原因=str(err))
         _restart_excel(session)
+
+
+# 收紧行高（用户 2026-11-03 要）：人工修切字时先给问题行一个很大的行高（例如 200），再让程序把多余的收回来。
+# 不一点点试：每试一次都要导出 PDF 检测，太慢。改成一步量出要多高：这一行每个有字的格子都搬到临时工作簿里
+# 同宽、同字体的格子上让 Excel 自动调整行高（量不出才按单词换行估算），取要的最高的，再加「字号 × 倍数」余量。
+# 只收不加；收完保存、整份复检，复检没过的行退回原来的行高，保存后再复检一次。
+TIGHTEN_SLACK_PT = 0.75  # 只差一个像素以内的不收
+TIGHTEN_PASSED_MESSAGE = "收紧行高后复检通过"
+XL_HORIZONTAL = -4128  # Orientation：横排
+
+
+def _addr_rows(addr: str) -> tuple[int, int]:
+    """单元格地址占哪几行（合并格 G5:I7 → 5–7）"""
+    parts = [_cell_rc(p)[0] for p in addr.split(":") if p]
+    return min(parts), max(parts)
+
+
+def _tighten_targets(path: str) -> list[dict]:
+    """调用方持有 STATE_LOCK：这份文件里出过切字问题的格子（还在列表里的、复检通过翻篇的都算），按它们所在的行收紧"""
+    return [c for c in _data()["cards"].values() if c["wb_path"] == path and c.get("cell_addr")
+            and not _keeps_user_mark(c) and set(_card_error_types(c)) & set(GROW_ERROR_TYPES)]
+
+
+def _shape_rows(sheet: Any) -> set[int]:
+    """图片、图形压着的行不收：收了图会被压扁或挡住字，复检也查不出来（批注不算）"""
+    rows: set[int] = set()
+    try:
+        shapes = list(sheet.Shapes)
+    except Exception:
+        return rows
+    for shape in shapes:
+        try:
+            if int(shape.Type) == 4:  # msoComment
+                continue
+            rows.update(range(int(shape.TopLeftCell.Row), int(shape.BottomRightCell.Row) + 1))
+        except Exception:
+            continue
+    return rows
+
+
+def _measure_area(measurer: "_Measurer", area: Any, size: float) -> tuple[float, str]:
+    """这一格的字全部显示要多高（pt）：先让 Excel 在临时格子上量，量不出按单词换行估算"""
+    wrap = area.WrapText is True and not bool(area.ShrinkToFit)
+    measured = measurer.height(area, wrap=wrap)
+    if measured > 0:
+        return measured, "Excel"
+    if not wrap:
+        return size * LINE_HEIGHT_RATIO, "估算"
+    _, lines = _wrap_shortfall(area, size)
+    if not lines:
+        return size * LINE_HEIGHT_RATIO, "估算"
+    return lines * size * LINE_HEIGHT_RATIO, "估算"
+
+
+def _row_target(measurer: "_Measurer", sheet: Any, row: int, height: float, ratio: float) -> tuple[float | None, str]:
+    """这一行收到多高：每个有字的格子（合并格减去它在别的行占的高度）要的高度加「字号 × 倍数」，取最高的。
+    有竖排、斜排文字的行量不准，返回 (None, 原因)"""
+    used = sheet.UsedRange
+    first = int(used.Column)
+    last = first + int(used.Columns.Count) - 1
+    target, seen, why = 0.0, set(), "-"
+    for col in range(first, last + 1):
+        area = sheet.Cells(row, col).MergeArea
+        top, left = int(area.Row), int(area.Column)
+        if (top, left) in seen:
+            continue
+        seen.add((top, left))
+        head = area.Cells(1, 1)
+        value = head.Value
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        try:
+            orientation = head.Orientation
+        except Exception:
+            orientation = XL_HORIZONTAL
+        if isinstance(orientation, (int, float)) and not isinstance(orientation, bool) and int(orientation) not in (0, XL_HORIZONTAL):
+            return None, "有竖排或斜排的字，量不准"
+        size = _font_size(area)
+        need, by = _measure_area(measurer, area, size)
+        need -= float(area.Height) - height  # 合并格在别的行已经占了的高度
+        if need + size * ratio > target:
+            target, why = need + size * ratio, by
+    if target <= 0:
+        return None, "这一行没有字"
+    return round(min(autofix.MAX_ROW_HEIGHT, target), 2), why
+
+
+def _tighten_rows(excel: Any, path: str, ratio: float) -> dict[tuple[str, int], dict]:
+    """把这份文件里出过切字问题的行收到「量出的高度 + 字号 × 倍数」，只收不加，保存一次。
+    返回 {(表名, 行): {"before": 原行高, "after": 新行高, "by": 怎么量的}}，只含真的收了的行"""
+    with wf.STATE_LOCK:
+        cards = _tighten_targets(path)
+    if not cards:
+        return {}
+    _check_file(path)
+    before = wf._file_version(Path(path))
+    name = Path(path).name
+    book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
+    measurer = _Measurer(excel)
+    done: dict[tuple[str, int], dict] = {}
+    try:
+        if book.ReadOnly:
+            raise ValueError(f"{name} 以只读方式打开，没能收紧行高")
+        rows: dict[str, tuple[Any, set[int]]] = {}
+        for card in cards:
+            sheet = _find_sheet(book, card["sheet_name"])
+            if sheet is None:
+                debug_log.event("⚠️ 收紧行高：找不到这张表", 文件=name, 表=card["sheet_name"])
+                continue
+            try:
+                area = sheet.Range(card["cell_addr"]).MergeArea
+                top = int(area.Row)
+                span = range(top, top + int(area.Rows.Count))
+            except Exception as err:
+                debug_log.event("⚠️ 收紧行高：找不到这一格", 格=f"{card['sheet_name']}!{card['cell_addr']}", 原因=str(err)[:120])
+                continue
+            rows.setdefault(sheet.Name, (sheet, set()))[1].update(span)
+        for sheet_name, (sheet, wanted) in rows.items():
+            busy_rows = _shape_rows(sheet)
+            for row in sorted(wanted):
+                where = f"{sheet_name}!{row} 行"
+                try:
+                    target_row = sheet.Rows(row)
+                    if target_row.Hidden is True:
+                        continue
+                    height = float(target_row.RowHeight)
+                    if row in busy_rows:
+                        debug_log.event("↕️ 不收", 行=where, 原因="有图片或图形", 行高=height)
+                        continue
+                    target, by = _row_target(measurer, sheet, row, height, ratio)
+                    if target is None or target >= height - TIGHTEN_SLACK_PT:
+                        debug_log.event("↕️ 不收", 行=where, 行高=height, 要=target, 原因=by if target is None else "已经不高")
+                        continue
+                    target_row.RowHeight = target
+                    done[(sheet_name, row)] = {"before": round(height, 2), "after": target, "by": by}
+                    debug_log.event("↕️ 收紧", 行=where, 原行高=height, 新行高=target, 量高=by, 倍数=ratio)
+                except Exception as err:
+                    wf.log_msg(f"⚠️ {name} / {where} 没能收紧：{err}")
+                    debug_log.event("⚠️ 收紧行高失败", 行=where, 原因=str(err)[:200])
+        if done:
+            normalize_workbook_view(excel, book)
+            book.Save()
+            _followed_own_save(path, before)
+            debug_log.event("💾 已保存", 文件=name, 收紧行数=len(done))
+    finally:
+        measurer.close()
+        book.Close(SaveChanges=False)
+    saved = sum(v["before"] - v["after"] for v in done.values())
+    wf.log_msg(f"↕️ {name}：{len(done)} 行收紧行高（共收回 {saved:.0f}pt）" if done else f"ℹ️ {name}：没有可以收紧的行")
+    return done
+
+
+def _failed_rows(path: str, tightened: dict[tuple[str, int], dict]) -> list[tuple[str, int]]:
+    """复检后还有问题的格子压着的、这次收紧过的行"""
+    with wf.STATE_LOCK:
+        unresolved = [it for it in wf.STATE["items"].values() if it["wb_path"] == path
+                      and it["status"] not in wf.RESOLVED_STATUSES]
+    failed = []
+    for it in unresolved:
+        try:
+            low, high = _addr_rows(it.get("cell_addr") or "")
+        except ValueError:
+            low = high = int(it.get("excel_row") or 0)
+        failed += [key for key in tightened if _sheet_key(key[0]) == _sheet_key(it["sheet_name"])
+                   and low <= key[1] <= high and key not in failed]
+    return failed
+
+
+def _restore_rows(excel: Any, path: str, rows: dict[tuple[str, int], float]) -> None:
+    """复检没过的行退回原来的行高，保存"""
+    _check_file(path)
+    before = wf._file_version(Path(path))
+    book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
+    try:
+        for (sheet_name, row), height in rows.items():
+            sheet = _find_sheet(book, sheet_name)
+            if sheet is not None:
+                sheet.Rows(row).RowHeight = height
+                debug_log.event("↩️ 退回原行高", 行=f"{sheet_name}!{row} 行", 行高=height)
+        normalize_workbook_view(excel, book)
+        book.Save()
+        _followed_own_save(path, before)
+    finally:
+        book.Close(SaveChanges=False)
+
+
+def _tighten_file(session: Any, path: str, ratio: float) -> dict:
+    """一份文件：收紧 → 整份复检 → 没过的行退回原行高 → 再复检一次（只有退回过才要）。返回这份的结果"""
+    name = Path(path).name
+    unsaved = close_saved_workbooks([Path(path)])
+    if Path(path) in unsaved:
+        raise ValueError(f"{unsaved[Path(path)]}，请在 Excel 里保存并关闭后重试")
+    session.touch()
+    tightened = _tighten_rows(session.app(), path, ratio)
+
+    def recheck(passed: str) -> None:
+        with wf.STATE_LOCK:
+            cards = [c for c in _data()["cards"].values() if c["wb_path"] == path
+                     and c["color"] == "yellow" and c.get("finalized") and not c.get("dismissed")]
+        session.touch()
+        _recheck_file(session.app(), path, cards, passed_message=passed)
+
+    recheck(TIGHTEN_PASSED_MESSAGE if tightened else "人工修改后复检通过")
+    failed = _failed_rows(path, tightened)
+    if failed:
+        wf.log_msg(f"↩️ {name}：{len(failed)} 行收紧后复检没过，退回原来的行高再复检")
+        _restore_rows(session.app(), path, {key: tightened[key]["before"] for key in failed})
+        recheck("人工修改后复检通过")
+    result = {"tightened": len(tightened) - len(failed), "restored": len(failed),
+              "saved_pt": round(sum(v["before"] - v["after"] for k, v in tightened.items() if k not in failed), 1)}
+    debug_log.event("↕️ 收紧行高完成", 文件=name, **{"收紧行数": result["tightened"], "退回行数": result["restored"],
+                                                 "收回pt": result["saved_pt"]})
+    return result
 
 
 def _hand_over(path: str, grown: dict[str, dict] | None = None) -> None:
@@ -3484,6 +3703,61 @@ def run() -> list[str]:
                 for path in _leftover_mark_paths(expected):
                     if not workbook_locked(Path(path)):  # 你正在 Excel 里改的文件不动，下次再还原
                         _sync_highlights_safely(session, path)
+        elif kind == "batch_tighten":
+            # 收紧行高：每份文件收紧 → 整份复检 → 没过的行退回原行高再复检；出错的文件问你重试还是跳过
+            ratio = grow_ratio(options.get("grow_ratio"))
+            expected = list(job["workbooks"])
+            results = job.setdefault("result", {})
+            for i, path in enumerate(expected, 1):
+                if path in job["completed"] or _unsettled(job, path):
+                    continue
+                if _stopping(job):
+                    break
+                label = workbook_rel_name(Path(path), wf.STATE["folder"])
+                debug_log.begin(f"收紧行高 {i} / {len(expected)}：{label}")
+                wf.log_msg(f"↕️ 正在收紧行高（{i} / {len(expected)}）：{Path(path).name}")
+                tries = -1
+                while True:
+                    tries += 1
+                    try:
+                        watchdog.progress()
+                        result = _tighten_file(session, path, ratio)
+                        watchdog.progress()
+                        with wf.STATE_LOCK:
+                            results[path] = result
+                            job.get("file_errors", {}).pop(path, None)
+                            job["completed"].append(path)
+                            wf._persist_state()
+                        _forget_opened(path)
+                        _sync_highlights_safely(session, path)
+                        break
+                    except Exception as err:
+                        if (not isinstance(err, (ValueError, TimeoutError)) and not watchdog.timed_out
+                                and tries < autofix.MAX_ERROR_RETRIES):
+                            wf.log_msg(f"⚠️ {Path(path).name} 收紧行高出错，重启 Excel 后重试：{err}{_where(err)}")
+                            _restart_excel(session)
+                            continue
+                        session.close()  # 别让后台 Excel 占着文件：你可能要打开它修
+                        message = file_problem.message_for(err, watchdog)
+                        if file_problem.should_ask(err, message) and not _stopping(job):
+                            wf.log_msg(f"⏸ {Path(path).name} 出错，等你选择重试还是跳过：{message}")
+                            choice = file_problem.ask(path, label, message, folder=wf.STATE["folder"],
+                                                      tick=watchdog.progress, should_stop=lambda: _stopping(job))
+                            watchdog.progress()
+                            if choice == "retry":
+                                wf.log_msg(f"🔁 重试 {Path(path).name}")
+                                tries = -1
+                                continue
+                        wf.log_msg(f"❌ {Path(path).name} 收紧行高没做完，已跳过，可续跑：{message}")
+                        debug_log.event("❌ 收紧行高跳过", 文件=Path(path).name, 原因=message[:200])
+                        with wf.STATE_LOCK:
+                            job.setdefault("file_errors", {})[path] = message
+                            results[path] = {"error": message}
+                            wf._persist_state()
+                        break
+            done = [r for r in results.values() if "error" not in r]
+            wf.log_msg(f"↕️ 收紧行高完成：{len(done)} 份文件，收紧 {sum(r['tightened'] for r in done)} 行，"
+                       f"复检没过退回 {sum(r['restored'] for r in done)} 行")
         elif kind == "batch_unhighlight":
             expected = list(options["paths"])
             wf.log_msg(f"🧽 开始清除标记颜色：{len(expected)} 份文件")
