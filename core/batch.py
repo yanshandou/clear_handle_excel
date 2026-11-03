@@ -668,6 +668,19 @@ def snapshot(detail_paths: set[str] | None = None) -> dict:
                 "logs": wf.STATE["logs"][-100:]}
 
 
+def progress_snapshot() -> dict:
+    """扫描期间网页每 1.8 秒只取这些：进度条、当前文件、预计时间和实时日志。
+    卡片、标色数等完整内容扫描时不变或用户不看，点「刷新」或扫描结束时再取完整的（用户 2026-11-03 定），
+    免得每次刷新都把几百个文件的卡片整理一遍、拖慢扫描。"""
+    with wf.STATE_LOCK:
+        job = wf.STATE["job"]
+        return {"light": True, "busy": wf.STATE["busy"], "folder": wf.STATE["folder"],
+                "job": copy.deepcopy(job), "progress": dict(wf.STATE["scan_progress"]),
+                "scan_eta": _scan_eta(job) if job else None,
+                "slow_files": [{"path": p, "name": Path(p).name, **info} for p, info in _data().get("slow_files", {}).items()],
+                "logs": wf.STATE["logs"][-100:]}
+
+
 def _mark_block_reason(path: str) -> str:
     """后台任务在跑时这份文件的卡能不能改颜色：能改返回空字符串。调用方持有 STATE_LOCK。
     改颜色只写记录、不碰 Excel：自动处理 / 复检时，不在这次任务里的文件、已经做完的文件都能改；
@@ -3121,9 +3134,9 @@ def start_new_open_round() -> None:
 
 
 def _open_candidates(ids: list[str]) -> list[dict]:
-    """按卡片处理顺序列出文件，同一文件的多张黄卡只算一次。调用方持有 STATE_LOCK。"""
+    """按传进来的卡片顺序列出文件（人工处理面板按左边列表的顺序传），同一文件的多张黄卡只算一次。调用方持有 STATE_LOCK。"""
     first = {}
-    for card in sorted((_data()["cards"][cid] for cid in ids), key=lambda c: c["seq"]):
+    for card in (_data()["cards"][cid] for cid in dict.fromkeys(ids) if cid in _data()["cards"]):
         first.setdefault(card["wb_path"], card)
     return list(first.values())
 
@@ -3317,24 +3330,38 @@ def run() -> list[str]:
             def scan_body(path: str) -> None:
                 debug_log.begin(f"扫描 {expected.index(path) + 1} / {len(expected)}："
                                   f"{workbook_rel_name(Path(path), wf.STATE['folder'])}")
+                steps: dict[str, float] = {}
+                mark = file_started = time.perf_counter()
+
+                def step(name: str) -> None:
+                    # 每步用了几秒，文件做完写一行「⏱ 分步」（排查扫描中途空等，用户 2026-11-03 要求）
+                    nonlocal mark
+                    now = time.perf_counter()
+                    steps[name] = round(steps.get(name, 0.0) + now - mark, 2)
+                    mark = now
+
                 _check_file(path)
                 excel = session.app()
+                step("查文件和Excel")
                 # 只给检测（只读打开原文件）设上限：超时结束 Excel 不会弄坏文件；之后标色要写文件，不在上限内
                 with wf.STATE_LOCK:
                     limit = _scan_limit(job, path)
                     job["scan_limit"] = {"path": path, "seconds": round(limit)}
                 started, checking, view = time.perf_counter(), {}, {}
                 watchdog.deadline(limit)
+                step("定上限")
                 try:
                     _refresh(excel, path, session=session, timing=checking, view=view)
                 finally:
                     watchdog.deadline(None)
+                step("检测")
                 # 检测的只读工作簿已经关闭；另开原文件保存视图，避免保存临时上色。
                 # 写文件放在检测超时限制之外，即使没有问题项也保留分页预览。
                 # 已全是分页预览就不再可写打开，文件（包括旧版 .xls）的修改时间保持不变。
                 if view.get("needed", True):
                     with scan_analysis.operation("save_view"):
                         _save_scan_preview(excel, path, session)
+                step("存分页视图")
                 with wf.STATE_LOCK:
                     job.setdefault("scan_seconds", {})[path] = round(time.perf_counter() - started, 1)
                     _data().get("slow_files", {}).pop(path, None)  # 以前超时跳过的，这次扫完了
@@ -3343,17 +3370,23 @@ def run() -> list[str]:
                            f"检测 {checking.get('detect', 0):.1f} 秒）")
                 with scan_analysis.operation("grow"):
                     grown = _grow_and_wrap(session.app(), path, ratio)
+                step("加高")
                 # 检出的全部转人工，在原 Excel 里标色方便定位
                 with wf.STATE_LOCK:
                     _data().setdefault("highlight_files", {})[path] = highlight_style(options.get("highlight"))
                 _hand_over(path, grown)
+                step("转人工")
                 if any("error" not in d for d in grown.values()):
                     with scan_analysis.operation("recheck"):
                         _recheck_after_grow(session, path)
+                    step("加高后复检")
                 with scan_analysis.operation("highlight"):
                     _sync_highlights(session.app, path, tick=session.touch)
+                step("标色")
                 with wf.STATE_LOCK:
                     job.setdefault("file_seconds", {})[path] = round(time.perf_counter() - started, 1)
+                debug_log.event("⏱ 分步", 文件=Path(path).name, 合计秒=round(time.perf_counter() - file_started, 2),
+                                **{k: v for k, v in steps.items()})
 
             def scan(path: str) -> None:
                 with scan_analysis.attempt(job, path):

@@ -14,9 +14,10 @@ from core.common import (
     EXCEL_EXTENSIONS, PROJECT_ROOT, RECORD_PATH, has_review_prefix, md_wrap, review_name_variants, strip_review_prefix,
     workbook_rel_name,
 )
+from core.lock_timing import TimedRLock
 from core.storage import load_snapshot, save_snapshot
 
-REPORT_LOCK = threading.RLock()
+REPORT_LOCK = TimedRLock("报告")
 REPORT_STATE_PATH = PROJECT_ROOT / "record_state.json"
 WRITE_INTERVAL = 1.0  # 进度更新很频繁：数据库和 Markdown 最多每秒写一次，开始、结束、中断时立即写
 _history_context = threading.local()

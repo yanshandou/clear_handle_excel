@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import time
 from typing import Any
 
 from core import data_dir
@@ -32,6 +33,7 @@ def save_snapshot(
     name: str, state: dict[str, Any], *, blob_field: str | None = None, blob_collections: tuple[str, ...] = (),
 ) -> None:
     """保存快照。给了 blob_field 时，state[集合][id][blob_field]（截图）单独存，只写有变化的。"""
+    started = time.perf_counter()
     blobs: dict[str, str] = {}
     if blob_field:
         slim = dict(state)
@@ -69,6 +71,7 @@ def save_snapshot(
             )
     finally:
         connection.close()
+    _note_slow_save(name, started, len(payload), len(changed))
     if blob_field:
         _WRITTEN_BLOBS[cache_key] = blobs
 
@@ -93,3 +96,17 @@ def load_snapshot(name: str) -> dict[str, Any] | None:
         if isinstance(entry, dict):
             entry.setdefault(field, data)
     return state
+
+
+SLOW_SAVE_SECONDS = 0.2  # 存一次记录超过这么久写调试日志（排查扫描中途空等，用户 2026-11-03 要求）
+
+
+def _note_slow_save(name: str, started: float, size: int, blobs: int) -> None:
+    seconds = time.perf_counter() - started
+    if seconds < SLOW_SAVE_SECONDS:
+        return
+    try:
+        from core import debug_log
+        debug_log.event("💾 存记录慢", 名=name, 秒=round(seconds, 2), 大小KB=size // 1024, 新截图=blobs)
+    except Exception:
+        pass
