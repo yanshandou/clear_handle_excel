@@ -1764,28 +1764,9 @@ def _strip_marks(book: Any, path: str, marks: list[dict]) -> None:
                    + "；".join(failed[:5]) + ("……" if len(failed) > 5 else ""))
 
 
-# 扫描后的简单处理（用户 2026-11-02 定，取代自动修复）：切字的格子（边框压线、文字截断、超出裁剪框）
-# 开自动换行，所在行（合并单元格按最下面一行）行高加「字号 × 倍数」，保存。只做一次，不试算、不核对、不还原，
-# 效果交给人工看；分页切开、### 列宽不足、PDF 未匹配到文字只标色。
-GROW_ERROR_TYPES = autofix.CUT_ERROR_TYPES
-GROW_RATIOS = (1.5, 1.2)
-DEFAULT_GROW_RATIO = 1.5
-DEFAULT_FONT_PT = 11.0  # 读不到字号时按日文 Excel 默认的 11pt
+# 扫描只标色、转人工，不改格子（用户 2026-11-03 定：扫描时开换行、加高「字号 × 1.5 / 1.2」去掉，
+# 换行和行高交给「按分类处理」：每类示范几格，程序学会后再修剩下的）。
 HASH_MESSAGE = "### 列宽不足：没有调整列宽，请人工核对数字格式、日期或列宽，也可标绿忽略"
-GROWN_MESSAGE = "已开自动换行、加高并保存，效果请人工看：好了标蓝，不好就改了保存再复检"
-
-
-def grow_ratio(value: Any = None) -> float:
-    """加高倍数：每个切字的格子所在行加「字号 × 倍数」pt。没给按 1.5，只能选 1.5 或 1.2"""
-    if value is None:
-        return DEFAULT_GROW_RATIO
-    try:
-        ratio = float(value)
-    except (TypeError, ValueError):
-        ratio = 0.0
-    if isinstance(value, bool) or ratio not in GROW_RATIOS:
-        raise ValueError("加高倍数只能选 1.5 或 1.2")
-    return ratio
 
 
 def _keeps_user_mark(card: dict) -> bool:
@@ -1793,98 +1774,9 @@ def _keeps_user_mark(card: dict) -> bool:
     return bool(card.get("marked") and card["color"] != "yellow" and not card.get("finalized"))
 
 
-def _grow_targets(path: str) -> list[dict]:
-    """调用方持有 STATE_LOCK：本文件要开换行、加高的卡（切字、定位已确认）"""
-    pending = [it for it in wf.STATE["items"].values() if it["wb_path"] == path
-               and it["status"] not in wf.RESOLVED_STATUSES]
-    targets = []
-    for group in _group_cells(pending):
-        card = _card_for(group)
-        if card.get("dismissed") or _keeps_user_mark(card) or not _can_highlight(card, group):
-            continue
-        if any(autofix.item_error_type(it) in GROW_ERROR_TYPES for it in group):
-            targets.append(card)
-    return targets
-
-
-def _font_size(area: Any) -> float:
-    try:
-        size = area.Cells(1, 1).Font.Size
-    except Exception:
-        return DEFAULT_FONT_PT
-    if isinstance(size, bool) or not isinstance(size, (int, float)) or not 4.0 <= float(size) <= 72.0:
-        return DEFAULT_FONT_PT  # 合并区域里字号不一样时 Excel 返回 None
-    return float(size)
-
-
-def _grow_and_wrap(excel: Any, path: str, ratio: float) -> dict[str, dict]:
-    """切字的格子开自动换行、所在行加高「字号 × 倍数」，保存一次。返回 {卡片 id: 做了什么}。
-    同一行有几个格子只加一次，按其中最大的字号算；最高到 Excel 上限 409pt。"""
-    with wf.STATE_LOCK:
-        cards = _grow_targets(path)
-    if not cards:
-        return {}
-    _check_file(path)
-    before = wf._file_version(Path(path))
-    if wf.STATE["checked_files"].get(path) != before:
-        raise ValueError(f"扫描后文件已修改，请重新扫描：{Path(path).name}")
-    name = Path(path).name
-    debug_log.event("📐 开换行加高", 文件=name, 格数=len(cards), 倍数=ratio)
-    book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
-    done: dict[str, dict] = {}
-    try:
-        if book.ReadOnly:
-            raise ValueError(f"{name} 以只读方式打开，没能开换行、加高")
-        rows: dict[tuple[str, int], dict] = {}
-        for card in cards:
-            where = f"{card['sheet_name']}!{card['cell_addr']}"
-            try:
-                sheet = _find_sheet(book, card["sheet_name"])
-                if sheet is None:
-                    raise ValueError("找不到这张表")
-                area = sheet.Range(card["cell_addr"]).MergeArea
-                size = _font_size(area)
-                if area.ShrinkToFit:
-                    wrap = "缩小字体填充，不开换行"
-                elif area.WrapText is True:
-                    wrap = "本来就开着"
-                else:
-                    area.WrapText = True
-                    wrap = "已开"
-                row = int(area.Row) + int(area.Rows.Count) - 1  # 合并单元格加在最下面一行
-                entry = rows.setdefault((sheet.Name, row), {"sheet": sheet, "size": 0.0, "cards": []})
-                entry["size"] = max(entry["size"], size)
-                entry["cards"].append(card["id"])
-                done[card["id"]] = {"wrap": wrap == "已开", "row": row, "font": size}
-                debug_log.event("↪️ 自动换行", 格=where, 结果=wrap, 字号=size)
-            except Exception as err:
-                done[card["id"]] = {"error": str(err)}
-                wf.log_msg(f"⚠️ {name} / {where} 没能开换行、加高：{err}")
-                debug_log.event("⚠️ 开换行加高失败", 格=where, 原因=str(err))
-        for (sheet_name, row), entry in rows.items():
-            target = entry["sheet"].Rows(row)
-            base = float(target.RowHeight)
-            applied = round(min(autofix.MAX_ROW_HEIGHT, base + entry["size"] * ratio), 2)
-            target.RowHeight = applied
-            debug_log.event("📏 加高", 表=sheet_name, 行=row, 原行高=base, 新行高=applied,
-                            字号=entry["size"], 倍数=ratio)
-            for cid in entry["cards"]:
-                done[cid].update(sheet=sheet_name, base=round(base, 2), applied=applied, ratio=ratio)
-        normalize_workbook_view(excel, book)
-        book.Save()
-        _followed_own_save(path, before)
-        changed = sum(1 for d in done.values() if "error" not in d)
-        wf.log_msg(f"📐 {name}：{changed} 格开自动换行、{len(rows)} 行加高（字号 × {ratio}），已保存")
-        debug_log.event("💾 已保存", 文件=name, 行数=len(rows))
-    finally:
-        book.Close(SaveChanges=False)
-    return done
-
-
-def _hand_over(path: str, grown: dict[str, dict] | None = None) -> None:
-    """本文件检出的问题全部转人工（黄色、已提交）。grown：这次开过换行、加高的格子，卡片上写明做了什么。
+def _hand_over(path: str) -> None:
+    """本文件检出的问题全部转人工（黄色、已提交），不改格子（换行、行高交给「按分类处理」示范后学着修）。
     你已经手动标成蓝 / 绿、还没提交的卡保留你的选择。"""
-    grown = grown or {}
     with wf.STATE_LOCK:
         pending = [it for it in wf.STATE["items"].values() if it["wb_path"] == path
                    and it["status"] not in wf.RESOLVED_STATUSES]
@@ -1893,24 +1785,16 @@ def _hand_over(path: str, grown: dict[str, dict] | None = None) -> None:
             if _keeps_user_mark(card):
                 card["waiting"] = False
                 continue
-            done = grown.get(card["id"])
             if any(autofix.column_width_only(it) for it in group):
                 message = HASH_MESSAGE
             elif not _can_highlight(card):
                 message = "单元格定位未确认，未在 Excel 中标色，请按截图查找后人工处理"
-            elif done and "error" in done:
-                message = f"没能开换行、加高（{done['error']}），请人工处理并保存后复检"
-            elif done:
-                message = GROWN_MESSAGE
             else:
                 message = SCAN_ONLY_MESSAGE
             card.update(color="yellow", verified=False, manual=True, finalized=True, waiting=False,
                         dismissed=False, after_kind="scan_only", message=message)
             card.pop("handed_over", None)
-            if done and "error" not in done:
-                card["grown"] = done
-            else:
-                card.pop("grown", None)
+            card.pop("grown", None)  # 旧版扫描时开换行、加高的记录，重新扫描后不再显示
             for item in _items_at(card):
                 item.update(status="manual_review", batch_managed=True, triage_keep=False, review_reason=message)
         wf._persist_state()
@@ -3164,9 +3048,8 @@ def run() -> list[str]:
                                     list(dict.fromkeys(_data()["cards"][cid]["wb_path"] for cid in options["card_ids"])))
                 wf._persist_state()
         if kind == "batch_scan":
-            # 扫描：检出的问题全部转人工、在 Excel 里标色；切字的格子顺手开自动换行、加高一次（不试算、不还原）。
+            # 扫描：检出的问题全部转人工、在 Excel 里标色，不改格子。
             # 旧版本留下的全自动 / 转回自动 / 自动调整任务续跑时也按扫描做
-            ratio = grow_ratio(options.get("grow_ratio"))
             if "workbooks" not in job:
                 folder, paths = wf.list_workbooks(options["folder"])
                 with wf.STATE_LOCK:
@@ -3283,15 +3166,13 @@ def run() -> list[str]:
                 wf.log_msg(f"⏱ {Path(path).name} 整份检查：{time.perf_counter() - started:.1f} 秒"
                            f"（导出 {int(checking.get('exports', 0))} 次 {checking.get('export', 0):.1f} 秒，"
                            f"检测 {checking.get('detect', 0):.1f} 秒）")
-                with scan_analysis.operation("grow"):
-                    grown = _grow_and_wrap(session.app(), path, ratio)
                 with scan_analysis.operation("baseline"):
                     _capture_baselines_safely(session, path, only_missing=False)
                 # 检出的全部转人工，在原 Excel 里标色方便定位
                 with wf.STATE_LOCK:
                     _data().setdefault("highlight_files", {})[path] = highlight_style(options.get("highlight"))
                 with scan_analysis.operation("highlight"):
-                    _hand_over(path, grown)
+                    _hand_over(path)
                     _sync_highlights(session.app, path, tick=session.touch)
 
             def scan(path: str) -> None:

@@ -411,9 +411,8 @@ class WebHandler(BaseHTTPRequestHandler):
                 if isinstance(minutes, bool) or minutes not in batch.SCAN_LIMIT_CHOICES:
                     raise ValueError("单个文件的扫描上限只能选自动或 3、5、10、15 分钟")
                 options["scan_limit_minutes"] = minutes
-            # 扫描：检出的问题全部标色、转人工；切字的格子开自动换行、行高加「字号 × 倍数」，保存（不再自动修复）
-            options.update(highlight=batch.highlight_style(payload.get("highlight")),
-                           grow_ratio=batch.grow_ratio(payload.get("grow_ratio")))
+            # 扫描：检出的问题全部标色、转人工，不改格子（换行、行高到「按分类处理」示范后学着修）
+            options.update(highlight=batch.highlight_style(payload.get("highlight")))
             self._start_job("batch_scan", options)
         elif self.path == "/api/print_layout":
             set_print_layout(payload.get("path"), payload.get("key"), payload.get("direction"))

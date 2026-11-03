@@ -63,7 +63,7 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(self.heights[5], 24)
         self.book.Save.assert_not_called()
 
-    def test_clean_scan_saves_preview_then_grows_then_colors(self):
+    def test_clean_scan_saves_preview_then_colors(self):
         job = {"kind": "batch_scan", "workbooks": [self.path], "completed": [],
                "options": {"folder": str(self.root)}}
         self.wf.STATE["job"] = job
@@ -74,11 +74,10 @@ class BatchTests(unittest.TestCase):
         self.save_scan_preview.side_effect = lambda *_: events.append("preview")
         with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
                 patch.object(batch, "ExcelWatchdog", return_value=Mock(timed_out=False, deadline_hit=False)), \
-                patch.object(batch, "_grow_and_wrap", side_effect=lambda *_: events.append("grow") or {}), \
                 patch.object(batch, "_sync_highlights", side_effect=lambda *_args, **_kwargs: events.append("color")), \
                 patch.object(batch, "finish_execution_batch"):
             batch.run()
-        self.assertEqual(events, ["scan", "preview", "grow", "color"])
+        self.assertEqual(events, ["scan", "preview", "color"])
         self.assertEqual(job["completed"], [self.path])
         from core import scan_analysis
         report = scan_analysis.report(job["analysis_id"])
