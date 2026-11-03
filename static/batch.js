@@ -207,11 +207,13 @@ async function pollProgress() {
   if (ended) { lastEtag = ''; poll(); }
 }
 
+let pollFailed = false;  // 上一次完整取数据出错了（「刷新卡片」按钮据此显示成功 / 失败）
 async function poll(background = false) {
   if (background && pollInFlight) return;
   if (background && scanningLight()) return pollProgress();
   ++pollInFlight;
   const version = ++pollVersion;
+  pollFailed = false;
   try {
     const url = snapshotUrl();
     if (lastSnapshotUrl !== url) { lastEtag = ''; lastSnapshotUrl = url; }
@@ -243,6 +245,7 @@ async function poll(background = false) {
     render();
     if (cleared && unhighlightResult()) showUnhighlightResult();
   } catch (error) {
+    pollFailed = true;
     if (version === pollVersion && !requestBusy && !colorSaving) $('errorText').textContent = error.message;
   } finally {
     --pollInFlight;
@@ -1398,7 +1401,24 @@ $('unhighlightResultBtn').addEventListener('click', showUnhighlightResult);
 $('unhighlightCloseBtn').addEventListener('click', () => $('unhighlightDialog').close());
 $('resumeBtn').addEventListener('click', () => startJob('/api/resume'));
 $('pauseBtn').addEventListener('click', () => action(() => post('/api/batch/pause')));
-$('scanRefreshBtn').addEventListener('click', () => { lastEtag = ''; poll(); });
+// 点了要有反应：刷新中 → ✓ 已刷新（几百个文件时要等一两秒）；宽度先固定住，文字变了按钮不变大小、旁边不挪
+$('scanRefreshBtn').addEventListener('click', async () => {
+  const button = $('scanRefreshBtn');
+  if (button.dataset.refreshing) return;
+  const label = button.dataset.label || (button.dataset.label = button.textContent);
+  button.style.minWidth = `${button.offsetWidth}px`;
+  button.dataset.refreshing = '1';
+  button.disabled = true;
+  button.textContent = '⏳ 刷新中…';
+  lastEtag = '';
+  await poll();
+  const failed = pollFailed;
+  delete button.dataset.refreshing;
+  button.disabled = false;
+  button.textContent = failed ? '! 刷新失败' : '✓ 已刷新';
+  clearTimeout(button.doneTimer);
+  button.doneTimer = setTimeout(() => { button.textContent = label; button.style.minWidth = ''; }, 1500);
+});
 $('commitBtn').addEventListener('click', async () => {
   const color = selectedFilter;
   const only = color === 'all' ? '' : COLOR_NAMES[color];

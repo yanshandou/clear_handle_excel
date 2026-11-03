@@ -5,7 +5,8 @@ import shutil
 import threading
 import time
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -186,10 +187,32 @@ def _referenced_images() -> set[str]:
 fix_images.register_references(_referenced_images)
 
 
-def _persist_state() -> None:
+_DEFER = threading.local()
+
+
+def _persist_state(force: bool = False) -> None:
+    """存工作台记录。扫描一个文件期间（deferred_persist 里）只记下「要存」，文件做完再存一次：
+    整份记录有几 MB，一个文件存十来次要四五秒（用户 2026-11-03 同意，崩溃时只需重扫那一个文件）。
+    force=True：改 Excel 之前必须先落盘的记录（如工作表标签原来的颜色），照常马上存。"""
+    if not force and getattr(_DEFER, "depth", 0):
+        _DEFER.dirty = True
+        return
     with STATE_LOCK:
         # 截图单独存、只写变了的：每点一下不用把所有截图重写一遍
         save_snapshot("workflow", STATE, blob_field="image", blob_collections=("pages", "items"))
+
+
+@contextmanager
+def deferred_persist() -> Iterator[None]:
+    """这段时间里本线程的 _persist_state 先不写，结束时（包括出错）有改动就存一次。别的线程（网页上改颜色等）照常马上存"""
+    _DEFER.depth = getattr(_DEFER, "depth", 0) + 1
+    try:
+        yield
+    finally:
+        _DEFER.depth -= 1
+        if not _DEFER.depth and getattr(_DEFER, "dirty", False):
+            _DEFER.dirty = False
+            _persist_state()
 
 
 def scan_job_active() -> bool:
