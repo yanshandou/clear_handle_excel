@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const source = ['highlight_colors.js', 'batch.js'].map(name =>
+const source = ['eta.js', 'highlight_colors.js', 'batch.js'].map(name =>
   fs.readFileSync(path.join(__dirname, '..', 'static', name), 'utf8')).join('\n');
 
 // A small structural DOM for state/identity assertions. Browser layout is tested separately.

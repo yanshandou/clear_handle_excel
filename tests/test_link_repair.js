@@ -22,7 +22,7 @@ async function page(initial = {}, {kind = 'links', storage = new Map(), postErro
       return {ok:!(post && postError), json:async () => post ? {ok:!postError, error:postError} : status};
     },
   });
-  for (const name of ['highlight_colors.js', 'repair.js']) {
+  for (const name of ['eta.js', 'highlight_colors.js', 'repair.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../static', name), 'utf8'), context);
   }
   const flush = () => new Promise(resolve => setImmediate(resolve));
