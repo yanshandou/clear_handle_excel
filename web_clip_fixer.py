@@ -559,6 +559,10 @@ class WebHandler(BaseHTTPRequestHandler):
                 if color:
                     options["color"] = color
                 self._start_job(f"batch_{action}", options)
+        elif self.path == "/api/batch/tighten":
+            # 收紧行高：这几张卡所在的文件整份收紧过高的行，再复检；后台忙时不排队，等它结束
+            ids = batch.validate_cards(payload.get("card_ids"), yellow=True)
+            self._start_job("batch_tighten", {"card_ids": ids, "grow_ratio": batch.grow_ratio(payload.get("grow_ratio"))})
         elif self.path == "/api/batch/followups/start":
             # 暂停时留着的排队复检 / 提交：现在就开始
             autofix.release_excel()
