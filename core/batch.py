@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from core import autofix, debug_log, file_problem, fix_images, fix_learning, page_breaks, print_layout, scan_analysis, workflow as wf
+from core import autofix, debug_log, file_problem, fix_images, page_breaks, print_layout, scan_analysis, workflow as wf
 from core.common import STALE_LOCK_HINT, is_inspection_exempt_sheet, workbook_locked, workbook_rel_name
 from core.excel_ops import (
     CellProbe, close_saved_workbooks, normalize_workbook_view,
@@ -495,6 +495,44 @@ def _image_url(name: str) -> str:
 CARD_DETAIL_FIELDS = {"text", "problems", "fix_images", "context", "images", "message"}
 
 
+# ───────────────────── 按分类人工处理（用户 2026-11-03：留排版、去掉学一下） ─────────────────────
+
+CATEGORY_TYPE_ORDER = list(autofix.CELL_ERROR_SPECS)
+
+
+def _missing_lines(items: list[dict]) -> int | None:
+    found = [int(it["missing_lines"]) for it in items
+             if isinstance(it.get("missing_lines"), (int, float)) and not isinstance(it.get("missing_lines"), bool)
+             and it["missing_lines"] > 0]
+    return max(found) if found else None
+
+
+def _card_category(card: dict, items: list[dict]) -> tuple[str, str]:
+    """返回 (分类键, 给人看的名字)，例：「文字截断 · 合并格 · 已加高 · 缺 1 行」。
+    一格有几种问题时按 CELL_ERROR_SPECS 的顺序取第一种。只用来分组显示，不改格子。"""
+    types = [t for t in card.get("error_types") or [] if t in autofix.CELL_ERROR_SPECS]
+    if not types:
+        types = [autofix.item_error_type(it) for it in items] or [autofix.ERROR_TYPE_BORDER_CLIP]
+    kind = min(types, key=lambda t: CATEGORY_TYPE_ORDER.index(t) if t in CATEGORY_TYPE_ORDER else len(CATEGORY_TYPE_ORDER))
+    parts, names = [kind], [autofix.error_type_label(kind)]
+    if kind != autofix.ERROR_TYPE_TEXT_MISSING:
+        grown = card.get("grown") or {}
+        merged = grown["merged"] if "merged" in grown else ":" in (card.get("cell_addr") or "")
+        parts.append("merged" if merged else "single")
+        names.append("合并格" if merged else "单格")
+    if kind in autofix.CUT_ERROR_TYPES:
+        grown = card.get("grown") or {}
+        ok = bool(grown) and "error" not in grown
+        parts.append("grown" if ok else "plain")
+        names.append("已加高" if ok else "没加高")
+    if kind == autofix.ERROR_TYPE_TEXT_TRUNCATED:
+        lines = _missing_lines(items)
+        if lines:
+            parts.append(f"lines{min(lines, 3)}")
+            names.append(f"缺 {lines} 行" if lines < 3 else "缺 3 行以上")
+    return "|".join(parts), " · ".join(names)
+
+
 def snapshot(detail_paths: set[str] | None = None) -> dict:
     with wf.STATE_LOCK:
         cards = []
@@ -539,6 +577,8 @@ def snapshot(detail_paths: set[str] | None = None) -> dict:
             elif row is not None:
                 result["row_height"] = {"base": row["base"], "applied": row["applied"], "saved": row["saved"],
                                         "wrap": card.get("cell_addr") in row.get("wrap", [])}
+            result["category"] = list(_card_category(result, items))
+            result["cell_text"] = str(card.get("text") or "")[:60]  # 分类清单用，文件框收起时 text 不发
             result["adoptable"] = _adoptable(card)
             result["highlighted"] = _shows_mark(_marks().get(card["id"]))
             if detailed:
@@ -556,9 +596,7 @@ def snapshot(detail_paths: set[str] | None = None) -> dict:
             cards.append(result)
         highlighted = sum(1 for m in _marks().values() if in_folder(m["path"]) and _shows_mark(m))
         tabs = sum(len(t) for p, t in _tabs().items() if in_folder(p))
-        categories = _categories(cards, by_cell)
-        return {"cards": cards, "categories": categories,
-                "busy": wf.STATE["busy"], "folder": wf.STATE["folder"], "highlighted": highlighted,
+        return {"cards": cards, "busy": wf.STATE["busy"], "folder": wf.STATE["folder"], "highlighted": highlighted,
                 "scan_analysis": copy.deepcopy(wf.STATE.get("latest_scan_analysis")),
                 "tab_marks": tabs,
                 "error_types": list(autofix.CELL_ERROR_SPECS.values()),
@@ -570,209 +608,6 @@ def snapshot(detail_paths: set[str] | None = None) -> dict:
                                if in_folder(p)],
                 "job": copy.deepcopy(wf.STATE["job"]), "progress": dict(wf.STATE["scan_progress"]),
                 "logs": wf.STATE["logs"][-100:]}
-
-
-# ───────────────────── 按分类示范学习修复（core/fix_learning.py） ─────────────────────
-
-def _baselines() -> dict[str, dict]:
-    """扫描完（开过换行、加过高之后）每个问题格的原样：卡片 id -> fix_learning.read_props()"""
-    return _data().setdefault("baselines", {})
-
-
-def _rules() -> dict[str, dict]:
-    """学到的规律：分类键 -> fix_learning.learn() 的结果（加上分类名）"""
-    return _data().setdefault("learned_rules", {})
-
-
-def _card_category(card: dict, items: list[dict]) -> tuple[str, str]:
-    return fix_learning.category(card, items, _baselines().get(card["id"]))
-
-
-def _categories(cards: list[dict], by_cell: dict) -> list[dict]:
-    """调用方持有 STATE_LOCK。按分类整理没处理完的卡（snapshot 里的卡，已去掉提交过、复检通过的）"""
-    groups: dict[str, dict] = {}
-    rules, baselines = _rules(), _baselines()
-    for result in cards:
-        card = _data()["cards"][result["id"]]
-        key, label = _card_category({**card, "error_types": result.get("error_types")}, by_cell.get(_cell(card), []))
-        group = groups.setdefault(key, {"key": key, "label": label, "type": key.split("|")[0], "cards": []})
-        rule = rules.get(key) or {}
-        state = ("demo" if card["id"] in (rule.get("demo_ids") or []) else
-                 "applied" if card.get("learn_applied") else
-                 "new" if card["id"] not in baselines else "todo")
-        group["cards"].append({"id": card["id"], "wb_path": card["wb_path"], "wb_name": card["wb_name"],
-                               "sheet_name": card["sheet_name"], "cell_addr": card["cell_addr"],
-                               "excel_row": card.get("excel_row"), "text": str(card.get("text") or "")[:60],
-                               "state": state, "color": card["color"], "finalized": card.get("finalized", False)})
-    result = []
-    for key, group in groups.items():
-        rule = rules.get(key)
-        group["count"] = len(group["cards"])
-        group["files"] = len({c["wb_path"] for c in group["cards"]})
-        group["rule"] = copy.deepcopy(rule) if rule else None
-        result.append(group)
-    order = fix_learning.TYPE_ORDER
-    result.sort(key=lambda g: (order.index(g["type"]) if g["type"] in order else len(order), -g["count"], g["label"]))
-    return result
-
-
-def category_card_ids(key: str) -> list[str]:
-    """这一类现在的卡（没提交、没复检通过的）"""
-    with wf.STATE_LOCK:
-        by_cell: dict[tuple, list[dict]] = {}
-        for item in wf.STATE["items"].values():
-            by_cell.setdefault(_cell(item), []).append(item)
-        ids = []
-        for card in sorted(_data()["cards"].values(), key=lambda c: c["seq"]):
-            if card.get("dismissed") or not wf.in_current_folder(card["wb_path"]):
-                continue
-            if _card_category(card, by_cell.get(_cell(card), []))[0] == key:
-                ids.append(card["id"])
-        return ids
-
-
-def _read_cards(book: Any, cards: list[dict]) -> dict[str, dict | str]:
-    """读这些格现在的样子：卡片 id -> 属性，读不到的给原因"""
-    found: dict[str, dict | str] = {}
-    for card in cards:
-        try:
-            sheet = _find_sheet(book, card["sheet_name"])
-            if sheet is None:
-                raise ValueError("找不到这张表")
-            found[card["id"]] = fix_learning.read_props(sheet, card["cell_addr"])
-        except Exception as err:
-            found[card["id"]] = str(err)
-    return found
-
-
-def _capture_baselines(excel: Any, path: str, *, only_missing: bool) -> None:
-    """记下这份文件问题格的原样。扫描时整份重记（新一轮开始）；复检后只补新查出的格子"""
-    with wf.STATE_LOCK:
-        cards = [copy.deepcopy(c) for c in _data()["cards"].values()
-                 if c["wb_path"] == path and not c.get("dismissed") and c.get("cell_addr")
-                 and not (only_missing and c["id"] in _baselines())]
-    if not cards:
-        return
-    book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0, ReadOnly=True)
-    try:
-        found = _read_cards(book, cards)
-    finally:
-        book.Close(SaveChanges=False)
-    with wf.STATE_LOCK:
-        baselines = _baselines()
-        for cid, props in found.items():
-            if isinstance(props, dict):
-                baselines[cid] = props
-                if not only_missing:
-                    _data()["cards"].get(cid, {}).pop("learn_applied", None)
-        wf._persist_state()
-    debug_log.event("📝 记下原样", 文件=Path(path).name, 格数=sum(isinstance(p, dict) for p in found.values()))
-
-
-def _demo_label(card: dict) -> str:
-    return f"{card['wb_name']} / {card['sheet_name']}!{card['cell_addr']}"
-
-
-def _learn_file(excel: Any, path: str, cards: list[dict], job: dict) -> None:
-    """读这份文件里这一类的格子，和原样不一样的就是示范，记进 job["demos"]"""
-    book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0, ReadOnly=True)
-    try:
-        found = _read_cards(book, cards)
-    finally:
-        book.Close(SaveChanges=False)
-    demos = []
-    with wf.STATE_LOCK:
-        baselines = _baselines()
-        for card in cards:
-            now = found.get(card["id"])
-            if not isinstance(now, dict):
-                continue
-            before = baselines.get(card["id"])
-            if before is None:
-                baselines[card["id"]] = now  # 以前扫描的卡没记原样：现在这样就算原样，下次才能当示范
-                continue
-            change = fix_learning.changes(before, now)
-            if change:
-                demos.append({"id": card["id"], "label": _demo_label(card), "change": change,
-                              "font": before.get("font"), "lines": fix_learning.missing_lines(_items_at(card)),
-                              "text_width": fix_learning.text_width(card.get("text", ""))})
-        job.setdefault("demos", []).extend(demos)
-        wf._persist_state()
-    wf.log_msg(f"🎓 {Path(path).name}：这一类 {len(cards)} 格，找到 {len(demos)} 个示范")
-
-
-def _finish_learn(job: dict) -> None:
-    key = job["options"]["category"]
-    with wf.STATE_LOCK:
-        demos = [{**d, "change": {k: tuple(v) for k, v in d["change"].items()}} for d in job.get("demos", [])]
-        rule = fix_learning.learn(demos)
-        cards = [_data()["cards"].get(cid) for cid in job["options"]["card_ids"]]
-        label = next((_card_category(c, _items_at(c))[1] for c in cards if c), key)
-        rule.update(category=key, label=label,
-                    demos=[{"id": d["id"], "label": d["label"],
-                            "change": [fix_learning._change_text(p, v) if p != "merge" else "合并 / 行列有变化"
-                                       for p, v in d["change"].items()]} for d in demos])
-        _rules()[key] = rule
-        wf._persist_state()
-    wf.log_msg(f"🎓 {label}：" + (f"学到的规律：{rule['text']}（{rule['demo_count']} 个示范）" if rule["ok"]
-                                  else rule["text"])
-               + (f"；{len(rule['conflicts'])} 处示范对不上" if rule["conflicts"] else ""))
-    debug_log.event("🎓 学到规律", 分类=label, 规律=rule["text"], 示范=len(demos), 对不上=len(rule["conflicts"]))
-
-
-def _apply_file(excel: Any, path: str, cards: list[dict], rule: dict) -> int:
-    """按规律改这份文件里这一类没动过的格子，保存。返回改了几格"""
-    _check_file(path)
-    demo_ids = set(rule.get("demo_ids") or [])
-    with wf.STATE_LOCK:
-        baselines = copy.deepcopy(_baselines())
-    targets = [c for c in cards if c["id"] not in demo_ids and c["id"] in baselines]
-    if not targets:
-        return 0
-    name = Path(path).name
-    before = wf._file_version(Path(path))
-    book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
-    written: dict[str, dict] = {}
-    touched = 0
-    try:
-        if book.ReadOnly:
-            raise ValueError(f"{name} 以只读方式打开，没能按规律修改")
-        found = _read_cards(book, targets)
-        for card in targets:
-            now = found.get(card["id"])
-            where = f"{card['sheet_name']}!{card['cell_addr']}"
-            if not isinstance(now, dict):
-                wf.log_msg(f"⚠️ {name} / {where} 读不到：{now}")
-                continue
-            if not fix_learning.same(baselines[card["id"]], now):
-                touched += 1  # 你改过、但这次学的时候还没保存的格子：不覆盖你的改动
-                continue
-            target = fix_learning.plan(rule, now, lines=fix_learning.missing_lines(_items_at(card)),
-                                       text=card.get("text", ""))
-            if not target:
-                continue
-            try:
-                sheet = _find_sheet(book, card["sheet_name"])
-                fix_learning.write_props(sheet, card["cell_addr"], now, target)
-                written[card["id"]] = fix_learning.read_props(sheet, card["cell_addr"])
-                debug_log.event("⚡ 按规律修改", 格=where, 改成=target)
-            except Exception as err:
-                wf.log_msg(f"⚠️ {name} / {where} 没能按规律修改：{err}")
-        if written:
-            normalize_workbook_view(excel, book)
-            book.Save()
-            _followed_own_save(path, before)
-    finally:
-        book.Close(SaveChanges=False)
-    with wf.STATE_LOCK:
-        for cid, props in written.items():
-            _baselines()[cid] = props  # 改完的样子作为新的原样：复检没过的，你再示范时只比你改的部分
-            if cid in _data()["cards"]:
-                _data()["cards"][cid]["learn_applied"] = rule.get("text", "")
-        wf._persist_state()
-    wf.log_msg(f"⚡ {name}：按规律改了 {len(written)} 格" + (f"，{touched} 格你改过，没动" if touched else "")
-               + ("，已保存" if written else ""))
-    return len(written)
 
 
 def _mark_block_reason(path: str) -> str:
@@ -1475,7 +1310,8 @@ def _adopt_rows(excel: Any, path: str, by_row: dict[str, list[dict]]) -> None:
     _finish_pending(excel)
 
 
-def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:
+def _recheck_file(excel: Any, path: str, cards: list[dict], *, passed_message: str = "人工修改后复检通过",
+                  found_message: str = "复检查出的问题：请修改并保存后再复检") -> None:
     """人工修改后复检：不管改了哪里，整份文件所有要打印的表全部重新导出检测，不去找原来那一格。
     原来的黄卡全部翻篇：这次没再查出问题的移出列表；这次查出的问题（同一格的就是原来那张卡）
     直接作为人工待处理项显示，改好保存后再复检，直到查不出问题为止。"""
@@ -1530,14 +1366,14 @@ def _recheck_file(excel: Any, path: str, cards: list[dict]) -> None:
                 else:
                     fix_images.forget(item, "after")
             card.update(color="blue", verified=True, finalized=True, dismissed=True, waiting=False,
-                        after_kind="fixed", message="人工修改后复检通过")
+                        after_kind="fixed", message=passed_message)
         found = 0
         for group in _group_cells(unresolved):
             card = _card_for(group)
             if id(card) in waiting or (card.get("marked") and card["color"] != "yellow" and not card.get("finalized")):
                 continue  # 全自动还没轮到的，或你已标蓝 / 绿还没提交的，保留原样
             found += 1
-            message = "复检查出的问题：请修改并保存后再复检"
+            message = found_message if card.get("grown") else "复检查出的问题：请修改并保存后再复检"
             card.update(color="yellow", verified=False, manual=True, finalized=True, waiting=False,
                         dismissed=False, message=message)
             for item in group:
@@ -1764,15 +1600,21 @@ def _strip_marks(book: Any, path: str, marks: list[dict]) -> None:
                    + "；".join(failed[:5]) + ("……" if len(failed) > 5 else ""))
 
 
-# 扫描后的简单处理（用户 2026-11-02 定，取代自动修复）：切字的格子（边框压线、文字截断、超出裁剪框）
-# 开自动换行，所在行（合并单元格按最下面一行）行高加「字号 × 倍数」，保存。只做一次，不试算、不核对、不还原，
-# 效果交给人工看；分页切开、### 列宽不足、PDF 未匹配到文字只标色。
+# 扫描后的简单处理（用户 2026-11-02 定，2026-11-03 去掉按分类学习后恢复）：切字的格子（边框压线、文字截断、
+# 超出裁剪框）开自动换行，按文字长度和格子宽度估算换行后要几行，行高不够先补到够，再加「字号 × 倍数」，保存。
+# 保存后整份复检一次：通过的格子翻篇、不标色；没通过的不再改，标色交给人工。
+# 分页切开、### 列宽不足、PDF 未匹配到文字只标色。
 GROW_ERROR_TYPES = autofix.CUT_ERROR_TYPES
 GROW_RATIOS = (1.5, 1.2)
 DEFAULT_GROW_RATIO = 1.5
 DEFAULT_FONT_PT = 11.0  # 读不到字号时按日文 Excel 默认的 11pt
+LINE_HEIGHT_RATIO = 1.25  # 估算换行后的高度：每行按「字号 × 1.25」pt（MS Pゴシック 11pt 一行 13.5pt）
+HALF_WIDTH_RATIO = 0.55  # 半角字符（英数、SQL）宽度约为字号的 0.55 倍，全角按 1 倍
+CELL_PADDING_PT = 4.0  # 格子左右留白
 HASH_MESSAGE = "### 列宽不足：没有调整列宽，请人工核对数字格式、日期或列宽，也可标绿忽略"
 GROWN_MESSAGE = "已开自动换行、加高并保存，效果请人工看：好了标蓝，不好就改了保存再复检"
+GROWN_PASSED_MESSAGE = "扫描后已开自动换行、加高，复检通过"
+GROWN_FAILED_MESSAGE = "已开自动换行、加高并复检，还有问题：请人工修改并保存后再复检"
 
 
 def grow_ratio(value: Any = None) -> float:
@@ -1817,9 +1659,34 @@ def _font_size(area: Any) -> float:
     return float(size)
 
 
+def _text_width_pt(text: str, size: float) -> float:
+    """一段文字不换行时大约多宽（pt）：全角按字号，半角按字号 × 0.55"""
+    return sum(size if unicodedata.east_asian_width(ch) in "WFA" else size * HALF_WIDTH_RATIO for ch in text)
+
+
+def _wrap_shortfall(area: Any, size: float) -> tuple[float, int]:
+    """开换行后估算要几行，返回（现在的高度还差多少 pt，估算行数）。读不到文字或宽度时返回 (0, 0)。
+    合并单元格按整个区域的宽、高算。"""
+    try:
+        value = area.Cells(1, 1).Value
+        width, height = area.Width, area.Height
+    except Exception:
+        return 0.0, 0
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return 0.0, 0
+    if isinstance(width, bool) or not isinstance(width, (int, float)) \
+            or isinstance(height, bool) or not isinstance(height, (int, float)):
+        return 0.0, 0
+    usable = max(float(width) - CELL_PADDING_PT, size)
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    lines = sum(max(1, math.ceil(_text_width_pt(part, size) / usable)) for part in text.split("\n"))
+    need = lines * size * LINE_HEIGHT_RATIO
+    return max(0.0, need - float(height)), lines
+
+
 def _grow_and_wrap(excel: Any, path: str, ratio: float) -> dict[str, dict]:
-    """切字的格子开自动换行、所在行加高「字号 × 倍数」，保存一次。返回 {卡片 id: 做了什么}。
-    同一行有几个格子只加一次，按其中最大的字号算；最高到 Excel 上限 409pt。"""
+    """切字的格子开自动换行，估算换行后要几行，行高不够先补够，再加「字号 × 倍数」，保存一次。
+    返回 {卡片 id: 做了什么}。同一行有几个格子只加一次，按其中要加最多的算；最高到 Excel 上限 409pt。"""
     with wf.STATE_LOCK:
         cards = _grow_targets(path)
     if not cards:
@@ -1844,19 +1711,27 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float) -> dict[str, dict]:
                     raise ValueError("找不到这张表")
                 area = sheet.Range(card["cell_addr"]).MergeArea
                 size = _font_size(area)
-                if area.ShrinkToFit:
+                shrink = bool(area.ShrinkToFit)
+                if shrink:
                     wrap = "缩小字体填充，不开换行"
                 elif area.WrapText is True:
                     wrap = "本来就开着"
                 else:
                     area.WrapText = True
                     wrap = "已开"
+                # 文字很长（例如一整句 SQL）时，只加一行不够：先按估算的行数补够高度，再加「字号 × 倍数」
+                shortfall, lines = (0.0, 0) if shrink else _wrap_shortfall(area, size)
                 row = int(area.Row) + int(area.Rows.Count) - 1  # 合并单元格加在最下面一行
-                entry = rows.setdefault((sheet.Name, row), {"sheet": sheet, "size": 0.0, "cards": []})
+                entry = rows.setdefault((sheet.Name, row), {"sheet": sheet, "size": 0.0, "extra": 0.0, "cards": []})
                 entry["size"] = max(entry["size"], size)
+                entry["extra"] = max(entry["extra"], shortfall + size * ratio)
                 entry["cards"].append(card["id"])
-                done[card["id"]] = {"wrap": wrap == "已开", "row": row, "font": size}
-                debug_log.event("↪️ 自动换行", 格=where, 结果=wrap, 字号=size)
+                done[card["id"]] = {"wrap": wrap == "已开", "row": row, "font": size,
+                                    "merged": int(area.Rows.Count) > 1 or int(area.Columns.Count) > 1}
+                if shortfall:
+                    done[card["id"]].update(lines=lines, shortfall=round(shortfall, 2))
+                debug_log.event("↪️ 自动换行", 格=where, 结果=wrap, 字号=size, 估算行数=lines or "-",
+                                还差=round(shortfall, 2))
             except Exception as err:
                 done[card["id"]] = {"error": str(err)}
                 wf.log_msg(f"⚠️ {name} / {where} 没能开换行、加高：{err}")
@@ -1864,10 +1739,10 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float) -> dict[str, dict]:
         for (sheet_name, row), entry in rows.items():
             target = entry["sheet"].Rows(row)
             base = float(target.RowHeight)
-            applied = round(min(autofix.MAX_ROW_HEIGHT, base + entry["size"] * ratio), 2)
+            applied = round(min(autofix.MAX_ROW_HEIGHT, base + entry["extra"]), 2)
             target.RowHeight = applied
             debug_log.event("📏 加高", 表=sheet_name, 行=row, 原行高=base, 新行高=applied,
-                            字号=entry["size"], 倍数=ratio)
+                            字号=entry["size"], 倍数=ratio, 估算补高=round(entry["extra"] - entry["size"] * ratio, 2))
             for cid in entry["cards"]:
                 done[cid].update(sheet=sheet_name, base=round(base, 2), applied=applied, ratio=ratio)
         normalize_workbook_view(excel, book)
@@ -1879,6 +1754,25 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float) -> dict[str, dict]:
     finally:
         book.Close(SaveChanges=False)
     return done
+
+
+def _recheck_after_grow(session: Any, path: str) -> None:
+    """开完换行、加完高保存后整份复检一次（用户 2026-11-03 定）：通过的格子翻篇、不标色；
+    没通过的不再改，留黄色交给人工。复检出错不影响扫描结果，所有问题照旧标色转人工。"""
+    with wf.STATE_LOCK:
+        cards = [c for c in _data()["cards"].values() if c["wb_path"] == path
+                 and c["color"] == "yellow" and c.get("finalized") and not c.get("dismissed")]
+    if not cards:
+        return
+    debug_log.event("🔁 加高后复检", 文件=Path(path).name, 卡数=len(cards))
+    session.touch()
+    try:
+        _recheck_file(session.app(), path, cards, passed_message=GROWN_PASSED_MESSAGE,
+                      found_message=GROWN_FAILED_MESSAGE)
+    except Exception as err:
+        wf.log_msg(f"⚠️ {Path(path).name} 加高后复检没做完，问题照旧标色转人工，可稍后点复检：{err}{_where(err)}")
+        debug_log.event("⚠️ 加高后复检失败", 文件=Path(path).name, 原因=str(err))
+        _restart_excel(session)
 
 
 def _hand_over(path: str, grown: dict[str, dict] | None = None) -> None:
@@ -1934,9 +1828,10 @@ def _scan_size(job: dict, path: str) -> int:
     return sizes[path]
 
 
-def _scan_model(job: dict) -> tuple[float, float] | None:
-    """按这次已扫完文件的耗时估算扫描速度：(平均每份秒数, 每字节秒数)；一份都没扫完时返回 None"""
-    done = job.get("scan_seconds") or {}
+def _scan_model(job: dict, key: str = "scan_seconds") -> tuple[float, float] | None:
+    """按这次已扫完文件的耗时估算扫描速度：(平均每份秒数, 每字节秒数)；一份都没扫完时返回 None。
+    key="scan_seconds" 只算检测（定超时上限用）；"file_seconds" 是整份做完（含加高、复检、标色，估剩余时间用）"""
+    done = job.get(key) or {}
     if not done:
         return None
     total = sum(done.values())
@@ -2008,10 +1903,11 @@ def _scan_eta(job: dict) -> dict | None:
     pending = [p for p in job["workbooks"] if p not in finished]
     now = wf.SCAN_NOW if wf.SCAN_NOW.get("path") in pending else {}
     running = max(0.0, time.time() - now["started"]) if now else 0.0
-    model = _scan_model(job)
+    # 剩余时间按整份做完的耗时估（加高后还要复检一次，只按检测估会少一半）
+    model = _scan_model(job, "file_seconds") or _scan_model(job)
     limit = job.get("scan_limit") or {}
     return {
-        "elapsed": round(sum((job.get("scan_seconds") or {}).values())
+        "elapsed": round(sum({**(job.get("scan_seconds") or {}), **(job.get("file_seconds") or {})}.values())
                          + sum((job.get("slow_seconds") or {}).values()) + running),
         "remaining": None if model is None
         else round(max(0.0, sum(_expected_scan_seconds(job, p, model) for p in pending) - running)),
@@ -2809,14 +2705,6 @@ def _sync_highlights_safely(session: Any, path: str) -> None:
                 return
 
 
-def _capture_baselines_safely(session: Any, path: str, *, only_missing: bool = True) -> None:
-    """扫描后记下问题格的原样、复检后给新查出的格子补记；失败只记日志（以后学的时候再补）"""
-    try:
-        _capture_baselines(session.app(), path, only_missing=only_missing)
-    except Exception as err:
-        wf.log_msg(f"⚠️ {Path(path).name} 没能记下新问题格的原样：{err}{_where(err)}")
-
-
 def highlighted_paths() -> list[str]:
     with wf.STATE_LOCK:
         paths = list(dict.fromkeys([m["path"] for m in _marks().values() if wf.in_current_folder(m["path"])]
@@ -3034,6 +2922,26 @@ def _remember_opened(paths: list[str], *, folder_key: str | None = None, round_:
             else:
                 history[key] = previous
             raise
+
+
+def note_opened(path: Path | str) -> None:
+    """网页上点文件名打开了一份还有问题的文件：也记成「已打开、待复检」，人工处理里各分类先不再列它"""
+    want = str(Path(path).resolve()).casefold()
+    with wf.STATE_LOCK:
+        paths = {c["wb_path"] for c in _data()["cards"].values() if not c.get("dismissed")}
+    key = next((p for p in paths if str(Path(p).resolve()).casefold() == want), None)
+    if key:
+        _remember_opened([key])
+
+
+def _forget_opened(path: str) -> None:
+    """复检完一份文件：不再算「待复检」，还有问题就回到各分类里"""
+    with wf.STATE_LOCK:
+        history = _data().get("open_history", {})
+        key = _open_folder_key()
+        if path in (history.get(key) or []):
+            history[key] = [p for p in history[key] if p != path]
+            wf._persist_state()
 
 
 def reset_open_history() -> int:
@@ -3285,14 +3193,17 @@ def run() -> list[str]:
                            f"检测 {checking.get('detect', 0):.1f} 秒）")
                 with scan_analysis.operation("grow"):
                     grown = _grow_and_wrap(session.app(), path, ratio)
-                with scan_analysis.operation("baseline"):
-                    _capture_baselines_safely(session, path, only_missing=False)
                 # 检出的全部转人工，在原 Excel 里标色方便定位
                 with wf.STATE_LOCK:
                     _data().setdefault("highlight_files", {})[path] = highlight_style(options.get("highlight"))
+                _hand_over(path, grown)
+                if any("error" not in d for d in grown.values()):
+                    with scan_analysis.operation("recheck"):
+                        _recheck_after_grow(session, path)
                 with scan_analysis.operation("highlight"):
-                    _hand_over(path, grown)
                     _sync_highlights(session.app, path, tick=session.touch)
+                with wf.STATE_LOCK:
+                    job.setdefault("file_seconds", {})[path] = round(time.perf_counter() - started, 1)
 
             def scan(path: str) -> None:
                 with scan_analysis.attempt(job, path):
@@ -3398,13 +3309,14 @@ def run() -> list[str]:
                                     # 不然 Excel 一挂，后面每份文件都报「RPC サーバーを利用できません」
                                     wf.log_msg(f"⚠️ {Path(path).name} 复检出错，重启 Excel 后重试：{err}{_where(err)}")
                                     _restart_excel(session)
-                            _capture_baselines_safely(session, path)
                             _sync_highlights_safely(session, path)
                         with wf.STATE_LOCK:
                             job["skipped"].remove(path)
                             if path not in job["again"]:
                                 job["completed"].append(path)
                             wf._persist_state()
+                        if cards:
+                            _forget_opened(path)
                     except Exception as err:
                         wf.log_msg(f"❌ {Path(path).name} 复检失败，可继续任务：{err}{_where(err)}")
                     finally:
@@ -3422,40 +3334,6 @@ def run() -> list[str]:
                 for path in _leftover_mark_paths(expected):
                     if not workbook_locked(Path(path)):  # 你正在 Excel 里改的文件不动，下次再还原
                         _sync_highlights_safely(session, path)
-        elif kind in {"batch_learn", "batch_apply"}:
-            expected = list(job["workbooks"])
-            key = options["category"]
-            rule = copy.deepcopy(_rules().get(key)) if kind == "batch_apply" else None
-            if kind == "batch_apply" and not (rule and rule.get("ok")):
-                raise ValueError("这一类还没有学到规律，请先示范几个再点「学一下」")
-            for i, path in enumerate(expected, 1):
-                if path in job["completed"]:
-                    continue
-                with wf.STATE_LOCK:
-                    cards = [copy.deepcopy(c) for cid in options["card_ids"]
-                             for c in [_data()["cards"].get(cid)]
-                             if c and c["wb_path"] == path and not c.get("dismissed")]
-                debug_log.begin(f"{'学一下' if kind == 'batch_learn' else '按规律修改'} {i} / {len(expected)}：{Path(path).name}")
-                watchdog.progress()
-                try:
-                    unsaved = close_saved_workbooks([Path(path)])
-                    if Path(path) in unsaved:
-                        wf.log_msg(f"⚠️ {Path(path).name}：{unsaved[Path(path)]}，请保存后再点")
-                        continue
-                    if kind == "batch_learn":
-                        _learn_file(session.app(), path, cards, job)
-                    elif _apply_file(session.app(), path, cards, rule):
-                        _recheck_file(session.app(), path, cards)
-                        _capture_baselines_safely(session, path)
-                        _sync_highlights_safely(session, path)
-                    with wf.STATE_LOCK:
-                        job["completed"].append(path)
-                        wf._persist_state()
-                except Exception as err:
-                    wf.log_msg(f"❌ {Path(path).name} 没做完，可继续任务：{err}{_where(err)}")
-                    _restart_excel(session)
-            if kind == "batch_learn":
-                _finish_learn(job)
         elif kind == "batch_unhighlight":
             expected = list(options["paths"])
             wf.log_msg(f"🧽 开始清除标记颜色：{len(expected)} 份文件")

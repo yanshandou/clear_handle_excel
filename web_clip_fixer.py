@@ -549,16 +549,6 @@ class WebHandler(BaseHTTPRequestHandler):
                 if color:
                     options["color"] = color
                 self._start_job(f"batch_{action}", options)
-        elif self.path in {"/api/batch/learn", "/api/batch/apply"}:
-            # 按分类示范学习修复：学一下 = 找出你改过的格子、总结规律；按规律修 = 改这一类剩下的并复检
-            key = payload.get("category")
-            if not isinstance(key, str) or not key:
-                raise ValueError("请先选一个分类")
-            ids = batch.category_card_ids(key)
-            if not ids:
-                raise ValueError("这一类已经没有要处理的格子了")
-            self._start_job("batch_learn" if self.path.endswith("learn") else "batch_apply",
-                            {"category": key, "card_ids": ids})
         elif self.path == "/api/batch/followups/start":
             # 暂停时留着的排队复检 / 提交：现在就开始
             autofix.release_excel()
@@ -685,7 +675,12 @@ class WebHandler(BaseHTTPRequestHandler):
                 autofix.wait_for_writes(15)  # 后台正在保存这个文件时别同时打开
             except ValueError:
                 raise ValueError("后台正在保存 Excel，请几秒后再点") from None
-            self._send_json({"ok": True, "note": open_workbook_in_excel(wb_path, sheet, cell)})
+            note = open_workbook_in_excel(wb_path, sheet, cell)
+            try:
+                batch.note_opened(wb_path)  # 人工处理里这份文件先算「已打开、待复检」
+            except Exception as err:
+                log_msg(f"⚠️ 没能记下已打开 {Path(wb_path).name}：{err}")
+            self._send_json({"ok": True, "note": note})
 
         elif self.path == "/api/autofix/choose":
             gid, index = payload.get("id"), payload.get("index")

@@ -42,7 +42,7 @@ from core.common import (
     workbook_locked,
     workbook_rel_name,
 )
-from core import debug_log, file_problem, fix_images, page_breaks, pdf_detector, pdf_store, print_layout, scan_analysis, sheet_history
+from core import debug_log, file_problem, fix_images, page_breaks, page_fill, pdf_detector, pdf_store, print_layout, scan_analysis, sheet_history
 from core.excel_watchdog import ExcelWatchdog
 from core.formula_links import delete_sheets_preserving_values
 from core.excel_ops import (
@@ -209,7 +209,7 @@ def _check_decision_item(item: dict[str, Any]) -> None:
     autofix.check_row_not_writing(item)
 
 
-BATCH_REVIEW_KINDS = {"batch_commit", "batch_recheck", "batch_open", "batch_unhighlight", "batch_learn", "batch_apply"}
+BATCH_REVIEW_KINDS = {"batch_commit", "batch_recheck", "batch_open", "batch_unhighlight"}
 
 
 def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
@@ -280,8 +280,7 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
 
 _TASK_TITLES = {
     "batch_recheck": "复检", "batch_commit": "提交审核结果", "batch_open": "打开文件",
-    "batch_unhighlight": "清除 Excel 标记颜色", "batch_learn": "学一下（看示范总结规律）",
-    "batch_apply": "按规律修改", "scan": "Web 切字扫描", "recheck": "复检",
+    "batch_unhighlight": "清除 Excel 标记颜色", "scan": "Web 切字扫描", "recheck": "复检",
     "refresh": "刷新复检", "fix": "修复", "review_recheck": "稍后人工复检", "review_open": "打开稍后复检的文件",
 }
 
@@ -3100,6 +3099,7 @@ def _export_workbook_pdfs(
         exported: list[Path] = []
         sheets_done: list[tuple[Path, str]] = []
         to_save: dict[str, tuple[str, int]] = {}
+        page_checks: dict[str, tuple[str, dict]] = {}  # PDF -> (表名, 内容太少的页)
         for sheet in _exportable_sheets(wb):
             # 别的 Excel 沿用着的 PDF 名字不占（极少见：a.xlsx 的表「b_c」和 a_b.xlsx 的表「c」同名）
             pdf_path = unique_pdf_path(out_dir, file_stem, sanitize_filename(sheet.Name), used_pdf_paths | taken)
@@ -3111,6 +3111,9 @@ def _export_workbook_pdfs(
                 to_save[print_layout.identity(sheet)[0]] = (str(sheet.Name), target)
             exported.append(pdf_path)
             sheets_done.append((pdf_path, str(sheet.Name)))
+            found = page_fill.inspect(sheet, pdf_path)
+            if found:
+                page_checks[str(pdf_path)] = (str(sheet.Name), found)
             with STATE_LOCK:
                 # PDF 人工复检按这个找回是哪个文件的哪张表
                 STATE.setdefault("pdf_exports", {})[str(pdf_path)] = {"wb_path": str(wb_path), "sheet": str(sheet.Name)}
@@ -3127,13 +3130,65 @@ def _export_workbook_pdfs(
         update_file_progress(wb_label, current_action="正在把打印方向保存进 Excel...")
         _save_print_orientations(get_excel, wb_path, to_save)
         digest = sheet_history.fingerprint(wb_path)  # 方向存进 Excel 后文件变了，记保存后的
-    # 记下这次导出时 Excel 的哈希：下次没变就沿用这些 PDF
-    pdf_store.record(root_folder, wb_path, digest, sheets_done)
+    notes: dict[str, list[dict]] = {}
+    if page_checks:
+        update_file_progress(wb_label, current_action="有内容很少的页，正在检查能不能修...")
+        notes = _fix_sparse_pages(get_excel, wb_path, page_checks)
+        digest = sheet_history.fingerprint(wb_path)  # 修了就是保存后的
+    # 记下这次导出时 Excel 的哈希：下次没变就沿用这些 PDF（内容太少的页的提示也跟着记）
+    pdf_store.record(root_folder, wb_path, digest, sheets_done, notes)
     update_file_progress(
         wb_label, status="done", exported_pdfs=len(exported), current_action=action,
         all_sheets=all_sheets,
     )
     return exported
+
+
+def _fix_sparse_pages(get_excel: Callable[[], Any], wb_path: Path,
+                      page_checks: dict[str, tuple[str, dict]]) -> dict[str, list[dict]]:
+    """导出时发现内容太少的页（page_fill）：有把握的（造成空页的手动分页、最后几页全是空格子）改 Excel、
+    重新导出这张表核对，修好了保存；别的、修不好的写成提示，复检页上那一页自动标黄（用户 2026-11-03 定）。
+    返回 PDF -> [{"page", "fixed", "text"}]"""
+    notes = {pdf: page_fill.flags(found) for pdf, (_, found) in page_checks.items()}
+    fixable = {pdf: item for pdf, item in page_checks.items()
+               if any(it["kind"] in ("tail", "break") for it in item[1]["items"])}
+    why = ""
+    if fixable and workbook_locked(wb_path):
+        why = "文件正在 Excel 里打开"
+    wb = None
+    if fixable and not why:
+        try:
+            wb = open_workbook_checked(get_excel(), str(wb_path.resolve()), UpdateLinks=0)
+        except Exception as err:
+            why = f"文件打不开（{err}）"
+    if why:
+        log_msg(f"  ⚠️ {why}，内容很少的页没能自动修，复检页上已标黄")
+    if wb is not None:
+        print_layout.bind(wb, str(wb_path))
+        try:
+            changed = False
+            for pdf, (name, found) in fixable.items():
+                try:
+                    sheet = wb.Sheets(name)
+                    sheet_notes, sheet_changed = page_fill.fix_sheet(sheet, Path(pdf), _export_sheet_pdf, found)
+                except Exception as err:
+                    debug_log.exception(err, f"空页修复 [{name}]")
+                    log_msg(f"  ⚠️ [{name}] 内容很少的页没能自动修：{err}")
+                    continue
+                notes[pdf] = sheet_notes
+                changed = changed or sheet_changed
+            if changed:
+                wb.Save()
+        finally:
+            wb.Close(SaveChanges=False)
+    for pdf, sheet_notes in notes.items():
+        name = page_checks[pdf][0]
+        for note in sheet_notes:
+            log_msg(f"  {'✅' if note['fixed'] else '🟡'} [{name}] {note['text']}")
+    debug_log.event("📄 内容很少的页", 文件=wb_path.name,
+                    修好=sum(n["fixed"] for v in notes.values() for n in v),
+                    标黄=sum(not n["fixed"] for v in notes.values() for n in v))
+    return notes
 
 
 def _save_print_orientations(get_excel: Callable[[], Any], wb_path: Path, to_save: dict[str, tuple[str, int]]) -> None:

@@ -1,7 +1,7 @@
 'use strict';
 const REVIEW_COLORS = ['blue', 'green', 'yellow'];
 const REVIEW_LABELS = { blue: '蓝 · 已修复', green: '绿 · 忽略', yellow: '黄 · 人工处理' };
-const REVIEW_JOB_NAMES = { batch_commit: '提交审核', batch_recheck: '复检', batch_open: '打开文件', batch_unhighlight: '清除标记颜色', batch_learn: '学一下', batch_apply: '按规律修改' };
+const REVIEW_JOB_NAMES = { batch_commit: '提交审核', batch_recheck: '复检', batch_open: '打开文件', batch_unhighlight: '清除标记颜色' };
 let batchState = { cards: [], busy: false, job: null, progress: {}, logs: [] };
 let selectedFilter = 'all';
 let largeMode = false;
@@ -414,16 +414,8 @@ function duration(seconds) {
   if (s < 3600) return `${Math.floor(s / 60)} 分${s % 60 ? ` ${s % 60} 秒` : ''}`;
   return `${Math.floor(s / 3600)} 小时${Math.floor(s % 3600 / 60) ? ` ${Math.floor(s % 3600 / 60)} 分` : ''}`;
 }
-// 扫描时进度后面接上已用和预计剩余时间（按这次已扫完文件的耗时和文件大小估算）
-function etaText(eta) {
-  if (!eta) return '';
-  if (eta.remaining == null) return ` · 已用 ${duration(eta.elapsed)} · 扫完第一个文件后估算剩余时间`;
-  const done = new Date(Date.now() + eta.remaining * 1000);
-  const clock = `${String(done.getHours()).padStart(2, '0')}:${String(done.getMinutes()).padStart(2, '0')}`;
-  return ` · 已用 ${duration(eta.elapsed)} · 预计还要约 ${duration(eta.remaining)}（${clock} 左右扫完）`;
-}
 // 任务已全部完成：收起满格进度条，换成明确的完成提示，免得以为卡在最后一个文件
-const DONE_TITLES = { batch_scan: '扫描完成', batch_commit: '审核已提交', batch_recheck: '复检完成', batch_open: '文件已打开', batch_unhighlight: '标记颜色已清除', batch_learn: '学完了', batch_apply: '按规律修改完成' };
+const DONE_TITLES = { batch_scan: '扫描完成', batch_commit: '审核已提交', batch_recheck: '复检完成', batch_open: '文件已打开', batch_unhighlight: '标记颜色已清除' };
 function renderDoneBanner(finished, job, total) {
   $('progressText').classList.toggle('hidden', finished);
   $('progressTrack').classList.toggle('hidden', finished);
@@ -434,7 +426,7 @@ function renderDoneBanner(finished, job, total) {
   const title = !kind ? '扫描完成' : DONE_TITLES[kind] || '处理完成';
   const left = batchState.cards.length;
   $('doneTitle').textContent = `${title}：${total} / ${total} 个文件全部处理完`;
-  $('doneDetail').textContent = left ? `还有 ${left} 个单元格待审核，请在下方卡片里确认颜色后提交。` : '没有待审核的单元格了。';
+  $('doneDetail').textContent = left ? `还有 ${left} 个单元格要人工处理，请在下方按分类打开文件修改，保存后复检。` : '没有待审核的单元格了。';
   $('doneGoBtn').classList.toggle('hidden', !left);
 }
 $('doneGoBtn').addEventListener('click', () => ($('learnPanel') || $('filters')).scrollIntoView({ behavior: 'smooth', block: 'start' }));
@@ -999,7 +991,7 @@ function pruneRenderCaches(allByFile) {
 
 function render() {
   renderControls();
-  if (typeof renderLearn === 'function') renderLearn();
+  if (typeof renderCategories === 'function') renderCategories();
   // 只保留当前筛选下看得到的卡片的选中，批量改色不会改到看不见的卡片
   const shown = shownCards();
   const visible = new Set(shown.map(c => c.id));
@@ -1015,11 +1007,15 @@ function render() {
   const label = batchState.busy ? (own && job.kind !== 'batch_scan' ? `正在${REVIEW_JOB_NAMES[job.kind] || '处理'}`
     : job?.pause_requested ? '当前文件做完后暂停' : '正在扫描')
     : job?.status === 'interrupted' ? '已暂停或部分文件未完成' : '当前进度';
-  $('progressText').textContent = `${label}：${completed} / ${total} 个文件 · 待审核 ${batchState.cards.length} 个单元格${etaText(batchState.scan_eta)}`;
+  $('progressText').textContent = `${label}：${completed} / ${total} 个文件 · 待审核 ${batchState.cards.length} 个单元格`;
   renderDoneBanner(!batchState.busy && total > 0 && completed >= total && (!job || job.status === 'completed'), job, total);
   renderScanNow(batchState.scan_eta?.current);
   renderSlowFiles();
   $('progressFill').style.width = `${total ? Math.round(completed * 100 / total) : 0}%`;
+  // 进度条下面写几点开始、预计几点完成：扫描用后台按文件大小估的剩余时间，其它任务按已用时间和进度推算
+  const scanEta = job?.kind === 'batch_scan' ? batchState.scan_eta : null;
+  window.ProgressEta?.update('progressFill', `workbench:${job?.kind || ''}`, total ? completed / total : 0,
+    !!(batchState.busy && own && total && completed < total), scanEta?.remaining);
   $('logBox').textContent = batchState.logs.join('\n') || '等待操作…';
   const counts = Object.fromEntries(REVIEW_COLORS.map(c => [c, batchState.cards.filter(card => card.color === c).length]));
   // 筛选按钮用对应颜色的边框、底色和圆点；选中时整块填色
@@ -1340,7 +1336,7 @@ $('slowClearBtn').addEventListener('click', () => action(() => post('/api/batch/
 $('startBtn').addEventListener('click', async () => {
   if (!$('folderInput').value.trim()) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
   const ratio = $('growRatio').value;
-  if (!(await appConfirm(`检出的问题全部转为黄色人工项，并在原 Excel 里给问题单元格标色（复检通过或提交蓝 / 绿后自动去掉）。\n切字的格子（边框压线、文字截断、超出裁剪框）开自动换行，所在行行高加「字号 × ${ratio}」，保存一次；不反复试、不还原，效果请你看卡片和 Excel 判断。\n\n确定开始扫描吗？`, { title: '开始扫描', okText: '开始扫描' }))) return;
+  if (!(await appConfirm(`检出的问题全部转为黄色人工项，并在原 Excel 里给问题单元格标色（复检通过或提交蓝 / 绿后自动去掉）。\n切字的格子（边框压线、文字截断、超出裁剪框）开自动换行，按文字长短估算行数补够行高，再加「字号 × ${ratio}」，保存后整份复检一遍：通过的去掉标色，没通过的不再改，交给人工。\n\n确定开始扫描吗？`, { title: '开始扫描', okText: '开始扫描' }))) return;
   await startBatch({ highlight: { ...highlight }, grow_ratio: Number(ratio) });
 });
 $('unhighlightBtn').addEventListener('click', async () => {

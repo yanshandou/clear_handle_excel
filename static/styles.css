@@ -2273,7 +2273,7 @@ input[type="text"] {
 /* 最近任务状态条 */
 .home-strip {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(180px, 260px) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 380px) auto;
   align-items: center;
   gap: 16px;
   padding: 14px 20px;

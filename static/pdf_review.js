@@ -11,6 +11,7 @@
 const FOLDER_KEY = 'clear_handle_excel.lastFolder';
 const OLD_FOLDER_KEY = 'clear_handle_excel.oldFolder'; // 和修复颜色 / 引用 / 隐藏页共用
 const MARKS_KEY = 'clear_handle_excel.pdfReviewMarks'; // {文件夹: {pdf: {v, red, pages: {页码: {}}, opened}}}
+const AUTO_KEY = 'clear_handle_excel.pdfReviewAutoYellow'; // {文件夹: {pdf: v}}：导出时发现内容很少的页，这一版已经自动标过黄
 const MARK_TEXT = { blue: '不用管', yellow: '要人工改', red: '删除这张表' };
 const MARK_TITLE = { blue: '整张表不用管（清掉这张表的所有标记）', yellow: '整张表每页都标黄；只标某一页就单击那一页', red: '删除整张表（所有页）' };
 const MIN_DRAG_PX = 6;  // 按下到松开挪动超过这么多就是在拖（选字、滚动），不算点
@@ -92,13 +93,21 @@ function renderDocs() {
       ? `<span class="pr-doc-excel">📗 ${excelLinkHtml(`${escapeHtml(doc.wb_name)} › ${escapeHtml(doc.sheet)}`, excelTarget(doc))}`
         + `${doc.guessed ? '<span class="pr-doc-note" title="导出记录里没有这份 PDF，按「Excel 文件名_表名.pdf」找到的">按文件名对应</span>' : ''}</span>`
       : '<span class="pr-doc-warn">⚠ 找不到对应的 Excel，点了也打不开</span>';
+    const notes = doc.notes || [];
+    const pageNote = p => notes.filter(n => !n.fixed && n.page === p).map(n => n.text).join('\n');
     const pages = doc.pages.map(([w, h], p) => `
       <div class="pr-page is-loading" data-doc="${d}" data-page="${p}" style="aspect-ratio:${w} / ${h};--ar:${w / h}">
         <img class="pr-img" loading="lazy" decoding="async" draggable="false" alt="第 ${p + 1} 页"
           src="/api/pdf_review/page?pdf=${encodeURIComponent(doc.pdf)}&p=${p}&v=${doc.v}">
         <div class="pr-layer"></div>
         <span class="pr-pageno">${p + 1} / ${doc.pages.length}</span>
+        ${pageNote(p) ? `<span class="pr-page-note" title="${escapeHtml(pageNote(p))}">⚠ 内容很少</span>` : ''}
       </div>`).join('');
+    const fixedNotes = notes.filter(n => n.fixed);
+    const openNotes = notes.filter(n => !n.fixed);
+    const noteRows = fixedNotes.map(n => `<li class="pr-fill-fixed">✓ 自动修好：${escapeHtml(n.text)}</li>`).join('')
+      + openNotes.map(n => `<li class="pr-fill-open">⚠ ${escapeHtml(n.text)}</li>`).join('');
+    const noteBox = noteRows ? `<ul class="pr-fill-notes" aria-label="内容很少的页">${noteRows}</ul>` : '';
     const markable = doc.wb_path && !doc.error;
     const buttons = markable ? `<span class="pr-mark" role="group" aria-label="标记">${['blue', 'yellow', 'red'].map(c =>
       `<button type="button" class="pr-mark-btn" data-mark-btn="${c}" data-doc="${d}" title="${MARK_TITLE[c]}">${MARK_TEXT[c]}</button>`).join('')}</span>` : '';
@@ -110,7 +119,7 @@ function renderDocs() {
         <span class="pr-doc-pages">${doc.pages.length} 页</span>${excel}
         <span class="pr-doc-gap"></span>${buttons}${regen}
       </header>
-      ${doc.error ? `<p class="pr-doc-warn">${escapeHtml(doc.error)}</p>` : `<div class="pr-pages">${pages}</div>`}
+      ${doc.error ? `<p class="pr-doc-warn">${escapeHtml(doc.error)}</p>` : `${noteBox}<div class="pr-pages">${pages}</div>`}
     </article>`;
   }).join('');
   $('prBar').classList.remove('hidden');
@@ -200,6 +209,29 @@ function loadMarks() {
     for (const [p, spot] of Object.entries(m.pages)) if (Number(p) < doc.pages.length) pages[p] = spot || {};
     if (m.red || Object.keys(pages).length) marks[doc.pdf] = { v: m.v, red: !!m.red, pages, opened: !!m.opened };
   }
+  autoYellow();
+}
+
+// 导出时发现内容很少、没自动修的页：每一版 PDF 只自动标一次黄，你改回蓝以后不再标
+function autoYellow() {
+  let all = {};
+  try { all = JSON.parse(localStorage.getItem(AUTO_KEY) || '{}'); } catch (_) {}
+  const seen = all[folder] || {};
+  const now = {};
+  for (const doc of pdfs) {
+    const pagesToMark = (doc.notes || []).filter(n => !n.fixed && Number.isInteger(n.page) && n.page < doc.pages.length);
+    if (!pagesToMark.length || !doc.wb_path || doc.error) continue;
+    now[doc.pdf] = doc.v;
+    if (seen[doc.pdf] === doc.v) continue;
+    const m = entry(doc);
+    if (m.red) continue;
+    pagesToMark.forEach(n => { m.pages[n.page] = m.pages[n.page] || {}; });
+  }
+  try {
+    if (Object.keys(now).length) all[folder] = now; else delete all[folder];
+    localStorage.setItem(AUTO_KEY, JSON.stringify(all));
+  } catch (_) {}
+  saveMarks();
 }
 
 function saveMarks() {

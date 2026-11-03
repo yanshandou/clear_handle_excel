@@ -9,13 +9,14 @@ from core import batch, fix_images, reporter, storage, workflow
 
 
 class FakeArea:
-    def __init__(self, row, rows=1, size=11.0, wrap=False, shrink=False):
-        self.Row, self.Rows = row, Mock(Count=rows)
+    def __init__(self, row, rows=1, size=11.0, wrap=False, shrink=False, value="文字", width=60.0, height=None):
+        self.Row, self.Rows, self.Columns = row, Mock(Count=rows), Mock(Count=1)
         self.WrapText, self.ShrinkToFit = wrap, shrink
         self.font = Mock(Size=size)
+        self.value, self.Width, self.Height = value, width, 18.75 * rows if height is None else height
 
     def Cells(self, _r, _c):
-        return Mock(Font=self.font)
+        return Mock(Font=self.font, Value=self.value)
 
 
 class FakeRow:
@@ -91,8 +92,31 @@ class GrowWrapTests(unittest.TestCase):
         self.book.Save.assert_called_once()
         self.book.Close.assert_called_once_with(SaveChanges=False)
         self.assertEqual(done[batch._key(self.path, "S1", "A5")],
-                         {"wrap": True, "row": 5, "font": 11.0, "sheet": "S1", "base": 18.75, "applied": 39.75, "ratio": 1.5})
+                         {"wrap": True, "row": 5, "font": 11.0, "merged": False, "sheet": "S1", "base": 18.75, "applied": 39.75, "ratio": 1.5})
         self.assertFalse(done[batch._key(self.path, "S1", "C5")]["wrap"])  # 本来就开着
+
+    def test_long_text_gets_enough_lines_before_the_extra(self):
+        """很长的文字（例如 SQL）：按格子宽度估算换行后要几行，先补够高度，再加「字号 × 倍数」"""
+        sql = "SELECT a.col1, b.col2 FROM table_a a JOIN table_b b ON a.id = b.id WHERE a.flag = 1"  # 84 个半角
+        self.sheet.areas["E9"] = FakeArea(9, value=sql, width=100.0, height=18.75)
+        self.add("E9", 9)
+        done = batch._grow_and_wrap(Mock(), self.path, 1.5)
+        # 84 × 11 × 0.55 = 508.2pt，可用宽 96pt → 6 行 × 11 × 1.25 = 82.5pt；还差 63.75，再加 16.5
+        self.assertEqual(self.sheet.rows[9].RowHeight, 99.0)
+        self.assertEqual(done[batch._key(self.path, "S1", "E9")]["lines"], 6)
+
+    def test_short_text_that_already_fits_only_gets_the_extra(self):
+        self.sheet.areas["E9"] = FakeArea(9, value="給与", width=100.0)
+        self.add("E9", 9)
+        batch._grow_and_wrap(Mock(), self.path, 1.5)
+        self.assertEqual(self.sheet.rows[9].RowHeight, 35.25)
+
+    def test_line_breaks_and_merged_height_count(self):
+        # 合并两行（共 37.5pt），文字有 4 段：4 × 13.75 = 55，还差 17.5，加在最下面一行
+        self.sheet.areas["E9"] = FakeArea(8, rows=2, value="一\n二\n三\n四", width=100.0, height=37.5)
+        self.add("E9", 8)
+        batch._grow_and_wrap(Mock(), self.path, 1.5)
+        self.assertEqual(self.sheet.rows[9].RowHeight, 18.75 + 17.5 + 16.5)
 
     def test_ratio_one_point_two_and_row_height_cap(self):
         self.add("E9", 9)
@@ -126,6 +150,32 @@ class GrowWrapTests(unittest.TestCase):
         # 下次扫描没再加高的，旧的记录去掉
         batch._hand_over(self.path)
         self.assertNotIn("grown", self.card("A5"))
+
+    def test_category_groups_by_type_merge_grow_and_missing_lines(self):
+        self.add("A5", 5, kind="hidden", hidden_reason="truncated", missing_lines=1)
+        self.add("E9", 9, kind="pagebreak")
+        done = batch._grow_and_wrap(Mock(), self.path, 1.5)
+        batch._hand_over(self.path, done)
+        snap = {c["cell_addr"]: c for c in batch.snapshot()["cards"]}
+        key, label = snap["A5"]["category"]
+        self.assertEqual(label, "文字截断 · 单格 · 已加高 · 缺 1 行")
+        self.assertEqual(key, "text_truncated|single|grown|lines1")
+        self.assertEqual(snap["A5"]["cell_text"], "文字")
+        self.assertNotIn("已加高", snap["E9"]["category"][1])
+        merged = batch._card_category({"error_types": ["border_clip"], "cell_addr": "B2", "grown": {"merged": True}}, [])
+        self.assertEqual(merged[1], "边框压线 · 合并格 · 已加高")
+        many = batch._card_category({"error_types": ["text_truncated"], "cell_addr": "B2:C3"}, [{"missing_lines": 4}])
+        self.assertEqual(many[1], "文字截断 · 合并格 · 没加高 · 缺 3 行以上")
+
+    def test_opened_file_waits_for_recheck_then_comes_back(self):
+        self.add("A5", 5)
+        batch._hand_over(self.path)
+        batch.note_opened(Path(self.path))
+        self.assertEqual(batch.snapshot()["opened_files"], [self.path])
+        batch.note_opened(self.root / "other.xlsx")  # 没有问题的文件不记
+        self.assertEqual(batch._opened_paths(), {self.path})
+        batch._forget_opened(self.path)
+        self.assertEqual(batch._opened_paths(), set())
 
     def test_grow_ratio_only_accepts_the_two_choices(self):
         self.assertEqual(batch.grow_ratio(None), 1.5)
