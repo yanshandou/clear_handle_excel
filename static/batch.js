@@ -414,14 +414,6 @@ function duration(seconds) {
   if (s < 3600) return `${Math.floor(s / 60)} 分${s % 60 ? ` ${s % 60} 秒` : ''}`;
   return `${Math.floor(s / 3600)} 小时${Math.floor(s % 3600 / 60) ? ` ${Math.floor(s % 3600 / 60)} 分` : ''}`;
 }
-// 扫描时进度后面接上已用和预计剩余时间（按这次已扫完文件的耗时和文件大小估算）
-function etaText(eta) {
-  if (!eta) return '';
-  if (eta.remaining == null) return ` · 已用 ${duration(eta.elapsed)} · 扫完第一个文件后估算剩余时间`;
-  const done = new Date(Date.now() + eta.remaining * 1000);
-  const clock = `${String(done.getHours()).padStart(2, '0')}:${String(done.getMinutes()).padStart(2, '0')}`;
-  return ` · 已用 ${duration(eta.elapsed)} · 预计还要约 ${duration(eta.remaining)}（${clock} 左右扫完）`;
-}
 // 任务已全部完成：收起满格进度条，换成明确的完成提示，免得以为卡在最后一个文件
 const DONE_TITLES = { batch_scan: '扫描完成', batch_commit: '审核已提交', batch_recheck: '复检完成', batch_open: '文件已打开', batch_unhighlight: '标记颜色已清除', batch_learn: '学完了', batch_apply: '按规律修改完成' };
 function renderDoneBanner(finished, job, total) {
@@ -1015,11 +1007,15 @@ function render() {
   const label = batchState.busy ? (own && job.kind !== 'batch_scan' ? `正在${REVIEW_JOB_NAMES[job.kind] || '处理'}`
     : job?.pause_requested ? '当前文件做完后暂停' : '正在扫描')
     : job?.status === 'interrupted' ? '已暂停或部分文件未完成' : '当前进度';
-  $('progressText').textContent = `${label}：${completed} / ${total} 个文件 · 待审核 ${batchState.cards.length} 个单元格${etaText(batchState.scan_eta)}`;
+  $('progressText').textContent = `${label}：${completed} / ${total} 个文件 · 待审核 ${batchState.cards.length} 个单元格`;
   renderDoneBanner(!batchState.busy && total > 0 && completed >= total && (!job || job.status === 'completed'), job, total);
   renderScanNow(batchState.scan_eta?.current);
   renderSlowFiles();
   $('progressFill').style.width = `${total ? Math.round(completed * 100 / total) : 0}%`;
+  // 进度条下面写几点开始、预计几点完成：扫描用后台按文件大小估的剩余时间，其它任务按已用时间和进度推算
+  const scanEta = job?.kind === 'batch_scan' ? batchState.scan_eta : null;
+  window.ProgressEta?.update('progressFill', `workbench:${job?.kind || ''}`, total ? completed / total : 0,
+    !!(batchState.busy && own && total && completed < total), scanEta?.remaining);
   $('logBox').textContent = batchState.logs.join('\n') || '等待操作…';
   const counts = Object.fromEntries(REVIEW_COLORS.map(c => [c, batchState.cards.filter(card => card.color === c).length]));
   // 筛选按钮用对应颜色的边框、底色和圆点；选中时整块填色

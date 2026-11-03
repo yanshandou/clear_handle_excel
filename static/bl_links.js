@@ -104,9 +104,11 @@
       showProgress('blProgress', 'running');
       $('blProgress').textContent = `正在${phase} ${Math.min((latest.done || 0) + 1, latest.total || 0)} / ${latest.total || 0}：${latest.current || '准备中…'}`;
       $('blProgressFill').style.width = `${latest.total ? latest.done / latest.total * 100 : 0}%`;
+      window.ProgressEta?.update('blProgressFill', `bl:${latest.phase}`, latest.total ? latest.done / latest.total : 0, true);
       $('blResults').textContent = `正在${phase}，完成后显示明细。`;
       return;
     }
+    window.ProgressEta?.update('blProgressFill', `bl:${latest.phase}`, 0, false);
     const applied = latest.applied;
     const data = applied || latest.result;
     if (!data) return;

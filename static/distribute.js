@@ -273,10 +273,12 @@
       showProgress('running');
       $('distProgress').textContent = `${latest.kind === 'fetch' ? '正在拿最新版' : '正在复制'} ${Math.min((latest.done || 0) + 1, latest.total || 0)} / ${latest.total || 0}：${latest.current || '准备中…'}`;
       $('distProgressFill').style.width = `${latest.total ? latest.done / latest.total * 100 : 0}%`;
+      window.ProgressEta?.update('distProgressFill', `dist:${latest.kind}`, latest.total ? latest.done / latest.total : 0, true);
       $('distResultTitle').textContent = latest.kind === 'fetch' ? '拿取结果' : '复制结果';
       $('distResults').textContent = latest.kind === 'fetch' ? '正在拿最新版，完成后显示每个文件夹的结果。' : '正在复制，完成后显示每个文件夹的核对结果。';
       return;
     }
+    window.ProgressEta?.update('distProgressFill', `dist:${latest.kind}`, 0, false);
     if (viewing) {
       $('distResultTitle').textContent = `${isFetch(viewing) ? '拿取记录' : '复制记录'}：${viewing.label || ''}`;
       $('distResults').innerHTML = '<p><button type="button" class="btn btn-outline btn-sm" data-dist-back>← 回到当前清单</button></p>' + renderAny(viewing, true);

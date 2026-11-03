@@ -711,9 +711,8 @@ test('scan shows elapsed and remaining time, the current file, and files skipped
   assert.equal(p.run(`duration(42)`), '42 秒');
   assert.equal(p.run(`duration(200)`), '3 分 20 秒');
   assert.equal(p.run(`duration(3720)`), '1 小时 2 分');
-  assert.equal(p.run(`etaText(null)`), '');
-  assert.equal(p.run(`etaText({elapsed: 30, remaining: null})`), ' · 已用 30 秒 · 扫完第一个文件后估算剩余时间');
-  assert.match(p.run(`etaText({elapsed: 600, remaining: 480})`), /^ · 已用 10 分 · 预计还要约 8 分（\d\d:\d\d 左右扫完）$/);
+  assert.equal(p.run(`window.ProgressEta.left(30)`), '不到 1 分钟');
+  assert.match(p.run(`window.ProgressEta.text('t', 0.5, 480)`), /^⏱ (约 \d\d:\d\d 开始 → )?预计 (明天 )?\d\d:\d\d 完成 · 还要约 8 分钟$/);
   p.run(`renderScanNow({name: 'a.xlsx', sheet: 'レイアウト', index: 2, total: 5, seconds: 75, limit: 600})`);
   assert.equal(p.elements.get('scanNow').textContent,
     '正在检查 a.xlsx：第 2 / 5 张表「レイアウト」 · 这份已用 1 分 15 秒（上限 10 分，超过就跳过、留给人工）');

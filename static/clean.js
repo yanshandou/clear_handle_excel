@@ -794,6 +794,7 @@ function renderRunBox() {
   document.getElementById('cleanProgressFill').style.width = `${Math.min(100, Math.max(0, pct))}%`;
   // 结束后下面的结果框已写明完成 / 未完成，进度条收起
   document.getElementById('cleanProgressFill').closest('.mini-progress-box').classList.toggle('hidden', phase === 'done');
+  window.ProgressEta?.update('cleanProgressFill', 'task', pct / 100, phase === 'running' && overview.busy);
 
   const runBtn = document.getElementById('runStateBtn');
   runBtn.classList.toggle('hidden', phase === 'done' && !canResumeClean());

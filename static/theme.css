@@ -2895,3 +2895,8 @@ input[type="checkbox"]:not(.hidden):checked::before {
   font-weight: 800;
   text-align: center;
 }
+
+/* 进度条下面的预估时间（eta.js）：几点开始、预计几点完成、还要多久 */
+.progress-eta { margin: 6px 0 0; font-size: 13px; line-height: 1.5; font-weight: 600; color: var(--ink, #1c2858); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.progress-eta[hidden] { display: none; }
+.home-strip-progress .progress-eta { margin-top: 0; text-align: right; font-size: 12.5px; white-space: normal; }
