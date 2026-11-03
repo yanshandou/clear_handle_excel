@@ -50,7 +50,10 @@ YYMMDD_SUFFIX_PATTERN = re.compile(r"(?<![a-zA-Z\d])\(?(\d{2})(\d{2})(\d{2})\)?[
 # 工具自动生成的工作表（如 自動生成_引数、自動生成_JSON），没有对应原表，精简 Sheet 时默认删除
 AUTO_GENERATED_PREFIXES = ("自動生成", "自动生成")
 # 表名多出的英文词里像临时版本的（サンプル 与 サンプルtest 仍标待定），其余英文词（JSON、CSV、PDF…）算另一张表
-ENGLISH_TEMP_WORDS = {"new", "tmp", "temp", "test", "wk", "work", "draft", "org", "orig", "original", "prev", "ver"}
+ENGLISH_TEMP_WORDS = {
+    "new", "tmp", "temp", "test", "wk", "work", "draft", "org", "orig", "original", "prev", "ver",
+    "old", "bk", "bak", "backup", "copy",
+}
 # 加在表名前面、像临时版本的词（仮一覧、作業用一覧 仍标待定）；其余前缀（精神科基本療養費 与 基本療養費）算另一张表
 TEMP_PREFIX_WORDS = ENGLISH_TEMP_WORDS | {
     "仮", "作業", "作業用", "テスト", "試し", "検証", "検証用", "確認", "確認用", "修正前", "修正後", "変更前", "変更後",
@@ -402,13 +405,14 @@ def _is_different_sheet(prefix: str, suffix: str, ref: str) -> bool:
     - 只在前面多出一段（精神科基本療養費 与 基本療養費、JSONサンプル 与 サンプル）：前缀是限定词，指另一类东西；
       仮/作業用/テスト/new/tmp 这类像临时版本的前缀除外
     - 日文表名多出的部分只是英文词（一覧 与 一覧CSV）；new/tmp/test/work 这类除外
-    后面多出日文（一覧 与 一覧詳細）仍可能是副本或明细，照旧待定。
+    - 前后都多出英文词（vwcmok15 与 DbVwCmok15Mapper，用户 2026-11-03）：把原名包在中间，是另一个对象；英文表名也算
+    后面多出日文（一覧 与 一覧詳細）、英文表名只在后面多出字母（Sheet 与 SheetAB）仍可能是副本或明细，照旧待定。
     """
     if prefix and not suffix:
         return prefix not in TEMP_PREFIX_WORDS
     parts = [p for p in (prefix, suffix) if p]
     return (
-        bool(parts) and not ref.isascii()
+        bool(parts) and (not ref.isascii() or len(parts) == 2)
         and all(re.fullmatch(r"[a-z]{2,}", p) and p not in ENGLISH_TEMP_WORDS for p in parts)
     )
 

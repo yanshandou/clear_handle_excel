@@ -273,6 +273,12 @@ class ContainedSheetTests(unittest.TestCase):
         self.assertEqual(find_contained_sheets(["一覧", "CSV一覧", "一覧PDF"]), [])
         # BIlryouRyouyouhiMeisai_スケジュール取込.xlsx：基本療養費 与 精神科基本療養費 也不是一回事（前面加的是限定词）
         self.assertEqual(find_contained_sheets(["算定仕様", "基本療養費", "精神科基本療養費", "管理療養費"]), [])
+        # vwcmok15_お客様同一建物減算ビュー.xlsx：前后都多出英文词，把原名包在中间，是另一个对象（用户 2026-11-03）
+        self.assertEqual(find_contained_sheets(["vwcmok15", "DbVwCmok15Mapper"]), [])
+        self.assertEqual(find_contained_sheets(["一覧", "CSV一覧PDF"]), [])
+        # 前后夹的是临时版本词、或纯英文表名只在后面多字母，照旧待定
+        self.assertEqual(find_contained_sheets(["vwcmok15", "TestVwCmok15Mapper", "Vwcmok15Mapper"]),
+                         ["TestVwCmok15Mapper", "Vwcmok15Mapper"])
         # 像临时版本的前缀照旧待定
         self.assertEqual(find_contained_sheets(["一覧", "仮一覧", "作業用一覧", "test一覧"]), ["仮一覧", "作業用一覧", "test一覧"])
         # 临时版本的英文词、日文多出部分、纯英文表名照旧待定
