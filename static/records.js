@@ -195,6 +195,7 @@ async function pollRecords() {
     const track = document.getElementById('progressBarFill').parentElement;
     track.classList.toggle('is-done', allDone);
     track.classList.toggle('is-paused', !isRunning);
+    window.ProgressEta?.update('progressBarFill', 'task', pct / 100, isRunning && !allDone);
 
     const filesList = filesOf(data);
     const totalClips = filesList.reduce((acc, f) => acc + Number(f.clip_detected || 0), 0);

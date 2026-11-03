@@ -415,8 +415,9 @@ class WebHandler(BaseHTTPRequestHandler):
                 if isinstance(minutes, bool) or minutes not in batch.SCAN_LIMIT_CHOICES:
                     raise ValueError("单个文件的扫描上限只能选自动或 3、5、10、15 分钟")
                 options["scan_limit_minutes"] = minutes
-            # 扫描：检出的问题全部标色、转人工，不改格子（换行、行高到「按分类处理」示范后学着修）
-            options.update(highlight=batch.highlight_style(payload.get("highlight")))
+            # 扫描：检出的问题全部标色、转人工；切字的格子开自动换行、行高加「字号 × 倍数」，保存（不再自动修复）
+            options.update(highlight=batch.highlight_style(payload.get("highlight")),
+                           grow_ratio=batch.grow_ratio(payload.get("grow_ratio")))
             self._start_job("batch_scan", options)
         elif self.path == "/api/print_layout":
             set_print_layout(payload.get("path"), payload.get("key"), payload.get("direction"))
@@ -546,28 +547,6 @@ class WebHandler(BaseHTTPRequestHandler):
                 if color:
                     options["color"] = color
                 self._start_job(f"batch_{action}", options)
-        elif self.path == "/api/batch/learn_review":
-            # 复核按规律改过的格子：认可 / 不行 / 待确认，只记下来
-            self._send_json({"ok": True, "changed": batch.set_learn_review(payload.get("card_ids"), payload.get("status"))})
-        elif self.path == "/api/batch/learn_revert":
-            # 复核不行的格子改回按规律改之前的样子，再整份复检
-            key = payload.get("category")
-            if not isinstance(key, str) or not key:
-                raise ValueError("请先选一个分类")
-            ids = batch.revert_card_ids(key)
-            if not ids:
-                raise ValueError("这一类没有标成「不行」的格子")
-            self._start_job("batch_revert", {"category": key, "card_ids": ids})
-        elif self.path in {"/api/batch/learn", "/api/batch/apply"}:
-            # 按分类示范学习修复：学一下 = 找出你改过的格子、总结规律；按规律修 = 改这一类剩下的并复检
-            key = payload.get("category")
-            if not isinstance(key, str) or not key:
-                raise ValueError("请先选一个分类")
-            ids = batch.category_card_ids(key)
-            if not ids:
-                raise ValueError("这一类已经没有要处理的格子了")
-            self._start_job("batch_learn" if self.path.endswith("learn") else "batch_apply",
-                            {"category": key, "card_ids": ids})
         elif self.path == "/api/batch/followups/start":
             # 暂停时留着的排队复检 / 提交：现在就开始
             autofix.release_excel()
@@ -694,7 +673,12 @@ class WebHandler(BaseHTTPRequestHandler):
                 autofix.wait_for_writes(15)  # 后台正在保存这个文件时别同时打开
             except ValueError:
                 raise ValueError("后台正在保存 Excel，请几秒后再点") from None
-            self._send_json({"ok": True, "note": open_workbook_in_excel(wb_path, sheet, cell)})
+            note = open_workbook_in_excel(wb_path, sheet, cell)
+            try:
+                batch.note_opened(wb_path)  # 人工处理里这份文件先算「已打开、待复检」
+            except Exception as err:
+                log_msg(f"⚠️ 没能记下已打开 {Path(wb_path).name}：{err}")
+            self._send_json({"ok": True, "note": note})
 
         elif self.path == "/api/autofix/choose":
             gid, index = payload.get("id"), payload.get("index")

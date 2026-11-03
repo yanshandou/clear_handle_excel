@@ -176,19 +176,12 @@ html:has(#largeView[open]) { overflow: hidden; }
 .batch-card-title .batch-cell-link { font-family: Consolas, "Yu Gothic UI", monospace; }
 .repair-filter-buttons { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 10px; }
 
-/* 按分类处理：左边分类列表，右边三步 + 格子清单。点分类只换颜色，不挪位置 */
+/* 按分类处理：左边分类列表，右边两步 + 格子清单。点分类只换颜色，不挪位置 */
 .learn-layout { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 18px; align-items: start; }
 .learn-layout > * { min-width: 0; }
 .learn-list { list-style: none; margin: 0; padding: 0 6px 6px 0; display: flex; flex-direction: column; gap: 6px; }
 .learn-type { margin: 10px 0 2px; font-weight: 800; color: var(--ink, #1c2858); font-size: 14px; }
 .learn-type:first-child { margin-top: 0; }
-.learn-type-chip { display: inline-block; padding: 2px 10px; border: 2px solid var(--ink, #1c2858); border-radius: 6px; font-size: 13.5px; }
-.type-colors { display: inline-flex; flex-wrap: wrap; gap: 8px; }
-.type-color { position: relative; display: inline-flex; align-items: center; cursor: pointer; }
-.batch-highlight .type-color input[type="color"] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; border: 0; padding: 0; }
-.type-color-chip { padding: 4px 10px; border: 2px solid var(--ink, #1c2858); border-radius: 6px; font-size: 12.5px; font-weight: 700; box-shadow: 2px 2px 0 var(--ink, #1c2858); }
-.type-color-chip.is-low { outline: 2px dashed #b42318; outline-offset: 2px; }
-.type-color:focus-within .type-color-chip { outline: 3px solid #1c2858; outline-offset: 2px; }
 .learn-cat { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 8px 10px; border: 2px solid var(--ink, #1c2858);
   border-radius: 10px; background: #fff; color: var(--ink, #1c2858); font: inherit; font-size: 14px; cursor: pointer; box-shadow: 2px 2px 0 var(--ink, #1c2858); }
 .learn-cat:hover { background: var(--purple-soft, #e2eeff); }
@@ -197,10 +190,6 @@ html:has(#largeView[open]) { overflow: hidden; }
 .learn-count { flex: none; min-width: 2.2em; text-align: center; padding: 1px 6px; border: 1.5px solid var(--ink, #1c2858); border-radius: 999px;
   background: #fff; color: var(--ink, #1c2858); font-weight: 800; font-size: 13px; text-shadow: none; -webkit-text-stroke: 0; }
 .learn-badge { flex: none; }
-/* 改完的分类：右边绿圈白勾（同主页卡片做过的步骤），整行不变位置 */
-.learn-done { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: 2px solid var(--ink, #1c2858);
-  border-radius: 50%; background: #15803d; color: #fff; font-size: 13px; font-weight: 900; line-height: 1; text-shadow: none; -webkit-text-stroke: 0; }
-.learn-cat.is-done:not([aria-pressed="true"]) { background: #ecfdf3; }
 .learn-empty { color: var(--ink-3, #56628f); }
 .learn-meta { color: var(--ink-3, #56628f); font-size: 14px; }
 .learn-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin-bottom: 10px; }
@@ -221,31 +210,26 @@ html:has(#largeView[open]) { overflow: hidden; }
 .learn-table th, .learn-table td { padding: 6px 10px; border-bottom: 1px solid var(--line-soft, #dbe4f3); text-align: left; vertical-align: top; color: var(--ink, #1c2858); }
 .learn-table th { position: sticky; top: 0; background: var(--paper, #e9f1fc); font-weight: 800; z-index: 1; }
 .learn-table td:nth-child(3) { white-space: nowrap; }
-.learn-file-no { display: inline-block; min-width: 3.6em; margin-right: 6px; padding: 0 6px; border-radius: 6px; background: var(--paper, #e9f1fc);
-  color: var(--ink, #1c2858); font-weight: 800; font-size: 12.5px; font-variant-numeric: tabular-nums; text-align: center; }
-.learn-table tr.is-current td { background: #fff7d6; }
-.learn-progress { margin: 0 0 12px; padding: 10px 14px; border: 2px solid var(--ink, #1c2858); border-radius: 10px; background: #fff; }
-.learn-progress p { margin: 0 0 8px; color: var(--ink, #1c2858); font-weight: 700; }
 .learn-text { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .learn-state { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; background: var(--paper, #e9f1fc); color: var(--ink, #1c2858); }
-tr[data-state="demo"] .learn-state { background: #1e7a45; color: #fff; }
-tr[data-state="applied"] .learn-state { background: var(--purple-ink, #1f5fc4); color: #fff; }
-tr[data-state="new"] .learn-state { background: #fff4e0; color: #7a4a00; }
+.learn-head-right { display: flex; align-items: center; gap: 14px; }
+.learn-mode { display: inline-flex; border: 2px solid var(--ink, #1c2858); border-radius: 10px; overflow: hidden; box-shadow: 2px 2px 0 var(--ink, #1c2858); }
+.learn-mode-btn { padding: 5px 14px; border: 0; background: #fff; color: var(--ink, #1c2858); font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
+.learn-mode-btn + .learn-mode-btn { border-left: 2px solid var(--ink, #1c2858); }
+.learn-mode-btn[aria-pressed="true"] { background: var(--purple-ink, #1f5fc4); color: #fff; }
+.learn-opened { background: #fff4e0; }
+.learn-opened[aria-pressed="true"] { background: #a35a00; color: #fff; }
+.learn-file .learn-cat-name { overflow-wrap: anywhere; }
+.learn-file-kinds { display: block; margin-top: 2px; font-size: 12px; opacity: .85; }
+.learn-others { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 999px; background: #fff4e0; color: #7a4a00; font-size: 12px; white-space: nowrap; }
+tr[data-state="grown"] .learn-state { background: #fff4e0; color: #7a4a00; }
+tr[data-state="marked"] .learn-state { background: var(--purple-ink, #1f5fc4); color: #fff; }
 
-/* 复核按规律改的格子：修改前 VS 修改后对比卡，单击换色（只换颜色，卡片不挪位置） */
-.learn-review { margin: 0 0 16px; padding: 12px 14px; border: 2px solid var(--ink, #1c2858); border-radius: 12px; background: #fff; }
-.learn-review h4 { margin: 0 0 4px; font-size: 16px; color: var(--ink, #1c2858); }
-.learn-review-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0 12px; }
-.learn-review-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 14px; max-height: 75vh; overflow-y: auto; padding: 4px 8px 8px 4px; }
-.learn-review-card { padding: 10px 12px; border: 3px solid var(--ink, #1c2858); border-radius: 14px; background: #fff; cursor: pointer;
-  box-shadow: 4px 4px 0 var(--ink, #1c2858); transition: background-color .15s, border-color .15s, box-shadow .15s; }
-.learn-review-card:focus-visible { outline: 3px solid #1f5fc4; outline-offset: 3px; }
-.learn-review-card.is-ok { border-color: #1f5fc4; background: #e8f0ff; box-shadow: 4px 4px 0 #1f5fc4; }
-.learn-review-card.is-bad { border-color: #b42318; background: #fdecea; box-shadow: 4px 4px 0 #b42318; }
-.learn-review-card header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 13.5px; color: var(--ink, #1c2858); }
-.learn-review-cell { color: var(--ink-2, #34407a); font-weight: 700; }
-.learn-review-tag { margin-left: auto; padding: 1px 10px; border-radius: 999px; font-weight: 800; font-size: 12.5px; background: #eef2f8; color: #1c2858; }
-.learn-review-card.is-ok .learn-review-tag { background: #1f5fc4; color: #fff; }
-.learn-review-card.is-bad .learn-review-tag { background: #b42318; color: #fff; }
-.learn-review-card .batch-shots img, .learn-review-card .batch-shots .batch-missing { height: 120px; object-fit: contain; }
-.learn-review-note { margin: 8px 0 0; font-size: 13px; color: var(--ink, #1c2858); }
+/* 按问题类型分色：色块（点色块换底色）和分类标题 */
+.learn-type-chip { display: inline-block; padding: 2px 10px; border: 2px solid var(--ink, #1c2858); border-radius: 6px; font-size: 13.5px; }
+.type-colors { display: inline-flex; flex-wrap: wrap; gap: 8px; }
+.type-color { position: relative; display: inline-flex; align-items: center; cursor: pointer; }
+.batch-highlight .type-color input[type="color"] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; border: 0; padding: 0; }
+.type-color-chip { padding: 4px 10px; border: 2px solid var(--ink, #1c2858); border-radius: 6px; font-size: 12.5px; font-weight: 700; box-shadow: 2px 2px 0 var(--ink, #1c2858); }
+.type-color-chip.is-low { outline: 2px dashed #b42318; outline-offset: 2px; }
+.type-color:focus-within .type-color-chip { outline: 3px solid #1c2858; outline-offset: 2px; }
