@@ -909,9 +909,9 @@ class ScanOnlyTests(unittest.TestCase):
         self.assertEqual(self.card("A5")["color"], "green")
         self.excel.Workbooks.Open.assert_not_called()
 
-    def test_run_scan_marks_cells_and_grows_once_with_chosen_ratio(self):
+    def test_run_scan_marks_cells_without_changing_rows(self):
         self.add_item("A5")
-        self.wf.STATE["job"]["options"] = {"folder": str(self.root), "grow_ratio": 1.2,
+        self.wf.STATE["job"]["options"] = {"folder": str(self.root),
                                            "highlight": {"fill": "#6D28D9", "font": "#FFFFFF"}}
         session = Mock()
         session.app.return_value = self.excel
@@ -921,9 +921,9 @@ class ScanOnlyTests(unittest.TestCase):
                 patch.object(self.wf.pythoncom, "CoInitialize", create=True), \
                 patch.object(self.wf.pythoncom, "CoUninitialize", create=True), \
                 patch.object(batch, "init_execution_batch"), patch.object(batch, "finish_execution_batch"), \
-                patch.object(batch, "_refresh"), patch.object(batch, "_grow_and_wrap", return_value={}) as grow:
+                patch.object(batch, "_refresh"):
             self.assertEqual(batch.run(), [self.path])
-        grow.assert_called_once_with(self.excel, self.path, 1.2)
+        self.assertNotIn("grown", self.card("A5"))
         self.assertEqual(self.card("A5")["color"], "yellow")
         self.assertEqual(self.sheet.shown("A5")[0], batch._excel_color("#6D28D9"))
         self.assertIn(self.path, self.wf.STATE["job"]["completed"])
