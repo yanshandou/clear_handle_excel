@@ -43,7 +43,7 @@ class WorkTaskTests(unittest.TestCase):
         p = PureWindowsPath(r"D:\Users\s.go\OneDrive - 日本コンピュータコンサルタント\介舟ファミリー\20基本設計\10DB\12.ビュー定義書")
         self.assertEqual(work_task.relative_part(p), ["介舟ファミリー", "20基本設計", "10DB", "12.ビュー定義書"])
         self.assertEqual(work_task.relative_part(PureWindowsPath(r"E:\共有\仕様書")), ["仕様書"])
-        self.assertEqual(str(work_task.default_work_root(p)), r"D:\clear_handle_excel")
+        self.assertEqual(work_task.default_work_root(), Path.home() / "Desktop" / "handle-excel")
 
     def test_derive_paths_and_rejects_onedrive_root(self):
         paths = work_task.derive(str(self.shared), str(self.work_root))

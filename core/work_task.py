@@ -3,12 +3,12 @@
 一个任务对应共享文件夹里的一个文件夹（连子文件夹一起）。例：
 
     共享  D:\\Users\\s.go\\OneDrive - 会社\\介舟ファミリー\\20基本設計\\10DB\\12.ビュー定義書
-    参考  D:\\clear_handle_excel\\参考\\介舟ファミリー\\20基本設計\\10DB\\12.ビュー定義書
-    处理  D:\\clear_handle_excel\\处理\\介舟ファミリー\\20基本設計\\10DB\\12.ビュー定義書
+    参考  D:\\Users\\s.go\\Desktop\\handle-excel\\参考\\介舟ファミリー\\20基本設計\\10DB\\12.ビュー定義書
+    处理  D:\\Users\\s.go\\Desktop\\handle-excel\\处理\\介舟ファミリー\\20基本設計\\10DB\\12.ビュー定義書
 
 - 「OneDrive - 公司名」后面那一段原样接到工作根目录的「参考」「处理」后面，目录结构和共享一样；
   路径里没有 OneDrive 时只用共享文件夹自己的名字。
-- 工作根目录默认是共享路径所在盘的根目录下 clear_handle_excel（网络路径时放用户文件夹下），可以改；
+- 工作根目录默认是桌面下的 handle-excel（%USERPROFILE%\\Desktop\\handle-excel），可以改；
   不能放进 OneDrive（会被同步给别人），也不能放进共享文件夹里面。
 - 参考 = 拿下来的原件，不改，修复颜色 / 引用 / 隐藏页的「原始备份」用它；处理 = 1～8 步改的地方。
 - 拿文件、上传都用 core/distribute.py 的「拿最新版」「复制」，覆盖前检查别人改过没有。
@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import json
-import re
 import threading
 import uuid
 from datetime import datetime
@@ -28,7 +27,7 @@ from typing import Any
 from core import debug_log, storage
 
 SNAPSHOT = "work_tasks"
-APP_DIR = "clear_handle_excel"
+APP_DIR = "handle-excel"
 REFERENCE, WORK, FETCH_BACKUP = "参考", "处理", "拿最新版前的备份"
 _LOCK = threading.RLock()
 
@@ -51,11 +50,9 @@ def relative_part(shared: Path) -> list[str]:
     return rel or [shared.name or "共享"]
 
 
-def default_work_root(shared: Path) -> Path:
-    drive = shared.drive
-    if re.fullmatch(r"[A-Za-z]:", drive or ""):
-        return type(shared)(drive + "\\") / APP_DIR
-    return Path.home() / APP_DIR
+def default_work_root(shared: Path | None = None) -> Path:
+    """默认放在桌面的 handle-excel 下（用户 2026-11-03 定：D:\\Users\\<用户名>\\Desktop\\handle-excel，用户名按当前用户）"""
+    return Path.home() / "Desktop" / APP_DIR
 
 
 def derive(shared_text: Any, work_root_text: Any = "", *, must_exist: bool = True) -> dict[str, Any]:
