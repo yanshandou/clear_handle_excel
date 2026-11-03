@@ -95,11 +95,12 @@ MIME_TYPES = {
 }
 
 
-def _require_folder(payload: dict) -> str:
+def _require_folder(payload: dict, role: str = "work") -> str:
+    """1～8 步填的文件夹：必须是当前任务的处理文件夹（原始备份必须是参考文件夹），见 work_task.require_folder"""
     folder = payload.get("folder")
     if not isinstance(folder, str) or not folder.strip():
-        raise ValueError("请输入 Excel 文件夹路径")
-    return folder
+        raise ValueError("请输入原始备份文件夹" if role == "reference" else "请输入 Excel 文件夹路径")
+    return work_task.require_folder(folder, role)
 
 
 class WebHandler(BaseHTTPRequestHandler):
@@ -179,7 +180,7 @@ class WebHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/pdf_review":
             folder = parse_qs(parsed.query).get("folder", [""])[0]
             try:
-                self._send_json({"ok": True, **pdf_review.list_pdfs(folder)})
+                self._send_json({"ok": True, **pdf_review.list_pdfs(_require_folder({"folder": folder}))})
             except ValueError as err:
                 self._send_json({"ok": False, "error": str(err)}, status=400)
         elif parsed.path == "/api/pdf_review/process":
@@ -435,7 +436,8 @@ class WebHandler(BaseHTTPRequestHandler):
             except ValueError:
                 raise ValueError("后台正在保存 Excel，请几秒后再点") from None
             self._send_json({"ok": True, **pdf_review.open_at(payload.get("pdf") or "", payload.get("page"),
-                                                                payload.get("pages"), payload.get("old_folder") or "")})
+                                                                payload.get("pages"), _require_folder({"folder": payload["old_folder"]}, "reference")
+                                                                if payload.get("old_folder") else "")})
         elif self.path == "/api/pdf_review/process":
             pdf_review.process(payload.get("red"), payload.get("yellow"))
             self._send_json({"ok": True})
@@ -446,7 +448,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 raise ValueError("后台正在保存 Excel，请几秒后再点") from None
             self._send_json({"ok": True, **pdf_review.regenerate(payload.get("pdf"), payload.get("force", False))})
         elif self.path == "/api/hidden_repair/run":
-            hidden_repair.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}), payload.get("options"))
+            hidden_repair.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}, "reference"), payload.get("options"))
             self._send_json({"ok": True})
         elif self.path == "/api/bl_links/scan":
             bl_links.start(_require_folder(payload))
@@ -472,10 +474,10 @@ class WebHandler(BaseHTTPRequestHandler):
             bl_links.clear()
             self._send_json({"ok": True})
         elif self.path == "/api/link_repair/run":
-            link_repair.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}))
+            link_repair.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}, "reference"))
             self._send_json({"ok": True})
         elif self.path == "/api/batch/find_marks/run":
-            mark_finder.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}), payload.get("colors"))
+            mark_finder.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}, "reference"), payload.get("colors"))
             self._send_json({"ok": True})
         elif self.path == "/api/link_repair":
             link_repair.start(_require_folder(payload))

@@ -13,7 +13,16 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from core import excel_ops, fix_images, storage
+from core import excel_ops, fix_images, storage, work_task
+
+
+def setUpModule():
+    # 这些测试直接用临时文件夹调接口，不走「新任务」
+    work_task.ENFORCE = False
+
+
+def tearDownModule():
+    work_task.ENFORCE = True
 
 
 class FakeSheet:
