@@ -1150,11 +1150,8 @@ async function saveColors() {
   }
 }
 
-// Excel 里的标记颜色：当前配色和历史自定义配色都记在本机浏览器
-let highlight = { fill: HIGHLIGHT_PRESETS[0].fill, font: HIGHLIGHT_PRESETS[0].font };
-try {
-  highlight = normalizeHighlight(JSON.parse(localStorage.getItem(HIGHLIGHT_KEY) || 'null')) || highlight;
-} catch (_) {}
+// Excel 里的标记颜色：每种问题一种颜色（用户 2026-11-03 定），一格有几种问题用「多种问题」的颜色。
+// 配色记在本机浏览器；改过的颜色也记进历史，独立的「修复颜色」页面会一并检查
 let highlightHistory = [];
 try {
   const saved = JSON.parse(localStorage.getItem(HIGHLIGHT_HISTORY_KEY) || '[]');
@@ -1162,13 +1159,21 @@ try {
     .filter(color => !HIGHLIGHT_PRESETS.some(p => sameHighlight(p, color)));
 } catch (_) {}
 function rememberHighlight(color) {
-  if (HIGHLIGHT_PRESETS.some(p => sameHighlight(p, color))) return;
+  if (!color || HIGHLIGHT_PRESETS.some(p => sameHighlight(p, color))) return;
   highlightHistory = uniqueHighlights([color, ...highlightHistory]);
   try { localStorage.setItem(HIGHLIGHT_HISTORY_KEY, JSON.stringify(highlightHistory)); } catch (_) {}
 }
-// 升级时保留浏览器里已经保存的当前自定义配色。
-rememberHighlight(highlight);
+// 升级时保留浏览器里旧版的单一配色（记进历史，修复颜色页还认得）
+try { rememberHighlight(normalizeHighlight(JSON.parse(localStorage.getItem(HIGHLIGHT_KEY) || 'null'))); } catch (_) {}
 
+const defaultTypeColors = () => Object.fromEntries(TYPE_HIGHLIGHTS.map(t => [t.type, { fill: t.fill, font: t.font }]));
+let typeColors = defaultTypeColors();
+try {
+  const saved = JSON.parse(localStorage.getItem(TYPE_HIGHLIGHT_KEY) || 'null') || {};
+  for (const t of TYPE_HIGHLIGHTS) typeColors[t.type] = normalizeHighlight(saved[t.type]) || typeColors[t.type];
+} catch (_) {}
+// 问题类型 → Excel 里那种颜色
+function typeColorOf(type) { return typeColors[type] || typeColors.multi; }
 // 清除标记结果中的文件名可直接打开 Excel。
 function fileNameLink(file, folder) {
   return excelLinkHtml(esc(file.name), { file: file.name, folder });
@@ -1181,40 +1186,46 @@ function luminance(hex) {
 }
 const contrastRatio = (a, b) => { const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
 
+// 换了底色时字色自动选白或黑里对比度高的；「多种问题」默认黑底黄字
+function fontFor(fill) {
+  return contrastRatio(fill, '#FFFFFF') >= contrastRatio(fill, '#000000') ? '#FFFFFF' : '#000000';
+}
 function renderHighlight() {
-  $('highlightFill').value = highlight.fill.toLowerCase();
-  $('highlightFont').value = highlight.font.toLowerCase();
-  $('highlightSample').style.background = highlight.fill;
-  $('highlightSample').style.color = highlight.font;
-  $('highlightPresets').innerHTML = HIGHLIGHT_PRESETS.map((p, i) => `<button type="button" class="batch-highlight-preset" data-preset="${i}" aria-pressed="${p.fill === highlight.fill && p.font === highlight.font}" style="background:${p.fill};color:${p.font}">${esc(p.label)}</button>`).join('');
-  $('highlightHistoryRow').classList.toggle('hidden', !highlightHistory.length);
-  $('highlightHistory').innerHTML = highlightHistory.map((color, i) => `<button type="button" class="batch-highlight-preset" data-history="${i}" aria-pressed="${sameHighlight(color, highlight)}" title="底色 ${color.fill}，字色 ${color.font}；点击使用" style="background:${color.fill};color:${color.font}">底 ${color.fill} / 字 ${color.font}</button>`).join('');
-  const ratio = contrastRatio(highlight.fill, highlight.font);
-  $('highlightContrast').textContent = `对比度 ${ratio.toFixed(1)}:1${ratio < 4.5 ? '，偏低，字可能看不清' : ''}`;
-  $('highlightContrast').classList.toggle('is-low', ratio < 4.5);
+  $('typeColors').innerHTML = TYPE_HIGHLIGHTS.map(t => {
+    const color = typeColors[t.type];
+    const low = contrastRatio(color.fill, color.font) < 4.5;
+    return `<label class="type-color" title="${esc(t.label)}：底色 ${color.fill}，字色 ${color.font}；点色块换底色">`
+      + `<input type="color" data-type-color="${t.type}" value="${color.fill.toLowerCase()}" aria-label="${esc(t.label)}的底色">`
+      + `<span class="type-color-chip${low ? ' is-low' : ''}" style="background:${color.fill};color:${color.font}">${esc(t.label)}</span></label>`;
+  }).join('');
+  const changed = TYPE_HIGHLIGHTS.some(t => !sameHighlight(typeColors[t.type], t));
+  $('typeColorsReset').classList.toggle('hidden', !changed);
 }
-
-function setHighlight(next, remember = true) {
-  const color = normalizeHighlight(next);
-  if (!color) return;
-  highlight = color;
-  try { localStorage.setItem(HIGHLIGHT_KEY, JSON.stringify(highlight)); } catch (_) {}
-  if (remember) rememberHighlight(highlight);
+function typeColorsChanged() {
   renderHighlight();
+  if (typeof renderCategories === 'function') { categoryRenderKey = ''; renderCategories(); }
 }
-$('highlightPresets').addEventListener('click', event => {
-  const button = event.target.closest('[data-preset]');
-  if (button) setHighlight(HIGHLIGHT_PRESETS[Number(button.dataset.preset)]);
-});
-$('highlightHistory').addEventListener('click', event => {
-  const button = event.target.closest('[data-history]');
-  if (button) setHighlight(highlightHistory[Number(button.dataset.history)]);
-});
+function setTypeColor(type, fill, remember = true) {
+  const color = normalizeHighlight({ fill, font: fontFor(fill) });
+  if (!color || !typeColors[type]) return;
+  const preset = TYPE_HIGHLIGHTS.find(t => t.type === type);
+  typeColors[type] = color.fill === preset.fill ? { fill: preset.fill, font: preset.font } : color;
+  try { localStorage.setItem(TYPE_HIGHLIGHT_KEY, JSON.stringify(typeColors)); } catch (_) {}
+  if (remember) rememberHighlight(typeColors[type]);
+  typeColorsChanged();
+}
 // 拖动取色器时只预览，确认选择后再记历史，避免把每个过渡颜色都存下来。
-for (const [id, part] of [['highlightFill', 'fill'], ['highlightFont', 'font']]) {
-  $(id).addEventListener('input', event => setHighlight({ ...highlight, [part]: event.target.value }, false));
-  $(id).addEventListener('change', event => setHighlight({ ...highlight, [part]: event.target.value }));
+for (const [name, remember] of [['input', false], ['change', true]]) {
+  $('typeColors').addEventListener(name, event => {
+    const type = event.target?.dataset?.typeColor;
+    if (type) setTypeColor(type, event.target.value, remember);
+  });
 }
+$('typeColorsReset').addEventListener('click', () => {
+  typeColors = defaultTypeColors();
+  try { localStorage.setItem(TYPE_HIGHLIGHT_KEY, JSON.stringify(typeColors)); } catch (_) {}
+  typeColorsChanged();
+});
 
 // 自动修复已去掉（用户 2026-11-02）：旧版本存的设置一并清掉
 try { localStorage.removeItem('clear_handle_excel.fixErrorTypes'); localStorage.removeItem('clear_handle_excel.highlightAuto'); } catch (_) {}
@@ -1337,7 +1348,7 @@ $('startBtn').addEventListener('click', async () => {
   if (!$('folderInput').value.trim()) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
   const ratio = $('growRatio').value;
   if (!(await appConfirm(`检出的问题全部转为黄色人工项，并在原 Excel 里给问题单元格标色（复检通过或提交蓝 / 绿后自动去掉）。\n切字的格子（边框压线、文字截断、超出裁剪框）开自动换行，按文字长短估算行数补够行高，再加「字号 × ${ratio}」，保存后整份复检一遍：通过的去掉标色，没通过的不再改，交给人工。\n\n确定开始扫描吗？`, { title: '开始扫描', okText: '开始扫描' }))) return;
-  await startBatch({ highlight: { ...highlight }, grow_ratio: Number(ratio) });
+  await startBatch({ highlight: { types: typeColors }, grow_ratio: Number(ratio) });
 });
 $('unhighlightBtn').addEventListener('click', async () => {
   if (await appConfirm(`去掉当前文件夹 ${batchState.highlighted || 0} 个单元格的标记颜色？\n标记是程序加的条件格式，只删这些规则；单元格本身的颜色和表里原有的条件格式都不动。标成橙黄色的工作表标签改回原来的颜色。\n需要先在 Excel 里保存并关闭这些文件。之后提交、复检也不再自动标色，重新开始处理时才按设置标色。`, { title: '清除 Excel 标记颜色', okText: '去掉标记' })) await startJob('/api/batch/unhighlight');

@@ -44,6 +44,18 @@ XL_PATTERN_NONE, XL_PATTERN_SOLID = -4142, 1
 # 只扫描模式在原 Excel 里给问题单元格标的颜色（可在页面上改）。
 # 默认洋红底白字：业务表格几乎不用这个颜色，一眼就能看到，白字对比度约 6:1；黄色已有别人在用
 DEFAULT_HIGHLIGHT = {"fill": "#C0007A", "font": "#FFFFFF"}
+# 每种问题一种颜色（用户 2026-11-03 定），打开 Excel 就知道是哪种问题；一格有几种问题用「多种问题」的颜色。
+# 都是页面原来的预设色，白字对比度都在 4.5:1 以上；「修复颜色」「查找残留标记色」也认得这些颜色
+MULTI_TYPE = "multi"
+DEFAULT_TYPE_HIGHLIGHT = {
+    autofix.ERROR_TYPE_BORDER_CLIP: {"fill": "#C0007A", "font": "#FFFFFF"},  # 洋红
+    autofix.ERROR_TYPE_TEXT_TRUNCATED: {"fill": "#1649CC", "font": "#FFFFFF"},  # 宝蓝
+    autofix.ERROR_TYPE_BOX_OVERFLOW: {"fill": "#006633", "font": "#FFFFFF"},  # 墨绿
+    autofix.ERROR_TYPE_PAGE_BREAK_CUT: {"fill": "#C2410C", "font": "#FFFFFF"},  # 橙红
+    autofix.ERROR_TYPE_HASH_OVERFLOW: {"fill": "#6D28D9", "font": "#FFFFFF"},  # 深紫
+    autofix.ERROR_TYPE_TEXT_MISSING: {"fill": "#333333", "font": "#FFFFFF"},  # 深灰
+    MULTI_TYPE: {"fill": "#000000", "font": "#FFFF00"},  # 纯黑底黄字
+}
 SCAN_ONLY_MESSAGE = "已在 Excel 中标色，请人工修改并保存后复检"
 
 
@@ -61,21 +73,67 @@ def _tabs() -> dict[str, dict[str, dict]]:
     return _data().setdefault("tab_marks", {})
 
 
-def highlight_style(value: Any) -> dict[str, str]:
-    """页面传来的 {"fill": "#RRGGBB", "font": "#RRGGBB"}；缺了或格式不对用默认颜色"""
-    style = dict(DEFAULT_HIGHLIGHT)
-    if isinstance(value, dict):
-        for key in style:
-            color = value.get(key)
-            if isinstance(color, str) and len(color) == 7 and color[0] == "#":
-                try:
-                    int(color[1:], 16)
-                except ValueError:
-                    continue
-                style[key] = color.upper()
-    if style["fill"] == style["font"]:
-        raise ValueError("标记的底色和字色不能相同")
+def _hex_color(value: Any) -> str | None:
+    if isinstance(value, str) and len(value) == 7 and value[0] == "#":
+        try:
+            int(value[1:], 16)
+        except ValueError:
+            return None
+        return value.upper()
+    return None
+
+
+def highlight_style(value: Any) -> dict[str, Any]:
+    """页面传来的 {"types": {问题类型: {"fill": "#RRGGBB", "font": "#RRGGBB"}}}（旧版只有 fill / font 一种颜色）。
+    缺了或格式不对用默认颜色。返回 {"fill", "font", "types"}：fill / font 是旧字段，留着兼容，按「边框压线」的颜色"""
+    given = value.get("types") if isinstance(value, dict) and isinstance(value.get("types"), dict) else {}
+    types: dict[str, dict[str, str]] = {}
+    for kind, default in DEFAULT_TYPE_HIGHLIGHT.items():
+        color = dict(default)
+        if isinstance(given.get(kind), dict):
+            for part in color:
+                color[part] = _hex_color(given[kind].get(part)) or color[part]
+        if color["fill"] == color["font"]:
+            raise ValueError(f"「{type_color_label(kind)}」的标记底色和字色不能相同")
+        types[kind] = color
+    style: dict[str, Any] = dict(DEFAULT_HIGHLIGHT)
+    if isinstance(value, dict) and not given:
+        # 旧版页面只传一种颜色：按问题分色用默认颜色，fill / font 照旧记下
+        for part in style:
+            style[part] = _hex_color(value.get(part)) or style[part]
+        if style["fill"] == style["font"]:
+            raise ValueError("标记的底色和字色不能相同")
+    else:
+        style.update(types[autofix.ERROR_TYPE_BORDER_CLIP])
+    style["types"] = types
     return style
+
+
+def type_color_label(kind: str) -> str:
+    return "多种问题" if kind == MULTI_TYPE else autofix.error_type_label(kind)
+
+
+def _card_error_types(card: dict) -> list[str]:
+    """这一格的问题类型，按 CELL_ERROR_SPECS 的顺序排好、去重"""
+    order = list(autofix.CELL_ERROR_SPECS)
+    types = [t for t in card.get("error_types") or [] if t in autofix.CELL_ERROR_SPECS]
+    if not types:
+        types = [autofix.item_error_type(p) for p in card.get("problems") or []] or [autofix.ERROR_TYPE_BORDER_CLIP]
+    return sorted(dict.fromkeys(types), key=lambda t: order.index(t) if t in order else len(order))
+
+
+def _mark_type(card: dict) -> str:
+    """这一格按哪种问题上色：只有一种问题就是那种，几种问题是 multi"""
+    types = _card_error_types(card)
+    return types[0] if len(types) == 1 else MULTI_TYPE
+
+
+def _mark_color(style: dict | None, card: dict) -> dict[str, int]:
+    """这一格的标记颜色（Excel 的 BGR 整数）。旧版记下的样式没有 types，也按默认的分色"""
+    kind = _mark_type(card)
+    types = (style or {}).get("types") or DEFAULT_TYPE_HIGHLIGHT
+    color = types.get(kind) or DEFAULT_TYPE_HIGHLIGHT[kind]
+    return {"fill": _excel_color(color["fill"]), "font": _excel_color(color["font"])}
 
 
 def _excel_color(hex_color: str) -> int:
@@ -2394,17 +2452,21 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
         cards = [c for c in data["cards"].values() if c["wb_path"] == path]
         want = set() if clear else _wanted_marks(path)
         have = {cid for cid, m in marks.items() if m["path"] == path}
+        # 已经标了、颜色和这格现在该用的不一样（问题类型变了、换了配色、旧版只有一种颜色）：去掉重标
+        by_id = {c["id"]: c for c in cards}
+        recolor = {cid for cid in want & have if _is_rule(marks[cid])
+                   and {k: marks[cid].get(k) for k in ("fill", "font")} != _mark_color(style, by_id[cid])}
         # 没确认存进文件的记录（上次标色被打断，或旧版本没记这一项）：打开文件看一眼标记还在不在
         unsure = sorted(cid for cid in have if not marks[cid].get("saved"))
-        add = [c for c in cards if c["id"] in want - have]
-        remove = sorted(have - want)
+        add = [c for c in cards if c["id"] in (want - have) | recolor]
+        remove = sorted((have - want) | recolor)
         tabs_stale = _tabs_stale(path, {marks[cid]["sheet"] for cid in have if cid not in remove}
                                  | {c["sheet_name"] for c in add})
     if not add and not remove and not unsure and not tabs_stale:
         return
     _check_file(path)
     debug_log.event("🎨 同步标色", 文件=Path(path).name, 清除=clear, 要标=len(add), 要去掉=len(remove),
-                    待核对=len(unsure), 标签要核对=tabs_stale, 样式=style or "-")
+                    待核对=len(unsure), 换色=len(recolor), 标签要核对=tabs_stale, 样式=style or "-")
     app = excel_for()
     book = open_workbook_checked(app, str(Path(path).resolve()), UpdateLinks=0)
     added: dict[str, dict] = {}
@@ -2447,11 +2509,13 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                 wf.log_msg(f"⚠️ {book_name} / {marks[cid]['sheet']}!{marks[cid]['addr']} 未能去掉标记，下次再试："
                            f"{drop_failed[tag]}")
                 note(marks[cid], "failed", f"删不掉标记规则（{drop_failed[tag]}），工作表可能受保护")
-            else:
+            elif cid not in recolor:
                 unmarked += 1  # 规则被人手动删掉的也算：本来就没东西要清
                 note(marks[cid], "ok", "已去掉标记" if tag in dropped else "标记规则已被删掉（或格子已删），不用清")
             debug_log.event("🧽 去掉标记", 位置=f"{marks[cid]['sheet']}!{marks[cid]['addr']}", 标识=tag,
                             条数=dropped.get(tag, 0), 出错=drop_failed.get(tag, "-"))
+        if recolor & set(stuck):  # 旧颜色的规则删不掉：先不重标，免得一格两条规则
+            add = [c for c in add if c["id"] not in stuck]
         for tag, count in dropped.items():
             if tag not in ours:
                 leftovers[tag] = count
@@ -2509,8 +2573,8 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                 # 分页切开的卡片是整个合并区域（A10:H12），按左上角找合并区域
                 areas[card["id"]] = area = sheet.Range(card["cell_addr"].split(":")[0]).MergeArea
                 added[card["id"]] = {"path": card["wb_path"], "sheet": card["sheet_name"], "addr": str(area.Address),
-                                     "tag": _mark_name(card["id"]), "fill": _excel_color(style["fill"]),
-                                     "font": _excel_color(style["font"])}
+                                     "tag": _mark_name(card["id"]), "type": _mark_type(card),
+                                     **_mark_color(style, card)}
             except Exception as err:
                 failed[card["id"]] = why(card["sheet_name"], err)
                 debug_log.event("❌ 标色失败", 位置=f"{card['sheet_name']}!{card.get('cell_addr')}", 原因=err)
@@ -2603,7 +2667,7 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
         book.Close(SaveChanges=False)
     with wf.STATE_LOCK:
         for cid in remove:
-            if cid not in stuck:
+            if cid not in stuck and cid not in added:  # 换色的格子去掉旧规则后又标上了新的
                 marks.pop(cid, None)
         for cid, error in failed.items():
             card = data["cards"].get(cid)
@@ -2611,6 +2675,9 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                 card["message"] = f"未能在 Excel 中标色（{error}），请按截图查找后人工处理"
         wf._persist_state()
     parts = [f"标色 {len(added)} 格"] if added else []
+    recolored = len(recolor & set(added))
+    if recolored:
+        parts[0] += f"（其中 {recolored} 格换成这种问题的颜色）"
     if unmarked:
         parts.append(f"去掉标记 {unmarked} 格")
     if leftovers:

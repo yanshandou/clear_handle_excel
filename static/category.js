@@ -100,7 +100,8 @@ function categoryListOnlyHtml(cats, current) {
   let lastType = '';
   return cats.map(cat => {
     const typeLabel = cat.label.split(' · ')[0];
-    const head = cat.type !== lastType ? `<li class="learn-type" aria-hidden="true">${esc(typeLabel)}</li>` : '';
+    const color = typeColorOf(cat.type);
+    const head = cat.type !== lastType ? `<li class="learn-type" aria-hidden="true"><span class="learn-type-chip" style="background:${color.fill};color:${color.font}" title="Excel 里这种问题的标记颜色">${esc(typeLabel)}</span></li>` : '';
     lastType = cat.type;
     const rest = cat.label.split(' · ').slice(1).join(' · ') || typeLabel;
     return `${head}<li><button type="button" class="learn-cat" data-learn-cat="${esc(cat.key)}" aria-pressed="${cat === current}">`

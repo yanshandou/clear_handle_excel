@@ -7,6 +7,9 @@ from unittest.mock import Mock, patch
 from core import batch, fix_images, reporter, storage, workflow
 
 
+
+TRUNCATED_FILL = "#1649CC"  # 测试里的问题项多是隐藏截断（文字截断）：按问题分色时用宝蓝
+
 class FakeCell:
     def __init__(self, addr, pattern=-4142, color=16777215, font=0):
         self.Address = addr
@@ -230,7 +233,7 @@ class ScanOnlyTests(unittest.TestCase):
             card = self.card(addr)
             self.assertEqual((card["color"], card["manual"], card["finalized"], card["waiting"]),
                              ("yellow", True, True, False))
-            self.assertEqual(self.sheet.shown(addr), (batch._excel_color("#C0007A"), batch._excel_color("#FFFFFF")))
+            self.assertEqual(self.sheet.shown(addr), (batch._excel_color(TRUNCATED_FILL), batch._excel_color("#FFFFFF")))
             # 单元格本身的颜色不动，标记是条件格式规则
             self.assertEqual(self.sheet.cell(addr).Interior.Pattern, batch.XL_PATTERN_NONE)
         rule = self.sheet.rules[0]
@@ -243,11 +246,36 @@ class ScanOnlyTests(unittest.TestCase):
 
     def test_custom_colors_and_validation(self):
         self.add_item("A5")
-        self.scan({"fill": "#1d4ed8", "font": "#ffff00"})
+        self.scan({"types": {"text_truncated": {"fill": "#1d4ed8", "font": "#ffff00"}}})
         self.assertEqual(self.sheet.shown("A5"), (batch._excel_color("#1D4ED8"), 0x00FFFF))
         with self.assertRaises(ValueError):
+            batch.highlight_style({"types": {"border_clip": {"fill": "#000000", "font": "#000000"}}})
+        with self.assertRaises(ValueError):
             batch.highlight_style({"fill": "#000000", "font": "#000000"})
-        self.assertEqual(batch.highlight_style({"fill": "red"}), batch.DEFAULT_HIGHLIGHT)
+        style = batch.highlight_style({"fill": "red"})
+        self.assertEqual({k: style[k] for k in ("fill", "font")}, batch.DEFAULT_HIGHLIGHT)
+        self.assertEqual(style["types"], batch.DEFAULT_TYPE_HIGHLIGHT)
+
+    def test_each_problem_type_gets_its_own_color_and_several_types_get_the_multi_color(self):
+        self.add_item("A5")  # 隐藏截断 → 文字截断
+        self.add_item("B5", kind="clip")  # 压线
+        self.add_item("C5", kind="clip")
+        self.add_item("C5x", kind="hidden", cell_addr="C5")  # 同一格又有截断：多种问题
+        self.scan()
+        color = lambda kind: tuple(batch._excel_color(batch.DEFAULT_TYPE_HIGHLIGHT[kind][p]) for p in ("fill", "font"))
+        self.assertEqual(self.sheet.shown("A5"), color("text_truncated"))
+        self.assertEqual(self.sheet.shown("B5"), color("border_clip"))
+        self.assertEqual(self.sheet.shown("C5"), color("multi"))
+
+    def test_marks_in_an_old_single_color_are_recolored_by_problem_type(self):
+        self.add_item("A5")
+        self.scan()
+        mark = next(iter(batch._marks().values()))
+        mark.update(fill=batch._excel_color("#C0007A"))  # 旧版：所有问题一种洋红色
+        batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertEqual(self.sheet.shown("A5")[0], batch._excel_color(TRUNCATED_FILL))
+        self.assertEqual(len(self.sheet.rules), 1)  # 旧颜色的规则去掉了，只留一条
+        self.assertEqual(next(iter(batch._marks().values()))["fill"], batch._excel_color(TRUNCATED_FILL))
 
     def test_recheck_pass_restores_original_colors_but_keeps_user_changes(self):
         self.sheet.cells["$A$5"] = FakeCell("$A$5", pattern=1, color=0xCCFFCC, font=0x0000FF)
@@ -291,7 +319,7 @@ class ScanOnlyTests(unittest.TestCase):
         self.assertIsNotNone(self.sheet.shown("A5"))  # 文件里还是标着的
         self.assertEqual(seen["rules"], [mine])  # 检测时只剩表里原有的规则
         batch._sync_highlights(lambda: self.excel, self.path)
-        marked = (batch._excel_color("#C0007A"), batch._excel_color("#FFFFFF"))
+        marked = (batch._excel_color(TRUNCATED_FILL), batch._excel_color("#FFFFFF"))
         self.assertTrue(self.card("A5")["dismissed"])
         self.assertIsNone(self.sheet.shown("A5"))
         self.assertEqual(self.sheet.shown("B5"), marked)
@@ -306,11 +334,11 @@ class ScanOnlyTests(unittest.TestCase):
         self.add_item("B5")
         self.scan()
         self.assertEqual(self.sheet.rules[-1], mine)
-        self.assertEqual(self.sheet.shown("A5")[0], batch._excel_color("#C0007A"))  # 盖住原有规则
+        self.assertEqual(self.sheet.shown("A5")[0], batch._excel_color(TRUNCATED_FILL))  # 盖住原有规则
         self.card("A5").update(color="blue", dismissed=True)
         batch._sync_highlights(lambda: self.excel, self.path)
         self.assertEqual(self.sheet.shown("A5"), (0x00FFFF, None))  # 原有规则又露出来
-        self.assertEqual(self.sheet.shown("B5")[0], batch._excel_color("#C0007A"))
+        self.assertEqual(self.sheet.shown("B5")[0], batch._excel_color(TRUNCATED_FILL))
         self.assertEqual(len(self.sheet.rules), 2)
         self.assertEqual(list(batch._marks()), [self.card("B5")["id"]])
 
@@ -661,7 +689,7 @@ class ScanOnlyTests(unittest.TestCase):
         self.sheet.cells["$A$5"] = FakeCell("$A$5", font=None)
         self.add_item("A5")
         self.scan()
-        self.assertEqual(self.sheet.shown("B5")[0], batch._excel_color("#C0007A"))  # 合并格整块一条规则
+        self.assertEqual(self.sheet.shown("B5")[0], batch._excel_color(TRUNCATED_FILL))  # 合并格整块一条规则
         self.assertEqual(len(self.sheet.rules), 1)
         self.assertIsNone(self.sheet.cell("A5").Font.Color)  # 单元格本身的字色不动
         self.card("A5").update(dismissed=True)
@@ -719,7 +747,7 @@ class ScanOnlyTests(unittest.TestCase):
         self.book.Save.side_effect = None
         with patch.object(batch.wf, "log_msg") as log:
             self.scan()
-        self.assertEqual(self.sheet.shown("A5")[0], batch._excel_color("#C0007A"))
+        self.assertEqual(self.sheet.shown("A5")[0], batch._excel_color(TRUNCATED_FILL))
         self.assertTrue(next(iter(batch._marks().values()))["saved"])
         self.assertTrue(any("没有存进文件" in c.args[0] for c in log.call_args_list))
         self.assertTrue(batch.snapshot()["cards"][0]["highlighted"])
@@ -893,7 +921,7 @@ class ScanOnlyTests(unittest.TestCase):
         self.use_named_sheets([self.sheet])
         self.add_item("A5")
         self.scan()
-        self.assertEqual(self.sheet.shown("A5")[0], batch._excel_color("#C0007A"))
+        self.assertEqual(self.sheet.shown("A5")[0], batch._excel_color(TRUNCATED_FILL))
 
     def test_highlight_on_missing_sheet_explains_why(self):
         self.use_named_sheets([])
@@ -912,7 +940,7 @@ class ScanOnlyTests(unittest.TestCase):
     def test_run_scan_marks_cells_and_grows_once_with_chosen_ratio(self):
         self.add_item("A5")
         self.wf.STATE["job"]["options"] = {"folder": str(self.root), "grow_ratio": 1.2,
-                                           "highlight": {"fill": "#6D28D9", "font": "#FFFFFF"}}
+                                           "highlight": {"types": {"text_truncated": {"fill": "#6D28D9", "font": "#FFFFFF"}}}}
         session = Mock()
         session.app.return_value = self.excel
         with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
