@@ -217,8 +217,21 @@ def _json_vs_source_hint(json_files: int | None, src: dict[str, Any]) -> str:
     return "JSON 里只有数量没有文件名，没法指出是哪个文件；请对照下面来源文件夹的文件清单"
 
 
-def preview(plan_text: str, source_root: str, dest_root: str) -> dict[str, Any]:
+def _task_args(task_id: Any, plan_text: str, source_root: str, dest_root: str) -> tuple[str, str, str, dict | None]:
+    """当前任务（core/work_task）：清单和两个根目录都按任务的处理文件夹、共享文件夹生成"""
+    if not task_id:
+        return plan_text, source_root, dest_root, None
+    from core import work_task
+    task = work_task.get(str(task_id))
+    args = work_task.plan_for(task)
+    info = {"id": task["id"], "name": task["name"], "shared": task["shared"], "work": task["work"],
+            "reference": args["reference"], "fetch_backup": args["fetch_backup"]}
+    return args["plan"], args["source_root"], args["dest_root"], info
+
+
+def preview(plan_text: str, source_root: str, dest_root: str, task_id: Any = None) -> dict[str, Any]:
     """生成复制清单：每个文件夹要复制哪些、哪些会覆盖、三个数对不对得上。不改任何文件"""
+    plan_text, source_root, dest_root, task = _task_args(task_id, plan_text, source_root, dest_root)
     plan = parse_plan(plan_text)
     src_root = _clean_root(source_root, "来源根目录")
     dst_root = _clean_root(dest_root, "目的地根目录")
@@ -234,6 +247,7 @@ def preview(plan_text: str, source_root: str, dest_root: str) -> dict[str, Any]:
         result = {
             "id": uuid.uuid4().hex[:12],
             "kind": "copy",
+            "task": task,
             "label": plan["label"],
             "source_root": str(src_root),
             "dest_root": str(dst_root),
@@ -637,6 +651,7 @@ def _run(preview_data: dict[str, Any]) -> dict[str, Any]:
     result = {
         "id": uuid.uuid4().hex[:12],
         "kind": "copy",
+        "task": preview_data.get("task"),
         "label": preview_data["label"],
         "source_root": preview_data["source_root"],
         "dest_root": preview_data["dest_root"],
@@ -994,8 +1009,9 @@ def _fetch_summary(folders: list[dict[str, Any]], applied: bool = False) -> dict
     }
 
 
-def preview_fetch(plan_text: str, source_root: str, dest_root: str) -> dict[str, Any]:
+def preview_fetch(plan_text: str, source_root: str, dest_root: str, task_id: Any = None) -> dict[str, Any]:
     """生成拿取清单：目的地哪些要拿回来源、哪些替换（先备份）、哪些保留你改的。不改任何文件"""
+    plan_text, source_root, dest_root, task = _task_args(task_id, plan_text, source_root, dest_root)
     plan = parse_plan(plan_text)
     src_root = _clean_root(source_root, "来源根目录")
     dst_root = _clean_root(dest_root, "目的地根目录")
@@ -1008,6 +1024,7 @@ def preview_fetch(plan_text: str, source_root: str, dest_root: str) -> dict[str,
         result = {
             "id": uuid.uuid4().hex[:12],
             "kind": "fetch",
+            "task": task,
             "label": plan["label"],
             "source_root": str(src_root),
             "dest_root": str(dst_root),
@@ -1032,12 +1049,27 @@ def _backup_root(src_root: Path) -> Path:
     return storage.DATABASE_PATH.parent / "拿最新版前的备份" / stamp
 
 
+def _refresh_reference(fresh_local: Path, ref_file: Path) -> None:
+    """任务的参考文件夹：放一份和共享一样的原件（刚拿下来、和共享一致的本地文件），已经一样就不复制"""
+    try:
+        if ref_file.exists() and _digest(ref_file) == _digest(fresh_local):
+            return
+    except OSError:
+        pass
+    copy_one(fresh_local, ref_file, check_source_open=False)
+    debug_log.event("📚 更新参考原件", 文件=str(ref_file))
+
+
 def _run_fetch(preview_data: dict[str, Any]) -> dict[str, Any]:
     folders = copy.deepcopy(preview_data["folders"])
     total = sum(len(f["files"]) for f in folders)
     done = 0
     baseline = load_baseline()
-    backup_root = _backup_root(Path(preview_data["source_root"]))
+    task = preview_data.get("task") or {}
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_root = (Path(task["fetch_backup"]) / stamp) if task.get("fetch_backup") \
+        else _backup_root(Path(preview_data["source_root"]))
+    reference = Path(task["reference"]) if task.get("reference") else None
     for folder in folders:
         if folder["error"]:
             wf.log_msg(f"⚠️ {folder['dest_rel']}：{folder['error']}，跳过")
@@ -1063,7 +1095,7 @@ def _run_fetch(preview_data: dict[str, Any]) -> dict[str, Any]:
                             item["recorded"] = True
                         elif item["action"] in ("copy", "replace"):
                             if item["backup"] and local_file.exists():
-                                backup = backup_root / folder["source_rel"] / item["local_rel"]
+                                backup = backup_root / (item["local_rel"] if task else f"{folder['source_rel']}/{item['local_rel']}")
                                 backup.parent.mkdir(parents=True, exist_ok=True)
                                 shutil.copy2(local_file, backup)
                                 item["backup_path"] = str(backup)
@@ -1071,6 +1103,9 @@ def _run_fetch(preview_data: dict[str, Any]) -> dict[str, Any]:
                             digest = copy_one(shared_file, local_file, check_source_open=False)
                             changes[key] = _base_entry(shared_file, digest, "拿取")
                             item["recorded"] = True
+                        if reference and item["action"] in ("copy", "replace", "same"):
+                            _refresh_reference(local_file, reference / item["rel"])
+                            item["reference"] = True
                         item.update(status="ok", error="")
                         break
                     except Exception as err:
@@ -1094,6 +1129,7 @@ def _run_fetch(preview_data: dict[str, Any]) -> dict[str, Any]:
     result = {
         "id": uuid.uuid4().hex[:12],
         "kind": "fetch",
+        "task": preview_data.get("task"),
         "label": preview_data["label"],
         "source_root": preview_data["source_root"],
         "dest_root": preview_data["dest_root"],

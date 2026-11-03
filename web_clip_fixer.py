@@ -12,7 +12,7 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from core import autofix, batch, bl_links, debug_log, distribute, file_problem, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review
+from core import autofix, batch, bl_links, debug_log, distribute, file_problem, work_task, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review
 from core.common import (
     STATIC_DIR,
     console_print,
@@ -199,6 +199,8 @@ class WebHandler(BaseHTTPRequestHandler):
             self._serve_static_file("bl_links.html")
         elif parsed.path == "/distribute":
             self._serve_static_file("distribute.html")
+        elif parsed.path == "/api/tasks":
+            self._send_json({"ok": True, **work_task.overview()})
         elif parsed.path == "/api/distribute":
             self._send_json({"ok": True, **distribute.status(), "history": distribute.history()})
         elif parsed.path in {"/api/distribute/run", "/api/distribute/markdown"}:
@@ -451,10 +453,18 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
         elif self.path == "/api/distribute/preview":
             self._send_json({"ok": True, "preview": distribute.preview(
-                payload.get("plan"), payload.get("source_root"), payload.get("dest_root"))})
+                payload.get("plan"), payload.get("source_root"), payload.get("dest_root"), payload.get("task_id"))})
         elif self.path == "/api/distribute/fetch_preview":
             self._send_json({"ok": True, "preview": distribute.preview_fetch(
-                payload.get("plan"), payload.get("source_root"), payload.get("dest_root"))})
+                payload.get("plan"), payload.get("source_root"), payload.get("dest_root"), payload.get("task_id"))})
+        elif self.path == "/api/tasks/derive":
+            self._send_json({"ok": True, "paths": work_task.derive(payload.get("shared"), payload.get("work_root") or "")})
+        elif self.path == "/api/tasks/new":
+            self._send_json({"ok": True, "task": work_task.create(payload.get("shared"), payload.get("work_root") or "")})
+        elif self.path == "/api/tasks/finish":
+            self._send_json({"ok": True, **work_task.finish(str(payload.get("id") or ""))})
+        elif self.path == "/api/tasks/switch":
+            self._send_json({"ok": True, "task": work_task.switch(str(payload.get("id") or ""))})
         elif self.path == "/api/distribute/start":
             distribute.start()
             self._send_json({"ok": True})

@@ -40,6 +40,26 @@ class DataDirMigrationTest(unittest.TestCase):
         patcher = patch.object(data_dir, "_checked", set())
         patcher.start()
         self.addCleanup(patcher.stop)
+        prev = patch.object(data_dir, "previous_dirs", lambda: [])
+        prev.start()
+        self.addCleanup(prev.stop)
+
+    def test_previous_data_dir_comes_first(self):
+        appdata = self.root / "LocalAppData" / "clear_handle_excel"
+        appdata.mkdir(parents=True)
+        db = sqlite3.connect(appdata / data_dir.DATABASE_NAME)
+        db.execute("CREATE TABLE t(v TEXT)")
+        db.execute("INSERT INTO t VALUES ('appdata')")
+        db.commit()
+        db.close()
+        (appdata / data_dir.IMAGES_NAME).mkdir()
+        (appdata / data_dir.IMAGES_NAME / "x.png").write_bytes(b"img")
+        program = make_program(self.root / "Downloads" / "clear_handle_excel-main", "program")
+        desktop = self.root / "Desktop" / "handle-excel" / "程序数据"
+        data_dir.ensure_migrated(desktop / data_dir.DATABASE_NAME, desktop / data_dir.IMAGES_NAME, program, [appdata])
+        self.assertEqual(read_value(desktop / data_dir.DATABASE_NAME), "appdata")
+        self.assertEqual((desktop / data_dir.IMAGES_NAME / "x.png").read_bytes(), b"img")
+        self.assertTrue((appdata / data_dir.DATABASE_NAME).exists(), "旧文件不删")
 
     def tearDown(self):
         self.temp.cleanup()

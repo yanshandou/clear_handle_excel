@@ -1,0 +1,44 @@
+/* 主页「当前任务」和新任务对话框（static/work_task.js） */
+/* 路线图上面的一行：当前任务名、看路径、切换 */
+.work-task-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin: 0 0 6px; font-size: 14px; color: var(--ink-2); }
+.work-task-title { overflow-wrap: anywhere; }
+.work-task-more summary { cursor: pointer; font-size: 13px; color: var(--purple-ink, #1d4f91); }
+.work-task-more[open] { flex-basis: 100%; order: 3; }
+.work-task-hint, .work-task-note { margin: 4px 0 0; font-size: 13px; color: var(--ink-3); }
+.work-task-paths { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; margin: 6px 0 0; font-size: 13px; }
+.work-task-paths dt { font-weight: 700; color: var(--ink-2); }
+.work-task-paths dd { margin: 0; color: var(--ink-2); overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; }
+.work-task-paths:empty { display: none; }
+.work-task-switch { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+.work-task-switch select { max-width: 280px; min-height: 30px; }
+
+/* 路线起点、终点的路牌按钮：起点像高速入口的绿色路牌，终点是黑白格 */
+.route-sign-row { display: flex; margin: 0 0 18px; }
+.route-sign-row-finish { justify-content: flex-end; margin: 18px 0 0; }
+.route-sign {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 8px 16px; border-radius: 10px; cursor: pointer;
+  font-weight: 900; line-height: 1.2; box-shadow: 0 4px 0 var(--road-edge);
+  transition: transform .12s ease, box-shadow .12s ease;
+}
+.route-sign:hover { transform: translateY(-2px); box-shadow: 0 6px 0 var(--road-edge); }
+.route-sign:active { transform: translateY(2px); box-shadow: 0 2px 0 var(--road-edge); }
+.route-sign:focus-visible { outline: 3px solid #f5b400; outline-offset: 3px; }
+.route-sign-main { font-size: 18px; }
+.route-sign-sub { font-size: 13px; font-weight: 800; padding: 2px 8px; border-radius: 6px; }
+.route-sign-entry {
+  color: #ffffff; background: #1f7a2e;   /* 白字对比度 > 5:1 */
+  border: 3px solid #ffffff; outline: 3px solid #1f7a2e;
+}
+.route-sign-entry .route-sign-sub { background: #ffffff; color: #1f7a2e; }
+.route-sign-finish {
+  color: var(--road-edge); border: 3px solid var(--road-edge);
+  background:
+    linear-gradient(#ffffff, #ffffff) center / calc(100% - 12px) calc(100% - 12px) no-repeat,
+    repeating-conic-gradient(var(--road-edge) 0 25%, #ffffff 0 50%) 0 0 / 12px 12px;
+}
+.route-sign-finish .route-sign-sub { background: var(--road-edge); color: #ffffff; }
+@media (max-width: 1199px) {
+  .route-sign-row-start { margin-bottom: 52px; }   /* 竖排时 START 旗在第一张卡上面 */
+  .route-sign-row-finish { justify-content: flex-start; margin-top: 64px; }
+}
