@@ -139,9 +139,23 @@ def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 
+GAP_NOTE_SECONDS = 2.0  # 任务进行中同一线程两条日志隔了这么久：行尾标「⌛距上条」，一眼看出空等在哪（用户 2026-11-03 要求）
+_last_line_at: dict[int, float] = {}
+
+
+def _gap_note() -> str:
+    if _task is None:
+        return ""
+    me, now = threading.get_ident(), time.monotonic()
+    with _lock:
+        last = _last_line_at.get(me)
+        _last_line_at[me] = now
+    return f" ⌛距上条={now - last:.1f}秒" if last is not None and now - last >= GAP_NOTE_SECONDS else ""
+
+
 def _line(emoji: str, text: str, *, force: bool = False) -> None:
     stamp = _now()
-    _emit(f"{emoji} [{stamp}] [{_thread()}] {_one_line(text)}", force=force)
+    _emit(f"{emoji} [{stamp}] [{_thread()}] {_one_line(text)}{_gap_note()}", force=force)
 
 
 def _wave(arrow: str, title: str, *, force: bool = True) -> None:
@@ -422,6 +436,7 @@ def start_task(kind: str, options: dict[str, Any] | None = None, extra: dict[str
             end_task("被下一个任务替换")
         prune()
         title = f"任务 {kind} #{datetime.now():%Y%m%d_%H%M%S}"
+        _last_line_at.clear()
         _task = {"title": title, "started": time.perf_counter(), "since": int(time.time()), "thread": threading.get_ident(), "bytes": 0, "full": False}
         _wave("⬇", title)
     write(f"任务 {kind}{'（继续上次任务）' if resumed else ''}", "🧭")

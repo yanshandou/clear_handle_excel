@@ -6,6 +6,7 @@ import math
 import sqlite3
 import sys
 import threading
+import time
 import webbrowser
 from datetime import datetime
 from pathlib import Path
@@ -260,8 +261,17 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_json(result)
         elif parsed.path == "/api/batch":
             query = parse_qs(parsed.query)
-            result = batch.snapshot(set(query.get("file", []))) if query.get("details") == ["lazy"] else batch.snapshot()
+            started = time.perf_counter()
+            light = query.get("light") == ["1"]
+            if light:
+                result = batch.progress_snapshot()
+            else:
+                result = batch.snapshot(set(query.get("file", []))) if query.get("details") == ["lazy"] else batch.snapshot()
             body = json.dumps(result, ensure_ascii=False).encode("utf-8")
+            seconds = time.perf_counter() - started
+            if seconds >= 0.3:  # 排查扫描中途空等：网页取一次进度花了多久（用户 2026-11-03 要求）
+                debug_log.event("🌐 网页取进度慢", 方式="只取进度" if light else "完整", 秒=round(seconds, 2),
+                                卡数=len(result.get("cards", [])), 大小KB=len(body) // 1024)
             etag = f'"{hashlib.sha256(body).hexdigest()}"'
             validators = {tag.strip().removeprefix("W/") for tag in self.headers.get("If-None-Match", "").split(",")}
             unchanged = etag in validators or "*" in validators

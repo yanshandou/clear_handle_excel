@@ -180,6 +180,7 @@ function renderCategories() {
   const current = groupCurrent(cats);
   const key = JSON.stringify([categoryMode, batchState.opened_files, cats.map(c => [c.key, c.cards.map(x => [x.id, x.color, x.finalized, !!x.grown])]), current?.key,
     categoryBusyReason(), batchState.folder, excelLinkHtml.revision, batchState.open_blocked]);
+  renderOpenNext();
   if (key === categoryRenderKey) return;
   categoryRenderKey = key;
   // 重画时保留清单框的滚动位置
@@ -194,6 +195,21 @@ function renderCategories() {
   const wrap = $('learnDetail').querySelector('.learn-table-wrap');
   if (wrap && `${categoryMode}:${current?.key}` === renderCategories.lastKey) wrap.scrollTop = scroll;
   renderCategories.lastKey = `${categoryMode}:${current?.key}`;
+}
+
+// 顶上的「打开下一批」：按左边列表的顺序（按文件时问题多的在前），打开还没打开过的文件，每次最多 10 个
+function nextBatchCards() {
+  return groupList().filter(g => g.key !== OPENED_KEY).flatMap(g => yellowCards(g));
+}
+
+function renderOpenNext() {
+  const button = $('categoryOpenNextBtn');
+  if (!button) return;
+  const files = new Set(nextBatchCards().map(c => c.wb_path)).size;
+  const busy = categoryBusyReason();
+  button.textContent = files ? `📂 打开下一批（还有 ${files} 个文件，每次 10 个）` : '📂 文件都打开过了';
+  button.disabled = !!busy || !files;
+  button.title = busy || '按左边列表的顺序，打开还没打开过的文件，每次最多 10 个；打开的放进「已打开、待复检」';
 }
 
 async function categoryOpen() {
@@ -220,6 +236,10 @@ async function categoryTighten() {
   await startJob('/api/batch/tighten', { card_ids: yellowCards(cat).map(c => c.id), grow_ratio: Number(ratio) });
 }
 
+$('categoryOpenNextBtn')?.addEventListener('click', () => {
+  const ids = nextBatchCards().map(c => c.id);
+  if (ids.length) openReady(false, ids);
+});
 $('learnList').addEventListener('click', event => {
   const button = event.target.closest('[data-learn-cat]');
   if (!button) return;

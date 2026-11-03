@@ -1000,6 +1000,18 @@ class ScanOnlyTests(unittest.TestCase):
         self.assertEqual((eta["elapsed"], eta["remaining"]), (25, 50))
         self.assertEqual(batch._scan_model(job), (10.0, 0.1))  # 超时上限仍只按检测时间
 
+    def test_progress_snapshot_sends_progress_without_cards(self):
+        self.add_item("A5")
+        self.scan()
+        self.wf.STATE["busy"] = True
+        self.wf.STATE["job"] = {"kind": "batch_scan", "workbooks": [self.path], "scanned": [], "completed": []}
+        light = batch.progress_snapshot()
+        self.assertTrue(light["light"])
+        self.assertNotIn("cards", light)
+        for key in ("busy", "job", "progress", "scan_eta", "logs", "folder"):
+            self.assertIn(key, light)
+        self.assertTrue(batch.snapshot()["cards"])
+
     def test_scan_skips_recheck_when_nothing_was_grown(self):
         self.add_item("A5")
         refreshed = self.run_scan_with_grow({}, None)
