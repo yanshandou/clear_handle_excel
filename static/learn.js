@@ -29,7 +29,9 @@ function learnListHtml(cats, current) {
   let lastType = '';
   return cats.map(cat => {
     const typeLabel = cat.label.split(' · ')[0];
-    const head = cat.type !== lastType ? `<li class="learn-type" aria-hidden="true">${esc(typeLabel)}</li>` : '';
+    const color = typeColorOf(cat.type);
+    const many = String(cat.type).includes('+') ? '多种问题：' : '';
+    const head = cat.type !== lastType ? `<li class="learn-type" aria-hidden="true"><span class="learn-type-chip" style="background:${color.fill};color:${color.font}" title="Excel 里这种问题的标记颜色">${esc(many + typeLabel)}</span></li>` : '';
     lastType = cat.type;
     const rest = cat.label.split(' · ').slice(1).join(' · ') || typeLabel;
     const badge = cat.rule?.ok ? '<span class="learn-badge" title="已经学到规律">🎓</span>' : '';
@@ -89,7 +91,7 @@ function renderLearn() {
   if (!panel) return;
   const cats = learnCategories();
   const current = learnCurrent();
-  const key = JSON.stringify([cats, current?.key, learnBusyReason(), batchState.folder, excelLinkHtml.revision, batchState.open_blocked]);
+  const key = JSON.stringify([cats, current?.key, learnBusyReason(), batchState.folder, excelLinkHtml.revision, batchState.open_blocked, typeColors]);
   if (key === learnRenderKey) return;
   learnRenderKey = key;
   $('learnSummary').textContent = cats.length

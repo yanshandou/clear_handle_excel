@@ -1,6 +1,6 @@
 """按分类示范学习修复（用户 2026-11-02 提出）：一次扫描出上千个问题，其实就那么几类。
 
-1. 分类：在 6 种错误类型下，再按「单格 / 合并格、原来有没有开换行、缺几行」细分，同一小类改法基本一样。
+1. 分类：在 6 种错误类型（一格有几种问题时按这个组合）下，再按「单格 / 合并格、原来有没有开换行、缺几行」细分，同一小类改法基本一样。
 2. 示范：扫描完记下每个问题格的原样（行高、列宽、换行、缩小填充、字号、上方分页）。
    你在 Excel 里改好几个、保存，点「学一下」：程序重读这一类的格子，和原样不一样的就是你的示范。
 3. 总结规律：对比改前改后，改了哪几样、改多少（固定值、按字号的倍数、按缺的行数、按文字长度），
@@ -36,12 +36,12 @@ TYPE_ORDER = list(autofix.CELL_ERROR_SPECS)
 
 # ───────────────────────── 分类 ─────────────────────────
 
-def primary_type(card: dict) -> str:
-    """一格可能同时有几种问题（比如压线 + 截断）：按 CELL_ERROR_SPECS 的顺序取第一种作为它的分类"""
+def error_types(card: dict) -> list[str]:
+    """这一格的问题类型，按 CELL_ERROR_SPECS 的顺序排好、去重"""
     types = [t for t in card.get("error_types") or [] if t in autofix.CELL_ERROR_SPECS]
     if not types:
         types = [autofix.item_error_type(p) for p in card.get("problems") or []] or [autofix.ERROR_TYPE_BORDER_CLIP]
-    return min(types, key=lambda t: TYPE_ORDER.index(t) if t in TYPE_ORDER else len(TYPE_ORDER))
+    return sorted(dict.fromkeys(types), key=lambda t: TYPE_ORDER.index(t) if t in TYPE_ORDER else len(TYPE_ORDER))
 
 
 def missing_lines(items: list[dict]) -> int | None:
@@ -58,19 +58,21 @@ def is_merged(card: dict, baseline: dict | None) -> bool:
 
 
 def category(card: dict, items: list[dict], baseline: dict | None) -> tuple[str, str]:
-    """返回 (分类键, 给人看的名字)。名字例：「文字截断 · 单格 · 已开换行 · 缺 2 行」"""
-    kind = primary_type(card)
-    parts = [kind]
-    names = [autofix.error_type_label(kind)]
-    if kind != autofix.ERROR_TYPE_TEXT_MISSING:
+    """返回 (分类键, 给人看的名字)。名字例：「文字截断 · 单格 · 已开换行 · 缺 2 行」。
+    一格同时有几种问题（比如压线 + 截断）时，这个组合单独成一类（用户 2026-11-03 定）：
+    一次改动没法拆给两个问题，按组合示范、按组合学、按组合修。键里用 + 连起来，名字「边框压线 + 文字截断 · …」"""
+    types = error_types(card)
+    parts = ["+".join(types)]
+    names = [" + ".join(autofix.error_type_label(t) for t in types)]
+    if any(t != autofix.ERROR_TYPE_TEXT_MISSING for t in types):
         merged = is_merged(card, baseline)
         parts.append("merged" if merged else "single")
         names.append("合并格" if merged else "单格")
-    if kind in autofix.CUT_ERROR_TYPES:
+    if any(t in autofix.CUT_ERROR_TYPES for t in types):
         wrap = (baseline or {}).get("wrap")
         parts.append({True: "wrap", False: "nowrap"}.get(wrap, "wrap?"))
         names.append({True: "已开换行", False: "没开换行"}.get(wrap, "换行未知"))
-    if kind == autofix.ERROR_TYPE_TEXT_TRUNCATED:
+    if autofix.ERROR_TYPE_TEXT_TRUNCATED in types:
         lines = missing_lines(items)
         if lines:
             parts.append(f"lines{min(lines, 3)}")

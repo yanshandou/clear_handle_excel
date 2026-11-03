@@ -24,9 +24,17 @@ class CategoryTests(unittest.TestCase):
         key, label = fl.category(card, [{"missing_lines": 5}], props(heights=(15, 15)))
         self.assertEqual(label, "文字截断 · 合并格 · 已开换行 · 缺 3 行以上")
 
-    def test_picks_first_type_and_skips_wrap_for_hash(self):
+    def test_a_cell_with_several_problems_is_its_own_category(self):
+        # 一格同时压线 + 截断：组合单独成一类，按固定顺序排，不管检测时先报哪个
+        card = {"error_types": ["text_truncated", "border_clip"], "cell_addr": "B5"}
+        key, label = fl.category(card, [{"missing_lines": 1}], props(wrap=True))
+        self.assertEqual(key, "border_clip+text_truncated|single|wrap|lines1")
+        self.assertEqual(label, "边框压线 + 文字截断 · 单格 · 已开换行 · 缺 1 行")
+        self.assertNotEqual(key, fl.category({"error_types": ["border_clip"], "cell_addr": "B6"}, [], props(wrap=True))[0])
+
+    def test_combination_order_and_skips_wrap_for_hash(self):
         card = {"error_types": ["hash_overflow", "border_clip"], "cell_addr": "B5"}
-        self.assertEqual(fl.category(card, [], None)[0], "border_clip|single|wrap?")
+        self.assertEqual(fl.category(card, [], None)[0], "border_clip+hash_overflow|single|wrap?")
         self.assertEqual(fl.category({"error_types": ["hash_overflow"], "cell_addr": "C3"}, [], None)[1],
                          "### 列宽不足 · 单格")
 

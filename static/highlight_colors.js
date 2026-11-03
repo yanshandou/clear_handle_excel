@@ -12,6 +12,17 @@ const HIGHLIGHT_PRESETS = [
   { label: '深灰底白字', fill: '#333333', font: '#FFFFFF' },
   { label: '纯黑底黄字', fill: '#000000', font: '#FFFF00' },
 ];
+// 切字工作台按问题类型分色（用户 2026-11-03 定）：默认色和 core/batch.py DEFAULT_TYPE_HIGHLIGHT 一致，都是上面的预设色
+const TYPE_HIGHLIGHT_KEY = 'clear_handle_excel.typeHighlightColors';
+const TYPE_HIGHLIGHTS = [
+  { type: 'border_clip', label: '边框压线', fill: '#C0007A', font: '#FFFFFF' },
+  { type: 'text_truncated', label: '文字截断', fill: '#1649CC', font: '#FFFFFF' },
+  { type: 'box_overflow', label: '超出裁剪框', fill: '#006633', font: '#FFFFFF' },
+  { type: 'page_break_cut', label: '分页切开', fill: '#C2410C', font: '#FFFFFF' },
+  { type: 'hash_overflow', label: '### 列宽不足', fill: '#6D28D9', font: '#FFFFFF' },
+  { type: 'text_missing', label: 'PDF 未匹配', fill: '#333333', font: '#FFFFFF' },
+  { type: 'multi', label: '多种问题', fill: '#000000', font: '#FFFF00' },
+];
 const HEX = /^#[0-9a-f]{6}$/i;
 const sameHighlight = (a, b) => a.fill === b.fill && a.font === b.font;
 function normalizeHighlight(color) {
@@ -32,5 +43,8 @@ function savedHighlightColors() {
   let current, history;
   try { current = JSON.parse(localStorage.getItem(HIGHLIGHT_KEY)); } catch (_) {}
   try { history = JSON.parse(localStorage.getItem(HIGHLIGHT_HISTORY_KEY)); } catch (_) {}
-  return uniqueHighlights([...HIGHLIGHT_PRESETS, current, ...(Array.isArray(history) ? history : [])]);
+  let types;
+  try { types = JSON.parse(localStorage.getItem(TYPE_HIGHLIGHT_KEY)); } catch (_) {}
+  const typeColors = types && typeof types === 'object' ? Object.values(types) : [];
+  return uniqueHighlights([...HIGHLIGHT_PRESETS, current, ...typeColors, ...(Array.isArray(history) ? history : [])]);
 }

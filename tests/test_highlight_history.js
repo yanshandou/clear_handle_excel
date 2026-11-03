@@ -4,77 +4,68 @@ const { page } = require('./workbench_page');
 
 const CURRENT = 'clear_handle_excel.highlightColors';
 const HISTORY = 'clear_handle_excel.highlightColorHistory';
+const TYPES = 'clear_handle_excel.typeHighlightColors';
 const custom = { fill: '#123456', font: '#FEDCBA' };
 const readHistory = p => JSON.parse(p.storage.get(HISTORY) || '[]');
+const pick = (p, name, type, value) => p.elements.get('typeColors').listeners[name]({ target: { value, dataset: { typeColor: type } } });
 
-test('existing custom selection migrates to history and survives switching to a preset and reloading', () => {
-  const storage = new Map([[CURRENT, JSON.stringify(custom)]]);
-  const p = page({ storage });
-  assert.deepEqual(readHistory(p), [custom]);
-  assert.equal(p.elements.get('highlightHistoryRow').classList.contains('hidden'), false);
-  p.run('setHighlight(HIGHLIGHT_PRESETS[4])');
-  const reloaded = page({ storage });
-  assert.match(reloaded.elements.get('highlightHistory').innerHTML, /#123456/);
-  reloaded.elements.get('highlightHistory').listeners.click({ target: {
-    closest: () => ({ dataset: { history: '0' } }),
-  } });
-  assert.equal(reloaded.elements.get('highlightFill').value, '#123456');
-  assert.equal(reloaded.elements.get('highlightFont').value, '#fedcba');
-  assert.match(reloaded.elements.get('highlightHistory').innerHTML, /aria-pressed="true"/);
-  assert.deepEqual(JSON.parse(storage.get(CURRENT)), custom);
-});
-
-test('picker previews do not flood history and confirmed selections are saved as fill/font pairs', () => {
+test('each problem type has its own default color chip, and the scan sends them all', async () => {
   const p = page();
-  assert.equal(p.elements.get('highlightHistoryRow').classList.contains('hidden'), true);
-  const fill = p.elements.get('highlightFill').listeners;
-  for (const value of ['#123450', '#123451', '#123456']) fill.input({ target: { value } });
+  const html = p.elements.get('typeColors').innerHTML;
+  for (const label of ['边框压线', '文字截断', '超出裁剪框', '分页切开', '### 列宽不足', 'PDF 未匹配', '多种问题']) assert.match(html, new RegExp(label));
+  assert.match(html, /background:#C0007A/);
+  assert.match(html, /background:#000000;color:#FFFF00/);
+  assert.equal(p.elements.get('typeColorsReset').classList.contains('hidden'), true);
+  p.elements.get('folderInput').value = 'C:/Excel';
+  p.run(`appConfirm = async () => true`);
+  await p.elements.get('startBtn').listeners.click();
+  const sent = p.requests.at(-1).payload.highlight.types;
+  assert.equal(Object.keys(sent).length, 7);
+  assert.equal(JSON.stringify(sent.text_truncated), JSON.stringify({ fill: '#1649CC', font: '#FFFFFF' }));
+});
+
+test('changing one type color previews without flooding history, picks a readable font and survives reloading', () => {
+  const storage = new Map();
+  const p = page({ storage });
+  for (const value of ['#123450', '#123451', '#123456']) pick(p, 'input', 'border_clip', value);
   assert.deepEqual(readHistory(p), []);
-  fill.change({ target: { value: '#123456' } });
-  const font = p.elements.get('highlightFont').listeners;
-  font.input({ target: { value: '#fedcba' } });
-  font.change({ target: { value: '#fedcba' } });
-  assert.deepEqual(readHistory(p), [custom, { fill: '#123456', font: '#FFFFFF' }]);
-  p.run('setHighlight(HIGHLIGHT_PRESETS[0])');
-  assert.equal(readHistory(p).length, 2);
+  pick(p, 'change', 'border_clip', '#123456');
+  assert.deepEqual(readHistory(p), [{ fill: '#123456', font: '#FFFFFF' }]);
+  pick(p, 'change', 'hash_overflow', '#FFEE00');  // 浅色底配黑字
+  assert.deepEqual(JSON.parse(storage.get(TYPES)).hash_overflow, { fill: '#FFEE00', font: '#000000' });
+  const reloaded = page({ storage });
+  assert.match(reloaded.elements.get('typeColors').innerHTML, /background:#123456;color:#FFFFFF/);
+  assert.equal(reloaded.elements.get('typeColorsReset').classList.contains('hidden'), false);
+  reloaded.elements.get('typeColorsReset').listeners.click();
+  assert.match(reloaded.elements.get('typeColors').innerHTML, /background:#C0007A/);
+  assert.equal(JSON.parse(storage.get(TYPES)).border_clip.fill, '#C0007A');
 });
 
-test('history validates, normalizes and deduplicates pairs while retaining different fonts for one fill', () => {
-  const p = page({ storage: new Map([[HISTORY, JSON.stringify([
-    { fill: '#abcdef', font: '#fedcba' }, { fill: '#ABCDEF', font: '#FEDCBA' },
-    { fill: '#ABCDEF', font: '#000000' }, { fill: '#C0007A', font: '#FFFFFF' },
-    { fill: 'red', font: '#FFFFFF' }, { fill: ['#123456'], font: '#FFFFFF' }, null, {},
-  ])]]) });
-  assert.equal(p.run('highlightHistory.length'), 2);
-  assert.equal(p.run('highlightHistory[0].fill'), '#ABCDEF');
-  p.run('setHighlight(highlightHistory[1])');
-  assert.deepEqual(readHistory(p), [
-    { fill: '#ABCDEF', font: '#000000' }, { fill: '#ABCDEF', font: '#FEDCBA' },
-  ]);
+test('an old single custom color is kept in history so the repair page still finds it', () => {
+  const p = page({ storage: new Map([[CURRENT, JSON.stringify(custom)]]) });
+  assert.deepEqual(readHistory(p), [custom]);
 });
 
-test('repair palette includes every saved history pair, current selection and presets without duplicates', () => {
+test('repair palette includes presets, history and type colors without duplicates', () => {
   const history = Array.from({ length: 35 }, (_, i) => ({
     fill: '#' + (0x123400 + i).toString(16).toUpperCase(), font: '#FFFFFF',
   }));
-  history.push({ fill: '#C0007A', font: '#000000' });
   const p = page({ storage: new Map([[HISTORY, JSON.stringify(history)]]) });
-  p.run(`setHighlight({fill:'#123456', font:'#FFFFFF'})`);
+  pick(p, 'change', 'box_overflow', '#654321');
   const pairs = Array.from(p.run('savedHighlightColors()'), color => `${color.fill}/${color.font}`);
   for (const color of history) assert.ok(pairs.includes(`${color.fill}/${color.font}`));
-  assert.ok(pairs.includes('#123456/#FFFFFF'));
-  assert.ok(pairs.includes('#C0007A/#FFFFFF'));
-  assert.equal(pairs.length, history.length + 8 + 1);
+  assert.ok(pairs.includes('#654321/#FFFFFF'));
+  assert.ok(pairs.includes('#1649CC/#FFFFFF'));
   assert.equal(new Set(pairs).size, pairs.length);
 });
 
-test('malformed or unavailable browser storage does not prevent choosing and finding colors', () => {
-  for (const value of ['{bad json', '{}', 'null']) {
-    const p = page({ storage: new Map([[HISTORY, value], [CURRENT, value]]) });
-    p.run(`setHighlight({fill:'#123456',font:'#FEDCBA'})`);
-    assert.deepEqual(readHistory(p), [custom]);
+test('malformed or unavailable browser storage falls back to the default type colors', () => {
+  for (const value of ['{bad json', '{}', 'null', '{"border_clip":{"fill":"red"}}']) {
+    const p = page({ storage: new Map([[HISTORY, value], [CURRENT, value], [TYPES, value]]) });
+    assert.match(p.elements.get('typeColors').innerHTML, /background:#C0007A/);
   }
   const p = page({ storage: { get() { throw Error('blocked'); }, set() { throw Error('blocked'); } } });
-  p.run(`setHighlight({fill:'#123456',font:'#FEDCBA'}); setHighlight(HIGHLIGHT_PRESETS[0]);`);
+  pick(p, 'change', 'border_clip', '#123456');
+  assert.match(p.elements.get('typeColors').innerHTML, /background:#123456/);
   assert.equal(p.run('savedHighlightColors().length'), 8);
 });
