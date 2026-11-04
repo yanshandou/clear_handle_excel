@@ -89,6 +89,21 @@ class HiddenTextTests(unittest.TestCase):
                     [(1, 1, text)], pieces, lambda r, c: text, lambda r, c: True,
                 ), [])
 
+    def test_last_letter_stored_as_its_own_piece_on_the_same_line_is_not_hidden(self):
+        """2026-11-04 用户截图：PDF 里 shikuchoson 整个印出来了，最后的 n 在 PDF 里单独一段，
+        提取成紧挨在右边的另一个片段，以前只往下一行找、报成只显示 shikuchoso"""
+        def word(text, x, y=100.0):
+            return Piece(0, [(c, (x + i * 5, y, x + i * 5 + 5, y + 9), True) for i, c in enumerate(text)])
+
+        pieces = [word("shikuchoso", 50), word("n", 100.5)]
+        self.assertEqual(find_hidden_cells(
+            [(194, 6, "shikuchoson")], pieces, lambda r, c: "shikuchoson", lambda r, c: True), [])
+        # 隔得远（另一格的字）不接；真的没印出来照样报，并记下附近的片段
+        far = [word("shikuchoso", 50), word("n", 110)]
+        result = find_hidden_cells([(194, 6, "shikuchoson")], far, lambda r, c: "shikuchoson", lambda r, c: True)
+        self.assertEqual([(r["reason"], r["visible"]) for r in result], [(REASON_TRUNCATED, "shikuchoso")])
+        self.assertIn("「n」", result[0]["nearby"])
+
     def test_hidden_dakuten_is_still_reported_with_its_location(self):
         pieces = [Piece(0, [("ﾌ", (50, 90, 60, 100), True),
                             ("ﾞ", (60, 90, 65, 100), False)])]

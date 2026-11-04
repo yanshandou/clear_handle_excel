@@ -664,6 +664,7 @@ def _detect_sheet_results(
                 "page_index": page_index, "text": found["text"], "bbox": found["bbox"],
                 "visible_text": found["visible"], "hidden_reason": found["reason"],
                 "missing_lines": found.get("missing_lines"),
+                "pdf_nearby": found.get("nearby"),
                 "occurrence": ["cell", address],
                 "excel_row": found["row"], "cell_addr": address, "row_height": probe.row_height(found["row"]),
                 "image": (
@@ -699,7 +700,7 @@ def _detect_sheet_results(
 
 
 # 检测规则变化时加一：之前按旧规则查过的文件即使没改过，下次扫描也要整份重新检查
-DETECTOR_VERSION = 20
+DETECTOR_VERSION = 21  # 21：同一行被拆成两段存的字（最后一个字母单独一段）接起来，不再误报截断
 
 
 def _confirm_clip_cells(
@@ -1545,7 +1546,8 @@ def _scan_one_workbook(
                                 位置=f"{s_name}!{found.get('cell_addr')}", 行=found.get("excel_row"),
                                 行高=found.get("row_height"), 页=found.get("page_index"),
                                 定位确认=found.get("location_confirmed"), 文字=debug_log.clip(found.get("text")),
-                                显示=debug_log.clip(found.get("visible_text")) if found.get("kind") == "hidden" else "-")
+                                显示=debug_log.clip(found.get("visible_text")) if found.get("kind") == "hidden" else "-",
+                                **({"PDF附近片段": found["pdf_nearby"]} if found.get("pdf_nearby") else {}))
             if pdfs is not None:
                 pdfs.remember_pdf(path, s_name, scan_version, pdf_path)
             next_seq += len(items)

@@ -249,11 +249,22 @@ class _Matcher:
             and not _border_between(prev, p)
         ]
 
+    def _right(self, prev: Piece) -> list[Piece]:
+        """同一行紧挨在右边的片段：PDF 里一行字有时被拆成两段文字存（例如 shikuchoson 的最后一个 n 单独一段），
+        提取时成了两个片段。只接间距和同一行里切开的标准一样小（≤ 1.5pt）、上下对齐的，隔着格子边框的字离得更远"""
+        x0, y0, x1, y1 = prev.bbox
+        return [
+            p for p in self.by_page[prev.page]
+            if p is not prev and -1.0 < p.bbox[0] - x1 <= 1.5
+            and min(y1, p.bbox[3]) - max(y0, p.bbox[1]) >= 0.7 * min(prev.height, p.height)
+        ]
+
     def _chunks(
         self, text: str, pos: int, prev: Piece | None, loose: bool, blank_lines: int = 0,
     ) -> list[Chunk]:
         """text[pos:] 开头能对上的片段。exact 只认整段；loose 允许首段是某段的后半、末段是某段的前半。"""
-        candidates = self.by_char.get(text[pos], []) if prev is None else self._below(prev, blank_lines)
+        candidates = (self.by_char.get(text[pos], []) if prev is None
+                      else self._right(prev) + self._below(prev, blank_lines))
         found: list[Chunk] = []
         for piece in candidates:
             starts = [0] if prev is not None or not loose else [
@@ -345,6 +356,25 @@ class _Matcher:
             except _SearchTooLong:
                 pass  # 已经找到的最长一段照样用
         return best or None
+
+
+def _nearby_pieces(matcher: "_Matcher", chain: list[Chunk], limit: int = 8) -> str:
+    """只打印出开头一段时，记下 PDF 里这一段右边、下面的文字片段（调试日志用）：
+    排查「其实印全了却报没显示」的误报（2026-11-04 shikuchoson 整个印出来了却报只显示 shikuchoso）"""
+    last = chain[-1][0]
+    x0, y0, x1, y1 = last.bbox
+    height = last.height
+    near = [
+        p for p in matcher.by_page.get(last.page, [])
+        if p is not last and x0 - 5 < p.bbox[0] < x1 + 60 and y0 - height * 0.5 < p.bbox[1] < y1 + height * 2
+    ]
+    near.sort(key=lambda p: (p.bbox[1], p.bbox[0]))
+    parts = [f"本段「{last.key}」({x0:.1f},{y0:.1f})-({x1:.1f},{y1:.1f})"]
+    for p in near[:limit]:
+        a, b, c, d = p.bbox
+        mark = "已配" if any(p.used) else "空闲"
+        parts.append(f"「{p.key[:12]}」({a:.1f},{b:.1f})-({c:.1f},{d:.1f}){mark}")
+    return "；".join(parts)
 
 
 def _order_same_text(records: dict[tuple[int, int], dict[str, Any]]) -> None:
@@ -545,6 +575,7 @@ def find_hidden_cells(
         if rec["kind"] == "prefix":
             result = _result(cell, "".join(c for c, _, _ in chars), REASON_TRUNCATED, page, bbox)
             result["missing_lines"], result["line_pitch"] = _missing_lines(cell["text"], chain)
+            result["nearby"] = _nearby_pieces(matcher, chain)
             results.append(result)
             continue
         if matches is not None:
