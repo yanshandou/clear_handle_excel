@@ -218,9 +218,23 @@ class GrowWrapTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "1.5 或 1.2"):
                 batch.grow_ratio(bad)
 
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_one_english_word_wider_than_the_column_is_not_grown(self):
+        """shikuchoson 只打印出 shikuchoso：Excel 量着一行放得下，加高没用，卡片写明要加列宽（2026-11-04 用户日志）"""
+        self.add("A5", 5, kind="hidden", hidden_reason="truncated", text="shikuchoson", visible_text="shikuchoso")
+        self.add("E9", 9, kind="hidden", hidden_reason="truncated", text="長い説明文", visible_text="長い")
+        done = batch._grow_and_wrap(Mock(), self.path, 1.5)
+        a5 = batch._key(self.path, "S1", "A5")
+        self.assertTrue(done[a5]["width_only"])
+        self.assertEqual(self.sheet.rows[5].RowHeight, 18.75)  # 不加高
+        self.assertGreater(self.sheet.rows[9].RowHeight, 18.75)  # 日文照样加高
+        batch._hand_over(self.path, done)
+        card = self.card("A5")
+        self.assertIn("列宽", card["message"])
+        self.assertTrue(card["width_only"])
+        self.assertIn("列宽不够", batch._card_category(card, batch._items_at(card))[1])
+        # 只是一个单词但显示的不是开头一段（例如被边框压住）、或有空格：照样加高
+        self.assertFalse(batch._width_only({"text": "shikuchoson"}, [{"kind": "clip", "visible_text": "shikuchoso"}]))
+        self.assertFalse(batch._width_only({"text": "two words"}, [{"kind": "hidden", "visible_text": "two"}]))
 
     # 复检又查出切字（例如人工改完后行高不够）：和扫描一样开换行加高，再复检一遍（用户 2026-11-04 要）
     def session(self):
@@ -265,3 +279,7 @@ if __name__ == "__main__":
         recheck.assert_not_called()
         restart.assert_not_called()
         self.assertNotIn("grown", self.card("A5"))
+
+
+if __name__ == "__main__":
+    unittest.main()
