@@ -1922,7 +1922,7 @@ def _widen_columns(book: Any, cards: list[dict], missing: dict[str, int], done: 
             done[card["id"]] = {"width_only": True, "column": col, "chars": chars, "font": size,
                                 "merged": int(area.Rows.Count) > 1 or int(area.Columns.Count) > 1}
         except Exception as err:
-            done[card["id"]] = {"error": f"{WIDTH_ONLY_MESSAGE}（没能自动加宽：{err}）", "width_only": True}
+            done[card["id"]] = {"error": str(err), "width_only": True}
             debug_log.event("⚠️ 没能加宽列", 格=where, 原因=str(err))
     by_sheet: dict[str, list[tuple[int, dict]]] = {}
     for (sheet_name, col), entry in cols.items():
@@ -1937,7 +1937,7 @@ def _widen_columns(book: Any, cards: list[dict], missing: dict[str, int], done: 
             width, chars_width = float(column.Width), float(column.ColumnWidth)
             if width <= 0:
                 for cid in entry["cards"]:
-                    done[cid] = {"error": f"{WIDTH_ONLY_MESSAGE}（这一列是隐藏的）", "width_only": True}
+                    done[cid] = {"error": "这一列是隐藏的", "width_only": True}
                 continue
             old.append((column, chars_width))
             column.ColumnWidth = min(255.0, chars_width * (width + entry["extra"]) / width)
@@ -1954,7 +1954,7 @@ def _widen_columns(book: Any, cards: list[dict], missing: dict[str, int], done: 
             debug_log.event("↩️ 加宽多出页，退回", 表=sheet_name, 原页数=pages, 新页数=after)
             for _, entry in entries:
                 for cid in entry["cards"]:
-                    done[cid] = {"error": f"{WIDTH_ONLY_MESSAGE}（加宽会多出一页，没加）", "width_only": True}
+                    done[cid] = {"error": "加宽会多出一页，没加", "width_only": True}
             continue
         widened += len(old)
     return widened
@@ -2002,6 +2002,14 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float, skip: set[str] | None = 
     try:
         if book.ReadOnly:
             raise ValueError(f"{name} 以只读方式打开，没能开换行、加高")
+        # 先加宽一个英文单词放不下的列；加不了（多出一页、有图形压着等）的改成加一行行高（用户 2026-11-04 定）
+        widened = _widen_columns(book, narrow, missing, done) if narrow else 0
+        extra_line = {c["id"]: done[c["id"]]["error"] for c in narrow if "error" in done.get(c["id"], {})}
+        for card in narrow:
+            if card["id"] in extra_line:
+                debug_log.event("↕️ 加宽不了，改加一行行高", 格=f"{card['sheet_name']}!{card['cell_addr']}",
+                                原因=done[card["id"]]["error"])
+        cards = cards + [c for c in narrow if c["id"] in extra_line]
         rows: dict[tuple[str, int], dict] = {}
         for card in cards:
             where = f"{card['sheet_name']}!{card['cell_addr']}"
@@ -2029,6 +2037,9 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float, skip: set[str] | None = 
                     else:
                         shortfall, lines = _wrap_shortfall(area, size)
                         by = "估算"
+                    if card["id"] in extra_line:
+                        # Excel 量着放得下、打印时最后几个字母被挤到下一行：至少多给一行
+                        shortfall, by = max(shortfall, size * LINE_HEIGHT_RATIO), by + "+一行"
                 row = int(area.Row) + int(area.Rows.Count) - 1  # 合并单元格加在最下面一行
                 entry = rows.setdefault((sheet.Name, row), {"sheet": sheet, "size": 0.0, "extra": 0.0, "cards": []})
                 entry["size"] = max(entry["size"], size)
@@ -2036,6 +2047,8 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float, skip: set[str] | None = 
                 entry["cards"].append(card["id"])
                 done[card["id"]] = {"wrap": wrap == "已开", "row": row, "font": size,
                                     "merged": int(area.Rows.Count) > 1 or int(area.Columns.Count) > 1}
+                if card["id"] in extra_line:
+                    done[card["id"]]["widen_failed"] = extra_line[card["id"]]
                 if shortfall:
                     done[card["id"]].update(shortfall=round(shortfall, 2), measured_by=by)
                     if lines:
@@ -2055,7 +2068,6 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float, skip: set[str] | None = 
                             字号=entry["size"], 倍数=ratio, 估算补高=round(entry["extra"] - entry["size"] * ratio, 2))
             for cid in entry["cards"]:
                 done[cid].update(sheet=sheet_name, base=round(base, 2), applied=applied, ratio=ratio)
-        widened = _widen_columns(book, narrow, missing, done) if narrow else 0
         normalize_workbook_view(excel, book)
         book.Save()
         _followed_own_save(path, before)

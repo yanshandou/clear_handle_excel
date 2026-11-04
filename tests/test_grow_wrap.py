@@ -267,10 +267,13 @@ class GrowWrapTests(unittest.TestCase):
         done = batch._grow_and_wrap(Mock(), self.path, 1.5)
         a5 = batch._key(self.path, "S1", "A5")
         self.assertEqual(cols[1].ColumnWidth, 10.0)  # 退回
-        self.assertIn("多出一页", done[a5]["error"])
+        # 改成加一行行高：Excel 量着放得下（还差 0），也至少多给一行 11 × 1.25，再加 11 × 1.5
+        self.assertEqual(done[a5]["widen_failed"], "加宽会多出一页，没加")
+        self.assertNotIn("error", done[a5])
+        self.assertEqual(self.sheet.rows[5].RowHeight, 18.75 + 13.75 + 16.5)
         batch._hand_over(self.path, done)
-        self.assertIn("列宽", self.card("A5")["message"])
-        self.assertNotIn("grown", self.card("A5"))
+        self.assertEqual(self.card("A5")["message"], batch.GROWN_MESSAGE)
+        self.assertNotIn("width_only", self.card("A5"))
 
     # 复检又查出切字（例如人工改完后行高不够）：和扫描一样开换行加高，再复检一遍（用户 2026-11-04 要）
     def session(self):
