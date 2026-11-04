@@ -1915,7 +1915,10 @@ def _widen_columns(book: Any, cards: list[dict], missing: dict[str, int], done: 
             if col in _shape_cols(sheet):
                 raise ValueError("有图片或图形压着这一列")
             size = _font_size(area)
-            chars = missing.get(card["id"], 1) - 1 + WIDEN_CHARS
+            # 已经折成几行的长名字（例如 shougaiji_shien_sadameru_gaku_umu 三行）：每行多放一点，
+            # 少的字母分摊到各行，不用整个加到一行上
+            lines = max(1, int(float(area.Height) // (size * LINE_HEIGHT_RATIO))) if area.WrapText is True else 1
+            chars = math.ceil(missing.get(card["id"], 1) / lines) - 1 + WIDEN_CHARS
             entry = cols.setdefault((sheet.Name, col), {"sheet": sheet, "extra": 0.0, "cards": []})
             entry["extra"] = max(entry["extra"], chars * size * HALF_WIDTH_RATIO)
             entry["cards"].append(card["id"])

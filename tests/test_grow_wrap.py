@@ -261,6 +261,16 @@ class GrowWrapTests(unittest.TestCase):
         self.assertFalse(batch._width_only({"text": "shikuchoson"}, [{"kind": "clip", "visible_text": "shikuchoso"}]))
         self.assertFalse(batch._width_only({"text": "two words"}, [{"kind": "hidden", "visible_text": "two"}]))
 
+    def test_wrapped_long_name_spreads_missing_letters_over_its_lines(self):
+        """三行的长名字少了 5 个字母：每行多放 2 个就够，加 2 - 1 + 1.5 = 2.5 个字母宽，不是 5.5 个"""
+        cols = self.columns()
+        area = self.sheet.areas["C5"]  # 已开换行、字号 14
+        area.Height = 14 * 1.25 * 3
+        self.add("C5", 5, kind="hidden", hidden_reason="truncated", text="shougaiji_shien_sadameru_gaku_umu",
+                 visible_text="shougaiji_shien_sadameru_gak")
+        batch._grow_and_wrap(Mock(), self.path, 1.5)
+        self.assertAlmostEqual(cols[1].Width, 60 + 2.5 * 14 * 0.55)
+
     def test_widening_that_adds_a_page_goes_back(self):
         cols = self.columns(pages=(1, 2))
         self.add("A5", 5, kind="hidden", hidden_reason="truncated", text="shikuchoson", visible_text="shikucho")
