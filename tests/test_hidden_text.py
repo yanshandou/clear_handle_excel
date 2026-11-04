@@ -89,20 +89,23 @@ class HiddenTextTests(unittest.TestCase):
                     [(1, 1, text)], pieces, lambda r, c: text, lambda r, c: True,
                 ), [])
 
-    def test_last_letter_stored_as_its_own_piece_on_the_same_line_is_not_hidden(self):
-        """2026-11-04 用户截图：PDF 里 shikuchoson 整个印出来了，最后的 n 在 PDF 里单独一段，
-        提取成紧挨在右边的另一个片段，以前只往下一行找、报成只显示 shikuchoso"""
-        def word(text, x, y=100.0):
-            return Piece(0, [(c, (x + i * 5, y, x + i * 5 + 5, y + 9), True) for i, c in enumerate(text)])
+    def test_same_text_in_other_columns_goes_back_to_its_own_column(self):
+        """2026-11-04 用户的 3311.xlsx：F42、H42、F194 都是 shikuchoson，只有 H42 行高不够、少了 n。
+        以前 H42 拿走 F194 的完整片段，截断报在 F194 上（加高、加宽 F 列都白做），H42 反而没报"""
+        def word(text, x, y, page=0):
+            return Piece(page, [(c, (x + i * 3, y, x + i * 3 + 3, y + 6), True) for i, c in enumerate(text)])
 
-        pieces = [word("shikuchoso", 50), word("n", 100.5)]
-        self.assertEqual(find_hidden_cells(
-            [(194, 6, "shikuchoson")], pieces, lambda r, c: "shikuchoson", lambda r, c: True), [])
-        # 隔得远（另一格的字）不接；真的没印出来照样报，并记下附近的片段
-        far = [word("shikuchoso", 50), word("n", 110)]
-        result = find_hidden_cells([(194, 6, "shikuchoson")], far, lambda r, c: "shikuchoson", lambda r, c: True)
-        self.assertEqual([(r["reason"], r["visible"]) for r in result], [(REASON_TRUNCATED, "shikuchoso")])
-        self.assertIn("「n」", result[0]["nearby"])
+        pieces = [word("eigyousho_id", 279, 100), word("eigyousho_i", 371, 100), word("d", 371, 106.7),
+                  word("todou_fuken", 279, 481), word("todoufuken", 371, 481),
+                  word("shikuchoson", 279, 488), word("shikuchoso", 371, 488),
+                  word("shikuchoson", 279, 693, page=3)]
+        # F、H 两列的位置用各自文字不重复的格子（todou_fuken、todoufuken）量
+        cells = [(15, 6, "eigyousho_id"), (15, 8, "eigyousho_id"), (41, 6, "todou_fuken"), (41, 8, "todoufuken"),
+                 (42, 6, "shikuchoson"), (42, 8, "shikuchoson"), (194, 6, "shikuchoson")]
+        values = {(r, c): v for r, c, v in cells}
+        result = find_hidden_cells(cells, pieces, lambda r, c: values[(r, c)], lambda r, c: True)
+        self.assertEqual([(r["row"], r["col"], r["visible"]) for r in result], [(42, 8, "shikuchoso")])
+        self.assertIn("本段「shikuchoso」", result[0]["nearby"])
 
     def test_hidden_dakuten_is_still_reported_with_its_location(self):
         pieces = [Piece(0, [("ﾌ", (50, 90, 60, 100), True),

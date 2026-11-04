@@ -700,7 +700,7 @@ def _detect_sheet_results(
 
 
 # 检测规则变化时加一：之前按旧规则查过的文件即使没改过，下次扫描也要整份重新检查
-DETECTOR_VERSION = 21  # 21：同一行被拆成两段存的字（最后一个字母单独一段）接起来，不再误报截断
+DETECTOR_VERSION = 21  # 21：不同列里文字一样的格子按位置分回各列，不再把截断报到别的格子上
 
 
 def _confirm_clip_cells(

@@ -249,22 +249,11 @@ class _Matcher:
             and not _border_between(prev, p)
         ]
 
-    def _right(self, prev: Piece) -> list[Piece]:
-        """同一行紧挨在右边的片段：PDF 里一行字有时被拆成两段文字存（例如 shikuchoson 的最后一个 n 单独一段），
-        提取时成了两个片段。只接间距和同一行里切开的标准一样小（≤ 1.5pt）、上下对齐的，隔着格子边框的字离得更远"""
-        x0, y0, x1, y1 = prev.bbox
-        return [
-            p for p in self.by_page[prev.page]
-            if p is not prev and -1.0 < p.bbox[0] - x1 <= 1.5
-            and min(y1, p.bbox[3]) - max(y0, p.bbox[1]) >= 0.7 * min(prev.height, p.height)
-        ]
-
     def _chunks(
         self, text: str, pos: int, prev: Piece | None, loose: bool, blank_lines: int = 0,
     ) -> list[Chunk]:
         """text[pos:] 开头能对上的片段。exact 只认整段；loose 允许首段是某段的后半、末段是某段的前半。"""
-        candidates = (self.by_char.get(text[pos], []) if prev is None
-                      else self._right(prev) + self._below(prev, blank_lines))
+        candidates = self.by_char.get(text[pos], []) if prev is None else self._below(prev, blank_lines)
         found: list[Chunk] = []
         for piece in candidates:
             starts = [0] if prev is not None or not loose else [
@@ -359,8 +348,7 @@ class _Matcher:
 
 
 def _nearby_pieces(matcher: "_Matcher", chain: list[Chunk], limit: int = 8) -> str:
-    """只打印出开头一段时，记下 PDF 里这一段右边、下面的文字片段（调试日志用）：
-    排查「其实印全了却报没显示」的误报（2026-11-04 shikuchoson 整个印出来了却报只显示 shikuchoso）"""
+    """只打印出开头一段时，记下 PDF 里这一段右边、下面的文字片段（调试日志用），排查误报、报错格子"""
     last = chain[-1][0]
     x0, y0, x1, y1 = last.bbox
     height = last.height
@@ -378,23 +366,49 @@ def _nearby_pieces(matcher: "_Matcher", chain: list[Chunk], limit: int = 8) -> s
 
 
 def _order_same_text(records: dict[tuple[int, int], dict[str, Any]]) -> None:
-    """同一列里文字一样的几格，按先到先得配到的片段不一定是自己那一格：
+    """文字一样的几格，按先到先得配到的片段不一定是自己那一格：
     例如 C130～C133 都是「全営業所分データ送信」，只有 C130 行高不够、只印出「全営業所分データ送」，
     先配的 C130 会拿走 C131 的完整片段，最后剩下的 C130 那段被算到 C133 头上，标色标错行。
     同一列上下顺序和 PDF 里的上下顺序一致：按行号排格子、按（页, 上边, 左边）排片段，一一重新对应。
+    不同列也会撞（2026-11-04：F42、H42、F194 都是 shikuchoson，只有 H42 真的少了 n，
+    结果 H42 拿了 F194 的完整片段，F194 被报截断、加高加宽都白做）：先按片段左边的位置分回各列
+    （各列的位置用这一列文字不重复的格子量），再在每列里按上下顺序对应。
     片段完整还是只有开头（kind）跟着片段走"""
-    groups: dict[tuple[str, int], list[tuple[int, int]]] = {}
+    texts: dict[str, list[tuple[int, int]]] = {}
     for key, rec in records.items():
         if rec["kind"] in ("full", "prefix") and rec["chain"]:
-            groups.setdefault((normalize_text(rec["cell"]["text"]), key[1]), []).append(key)
-    for keys in groups.values():
-        if len(keys) < 2:
-            continue
-        keys.sort()
-        found = [(records[k]["kind"], records[k]["chain"]) for k in keys]
-        found.sort(key=lambda kc: (kc[1][0][0].page, kc[1][0][0].bbox[1], kc[1][0][0].bbox[0]))
+            texts.setdefault(normalize_text(rec["cell"]["text"]), []).append(key)
+    col_x: dict[int, list[float]] = {}
+    for keys in texts.values():
+        if len(keys) == 1:
+            col_x.setdefault(keys[0][1], []).append(records[keys[0]]["chain"][0][0].bbox[0])
+    left = {col: sorted(xs)[len(xs) // 2] for col, xs in col_x.items()}
+
+    def by_row(keys: list[tuple[int, int]], found: list[tuple[str, list[Chunk]]]) -> None:
+        keys = sorted(keys)
+        found = sorted(found, key=lambda kc: (kc[1][0][0].page, kc[1][0][0].bbox[1], kc[1][0][0].bbox[0]))
         for key, (kind, chain) in zip(keys, found):
             records[key]["kind"], records[key]["chain"] = kind, chain
+
+    for keys in texts.values():
+        if len(keys) < 2:
+            continue
+        columns: dict[int, list[tuple[int, int]]] = {}
+        for key in keys:
+            columns.setdefault(key[1], []).append(key)
+        found = [(records[k]["kind"], records[k]["chain"]) for k in keys]
+        if len(columns) > 1 and all(col in left for col in columns):
+            split: dict[int, list[tuple[str, list[Chunk]]]] = {col: [] for col in columns}
+            for kind, chain in found:
+                x = chain[0][0].bbox[0]
+                split[min(columns, key=lambda col: abs(left[col] - x))].append((kind, chain))
+            if all(len(split[col]) == len(columns[col]) for col in columns):
+                for col, col_keys in columns.items():
+                    by_row(col_keys, split[col])
+                continue
+        for col_keys in columns.values():
+            if len(col_keys) > 1:
+                by_row(col_keys, [(records[k]["kind"], records[k]["chain"]) for k in col_keys])
 
 
 def _border_between(upper: Piece, lower: Piece) -> bool:
