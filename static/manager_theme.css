@@ -1,0 +1,257 @@
+/* ==========================================
+   上传管理风格（参考 /distribute/manage 的 cartoon-style.css）
+   只改颜色、边框、阴影、字体效果，不改布局和位置。
+   - 宝蓝底 + 淡圆斑 + 点阵
+   - 顶栏蓝色渐变，当前页是黄色药丸
+   - 面板：浅蓝白底、3px 藏青描边、16px 圆角、6px 硬阴影
+   - 面板标题栏：彩色网点色带（紫 / 橙 / 绿 / 蓝 轮换），白字藏青粗描边
+   - 主按钮金黄，次按钮白→浅蓝，表头蓝色渐变
+   加载顺序：放在本页所有样式表最后。
+   ========================================== */
+:root {
+  --m-ink: #1b2a55;
+  --m-shadow: #0e1a3d;
+  --m-muted: #4d618c;
+  --m-gold-edge: #7a4306;
+  --m-surface: #f3f8ff;
+  --m-surface-2: #e3efff;
+  --m-line: #b8cdf0;
+}
+
+/* ---------- 背景 ---------- */
+body {
+  background-color: #2b84df;
+  background-image:
+    radial-gradient(circle at 16% 20%, #ffffff14 0 90px, transparent 91px),
+    radial-gradient(circle at 84% 36%, #ffffff12 0 130px, transparent 131px),
+    radial-gradient(circle at 28% 86%, #ffffff12 0 110px, transparent 111px),
+    radial-gradient(circle, #ffffff10 2px, transparent 3px);
+  background-size: auto, auto, auto, 28px 28px;
+  background-attachment: fixed;
+}
+
+/* ---------- 顶栏 ---------- */
+.app-header {
+  color: #fff;
+  background: linear-gradient(135deg, #2866c5, #234a9c 60%, #1c3f8c);
+  border-bottom: 3px solid #19265d;
+  box-shadow: none;
+}
+.app-header h1 { color: #fff; text-shadow: none; }
+.app-header .subtitle { color: #d4e6ff; }
+
+.nav-link {
+  color: #e7f1ff;
+  background: transparent;
+  border: 2px solid transparent;
+  border-radius: 10px;
+  box-shadow: none;
+}
+.nav-link:hover {
+  color: #fff;
+  background: #ffffff1c;
+  border-color: transparent;
+}
+.nav-link.active,
+.nav-link.active:hover {
+  color: #19265d;
+  background: #ffdc59;
+  border-color: #19265d;
+  box-shadow: 0 2px 0 #19265d;
+  text-shadow: none;
+}
+
+/* ---------- 面板 ---------- */
+.panel {
+  background: var(--m-surface);
+  border: 3px solid var(--m-ink);
+  border-radius: 16px;
+  box-shadow: 0 6px 0 var(--m-shadow);
+}
+
+/* 标题栏做成整条彩色网点色带：负边距贴到面板边上，内边距补回，所以里面的东西位置不变。 */
+.panel > .panel-section-head:first-child {
+  --m-band-top: #9b45dd;
+  --m-band-bot: #6d24b8;
+  --m-band-sub: #f1e6ff;
+  margin: -20px -24px 16px;
+  padding: 14px 24px 12px;
+  color: #fff;
+  background:
+    radial-gradient(circle, #ffffff1f 2px, transparent 2.5px) 0 0 / 14px 14px,
+    linear-gradient(180deg, var(--m-band-top), var(--m-band-bot));
+  border-bottom: 3px solid var(--m-ink);
+  border-radius: 13px 13px 0 0;
+  box-shadow: inset 0 3px 0 #ffffff40;
+}
+.container > .panel:nth-of-type(4n + 2) > .panel-section-head:first-child {
+  --m-band-top: #ff9a2e;
+  --m-band-bot: #e0640f;
+  --m-band-sub: #fff1dc;
+}
+.container > .panel:nth-of-type(4n + 3) > .panel-section-head:first-child {
+  --m-band-top: #2fb36a;
+  --m-band-bot: #1a8a4c;
+  --m-band-sub: #e3fbe9;
+}
+.container > .panel:nth-of-type(4n + 4) > .panel-section-head:first-child {
+  --m-band-top: #3a8ef0;
+  --m-band-bot: #1f63c4;
+  --m-band-sub: #e3f0ff;
+}
+
+.panel-section-title {
+  color: #fff;
+  font-size: 18px;
+  font-weight: 800;
+  text-shadow: none;
+  -webkit-text-stroke: 5px var(--m-ink);
+  paint-order: stroke fill;
+  filter: drop-shadow(0 3px 0 var(--m-ink));
+}
+.panel-section-title .step-chip,
+.panel-section-title button,
+.panel-section-title .btn {
+  -webkit-text-stroke: 0;
+  filter: none;
+}
+.panel-section-sub,
+.panel > .panel-section-head:first-child .toolbar-hint {
+  color: var(--m-band-sub, #f1e6ff);
+  text-shadow: 0 1px 0 #0e1a3d80;
+}
+
+/* 步骤标签：金黄小牌 */
+.step-chip,
+.step-chip-teal {
+  color: #5a2d00;
+  background: linear-gradient(#ffe65f, #ffc226 55%, #ffa800);
+  border: 2px solid var(--m-gold-edge);
+  border-radius: 8px;
+  box-shadow: inset 0 2px 0 #fff9, 0 2px 0 var(--m-shadow);
+  text-shadow: none;
+}
+.step-chip::before,
+.step-chip::after { display: none; }
+
+/* ---------- 按钮 ---------- */
+.btn,
+.btn-outline,
+.btn-outline:hover:not(:disabled),
+.btn-outline:active:not(:disabled) {
+  --b-top: #ffffff;
+  --b: #cfe3ff;
+  --b-edge: #a9c6f2;
+  color: var(--m-ink);
+  border-color: var(--m-ink);
+  border-radius: 12px;
+}
+.btn {
+  box-shadow: inset 0 3px 0 #fff, inset 0 -3px 0 var(--b-edge), 0 4px 0 var(--m-shadow);
+}
+.btn-sm {
+  border-radius: 10px;
+  box-shadow: inset 0 2px 0 #fff, inset 0 -3px 0 var(--b-edge), 0 3px 0 var(--m-shadow);
+}
+.btn-primary,
+.btn-primary:hover:not(:disabled) {
+  --b-top: #ffe65f;
+  --b: #ffb000;
+  --b-edge: #e08a00;
+  color: #5a2d00;
+  border-color: var(--m-gold-edge);
+  text-shadow: 0 1px 0 #fff6;
+  box-shadow: inset 0 3px 0 #fff9, inset 0 -4px 0 var(--b-edge), 0 4px 0 #3b2203;
+}
+.btn-success { --b-top: #4aa0f7; --b: #2370d0; --b-edge: #1a58a8; color: #fff; }
+.btn-danger,
+.btn-danger:hover:not(:disabled) { --b-top: #ff7a6b; --b: #d42a2e; --b-edge: #a01a1d; color: #fff; border-color: #5a0e10; }
+.btn-success,
+.btn-danger {
+  text-shadow: 0 1px 0 #0e1a3d, 0 0 2px #0e1a3d;
+  box-shadow: inset 0 3px 0 #ffffff55, inset 0 -4px 0 var(--b-edge), 0 4px 0 var(--m-shadow);
+}
+.btn-outline:hover:not(:disabled),
+.btn-success:hover:not(:disabled),
+.btn-danger:hover:not(:disabled) {
+  filter: brightness(1.05);
+  box-shadow: inset 0 3px 0 #fff, inset 0 -3px 0 var(--b-edge), 0 4px 0 var(--m-shadow);
+}
+.btn-sm:hover:not(:disabled) {
+  box-shadow: inset 0 2px 0 #fff, inset 0 -3px 0 var(--b-edge), 0 3px 0 var(--m-shadow);
+}
+.btn:active:not(:disabled),
+.btn-outline:active:not(:disabled),
+.btn-primary:active:not(:disabled),
+.btn-success:active:not(:disabled),
+.btn-danger:active:not(:disabled),
+.btn.btn-sm:active:not(:disabled) {
+  box-shadow: inset 0 3px 0 #ffffff80, inset 0 -2px 0 var(--b-edge), 0 1px 0 var(--m-shadow);
+}
+
+/* ---------- 输入框 ---------- */
+.panel input[type="text"],
+.panel input[type="search"],
+.panel input[type="number"],
+.panel input:not([type]),
+.panel select {
+  color: var(--m-ink);
+  background-color: #fff;
+  border: 2px solid var(--m-ink);
+  border-radius: 10px;
+  box-shadow: inset 0 2px 3px #1b2a5526;
+}
+.input-groove-wrap {
+  background: #fff;
+  border: 2px solid var(--m-ink);
+  border-radius: 12px;
+  box-shadow: inset 0 2px 3px #1b2a5526;
+}
+.input-groove-wrap input,
+.input-groove-wrap input:focus {
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+/* ---------- 进度条：深槽 + 绿条 ---------- */
+.progress-track {
+  background: #1d2d5c;
+  border: 2px solid var(--m-ink);
+  border-radius: 999px;
+  box-shadow: inset 0 2px 3px #0008;
+}
+.progress-fill {
+  background: linear-gradient(#b4f56a, #5ed827 55%, #36b01a);
+  box-shadow: inset 0 2px 0 #ffffff80;
+}
+
+/* ---------- 表格 ---------- */
+.panel table thead,
+.records-table thead {
+  background: linear-gradient(#3a8ef0, #2370d0);
+}
+.panel table th,
+.records-table th {
+  color: #fff;
+  background: transparent;
+  text-shadow: 0 1px 0 var(--m-ink);
+  border-bottom: 3px solid var(--m-ink);
+}
+.panel table tbody tr:hover { background: #fff3c9; }
+
+/* ---------- 日志 / 虚线托盘 ---------- */
+.info-panel .log-box {
+  background: #fff;
+  border-color: var(--m-ink);
+}
+.info-panel summary { color: var(--m-ink); }
+
+/* ---------- 对话框 ---------- */
+.app-dialog {
+  background: var(--m-surface);
+  border: 3px solid var(--m-ink);
+  border-radius: 18px;
+  box-shadow: 0 8px 0 var(--m-shadow), 0 24px 60px #0008;
+}
+.app-dialog::backdrop { background: #0a1946b3; }
