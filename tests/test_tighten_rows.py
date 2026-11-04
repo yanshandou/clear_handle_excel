@@ -159,6 +159,25 @@ class TightenRowsTests(unittest.TestCase):
         self.assertEqual(rechecks, [batch.TIGHTEN_PASSED_MESSAGE, "人工修改后复检通过"])
         self.assertEqual(self.book.Save.call_count, 2)
 
+    def test_new_cut_in_other_rows_after_tighten_is_grown_but_tightened_rows_are_not(self):
+        """收紧后复检在别的行（以前没出过问题）查出新的切字：和普通复检一样加高；收过、退回过的行不加（用户 2026-11-04 要）"""
+        self.use(Sheet({5: 200.0}, {(5, 1): Area(5, 1, "字", need=15.0)}))
+        a5 = self.card("A5")
+
+        def recheck(_excel, path, cards, passed_message="", found_message=""):
+            self.card("B5")  # 同一行新查出的：收紧管的行，不加
+            self.card("A12")  # 别的行新查出的：加
+
+        with patch.object(batch, "_recheck_file", side_effect=recheck), \
+                patch.object(batch, "close_saved_workbooks", return_value={}), \
+                patch.object(batch, "_grow_after_recheck") as grow:
+            batch._tighten_file(Mock(), self.path, 1.2)
+        _, _, skip, ratio = grow.call_args[0]
+        self.assertEqual(ratio, 1.2)
+        self.assertIn(a5, skip)
+        self.assertIn(batch._key(self.path, "S1", "B5"), skip)
+        self.assertNotIn(batch._key(self.path, "S1", "A12"), skip)
+
     def test_file_still_open_and_unsaved_asks_to_save(self):
         self.card("A5")
         with patch.object(batch, "close_saved_workbooks", return_value={Path(self.path): "文件还有没保存的修改"}), \

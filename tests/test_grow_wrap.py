@@ -218,6 +218,117 @@ class GrowWrapTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "1.5 或 1.2"):
                 batch.grow_ratio(bad)
 
+    def columns(self, pages=(1, 1)):
+        """给假表加上列（ColumnWidth 按 1 字 = 6pt）和打印页数（加宽前、后各读一次）"""
+        class Column:
+            def __init__(self):
+                self.ColumnWidth = 10.0
+
+            @property
+            def Width(self):
+                return self.ColumnWidth * 6.0
+
+        cols = {}
+        self.sheet.Columns = lambda col: cols.setdefault(col, Column())
+        self.sheet.Shapes = []
+        self.sheet.PageSetup = Mock()
+        type(self.sheet.PageSetup).Pages = property(lambda _s, it=iter(pages): Mock(Count=next(it)))
+        for area in self.sheet.areas.values():
+            area.Column = 1
+        return cols
+
+    def test_one_english_word_wider_than_the_column_widens_the_column(self):
+        """shikuchoson 只打印出 shikuchoso：Excel 量着一行放得下，加高没用，改成把列加宽 1.5 个字母（用户 2026-11-04 定）"""
+        cols = self.columns()
+        self.add("A5", 5, kind="hidden", hidden_reason="truncated", text="shikuchoson", visible_text="shikuchoso")
+        self.add("E9", 9, kind="hidden", hidden_reason="truncated", text="長い説明文", visible_text="長い")
+        done = batch._grow_and_wrap(Mock(), self.path, 1.5)
+        a5 = batch._key(self.path, "S1", "A5")
+        self.assertTrue(done[a5]["width_only"])
+        self.assertNotIn("error", done[a5])
+        self.assertEqual(self.sheet.rows[5].RowHeight, 18.75)  # 不加高
+        self.assertGreater(self.sheet.rows[9].RowHeight, 18.75)  # 日文照样加高
+        # 字号 11：1.5 × 11 × 0.55 = 9.075pt，原来 60pt
+        self.assertAlmostEqual(cols[1].Width, 69.075)
+        self.assertAlmostEqual(done[a5]["applied_width"], 69.07, places=1)
+        self.book.Save.assert_called_once()
+        batch._hand_over(self.path, done)
+        card = self.card("A5")
+        self.assertEqual(card["message"], batch.WIDENED_MESSAGE)
+        self.assertTrue(card["width_only"])
+        self.assertIn("列宽不够 · 已加宽", batch._card_category(card, batch._items_at(card))[1])
+        # 只是一个单词但显示的不是开头一段（例如被边框压住）、或有空格：照样加高
+        self.assertFalse(batch._width_only({"text": "shikuchoson"}, [{"kind": "clip", "visible_text": "shikuchoso"}]))
+        self.assertFalse(batch._width_only({"text": "two words"}, [{"kind": "hidden", "visible_text": "two"}]))
+
+    def test_wrapped_long_name_spreads_missing_letters_over_its_lines(self):
+        """三行的长名字少了 5 个字母：每行多放 2 个就够，加 2 - 1 + 1.5 = 2.5 个字母宽，不是 5.5 个"""
+        cols = self.columns()
+        area = self.sheet.areas["C5"]  # 已开换行、字号 14
+        area.Height = 14 * 1.25 * 3
+        self.add("C5", 5, kind="hidden", hidden_reason="truncated", text="shougaiji_shien_sadameru_gaku_umu",
+                 visible_text="shougaiji_shien_sadameru_gak")
+        batch._grow_and_wrap(Mock(), self.path, 1.5)
+        self.assertAlmostEqual(cols[1].Width, 60 + 2.5 * 14 * 0.55)
+
+    def test_widening_that_adds_a_page_goes_back(self):
+        cols = self.columns(pages=(1, 2))
+        self.add("A5", 5, kind="hidden", hidden_reason="truncated", text="shikuchoson", visible_text="shikucho")
+        done = batch._grow_and_wrap(Mock(), self.path, 1.5)
+        a5 = batch._key(self.path, "S1", "A5")
+        self.assertEqual(cols[1].ColumnWidth, 10.0)  # 退回
+        # 改成加一行行高：Excel 量着放得下（还差 0），也至少多给一行 11 × 1.25，再加 11 × 1.5
+        self.assertEqual(done[a5]["widen_failed"], "加宽会多出一页，没加")
+        self.assertNotIn("error", done[a5])
+        self.assertEqual(self.sheet.rows[5].RowHeight, 18.75 + 13.75 + 16.5)
+        batch._hand_over(self.path, done)
+        self.assertEqual(self.card("A5")["message"], batch.GROWN_MESSAGE)
+        self.assertNotIn("width_only", self.card("A5"))
+
+    # 复检又查出切字（例如人工改完后行高不够）：和扫描一样开换行加高，再复检一遍（用户 2026-11-04 要）
+    def session(self):
+        return Mock(app=Mock(return_value=Mock()))
+
+    def test_new_cut_cells_found_by_recheck_are_grown_then_rechecked(self):
+        self.add("A5", 5)
+        self.add("E9", 9)
+        batch._hand_over(self.path)
+        batch._data()["grow_ratio"] = 1.2
+        tried = batch._grown_before_recheck(self.path)
+        self.assertEqual(tried, set())
+        with patch.object(batch, "_recheck_file") as recheck:
+            batch._grow_after_recheck(self.session(), self.path, tried)
+        self.assertEqual(self.card("A5")["grown"]["ratio"], 1.2)
+        self.assertEqual(self.card("A5")["message"], batch.GROWN_MESSAGE)
+        recheck.assert_called_once()
+        _, kwargs = recheck.call_args
+        self.assertEqual(kwargs["passed_message"], batch.RECHECK_GROWN_PASSED_MESSAGE)
+        self.assertEqual(kwargs["found_message"], batch.GROWN_FAILED_MESSAGE)
+        self.assertEqual({c["cell_addr"] for c in recheck.call_args[0][2]}, {"A5", "E9"})
+
+    def test_cells_already_grown_before_recheck_are_left_to_people(self):
+        self.add("A5", 5)
+        batch._hand_over(self.path, batch._grow_and_wrap(Mock(), self.path, 1.5))
+        height = self.sheet.rows[5].RowHeight
+        self.book.Save.reset_mock()
+        tried = batch._grown_before_recheck(self.path)
+        self.assertEqual(tried, {batch._key(self.path, "S1", "A5")})
+        with patch.object(batch, "_recheck_file") as recheck:
+            batch._grow_after_recheck(self.session(), self.path, tried)
+        self.assertEqual(self.sheet.rows[5].RowHeight, height)  # 不再加
+        self.book.Save.assert_not_called()
+        recheck.assert_not_called()
+
+    def test_file_changed_meanwhile_is_not_touched(self):
+        self.add("A5", 5)
+        batch._hand_over(self.path)
+        Path(self.path).write_bytes(b"edited again")
+        with patch.object(batch, "_recheck_file") as recheck, patch.object(batch, "_restart_excel") as restart:
+            batch._grow_after_recheck(self.session(), self.path, set())
+        recheck.assert_not_called()
+        restart.assert_not_called()
+        self.assertNotIn("grown", self.card("A5"))
+
 
 if __name__ == "__main__":
     unittest.main()
