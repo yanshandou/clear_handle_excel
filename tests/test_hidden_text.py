@@ -89,6 +89,24 @@ class HiddenTextTests(unittest.TestCase):
                     [(1, 1, text)], pieces, lambda r, c: text, lambda r, c: True,
                 ), [])
 
+    def test_same_text_in_other_columns_goes_back_to_its_own_column(self):
+        """2026-11-04 用户的 3311.xlsx：F42、H42、F194 都是 shikuchoson，只有 H42 行高不够、少了 n。
+        以前 H42 拿走 F194 的完整片段，截断报在 F194 上（加高、加宽 F 列都白做），H42 反而没报"""
+        def word(text, x, y, page=0):
+            return Piece(page, [(c, (x + i * 3, y, x + i * 3 + 3, y + 6), True) for i, c in enumerate(text)])
+
+        pieces = [word("eigyousho_id", 279, 100), word("eigyousho_i", 371, 100), word("d", 371, 106.7),
+                  word("todou_fuken", 279, 481), word("todoufuken", 371, 481),
+                  word("shikuchoson", 279, 488), word("shikuchoso", 371, 488),
+                  word("shikuchoson", 279, 693, page=3)]
+        # F、H 两列的位置用各自文字不重复的格子（todou_fuken、todoufuken）量
+        cells = [(15, 6, "eigyousho_id"), (15, 8, "eigyousho_id"), (41, 6, "todou_fuken"), (41, 8, "todoufuken"),
+                 (42, 6, "shikuchoson"), (42, 8, "shikuchoson"), (194, 6, "shikuchoson")]
+        values = {(r, c): v for r, c, v in cells}
+        result = find_hidden_cells(cells, pieces, lambda r, c: values[(r, c)], lambda r, c: True)
+        self.assertEqual([(r["row"], r["col"], r["visible"]) for r in result], [(42, 8, "shikuchoso")])
+        self.assertIn("本段「shikuchoso」", result[0]["nearby"])
+
     def test_hidden_dakuten_is_still_reported_with_its_location(self):
         pieces = [Piece(0, [("ﾌ", (50, 90, 60, 100), True),
                             ("ﾞ", (60, 90, 65, 100), False)])]

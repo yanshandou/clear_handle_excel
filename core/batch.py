@@ -588,12 +588,8 @@ def _card_category(card: dict, items: list[dict]) -> tuple[str, str]:
     if kind in autofix.CUT_ERROR_TYPES:
         grown = card.get("grown") or {}
         ok = bool(grown) and "error" not in grown
-        if card.get("width_only"):
-            parts.append("narrow" if ok else "narrow_plain")
-            names.append("列宽不够 · 已加宽" if ok else "列宽不够 · 没加宽")
-        else:
-            parts.append("grown" if ok else "plain")
-            names.append("已加高" if ok else "没加高")
+        parts.append("grown" if ok else "plain")
+        names.append("已加高" if ok else "没加高")
     if kind == autofix.ERROR_TYPE_TEXT_TRUNCATED:
         lines = _missing_lines(items)
         if lines:
@@ -1470,10 +1466,7 @@ def _recheck_file(excel: Any, path: str, cards: list[dict], *, passed_message: s
             if id(card) in waiting or (card.get("marked") and card["color"] != "yellow" and not card.get("finalized")):
                 continue  # 全自动还没轮到的，或你已标蓝 / 绿还没提交的，保留原样
             found += 1
-            if card.get("width_only"):
-                message = WIDENED_FAILED_MESSAGE if card.get("grown") else f"{WIDTH_ONLY_MESSAGE}，保存后复检"
-            else:
-                message = found_message if card.get("grown") else "复检查出的问题：请修改并保存后再复检"
+            message = found_message if card.get("grown") else "复检查出的问题：请修改并保存后再复检"
             card.update(color="yellow", verified=False, manual=True, finalized=True, waiting=False,
                         dismissed=False, message=message)
             for item in group:
@@ -1861,111 +1854,13 @@ class _Measurer:
             self.book = None
 
 
-WIDTH_ONLY_MESSAGE = "一个英文单词比列宽长，开换行、加高都没用，请把这一列调宽一点（或缩小字号）"
-WIDENED_MESSAGE = "一个英文单词比列宽长：已把这一列加宽一点并保存，效果请人工看"
-WIDENED_FAILED_MESSAGE = "已把这一列加宽一点并复检，还有问题：请人工把这一列再调宽（或缩小字号）后保存再复检"
-WIDEN_CHARS = 1.5  # 少几个字母就补几个字母宽，再多留半个（少一个字母时正好加 1.5 个字母宽，用户 2026-11-04 定）
-_ONE_WORD = re.compile(r"[!-~]+")  # 只有半角字母数字符号、中间没有空格：Excel 不会在中间换行
-
-
-def _missing_chars(card: dict, items: list[dict]) -> int:
-    """打印时少了几个字母（至少 1）"""
-    text = str(card.get("text") or "").strip()
-    return max([1] + [len(text) - len(str(it.get("visible_text") or "").strip()) for it in items])
-
-
-def _shape_cols(sheet: Any) -> set[int]:
-    """图片、图形压着的列不加宽：加宽会把图拉变形（批注不算）"""
-    cols: set[int] = set()
-    try:
-        shapes = list(sheet.Shapes)
-    except Exception:
-        return cols
-    for shape in shapes:
-        try:
-            if int(shape.Type) == 4:  # msoComment
-                continue
-            cols.update(range(int(shape.TopLeftCell.Column), int(shape.BottomRightCell.Column) + 1))
-        except Exception:
-            continue
-    return cols
-
-
-def _page_count(sheet: Any) -> int | None:
-    try:
-        return int(sheet.PageSetup.Pages.Count)
-    except Exception:
-        return None
-
-
-def _widen_columns(book: Any, cards: list[dict], missing: dict[str, int], done: dict[str, dict]) -> int:
-    """一个英文单词放不下的格子：把它所在的列（合并格取最右一列）加宽「少的字母数 + 0.5」个字母宽。
-    同一列只加一次，按要加最多的算。加宽后这张表打印页数变多就退回原列宽，交给人工。返回加宽了几列"""
-    cols: dict[tuple[str, int], dict] = {}
-    for card in cards:
-        where = f"{card['sheet_name']}!{card['cell_addr']}"
-        try:
-            sheet = _find_sheet(book, card["sheet_name"])
-            if sheet is None:
-                raise ValueError("找不到这张表")
-            area = sheet.Range(card["cell_addr"]).MergeArea
-            if bool(area.ShrinkToFit):
-                raise ValueError("缩小字体填充")
-            col = int(area.Column) + int(area.Columns.Count) - 1
-            if col in _shape_cols(sheet):
-                raise ValueError("有图片或图形压着这一列")
-            size = _font_size(area)
-            # 已经折成几行的长名字（例如 shougaiji_shien_sadameru_gaku_umu 三行）：每行多放一点，
-            # 少的字母分摊到各行，不用整个加到一行上
-            lines = max(1, int(float(area.Height) // (size * LINE_HEIGHT_RATIO))) if area.WrapText is True else 1
-            chars = math.ceil(missing.get(card["id"], 1) / lines) - 1 + WIDEN_CHARS
-            entry = cols.setdefault((sheet.Name, col), {"sheet": sheet, "extra": 0.0, "cards": []})
-            entry["extra"] = max(entry["extra"], chars * size * HALF_WIDTH_RATIO)
-            entry["cards"].append(card["id"])
-            done[card["id"]] = {"width_only": True, "column": col, "chars": chars, "font": size,
-                                "merged": int(area.Rows.Count) > 1 or int(area.Columns.Count) > 1}
-        except Exception as err:
-            done[card["id"]] = {"error": str(err), "width_only": True}
-            debug_log.event("⚠️ 没能加宽列", 格=where, 原因=str(err))
-    by_sheet: dict[str, list[tuple[int, dict]]] = {}
-    for (sheet_name, col), entry in cols.items():
-        by_sheet.setdefault(sheet_name, []).append((col, entry))
-    widened = 0
-    for sheet_name, entries in by_sheet.items():
-        sheet = entries[0][1]["sheet"]
-        pages = _page_count(sheet)
-        old: list[tuple[Any, float]] = []
-        for col, entry in entries:
-            column = sheet.Columns(col)
-            width, chars_width = float(column.Width), float(column.ColumnWidth)
-            if width <= 0:
-                for cid in entry["cards"]:
-                    done[cid] = {"error": "这一列是隐藏的", "width_only": True}
-                continue
-            old.append((column, chars_width))
-            column.ColumnWidth = min(255.0, chars_width * (width + entry["extra"]) / width)
-            applied = float(column.Width)
-            debug_log.event("↔️ 加宽列", 表=sheet_name, 列=col, 原宽=round(width, 2), 新宽=round(applied, 2),
-                            加=round(entry["extra"], 2))
-            for cid in entry["cards"]:
-                done[cid].update(sheet=sheet_name, base_width=round(width, 2), applied_width=round(applied, 2))
-        after = _page_count(sheet)
-        if pages is not None and after is not None and after > pages:
-            for column, chars_width in old:
-                column.ColumnWidth = chars_width
-            wf.log_msg(f"↩️ {sheet_name}：加宽列后打印页数从 {pages} 变成 {after}，退回原列宽，交给人工")
-            debug_log.event("↩️ 加宽多出页，退回", 表=sheet_name, 原页数=pages, 新页数=after)
-            for _, entry in entries:
-                for cid in entry["cards"]:
-                    done[cid] = {"error": "加宽会多出一页，没加", "width_only": True}
-            continue
-        widened += len(old)
-    return widened
+_ONE_WORD = re.compile(r"[!-~]+")  # 只有半角字母数字符号、中间没有空格
 
 
 def _width_only(card: dict, items: list[dict]) -> bool:
     """调用方持有 STATE_LOCK：只是一个英文单词放不下（例如 shikuchoson 只显示出 shikuchoso）。
-    Excel 量着一行放得下，打印时差一两个字母，开换行、加高都显示不全，只能加列宽（2026-11-04 用户日志）"""
+    PDF 里的字比 Excel 屏幕上宽一点，Excel 量着放得下，打印时最后一两个字母被挤到下一行：至少多给一行行高。
+    （2026-11-04 试过加列宽：表是「缩放到一页宽」时整页跟着缩小，下划线被切掉，一份多出 44 处问题，已去掉）"""
     text = str(card.get("text") or "").strip()
     if not _ONE_WORD.fullmatch(text) or not items:
         return False
@@ -1984,14 +1879,9 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float, skip: set[str] | None = 
     skip：这些卡不再加（复检时已经加高过、还没过的，交给人工）。"""
     with wf.STATE_LOCK:
         cards = [c for c in _grow_targets(path) if c["id"] not in (skip or set())]
-        # 一个英文单词放不下：加高没用，改成把列加宽一点（用户 2026-11-04 定）
-        missing = {c["id"]: _missing_chars(c, _items_at(c)) for c in cards if _width_only(c, _items_at(c))}
-    narrow = [c for c in cards if c["id"] in missing]
-    cards = [c for c in cards if c["id"] not in missing]
-    for card in narrow:
-        debug_log.event("↔️ 列宽不够，加宽不加高", 格=f"{card['sheet_name']}!{card['cell_addr']}",
-                        文字=debug_log.clip(card.get("text")), 少几个字=missing[card["id"]])
-    if not cards and not narrow:
+        # 一个英文单词放不下：最后几个字母被挤到下一行，至少多给一行
+        extra_line = {c["id"] for c in cards if _width_only(c, _items_at(c))}
+    if not cards:
         return {}
     _check_file(path)
     before = wf._file_version(Path(path))
@@ -2005,14 +1895,6 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float, skip: set[str] | None = 
     try:
         if book.ReadOnly:
             raise ValueError(f"{name} 以只读方式打开，没能开换行、加高")
-        # 先加宽一个英文单词放不下的列；加不了（多出一页、有图形压着等）的改成加一行行高（用户 2026-11-04 定）
-        widened = _widen_columns(book, narrow, missing, done) if narrow else 0
-        extra_line = {c["id"]: done[c["id"]]["error"] for c in narrow if "error" in done.get(c["id"], {})}
-        for card in narrow:
-            if card["id"] in extra_line:
-                debug_log.event("↕️ 加宽不了，改加一行行高", 格=f"{card['sheet_name']}!{card['cell_addr']}",
-                                原因=done[card["id"]]["error"])
-        cards = cards + [c for c in narrow if c["id"] in extra_line]
         rows: dict[tuple[str, int], dict] = {}
         for card in cards:
             where = f"{card['sheet_name']}!{card['cell_addr']}"
@@ -2051,7 +1933,7 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float, skip: set[str] | None = 
                 done[card["id"]] = {"wrap": wrap == "已开", "row": row, "font": size,
                                     "merged": int(area.Rows.Count) > 1 or int(area.Columns.Count) > 1}
                 if card["id"] in extra_line:
-                    done[card["id"]]["widen_failed"] = extra_line[card["id"]]
+                    done[card["id"]]["extra_line"] = True
                 if shortfall:
                     done[card["id"]].update(shortfall=round(shortfall, 2), measured_by=by)
                     if lines:
@@ -2074,9 +1956,8 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float, skip: set[str] | None = 
         normalize_workbook_view(excel, book)
         book.Save()
         _followed_own_save(path, before)
-        changed = sum(1 for d in done.values() if "error" not in d and not d.get("width_only"))
-        wf.log_msg(f"📐 {name}：{changed} 格开自动换行、{len(rows)} 行加高（字号 × {ratio}）"
-                   + (f"，{widened} 列加宽" if widened else "") + "，已保存")
+        changed = sum(1 for d in done.values() if "error" not in d)
+        wf.log_msg(f"📐 {name}：{changed} 格开自动换行、{len(rows)} 行加高（字号 × {ratio}），已保存")
         debug_log.event("💾 已保存", 文件=name, 行数=len(rows))
     finally:
         measurer.close()
@@ -2131,25 +2012,14 @@ def _grow_after_recheck(session: Any, path: str, tried: set[str], ratio: float |
             _restart_excel(session)
         return
     done = {cid: d for cid, d in grown.items() if "error" not in d}
-    narrow = [cid for cid, d in grown.items() if d.get("width_only") and "error" in d]
-    with wf.STATE_LOCK:
-        cards = _data()["cards"]
-        for cid in narrow:
-            if cid in cards:
-                cards[cid].update(width_only=True, message=f"{grown[cid]['error']}，保存后复检")
-                for item in _items_at(cards[cid]):
-                    item["review_reason"] = cards[cid]["message"]
-        for cid, d in done.items():
-            if cid in cards:
-                cards[cid].update(grown=d, message=WIDENED_MESSAGE if d.get("width_only") else GROWN_MESSAGE)
-                if d.get("width_only"):
-                    cards[cid]["width_only"] = True
-                else:
-                    cards[cid].pop("width_only", None)
-        if narrow or done:
-            wf._persist_state()
     if not done:
         return
+    with wf.STATE_LOCK:
+        cards = _data()["cards"]
+        for cid, d in done.items():
+            if cid in cards:
+                cards[cid].update(grown=d, message=GROWN_MESSAGE)
+        wf._persist_state()
     wf.log_msg(f"📐 {name}：复检查出 {len(done)} 处切字，已开换行、加高，再复检一遍")
     debug_log.event("🔁 复检加高后再复检", 文件=name, 格数=len(done))
     with wf.STATE_LOCK:
@@ -2413,8 +2283,6 @@ def _hand_over(path: str, grown: dict[str, dict] | None = None) -> None:
                 message = HASH_MESSAGE
             elif not _can_highlight(card):
                 message = "单元格定位未确认，未在 Excel 中标色，请按截图查找后人工处理"
-            elif done and done.get("width_only"):
-                message = f"{done['error']}，保存后复检" if "error" in done else WIDENED_MESSAGE
             elif done and "error" in done:
                 message = f"没能开换行、加高（{done['error']}），请人工处理并保存后复检"
             elif done:
@@ -2424,10 +2292,7 @@ def _hand_over(path: str, grown: dict[str, dict] | None = None) -> None:
             card.update(color="yellow", verified=False, manual=True, finalized=True, waiting=False,
                         dismissed=False, after_kind="scan_only", message=message)
             card.pop("handed_over", None)
-            if done and done.get("width_only"):
-                card["width_only"] = True
-            else:
-                card.pop("width_only", None)
+            card.pop("width_only", None)  # 2026-11-04 试过加列宽的旧记录
             if done and "error" not in done:
                 card["grown"] = done
             else:
@@ -4103,7 +3968,11 @@ def run() -> list[str]:
             wf.log_msg(_unhighlight_summary(results))
         else:
             raise ValueError("未知批处理任务")
+        # 收尾每步记时间：2026-11-04 用户扫完 327 / 327 后页面一直停在「正在扫描」，日志里看不出卡在哪一步
+        debug_log.event("🏁 收尾：写执行记录")
+        ending = time.perf_counter()
         finish_execution_batch("处理完成，请审核结果" if set(expected).issubset(job["completed"]) else "部分文件尚未完成，可继续任务")
+        debug_log.event("🏁 收尾：执行记录写完", 秒=round(time.perf_counter() - ending, 2))
         return expected
     finally:
         scan_analysis.finish(job, interrupted=True)
@@ -4113,7 +3982,10 @@ def run() -> list[str]:
                 wf._persist_state()
         finally:
             try:
+                debug_log.event("🏁 收尾：关后台 Excel")
+                closing = time.perf_counter()
                 session.close()
+                debug_log.event("🏁 收尾：后台 Excel 已关", 秒=round(time.perf_counter() - closing, 2))
             finally:
                 if watchdog is not None:
                     watchdog.stop()
