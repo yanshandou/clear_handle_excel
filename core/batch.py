@@ -3968,7 +3968,11 @@ def run() -> list[str]:
             wf.log_msg(_unhighlight_summary(results))
         else:
             raise ValueError("未知批处理任务")
+        # 收尾每步记时间：2026-11-04 用户扫完 327 / 327 后页面一直停在「正在扫描」，日志里看不出卡在哪一步
+        debug_log.event("🏁 收尾：写执行记录")
+        ending = time.perf_counter()
         finish_execution_batch("处理完成，请审核结果" if set(expected).issubset(job["completed"]) else "部分文件尚未完成，可继续任务")
+        debug_log.event("🏁 收尾：执行记录写完", 秒=round(time.perf_counter() - ending, 2))
         return expected
     finally:
         scan_analysis.finish(job, interrupted=True)
@@ -3978,7 +3982,10 @@ def run() -> list[str]:
                 wf._persist_state()
         finally:
             try:
+                debug_log.event("🏁 收尾：关后台 Excel")
+                closing = time.perf_counter()
                 session.close()
+                debug_log.event("🏁 收尾：后台 Excel 已关", 秒=round(time.perf_counter() - closing, 2))
             finally:
                 if watchdog is not None:
                     watchdog.stop()
