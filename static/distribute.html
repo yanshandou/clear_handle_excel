@@ -6,6 +6,7 @@
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
   <link rel="stylesheet" href="/static/repair.css">
+  <link rel="stylesheet" href="/static/distribution_header.css">
   <style>
     .dist-plan { display: grid; gap: 10px; font-weight: 600; margin: 0 0 8px; }
     .dist-plan textarea { width: 100%; min-height: 160px; box-sizing: border-box; font-family: ui-monospace, Consolas, monospace; font-size: 13px; resize: vertical; }
@@ -54,13 +55,14 @@
   </style>
 </head>
 <body>
-  <header class="app-header">
-    <a href="/" class="header-brand"><div class="header-logo-badge">📦</div><div class="header-title"><h1>按 JSON 复制 Excel</h1><span class="subtitle">按上传记录建好目录结构、把 Excel 放进对应文件夹</span></div></a>
-    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/records" class="nav-link">📋 执行记录</a><a href="/workbench" class="nav-link">📐 切字检查工作台</a></nav>
+  <header class="distribution-header">
+    <a href="/" class="distribution-brand"><span class="distribution-brand-mark" aria-hidden="true">📦</span><span><strong>按 JSON 复制 Excel</strong><small>Excel 整理工具箱 · 第 9 步</small></span></a>
+    <nav class="distribution-nav" aria-label="第 9 步功能导航"><a href="/">🏠 主页</a><a href="/distribute/manage">文件管理与上传方案</a><a href="/distribute?mode=json" data-dist-mode="json">复制 Excel</a><a href="/distribute" data-dist-mode="task">当前任务上传</a></nav>
   </header>
   <main class="container clean-container">
     <section class="panel">
-      <h2>先生成清单，确认后再复制</h2>
+      <p class="toolbar-hint">需要生成 JSON？<a href="/distribute/manage">打开文件管理与上传方案 →</a>，确认方案后可直接带入此页。</p>
+      <h1>先生成清单，确认后再复制</h1>
       <div id="distJsonIntro">
       <p class="toolbar-hint">JSON 里每个文件夹的 source 接在「来源根目录」后面，destination 接在「目的地根目录」后面。先按目录结构把目的地文件夹全部建好（来源里的子文件夹、空文件夹也照样建，来源找不到的也建一个空的），再把 Excel 复制进对应的文件夹：只复制 Excel 表格文件（.xls / .xlsx / .xlsm / .xlsb / .xlt / .xltx / .xltm，~$ 临时文件不算），其他文件不管。只复制不移动，来源文件原样保留。目的地已有同名文件时覆盖，文件名不改，覆盖了哪些写在复制记录里。</p>
       <p class="toolbar-hint"><strong>覆盖前检查别人改过没有：</strong>用「⬇ 从目的地拿最新版」把目的地（共享文件夹）的 Excel 拿回来源时，会记下每个文件拿到的版本。复制时如果目的地的文件和记下的不一样（拿走之后被别人改过），这个文件<strong>不覆盖</strong>、标红列出来；请再拿一次最新版，在新版上改好再复制。复制成功的文件也会记下放进去的版本，下次接着检查。没有记录的文件（以前手动拿的）没法检查，照旧覆盖，清单里会标出来。</p>

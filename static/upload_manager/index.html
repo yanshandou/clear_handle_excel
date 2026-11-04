@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1c3f8c">
+  <title>文件管理与上传方案 - Excel 整理工具箱</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230d7188'/%3E%3Crect x='3' y='3' width='58' height='58' rx='12' fill='%2343cbe6'/%3E%3Cpath d='M10 19h16l5 5h23v21a6 6 0 0 1-6 6H16a6 6 0 0 1-6-6z' fill='%23f4fdff'/%3E%3Cpath d='M32 43V27m-7 7 7-7 7 7' fill='none' stroke='%230b7189' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/upload_manager/style.css">
+  <style>
+    .owner-filters { display: flex; align-items: flex-start; gap: 12px; padding: 0 21px 16px; }
+    .owner-filters-label { flex: none; padding-top: 6px; color: #a0ada2; font-size: 11px; }
+    .owner-tags { display: flex; flex-wrap: wrap; gap: 7px; min-width: 0; }
+    .owner-tag { max-width: 100%; padding: 5px 10px; border: 1px solid #e6ece4; border-radius: 5px; background: linear-gradient(#fff, #f8faf7); color: #79897c; font-size: 10px; overflow-wrap: anywhere; }
+    .owner-tag:hover { border-color: #b6cbb9; color: #54745e; }
+    .owner-tag[aria-pressed="true"] { border-color: #c9ddcb; background: #e8f1e7; color: #54785e; box-shadow: inset 0 1px 2px #718c741a; }
+    @media (max-width: 700px) { html { overflow-x: clip; } .owner-filters { padding: 0 13px 13px; } }
+  </style>
+  <link rel="stylesheet" href="/static/upload_manager/game-style.css">
+  <link rel="stylesheet" href="/static/upload_manager/planner.css">
+  <link rel="stylesheet" href="/static/upload_manager/cartoon-style.css">
+  <link rel="stylesheet" href="/static/distribution_header.css">
+  <link rel="stylesheet" href="/static/upload_manager/integration.css">
+  <script src="/static/upload_manager/icons.js" defer></script>
+  <script src="/static/upload_manager/app.js" defer></script>
+  <script src="/static/upload_manager/planner.js" defer></script>
+</head>
+<body>
+  <header class="distribution-header">
+    <a href="/" class="distribution-brand"><span class="distribution-brand-mark" aria-hidden="true">📦</span><span><strong>按 JSON 复制 Excel</strong><small>Excel 整理工具箱 · 第 9 步</small></span></a>
+    <nav class="distribution-nav" aria-label="第 9 步功能导航"><a href="/">🏠 主页</a><a href="/distribute/manage" aria-current="page">文件管理与上传方案</a><a href="/distribute?mode=json">复制 Excel</a><a href="/distribute">当前任务上传</a></nav>
+    <span class="today"><i data-lucide="calendar-days"></i><span id="today"></span></span>
+  </header>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar-label">工作空间 <span>WORKSPACE</span></div>
+      <nav class="navigation" aria-label="文件夹导航">
+        <button class="nav-item active" data-group="all"><i data-lucide="layout-dashboard"></i><span>总览</span><i class="nav-arrow" data-lucide="chevron-right"></i></button>
+        <div class="nav-caption">项目文件夹 <button id="add-group" class="subtle-icon" title="新建文件夹" aria-label="新建文件夹"><i data-lucide="plus"></i></button></div>
+        <div id="folder-nav"></div>
+      </nav>
+      <div class="sidebar-bottom"><div class="storage-icon"><i data-lucide="hard-drive"></i></div><div><strong>本地工作空间</strong><span id="storage-status">正在连接数据库</span></div><span class="online-dot"></span></div>
+    </aside>
+
+    <main class="main-content">
+      <div class="content">
+        <section class="page-heading"><div><div class="eyebrow"><span></span> 文件管理 / <strong id="breadcrumb-current">总览</strong></div><h1>文件上传管理 <span class="heading-spark">✳</span></h1><p>所有文件的上传进度，一目了然。</p></div><button id="add-item" class="button primary"><i data-lucide="plus"></i> 添加文件夹</button></section>
+
+        <section class="overview" aria-label="上传概况">
+          <div class="overview-intro"><div class="section-kicker">PROJECT PROGRESS <span>01 / OVERVIEW</span></div><div class="overview-title"><div><h2>项目进度概览</h2><p>掌握每一份文件的上传情况</p></div><div class="mini-chart"><i data-lucide="chart-no-axes-column-increasing"></i></div></div></div>
+          <div class="metric"><div class="metric-label"><span class="metric-icon blue"><i data-lucide="files"></i></span> 文件总数</div><div class="metric-value"><strong id="total-files">0</strong><span>个文件</span></div><div class="metric-foot">当前范围内的全部文件</div></div>
+          <div class="metric"><div class="metric-label"><span class="metric-icon green"><i data-lucide="circle-check"></i></span> 已上传</div><div class="metric-value"><strong id="uploaded-files">0</strong><span>个文件</span></div><div class="metric-foot"><span class="tiny-dot green-dot"></span> 已完成上传的文件</div></div>
+          <div class="metric progress-metric"><div class="metric-label"><span class="metric-icon amber"><i data-lucide="chart-pie"></i></span> 上传完成率</div><div class="metric-value"><strong id="overall-percent">0%</strong></div><div class="progress-line"><span id="overall-bar"></span></div><div class="metric-foot">每一次更新，都离完成更近一步</div></div>
+        </section>
+
+        <div id="plan-preview-spacer" aria-hidden="true"></div>
+        <section class="planner" aria-labelledby="planner-title">
+          <div class="planner-heading"><div><div class="section-kicker">DAILY PLAN <span>02 / ALLOCATION</span></div><h2 id="planner-title">上传分配</h2></div><span class="planner-badge"><i data-lucide="calendar-check"></i> 按子文件夹分配</span></div>
+          <form id="planner-form" class="planner-form">
+            <label>计划上传日期<input id="plan-date" type="date" autocomplete="off" placeholder="YYYY-MM-DD" data-datepicker required></label>
+            <label>目标文件数<input id="plan-target" type="number" min="1" max="1000000" value="150" required></label>
+            <div class="planner-field planner-people"><span id="plan-people-label">分配给</span><details class="person-picker" id="plan-people-picker"><summary aria-labelledby="plan-people-label plan-people-summary"><span id="plan-people-summary"></span><i data-lucide="chevron-down"></i></summary><div class="person-picker-panel"><div class="person-picker-heading"><span>分配人员</span><strong id="plan-people-count" aria-live="polite"></strong></div><div class="person-picker-list" id="plan-people-options" role="group" aria-label="分配人员"></div><div class="person-picker-add"><input id="plan-person-add" type="text" maxlength="40" placeholder="添加其他人员" aria-label="添加其他人员"><button id="plan-person-add-button" type="button">添加</button></div></div></details></div>
+            <div class="planner-field"><span id="plan-owner-label">来源负责人</span><details class="person-picker" id="plan-owner-picker"><summary aria-labelledby="plan-owner-label plan-owner-summary"><span id="plan-owner-summary">全部负责人</span><i data-lucide="chevron-down"></i></summary><div class="person-picker-panel"><div class="person-picker-heading"><span>来源负责人</span><strong id="plan-owner-count" aria-live="polite">全部</strong></div><div class="person-picker-list" id="plan-owner-options" role="group" aria-label="来源负责人"></div><button id="plan-owner-clear" class="person-picker-clear" type="button">清除选择</button></div></details></div>
+            <button type="submit" class="button primary"><i data-lucide="sparkles"></i> 生成方案</button>
+          </form>
+          <p id="planner-message" class="planner-message" role="status">从已完成且未上传的子文件夹中，选择目标文件数上下 5 个以内的方案，优先接近目标。</p>
+          <div id="planner-results" hidden>
+            <div class="planner-result-heading"><div id="plan-options" class="plan-options" role="group" aria-label="分配方案"></div><div id="plan-hover-preview" class="plan-hover-preview" role="tooltip" hidden></div><button id="plan-create" type="button" class="button primary"><i data-lucide="clipboard-copy"></i> 确定并复制方案 JSON</button></div>
+            <div id="plan-summary" class="plan-summary"></div>
+            <p class="planner-note">确认后保存上传计划，文件夹进入上传中；实际上传完成后请手动切换为已上传。</p>
+          </div>
+          <details id="allocation-history" class="allocation-history">
+            <summary><i data-lucide="history"></i><span>历史分配方案</span><i data-lucide="chevron-down"></i></summary>
+            <div class="history-toolbar"><strong>已保存的方案</strong><button id="history-refresh" type="button" class="icon-button" title="刷新历史方案" aria-label="刷新历史方案"><i data-lucide="refresh-cw"></i></button></div>
+            <div id="history-list" class="history-list" aria-live="polite"></div>
+          </details>
+        </section>
+
+        <section class="list-section"><div class="list-heading"><div><div class="section-kicker">FILE DIRECTORY <span>03 / DETAILS</span></div><h2 id="list-title">文件夹明细 <span id="row-count">0</span></h2><p>查看并管理各文件夹的上传状态</p></div><div class="data-actions"><button id="import-excel" class="button secondary"><i data-lucide="file-down"></i> 导入 Excel</button><button id="export" class="button secondary"><i data-lucide="file-up"></i> 导出完整 Excel</button><button id="export-customer" class="button secondary"><i data-lucide="file-up"></i> 导出客户表</button><button id="import-backup" class="button secondary"><i data-lucide="file-down"></i> 导入 JSON 备份</button><button id="export-backup" class="button secondary"><i data-lucide="file-up"></i> 导出 JSON 备份</button><input id="excel-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden><input id="backup-file" type="file" accept=".json,application/json" hidden></div></div>
+          <div id="plan-preview-bar" class="plan-preview-bar" hidden><span>正在预览：<strong id="plan-preview-name"></strong></span><button id="exit-plan-preview" type="button" class="button secondary">退出预览</button></div>
+          <div id="date-history-bar" class="date-history-bar" aria-live="polite" hidden></div>
+          <div class="table-card"><div class="table-toolbar"><label class="search-box"><i data-lucide="search"></i><input id="search" type="search" placeholder="搜索文件夹或负责人..." aria-label="搜索文件夹或负责人"><kbd>⌘ K</kbd></label><div class="toolbar-actions"><label class="upload-date-filter"><span>上传日期</span><input id="upload-date-filter" type="date" autocomplete="off" placeholder="YYYY-MM-DD" data-datepicker aria-label="按上传日期筛选"></label><button id="clear-upload-date" type="button" class="clear-upload-date" aria-label="清除上传日期筛选" hidden>清除</button><label class="filter-select"><i data-lucide="list-filter"></i><select id="status-filter" aria-label="按文件夹状态筛选"><option value="all">全部状态</option><option value="unstarted">未完成</option><option value="processing">完成中...</option><option value="ready">已完成/未上传</option><option value="uploading">上传中...</option><option value="uploaded">已上传</option></select><i data-lucide="chevron-down"></i></label><span class="toolbar-divider"></span><button id="sort-order" class="icon-button" title="切换排序方向" aria-label="切换排序方向"><i data-lucide="arrow-down-wide-narrow"></i></button></div></div>
+            <div class="owner-filters"><span class="owner-filters-label">负责人</span><div id="owner-tags" class="owner-tags" role="group" aria-label="按负责人筛选"></div></div>
+            <div class="tree-actions"><button id="expand-all-folders" type="button" class="button secondary"><i data-lucide="chevrons-up-down"></i> 全部展开</button><button id="collapse-all-folders" type="button" class="button secondary"><i data-lucide="chevrons-down-up"></i> 全部折叠</button></div>
+            <div class="table-wrap"><table><thead><tr><th><button data-sort="name">文件夹名称 <i data-lucide="arrow-up-down"></i></button></th><th><button data-sort="total">文件数量 <i data-lucide="arrow-up-down"></i></button></th><th>完成数量</th><th><button data-sort="date">开始日期 <i data-lucide="arrow-up-down"></i></button></th><th><button data-sort="owner">负责人 <i data-lucide="arrow-up-down"></i></button></th><th>名义上传者</th><th><button data-sort="uploadDate">上传日期 <i data-lucide="arrow-up-down"></i></button></th><th>上传进度</th><th><button data-sort="plannedDate">计划上传日期 <i data-lucide="arrow-up-down"></i></button></th><th><button data-sort="status">文件夹状态 <i data-lucide="arrow-up-down"></i></button></th><th><span class="sr-only">操作</span></th></tr></thead><tbody id="table-body"></tbody></table><div id="empty-state" class="empty-state" hidden><i data-lucide="folder-search"></i><strong>没有找到相关文件夹</strong><span>试试调整搜索内容或筛选条件</span></div></div>
+            <div class="table-footer"><span id="table-summary"></span></div>
+          </div>
+        </section>
+        <footer class="page-footer"><span>EXCEL 整理工具箱 <span> / </span> 文件管理与上传方案</span><span>让每一份进度都有迹可循 <span class="footer-star">✳</span></span></footer>
+      </div>
+    </main>
+  </div>
+  <dialog id="item-dialog"><form id="item-form"><div class="dialog-header"><div><span class="section-kicker">FOLDER DETAILS</span><h2 id="dialog-title">添加文件夹</h2></div><button type="button" class="icon-button" id="close-dialog" aria-label="关闭"><i data-lucide="x"></i></button></div><div class="form-grid"><label class="full">子文件夹名称<input name="name" maxlength="200" placeholder="留空表示父文件夹记录"><select name="name-choice" aria-label="子文件夹名称" required hidden disabled></select></label><label class="full">所属父文件夹<select name="group-choice" aria-label="所属父文件夹" required></select><input name="group" aria-label="新建父文件夹名称" maxlength="500" placeholder="输入新父文件夹路径" hidden disabled></label><label>文件数量<input name="total" type="number" min="0" max="1000000" step="1" placeholder="未填写"></label><label>完成数量（消化件数）<input name="processed" type="number" min="0" max="1000000" step="1" placeholder="未填写"></label><label>已上传数量<input name="uploaded" type="number" min="0" max="1000000" step="1" required value="0"></label><label>开始日期<input name="date" type="date" autocomplete="off" placeholder="YYYY-MM-DD" data-datepicker></label><label>负责人<select name="owner-choice" aria-label="负责人"></select><input name="owner" aria-label="新建负责人名称" maxlength="100" placeholder="输入新负责人" hidden disabled></label></div><p id="form-error" class="form-error" role="alert"></p><div class="dialog-actions"><button type="button" id="cancel-dialog" class="button secondary">取消</button><button type="submit" class="button primary">保存更改</button></div></form></dialog>
+  <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message"><form method="dialog"><div class="dialog-header"><div><span class="section-kicker">CONFIRM</span><h2 id="confirm-title">请确认</h2></div></div><p id="confirm-message" class="confirm-message"></p><div class="dialog-actions"><button type="button" id="confirm-cancel" class="button secondary">取消</button><button type="button" id="confirm-ok" class="button primary">确定</button></div></form></dialog>
+  <div id="toast" class="toast" role="status"></div>
+</body>
+</html>

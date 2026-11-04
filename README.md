@@ -89,6 +89,20 @@
 
 ---
 
+## 第 9 步：文件管理、上传方案与 JSON 复制
+
+主页的「按 JSON 复制 Excel」进入 `/distribute/manage`，集成了 `rebuild.md` 中的 Upload Desk：文件夹树、搜索筛选、处理与上传进度、Excel 导入预览和合并、完整表与客户表导出、JSON 备份、上传方案和历史快照。
+
+使用顺序：导入已有 Excel 或 JSON 备份 → 更新完成数量和状态 → 选择人员、来源负责人、计划日期及目标总数量 → 生成并确认方案 → 点「带入复制页面」→ 填写来源和目的地根目录 → 生成清单并确认复制。确认方案只保存计划并设为「上传中」，实际复制后仍需核对结果并手动更新上传状态。方案总数量保留目标上下 5 个的规则，文件夹不拆分，每人至少一个。
+
+原有 `/distribute` 当前任务上传、`/distribute?mode=json` 手工粘贴 JSON、版本冲突检查和复制记录继续使用。带入新方案或修改复制参数后，必须重新生成清单。
+
+管理系统与工具箱共用一个 Python 服务；后端使用 Python 标准库和已有的 openpyxl，浏览器使用普通 JavaScript，无需安装 Node.js 或运行 npm。日期选择改用浏览器日历，字体和图标使用本地资源，无需外部 CDN。
+
+管理数据单独保存在程序数据目录下的 `upload_manager.sqlite3`（默认 `桌面/handle-excel/程序数据`，也随 `CLEAR_HANDLE_EXCEL_DATA` 修改）。首次使用为空库，`rebuild.md` 的源码快照不含原系统的工作数据。可通过页面导入旧 Excel / JSON 备份；若保留原 SQLite 数据库，也可在启动前用 `UPLOAD_DESK_DB` 指定其路径，首次使用前建议保留一份副本。管理系统的数据和历史方案不包含在主页「导出进度」的工具箱备份中；管理页面的 JSON 备份只含文件夹记录，完整历史需备份 SQLite 数据库。
+
+相关验证：`python -m unittest discover -s tests -p "test_upload_manager*.py"`、`node tests/test_upload_manager_planner.js`、`node tests/test_upload_manager_tree.js`。可选的 `node tests/browser_upload_manager.js` 使用临时数据库和无界面 Chromium，验证生成方案、确认保存、带入复制、错误提示和窄屏布局，不读取实际任务数据库。Node.js 仅用于这些前端开发测试。
+
 ## 📂 项目目录结构
 
 ```text

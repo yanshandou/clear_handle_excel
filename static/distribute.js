@@ -12,7 +12,9 @@
   // 当前任务（主页「🆕 新任务」）：有任务时按任务的处理 / 共享文件夹，不用填 JSON；?mode=json 改回 JSON 复制
   const params = new URLSearchParams(location.search);
   let task = null;
-  const jsonMode = params.get('mode') === 'json';
+  const jsonMode = params.get('mode') === 'json' || params.has('plan');
+  document.querySelector('[data-dist-mode="' + (jsonMode ? 'json' : 'task') + '"]')?.setAttribute('aria-current', 'page');
+  let needsPreview = params.has('plan');
 
   const load = key => { try { return localStorage.getItem(key) || ''; } catch (_) { return ''; } };
   const save = (key, value) => { try { localStorage.setItem(key, value); } catch (_) {} };
@@ -33,7 +35,7 @@
     $('distPreview').disabled = !!busy;
     $('distFetch').disabled = !!busy;
     const fetchMode = isFetch(latest.preview) || (latest.running && latest.kind === 'fetch');
-    const canStart = !busy && latest.preview && latest.preview.folders.some(f => f.files.length || (f.dirs_to_create || []).length);
+    const canStart = !busy && !needsPreview && latest.preview && latest.preview.folders.some(f => f.files.length || (f.dirs_to_create || []).length);
     $('distStart').disabled = !canStart;
     $('distPreview').textContent = submitting === 'preview' ? '正在生成清单…' : task ? '📋 生成上传清单' : '📋 生成复制清单';
     $('distFetch').textContent = submitting === 'fetch' ? '正在对比共享和本地…' : task ? '⬇ 从共享拿最新版' : '⬇ 从目的地拿最新版';
@@ -363,6 +365,7 @@
     showProgress('running', '', kind === 'fetch' ? '正在对比目的地和本地的文件（要读每个文件算哈希，文件多时要等一会儿）…' : '正在列出来源和目的地的文件，检查要覆盖的文件别人改过没有…');
     try {
       await post(api + (kind === 'fetch' ? '/fetch_preview' : '/preview'), payload);
+      needsPreview = false;
     } catch (error) {
       $('distError').textContent = error.message;
     } finally { submitting = false; await refresh(); }
@@ -379,7 +382,7 @@
   }
 
   async function startCopy() {
-    if (loading || submitting || latest.running || !latest.preview) return;
+    if (loading || submitting || latest.running || needsPreview || !latest.preview) return;
     if (isFetch(latest.preview)) {
       if (!await startFetch()) return;
       submitting = 'start'; viewing = null; controls();
@@ -421,12 +424,17 @@
     const file = $('distFile').files[0];
     if (!file) return;
     $('distPlan').value = await file.text();
+    needsPreview = true;
+    controls();
     $('distFileName').textContent = `已读入 ${file.name}`;
     $('distFile').value = '';
   });
   $('distPreview').addEventListener('click', () => makePreview('preview'));
   $('distFetch').addEventListener('click', () => makePreview('fetch'));
   $('distStart').addEventListener('click', startCopy);
+  for (const id of ['distSource', 'distDest', 'distPlan']) {
+    $(id).addEventListener('input', () => { needsPreview = true; controls(); });
+  }
   document.addEventListener('click', event => {
     const button = event.target.closest('[data-dist-filter]');
     if (button) { filter = button.dataset.distFilter; render(); $('distResults').querySelector('[aria-pressed="true"]')?.focus(); return; }
@@ -453,6 +461,24 @@
 
   controls();
   loadTask().then(async () => {
+    const planId = params.get('plan');
+    if (planId) {
+      try {
+        const response = await fetch('/api/upload-manager/allocation-history/' + encodeURIComponent(planId) + '/manifest', { cache: 'no-store' });
+        const manifest = await response.json();
+        if (!response.ok) throw Error(manifest.error || '读取方案失败');
+        $('distPlan').value = JSON.stringify(manifest, null, 2);
+        $('distFileName').textContent = `已带入管理系统方案：${manifest.label || '上传方案'}。填写来源和目的地根目录后生成清单。`;
+        save(KEYS.plan, $('distPlan').value);
+        controls();
+      } catch (error) {
+        $('distError').textContent = error.message;
+        // Failed handoff must not leave an older plan available for accidental use.
+        $('distPlan').value = '';
+        save(KEYS.plan, '');
+        controls();
+      }
+    }
     await refresh();
     // 主页开了新任务过来：先自动生成拿取清单（确认后才真正拿）
     if (task && params.get('fetch') === '1' && !latest.running) {

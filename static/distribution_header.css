@@ -1,0 +1,65 @@
+/* Shared navigation for folder management, JSON copying and task uploads. */
+.distribution-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 24px;
+  padding: 16px 24px;
+  color: #fff;
+  background: linear-gradient(135deg, #2866c5, #234a9c 60%, #1c3f8c);
+  border-bottom: 3px solid #19265d;
+}
+.distribution-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: inherit;
+  text-decoration: none;
+}
+.distribution-brand-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 42px;
+  height: 42px;
+  font-size: 23px;
+  background: linear-gradient(#ffe871, #ffbc2b);
+  border: 2px solid #19265d;
+  border-radius: 12px;
+  box-shadow: 0 3px 0 #19265d;
+}
+.distribution-brand strong { display: block; font-size: 17px; line-height: 1.4; }
+.distribution-brand small { display: block; margin-top: 3px; color: #d4e6ff; font-size: 11px; line-height: 1.4; }
+.distribution-nav { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
+.distribution-nav a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 10px 14px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: #e7f1ff;
+  font-size: 13px;
+  line-height: 1.4;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background .15s, color .15s;
+}
+.distribution-nav a:hover { color: #fff; background: #ffffff1c; }
+.distribution-nav a[aria-current="page"] { color: #19265d; background: #ffdc59; border-color: #19265d; box-shadow: 0 2px 0 #19265d; }
+.distribution-header a:focus-visible { outline: 3px solid #ffe26c; outline-offset: 4px; }
+.distribution-header .today { display: inline-flex; align-items: center; gap: 8px; color: #d4e6ff; font-size: 11px; white-space: nowrap; }
+.distribution-header .today svg { width: 15px; height: 15px; }
+@media (max-width: 1100px) {
+  .distribution-header { grid-template-columns: auto minmax(0, 1fr); gap: 16px; }
+  .distribution-header .today { display: none; }
+  .distribution-nav a { padding: 9px 10px; font-size: 12px; }
+}
+@media (max-width: 800px) {
+  .distribution-header { grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 16px; }
+  .distribution-brand strong { font-size: 16px; }
+  .distribution-nav { justify-content: flex-start; gap: 4px; overflow-x: auto; padding: 0 1px 5px; }
+  .distribution-nav a { padding: 9px; }
+}

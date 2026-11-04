@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 from core import autofix, batch, bl_links, debug_log, distribute, file_problem, work_task, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review
+from core import upload_manager
 from core.common import (
     STATIC_DIR,
     console_print,
@@ -93,6 +94,7 @@ MIME_TYPES = {
     ".svg": "image/svg+xml",
     ".png": "image/png",
     ".pdf": "application/pdf",
+    ".py": "text/plain; charset=utf-8",
 }
 
 
@@ -104,7 +106,7 @@ def _require_folder(payload: dict, role: str = "work") -> str:
     return work_task.require_folder(folder, role)
 
 
-class WebHandler(BaseHTTPRequestHandler):
+class WebHandler(upload_manager.Handler):
     def log_message(self, format: str, *args: object) -> None:
         del format, args  # 保持终端清爽
 
@@ -155,7 +157,11 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def _handle_get(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path in {"/", "/home.html"}:
+        if parsed.path.startswith("/api/upload-manager/"):
+            upload_manager.Handler.do_GET(self)
+        elif parsed.path in {"/distribute/manage", "/distribute/manage/"}:
+            self._serve_static_file("upload_manager/index.html")
+        elif parsed.path in {"/", "/home.html"}:
             self._serve_static_file("home.html")
         elif parsed.path in {"/clean", "/clean.html"}:
             self._serve_static_file("clean.html")
@@ -351,6 +357,9 @@ class WebHandler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self) -> None:
+        if urlparse(self.path).path.startswith("/api/upload-manager/"):
+            upload_manager.Handler.do_POST(self)
+            return
         try:
             length = int(self.headers.get("Content-Length", 0))
             try:
