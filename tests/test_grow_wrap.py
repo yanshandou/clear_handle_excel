@@ -218,23 +218,59 @@ class GrowWrapTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "1.5 或 1.2"):
                 batch.grow_ratio(bad)
 
-    def test_one_english_word_wider_than_the_column_is_not_grown(self):
-        """shikuchoson 只打印出 shikuchoso：Excel 量着一行放得下，加高没用，卡片写明要加列宽（2026-11-04 用户日志）"""
+    def columns(self, pages=(1, 1)):
+        """给假表加上列（ColumnWidth 按 1 字 = 6pt）和打印页数（加宽前、后各读一次）"""
+        class Column:
+            def __init__(self):
+                self.ColumnWidth = 10.0
+
+            @property
+            def Width(self):
+                return self.ColumnWidth * 6.0
+
+        cols = {}
+        self.sheet.Columns = lambda col: cols.setdefault(col, Column())
+        self.sheet.Shapes = []
+        self.sheet.PageSetup = Mock()
+        type(self.sheet.PageSetup).Pages = property(lambda _s, it=iter(pages): Mock(Count=next(it)))
+        for area in self.sheet.areas.values():
+            area.Column = 1
+        return cols
+
+    def test_one_english_word_wider_than_the_column_widens_the_column(self):
+        """shikuchoson 只打印出 shikuchoso：Excel 量着一行放得下，加高没用，改成把列加宽 1.5 个字母（用户 2026-11-04 定）"""
+        cols = self.columns()
         self.add("A5", 5, kind="hidden", hidden_reason="truncated", text="shikuchoson", visible_text="shikuchoso")
         self.add("E9", 9, kind="hidden", hidden_reason="truncated", text="長い説明文", visible_text="長い")
         done = batch._grow_and_wrap(Mock(), self.path, 1.5)
         a5 = batch._key(self.path, "S1", "A5")
         self.assertTrue(done[a5]["width_only"])
+        self.assertNotIn("error", done[a5])
         self.assertEqual(self.sheet.rows[5].RowHeight, 18.75)  # 不加高
         self.assertGreater(self.sheet.rows[9].RowHeight, 18.75)  # 日文照样加高
+        # 字号 11：1.5 × 11 × 0.55 = 9.075pt，原来 60pt
+        self.assertAlmostEqual(cols[1].Width, 69.075)
+        self.assertAlmostEqual(done[a5]["applied_width"], 69.07, places=1)
+        self.book.Save.assert_called_once()
         batch._hand_over(self.path, done)
         card = self.card("A5")
-        self.assertIn("列宽", card["message"])
+        self.assertEqual(card["message"], batch.WIDENED_MESSAGE)
         self.assertTrue(card["width_only"])
-        self.assertIn("列宽不够", batch._card_category(card, batch._items_at(card))[1])
+        self.assertIn("列宽不够 · 已加宽", batch._card_category(card, batch._items_at(card))[1])
         # 只是一个单词但显示的不是开头一段（例如被边框压住）、或有空格：照样加高
         self.assertFalse(batch._width_only({"text": "shikuchoson"}, [{"kind": "clip", "visible_text": "shikuchoso"}]))
         self.assertFalse(batch._width_only({"text": "two words"}, [{"kind": "hidden", "visible_text": "two"}]))
+
+    def test_widening_that_adds_a_page_goes_back(self):
+        cols = self.columns(pages=(1, 2))
+        self.add("A5", 5, kind="hidden", hidden_reason="truncated", text="shikuchoson", visible_text="shikucho")
+        done = batch._grow_and_wrap(Mock(), self.path, 1.5)
+        a5 = batch._key(self.path, "S1", "A5")
+        self.assertEqual(cols[1].ColumnWidth, 10.0)  # 退回
+        self.assertIn("多出一页", done[a5]["error"])
+        batch._hand_over(self.path, done)
+        self.assertIn("列宽", self.card("A5")["message"])
+        self.assertNotIn("grown", self.card("A5"))
 
     # 复检又查出切字（例如人工改完后行高不够）：和扫描一样开换行加高，再复检一遍（用户 2026-11-04 要）
     def session(self):
