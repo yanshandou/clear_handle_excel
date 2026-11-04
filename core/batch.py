@@ -1832,11 +1832,12 @@ class _Measurer:
             self.book = None
 
 
-def _grow_and_wrap(excel: Any, path: str, ratio: float) -> dict[str, dict]:
+def _grow_and_wrap(excel: Any, path: str, ratio: float, skip: set[str] | None = None) -> dict[str, dict]:
     """切字的格子开自动换行，估算换行后要几行，行高不够先补够，再加「字号 × 倍数」，保存一次。
-    返回 {卡片 id: 做了什么}。同一行有几个格子只加一次，按其中要加最多的算；最高到 Excel 上限 409pt。"""
+    返回 {卡片 id: 做了什么}。同一行有几个格子只加一次，按其中要加最多的算；最高到 Excel 上限 409pt。
+    skip：这些卡不再加（复检时已经加高过、还没过的，交给人工）。"""
     with wf.STATE_LOCK:
-        cards = _grow_targets(path)
+        cards = [c for c in _grow_targets(path) if c["id"] not in (skip or set())]
     if not cards:
         return {}
     _check_file(path)
@@ -1932,6 +1933,56 @@ def _recheck_after_grow(session: Any, path: str) -> None:
     except Exception as err:
         wf.log_msg(f"⚠️ {Path(path).name} 加高后复检没做完，问题照旧标色转人工，可稍后点复检：{err}{_where(err)}")
         debug_log.event("⚠️ 加高后复检失败", 文件=Path(path).name, 原因=str(err))
+        _restart_excel(session)
+
+
+RECHECK_GROWN_PASSED_MESSAGE = "复检查出切字，已开自动换行、加高，再复检通过"
+
+
+def _grown_before_recheck(path: str) -> set[str]:
+    """复检前还在列表里、已经开过换行加高的卡：复检又查出来就不再加，交给人工（不会每复检一次就加高一次）"""
+    with wf.STATE_LOCK:
+        return {c["id"] for c in _data()["cards"].values() if c["wb_path"] == path and c.get("grown")
+                and c["color"] == "yellow" and c.get("finalized") and not c.get("dismissed")}
+
+
+def _grow_after_recheck(session: Any, path: str, tried: set[str]) -> None:
+    """整份复检又查出新的切字（例如人工改完后行高不够）：和扫描一样开换行、加高、保存，再整份复检一次
+    （用户 2026-11-04 要）。只加不减，复检前已经加高过的格子不再加；加完还没过的留黄色交给人工。
+    出错只记日志，复检结果照旧。"""
+    name = Path(path).name
+    with wf.STATE_LOCK:
+        ratio = grow_ratio(_data().get("grow_ratio"))
+    session.touch()
+    try:
+        grown = _grow_and_wrap(session.app(), path, ratio, skip=tried)
+    except Exception as err:
+        wf.log_msg(f"⚠️ {name} 复检后没能开换行、加高，请人工处理：{err}{_where(err)}")
+        debug_log.event("⚠️ 复检后加高失败", 文件=name, 原因=str(err))
+        if not isinstance(err, ValueError):
+            _restart_excel(session)
+        return
+    done = {cid: d for cid, d in grown.items() if "error" not in d}
+    if not done:
+        return
+    with wf.STATE_LOCK:
+        cards = _data()["cards"]
+        for cid, d in done.items():
+            if cid in cards:
+                cards[cid].update(grown=d, message=GROWN_MESSAGE)
+        wf._persist_state()
+    wf.log_msg(f"📐 {name}：复检查出 {len(done)} 处切字，已开换行、加高，再复检一遍")
+    debug_log.event("🔁 复检加高后再复检", 文件=name, 格数=len(done))
+    with wf.STATE_LOCK:
+        cards = [c for c in _data()["cards"].values() if c["wb_path"] == path
+                 and c["color"] == "yellow" and c.get("finalized") and not c.get("dismissed")]
+    session.touch()
+    try:
+        _recheck_file(session.app(), path, cards, passed_message=RECHECK_GROWN_PASSED_MESSAGE,
+                      found_message=GROWN_FAILED_MESSAGE)
+    except Exception as err:
+        wf.log_msg(f"⚠️ {name} 加高后复检没做完，可稍后再点复检：{err}{_where(err)}")
+        debug_log.event("⚠️ 复检加高后再复检失败", 文件=name, 原因=str(err))
         _restart_excel(session)
 
 
@@ -3457,6 +3508,8 @@ def run() -> list[str]:
             # 扫描：检出的问题全部转人工、在 Excel 里标色；切字的格子顺手开自动换行、加高一次（不试算、不还原）。
             # 旧版本留下的全自动 / 转回自动 / 自动调整任务续跑时也按扫描做
             ratio = grow_ratio(options.get("grow_ratio"))
+            with wf.STATE_LOCK:
+                _data()["grow_ratio"] = ratio  # 复检查出新的切字时按同样的倍数加高
             if "workbooks" not in job:
                 folder, paths = wf.list_workbooks(options["folder"])
                 with wf.STATE_LOCK:
@@ -3701,6 +3754,7 @@ def run() -> list[str]:
                         if cards:
                             session.touch()
                             full = _full_recheck(options, path)
+                            tried = _grown_before_recheck(path) if full else set()
                             for tries in range(2):
                                 try:
                                     if full:
@@ -3717,6 +3771,8 @@ def run() -> list[str]:
                                     # 不然 Excel 一挂，后面每份文件都报「RPC サーバーを利用できません」
                                     wf.log_msg(f"⚠️ {Path(path).name} 复检出错，重启 Excel 后重试：{err}{_where(err)}")
                                     _restart_excel(session)
+                            if full:
+                                _grow_after_recheck(session, path, tried)
                             _sync_highlights_safely(session, path)
                         with wf.STATE_LOCK:
                             job["skipped"].remove(path)

@@ -221,3 +221,47 @@ class GrowWrapTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    # 复检又查出切字（例如人工改完后行高不够）：和扫描一样开换行加高，再复检一遍（用户 2026-11-04 要）
+    def session(self):
+        return Mock(app=Mock(return_value=Mock()))
+
+    def test_new_cut_cells_found_by_recheck_are_grown_then_rechecked(self):
+        self.add("A5", 5)
+        self.add("E9", 9)
+        batch._hand_over(self.path)
+        batch._data()["grow_ratio"] = 1.2
+        tried = batch._grown_before_recheck(self.path)
+        self.assertEqual(tried, set())
+        with patch.object(batch, "_recheck_file") as recheck:
+            batch._grow_after_recheck(self.session(), self.path, tried)
+        self.assertEqual(self.card("A5")["grown"]["ratio"], 1.2)
+        self.assertEqual(self.card("A5")["message"], batch.GROWN_MESSAGE)
+        recheck.assert_called_once()
+        _, kwargs = recheck.call_args
+        self.assertEqual(kwargs["passed_message"], batch.RECHECK_GROWN_PASSED_MESSAGE)
+        self.assertEqual(kwargs["found_message"], batch.GROWN_FAILED_MESSAGE)
+        self.assertEqual({c["cell_addr"] for c in recheck.call_args[0][2]}, {"A5", "E9"})
+
+    def test_cells_already_grown_before_recheck_are_left_to_people(self):
+        self.add("A5", 5)
+        batch._hand_over(self.path, batch._grow_and_wrap(Mock(), self.path, 1.5))
+        height = self.sheet.rows[5].RowHeight
+        self.book.Save.reset_mock()
+        tried = batch._grown_before_recheck(self.path)
+        self.assertEqual(tried, {batch._key(self.path, "S1", "A5")})
+        with patch.object(batch, "_recheck_file") as recheck:
+            batch._grow_after_recheck(self.session(), self.path, tried)
+        self.assertEqual(self.sheet.rows[5].RowHeight, height)  # 不再加
+        self.book.Save.assert_not_called()
+        recheck.assert_not_called()
+
+    def test_file_changed_meanwhile_is_not_touched(self):
+        self.add("A5", 5)
+        batch._hand_over(self.path)
+        Path(self.path).write_bytes(b"edited again")
+        with patch.object(batch, "_recheck_file") as recheck, patch.object(batch, "_restart_excel") as restart:
+            batch._grow_after_recheck(self.session(), self.path, set())
+        recheck.assert_not_called()
+        restart.assert_not_called()
+        self.assertNotIn("grown", self.card("A5"))
