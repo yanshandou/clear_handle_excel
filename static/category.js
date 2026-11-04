@@ -138,7 +138,7 @@ function categoryCellsHtml(cat) {
 
 // 收紧行高：改的时候先给问题行一个很大的行高，保存后让程序量出要多高、收回多余的，再整份复检
 function tightenButtonHtml(disabledAttr) {
-  return `<button type="button" class="btn btn-outline" id="categoryTightenBtn"${disabledAttr} title="改的时候可以先给问题行一个很大的行高（例如 200），保存后点这里：程序量出每行要多高，收到刚好够再留「字号 × 倍数」的余量（只收不加），然后整份复检；复检没过的行退回你原来给的行高">↕️ 收紧行高并复检</button>`;
+  return `<button type="button" class="btn btn-outline" id="categoryTightenBtn"${disabledAttr} title="改的时候可以先给问题行一个很大的行高（例如 200），保存后点这里：程序量出每行要多高，收到刚好够再留「字号 × 倍数」的余量（只收不加），然后整份复检；复检没过的行退回你原来给的行高；复检在别的行查出新的切字，照样开换行、加高再复检">↕️ 收紧行高并复检</button>`;
 }
 
 function categoryDetailHtml(cat) {
@@ -231,7 +231,7 @@ async function categoryTighten() {
   if (!cat) return;
   const what = cat.key === OPENED_KEY ? `已打开的 ${cat.files} 个文件` : categoryMode === 'file' ? `「${cat.label}」` : `「${cat.label}」涉及的 ${cat.files} 个文件`;
   const ratio = document.getElementById('growRatio')?.value || '1.5';
-  if (!(await appConfirm(`收紧${what}里出过切字问题的行：\n· 量出每行的字全部显示要多高，再留「字号 × ${ratio}」的余量，比这个高的收回来，只收不加\n· 收完整份复检，复检没过的行退回原来的行高\n· 有图片、竖排字的行不动\n请先在 Excel 里保存修改。`,
+  if (!(await appConfirm(`收紧${what}里出过切字问题的行：\n· 量出每行的字全部显示要多高，再留「字号 × ${ratio}」的余量，比这个高的收回来，只收不加\n· 收完整份复检，复检没过的行退回原来的行高\n· 复检在别的行（以前没出过问题）查出新的切字：开换行、加高再复检\n· 有图片、竖排字的行不动\n请先在 Excel 里保存修改。`,
     { title: '收紧行高并复检', okText: '↕️ 收紧并复检', tone: 'info' }))) return;
   await startJob('/api/batch/tighten', { card_ids: yellowCards(cat).map(c => c.id), grow_ratio: Number(ratio) });
 }

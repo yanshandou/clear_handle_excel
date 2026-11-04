@@ -1946,13 +1946,14 @@ def _grown_before_recheck(path: str) -> set[str]:
                 and c["color"] == "yellow" and c.get("finalized") and not c.get("dismissed")}
 
 
-def _grow_after_recheck(session: Any, path: str, tried: set[str]) -> None:
+def _grow_after_recheck(session: Any, path: str, tried: set[str], ratio: float | None = None) -> None:
     """整份复检又查出新的切字（例如人工改完后行高不够）：和扫描一样开换行、加高、保存，再整份复检一次
     （用户 2026-11-04 要）。只加不减，复检前已经加高过的格子不再加；加完还没过的留黄色交给人工。
     出错只记日志，复检结果照旧。"""
     name = Path(path).name
-    with wf.STATE_LOCK:
-        ratio = grow_ratio(_data().get("grow_ratio"))
+    if ratio is None:
+        with wf.STATE_LOCK:
+            ratio = grow_ratio(_data().get("grow_ratio"))
     session.touch()
     try:
         grown = _grow_and_wrap(session.app(), path, ratio, skip=tried)
@@ -2005,6 +2006,18 @@ def _tighten_targets(path: str) -> list[dict]:
     """调用方持有 STATE_LOCK：这份文件里出过切字问题的格子（还在列表里的、复检通过翻篇的都算），按它们所在的行收紧"""
     return [c for c in _data()["cards"].values() if c["wb_path"] == path and c.get("cell_addr")
             and not _keeps_user_mark(c) and set(_card_error_types(c)) & set(GROW_ERROR_TYPES)]
+
+
+def _card_rows(cards: list[dict]) -> set[tuple[str, int]]:
+    """这些卡的格子压着哪些行（表名不分大小写）"""
+    rows: set[tuple[str, int]] = set()
+    for card in cards:
+        try:
+            low, high = _addr_rows(card.get("cell_addr") or "")
+        except ValueError:
+            low = high = int(card.get("excel_row") or 0)
+        rows.update((_sheet_key(card["sheet_name"]), r) for r in range(low, high + 1))
+    return rows
 
 
 def _shape_rows(sheet: Any) -> set[int]:
@@ -2176,6 +2189,8 @@ def _tighten_file(session: Any, path: str, ratio: float) -> dict:
     unsaved = close_saved_workbooks([Path(path)])
     if Path(path) in unsaved:
         raise ValueError(f"{unsaved[Path(path)]}，请在 Excel 里保存并关闭后重试")
+    with wf.STATE_LOCK:
+        handled = _card_rows(_tighten_targets(path))  # 以前出过切字的行：收紧管的，之后不自动加高
     session.touch()
     tightened = _tighten_rows(session.app(), path, ratio)
 
@@ -2192,6 +2207,10 @@ def _tighten_file(session: Any, path: str, ratio: float) -> dict:
         wf.log_msg(f"↩️ {name}：{len(failed)} 行收紧后复检没过，退回原来的行高再复检")
         _restore_rows(session.app(), path, {key: tightened[key]["before"] for key in failed})
         recheck("人工修改后复检通过")
+    # 复检在别的行查出新的切字（以前没出过问题、没收过也没退回过）：和普通复检一样开换行、加高再复检（用户 2026-11-04 要）
+    with wf.STATE_LOCK:
+        skip = {c["id"] for c in _data()["cards"].values() if c["wb_path"] == path and _card_rows([c]) & handled}
+    _grow_after_recheck(session, path, skip | _grown_before_recheck(path), ratio)
     result = {"tightened": len(tightened) - len(failed), "restored": len(failed),
               "saved_pt": round(sum(v["before"] - v["after"] for k, v in tightened.items() if k not in failed), 1)}
     debug_log.event("↕️ 收紧行高完成", 文件=name, **{"收紧行数": result["tightened"], "退回行数": result["restored"],
