@@ -143,6 +143,17 @@ class WorkTaskTests(unittest.TestCase):
         self.assertFalse(work_task.overview()["single"])
         self.assertFalse(work_task.set_single(False)["single"])
 
+    def test_normalize_api_uses_custom_path_while_another_task_is_selected(self):
+        import web_clip_fixer as server
+        work_task.create(str(self.shared), str(self.work_root))
+        chosen = self.work_root / "自选目录"
+        write(chosen / "custom.xlsx")
+        handler = object.__new__(server.WebHandler)
+        handler.path = "/api/quick_task"
+        handler._start_job = lambda kind, options: setattr(handler, "started", (kind, options))
+        handler._handle_post({"kind": "normalize_view", "folder": str(chosen)})
+        self.assertEqual(handler.started, ("normalize_view", {"folder": str(chosen.resolve())}))
+
     def test_finish_check_blocks_until_everything_uploaded(self):
         task = work_task.create(str(self.shared), str(self.work_root))
         work = Path(task["work"])

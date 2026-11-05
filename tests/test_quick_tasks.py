@@ -476,19 +476,23 @@ class QuickTaskTests(unittest.TestCase):
 
     def test_quick_task_keeps_workbench_scan_results_and_folders(self):
         self.add_book("a.xlsx", ["Sheet1"])
-        self.workflow.STATE.update(folder="D:/workbench", backup_folder="D:/workbench/_backup_x")
+        old_folder = self.root / "workbench"
+        old_folder.mkdir()
+        self.workflow.STATE.update(folder=str(old_folder), backup_folder=str(old_folder / "_backup_x"))
         self.workflow.STATE["items"]["item_1"] = {
-            "id": "item_1", "wb_path": "D:/workbench/x.xlsx", "status": "pending",
+            "id": "item_1", "wb_path": str(old_folder / "x.xlsx"), "status": "pending",
         }
         self.run_task("export_pdf")
 
-        self.assertEqual(self.workflow.STATE["folder"], "D:/workbench")
-        self.assertEqual(self.workflow.STATE["backup_folder"], "D:/workbench/_backup_x")
-        self.assertIn("item_1", self.workflow.STATE["items"])
+        self.assertEqual(self.workflow.STATE["folder"], str(self.folder))
+        self.assertNotIn("item_1", self.workflow.STATE["items"])
         overview = self.workflow.get_overview_snapshot()
-        self.assertEqual(overview["clips"], {"total": 1, "unresolved": 1})
         self.assertEqual(overview["job"]["kind"], "export_pdf")
         self.assertNotIn("pages", overview)
+        self.workflow.activate_folder(str(old_folder))
+        self.assertEqual(self.workflow.STATE["backup_folder"], str(old_folder / "_backup_x"))
+        self.assertIn("item_1", self.workflow.STATE["items"])
+        self.assertEqual(self.workflow.get_overview_snapshot()["clips"], {"total": 1, "unresolved": 1})
 
     def test_non_utf8_console_does_not_interrupt_background_task(self):
         # 管道输出时 stdout 使用系统 ANSI 代码页（如 cp932），无法编码 emoji 和部分中文

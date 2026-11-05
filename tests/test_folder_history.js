@@ -64,9 +64,10 @@ test('restoring a task switches to its saved workbench without starting a scan',
   assert.equal(p.context.window.location.href, '/workbench');
 });
 
-test('single mode can restore folder progress directly without a task', async () => {
-  const p = await page({single:true, task:false});
+test('custom folder progress can be restored without a task or a mode switch', async () => {
+  const p = await page({single:false, task:false});
   await p.select('C:/A');
+  assert.doesNotMatch(p.element('detail').innerHTML, /id="restore"[^>]*disabled|先到主页打开单项模式/);
   await p.element('restore').listeners.click();
   const posts = p.requests.filter(r => r.options?.method === 'POST');
   assert.equal(posts[0].url, '/api/folders/activate');
