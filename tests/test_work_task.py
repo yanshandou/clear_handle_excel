@@ -101,10 +101,9 @@ class WorkTaskTests(unittest.TestCase):
         self.assertEqual(again["id"], first["id"])  # 同一个共享文件夹沿用以前的任务
         self.assertEqual(len(work_task.overview()["tasks"]), 2)
 
-    def test_steps_only_accept_current_task_folders(self):
-        """用户 2026-11-03：不走新任务不能直接填路径；OneDrive（共享）里的文件夹一律不让改"""
-        with self.assertRaisesRegex(ValueError, "新任务"):
-            work_task.require_folder(str(self.work_root))  # 还没有任务
+    def test_task_paths_are_defaults_and_all_local_folders_remain_editable(self):
+        """不需要新建或切换任务，各功能可以直接选择本地路径。"""
+        self.assertEqual(work_task.require_folder(str(self.work_root)), str(self.work_root))
         with self.assertRaisesRegex(ValueError, "OneDrive"):
             work_task.require_folder(str(self.shared))
         first = work_task.create(str(self.shared), str(self.work_root))
@@ -113,35 +112,32 @@ class WorkTaskTests(unittest.TestCase):
         self.assertEqual(work_task.require_folder(first["work"]), first["work"])
         self.assertEqual(work_task.require_folder(str(sub)), str(sub))  # 子文件夹可以
         self.assertEqual(work_task.require_folder(first["reference"], "reference"), first["reference"])
-        for bad, role in ((first["reference"], "work"), (first["work"], "reference"), (str(self.work_root), "work"),
-                          (str(self.shared), "work"), (str(self.shared / "子"), "reference")):
+        for local, role in ((first["reference"], "work"), (first["work"], "reference"), (str(self.work_root), "work")):
+            self.assertEqual(work_task.require_folder(local, role), local)
+        for bad, role in ((str(self.shared), "work"), (str(self.shared / "子"), "reference")):
             with self.assertRaises(ValueError, msg=(bad, role)):
                 work_task.require_folder(bad, role)
         other = self.shared.parent / "13.テーブル定義書"
         other.mkdir()
         second = work_task.create(str(other), str(self.work_root))
-        with self.assertRaisesRegex(ValueError, "13.テーブル定義書"):
-            work_task.require_folder(first["work"])  # 换了任务，旧任务的处理文件夹不能用
+        self.assertEqual(work_task.require_folder(first["work"]), first["work"])
         work_task.require_folder(second["work"])
-        with patch.object(work_task, "ENFORCE", False):
-            work_task.require_folder(str(self.work_root))
+        for bad in ("", "  ", None, 123):
             with self.assertRaises(ValueError):
-                work_task.require_folder(str(self.shared))  # 关了任务检查，OneDrive 也照样拦
+                work_task.require_folder(bad)
 
     def test_single_mode_allows_local_folders_but_not_onedrive(self):
-        """单项模式（用户 2026-11-03 定）：可以自己填本地文件夹，OneDrive 照样拦；开任务 / 切换自动回到任务模式"""
+        """旧路径偏好开关只影响默认值，不再限制可选路径。"""
         local = self.work_root / "随便一个文件夹"
         local.mkdir(parents=True)
-        with self.assertRaises(ValueError):
-            work_task.require_folder(str(local))
+        self.assertEqual(work_task.require_folder(str(local)), str(local))
         self.assertTrue(work_task.set_single(True)["single"])
         self.assertEqual(work_task.require_folder(str(local)), str(local))
         with self.assertRaisesRegex(ValueError, "OneDrive"):
             work_task.require_folder(str(self.shared))
         task = work_task.create(str(self.shared), str(self.work_root))
         self.assertFalse(work_task.overview()["single"])
-        with self.assertRaises(ValueError):
-            work_task.require_folder(str(local))
+        self.assertEqual(work_task.require_folder(str(local)), str(local))
         work_task.set_single(True)
         work_task.switch(task["id"])
         self.assertFalse(work_task.overview()["single"])

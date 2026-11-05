@@ -44,12 +44,11 @@
       if (version !== sequence) return;
       const report = value.report || {}, summary = value.summary || {};
       const matching = tasks.tasks.find(task => norm(task.work) === norm(folder));
-      const allowed = matching || tasks.single || norm(data.current) === norm(folder);
       const files = Object.values(report.files || {});
       const operations = (value.operations || []).map(row => `<tr><td>${esc(row.started_at)}</td><td>${esc(row.name)}</td><td>${status(row.status)}</td></tr>`);
       const scans = (value.scans || []).map(row => `<tr><td>${esc(row.started_at)}</td><td>${esc(row.mode)}</td><td>${status(row.status)}</td><td><a href="/analysis?id=${encodeURIComponent(row.id)}&folder=${encodeURIComponent(folder)}">查看逐文件扫描分析</a></td></tr>`);
       const fileRows = files.map(file => `<tr><td>${esc(file.name)}</td><td>${status(file.status)}</td><td>${esc(file.current_action)}${fileDetails(file)}</td><td>${esc(file.error || '')}</td></tr>`);
-      $('detail').innerHTML = `<h2 class="history-path">${esc(folder)}</h2><p>${status(summary.status)} · ${esc(summary.task_name)}${summary.total ? ` · 进度 ${summary.completed} / ${summary.total} 个文件` : ''}</p><button id="restore" class="btn btn-primary" ${data.busy || !allowed ? 'disabled' : ''}>恢复并继续处理</button><p>${data.busy ? '当前后台任务正在执行，完成或暂停后可恢复。' : !allowed ? '这是单项模式的文件夹，请先到主页打开单项模式，再恢复。' : '恢复仅切换工作台；继续暂停的任务时，请在工作台点「继续上次任务」。'}</p><h3>最近一次执行的文件明细</h3>${table(['文件','状态','执行信息','错误'], fileRows)}<h3>扫描 / 复检批次</h3>${table(['开始时间','类型','状态','明细'], scans)}<h3>操作时间线（最近 200 次）</h3>${table(['开始时间','操作','状态'], operations)}<details><summary>工作台日志（最近 100 条）</summary><pre class="history-log">${esc((value.logs || []).join('\n'))}</pre></details>`;
+      $('detail').innerHTML = `<h2 class="history-path">${esc(folder)}</h2><p>${status(summary.status)} · ${esc(summary.task_name)}${summary.total ? ` · 进度 ${summary.completed} / ${summary.total} 个文件` : ''}</p><button id="restore" class="btn btn-primary" ${data.busy ? 'disabled' : ''}>恢复并继续处理</button><p>${data.busy ? '当前后台任务正在执行，完成或暂停后可恢复。' : '恢复仅切换工作台；继续暂停的任务时，请在工作台点「继续上次任务」。'}</p><h3>最近一次执行的文件明细</h3>${table(['文件','状态','执行信息','错误'], fileRows)}<h3>扫描 / 复检批次</h3>${table(['开始时间','类型','状态','明细'], scans)}<h3>操作时间线（最近 200 次）</h3>${table(['开始时间','操作','状态'], operations)}<details><summary>工作台日志（最近 100 条）</summary><pre class="history-log">${esc((value.logs || []).join('\n'))}</pre></details>`;
       $('restore').addEventListener('click', async () => {
         if (restoring) return;
         restoring = true;

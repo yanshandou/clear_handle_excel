@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 import uuid
 from datetime import datetime
@@ -154,26 +153,13 @@ def switch(task_id: str) -> dict[str, Any]:
     return task
 
 
-def _norm(path: Path) -> str:
-    try:
-        path = path.resolve()
-    except OSError:
-        pass
-    return os.path.normcase(os.path.normpath(str(path))).casefold()
-
-
-def _inside(path: Path, base: Path) -> bool:
-    a, b = _norm(path), _norm(base)
-    return a == b or a.startswith(b.rstrip("\\/") + os.sep)
-
-
 def set_single(on: Any) -> dict[str, Any]:
     """保留旧版的路径偏好开关：是否优先使用自选路径；两种偏好都允许修改路径。"""
     with _LOCK:
         data = _load()
         data["single"] = on is True
         _save(data)
-    debug_log.event("🔧 单项模式" if on is True else "📁 回到任务模式")
+    debug_log.event("📂 自选路径优先" if on is True else "📁 使用任务默认路径")
     return overview()
 
 
