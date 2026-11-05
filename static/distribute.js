@@ -1,5 +1,4 @@
-// 按上传记录 JSON 复制 Excel（后端 core/distribute.py）
-// 两步：生成清单（只读） → 确认后复制。结果按人、按文件夹显示，三个数（JSON / 来源 / 目的地）对不上的标黄
+// 当前任务批量上传，以及按上传记录 JSON 复制 Excel（后端 core/distribute.py）
 (() => {
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[ch]));
@@ -9,14 +8,27 @@
   let viewing = null;          // 正在看的历史记录（null = 看当前清单 / 最近一次结果）
   let filter = 'all';
   let wasRunning = false;
-  // 当前任务（主页「🆕 新任务」）：有任务时按任务的处理 / 共享文件夹，不用填 JSON；?mode=json 改回 JSON 复制
+  // 默认进入当前任务上传，JSON 复制从导航或保存的分配方案进入。
   const params = new URLSearchParams(location.search);
   let task = null;
   let taskFiles = [], readingFiles = false;
   const selected = new Set();
   const jsonMode = params.get('mode') === 'json' || params.has('plan');
   document.querySelector('[data-dist-mode="' + (jsonMode ? 'json' : 'task') + '"]')?.setAttribute('aria-current', 'page');
+  $('distToday').textContent = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'long' }).format(new Date());
+  window.lucide?.createIcons();
   let needsPreview = params.has('plan');
+  if (jsonMode) {
+    for (const id of ['distJsonIntro', 'distJsonFields', 'distJsonHelp', 'distActions']) $(id).hidden = false;
+    $('distTaskNotice').hidden = true;
+    document.title = '按 JSON 复制 Excel - Excel 整理工具箱';
+    $('distNavOverview').textContent = '复制 Excel';
+    $('distBreadcrumb').textContent = 'JSON 复制';
+    $('distHeading').textContent = '先生成清单，确认后再复制';
+    $('distSubtitle').textContent = '导入上传方案，按清单复制 Excel。';
+    $('distControlsTitle').textContent = '设置复制清单';
+    $('distProgress').textContent = '填好两个根目录和 JSON 后点「生成复制清单」。';
+  }
 
   const load = key => { try { return localStorage.getItem(key) || ''; } catch (_) { return ''; } };
   const save = (key, value) => { try { localStorage.setItem(key, value); } catch (_) {} };
@@ -40,12 +52,12 @@
     const fetchMode = isFetch(latest.preview) || (latest.running && latest.kind === 'fetch');
     const canStart = !busy && !needsPreview && latest.preview && latest.preview.folders.some(f => f.files.length || (f.dirs_to_create || []).length);
     $('distStart').disabled = !canStart;
-    $('distPreview').hidden = !!task;
-    $('distStart').hidden = !!task && !fetchMode;
-    $('distPreview').textContent = submitting === 'preview' ? '正在生成清单…' : task ? '📋 生成上传清单' : '📋 生成复制清单';
+    $('distPreview').hidden = !jsonMode;
+    $('distStart').hidden = !jsonMode && !fetchMode;
+    $('distPreview').textContent = submitting === 'preview' ? '正在生成清单…' : '📋 生成复制清单';
     $('distFetch').textContent = submitting === 'fetch' ? '正在对比共享和本地…' : task ? '⬇ 从共享拿最新版' : '⬇ 从目的地拿最新版';
     $('distStart').textContent = fetchMode ? (latest.running ? '正在拿…' : '⬇ 按清单拿文件')
-      : (latest.running ? (task ? '正在上传…' : '正在复制…') : (task ? '📥 按清单上传到共享' : '📥 按清单开始复制'));
+      : (latest.running ? '正在复制…' : '📥 按清单开始复制');
     if (task) taskControls(busy || readingFiles);
   }
 
@@ -68,6 +80,9 @@
     try {
       const data = await post(api + '/task_files', { task_id: task.id });
       taskFiles = data.files;
+      $('distTaskTotal').textContent = taskFiles.length;
+      $('distTaskUploaded').textContent = taskFiles.filter(file => file.uploaded_current && !file.review).length;
+      $('distTaskPending').textContent = taskFiles.filter(file => file.review).length;
       const found = new Set(taskFiles.map(file => file.rel));
       for (const rel of selected) if (!found.has(rel)) selected.delete(rel);
       const rows = taskFiles.map(file => {
@@ -87,6 +102,8 @@
     } catch (error) {
       taskFiles = [];
       $('distTaskFiles').textContent = error.message;
+      $('distTaskReview').hidden = true;
+      for (const id of ['distTaskTotal', 'distTaskUploaded', 'distTaskPending']) $(id).textContent = '—';
     } finally {
       readingFiles = false;
       controls();
@@ -320,7 +337,7 @@
 
   function renderHistory() {
     const runs = latest.history || [];
-    if (!runs.length) { $('distHistory').innerHTML = '<p>还没有复制记录。</p>'; return; }
+    if (!runs.length) { $('distHistory').innerHTML = '<p>还没有记录。</p>'; return; }
     $('distHistory').innerHTML = '<ul class="dist-history">' + runs.map(run => {
       const s = run.summary || {};
       const chip = run.attention ? (s['别人改过没覆盖'] ? '<span class="dist-chip dist-chip-err">🛑 有别人改过的</span>' : '<span class="dist-chip dist-chip-warn">⚠️ 有对不上的地方</span>')
@@ -329,8 +346,8 @@
         : run.kind === 'fetch' ? `⬇ 拿最新版 ${s['已拿'] ?? 0} 个（替换 ${s['替换'] ?? 0}）`
         : `复制 ${s['已复制'] ?? 0} 个（覆盖 ${s['覆盖'] ?? 0}${s['别人改过没覆盖'] ? `，别人改过没覆盖 ${s['别人改过没覆盖']}` : ''}）`;
       return `<li><span class="dist-route">${esc(run.label || '（没有 label）')}<small>${esc(run.finished || '')} · ${what} · ${esc(run.dest_root || '')}</small></span>${chip}`
-        + `<button type="button" class="btn btn-outline btn-sm" data-dist-view="${esc(run.id)}">查看</button>`
-        + `<a class="btn btn-outline btn-sm" href="${api}/markdown?id=${encodeURIComponent(run.id)}">⬇ 下载</a></li>`;
+        + `<button type="button" class="button secondary" data-dist-view="${esc(run.id)}">查看</button>`
+        + `<a class="button secondary" href="${api}/markdown?id=${encodeURIComponent(run.id)}">⬇ 下载</a></li>`;
     }).join('') + '</ul>';
   }
 
@@ -355,8 +372,9 @@
     const applied = latest.applied;
     const data = latest.preview || applied;
     if (!data) {
-      $('distResultTitle').textContent = task ? '批量上传结果' : '复制清单';
-      $('distResults').textContent = task ? '选好文件后，点击「检查并批量上传」。' : '尚未生成清单。';
+      $('distResultTitle').textContent = jsonMode ? '复制清单' : '批量上传结果';
+      $('distResults').textContent = jsonMode ? '尚未生成清单。'
+        : task ? '选好文件后，点击「检查并批量上传」。' : '还没有上传结果。';
       return;
     }
     $('distProgressFill').style.width = '100%';
@@ -407,8 +425,9 @@
       const response = await fetch(api, { cache: 'no-store' });
       if (!response.ok) throw Error('读取任务进度失败，正在重试');
       latest = await response.json();
-      if (latest.preview && (latest.preview.task?.id || '') !== (task?.id || '')) latest.preview = null;
-      if (latest.applied && (latest.applied.task?.id || '') !== (task?.id || '')) latest.applied = null;
+      const scope = jsonMode ? '' : task?.id;
+      if (latest.preview && (latest.preview.task?.id || '') !== scope) latest.preview = null;
+      if (latest.applied && (latest.applied.task?.id || '') !== scope) latest.applied = null;
       if (pollError && $('distError').textContent === pollError) $('distError').textContent = '';
       pollError = '';
       loading = false;
@@ -440,7 +459,7 @@
   }
 
   async function makePreview(kind = 'preview') {
-    if (loading || submitting || latest.running) return;
+    if (loading || submitting || latest.running || (!jsonMode && !task)) return;
     const payload = { source_root: $('distSource').value.trim(), dest_root: $('distDest').value.trim(), plan: $('distPlan').value };
     $('distError').textContent = '';
     if (task) payload.task_id = task.id;
@@ -573,22 +592,30 @@
   });
   async function loadTask() {
     try {
-      const result = await (await fetch('/api/tasks', { cache: 'no-store' })).json();
-      const current = (result.tasks || []).find(t => t.id === result.current);
-      if (current && !jsonMode) {
-        task = current;
-        $('distTaskName').textContent = current.name;
-        $('distTaskPaths').innerHTML = `<dt>共享</dt><dd>${esc(current.shared)}</dd><dt>参考</dt><dd>${esc(current.reference)}</dd><dt>处理</dt><dd>${esc(current.work)}</dd>`;
-        $('distTaskBox').hidden = false;
-        $('distJsonFields').hidden = true;
-        $('distJsonIntro').hidden = true;
-        $('distJsonHelp').hidden = true;
-        $('distHeading').textContent = '选择处理好的 Excel，批量传回共享';
-        $('distProgress').textContent = '等待选择文件。';
-      } else if (current) {
-        $('distBackToTask').hidden = false;
+      const response = await fetch('/api/tasks', { cache: 'no-store' });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw Error('无法读取当前任务');
+      const current = result.tasks.find(t => t.id === result.current);
+      if (jsonMode) {
+        $('distBackToTask').hidden = !current;
+        return;
       }
-    } catch (_) {}
+      if (!current) {
+        $('distTaskNoticeText').textContent = '还没有当前任务。请先新建或切换任务，再选择处理好的 Excel。';
+        $('distTaskHome').hidden = false;
+        return;
+      }
+      task = current;
+      $('distTaskName').textContent = task.name;
+      $('distTaskPaths').innerHTML = `<dt>共享</dt><dd>${esc(task.shared)}</dd><dt>参考</dt><dd>${esc(task.reference)}</dd><dt>处理</dt><dd>${esc(task.work)}</dd>`;
+      $('distTaskNotice').hidden = true;
+      $('distTaskSummary').hidden = false;
+      $('distTaskBox').hidden = false;
+      $('distActions').hidden = false;
+      $('distProgress').textContent = '等待选择文件。';
+    } catch (_) {
+      if (!jsonMode) $('distTaskNoticeText').textContent = '无法读取当前任务，请刷新页面重试。';
+    }
   }
 
   controls();

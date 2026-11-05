@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Callable
 
@@ -23,6 +24,7 @@ from core.pdf_detector import fitz
 
 FILL_LOW = 0.15   # 一页用了不到这么多算「很少」
 FILL_FULL = 0.60  # 相邻页用了这么多以上算「挺满」
+SCAN_TAIL_FILL = 0.40  # 扫描时自动分页的末页不到 40%，缩放到少一页
 MAX_FIXES = 6     # 一张表最多连着修几次（每修一次都要重新导出核对）
 SCAN_ROWS_LIMIT = 400  # Excel 里逐行找字最多找这么多行（Find 用不了时）
 XL_VALUES, XL_PART, XL_BY_ROWS, XL_PREVIOUS = -4163, 2, 1, 2
@@ -204,6 +206,85 @@ def _layout(sheet: Any) -> dict | None:
         return None
     return {"area": text, "top": top, "left": left, "bottom": bottom, "right": right, "h": h,
             "breaks": breaks}
+
+
+# Excel XlPaperSize（常用纸型）：毫米和英寸分列，换算后单位为 pt。未知/自定义纸型不猜。
+_PAPER_MM = {8: (297, 420), 9: (210, 297), 10: (210, 297), 11: (148, 210),
+             12: (250, 354), 13: (182, 257), 66: (420, 594), 70: (210, 297)}
+_PAPER_INCH = {1: (8.5, 11), 2: (8.5, 11), 3: (11, 17), 4: (17, 11),
+               5: (8.5, 14), 6: (5.5, 8.5), 7: (7.25, 10.5), 17: (11, 17)}
+
+
+def compact_scan_tail(sheet: Any) -> dict | None:
+    """导出前从 Excel 估算末页占用，不生成试算 PDF，不操作分页线。
+
+    只处理单块打印区域、纵向自动分页、未指定页高的表。由纸型/边距/打印缩放和
+    末页实际行高估算正文占用；重复标题占用从可用高度中扣除。不足 40% 时只设置
+    打印页宽 1、页高 N-1。后续只导出一次 PDF，按这个最终结果检测、标色。
+    """
+    try:
+        layout = _layout(sheet)
+        if layout is None or not layout["h"] or any(manual for _, manual in layout["h"]):
+            return None
+        setup = sheet.PageSetup
+        paper, orientation = int(setup.PaperSize), int(setup.Orientation)
+        if paper in _PAPER_MM:
+            width, height = (v * 72 / 25.4 for v in _PAPER_MM[paper])
+        elif paper in _PAPER_INCH:
+            width, height = (v * 72 for v in _PAPER_INCH[paper])
+        else:
+            raise ValueError(f"不支持的纸型 {paper}")
+        if orientation == 2:
+            width, height = height, width
+        elif orientation != 1:
+            raise ValueError("读不到纸张方向")
+        if setup.PrintHeadings is not False:
+            raise ValueError("打印行列标号或读取失败")
+        body_height = height - float(setup.TopMargin) - float(setup.BottomMargin)
+        body_width = width - float(setup.LeftMargin) - float(setup.RightMargin)
+        if body_height <= 0 or body_width <= 0:
+            raise ValueError("打印边距无效")
+        zoom = setup.Zoom
+        if zoom is False:
+            if setup.FitToPagesWide != 1:
+                raise ValueError("自动缩放没有指定一页宽，无法估算比例")
+            area = sheet.Range(sheet.Cells(layout["top"], layout["left"]),
+                               sheet.Cells(layout["bottom"], layout["right"]))
+            scale = min(1.0, body_width / float(area.Width))
+        elif type(zoom) in (int, float) and 10 <= zoom <= 400:
+            scale = float(zoom) / 100
+        else:
+            raise ValueError("读不到打印缩放")
+        title_height = 0.0
+        title_rows = str(setup.PrintTitleRows or "")
+        if title_rows:
+            title_height = float(sheet.Range(title_rows).Height)
+        available = body_height - title_height * scale
+        if available <= 0:
+            raise ValueError("重复标题占满了页面")
+        last_start = layout["h"][-1][0]
+        last = sheet.Range(sheet.Cells(last_start, layout["left"]),
+                           sheet.Cells(layout["bottom"], layout["right"]))
+        last_height = float(last.Height)
+        if not all(math.isfinite(v) and v >= 0 for v in
+                   (last_height, scale, available, title_height)):
+            raise ValueError("页面高度或缩放无效")
+        fill = last_height * scale / available
+        if fill >= SCAN_TAIL_FILL:
+            return None
+        original = {key: getattr(setup, key) for key in ("Zoom", "FitToPagesWide", "FitToPagesTall")}
+        count = len(layout["h"]) + 1
+        target = {"Zoom": False, "FitToPagesWide": 1, "FitToPagesTall": count - 1}
+    except Exception as err:
+        debug_log.event("📄 末页缩放跳过", 表=getattr(sheet, "Name", ""), 原因=str(err))
+        return None
+    # 设置失败必须中止本文件，不能按未保存或部分生效的打印设置标色。
+    for key, value in target.items():
+        setattr(setup, key, value)
+    debug_log.event("📄 Excel 末页估算", 表=sheet.Name, 原页数=count, 目标页数=count - 1,
+                    末页占比=round(fill, 4), 缩放比例=round(scale, 4))
+    return {"before": original, "after": target, "pages_before": count,
+            "pages_after": count - 1, "tail_fill": fill}
 
 
 # ---------- 检查 ----------

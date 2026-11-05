@@ -2,6 +2,13 @@
 .app-shell { min-height:calc(100vh - 80px); }
 .content { padding-top:32px; }
 .page-heading .eyebrow { color:#d4e6ff; letter-spacing:.5px; }
+.page-heading-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:10px; }
+.page-heading-actions .button { margin:0; text-decoration:none; }
+.page-heading-actions a:focus-visible { outline:3px solid #ffe26c; outline-offset:4px; }
 input[type=date] { font-family:inherit; min-width:0; }
 #manager-next-copy { display:inline-flex; margin:10px 0; padding:10px 16px; background:#dff4e5; color:#175935; border:2px solid #175935; border-radius:10px; font-weight:700; }
 @media(max-width:800px) { .app-shell { min-height:calc(100vh - 135px); } }
+@media(max-width:700px) {
+  .page-heading { flex-wrap:wrap; }
+  .page-heading-actions { justify-content:flex-start; }
+}

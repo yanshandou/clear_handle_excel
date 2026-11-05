@@ -23,7 +23,6 @@
   function render() {
     const current = data.tasks.find(t => t.id === data.current);
     const single = data.single === true;
-    $('workTaskUploadLink').href = current && !single ? '/distribute' : '/distribute/manage';
     $('workTaskPanel').classList.toggle('single', single);
     $('workTaskSingle').textContent = single ? '📁 回到任务模式' : '🔧 单项模式';
     $('workTaskName').textContent = single ? '🔧 单项模式（各页面自己填本地文件夹）'

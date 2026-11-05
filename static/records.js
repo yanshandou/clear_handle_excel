@@ -1,6 +1,7 @@
 let currentFilter = 'all';
 let latestReportData = null;
 let lastRenderKey = '';
+let rescanPending = false;
 
 // 看板按记录的键（相对目标文件夹的路径）排序显示；打开文件也用这个键
 function filesOf(data) {
@@ -48,7 +49,8 @@ function getFileStatusBadge(status) {
 
 function renderFilesTable(filesList) {
   // 内容没变就不重建表格：不打断选中文字，也不让刚点的链接被换掉
-  const renderKey = currentFilter + JSON.stringify(filesList);
+  const rescanDisabled = rescanPending || latestReportData?.status === 'running';
+  const renderKey = currentFilter + rescanDisabled + JSON.stringify(filesList);
   if (renderKey === lastRenderKey) return;
   lastRenderKey = renderKey;
   const tbody = document.getElementById('recordsTableBody');
@@ -110,6 +112,9 @@ function renderFilesTable(filesList) {
         ? `${escapeHtml(f.name)} <span style="color:#b45309; font-size:12px;">→ ${escapeHtml(f.renamed_to)}</span>`
         : escapeHtml(f.name);
       const fileLink = excelLinkHtml(`📄 ${fileDisplayName}`, { file: f.key, record: true });
+      const rescan = f.status === 'error'
+        ? ` <button type="button" class="btn btn-outline btn-sm" data-rescan="${escapeHtml(f.key)}" ${rescanDisabled ? 'disabled' : ''}>重扫</button>`
+        : '';
 
       const det = Number(f.clip_detected || 0);
       const fix = Number(f.clip_fixed || 0);
@@ -136,7 +141,7 @@ function renderFilesTable(filesList) {
       return `
         <tr class="${rowClass}">
           <td><b>${Number(f.index || 1)}</b></td>
-          <td><b>${fileLink}</b></td>
+          <td><b>${fileLink}</b>${rescan}</td>
           <td>${getFileStatusBadge(f.status)}</td>
           <td>${sheetsHtml}</td>
           <td style="text-align:center;"><b>${Number(f.exported_pdfs || 0)}</b></td>
@@ -149,6 +154,36 @@ function renderFilesTable(filesList) {
     })
     .join('');
 }
+
+document.getElementById('recordsTableBody').addEventListener('click', async event => {
+  const button = event.target.closest('[data-rescan]');
+  if (!button || rescanPending || !latestReportData) return;
+  const { folder } = latestReportData;
+  const file = button.dataset.rescan;
+  rescanPending = true;
+  try {
+    if (!(await appConfirm(`只重扫「${file}」，检测上限为 15 分钟。扫描会按切字工作台的规则处理条件格式、换行加高及标色，并保存文件。请先在 Excel 中关闭这份文件。`,
+      { title: '重扫单个 Excel 文件', okText: '开始重扫' }))) return;
+    renderFilesTable(filesOf(latestReportData));
+    const options = { folder, file };
+    try {
+      options.grow_ratio = localStorage.getItem('clear_handle_excel.growRatio') || undefined;
+      options.highlight = { types: JSON.parse(localStorage.getItem(TYPE_HIGHLIGHT_KEY) || '{}') };
+    } catch (_) { /* 浏览器禁用存储时使用默认设置 */ }
+    const res = await fetch('/api/records/rescan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || '无法开始重扫');
+    setStatusFilter('all');
+    await pollRecords();
+  } catch (error) {
+    await appAlert(error.message, { title: '无法开始重扫', tone: 'error' });
+  } finally {
+    rescanPending = false;
+    renderFilesTable(filesOf(latestReportData));
+  }
+});
 
 async function pollRecords() {
   try {

@@ -736,16 +736,16 @@ test('open all during a background task opens finished files and lists the rest'
 });
 
 
-test('start scan asks once, then sends the colors and the chosen grow ratio', async () => {
+test('start scan explains Excel tail estimation and sends only highlight settings', async () => {
   const p = page();
   p.elements.get('folderInput').value = 'C:/Excel';
-  p.elements.get('growRatio').value = '1.2';
   p.run(`appConfirm = async text => { globalThis.asked = text; return true; }`);
   await p.elements.get('startBtn').listeners.click();
-  assert.match(p.run('globalThis.asked'), /字号 × 1\.2/);
+  assert.match(p.run('globalThis.asked'), /从 Excel 估算末页占用/);
+  assert.match(p.run('globalThis.asked'), /只导出一次 PDF/);
   const last = p.requests.at(-1);
   assert.equal(last.url, '/api/batch/start');
-  assert.equal(last.payload.grow_ratio, 1.2);
+  assert.equal(last.payload.grow_ratio, undefined);
   assert.ok(last.payload.highlight);
   assert.equal(last.payload.scan_only, undefined);
   assert.equal(last.payload.fix_error_types, undefined);

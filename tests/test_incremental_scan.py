@@ -93,6 +93,48 @@ class IncrementalScanTests(unittest.TestCase):
         self.books[name] = FakeWorkbook(self, name, sheets)
         return path
 
+    def test_tail_is_estimated_before_the_only_export_then_saved_without_view_changes(self):
+        path = self.add_book("book", ["S1"])
+        sheet = self.books["book"].Sheets[0]
+        setup = sheet.PageSetup = SimpleNamespace(Zoom=100, FitToPagesWide=1, FitToPagesTall=False)
+        change = {"before": vars(setup).copy(),
+                  "after": {"Zoom": False, "FitToPagesWide": 1, "FitToPagesTall": 2},
+                  "pages_before": 3, "pages_after": 2, "tail_fill": .3}
+        events = []
+        def compact(target):
+            events.append("estimate")
+            for key, value in change["after"].items():
+                setattr(target.PageSetup, key, value)
+            return change
+        def export(target, pdf):
+            events.append("export")
+            self.assertEqual(target.PageSetup.FitToPagesTall, 2)
+            shutil.copyfile(self.blank_pdf, pdf)
+        def save(*_):
+            events.append("save_print")
+            path.write_bytes(b"saved print settings")
+            return self.workflow._file_version(path)
+        cached = Mock()
+        cached.pdf_for.return_value = self.blank_pdf  # 原缩放的缓存不可复用
+        with patch.object(self.workflow.page_fill, "compact_scan_tail", side_effect=compact), \
+                patch.object(self.workflow, "_export_sheet_pdf", side_effect=export) as exported, \
+                patch.object(self.workflow, "prepare_print_layout") as orientation, \
+                patch.object(self.workflow, "_detect_sheet_results", side_effect=lambda *_: events.append("detect") or ({}, {})), \
+                patch.object(self.workflow, "_save_scan_print_settings", side_effect=save) as saved:
+            self.workflow._scan_one_workbook(
+                self.excel, path, {"mode": "full", "scanned": False}, [], job=None,
+                resumed=False, rescan_all=False, delete_backups=False, used_pdf_paths=set(),
+                read_only=True, compact_print_tail=True, pdfs=cached,
+                before_print_save=lambda: events.append("clear_deadline"))
+        self.assertEqual(events, ["estimate", "export", "detect", "clear_deadline", "save_print"])
+        exported.assert_called_once()
+        orientation.assert_not_called()
+        self.save_preview.assert_not_called()
+        self.assertEqual(saved.call_args.args[3], {"S1": change})
+        version = self.workflow._file_version(path)
+        self.assertEqual(self.workflow.STATE["checked_files"][str(path)], version)
+        self.assertEqual(cached.remember_pdf.call_args.args[2], version)
+
     def modify(self, path):
         stat = path.stat()
         os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000))
@@ -151,7 +193,7 @@ class IncrementalScanTests(unittest.TestCase):
         self.assertEqual(report["summary"]["exempt_sheets"], 1)
         self.assertEqual(report["summary"]["checked_sheets"], 1)
         self.assertEqual(report["summary"]["issues"], 1)
-        self.assertTrue({"open", "layout", "export", "detect", "save_view"}.issubset(
+        self.assertTrue({"open", "layout", "export", "detect"}.issubset(
             op["key"] for op in report["operations"]))
         first_id = job["analysis_id"]
         self.scan()
@@ -310,17 +352,17 @@ class IncrementalScanTests(unittest.TestCase):
         self.assertEqual((report["status"], report["clip_unfixed"]), ("needs_fix", 1))
         self.assertIn("沿用", report["current_action"])
 
-    def test_clean_legacy_scan_also_saves_page_break_preview(self):
+    def test_clean_legacy_scan_does_not_save_page_break_preview(self):
         path = self.add_book("book", ["S1"])
         self.assertEqual(self.scan()["status"], "completed")
         self.assertEqual(self.workflow.STATE["items"], {})
-        self.save_preview.assert_called_once_with(self.excel, path, self.workflow._file_version(path))
+        self.save_preview.assert_not_called()
 
     def test_file_already_in_page_break_preview_is_not_opened_for_writing(self):
         path = self.add_book("book", ["S1"])
         with patch.object(self.workflow, "page_break_preview_needed", return_value=False) as check:
             self.assertEqual(self.scan()["status"], "completed")
-        check.assert_called_once()
+        check.assert_not_called()
         self.excel.Workbooks.Open.assert_called_once_with(str(path.resolve()), UpdateLinks=0, ReadOnly=True)
         self.save_preview.assert_not_called()
         self.assertEqual(self.workflow.STATE["checked_files"][str(path)], self.workflow._file_version(path))
@@ -374,11 +416,11 @@ class IncrementalScanTests(unittest.TestCase):
         report = self.reporter.get_execution_report_snapshot()["files"]["book.xlsx"]
         self.assertEqual(report["deleted_backups"], ["S1_20231023"])
 
-    def test_view_check_failure_falls_back_to_saving_the_preview(self):
+    def test_scan_does_not_check_or_save_the_view(self):
         self.add_book("book", ["S1"])
         with patch.object(self.workflow, "page_break_preview_needed", side_effect=RuntimeError("COM")):
             self.assertEqual(self.scan()["status"], "completed")
-        self.save_preview.assert_called_once()
+        self.save_preview.assert_not_called()
 
     def test_modified_problem_file_only_rechecks_problem_sheets(self):
         path = self.add_book("book", ["S1", "S2"])

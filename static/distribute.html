@@ -2,11 +2,16 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>按 JSON 复制 Excel - Excel 整理工具箱</title>
+  <title>当前任务批量上传 - Excel 整理工具箱</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
   <link rel="stylesheet" href="/static/repair.css">
+  <link rel="stylesheet" href="/static/upload_manager/style.css">
+  <link rel="stylesheet" href="/static/upload_manager/game-style.css">
+  <link rel="stylesheet" href="/static/upload_manager/planner.css">
+  <link rel="stylesheet" href="/static/upload_manager/cartoon-style.css">
   <link rel="stylesheet" href="/static/distribution_header.css">
+  <link rel="stylesheet" href="/static/upload_manager/integration.css">
   <style>
     .dist-plan { display: grid; gap: 10px; font-weight: 600; margin: 0 0 8px; }
     .dist-plan textarea { width: 100%; min-height: 160px; box-sizing: border-box; font-family: ui-monospace, Consolas, monospace; font-size: 13px; resize: vertical; }
@@ -39,15 +44,41 @@
     .dist-history .dist-route { flex: 1 1 260px; }
     .tag-overwrite { color: #7a3b00; font-weight: 700; }
     .tag-new { color: #14633c; font-weight: 700; }
-    .dist-task { border: 2px solid #b7d4fb; background: var(--purple-soft); border-radius: 14px; padding: 12px 16px; margin: 14px 0; }
-    .dist-task-head { margin: 0 0 6px; font-size: 16px; overflow-wrap: anywhere; }
-    .dist-task-paths { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; margin: 0 0 6px; font-size: 13px; }
+    .dist-workspace .nav-item { text-decoration: none; }
+    .dist-workspace .nav-item:focus-visible { outline: 2px solid #ffe45c; outline-offset: 2px; }
+    .dist-workspace .button { max-width: 100%; height: auto; min-height: 42px; white-space: normal; text-decoration: none; }
+    .dist-workspace .button:disabled { opacity: .6; cursor: not-allowed; transform: none; }
+    .dist-workspace [hidden] { display: none; }
+    .dist-overview { color: #fff; }
+    .dist-overview-grid:not([hidden]) { display: contents; }
+    .dist-overview h2 { overflow-wrap: anywhere; }
+    .dist-overview-copy { grid-column: 1 / -1; padding: 8px 26px; }
+    .dist-overview-copy p { margin: 8px 0 12px; color: #f5ebff; }
+    .dist-overview-copy a:not(.button) { color: #ffe45c; }
+    .dist-task-paths { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; margin: 12px 0 0; font-size: 13px; color: #f5ebff; }
     .dist-task-paths dt { font-weight: 700; }
     .dist-task-paths dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; }
     .dist-task-list { max-height: 25rem; overflow: auto; }
-    .dist-task-list input { width: auto; }
-    #distTaskCount { width: 6rem; margin-inline: 6px; }
-    .link-actions [hidden] { display: none; }
+    .dist-task-list input { width: auto; accent-color: #7033b7; }
+    .dist-task-list th:first-child, .dist-task-list td:first-child { width: 5rem; min-width: 4rem; }
+    .dist-surface { min-width: 0; padding: 16px; border: 2px solid var(--outline); border-radius: 12px; background: #fff7e6; }
+    .dist-surface > :first-child { margin-top: 0; }
+    .dist-surface > :last-child { margin-bottom: 0; }
+    .dist-surface .link-table { background: #fff; }
+    .dist-activity:empty { display: none; }
+    .dist-section { scroll-margin-top: 20px; }
+    .planner .dist-surface { margin-top: 14px; }
+    .dist-section .table-card { padding: 16px; }
+    .dist-section .table-card > :first-child { margin-top: 0; }
+    .dist-section .table-card > :last-child { margin-bottom: 0; }
+    #distTaskUpload { margin-top: 12px; }
+    #distTaskCount { width: 6rem; margin-inline: 6px; border: 2px solid var(--outline); border-radius: 10px; }
+    .dist-debug { margin-top: 24px; }
+    @media (max-width: 700px) {
+      .dist-workspace .navigation { padding: 3px 3px 8px; }
+      .dist-overview-copy { padding-inline: 16px; }
+      .dist-surface { padding: 12px; }
+    }
     .tag-keep { color: #1d4f91; font-weight: 700; }
     .tag-same { color: var(--ink-3); font-weight: 700; }
     .dist-conflict { color: #b42318; font-weight: 700; }
@@ -60,61 +91,127 @@
 </head>
 <body>
   <header class="distribution-header">
-    <a href="/" class="distribution-brand"><span class="distribution-brand-mark" aria-hidden="true">📦</span><span><strong>按 JSON 复制 Excel</strong><small>Excel 整理工具箱 · 第 9 步</small></span></a>
+    <a href="/" class="distribution-brand"><span class="distribution-brand-mark" aria-hidden="true">📦</span><span><strong>Excel 上传</strong><small>Excel 整理工具箱 · 第 9 步</small></span></a>
     <nav class="distribution-nav" aria-label="第 9 步功能导航"><a href="/">🏠 主页</a><a href="/distribute/manage">文件管理与上传方案</a><a href="/distribute?mode=json" data-dist-mode="json">复制 Excel</a><a href="/distribute" data-dist-mode="task">当前任务上传</a></nav>
+    <span class="today"><i data-lucide="calendar-days" aria-hidden="true"></i><time id="distToday"></time></span>
   </header>
-  <main class="container clean-container">
-    <section class="panel">
-      <p class="toolbar-hint">需要生成 JSON？<a href="/distribute/manage">打开文件管理与上传方案 →</a>，确认方案后可直接带入此页。</p>
-      <h1 id="distHeading">先生成清单，确认后再复制</h1>
-      <div id="distJsonIntro">
-      <p class="toolbar-hint">JSON 里每个文件夹的 source 接在「来源根目录」后面，destination 接在「目的地根目录」后面。先按目录结构把目的地文件夹全部建好（来源里的子文件夹、空文件夹也照样建，来源找不到的也建一个空的），再把 Excel 复制进对应的文件夹：只复制 Excel 表格文件（.xls / .xlsx / .xlsm / .xlsb / .xlt / .xltx / .xltm，~$ 临时文件不算），其他文件不管。只复制不移动，来源文件原样保留。目的地已有同名文件时覆盖，文件名不改，覆盖了哪些写在复制记录里。</p>
-      <p class="toolbar-hint"><strong>覆盖前检查别人改过没有：</strong>用「⬇ 从目的地拿最新版」把目的地（共享文件夹）的 Excel 拿回来源时，会记下每个文件拿到的版本。复制时如果目的地的文件和记下的不一样（拿走之后被别人改过），这个文件<strong>不覆盖</strong>、标红列出来；请再拿一次最新版，在新版上改好再复制。复制成功的文件也会记下放进去的版本，下次接着检查。没有记录的文件（以前手动拿的）没法检查，照旧覆盖，清单里会标出来。</p>
+  <div class="app-shell dist-workspace">
+    <aside class="sidebar">
+      <div class="sidebar-label">工作空间 <span>WORKSPACE</span></div>
+      <nav class="navigation" aria-label="上传页面导航">
+        <a class="nav-item active" href="#distWorkspace"><i data-lucide="layout-dashboard" aria-hidden="true"></i><span id="distNavOverview">当前任务上传</span><i class="nav-arrow" data-lucide="chevron-right" aria-hidden="true"></i></a>
+        <a class="nav-item" href="#distResultsPanel"><i data-lucide="circle-check" aria-hidden="true"></i><span>本次结果</span></a>
+        <a class="nav-item" href="#distHistoryPanel"><i data-lucide="history" aria-hidden="true"></i><span>历史记录</span></a>
+      </nav>
+    </aside>
+    <main class="main-content">
+      <div class="content">
+        <section id="distWorkspace" class="page-heading dist-section">
+          <div>
+            <div class="eyebrow"><span></span> Excel 上传 / <strong id="distBreadcrumb">当前任务</strong></div>
+            <h1><span id="distHeading">当前任务批量上传</span> <span class="heading-spark" aria-hidden="true">✳</span></h1>
+            <p id="distSubtitle">选择处理好的 Excel，核对共享版本后批量上传。</p>
+          </div>
+          <div class="page-heading-actions">
+            <a class="button secondary" href="/distribute/manage"><i data-lucide="files" aria-hidden="true"></i> 文件管理与上传方案</a>
+          </div>
+        </section>
+        <section class="overview dist-overview" aria-label="上传概况">
+          <div id="distTaskNotice" class="dist-overview-copy">
+            <div class="section-kicker">TASK OVERVIEW <span>01 / 当前任务</span></div>
+            <div class="overview-title"><h2>当前任务</h2></div>
+            <p id="distTaskNoticeText" role="status">正在读取当前任务…</p>
+            <a id="distTaskHome" class="button primary" href="/#workTaskPanel" hidden>回主页新建或切换任务 →</a>
+          </div>
+          <div id="distTaskSummary" class="dist-overview-grid" hidden>
+            <div class="overview-intro">
+              <div class="section-kicker">TASK OVERVIEW <span>01 / 当前任务</span></div>
+              <div class="overview-title"><h2 id="distTaskName"></h2></div>
+              <dl id="distTaskPaths" class="dist-task-paths"></dl>
+            </div>
+            <div class="metric">
+              <div class="metric-label"><span class="metric-icon blue"><i data-lucide="files" aria-hidden="true"></i></span> 文件总数</div>
+              <div class="metric-value"><strong id="distTaskTotal">—</strong><span>个文件</span></div>
+              <div class="metric-foot">处理文件夹中的 Excel</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label"><span class="metric-icon green"><i data-lucide="circle-check" aria-hidden="true"></i></span> 当前版本已上传</div>
+              <div class="metric-value"><strong id="distTaskUploaded">—</strong><span>个文件</span></div>
+              <div class="metric-foot">按数量选取时会跳过</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label"><span class="metric-icon amber"><i data-lucide="history" aria-hidden="true"></i></span> 待重新处理</div>
+              <div class="metric-value"><strong id="distTaskPending">—</strong><span>个文件</span></div>
+              <div class="metric-foot">共享版本更新后需复检</div>
+            </div>
+          </div>
+          <div id="distJsonIntro" class="dist-overview-copy" hidden>
+            <div class="section-kicker">COPY OVERVIEW <span>01 / 复制规则</span></div>
+            <div class="overview-title"><h2>按清单复制</h2></div>
+            <p>需要生成 JSON？<a href="/distribute/manage">打开文件管理与上传方案 →</a>，确认方案后可直接带入此页。</p>
+            <p>JSON 里每个文件夹的 source 接在「来源根目录」后面，destination 接在「目的地根目录」后面。先按目录结构把目的地文件夹全部建好（来源里的子文件夹、空文件夹也照样建，来源找不到的也建一个空的），再把 Excel 复制进对应的文件夹：只复制 Excel 表格文件（.xls / .xlsx / .xlsm / .xlsb / .xlt / .xltx / .xltm，~$ 临时文件不算），其他文件不管。只复制不移动，来源文件原样保留。目的地已有同名文件时覆盖，文件名不改，覆盖了哪些写在复制记录里。</p>
+            <p><strong>覆盖前检查别人改过没有：</strong>用「⬇ 从目的地拿最新版」把目的地（共享文件夹）的 Excel 拿回来源时，会记下每个文件拿到的版本。复制时如果目的地的文件和记下的不一样（拿走之后被别人改过），这个文件<strong>不覆盖</strong>、标红列出来；请再拿一次最新版，在新版上改好再复制。复制成功的文件也会记下放进去的版本，下次接着检查。没有记录的文件（以前手动拿的）没法检查，照旧覆盖，清单里会标出来。</p>
+          </div>
+        </section>
+        <section class="planner dist-section" aria-labelledby="distControlsTitle">
+          <div class="planner-heading">
+            <div>
+              <div class="section-kicker">FILE UPLOAD <span>02 / 操作</span></div>
+              <h2 id="distControlsTitle">上传操作</h2>
+            </div>
+          </div>
+          <div id="distTaskBox" class="dist-surface" hidden>
+            <p class="toolbar-hint">在处理文件夹中勾选要传回共享的 Excel，或按数量选择。系统只检查选中文件的共享版本，有更新就先同步到参考和处理文件夹，等你重新处理并复检。</p>
+            <div class="dist-plan-row">
+              <label for="distTaskCount">按数量选取<input id="distTaskCount" type="number" min="1" step="1" value="10" required></label>
+              <button id="distTaskPickCount" class="button secondary" type="button">选取前 N 个待上传文件</button>
+              <button id="distTaskClear" class="button secondary" type="button">清空选择</button>
+              <button id="distTaskReload" class="button secondary" type="button">刷新文件列表</button>
+              <span id="distTaskSelection" role="status" aria-live="polite"></span>
+            </div>
+            <div id="distTaskFiles" class="link-table-wrap dist-task-list"><p>正在读取本地文件…</p></div>
+            <p id="distTaskReview" class="toolbar-hint" hidden>待重新处理的文件可点名称在 Excel 中打开。处理并保存后，可前往<a href="/?task=export_pdf" target="_blank" rel="noopener">第 7 步导出 PDF 并复检 ↗</a>，然后回到此页再次检查。</p>
+            <button id="distTaskUpload" class="button primary" type="button" disabled>检查并批量上传</button>
+          </div>
+          <div id="distJsonFields" class="dist-surface" hidden>
+            <p id="distBackToTask" class="toolbar-hint" hidden><a href="/distribute">← 回到当前任务</a></p>
+            <div class="link-fields">
+              <label for="distSource">来源根目录<input id="distSource" type="text" placeholder="例如 D:\原始"></label>
+              <label for="distDest">目的地根目录<input id="distDest" type="text" placeholder="例如 \\server\共有\上传"></label>
+            </div>
+            <label class="dist-plan" for="distPlan">上传记录 JSON
+              <textarea id="distPlan" spellcheck="false" placeholder='粘贴 JSON，例如 {"label": "2026-10-30 上传记录", "people": [...]}'></textarea>
+            </label>
+            <div class="dist-plan-row">
+              <input id="distFile" type="file" accept=".json,application/json" hidden>
+              <button id="distPick" class="button secondary" type="button">📂 选择 .json 文件</button>
+              <span id="distFileName" class="toolbar-hint"></span>
+            </div>
+          </div>
+          <div id="distActions" class="link-actions" hidden>
+            <button id="distPreview" class="button primary" type="button" disabled>📋 生成复制清单</button>
+            <button id="distFetch" class="button secondary" type="button" disabled>⬇ 从目的地拿最新版</button>
+            <button id="distStart" class="button primary" type="button" disabled>📥 按清单开始复制</button>
+          </div>
+          <p id="distJsonHelp" class="planner-note" hidden>两个按钮都是先生成清单（只读不改），确认后点右边的按钮才动文件。开始复制前会再查一遍来源，生成清单后来源有变化就不复制，需要重新生成；每个文件覆盖前还会再查一次目的地有没有被别人改过。拿最新版时，本地改过、目的地没人动的文件保留你改的不拿；本地被替换的文件先备份到来源根目录旁边的「…_拿最新版前的备份」文件夹。关闭网页后任务继续。</p>
+          <section id="distResultsPanel" class="dist-section dist-surface" aria-labelledby="distResultTitle">
+            <h3 id="distResultTitle">批量上传结果</h3>
+            <p id="distProgress" class="dist-activity" role="status" aria-live="polite"></p>
+            <div class="progress-track progress-track-sm is-done"><div id="distProgressFill" class="progress-fill" style="width:0%"></div></div>
+            <p id="distError" class="batch-error dist-activity" role="alert"></p>
+            <div id="distResults"><p>还没有上传结果。</p></div>
+          </section>
+        </section>
+        <section id="distHistoryPanel" class="list-section dist-section" aria-labelledby="distHistoryTitle">
+          <div class="list-heading"><div><div class="section-kicker">UPLOAD HISTORY <span>03 / 记录</span></div><h2 id="distHistoryTitle">历史上传和复制记录</h2></div></div>
+          <div id="distHistory" class="table-card"><p>还没有记录。</p></div>
+        </section>
+        <details class="dist-surface dist-debug"><summary>调试日志</summary><div data-debug-log-tools></div></details>
+        <footer class="page-footer"><span>EXCEL 整理工具箱 / 第 9 步</span></footer>
       </div>
-      <div id="distTaskBox" class="dist-task" hidden>
-        <p class="dist-task-head">📁 当前任务：<strong id="distTaskName"></strong></p>
-        <dl id="distTaskPaths" class="dist-task-paths"></dl>
-        <p class="toolbar-hint">在处理文件夹中勾选要传回共享的 Excel，或按数量选择。系统只检查选中文件的共享版本，有更新就先同步到参考和处理文件夹，等你重新处理并复检。</p>
-        <div class="dist-plan-row">
-          <label for="distTaskCount">按数量选取<input id="distTaskCount" type="number" min="1" step="1" value="10" required></label>
-          <button id="distTaskPickCount" class="btn btn-outline btn-sm" type="button">选取前 N 个待上传文件</button>
-          <button id="distTaskClear" class="btn btn-outline btn-sm" type="button">清空选择</button>
-          <button id="distTaskReload" class="btn btn-outline btn-sm" type="button">刷新文件列表</button>
-          <span id="distTaskSelection" role="status" aria-live="polite"></span>
-        </div>
-        <div id="distTaskFiles" class="link-table-wrap dist-task-list"><p>正在读取本地文件…</p></div>
-        <p id="distTaskReview" class="toolbar-hint" hidden>待重新处理的文件可点名称在 Excel 中打开。处理并保存后，可前往<a href="/?task=export_pdf" target="_blank" rel="noopener">第 7 步导出 PDF 并复检 ↗</a>，然后回到此页再次检查。</p>
-        <button id="distTaskUpload" class="btn btn-danger" type="button" disabled>检查并批量上传</button>
-      </div>
-      <div id="distJsonFields">
-      <p id="distBackToTask" class="toolbar-hint" hidden><a href="/distribute">← 回到当前任务</a></p>
-      <div class="link-fields">
-        <label for="distSource">来源根目录<input id="distSource" type="text" placeholder="例如 D:\原始"></label>
-        <label for="distDest">目的地根目录<input id="distDest" type="text" placeholder="例如 \\server\共有\上传"></label>
-      </div>
-      <label class="dist-plan" for="distPlan">上传记录 JSON
-        <textarea id="distPlan" spellcheck="false" placeholder='粘贴 JSON，例如 {"label": "2026-10-30 上传记录", "people": [...]}'></textarea>
-      </label>
-      <div class="dist-plan-row">
-        <input id="distFile" type="file" accept=".json,application/json" hidden>
-        <button id="distPick" class="btn btn-outline btn-sm" type="button">📂 选择 .json 文件</button>
-        <span id="distFileName" class="toolbar-hint"></span>
-      </div>
-      </div>
-      <div class="link-actions">
-        <button id="distPreview" class="btn btn-primary" type="button" disabled>📋 生成复制清单</button>
-        <button id="distFetch" class="btn btn-outline" type="button" disabled>⬇ 从目的地拿最新版</button>
-        <button id="distStart" class="btn btn-danger" type="button" disabled>📥 按清单开始复制</button>
-      </div>
-      <p id="distJsonHelp" class="toolbar-hint">两个按钮都是先生成清单（只读不改），确认后点右边的按钮才动文件。开始复制前会再查一遍来源，生成清单后来源有变化就不复制，需要重新生成；每个文件覆盖前还会再查一次目的地有没有被别人改过。拿最新版时，本地改过、目的地没人动的文件保留你改的不拿；本地被替换的文件先备份到来源根目录旁边的「…_拿最新版前的备份」文件夹。关闭网页后任务继续。</p>
-      <p id="distProgress" role="status" aria-live="polite">填好两个根目录和 JSON 后点「生成复制清单」。</p>
-      <div class="progress-track progress-track-sm"><div id="distProgressFill" class="progress-fill" style="width:0%"></div></div>
-      <p id="distError" class="batch-error" role="alert"></p>
-    </section>
-    <section class="panel"><h2 id="distResultTitle">复制清单</h2><div id="distResults"><p>尚未生成清单。</p></div></section>
-    <section class="panel"><h2>以前的复制记录</h2><div id="distHistory"><p>还没有复制记录。</p></div></section>
-    <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
-  </main>
+    </main>
+  </div>
+  <script src="/static/upload_manager/icons.js"></script>
   <script src="/static/eta.js"></script><script src="/static/dialog.js"></script><script src="/static/open_excel.js"></script><script src="/static/distribute.js"></script><script src="/static/debug_log.js"></script>
   <script src="/static/file_problem.js"></script>
 </body>

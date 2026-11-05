@@ -189,13 +189,13 @@ def same_folder(a: str, b: Path | str) -> bool:
     return _same_folder(a, Path(b)) if b else False
 
 
-def _same_folder(a: str, b: Path) -> bool:
+def _same_folder(a: str, b: str | Path) -> bool:
     if not a:
         return False
     try:
-        return Path(a).resolve() == b.resolve()
+        return Path(a).resolve() == Path(b).resolve()
     except OSError:
-        return Path(a) == b
+        return Path(a) == Path(b)
 
 
 _SUSPENDED = threading.local()
@@ -466,11 +466,13 @@ def finish_execution_batch(summary_step: str = "全部任务处理完毕") -> No
         _persist_and_write_markdown_unlocked()
 
 
-def interrupt_execution_batch(message: str) -> None:
+def interrupt_execution_batch(message: str, *, restore_batch: list[str] | None = None) -> None:
     if _updates_suspended():
         return
     with REPORT_LOCK:
         operation_history.finish(getattr(_history_context, "ids", []), "interrupted")
+        if restore_batch is not None:
+            EXECUTION_STATE["batch"] = restore_batch
         EXECUTION_STATE["status"] = "interrupted"
         EXECUTION_STATE["current_file"] = ""
         EXECUTION_STATE["current_step"] = message
@@ -699,14 +701,19 @@ def find_workbook(file_name: str, roots: list[str]) -> Path:
     raise ValueError(f"找不到文件「{raw.name}」，可能已被移动或改名")
 
 
-def find_recorded_workbook(file_name: str) -> Path:
+def find_recorded_workbook(file_name: str, *, failed_in_folder: str | None = None) -> Path:
     """看板里的文件现在在磁盘上的路径；只接受本次目标文件夹内的 Excel 文件"""
     with REPORT_LOCK:
         folder_str = EXECUTION_STATE.get("folder", "")
         entry = EXECUTION_STATE["files"].get(file_name)
-    if not folder_str or entry is None:
-        raise ValueError("看板里没有这个文件，请刷新页面")
-    for name in filter(None, [entry.get("renamed_to"), file_name]):
+        if not folder_str or entry is None:
+            raise ValueError("看板里没有这个文件，请刷新页面")
+        if failed_in_folder is not None and (
+            not same_folder(folder_str, failed_in_folder) or entry["status"] != "error"
+        ):
+            raise ValueError("这条异常记录已更新，请刷新页面")
+        names = [entry.get("renamed_to"), file_name]
+    for name in filter(None, names):
         try:
             return find_workbook(name, [folder_str])
         except ValueError:

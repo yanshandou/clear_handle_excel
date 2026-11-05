@@ -27,7 +27,7 @@
 </head>
 <body>
   <header class="distribution-header">
-    <a href="/" class="distribution-brand"><span class="distribution-brand-mark" aria-hidden="true">📦</span><span><strong>按 JSON 复制 Excel</strong><small>Excel 整理工具箱 · 第 9 步</small></span></a>
+    <a href="/" class="distribution-brand"><span class="distribution-brand-mark" aria-hidden="true">📦</span><span><strong>Excel 上传</strong><small>Excel 整理工具箱 · 第 9 步</small></span></a>
     <nav class="distribution-nav" aria-label="第 9 步功能导航"><a href="/">🏠 主页</a><a href="/distribute/manage" aria-current="page">文件管理与上传方案</a><a href="/distribute?mode=json">复制 Excel</a><a href="/distribute">当前任务上传</a></nav>
     <span class="today"><i data-lucide="calendar-days"></i><span id="today"></span></span>
   </header>
@@ -44,7 +44,13 @@
 
     <main class="main-content">
       <div class="content">
-        <section class="page-heading"><div><div class="eyebrow"><span></span> 文件管理 / <strong id="breadcrumb-current">总览</strong></div><h1>文件上传管理 <span class="heading-spark">✳</span></h1><p>所有文件的上传进度，一目了然。</p></div><button id="add-item" class="button primary"><i data-lucide="plus"></i> 添加文件夹</button></section>
+        <section class="page-heading">
+          <div><div class="eyebrow"><span></span> 文件管理 / <strong id="breadcrumb-current">总览</strong></div><h1>文件上传管理 <span class="heading-spark">✳</span></h1><p>所有文件的上传进度，一目了然。</p></div>
+          <div class="page-heading-actions">
+            <a id="manager-task-upload" class="button primary" href="/distribute"><i data-lucide="upload"></i> 批量上传当前任务</a>
+            <button id="add-item" type="button" class="button secondary"><i data-lucide="plus"></i> 添加文件夹</button>
+          </div>
+        </section>
 
         <section class="overview" aria-label="上传概况">
           <div class="overview-intro"><div class="section-kicker">PROJECT PROGRESS <span>01 / OVERVIEW</span></div><div class="overview-title"><div><h2>项目进度概览</h2><p>掌握每一份文件的上传情况</p></div><div class="mini-chart"><i data-lucide="chart-no-axes-column-increasing"></i></div></div></div>
@@ -76,7 +82,7 @@
           </details>
         </section>
 
-        <section class="list-section"><div class="list-heading"><div><div class="section-kicker">FILE DIRECTORY <span>03 / DETAILS</span></div><h2 id="list-title">文件夹明细 <span id="row-count">0</span></h2><p>查看并管理各文件夹的上传状态</p></div><div class="data-actions"><button id="import-excel" class="button secondary"><i data-lucide="file-down"></i> 导入 Excel</button><button id="export" class="button secondary"><i data-lucide="file-up"></i> 导出完整 Excel</button><button id="export-customer" class="button secondary"><i data-lucide="file-up"></i> 导出客户表</button><button id="import-backup" class="button secondary"><i data-lucide="file-down"></i> 导入 JSON 备份</button><button id="export-backup" class="button secondary"><i data-lucide="file-up"></i> 导出 JSON 备份</button><input id="excel-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden><input id="backup-file" type="file" accept=".json,application/json" hidden></div></div>
+        <section class="list-section"><div class="list-heading"><div><div class="section-kicker">FILE DIRECTORY <span>03 / DETAILS</span></div><h2 id="list-title">文件夹明细 <span id="row-count">0</span></h2><p>查看并管理各文件夹的上传状态</p></div><div class="data-actions"><button id="import-excel" class="button secondary"><i data-lucide="table-import"></i> 导入 Excel</button><button id="export" class="button secondary"><i data-lucide="table-export"></i> 导出完整 Excel</button><button id="export-customer" class="button secondary"><i data-lucide="contact-round"></i> 导出客户表</button><button id="import-backup" class="button secondary"><i data-lucide="file-json-import"></i> 导入 JSON 备份</button><button id="export-backup" class="button secondary"><i data-lucide="file-json-export"></i> 导出 JSON 备份</button><input id="excel-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden><input id="backup-file" type="file" accept=".json,application/json" hidden></div></div>
           <div id="plan-preview-bar" class="plan-preview-bar" hidden><span>正在预览：<strong id="plan-preview-name"></strong></span><button id="exit-plan-preview" type="button" class="button secondary">退出预览</button></div>
           <div id="date-history-bar" class="date-history-bar" aria-live="polite" hidden></div>
           <div class="table-card"><div class="table-toolbar"><label class="search-box"><i data-lucide="search"></i><input id="search" type="search" placeholder="搜索文件夹或负责人..." aria-label="搜索文件夹或负责人"><kbd>⌘ K</kbd></label><div class="toolbar-actions"><label class="upload-date-filter"><span>上传日期</span><input id="upload-date-filter" type="date" autocomplete="off" placeholder="YYYY-MM-DD" data-datepicker aria-label="按上传日期筛选"></label><button id="clear-upload-date" type="button" class="clear-upload-date" aria-label="清除上传日期筛选" hidden>清除</button><label class="filter-select"><i data-lucide="list-filter"></i><select id="status-filter" aria-label="按文件夹状态筛选"><option value="all">全部状态</option><option value="unstarted">未完成</option><option value="processing">完成中...</option><option value="ready">已完成/未上传</option><option value="uploading">上传中...</option><option value="uploaded">已上传</option></select><i data-lucide="chevron-down"></i></label><span class="toolbar-divider"></span><button id="sort-order" class="icon-button" title="切换排序方向" aria-label="切换排序方向"><i data-lucide="arrow-down-wide-narrow"></i></button></div></div>

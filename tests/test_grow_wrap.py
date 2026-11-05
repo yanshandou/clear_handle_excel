@@ -3,7 +3,7 @@ import importlib
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from core import batch, fix_images, reporter, storage, workflow
 
@@ -106,6 +106,98 @@ class GrowWrapTests(unittest.TestCase):
         self.assertEqual(self.sheet.rows[9].RowHeight, 112.75)
         self.assertEqual(done[batch._key(self.path, "S1", "E9")]["lines"], 7)
         self.assertEqual(done[batch._key(self.path, "S1", "E9")]["measured_by"], "估算")
+
+    def horizontal_title(self):
+        area = FakeArea(9, value="パターン⑤ サービスコード ＋ 加算 ＋ 個別サービス", width=20.0)
+        area.Column = 5
+        area.Orientation = batch.XL_HORIZONTAL
+        area.HorizontalAlignment = batch.XL_HALIGN_GENERAL
+        self.sheet.areas["E9"] = area
+        self.sheet.Columns = Mock(Count=100)
+        self.sheet.Cells = Mock(return_value=Mock(Value2=None, HasFormula=False, MergeCells=False, Width=20.0))
+        self.add("E9", 9, kind="hidden", hidden_reason="truncated", text=area.value, visible_text="パタ")
+        batch._data().setdefault("highlight_files", {})[self.path] = {"enabled": True}
+        return area
+
+    def test_horizontal_title_with_space_on_the_right_stays_in_its_original_layout(self):
+        area = self.horizontal_title()
+        batch._hand_over(self.path, batch._grow_and_wrap(Mock(), self.path, 1.5))
+        card = self.card("E9")
+        self.assertFalse(area.WrapText)
+        self.assertEqual(self.sheet.rows[9].RowHeight, 18.75)
+        self.book.Save.assert_not_called()
+        self.assertEqual(card["message"], batch.HORIZONTAL_LAYOUT_MESSAGE)
+        self.assertNotIn("grown", card)
+        self.assertNotIn(card["id"], batch._wanted_marks(self.path))
+
+    def horizontal_format_trial(self, visible_lengths, *, formula="=TRUE()"):
+        area = self.horizontal_title()
+        original = Mock(Areas=Mock(Count=1), Rows=Mock(Count=1), Columns=Mock(Count=1), Row=9, Column=5)
+        rule = Mock(Type=batch.XL_EXPRESSION, AppliesTo=original, Formula1=formula)
+        area.FormatConditions = Mock(Count=1)
+        area.FormatConditions.Item.return_value = rule
+        neighbor = self.sheet.Cells.return_value
+        neighbor.FormatConditions = Mock(Count=0)
+        self.sheet.Range = Mock(side_effect=lambda address: Mock(MergeArea=area) if address == "E9" else address)
+
+        def write_pdf(path, length):
+            with batch.fitz.open() as doc:
+                page = doc.new_page()
+                page.insert_text((40, 60), area.value[:length], fontname="japan", fontsize=11)
+                page.insert_text((40, 90), area.value, fontname="japan", fontsize=11)
+                doc.save(path)
+
+        baseline = self.root / "original.pdf"
+        write_pdf(baseline, 2)
+        with batch.fitz.open(baseline) as doc:
+            anchor = batch.collect_text_pieces(doc)[0].bbox
+        self.wf.STATE["items"]["iE9"].update(pdf_path=str(baseline), bbox=anchor)
+        lengths = iter(visible_lengths)
+        with patch.object(batch.page_breaks, "page_area", return_value="A1:Z20"), \
+                patch.object(self.wf, "_export_sheet_pdf", side_effect=lambda _sheet, pdf, _pages: write_pdf(pdf, next(lengths))):
+            done = batch._grow_and_wrap(Mock(), self.path, 1.5)
+        return area, rule, original, done[batch._key(self.path, "S1", "E9")]
+
+    def test_horizontal_format_extends_until_the_target_text_is_visible(self):
+        area, rule, _, result = self.horizontal_format_trial([5, 100])
+        self.assertEqual(rule.ModifyAppliesToRange.call_args_list, [call("E9:F9"), call("E9:G9")])
+        self.assertEqual(result["horizontal_fix"], batch.HORIZONTAL_FORMAT_PASSED)
+        self.assertFalse(area.WrapText)
+        self.assertEqual(self.sheet.rows[9].RowHeight, 18.75)
+        self.book.Save.assert_called_once()
+
+    def test_horizontal_format_rolls_back_when_progress_stops(self):
+        area, rule, original, result = self.horizontal_format_trial([5, 5])
+        self.assertEqual(rule.ModifyAppliesToRange.call_args_list, [call("E9:F9"), call("E9:G9"), call(original)])
+        self.assertNotIn("horizontal_fix", result)
+        self.assertFalse(area.WrapText)
+        self.book.Save.assert_not_called()
+
+    def test_temporary_marker_is_removed_when_the_unmarked_title_is_complete(self):
+        area, rule, _, result = self.horizontal_format_trial([100], formula='=N("CHE_MARK_test")=0')
+        rule.ModifyAppliesToRange.assert_called_once_with(self.sheet.Cells.return_value)
+        rule.Delete.assert_called_once()
+        self.assertEqual(result["horizontal_fix"], batch.HORIZONTAL_MARK_PASSED)
+        self.assertFalse(area.WrapText)
+        self.book.Save.assert_called_once()
+
+    def test_recheck_protects_horizontal_layout_but_does_not_count_it_as_grown(self):
+        area = self.horizontal_title()
+        batch._hand_over(self.path)
+        with patch.object(batch, "_recheck_file") as recheck:
+            batch._grow_after_recheck(self.session(), self.path, set())
+        self.assertFalse(area.WrapText)
+        self.assertEqual(self.card("E9")["message"], batch.HORIZONTAL_LAYOUT_MESSAGE)
+        self.book.Save.assert_not_called()
+        recheck.assert_not_called()
+
+    def test_empty_looking_formula_blocks_horizontal_space(self):
+        area = self.horizontal_title()
+        self.sheet.Cells.return_value.HasFormula = True
+        done = batch._grow_and_wrap(Mock(), self.path, 1.5)
+        self.assertTrue(area.WrapText)
+        self.assertGreater(self.sheet.rows[9].RowHeight, 18.75)
+        self.assertIn("applied", done[batch._key(self.path, "S1", "E9")])
 
     def test_excel_measures_merged_cell_on_a_temp_cell_of_the_same_width(self):
         """合并格 Excel 不会自动调整：搬到临时工作簿一个同宽的格子上量，量出来不够的补够再加倍数"""

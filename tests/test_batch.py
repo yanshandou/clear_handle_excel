@@ -63,7 +63,7 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(self.heights[5], 24)
         self.book.Save.assert_not_called()
 
-    def test_clean_scan_saves_preview_then_grows_then_colors(self):
+    def test_clean_scan_estimates_print_tail_and_only_colors(self):
         job = {"kind": "batch_scan", "workbooks": [self.path], "completed": [],
                "options": {"folder": str(self.root)}}
         self.wf.STATE["job"] = job
@@ -78,7 +78,9 @@ class BatchTests(unittest.TestCase):
                 patch.object(batch, "_sync_highlights", side_effect=lambda *_args, **_kwargs: events.append("color")), \
                 patch.object(batch, "finish_execution_batch"):
             batch.run()
-        self.assertEqual(events, ["scan", "preview", "grow", "color"])
+        self.assertEqual(events, ["scan", "color"])
+        self.assertTrue(self.refresh.call_args.kwargs["compact_print_tail"])
+        self.save_scan_preview.assert_not_called()
         self.assertEqual(job["completed"], [self.path])
         from core import scan_analysis
         report = scan_analysis.report(job["analysis_id"])
@@ -86,8 +88,50 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(report["summary"]["completed"], 1)
         self.assertEqual(report["files"][0]["attempts"], 1)
 
+    def test_records_rescan_updates_only_the_selected_failure_and_keeps_the_original_batch(self):
+        from web_clip_fixer import WebHandler
+
+        selected = self.root / "sub" / "book.xlsx"
+        selected.parent.mkdir()
+        selected.write_bytes(b"workbook")
+        pending = self.root / "pending.xlsx"
+        files = [Path(self.path), selected, pending]
+        folder = str(self.root)
+        reporter.init_execution_batch("扫描并标记", self.root, files)
+        reporter.update_file_progress("book.xlsx", status="done")
+        reporter.update_file_progress("sub/book.xlsx", status="error", error="扫描超过 3 分钟")
+        reporter.interrupt_execution_batch("原批次中断")
+        old = {"kind": "batch_scan", "status": "interrupted", "options": {"folder": folder},
+               "workbooks": list(map(str, files)), "completed": [self.path], "pending_adjustment": None}
+        self.wf.STATE.update(job=old, busy=False)
+
+        handler = object.__new__(WebHandler)
+        handler.path = "/api/records/rescan"
+        handler._start_job = self.wf.queue_job
+        with patch("web_clip_fixer._require_folder", return_value=folder):
+            with self.assertRaisesRegex(ValueError, "异常记录已更新"):
+                handler._handle_post({"folder": folder, "file": "book.xlsx"})
+            handler._handle_post({"folder": folder, "file": "sub/book.xlsx"})
+        self.assertEqual(self.wf.STATE["job"]["options"]["scan_limit_minutes"], 15)
+
+        session = Mock(app=Mock(return_value=self.excel))
+        with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch, "ExcelWatchdog", return_value=Mock(deadline_hit=False)), \
+                patch.object(batch, "_sync_highlights"), \
+                patch.object(self.wf, "list_workbooks") as list_workbooks:
+            self.wf.run_pending_workflow()
+        list_workbooks.assert_not_called()
+        self.refresh.assert_called_once()
+        self.assertEqual(self.refresh.call_args.args[1], str(selected))
+        self.assertIs(self.wf.STATE["job"], old)
+        self.assertEqual(old["completed"], [self.path, str(selected)])
+        report = reporter.get_execution_report_snapshot()
+        self.assertEqual(report["batch"], ["book.xlsx", "sub/book.xlsx", "pending.xlsx"])
+        self.assertEqual({key: row["status"] for key, row in report["files"].items()},
+                         {"book.xlsx": "done", "sub/book.xlsx": "done", "pending.xlsx": "pending"})
+
     def test_scan_skips_preview_save_when_views_are_already_page_break_preview(self):
-        for needed, saves in ((False, 0), (True, 1)):
+        for needed, saves in ((False, 0), (True, 0)):
             with self.subTest(needed=needed):
                 self.save_scan_preview.reset_mock()
                 job = {"kind": "batch_scan", "workbooks": [self.path], "completed": [],
@@ -96,7 +140,8 @@ class BatchTests(unittest.TestCase):
                 session = Mock()
                 session.app.return_value = self.excel
                 def refresh(*_args, view=None, **_kwargs):
-                    view["needed"] = needed
+                    if view is not None:
+                        view["needed"] = needed
                 self.refresh.side_effect = refresh
                 with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
                         patch.object(batch, "ExcelWatchdog", return_value=Mock(timed_out=False, deadline_hit=False)), \
@@ -138,10 +183,10 @@ class BatchTests(unittest.TestCase):
                 self.real_save_scan_preview(self.excel, self.path, Mock())
         save.assert_not_called()
 
-    def test_preview_save_failure_keeps_file_incomplete_and_does_not_repair(self):
+    def test_print_settings_save_failure_keeps_file_incomplete_and_does_not_repair(self):
         job = self.wf.STATE["job"]
         job.update(workbooks=[self.path], options={"folder": str(self.root)})
-        self.save_scan_preview.side_effect = ValueError("无法保存分页预览")
+        self.refresh.side_effect = ValueError("无法保存打印缩放")
         with patch.object(batch.autofix, "_ExcelSession", return_value=Mock()), \
                 patch.object(batch, "finish_execution_batch"):
             batch.run()
@@ -701,6 +746,7 @@ class BatchTests(unittest.TestCase):
                 raise RuntimeError("Excel 不可用")
         self.refresh.side_effect = refresh
         with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch.file_problem, "should_ask", return_value=False), \
                 patch.object(batch, "finish_execution_batch"):
             batch.run()
         self.assertEqual(attempts, [self.path] * 3 + [second])
@@ -741,6 +787,7 @@ class BatchTests(unittest.TestCase):
                 raise TimeoutError("Excel 超时")
         self.refresh.side_effect = refresh
         with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch.file_problem, "should_ask", return_value=False), \
                 patch.object(batch, "finish_execution_batch"):
             batch.run()
         self.assertEqual(self.refresh.call_count, 2)

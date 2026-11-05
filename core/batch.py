@@ -1,7 +1,7 @@
 """无人值守扫描、标记，以及按单元格进行的三色结果审核。
 
-扫描检出的问题全部转人工、在原 Excel 里标色；切字的格子顺手开自动换行、加高一次并保存，
-不试算、不核对、不还原，效果交给人工判断（用户 2026-11-02 去掉了自动修复）。
+扫描先将自动分页且末页不足 40% 的表缩放到少一页，再检测 PDF、在原 Excel 里标色。
+不自动加高、开换行或调整原有样式（用户 2026-11-05 定）。
 审核颜色只写数据库；旧版本留下的自动修改由独立、可续跑的审核任务统一还原。
 """
 import copy
@@ -29,7 +29,7 @@ from core.excel_watchdog import ExcelWatchdog, idle_timeout
 from core.hidden_text import (
     collect_text_pieces, is_excel_error, locate_text, normalize_text,
 )
-from core.pdf_detector import fitz, render_crop_base64
+from core.pdf_detector import crossing_horizontal_line, fitz, render_crop_base64
 from core.reporter import finish_execution_batch, init_execution_batch, update_file_progress
 
 COLORS = ("blue", "green", "yellow")
@@ -40,6 +40,7 @@ WAITING_MESSAGE = "等待自动处理"
 # 比这个差得少就算同一个行高（日文 Excel 默认 18.75pt，按 0.1 取整成 18.8 会被误判成「已被修改」）
 ROW_HEIGHT_TOLERANCE = .4
 XL_HALIGN_RIGHT, XL_HALIGN_CENTER = -4152, -4108
+XL_HALIGN_GENERAL, XL_HALIGN_LEFT, XL_HALIGN_CENTER_ACROSS = 1, -4131, 7
 XL_PATTERN_NONE, XL_PATTERN_SOLID = -4142, 1
 # 只扫描模式在原 Excel 里给问题单元格标的颜色（可在页面上改）。
 # 默认洋红底白字：业务表格几乎不用这个颜色，一眼就能看到，白字对比度约 6:1；黄色已有别人在用
@@ -1025,7 +1026,7 @@ def _error_value_card(card: dict) -> bool:
 def _refresh(
     excel: Any, path: str, sheets: list[str] | None = None, *,
     session: Any = None, workbook: Any = None, reuse: bool = True, timing: dict[str, float] | None = None,
-    view: dict | None = None,
+    view: dict | None = None, compact_print_tail: bool = False, before_print_save: Callable | None = None,
 ) -> list[str]:
     """重新检测（默认整个文件）。session 给了就沿用同一状态已导出的 PDF（reuse=False 时一律重新导出）；
     workbook 给了就直接用它检测（全自动的副本，或复检时在内存里还原过标记色的原文件），不再打开原文件。
@@ -1054,6 +1055,7 @@ def _refresh(
         used_pdf_paths={Path(p["pdf_path"]) for p in wf.STATE["pages"].values()},
         read_only=True, workbook=workbook, pdfs=session, reuse_pdfs=reuse, timing=timing,
         check_page_break_preview=view is not None,
+        compact_print_tail=compact_print_tail, before_print_save=before_print_save,
     )
     if view is not None:
         view["needed"] = entry.get("page_break_preview_needed", True)
@@ -1458,15 +1460,22 @@ def _recheck_file(excel: Any, path: str, cards: list[dict], *, passed_message: s
                     item.setdefault("fix_images", {})["after"] = after
                 else:
                     fix_images.forget(item, "after")
+            message = card.pop("horizontal_fix", None) or passed_message
             card.update(color="blue", verified=True, finalized=True, dismissed=True, waiting=False,
-                        after_kind="fixed", message=passed_message)
+                        after_kind="fixed", message=message)
         found = 0
         for group in _group_cells(unresolved):
             card = _card_for(group)
             if id(card) in waiting or (card.get("marked") and card["color"] != "yellow" and not card.get("finalized")):
                 continue  # 全自动还没轮到的，或你已标蓝 / 绿还没提交的，保留原样
             found += 1
-            message = found_message if card.get("grown") else "复检查出的问题：请修改并保存后再复检"
+            card.pop("horizontal_fix", None)
+            if card.get("horizontal_layout") and not any(autofix.item_error_type(it) in GROW_ERROR_TYPES for it in group):
+                card.pop("horizontal_layout", None)
+            if card.get("horizontal_layout"):
+                message = HORIZONTAL_LAYOUT_MESSAGE
+            else:
+                message = found_message if card.get("grown") else "复检查出的问题：请修改并保存后再复检"
             card.update(color="yellow", verified=False, manual=True, finalized=True, waiting=False,
                         dismissed=False, message=message)
             for item in group:
@@ -1705,6 +1714,9 @@ LINE_HEIGHT_RATIO = 1.25  # 估算换行后的高度：每行按「字号 × 1.2
 HALF_WIDTH_RATIO = 0.55  # 半角字符（英数、SQL）宽度约为字号的 0.55 倍，全角按 1 倍
 CELL_PADDING_PT = 4.0  # 格子左右留白
 HASH_MESSAGE = "### 列宽不足：没有调整列宽，请人工核对数字格式、日期或列宽，也可标绿忽略"
+HORIZONTAL_LAYOUT_MESSAGE = "疑似跨格横排：右侧有连续空格，已保留原排版。请核对书式的应用范围，保存后复检"
+HORIZONTAL_FORMAT_PASSED = "已向右延伸条件格式，横排文字复检通过"
+HORIZONTAL_MARK_PASSED = "已清除截断横排文字的临时标记，复检通过"
 GROWN_MESSAGE = "已开自动换行、加高并保存，效果请人工看：好了标蓝，不好就改了保存再复检"
 GROWN_PASSED_MESSAGE = "扫描后已开自动换行、加高，复检通过"
 GROWN_FAILED_MESSAGE = "已开自动换行、加高并复检，还有问题：请人工修改并保存后再复检"
@@ -1755,6 +1767,142 @@ def _font_size(area: Any) -> float:
 def _text_width_pt(text: str, size: float) -> float:
     """一段文字不换行时大约多宽（pt）：全角按字号，半角按字号 × 0.55"""
     return sum(size if unicodedata.east_asian_width(ch) in "WFA" else size * HALF_WIDTH_RATIO for ch in text)
+
+
+def _has_horizontal_space(sheet: Any, area: Any, size: float) -> bool:
+    """识别极窄单格中的横排单行文字，且右侧确实有足够连续的空白宽度。"""
+    try:
+        if (area.WrapText is not False or area.Rows.Count != 1 or area.Columns.Count != 1
+                or area.Orientation not in (0, XL_HORIZONTAL)
+                or area.HorizontalAlignment not in (XL_HALIGN_GENERAL, XL_HALIGN_LEFT, XL_HALIGN_CENTER_ACROSS)):
+            return False
+        width = float(area.Width)
+        if not 0 < width <= 3 * size + CELL_PADDING_PT or float(area.Height) < size:
+            return False
+        text = area.Cells(1, 1).Value
+        if not isinstance(text, str) or not text.strip() or "\n" in text or "\r" in text:
+            return False
+        needed = _text_width_pt(text.rstrip(), size) + CELL_PADDING_PT
+        if needed < 3 * width:
+            return False
+        row, col = int(area.Row), int(area.Column)
+        # 只检查标题附近。值、公式、合并格和隐藏列都会终止这段可用宽度。
+        last = min(int(sheet.Columns.Count), col + 64)
+        for c in range(col + 1, last + 1):
+            neighbor = sheet.Cells(row, c)
+            if neighbor.Value2 is not None or neighbor.HasFormula or neighbor.MergeCells:
+                break
+            extra = float(neighbor.Width)
+            if extra <= 0:
+                break
+            width += extra
+            if width >= needed:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _visible_horizontal_prefix(doc: Any, text: str, anchor: list[float]) -> int:
+    """只比较原位置同一行的可见文字，不把别处的同文或裁剪框外的字算进去。"""
+    x, y, _, bottom = anchor
+    tolerance = max(1.0, (bottom - y) * 0.2)
+    matches = [piece for piece in collect_text_pieces(doc)
+               if abs(piece.bbox[0] - x) <= tolerance and abs(piece.bbox[1] - y) <= tolerance]
+    if len(matches) != 1:
+        return 0
+    piece = matches[0]
+    visible = []
+    for char, box, shown in piece.chars:
+        if not shown or crossing_horizontal_line(box, piece.rules) is not None:
+            break
+        visible.append(char)
+    prefix = normalize_text("".join(visible))
+    for i, (expected, actual) in enumerate(zip(text, prefix)):
+        if expected != actual:
+            return i
+    return min(len(text), len(prefix))
+
+
+class _FormatRestoreError(RuntimeError):
+    """试改的规则恢复失败，整份工作簿必须关闭且不保存。"""
+
+
+@print_layout.with_layout
+def _try_extend_horizontal_format(sheet: Any, area: Any, items: list[dict]) -> str | None:
+    """在当前页验证横排全文，逐列延伸原有条件格式或清除挡字的临时标记。"""
+    rules = area.FormatConditions
+    if int(rules.Count) != 1:
+        return None
+    rule = rules.Item(1)
+    if int(rule.Type) not in (XL_CELL_VALUE, XL_EXPRESSION):
+        return None
+    tag = _rule_tag(rule)
+    original = rule.AppliesTo
+    row, col = int(area.Row), int(area.Column)
+    if (int(original.Areas.Count) != 1 or int(original.Rows.Count) != 1
+            or int(original.Row) != row or int(original.Column) != col):
+        return None
+
+    text = normalize_text(area.Cells(1, 1).Value)
+    evidence = next((it for it in items if it.get("kind") == "hidden" and it.get("pdf_path")
+                     and it.get("bbox") and isinstance(it.get("page_index"), int)
+                     and normalize_text(it["text"]) == text), None)
+    if evidence is None:
+        return None
+    index, anchor = evidence["page_index"], evidence["bbox"]
+    with fitz.open(evidence["pdf_path"]) as doc:
+        page_address = page_breaks.page_area(sheet, index, len(doc))
+        if not page_address:
+            return None
+        visible = _visible_horizontal_prefix([doc[index]], text, anchor)
+    if not 0 < visible < len(text):
+        return None
+    top, left = _cell_rc(page_address.split(":")[0])
+    bottom, right = _cell_rc(page_address.split(":")[-1])
+    current = col + int(original.Columns.Count) - 1
+    if not (top <= row <= bottom and left <= col <= current < right):
+        return None
+
+    pdf = Path(tempfile.gettempdir()) / f"~横排复检_{uuid4().hex}.pdf"
+    attempted = False
+    kept = False
+    try:
+        # 工具自己的标记最终要清除。先挪到空格，验证标题在清除标记后能否显示完整。
+        last = current + 1 if tag else min(right, col + 32)
+        for end in range(current + 1, last + 1):
+            neighbor = sheet.Cells(row, end)
+            if (neighbor.Value2 is not None or neighbor.HasFormula or neighbor.MergeCells
+                    or float(neighbor.Width) <= 0 or int(neighbor.FormatConditions.Count)):
+                break
+            address = f"{_col_letters(col)}{row}:{_col_letters(end)}{row}"
+            attempted = True
+            rule.ModifyAppliesToRange(neighbor if tag else sheet.Range(address))
+            pdf.unlink(missing_ok=True)
+            wf._export_sheet_pdf(sheet, pdf, (index + 1, index + 1))
+            with fitz.open(pdf) as page:
+                shown = _visible_horizontal_prefix(page, text, anchor) if len(page) == 1 else 0
+            if shown == len(text):
+                if tag:
+                    rule.Delete()
+                kept = True
+                debug_log.event("↔️ 横排全文可见", 表=sheet.Name, 应用范围="已清除临时标记" if tag else address)
+                return HORIZONTAL_MARK_PASSED if tag else HORIZONTAL_FORMAT_PASSED
+            if shown <= visible:
+                break
+            visible = shown
+    finally:
+        try:
+            if attempted and not kept:
+                rule.ModifyAppliesToRange(original)
+        except Exception as err:
+            raise _FormatRestoreError("未能恢复条件格式的应用范围") from err
+        finally:
+            try:
+                pdf.unlink(missing_ok=True)
+            except OSError as err:
+                debug_log.exception(err, "清理横排试改 PDF")
+    return None
 
 
 def _wrapped_lines(text: str, size: float, usable: float) -> int:
@@ -1879,8 +2027,9 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float, skip: set[str] | None = 
     skip：这些卡不再加（复检时已经加高过、还没过的，交给人工）。"""
     with wf.STATE_LOCK:
         cards = [c for c in _grow_targets(path) if c["id"] not in (skip or set())]
+        items_by_card = {c["id"]: _items_at(c) for c in cards}
         # 一个英文单词放不下：最后几个字母被挤到下一行，至少多给一行
-        extra_line = {c["id"] for c in cards if _width_only(c, _items_at(c))}
+        extra_line = {c["id"] for c in cards if _width_only(c, items_by_card[c["id"]])}
     if not cards:
         return {}
     _check_file(path)
@@ -1890,6 +2039,7 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float, skip: set[str] | None = 
     name = Path(path).name
     debug_log.event("📐 开换行加高", 文件=name, 格数=len(cards), 倍数=ratio)
     book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
+    print_layout.bind(book, path)
     done: dict[str, dict] = {}
     measurer = _Measurer(excel)
     try:
@@ -1905,6 +2055,19 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float, skip: set[str] | None = 
                 area = sheet.Range(card["cell_addr"]).MergeArea
                 size = _font_size(area)
                 shrink = bool(area.ShrinkToFit)
+                if not shrink and _has_horizontal_space(sheet, area, size):
+                    result = done[card["id"]] = {"horizontal_layout": True}
+                    try:
+                        fixed = _try_extend_horizontal_format(sheet, area, items_by_card[card["id"]])
+                    except _FormatRestoreError:
+                        raise
+                    except Exception as err:
+                        debug_log.exception(err, f"试延伸条件格式 {where}")
+                    else:
+                        if fixed:
+                            result["horizontal_fix"] = fixed
+                    debug_log.event("↔️ 保留横排", 格=where, 结果=result.get("horizontal_fix", "保留原范围"))
+                    continue
                 if shrink:
                     wrap = "缩小字体填充，不开换行"
                 elif area.WrapText is True:
@@ -1940,6 +2103,8 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float, skip: set[str] | None = 
                         done[card["id"]]["lines"] = lines
                 debug_log.event("↪️ 自动换行", 格=where, 结果=wrap, 字号=size, 量高=by, 估算行数=lines or "-",
                                 还差=round(shortfall, 2))
+            except _FormatRestoreError:
+                raise
             except Exception as err:
                 done[card["id"]] = {"error": str(err)}
                 wf.log_msg(f"⚠️ {name} / {where} 没能开换行、加高：{err}")
@@ -1953,12 +2118,17 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float, skip: set[str] | None = 
                             字号=entry["size"], 倍数=ratio, 估算补高=round(entry["extra"] - entry["size"] * ratio, 2))
             for cid in entry["cards"]:
                 done[cid].update(sheet=sheet_name, base=round(base, 2), applied=applied, ratio=ratio)
-        normalize_workbook_view(excel, book)
-        book.Save()
-        _followed_own_save(path, before)
-        changed = sum(1 for d in done.values() if "error" not in d)
-        wf.log_msg(f"📐 {name}：{changed} 格开自动换行、{len(rows)} 行加高（字号 × {ratio}），已保存")
-        debug_log.event("💾 已保存", 文件=name, 行数=len(rows))
+        horizontal_count = sum(bool(d.get("horizontal_fix")) for d in done.values())
+        if rows or horizontal_count:
+            normalize_workbook_view(excel, book)
+            book.Save()
+            _followed_own_save(path, before)
+            changed = sum("applied" in d for d in done.values())
+            if rows:
+                wf.log_msg(f"📐 {name}：{changed} 格开自动换行、{len(rows)} 行加高（字号 × {ratio}），已保存")
+            if horizontal_count:
+                wf.log_msg(f"↔️ {name}：{horizontal_count} 处横排文字调整条件格式后显示完整，已保存")
+            debug_log.event("💾 已保存", 文件=name, 行数=len(rows), 条件格式=horizontal_count)
     finally:
         measurer.close()
         book.Close(SaveChanges=False)
@@ -2011,17 +2181,32 @@ def _grow_after_recheck(session: Any, path: str, tried: set[str], ratio: float |
         if not isinstance(err, ValueError):
             _restart_excel(session)
         return
-    done = {cid: d for cid, d in grown.items() if "error" not in d}
-    if not done:
+    if not grown:
         return
     with wf.STATE_LOCK:
         cards = _data()["cards"]
-        for cid, d in done.items():
-            if cid in cards:
-                cards[cid].update(grown=d, message=GROWN_MESSAGE)
+        for cid, d in grown.items():
+            card = cards.get(cid)
+            if card is None:
+                continue
+            if d.get("horizontal_layout"):
+                card.update(horizontal_layout=True, message=HORIZONTAL_LAYOUT_MESSAGE)
+                if d.get("horizontal_fix"):
+                    card["horizontal_fix"] = d["horizontal_fix"]
+                for item in _items_at(card):
+                    item["review_reason"] = HORIZONTAL_LAYOUT_MESSAGE
+            else:
+                was_horizontal = card.pop("horizontal_layout", None)
+                if "applied" in d:
+                    card.update(grown=d, message=GROWN_MESSAGE)
+                elif was_horizontal:
+                    card["message"] = "复检查出的问题：请修改并保存后再复检"
         wf._persist_state()
-    wf.log_msg(f"📐 {name}：复检查出 {len(done)} 处切字，已开换行、加高，再复检一遍")
-    debug_log.event("🔁 复检加高后再复检", 文件=name, 格数=len(done))
+    changed = sum("applied" in d or bool(d.get("horizontal_fix")) for d in grown.values())
+    if not changed:
+        return
+    wf.log_msg(f"📐 {name}：已处理 {changed} 处切字，再复检一遍")
+    debug_log.event("🔁 复检加高后再复检", 文件=name, 格数=changed)
     with wf.STATE_LOCK:
         cards = [c for c in _data()["cards"].values() if c["wb_path"] == path
                  and c["color"] == "yellow" and c.get("finalized") and not c.get("dismissed")]
@@ -2278,8 +2463,11 @@ def _hand_over(path: str, grown: dict[str, dict] | None = None) -> None:
             if _keeps_user_mark(card):
                 card["waiting"] = False
                 continue
-            done = grown.get(card["id"])
-            if any(autofix.column_width_only(it) for it in group):
+            done = grown.get(card["id"], {})
+            if done.get("horizontal_layout"):
+                card["horizontal_layout"] = True
+                message = HORIZONTAL_LAYOUT_MESSAGE
+            elif any(autofix.column_width_only(it) for it in group):
                 message = HASH_MESSAGE
             elif not _can_highlight(card):
                 message = "单元格定位未确认，未在 Excel 中标色，请按截图查找后人工处理"
@@ -2293,7 +2481,13 @@ def _hand_over(path: str, grown: dict[str, dict] | None = None) -> None:
                         dismissed=False, after_kind="scan_only", message=message)
             card.pop("handed_over", None)
             card.pop("width_only", None)  # 2026-11-04 试过加列宽的旧记录
-            if done and "error" not in done:
+            if not done.get("horizontal_layout"):
+                card.pop("horizontal_layout", None)
+            if done.get("horizontal_fix"):
+                card["horizontal_fix"] = done["horizontal_fix"]
+            else:
+                card.pop("horizontal_fix", None)
+            if "applied" in done:
                 card["grown"] = done
             else:
                 card.pop("grown", None)
@@ -2607,7 +2801,7 @@ def _col_letters(col: int) -> str:
     return letters
 
 
-XL_EXPRESSION = 2
+XL_CELL_VALUE, XL_EXPRESSION = 1, 2
 MARK_TAG = re.compile(r"CHE_MARK_[0-9A-Za-z]+")
 
 
@@ -3087,7 +3281,6 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
         if added or remove or dropped or tabs["marked"] or tabs["restored"]:  # 只核对、没有要改的：不保存
             if tick is not None:
                 tick()
-            normalize_workbook_view(app, book)
             before = _version_or_none(path)
             book.Save()
             _followed_own_save(path, before)
@@ -3142,7 +3335,7 @@ def _wanted_marks(path: str) -> set[str]:
         return set()
     return {c["id"] for c in data["cards"].values()
             if c["wb_path"] == path and not c.get("dismissed") and c["color"] == "yellow"
-            and c.get("manual") and _can_highlight(c)}
+            and c.get("manual") and not c.get("horizontal_layout") and _can_highlight(c)}
 
 
 def _leftover_mark_paths(skip: list[str]) -> list[str]:
@@ -3573,22 +3766,26 @@ def run() -> list[str]:
                                     list(dict.fromkeys(_data()["cards"][cid]["wb_path"] for cid in options["card_ids"])))
                 wf._persist_state()
         if kind == "batch_scan":
-            # 扫描：检出的问题全部转人工、在 Excel 里标色；切字的格子顺手开自动换行、加高一次（不试算、不还原）。
+            # 扫描只调整稀疏末页的打印缩放，再检测、标色；不自动修复单元格。
             # 旧版本留下的全自动 / 转回自动 / 自动调整任务续跑时也按扫描做
-            ratio = grow_ratio(options.get("grow_ratio"))
-            with wf.STATE_LOCK:
-                _data()["grow_ratio"] = ratio  # 复检查出新的切字时按同样的倍数加高
             if "workbooks" not in job:
-                folder, paths = wf.list_workbooks(options["folder"])
+                retry_path = options.get("retry_path")
+                if retry_path:
+                    folder, paths = Path(options["folder"]).resolve(), [Path(retry_path)]
+                else:
+                    folder, paths = wf.list_workbooks(options["folder"])
                 with wf.STATE_LOCK:
                     if str(folder) != wf.STATE["folder"]:
                         # 审核卡片、忽略规则、行高记录按文件路径区分，各文件夹分开保留：切回来还能审核、还原
                         wf.STATE.update(items={}, pages={}, checked_files={})
                     wf.STATE.update(folder=str(folder), pdf_folder=str(folder))
-                    start_new_open_round()  # 新扫描开始新一轮；续跑和复检不重置。
+                    if not retry_path:
+                        start_new_open_round()  # 只有扫描整个文件夹才重置批量打开进度。
                     job["workbooks"] = [str(p) for p in paths]
                     wf._persist_state()
-                init_execution_batch(task_name="扫描并标记", folder=folder, workbooks=paths, pdf_folder=folder)
+                init_execution_batch(task_name="扫描并标记", folder=folder, workbooks=paths,
+                                     pdf_folder=None if retry_path else folder,
+                                     preserve_existing_files=bool(retry_path))
             expected = job["workbooks"]
             with wf.STATE_LOCK:
                 if job.get("pending_adjustment"):
@@ -3687,39 +3884,27 @@ def run() -> list[str]:
                 with wf.STATE_LOCK:
                     limit = _scan_limit(job, path)
                     job["scan_limit"] = {"path": path, "seconds": round(limit)}
-                started, checking, view = time.perf_counter(), {}, {}
+                started, checking = time.perf_counter(), {}
                 watchdog.deadline(limit)
                 step("定上限")
                 try:
-                    _refresh(excel, path, session=session, timing=checking, view=view)
+                    _refresh(excel, path, session=session, timing=checking, compact_print_tail=True,
+                             before_print_save=lambda: watchdog.deadline(None))
                 finally:
                     watchdog.deadline(None)
                 step("检测")
-                # 检测的只读工作簿已经关闭；另开原文件保存视图，避免保存临时上色。
-                # 写文件放在检测超时限制之外，即使没有问题项也保留分页预览。
-                # 已全是分页预览就不再可写打开，文件（包括旧版 .xls）的修改时间保持不变。
-                if view.get("needed", True):
-                    with scan_analysis.operation("save_view"):
-                        _save_scan_preview(excel, path, session)
-                step("存分页视图")
+                # 不保存视图；原文件只允许写入打印页数和颜色标记。
                 with wf.STATE_LOCK:
                     job.setdefault("scan_seconds", {})[path] = round(time.perf_counter() - started, 1)
                     _data().get("slow_files", {}).pop(path, None)  # 以前超时跳过的，这次扫完了
                 wf.log_msg(f"⏱ {Path(path).name} 整份检查：{time.perf_counter() - started:.1f} 秒"
                            f"（导出 {int(checking.get('exports', 0))} 次 {checking.get('export', 0):.1f} 秒，"
                            f"检测 {checking.get('detect', 0):.1f} 秒）")
-                with scan_analysis.operation("grow"):
-                    grown = _grow_and_wrap(session.app(), path, ratio)
-                step("加高")
                 # 检出的全部转人工，在原 Excel 里标色方便定位
                 with wf.STATE_LOCK:
                     _data().setdefault("highlight_files", {})[path] = highlight_style(options.get("highlight"))
-                _hand_over(path, grown)
+                _hand_over(path)
                 step("转人工")
-                if any("error" not in d for d in grown.values()):
-                    with scan_analysis.operation("recheck"):
-                        _recheck_after_grow(session, path)
-                    step("加高后复检")
                 with scan_analysis.operation("highlight"):
                     _sync_highlights(session.app, path, tick=session.touch)
                 step("标色")
@@ -3822,7 +4007,6 @@ def run() -> list[str]:
                         if cards:
                             session.touch()
                             full = _full_recheck(options, path)
-                            tried = _grown_before_recheck(path) if full else set()
                             for tries in range(2):
                                 try:
                                     if full:
@@ -3839,8 +4023,6 @@ def run() -> list[str]:
                                     # 不然 Excel 一挂，后面每份文件都报「RPC サーバーを利用できません」
                                     wf.log_msg(f"⚠️ {Path(path).name} 复检出错，重启 Excel 后重试：{err}{_where(err)}")
                                     _restart_excel(session)
-                            if full:
-                                _grow_after_recheck(session, path, tried)
                             _sync_highlights_safely(session, path)
                         with wf.STATE_LOCK:
                             job["skipped"].remove(path)

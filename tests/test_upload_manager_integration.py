@@ -58,9 +58,10 @@ class UploadManagerIntegrationTests(unittest.TestCase):
         self.assertNotIn(b'node_modules', page)
         self.assertNotIn(b'https://', page)
         self.assertIn(b'type="date"', page)
+        self.assertIn(b'id="manager-task-upload" class="button primary" href="/distribute"', page)
         status, home = self.request('GET', '/')
         self.assertEqual(status, 200)
-        self.assertIn(b'href="/distribute/manage"', home)
+        self.assertIn(b'href="/distribute" id="workTaskUploadLink"', home)
         self.assertEqual(home.count(b'class="feature-title"'), 9)
         for filename in ('app.js', 'planner.js', 'icons.js', 'integration.css'):
             self.assertEqual(self.request('GET', '/static/upload_manager/' + filename)[0], 200)

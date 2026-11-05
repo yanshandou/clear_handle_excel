@@ -426,17 +426,21 @@ class WebHandler(upload_manager.Handler):
                         "隐藏状态" if STATE["maintenance"].startswith("hidden_") else
                         "BL 超链接" if STATE["maintenance"].startswith("bl_link_") else "引用错误")
                 raise ValueError(f"正在检查或修复{name}，请等当前任务结束")
-        if self.path == "/api/batch/start":
+        if self.path in {"/api/batch/start", "/api/records/rescan"}:
             options = {"folder": _require_folder(payload)}
-            minutes = payload.get("scan_limit_minutes")
+            if self.path == "/api/records/rescan":
+                file_name = payload.get("file")
+                if not isinstance(file_name, str) or not file_name.strip():
+                    raise ValueError("请选择要重扫的异常文件")
+                options["retry_file"] = file_name
+            minutes = payload.get("scan_limit_minutes", 15 if "retry_file" in options else None)
             if minutes is not None:
                 # 单个文件扫描的时间上限（分钟），不给就自动估算
                 if isinstance(minutes, bool) or minutes not in batch.SCAN_LIMIT_CHOICES:
                     raise ValueError("单个文件的扫描上限只能选自动或 3、5、10、15 分钟")
                 options["scan_limit_minutes"] = minutes
-            # 扫描：检出的问题全部标色、转人工；切字的格子开自动换行、行高加「字号 × 倍数」，保存（不再自动修复）
-            options.update(highlight=batch.highlight_style(payload.get("highlight")),
-                           grow_ratio=batch.grow_ratio(payload.get("grow_ratio")))
+            # 扫描只做末页打印缩放、PDF 检测和标色；不接受旧版的自动加高参数。
+            options.update(highlight=batch.highlight_style(payload.get("highlight")))
             self._start_job("batch_scan", options)
         elif self.path == "/api/print_layout":
             set_print_layout(payload.get("path"), payload.get("key"), payload.get("direction"))

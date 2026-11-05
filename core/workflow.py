@@ -99,6 +99,7 @@ from core.pdf_detector import (
     RegionTrackingError,
 )
 from core.reporter import (
+    find_recorded_workbook,
     finish_execution_batch,
     flush_execution_report,
     get_execution_report_snapshot,
@@ -254,6 +255,17 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
     with STATE_LOCK:
         if STATE["busy"]:
             return False
+        paused_retry = None
+        if kind == "batch_scan" and options and "retry_file" in options:
+            target = str(find_recorded_workbook(options["retry_file"], failed_in_folder=options["folder"]))
+            options = {**options, "retry_path": target}
+            old_job = STATE["job"]
+            if old_job and old_job["status"] == "interrupted":
+                if (old_job["kind"] != "batch_scan"
+                        or not same_folder(options["folder"], old_job["options"].get("folder", ""))):
+                    raise ValueError("还有其他中断任务，请先继续上次任务")
+                remaining = set(old_job.get("workbooks", [])) - set(old_job["completed"]) - {target}
+                paused_retry = old_job.get("paused_scan") or (old_job if remaining else None)
         unsettled = {}
         if (kind != "resume" and STATE.get("job") and STATE["job"]["kind"].startswith("batch_")
                 and (STATE["job"].get("pending_adjustment") or STATE["job"].get("deferred_adjustments"))):
@@ -285,6 +297,8 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
                 "kind": kind, "options": options or {}, "completed": [],
                 "pending_adjustment": None, "status": "running",
             }
+            if paused_retry:
+                STATE["job"]["paused_scan"] = paused_retry
             if (kind in BATCH_REVIEW_KINDS and old_job and old_job.get("status") == "interrupted"
                     and old_job["kind"] in {"batch_scan", *BATCH_REVIEW_KINDS}):
                 # 暂停的扫描先收起来，审核提交 / 复检 / 打开做完后放回，仍可「继续上次任务」
@@ -404,7 +418,25 @@ def run_pending_workflow() -> None:
                 "completed" if set(expected).issubset(job["completed"])
                 and not job.get("pending_adjustment") and not job.get("deferred_adjustments") else "interrupted"
             )
-        if job["status"] == "interrupted":
+        if options.get("retry_path") and job.get("paused_scan"):
+            path = options["retry_path"]
+            with STATE_LOCK:
+                paused = job.pop("paused_scan")
+                # 超时跳过也会进 completed，只有确实扫完的文件才算完成原批次中的该项。
+                version = job.get("scan_versions", {}).get(path)
+                if version and path in paused["workbooks"]:
+                    paused.setdefault("scanned", list(paused["completed"]))
+                    for key in ("scanned", "completed"):
+                        if path not in paused[key]:
+                            paused[key].append(path)
+                    paused.setdefault("scan_versions", {})[path] = version
+                    paused.get("file_errors", {}).pop(path, None)
+                    paused.get("slow_seconds", {}).pop(path, None)
+                STATE["job"] = paused
+            interrupt_execution_batch("单文件重扫已结束，原批次仍可继续",
+                                      restore_batch=[workbook_rel_name(Path(p), options["folder"])
+                                                     for p in paused["workbooks"]])
+        elif job["status"] == "interrupted":
             interrupt_execution_batch("部分文件处理失败，可点击继续上次任务重试")
         elif job.get("paused_scan"):
             with STATE_LOCK:
@@ -700,7 +732,7 @@ def _detect_sheet_results(
 
 
 # 检测规则变化时加一：之前按旧规则查过的文件即使没改过，下次扫描也要整份重新检查
-DETECTOR_VERSION = 21  # 21：不同列里文字一样的格子按位置分回各列，不再把截断报到别的格子上
+DETECTOR_VERSION = 22  # 22：扫描先从 Excel 估算稀疏末页并调整打印页数，只导出一次 PDF、不修改单元格
 
 
 def _confirm_clip_cells(
@@ -1382,6 +1414,33 @@ def _save_page_break_preview(excel: Any, wb_path: Path, expected_version: dict) 
     return _file_version(wb_path)
 
 
+def _save_scan_print_settings(excel: Any, wb_path: Path, expected_version: dict, changes: dict) -> dict:
+    """只把检测时验证过的打印缩放写回原文件，不保存临时上色等检测修改。"""
+    if _file_version(wb_path) != expected_version:
+        raise ValueError(f"扫描期间文件已修改，未保存打印缩放，请重新扫描：{wb_path.name}")
+    book = open_workbook_checked(excel, str(wb_path.resolve()), ReadOnly=False, UpdateLinks=0)
+    try:
+        if book.ReadOnly:
+            raise ValueError(f"文件以只读方式打开，未能保存打印缩放：{wb_path.name}")
+        opened_version = _file_version(wb_path)
+        if wb_path.suffix.lower() != ".xls" and opened_version != expected_version:
+            raise ValueError(f"扫描期间文件已修改，请重新扫描：{wb_path.name}")
+        for name, change in changes.items():
+            setup = book.Sheets(name).PageSetup
+            if any(getattr(setup, key) != value for key, value in change["before"].items()):
+                raise ValueError(f"[{name}] 打印设置已修改，请重新扫描")
+            for key, value in change["after"].items():
+                setattr(setup, key, value)
+            if any(getattr(setup, key) != value for key, value in change["after"].items()):
+                raise ValueError(f"[{name}] 未能应用打印缩放，请重新扫描")
+        if _file_version(wb_path) != opened_version:
+            raise ValueError(f"扫描期间文件已修改，请重新扫描：{wb_path.name}")
+        book.Save()
+    finally:
+        book.Close(SaveChanges=False)
+    return _file_version(wb_path)
+
+
 def _scan_one_workbook(
     excel: Any,
     wb_path: Path,
@@ -1400,6 +1459,8 @@ def _scan_one_workbook(
     timing: dict[str, float] | None = None,
     keep_page_break_preview: bool = False,
     check_page_break_preview: bool = False,
+    compact_print_tail: bool = False,
+    before_print_save: Callable | None = None,
 ) -> None:
     """检查一个工作簿；所有工作表检测完成后才一次性替换该文件的旧结果，中途失败不影响旧记录。
 
@@ -1408,6 +1469,8 @@ def _scan_one_workbook(
     timing：累计打开 / 导出 / 检测各花了几秒。
     check_page_break_preview：打开原文件后先查视图，结果写入 entry["page_break_preview_needed"]；
     已全是分页预览时不必再可写打开原文件（旧版 .xls 可写打开即使不保存也会改文件时间）。"""
+    if compact_print_tail and workbook is not None:
+        raise ValueError("末页打印缩放必须独立打开原文件检测")
     timing = {} if timing is None else timing
     path = str(wb_path)
     wb_label = workbook_rel_name(wb_path, STATE.get("folder"))
@@ -1505,6 +1568,8 @@ def _scan_one_workbook(
             next_seq = max((it["seq"] for it in STATE["items"].values()), default=0) + 1
         file_pages: dict[str, Any] = {}
         file_items: dict[str, Any] = {}
+        print_changes: dict[str, dict] = {}
+        scanned_pdfs: dict[str, Path] = {}
         for index, sheet in enumerate(sheets, 1):
             s_name = sheet.Name
             with STATE_LOCK:
@@ -1514,9 +1579,17 @@ def _scan_one_workbook(
             pdf_dir.mkdir(parents=True, exist_ok=True)
             pdf_path = unique_pdf_path(pdf_dir, file_stem, sanitize_filename(s_name), used_pdf_paths)
             started = time.perf_counter()
+            if compact_print_tail:
+                change = page_fill.compact_scan_tail(sheet)
+                if change:
+                    print_changes[s_name] = change
+                    log_msg(f"  📄 [{s_name}] Excel 末页估算约占 {change['tail_fill']:.0%}，"
+                            f"打印 {change['pages_before']} 页 → {change['pages_after']} 页")
             with scan_analysis.operation("layout", s_name):
-                generated = prepare_print_layout(sheet, path, pdf_path)
+                generated = False if compact_print_tail else prepare_print_layout(sheet, path, pdf_path)
             exported = pdfs.pdf_for(path, s_name, scan_version) if pdfs is not None and reuse_pdfs else None
+            if s_name in print_changes:
+                exported = None  # 原设置的缓存不能用于新的打印页数
             try:
                 if generated:
                     exported = None
@@ -1548,8 +1621,7 @@ def _scan_one_workbook(
                                 定位确认=found.get("location_confirmed"), 文字=debug_log.clip(found.get("text")),
                                 显示=debug_log.clip(found.get("visible_text")) if found.get("kind") == "hidden" else "-",
                                 **({"PDF附近片段": found["pdf_nearby"]} if found.get("pdf_nearby") else {}))
-            if pdfs is not None:
-                pdfs.remember_pdf(path, s_name, scan_version, pdf_path)
+            scanned_pdfs[s_name] = pdf_path
             next_seq += len(items)
             file_pages.update(pages)
             file_items.update(items)
@@ -1559,9 +1631,22 @@ def _scan_one_workbook(
         if workbook is None:
             wb.Close(SaveChanges=False)
 
+    if print_changes:
+        # 检测使用的 PDF 已经应用这些缩放；必须成功保存后才提交检测结果。
+        if before_print_save is not None:
+            before_print_save()  # 写入前撤掉检测超时，避免保存时强制结束 Excel
+        with scan_analysis.operation("save_print_settings"):
+            scan_version = _save_scan_print_settings(excel, wb_path, scan_version, print_changes)
+        if pdfs is not None:
+            pdfs.drop_copy(path)
+
     if keep_page_break_preview and entry.get("page_break_preview_needed", True):
         with scan_analysis.operation("save_view"):
             scan_version = _save_page_break_preview(excel, wb_path, scan_version)
+
+    if pdfs is not None:
+        for name, pdf in scanned_pdfs.items():
+            pdfs.remember_pdf(path, name, scan_version, pdf)
 
     merged = _merge_redetected(file_items, previous, mark_new=entry["scanned"], keep_unmatched=not rescan_all)
     fixed_now = sum(
@@ -1724,7 +1809,7 @@ def scan_folder_workflow(
                             delete_backups=delete_backups, used_pdf_paths=used_pdf_paths,
                             # 未要求删表时只读检测，避免旧版 .xls 首次打开就更新时间。
                             read_only=not delete_backups,
-                            keep_page_break_preview=True,
+                            compact_print_tail=True,
                         )
                 except Exception as err:
                     wb_label = workbook_rel_name(wb_path, folder)

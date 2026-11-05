@@ -937,7 +937,7 @@ class ScanOnlyTests(unittest.TestCase):
         self.assertEqual(self.card("A5")["color"], "green")
         self.excel.Workbooks.Open.assert_not_called()
 
-    def test_run_scan_marks_cells_and_grows_once_with_chosen_ratio(self):
+    def test_run_scan_marks_cells_without_growing_even_with_legacy_ratio(self):
         self.add_item("A5")
         self.wf.STATE["job"]["options"] = {"folder": str(self.root), "grow_ratio": 1.2,
                                            "highlight": {"types": {"text_truncated": {"fill": "#6D28D9", "font": "#FFFFFF"}}}}
@@ -951,7 +951,8 @@ class ScanOnlyTests(unittest.TestCase):
                 patch.object(batch, "init_execution_batch"), patch.object(batch, "finish_execution_batch"), \
                 patch.object(batch, "_refresh"), patch.object(batch, "_grow_and_wrap", return_value={}) as grow:
             self.assertEqual(batch.run(), [self.path])
-        grow.assert_called_once_with(self.excel, self.path, 1.2)
+        grow.assert_not_called()
+        batch.normalize_workbook_view.assert_not_called()
         self.assertEqual(self.card("A5")["color"], "yellow")
         self.assertEqual(self.sheet.shown("A5")[0], batch._excel_color("#6D28D9"))
         self.assertIn(self.path, self.wf.STATE["job"]["completed"])
@@ -971,7 +972,7 @@ class ScanOnlyTests(unittest.TestCase):
             self.assertEqual(batch.run(), [self.path])
         return refreshed
 
-    def test_scan_rechecks_after_growing_and_only_marks_what_still_fails(self):
+    def test_scan_does_not_apply_old_grow_results_or_recheck_twice(self):
         """开换行加高保存后整份复检一次：通过的翻篇、不标色；没通过的不再改，标色交给人工（用户 2026-11-03 定）"""
         self.add_item("A5")
         self.add_item("B5")
@@ -983,13 +984,13 @@ class ScanOnlyTests(unittest.TestCase):
             if len(calls) == 2:  # 第二次是加高后的复检：A5 好了，B5 还有问题
                 self.wf.STATE["items"]["iA5"]["status"] = "fixed"
         refreshed = self.run_scan_with_grow(grown, refresh)
-        self.assertEqual(refreshed.call_count, 2)
-        a5, b5 = self.card("A5"), self.card("B5")
-        self.assertTrue(a5["dismissed"])
-        self.assertEqual(a5["message"], batch.GROWN_PASSED_MESSAGE)
-        self.assertIsNone(self.sheet.shown("A5"))
-        self.assertEqual((b5["color"], b5["dismissed"], b5["message"]), ("yellow", False, batch.GROWN_FAILED_MESSAGE))
-        self.assertIsNotNone(self.sheet.shown("B5"))
+        self.assertEqual(refreshed.call_count, 1)
+        for address in ("A5", "B5"):
+            card = self.card(address)
+            self.assertEqual((card["color"], card["dismissed"], card["message"]),
+                             ("yellow", False, batch.SCAN_ONLY_MESSAGE))
+            self.assertNotIn("grown", card)
+            self.assertIsNotNone(self.sheet.shown(address))
 
     def test_scan_eta_counts_grow_and_recheck_time(self):
         job = {"kind": "batch_scan", "workbooks": ["a", "b", "c"], "scanned": ["a"], "completed": ["a"],

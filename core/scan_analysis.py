@@ -15,6 +15,7 @@ OPERATIONS = {
     "open": "打开工作簿", "layout": "打印方向分析", "export": "PDF 导出",
     "detect": "切字检测与定位", "save_view": "保存分页预览", "grow": "开自动换行与加高", "recheck": "加高后复检", "highlight": "标色与转人工",
     "restart": "重启 Excel",
+    "save_print_settings": "保存打印页数",
 }
 _current = ContextVar("scan_analysis_file", default=None)
 

@@ -352,7 +352,7 @@ function renderControls() {
   $('scanReportBtn').classList.toggle('hidden', !analysis || analysis.folder !== batchState.folder);
   if (analysis) $('scanReportBtn').href = `/analysis?id=${encodeURIComponent(analysis.id)}&folder=${encodeURIComponent(analysis.folder)}`;
   const manual = manualCards(), recheckAll = recheckAllCards(manual), recheckSet = new Set(recheckAll);
-  for (const id of ['startBtn', 'growRatio', 'commitBtn', 'folderInput', 'scanLimit']) $(id).disabled = busy;
+  for (const id of ['startBtn', 'commitBtn', 'folderInput', 'scanLimit']) $(id).disabled = busy;
   $('unhighlightBtn').disabled = busy || !(batchState.highlighted || batchState.tab_marks);
   $('unhighlightBtn').textContent = `🧽 清除 Excel 标记颜色${batchState.highlighted ? `（${batchState.highlighted}）` : ''}`;
   $('unhighlightResultBtn').classList.toggle('hidden', batchState.busy || !unhighlightResult());
@@ -1273,13 +1273,6 @@ $('typeColorsReset').addEventListener('click', () => {
 
 // 自动修复已去掉（用户 2026-11-02）：旧版本存的设置一并清掉
 try { localStorage.removeItem('clear_handle_excel.fixErrorTypes'); localStorage.removeItem('clear_handle_excel.highlightAuto'); } catch (_) {}
-// 切字的格子加高几倍字号：1.5（默认）或 1.2，记在本机浏览器
-const GROW_RATIO_KEY = 'clear_handle_excel.growRatio';
-try { if (['1.5', '1.2'].includes(localStorage.getItem(GROW_RATIO_KEY))) $('growRatio').value = localStorage.getItem(GROW_RATIO_KEY); } catch (_) {}
-$('growRatio').addEventListener('change', event => {
-  try { localStorage.setItem(GROW_RATIO_KEY, event.target.value); } catch (_) {}
-});
-
 // 暂停的扫描在提交、复检、打开文件后会放回来，不算替换续跑点
 const KEEPS_PAUSED_SCAN = new Set(['/api/batch/commit', '/api/batch/recheck', '/api/batch/open', '/api/batch/unhighlight']);
 const waitingCard = card => card.waiting ?? card.message === '等待自动处理';
@@ -1390,9 +1383,8 @@ $('scanLimit').addEventListener('change', event => {
 $('slowClearBtn').addEventListener('click', () => action(() => post('/api/batch/slow_files/clear')));
 $('startBtn').addEventListener('click', async () => {
   if (!$('folderInput').value.trim()) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
-  const ratio = $('growRatio').value;
-  if (!(await appConfirm(`检出的问题全部转为黄色人工项，并在原 Excel 里给问题单元格标色（复检通过或提交蓝 / 绿后自动去掉）。\n切字的格子（边框压线、文字截断、超出裁剪框）开自动换行，按文字长短估算行数补够行高，再加「字号 × ${ratio}」，保存后整份复检一遍：通过的去掉标色，没通过的不再改，交给人工。\n\n确定开始扫描吗？`, { title: '开始扫描', okText: '开始扫描' }))) return;
-  await startBatch({ highlight: { types: typeColors }, grow_ratio: Number(ratio) });
+  if (!(await appConfirm(`从 Excel 估算末页占用，不足 40% 时缩放到少一页；每张表只导出一次 PDF，检测后标色。\n只保存标记颜色和打印页数设置；不修改行高、列宽、换行、原有样式、分页线或视图。\n\n确定开始扫描吗？`, { title: '开始扫描', okText: '开始扫描' }))) return;
+  await startBatch({ highlight: { types: typeColors } });
 });
 $('unhighlightBtn').addEventListener('click', async () => {
   if (await appConfirm(`去掉当前文件夹 ${batchState.highlighted || 0} 个单元格的标记颜色？\n标记是程序加的条件格式，只删这些规则；单元格本身的颜色和表里原有的条件格式都不动。标成橙黄色的工作表标签改回原来的颜色。\n需要先在 Excel 里保存并关闭这些文件。之后提交、复检也不再自动标色，重新开始处理时才按设置标色。`, { title: '清除 Excel 标记颜色', okText: '去掉标记' })) await startJob('/api/batch/unhighlight');
