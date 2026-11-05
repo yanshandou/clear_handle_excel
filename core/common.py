@@ -83,6 +83,7 @@ XL_TYPE_PDF = 0
 XL_SHEET_VISIBLE = -1
 XL_WORKSHEET = -4167
 XL_PAGE_BREAK_PREVIEW = 2
+XL_PAGE_LAYOUT_VIEW = 3
 
 
 def is_inspection_exempt_sheet(sheet_name: str) -> bool:

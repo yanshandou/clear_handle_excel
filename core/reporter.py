@@ -43,6 +43,12 @@ EXECUTION_STATE: dict[str, Any] = {
     "files": {},  # wb_name -> file record dict
 }
 
+_EMPTY_EXECUTION_STATE = copy.deepcopy(EXECUTION_STATE)
+
+
+def empty_execution_report(folder: str) -> dict[str, Any]:
+    return {**copy.deepcopy(_EMPTY_EXECUTION_STATE), "folder": folder}
+
 
 def _restore_report() -> None:
     loaded = load_snapshot("report")
@@ -136,6 +142,8 @@ def replace_execution_report(state: dict[str, Any]) -> None:
         raise ValueError("进度文件损坏：缺少执行记录")
     with REPORT_LOCK:
         previous = copy.deepcopy(EXECUTION_STATE)
+        EXECUTION_STATE.clear()
+        EXECUTION_STATE.update(copy.deepcopy(_EMPTY_EXECUTION_STATE))
         EXECUTION_STATE.update(copy.deepcopy(state))
         EXECUTION_STATE.pop("markdown", None)
         _merge_review_duplicates_unlocked()
@@ -224,7 +232,7 @@ def init_execution_batch(
     每个文件的记录合并，前面步骤的结果不丢；换了文件夹才清空重来。"""
     kinds = ({"精简 Sheet（删除备份表）": ["clean"], "批量导出 PDF": ["pdf"],
               "视图标准化（分页预览 + A1 + 100% 缩放）": ["view"],
-              "只扫描（全部转人工）": ["scan"], "全自动扫描与修复": ["scan", "autofix"],
+              "扫描并标记": ["scan"], "只扫描（全部转人工）": ["scan"], "全自动扫描与修复": ["scan", "autofix"],
               "自动调整选中的格子": ["autofix"], "Web 切字扫描（完整）": ["scan"],
               "Web 切字扫描（增量）": ["scan"]}).get(task_name, [])
     with REPORT_LOCK:

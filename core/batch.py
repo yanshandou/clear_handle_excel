@@ -780,7 +780,7 @@ def _save_scan_preview(excel: Any, path: str, session: Any) -> None:
     before = wf._file_version(Path(path))
     if wf.STATE["checked_files"].get(path) != before:
         raise ValueError(f"扫描后文件已修改，请重新扫描：{Path(path).name}")
-    after = wf._save_page_break_preview(excel, Path(path), before)
+    after = wf._save_page_layout_view(excel, Path(path), before)
     with wf.STATE_LOCK:
         wf.STATE["checked_files"][path] = after
         checks = _sheet_checks().get(path, {})
@@ -1037,7 +1037,7 @@ def _refresh(
 ) -> list[str]:
     """重新检测（默认整个文件）。session 给了就沿用同一状态已导出的 PDF（reuse=False 时一律重新导出）；
     workbook 给了就直接用它检测（全自动的副本，或复检时在内存里还原过标记色的原文件），不再打开原文件。
-    view 给了就顺便查原文件视图，view["needed"] 表示是否还要另存分页预览。
+    view 给了就顺便查原文件视图，view["needed"] 表示是否还要另存页面布局视图。
     返回这次找不到、没有检测的工作表（被删除、隐藏，或改名后认不出来）。"""
     with wf.STATE_LOCK:
         cards = _data()["cards"]
@@ -1061,11 +1061,11 @@ def _refresh(
         previous, job=None, resumed=True, rescan_all=False, delete_backups=False,
         used_pdf_paths={Path(p["pdf_path"]) for p in wf.STATE["pages"].values()},
         read_only=True, workbook=workbook, pdfs=session, reuse_pdfs=reuse, timing=timing,
-        check_page_break_preview=view is not None,
+        scan_view="check_page_layout" if view is not None else None,
         compact_print_tail=compact_print_tail, before_print_save=before_print_save,
     )
     if view is not None:
-        view["needed"] = entry.get("page_break_preview_needed", True)
+        view["needed"] = entry.get("page_layout_needed", True)
     with wf.STATE_LOCK:
         missing = list(entry.get("missing", []))
         for card in _data()["cards"].values():
@@ -3893,16 +3893,20 @@ def run() -> list[str]:
                 with wf.STATE_LOCK:
                     limit = _scan_limit(job, path)
                     job["scan_limit"] = {"path": path, "seconds": round(limit)}
-                started, checking = time.perf_counter(), {}
+                started, checking, view = time.perf_counter(), {}, {}
                 watchdog.deadline(limit)
                 step("定上限")
                 try:
-                    _refresh(excel, path, session=session, timing=checking, compact_print_tail=True,
+                    _refresh(excel, path, session=session, timing=checking, compact_print_tail=True, view=view,
                              before_print_save=lambda: watchdog.deadline(None))
                 finally:
                     watchdog.deadline(None)
                 step("检测")
-                # 不保存视图；原文件只允许写入打印页数和颜色标记。
+                # PDF 检测完成后只保存页面布局视图，不改选区或缩放。
+                if view.get("needed", True):
+                    with scan_analysis.operation("save_view"):
+                        _save_scan_preview(excel, path, session)
+                step("存页面布局视图")
                 with wf.STATE_LOCK:
                     job.setdefault("scan_seconds", {})[path] = round(time.perf_counter() - started, 1)
                     _data().get("slow_files", {}).pop(path, None)  # 以前超时跳过的，这次扫完了

@@ -73,6 +73,8 @@ class IncrementalScanTests(unittest.TestCase):
         # 视图写回单独由 test_page_break_preview.py 验证；此处仅模拟检测流程。
         self.save_preview = Mock(side_effect=lambda app, path, version: version)
         self.patch_value(workflow, "_save_page_break_preview", self.save_preview)
+        self.save_layout = Mock(side_effect=lambda app, path, version: version)
+        self.patch_value(workflow, "_save_page_layout_view", self.save_layout)
 
     def patch_value(self, target, name, value):
         patcher = patch.object(target, name, value)
@@ -359,11 +361,12 @@ class IncrementalScanTests(unittest.TestCase):
         self.assertEqual(self.workflow.STATE["items"], {})
         self.save_preview.assert_not_called()
 
-    def test_file_already_in_page_break_preview_is_not_opened_for_writing(self):
+    def test_file_already_in_page_layout_is_not_opened_for_writing(self):
         path = self.add_book("book", ["S1"])
-        with patch.object(self.workflow, "page_break_preview_needed", return_value=False) as check:
+        with patch.object(self.workflow, "page_layout_view_needed", return_value=False) as check:
             self.assertEqual(self.scan()["status"], "completed")
-        check.assert_not_called()
+        check.assert_called_once()
+        self.save_layout.assert_not_called()
         self.excel.Workbooks.Open.assert_called_once_with(str(path.resolve()), UpdateLinks=0, ReadOnly=True)
         self.save_preview.assert_not_called()
         self.assertEqual(self.workflow.STATE["checked_files"][str(path)], self.workflow._file_version(path))
@@ -380,7 +383,7 @@ class IncrementalScanTests(unittest.TestCase):
             return self.books[Path(filename).stem]
 
         self.excel.Workbooks.Open.side_effect = opened
-        with patch.object(self.workflow, "page_break_preview_needed", return_value=False):
+        with patch.object(self.workflow, "page_layout_view_needed", return_value=False):
             self.assertEqual(self.scan()["status"], "completed")
         self.assertEqual(self.workflow._file_version(path), before)
         self.excel.Workbooks.Open.assert_called_once_with(str(path.resolve()), UpdateLinks=0, ReadOnly=True)
@@ -408,7 +411,7 @@ class IncrementalScanTests(unittest.TestCase):
         backup = book.Sheets("S1_20231023")
         backup.Delete = Mock(side_effect=lambda: book.Sheets.remove(backup))
         book.Save = Mock()
-        with patch.object(self.workflow, "page_break_preview_needed", return_value=False):
+        with patch.object(self.workflow, "page_layout_view_needed", return_value=False):
             self.assertEqual(self.scan(delete_backups=True)["status"], "completed")
         self.assertFalse(self.excel.Workbooks.Open.call_args.kwargs.get("ReadOnly", False))
         backup.Delete.assert_called_once()
@@ -417,11 +420,13 @@ class IncrementalScanTests(unittest.TestCase):
         report = self.reporter.get_execution_report_snapshot()["files"]["book.xlsx"]
         self.assertEqual(report["deleted_backups"], ["S1_20231023"])
 
-    def test_scan_does_not_check_or_save_the_view(self):
+    def test_scan_checks_page_layout_and_saves_if_check_failed(self):
         self.add_book("book", ["S1"])
-        with patch.object(self.workflow, "page_break_preview_needed", side_effect=RuntimeError("COM")):
+        with patch.object(self.workflow, "page_layout_view_needed", side_effect=RuntimeError("COM")):
             self.assertEqual(self.scan()["status"], "completed")
         self.save_preview.assert_not_called()
+
+        self.save_layout.assert_called_once()
 
     def test_modified_problem_file_only_rechecks_problem_sheets(self):
         path = self.add_book("book", ["S1", "S2"])

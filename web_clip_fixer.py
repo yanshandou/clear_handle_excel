@@ -44,6 +44,8 @@ from core.workflow import (
     STATE,
     STATE_LOCK,
     apply_skip_decisions,
+    activate_folder,
+    folder_history,
     apply_keep_decisions,
     export_progress,
     fix_selected_workflow,
@@ -99,7 +101,7 @@ MIME_TYPES = {
 
 
 def _require_folder(payload: dict, role: str = "work") -> str:
-    """1～8 步填的文件夹：必须是当前任务的处理文件夹（原始备份必须是参考文件夹），见 work_task.require_folder"""
+    """校验各功能自己填写的本地文件夹；当前任务只提供默认路径。"""
     folder = payload.get("folder")
     if not isinstance(folder, str) or not folder.strip():
         raise ValueError("请输入原始备份文件夹" if role == "reference" else "请输入 Excel 文件夹路径")
@@ -251,6 +253,17 @@ class WebHandler(upload_manager.Handler):
                 self._send_json({"ok": True, "reports": scan_analysis.history(folder), "report": data})
         elif parsed.path in {"/records", "/records.html"}:
             self._serve_static_file("records.html")
+        elif parsed.path == "/history":
+            self._serve_static_file("history.html")
+        elif parsed.path == "/api/folders":
+            self._send_json(folder_history())
+        elif parsed.path == "/api/folders/detail":
+            from core import operation_history
+            folder = parse_qs(parsed.query).get("folder", [""])[0]
+            if not folder:
+                raise ValueError("请选择文件夹")
+            self._send_json({**folder_history(folder), "operations": operation_history.events(folder),
+                             "scans": scan_analysis.history(folder)})
         elif parsed.path == "/favicon.ico":
             self._serve_static_file("favicon.svg")
         elif parsed.path.startswith("/static/"):
@@ -499,6 +512,9 @@ class WebHandler(upload_manager.Handler):
             self._send_json({"ok": True, **work_task.set_single(payload.get("on"))})
         elif self.path == "/api/tasks/switch":
             self._send_json({"ok": True, "task": work_task.switch(str(payload.get("id") or ""))})
+        elif self.path == "/api/folders/activate":
+            activate_folder(_require_folder(payload))
+            self._send_json({"ok": True})
         elif self.path == "/api/distribute/start":
             distribute.start(payload.get("preview_id"))
             self._send_json({"ok": True})

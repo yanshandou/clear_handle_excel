@@ -12,6 +12,7 @@ from typing import Any
 from core.common import (
     EXCLUDE_PDF_SHEETS,
     XL_PAGE_BREAK_PREVIEW,
+    XL_PAGE_LAYOUT_VIEW,
     XL_SHEET_VISIBLE,
     XL_WORKSHEET,
     col_index_to_letters,
@@ -828,15 +829,15 @@ def adjust_row_heights_against_clipping(wb: Any, extra_points: float = 6.0) -> N
             pass
 
 
-def enable_page_break_preview(excel: Any, wb: Any, *, check_only: bool = False) -> bool:
-    """所有窗口的可见工作表保留分页预览；保留缩放、选区和当前标签，返回是否改过视图。
+def _set_workbook_view(excel: Any, wb: Any, view: int, label: str, *, check_only: bool = False) -> bool:
+    """设置所有窗口的可见工作表视图；保留缩放、选区和当前标签，返回是否改过。
 
     不修改隐藏表或图表页；隐藏的工作簿窗口临时显示、设置完再隐藏回去。
     设置失败向上传递，调用方不能把未完成的保存当成成功。
-    check_only=True 时不改视图，只返回是否还有可见工作表不是分页预览。
+    check_only=True 时不改视图，只返回是否还有可见工作表不是目标视图。
     """
     if wb.Windows.Count == 0:
-        raise ValueError("工作簿没有可用窗口，无法保存分页预览")
+        raise ValueError(f"工作簿没有可用窗口，无法保存{label}")
     original_window = excel.ActiveWindow
     changed = False
     try:
@@ -853,11 +854,11 @@ def enable_page_break_preview(excel: Any, wb: Any, *, check_only: bool = False) 
                         if sheet.Visible != XL_SHEET_VISIBLE:
                             continue
                         sheet.Activate()
-                        if window.View != XL_PAGE_BREAK_PREVIEW:
+                        if window.View != view:
                             if check_only:
                                 return True
                             zoom = window.Zoom
-                            window.View = XL_PAGE_BREAK_PREVIEW
+                            window.View = view
                             window.Zoom = zoom
                             changed = True
                 finally:
@@ -871,9 +872,23 @@ def enable_page_break_preview(excel: Any, wb: Any, *, check_only: bool = False) 
     return changed
 
 
+def enable_page_break_preview(excel: Any, wb: Any, *, check_only: bool = False) -> bool:
+    """保存分页预览，保留缩放、选区和当前工作表。"""
+    return _set_workbook_view(excel, wb, XL_PAGE_BREAK_PREVIEW, "分页预览", check_only=check_only)
+
+
 def page_break_preview_needed(excel: Any, wb: Any) -> bool:
     """还有可见工作表不是分页预览时返回 True；只切换当前标签查看，不改视图。"""
     return enable_page_break_preview(excel, wb, check_only=True)
+
+
+def enable_page_layout_view(excel: Any, wb: Any, *, check_only: bool = False) -> bool:
+    """扫描后保存页面布局视图，保留缩放、选区和当前工作表。"""
+    return _set_workbook_view(excel, wb, XL_PAGE_LAYOUT_VIEW, "页面布局视图", check_only=check_only)
+
+
+def page_layout_view_needed(excel: Any, wb: Any) -> bool:
+    return enable_page_layout_view(excel, wb, check_only=True)
 
 
 def normalize_workbook_view(

@@ -76,13 +76,13 @@ def save_snapshot(
         _WRITTEN_BLOBS[cache_key] = blobs
 
 
-def load_snapshot(name: str) -> dict[str, Any] | None:
+def load_snapshot(name: str, *, include_blobs: bool = True) -> dict[str, Any] | None:
     connection = _connect()
     try:
         row = connection.execute(
             "SELECT payload FROM snapshots WHERE name = ?", (name,)
         ).fetchone()
-        blob_rows = connection.execute("SELECT key, data FROM blobs WHERE name = ?", (name,)).fetchall()
+        blob_rows = connection.execute("SELECT key, data FROM blobs WHERE name = ?", (name,)).fetchall() if include_blobs else []
     finally:
         connection.close()
     if row is None:

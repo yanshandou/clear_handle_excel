@@ -235,11 +235,12 @@ async function poll(background = false) {
       value.cards = value.cards.map(card => ({ ...Object.fromEntries(Object.entries(card)
         .filter(([field]) => !CARD_DETAIL_FIELDS.includes(field))), details_pending: true }));
     }
+    const folderChanged = fileFolder !== value.folder;
     fileFolder = value.folder;
     batchState = value;
     lastEtag = response.headers.get('ETag') || '';
     if (!document.activeElement || document.activeElement.id !== 'folderInput') {
-      if (value.folder && !$('folderInput').value) $('folderInput').value = value.folder;
+      if (value.folder && (folderChanged || !$('folderInput').value)) $('folderInput').value = value.folder;
       if (value.busy && value.folder) $('folderInput').value = value.folder;
     }
     render();
@@ -352,7 +353,7 @@ function renderControls() {
   $('scanReportBtn').classList.toggle('hidden', !analysis || analysis.folder !== batchState.folder);
   if (analysis) $('scanReportBtn').href = `/analysis?id=${encodeURIComponent(analysis.id)}&folder=${encodeURIComponent(analysis.folder)}`;
   const manual = manualCards(), recheckAll = recheckAllCards(manual), recheckSet = new Set(recheckAll);
-  for (const id of ['startBtn', 'commitBtn', 'folderInput', 'scanLimit']) $(id).disabled = busy;
+  for (const id of ['startBtn', 'restoreFolderBtn', 'commitBtn', 'folderInput', 'scanLimit']) $(id).disabled = busy;
   $('unhighlightBtn').disabled = busy || !(batchState.highlighted || batchState.tab_marks);
   $('unhighlightBtn').textContent = `🧽 清除 Excel 标记颜色${batchState.highlighted ? `（${batchState.highlighted}）` : ''}`;
   $('unhighlightResultBtn').classList.toggle('hidden', batchState.busy || !unhighlightResult());
@@ -1367,14 +1368,27 @@ async function openReady(selectedOnly = false, only = null) {
 async function startBatch(extra = {}) {
   const folder = $('folderInput').value.trim();
   if (!folder) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
-  const unsent = batchState.cards.filter(c => !c.finalized).length;
-  if (unsent && batchState.folder && folder !== batchState.folder
-      && !(await appConfirm(`当前文件夹还有 ${unsent} 张卡片没有提交审核。\n审核记录会保留，以后对原文件夹重新扫描即可继续审核。\n\n确定换到新文件夹吗？`, { title: '换文件夹', okText: '换到新文件夹' }))) return;
   const limit = Number($('scanLimit').value);  // 空 = 自动估算
   await startJob('/api/batch/start', { folder, ...extra, ...(limit ? { scan_limit_minutes: limit } : {}) }).then(() => {
     if (batchState.busy) { try { localStorage.setItem('clear_handle_excel.lastFolder', folder); } catch (_) {} }
   });
 }
+$('restoreFolderBtn').addEventListener('click', async () => {
+  const folder = $('folderInput').value.trim();
+  if (!folder) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
+  if (requestBusy) return;
+  requestBusy = true;
+  ++pollVersion;
+  renderControls();
+  try {
+    await post('/api/folders/activate', { folder });
+    try { localStorage.setItem('clear_handle_excel.lastFolder', folder); } catch (_) {}
+    lastEtag = '';
+  } catch (error) { $('errorText').textContent = error.message; }
+  finally { requestBusy = false; }
+  await poll();
+});
+
 const SCAN_LIMIT_KEY = 'clear_handle_excel.scanLimit';
 try { $('scanLimit').value = localStorage.getItem(SCAN_LIMIT_KEY) || ''; } catch (_) {}
 $('scanLimit').addEventListener('change', event => {
@@ -1383,7 +1397,7 @@ $('scanLimit').addEventListener('change', event => {
 $('slowClearBtn').addEventListener('click', () => action(() => post('/api/batch/slow_files/clear')));
 $('startBtn').addEventListener('click', async () => {
   if (!$('folderInput').value.trim()) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
-  if (!(await appConfirm(`从 Excel 估算末页占用，不足 40% 时缩放到少一页；每张表只导出一次 PDF，检测后标色。\n只保存标记颜色和打印页数设置；不修改行高、列宽、换行、原有样式、分页线或视图。\n\n确定开始扫描吗？`, { title: '开始扫描', okText: '开始扫描' }))) return;
+  if (!(await appConfirm(`从 Excel 估算末页占用，不足 40% 时缩放到少一页；每张表只导出一次 PDF，检测后标色。\n保存页面布局视图、标记颜色和打印页数设置；保留原选区和显示缩放，不修改行高、列宽、换行、原有样式或分页线。\n\n确定开始扫描吗？`, { title: '开始扫描', okText: '开始扫描' }))) return;
   await startBatch({ highlight: { types: typeColors } });
 });
 $('unhighlightBtn').addEventListener('click', async () => {

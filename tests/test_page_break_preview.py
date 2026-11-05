@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from core import excel_ops, workflow
-from core.common import XL_PAGE_BREAK_PREVIEW, XL_WORKSHEET
+from core.common import XL_PAGE_BREAK_PREVIEW, XL_PAGE_LAYOUT_VIEW, XL_WORKSHEET
 
 
 class Sheets(list):
@@ -81,6 +81,27 @@ class PageBreakPreviewTests(unittest.TestCase):
         excel.Goto.assert_not_called()
         self.assertFalse(excel_ops.enable_page_break_preview(excel, book))
 
+    def test_scan_page_layout_preserves_zoom_active_sheet_and_hidden_sheets(self):
+        excel, book = self.setup_book()
+        book.Windows[1].Visible = False
+        self.assertTrue(excel_ops.enable_page_layout_view(excel, book))
+        for window, original in zip(book.Windows, (1, 3)):
+            self.assertEqual(window.views, {"First": XL_PAGE_LAYOUT_VIEW, "Second": XL_PAGE_LAYOUT_VIEW,
+                                           "Hidden": original, "Chart": original})
+            self.assertEqual(set(window.zooms.values()), {85})
+        self.assertFalse(book.Windows[1].Visible)
+        self.assertIs(excel.ActiveWindow, book.Windows[0])
+        self.assertIs(book.Windows[0].ActiveSheet, book.Sheets[1])
+        excel.Goto.assert_not_called()
+        self.assertFalse(excel_ops.page_layout_view_needed(excel, book))
+        self.assertFalse(excel_ops.enable_page_layout_view(excel, book))
+
+    def test_checking_layout_does_not_change_the_view(self):
+        excel, book = self.setup_book()
+        before = [(dict(w.views), dict(w.zooms), w.ActiveSheet) for w in book.Windows]
+        self.assertTrue(excel_ops.page_layout_view_needed(excel, book))
+        self.assertEqual([(w.views, w.zooms, w.ActiveSheet) for w in book.Windows], before)
+
     def test_check_only_reports_without_changing_views_or_active_state(self):
         excel, book = self.setup_book()
         before = [(dict(w.views), dict(w.zooms), w.ActiveSheet) for w in book.Windows]
@@ -141,6 +162,14 @@ class PreviewSaveTests(unittest.TestCase):
         self.book.Save.assert_called_once()
         self.book.Close.assert_called_once_with(SaveChanges=False)
         self.followed.assert_called_once()
+
+    def test_scan_saves_page_layout_instead_of_page_break_preview(self):
+        with patch.object(workflow, "enable_page_layout_view", return_value=True) as layout:
+            workflow._save_page_layout_view(self.excel, self.path, self.before)
+        layout.assert_called_once_with(self.excel, self.book)
+        self.preview.assert_not_called()
+        self.book.Save.assert_called_once()
+        self.book.Close.assert_called_once_with(SaveChanges=False)
 
     def test_already_enabled_view_does_not_save_again(self):
         self.preview.return_value = False

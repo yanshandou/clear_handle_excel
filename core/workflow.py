@@ -43,13 +43,14 @@ from core.common import (
     workbook_locked,
     workbook_rel_name,
 )
-from core import debug_log, file_problem, fix_images, page_breaks, page_fill, pdf_detector, pdf_store, print_layout, scan_analysis, sheet_history
+from core import debug_log, file_problem, fix_images, folder_progress, page_breaks, page_fill, pdf_detector, pdf_store, print_layout, scan_analysis, sheet_history
 from core.excel_watchdog import ExcelWatchdog
 from core.formula_links import delete_sheets_preserving_values
 from core.excel_ops import (
     CellProbe,
     close_saved_workbooks,
     enable_page_break_preview,
+    enable_page_layout_view,
     extract_sheet_snapshot,
     gray_tab_sheet_names,
     mark_review_cells,
@@ -62,6 +63,7 @@ from core.excel_ops import (
     open_workbook_for_manual_review,
     open_workbook_checked,
     page_break_preview_needed,
+    page_layout_view_needed,
     pythoncom,
     quit_background_excel,
     scan_workbook_sheets,
@@ -99,6 +101,7 @@ from core.pdf_detector import (
     RegionTrackingError,
 )
 from core.reporter import (
+    empty_execution_report,
     find_recorded_workbook,
     finish_execution_batch,
     flush_execution_report,
@@ -154,6 +157,8 @@ STATE: dict[str, Any] = {
     "batch_review": {"cards": {}, "rows": {}, "ignored": []},
 }
 
+_EMPTY_STATE = copy.deepcopy(STATE)
+
 # 后台现在在检查哪份文件、第几张表（只放内存）：工作台据此显示当前文件用了多久，扫描超时跳过时写明卡在哪张表
 SCAN_NOW: dict[str, Any] = {}
 
@@ -186,6 +191,7 @@ def _referenced_images() -> set[str]:
 
 
 fix_images.register_references(_referenced_images)
+fix_images.register_references(folder_progress.archived_images)
 
 
 _DEFER = threading.local()
@@ -201,6 +207,7 @@ def _persist_state(force: bool = False) -> None:
     global _LAST_SAVE
     with STATE_LOCK:
         # 截图单独存、只写变了的：每点一下不用把所有截图重写一遍
+        STATE["progress_saved_at"] = datetime.now().isoformat(timespec="seconds")
         save_snapshot("workflow", STATE, blob_field="image", blob_collections=("pages", "items"))
         _LAST_SAVE = time.monotonic()
         if getattr(_DEFER, "depth", 0):
@@ -208,6 +215,88 @@ def _persist_state(force: bool = False) -> None:
 
 
 _LAST_SAVE = 0.0
+
+
+def activate_folder(folder: str, *, commit: Callable[[], None] | None = None) -> bool:
+    """保存当前文件夹并恢复目标工作台；不会读写 Excel，也不会导出 PDF。"""
+    folder = str(Path(folder).resolve())
+    with STATE_LOCK:
+        current = STATE.get("folder", "")
+        if current and folder_progress.key(current) == folder_progress.key(folder):
+            if commit is not None:
+                commit()
+            return False
+        if STATE["busy"] or STATE.get("maintenance"):
+            raise ValueError("当前任务正在执行，请先完成或暂停，再切换文件夹；已完成的进度会保留")
+        from core import batch
+        if batch._OPEN_LOCK.locked():
+            raise ValueError("正在打开 Excel 文件，请等打开完成后再切换文件夹")
+        previous = dict(STATE)
+        previous_report = get_execution_report_snapshot()
+        previous_report.pop("markdown", None)
+        # 首次升级保留旧版混合记录，供以前扫描过的其他文件夹逐一迁移。
+        if not STATE.get("folder_progress_version") and load_snapshot(folder_progress.LEGACY) is None:
+            folder_progress.save(STATE, previous_report, legacy=True)
+        source = STATE
+        if current and not STATE.get("folder_progress_version"):
+            source = {**STATE, **folder_progress.scoped_records(STATE, current), "folder_progress_version": 1}
+        source_report = previous_report if same_folder(previous_report.get("folder", ""), current) else empty_execution_report(current)
+        folder_progress.save(source, source_report)
+        restored = folder_progress.load(folder)
+        if restored is None:
+            restored = folder_progress.legacy_state(folder, _EMPTY_STATE)
+        restored = {**copy.deepcopy(_EMPTY_STATE), **restored}
+        report = restored.pop("folder_report", None)
+        if not report or not same_folder(report.get("folder", ""), folder):
+            report = empty_execution_report(folder)
+        restored.update(folder=folder, busy=False, folder_progress_version=1)
+        restored.pop("maintenance", None)
+        job = restored.get("job")
+        if job and job.get("status") == "running":
+            job["status"] = "interrupted"
+        try:
+            replace_execution_report(report)
+            STATE.clear()
+            STATE.update(restored)
+            _persist_state(force=True)
+            if commit is not None:
+                commit()
+        except Exception:
+            STATE.clear()
+            STATE.update(previous)
+            replace_execution_report(previous_report)
+            _persist_state(force=True)
+            raise
+        SCAN_NOW.clear()
+        return True
+
+
+def folder_history(folder: str = "") -> dict:
+    """只读浏览历史；查看另一文件夹不会切换正在显示的工作台。"""
+    with STATE_LOCK:
+        current = STATE.get("folder", "")
+        if folder:
+            is_current = bool(current) and same_folder(current, folder)
+            saved = STATE if is_current else folder_progress.load(folder, include_images=False)
+            if saved is None:
+                raise ValueError("没有这个文件夹的已保存进度")
+            report = get_execution_report_snapshot() if is_current else saved.get("folder_report", {})
+            report = copy.deepcopy(report)
+            report.pop("markdown", None)
+            if not same_folder(report.get("folder", ""), folder):
+                report = empty_execution_report(folder)
+            return {"folder": folder, "report": report, "logs": list(saved.get("logs", []))[-100:],
+                    "summary": folder_progress.summary(saved, report)}
+        rows = {folder_progress.key(v["folder"]): {k: val for k, val in v.items() if k != "images"}
+                for name, v in (load_snapshot(folder_progress.INDEX) or {}).items()
+                if name != folder_progress.LEGACY and v.get("folder")}
+        if current:
+            report = get_execution_report_snapshot()
+            if not same_folder(report.get("folder", ""), current):
+                report = empty_execution_report(current)
+            rows[folder_progress.key(current)] = folder_progress.summary(STATE, report)
+        return {"current": current, "busy": STATE["busy"],
+                "folders": sorted(rows.values(), key=lambda r: r.get("saved_at", ""), reverse=True)}
 
 
 @contextmanager
@@ -255,6 +344,8 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
     with STATE_LOCK:
         if STATE["busy"]:
             return False
+        if kind != "resume" and options and options.get("folder"):
+            activate_folder(options["folder"])
         paused_retry = None
         if kind == "batch_scan" and options and "retry_file" in options:
             target = str(find_recorded_workbook(options["retry_file"], failed_in_folder=options["folder"]))
@@ -796,7 +887,7 @@ HIDDEN_FIX_REASONS = {
     REASON_TRUNCATED: "文字没显示全，后半段被截掉（行高或列宽不够）",
     REASON_CLIPPED: "文字超出单元格被裁掉（列宽或行高不够）",
     REASON_HASH: "列宽不够，数字显示成 ###",
-    REASON_MISSING: "PDF 未匹配到对应文字（需人工核对）",
+    REASON_MISSING: "文字显示完整性未确认",
 }
 
 
@@ -1389,22 +1480,23 @@ def _scan_plan(workbooks: list[Path], *, rescan_all: bool) -> dict[str, dict[str
     return plan
 
 
-def _save_page_break_preview(excel: Any, wb_path: Path, expected_version: dict) -> dict:
-    """检测结束后重新打开原文件，只保存分页预览，丢弃检测时临时上色等内存修改。"""
+def _save_workbook_scan_view(excel: Any, wb_path: Path, expected_version: dict, *, page_layout: bool) -> dict:
+    """重新打开原文件只保存视图，丢弃检测时临时上色等内存修改。"""
+    label = "页面布局视图" if page_layout else "分页预览"
     if _file_version(wb_path) != expected_version:
-        raise ValueError(f"扫描后文件已修改，未保存分页预览，请重新扫描：{wb_path.name}")
+        raise ValueError(f"扫描后文件已修改，未保存{label}，请重新扫描：{wb_path.name}")
     book = open_workbook_checked(excel, str(wb_path.resolve()), ReadOnly=False, UpdateLinks=0)
     try:
         if book.ReadOnly:
-            raise ValueError(f"文件以只读方式打开，未能保存分页预览：{wb_path.name}")
+            raise ValueError(f"文件以只读方式打开，未能保存{label}：{wb_path.name}")
         # Excel 以可写方式打开旧版 .xls 时会原地更新 OLE 元数据和文件时间，
         # 即使尚未 Save。只对该格式接受打开产生的变化，随后仍检查有无再次修改。
         opened_version = _file_version(wb_path)
         if wb_path.suffix.lower() != ".xls" and opened_version != expected_version:
-            raise ValueError(f"扫描后文件已修改，未保存分页预览，请重新扫描：{wb_path.name}")
-        changed = enable_page_break_preview(excel, book)
+            raise ValueError(f"扫描后文件已修改，未保存{label}，请重新扫描：{wb_path.name}")
+        changed = enable_page_layout_view(excel, book) if page_layout else enable_page_break_preview(excel, book)
         if _file_version(wb_path) != opened_version:
-            raise ValueError(f"扫描后文件已修改，未保存分页预览，请重新扫描：{wb_path.name}")
+            raise ValueError(f"扫描后文件已修改，未保存{label}，请重新扫描：{wb_path.name}")
         if changed:
             book.Save()
             with STATE_LOCK:
@@ -1412,6 +1504,14 @@ def _save_page_break_preview(excel: Any, wb_path: Path, expected_version: dict) 
     finally:
         book.Close(SaveChanges=False)
     return _file_version(wb_path)
+
+
+def _save_page_break_preview(excel: Any, wb_path: Path, expected_version: dict) -> dict:
+    return _save_workbook_scan_view(excel, wb_path, expected_version, page_layout=False)
+
+
+def _save_page_layout_view(excel: Any, wb_path: Path, expected_version: dict) -> dict:
+    return _save_workbook_scan_view(excel, wb_path, expected_version, page_layout=True)
 
 
 def _save_scan_print_settings(excel: Any, wb_path: Path, expected_version: dict, changes: dict) -> dict:
@@ -1461,6 +1561,7 @@ def _scan_one_workbook(
     check_page_break_preview: bool = False,
     compact_print_tail: bool = False,
     before_print_save: Callable | None = None,
+    scan_view: str | None = None,
 ) -> None:
     """检查一个工作簿；所有工作表检测完成后才一次性替换该文件的旧结果，中途失败不影响旧记录。
 
@@ -1468,7 +1569,8 @@ def _scan_one_workbook(
     pdfs：后台会话的导出记录（autofix._ExcelSession）；同一版本已导出过的表直接用那份 PDF，不再导出。
     timing：累计打开 / 导出 / 检测各花了几秒。
     check_page_break_preview：打开原文件后先查视图，结果写入 entry["page_break_preview_needed"]；
-    已全是分页预览时不必再可写打开原文件（旧版 .xls 可写打开即使不保存也会改文件时间）。"""
+    已全是分页预览时不必再可写打开原文件（旧版 .xls 可写打开即使不保存也会改文件时间）。
+    scan_view="check_page_layout" 只检查原页面布局视图；"page_layout" 在检测后另存该视图。"""
     if compact_print_tail and workbook is not None:
         raise ValueError("末页打印缩放必须独立打开原文件检测")
     timing = {} if timing is None else timing
@@ -1495,6 +1597,13 @@ def _scan_one_workbook(
                     用副本=workbook is not None, 只查=entry["sheets"] if sheets_only else "全部",
                     大小KB=wb_path.stat().st_size // 1024 if wb_path.exists() else "?")
     try:
+        if scan_view and workbook is None:
+            # 检测会临时切换视图，先检查文件原来保存的状态。
+            try:
+                entry["page_layout_needed"] = page_layout_view_needed(excel, wb)
+            except Exception as err:
+                debug_log.event("⚠️ 无法检查页面布局视图", 文件=wb_label, 错误=str(err))
+                entry["page_layout_needed"] = True
         if (keep_page_break_preview or check_page_break_preview) and workbook is None:
             # 检测分页时会临时切换视图，必须在检测前查看文件保存的视图。
             try:
@@ -1644,6 +1753,10 @@ def _scan_one_workbook(
     if keep_page_break_preview and entry.get("page_break_preview_needed", True):
         with scan_analysis.operation("save_view"):
             scan_version = _save_page_break_preview(excel, wb_path, scan_version)
+
+    if scan_view == "page_layout" and entry.get("page_layout_needed", True):
+        with scan_analysis.operation("save_view"):
+            scan_version = _save_page_layout_view(excel, wb_path, scan_version)
 
     if pdfs is not None:
         for name, pdf in scanned_pdfs.items():
@@ -1811,6 +1924,7 @@ def scan_folder_workflow(
                             # 未要求删表时只读检测，避免旧版 .xls 首次打开就更新时间。
                             read_only=not delete_backups,
                             compact_print_tail=True,
+                            scan_view="page_layout",
                         )
                 except Exception as err:
                     wb_label = workbook_rel_name(wb_path, folder)

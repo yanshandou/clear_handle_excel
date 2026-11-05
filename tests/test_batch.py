@@ -63,7 +63,7 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(self.heights[5], 24)
         self.book.Save.assert_not_called()
 
-    def test_clean_scan_estimates_print_tail_and_only_colors(self):
+    def test_clean_scan_estimates_tail_saves_page_layout_then_colors(self):
         job = {"kind": "batch_scan", "workbooks": [self.path], "completed": [],
                "options": {"folder": str(self.root)}}
         self.wf.STATE["job"] = job
@@ -78,9 +78,9 @@ class BatchTests(unittest.TestCase):
                 patch.object(batch, "_sync_highlights", side_effect=lambda *_args, **_kwargs: events.append("color")), \
                 patch.object(batch, "finish_execution_batch"):
             batch.run()
-        self.assertEqual(events, ["scan", "color"])
+        self.assertEqual(events, ["scan", "preview", "color"])
         self.assertTrue(self.refresh.call_args.kwargs["compact_print_tail"])
-        self.save_scan_preview.assert_not_called()
+        self.save_scan_preview.assert_called_once()
         self.assertEqual(job["completed"], [self.path])
         from core import scan_analysis
         report = scan_analysis.report(job["analysis_id"])
@@ -130,8 +130,8 @@ class BatchTests(unittest.TestCase):
         self.assertEqual({key: row["status"] for key, row in report["files"].items()},
                          {"book.xlsx": "done", "sub/book.xlsx": "done", "pending.xlsx": "pending"})
 
-    def test_scan_skips_preview_save_when_views_are_already_page_break_preview(self):
-        for needed, saves in ((False, 0), (True, 0)):
+    def test_scan_only_saves_view_when_page_layout_is_needed(self):
+        for needed, saves in ((False, 0), (True, 1)):
             with self.subTest(needed=needed):
                 self.save_scan_preview.reset_mock()
                 job = {"kind": "batch_scan", "workbooks": [self.path], "completed": [],
@@ -152,9 +152,9 @@ class BatchTests(unittest.TestCase):
                 self.assertEqual(job["completed"], [self.path])
 
     def test_refresh_reports_whether_the_original_still_needs_the_preview(self):
-        def scan(*_args, check_page_break_preview=False, **_kwargs):
-            self.assertTrue(check_page_break_preview)
-            _args[2]["page_break_preview_needed"] = False
+        def scan(*_args, scan_view=None, **_kwargs):
+            self.assertEqual(scan_view, "check_page_layout")
+            _args[2]["page_layout_needed"] = False
         view = {}
         with patch.object(self.wf, "_scan_one_workbook", side_effect=scan):
             self.real_refresh(self.excel, self.path, view=view)
@@ -168,7 +168,7 @@ class BatchTests(unittest.TestCase):
             Path(self.path).write_bytes(b"workbook with saved preview")
             return self.wf._file_version(Path(self.path))
         session = Mock()
-        with patch.object(self.wf, "_save_page_break_preview", side_effect=save):
+        with patch.object(self.wf, "_save_page_layout_view", side_effect=save):
             self.real_save_scan_preview(self.excel, self.path, session)
         after = self.wf._file_version(Path(self.path))
         self.assertEqual(self.wf.STATE["checked_files"][self.path], after)
@@ -178,7 +178,7 @@ class BatchTests(unittest.TestCase):
     def test_changed_file_is_not_saved_as_a_scanned_view(self):
         self.wf.STATE["checked_files"][self.path] = self.wf._file_version(Path(self.path))
         Path(self.path).write_bytes(b"edited after scan")
-        with patch.object(self.wf, "_save_page_break_preview") as save:
+        with patch.object(self.wf, "_save_page_layout_view") as save:
             with self.assertRaisesRegex(ValueError, "扫描后文件已修改"):
                 self.real_save_scan_preview(self.excel, self.path, Mock())
         save.assert_not_called()
@@ -193,6 +193,18 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(job["completed"], [])
         self.assertEqual(job["scanned"], [])
         self.assertIn(self.path, job["file_errors"])
+
+    def test_page_layout_save_failure_does_not_complete_or_color_the_file(self):
+        job = self.wf.STATE["job"]
+        job.update(workbooks=[self.path], options={"folder": str(self.root)})
+        self.save_scan_preview.side_effect = ValueError("页面布局视图保存失败")
+        with patch.object(batch.autofix, "_ExcelSession", return_value=Mock()), \
+                patch.object(batch, "_sync_highlights") as colors, \
+                patch.object(batch, "finish_execution_batch"):
+            batch.run()
+        self.assertEqual(job["completed"], [])
+        self.assertIn(self.path, job["file_errors"])
+        colors.assert_not_called()
 
     def test_same_named_trial_and_original_use_separate_excel_instances(self):
         from core import autofix

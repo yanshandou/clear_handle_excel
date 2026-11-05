@@ -265,7 +265,7 @@
     keep: '<span class="tag-keep">✋ 保留你改的</span>', same: '<span class="tag-same">＝ 已一样</span>',
   };
   const FETCH_HINT = {
-    copy: '本地没有，拿过来', replace: '目的地有新版，用它替换本地的', keep: '你改过、目的地没人动，不拿', same: '本地和目的地一样，只记下版本',
+    copy: '本地没有，拿过来', replace: '共享与本地文件内容不同，按拿取规则用共享这份替换本地；不代表是别人修改', keep: '你改过、目的地没人动，不拿', same: '共享与本地文件内容完全一致，无需替换（也可能是你已上传的版本），只记下版本',
   };
 
   function fetchCard(folder, applied) {

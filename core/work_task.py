@@ -31,7 +31,6 @@ SNAPSHOT = "work_tasks"
 APP_DIR = "handle-excel"
 REFERENCE, WORK, FETCH_BACKUP = "参考", "处理", "拿最新版前的备份"
 _LOCK = threading.RLock()
-ENFORCE = True  # 1～8 步只能用当前任务的文件夹；测试里关掉
 
 
 def _is_onedrive(part: str) -> bool:
@@ -118,7 +117,8 @@ def create(shared_text: Any, work_root_text: Any = "") -> dict[str, Any]:
     paths = derive(shared_text, work_root_text)
     for key in ("reference", "work"):
         Path(paths[key]).mkdir(parents=True, exist_ok=True)
-    with _LOCK:
+    from core import workflow as wf
+    with wf.STATE_LOCK, _LOCK:
         data = _load()
         same = next((t for t in data["tasks"] if t.get("shared") == paths["shared"]
                      and t.get("work_root") == paths["work_root"]), None)
@@ -131,14 +131,15 @@ def create(shared_text: Any, work_root_text: Any = "") -> dict[str, Any]:
         data["tasks"].insert(0, task)
         data["current"] = task["id"]
         data["single"] = False  # 开任务 = 回到任务模式
-        _save(data)
+        wf.activate_folder(task["work"], commit=lambda: _save(data))
     debug_log.event("🆕 新任务" if not same else "🔁 沿用以前的任务", 共享=paths["shared"], 参考=paths["reference"],
                     处理=paths["work"])
     return task
 
 
 def switch(task_id: str) -> dict[str, Any]:
-    with _LOCK:
+    from core import workflow as wf
+    with wf.STATE_LOCK, _LOCK:
         data = _load()
         task = next((t for t in data["tasks"] if t.get("id") == task_id), None)
         if not task:
@@ -148,7 +149,7 @@ def switch(task_id: str) -> dict[str, Any]:
         data["tasks"].insert(0, task)
         data["current"] = task_id
         data["single"] = False
-        _save(data)
+        wf.activate_folder(task["work"], commit=lambda: _save(data))
     debug_log.event("🔀 切换任务", 共享=task["shared"], 处理=task["work"])
     return task
 
@@ -167,8 +168,7 @@ def _inside(path: Path, base: Path) -> bool:
 
 
 def set_single(on: Any) -> dict[str, Any]:
-    """单项模式（用户 2026-11-03 定）：只想单独用某一个功能时，各页面可以自己填本地文件夹；
-    OneDrive 里的文件夹照样不让改。开新任务或切换任务会自动回到任务模式"""
+    """保留旧版的路径偏好开关：是否优先使用自选路径；两种偏好都允许修改路径。"""
     with _LOCK:
         data = _load()
         data["single"] = on is True
@@ -178,27 +178,12 @@ def set_single(on: Any) -> dict[str, Any]:
 
 
 def require_folder(folder: Any, role: str = "work") -> str:
-    """1～8 步的保险（用户 2026-11-03 定）：不走新任务不能直接填路径（单项模式除外）。
-    role="work"：只能是当前任务的「处理」文件夹（或它的子文件夹）；role="reference"：只能是「参考」。
-    不管有没有任务，OneDrive 里的文件夹（就是共享文件夹）一律不让程序直接改。"""
+    """任务路径只作默认值，各功能可独立填写本地处理 / 参考文件夹。"""
     what = "原始备份文件夹" if role == "reference" else "Excel 文件夹路径"
     path = _clean(folder, what)
     if any(_is_onedrive(p) for p in path.parts):
         raise ValueError(f"这个文件夹在 OneDrive 里，就是共享文件夹，程序不能直接改：{path}"
                          "。请回主页点「🆕 新任务」，在本地的处理文件夹里改，改好再用第 9 步传回去")
-    if not ENFORCE:
-        return str(folder)
-    data = _load()
-    if data["single"]:
-        return str(folder)
-    task = next((t for t in data["tasks"] if t.get("id") == data["current"]), None)
-    if not task:
-        raise ValueError("还没有开任务：请先回主页点「🆕 新任务」，填共享文件夹路径，程序只处理任务的本地文件夹")
-    key, name = ("reference", "参考") if role == "reference" else ("work", "处理")
-    base = Path(task[key])
-    if not _inside(path, base):
-        debug_log.event("🚫 不是当前任务的文件夹", 用途=name, 填的=str(path), 应该是=str(base))
-        raise ValueError(f"只能用当前任务「{task['name']}」的{name}文件夹：{base}。要换任务请回主页切换或开新任务")
     return str(folder)
 
 

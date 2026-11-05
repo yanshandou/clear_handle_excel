@@ -2,6 +2,16 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { page } = require('./workbench_page');
 
+test('restore folder loads saved progress without starting another scan', async () => {
+  const p = page();
+  p.elements.get('folderInput').value = 'C:/Other';
+  await p.elements.get('restoreFolderBtn').listeners.click();
+  assert.equal(p.requests.length, 1);
+  assert.equal(p.requests[0].url, '/api/folders/activate');
+  assert.equal(p.requests[0].payload.folder, 'C:/Other');
+  assert.equal(p.storage.get('clear_handle_excel.lastFolder'), 'C:/Other');
+});
+
 test('all review layouts show historical height changes without an adjustment action', () => {
   const p = page();
   p.run(require('node:fs').readFileSync(require('node:path').join(__dirname, '../static/category.js'), 'utf8'));

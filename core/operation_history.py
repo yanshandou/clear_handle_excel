@@ -63,6 +63,17 @@ def summary():
         entry["count"] += 1
     return {"labels": LABELS, "folders": list(folders.values())}
 
+
+def events(folder):
+    db = _connect()
+    try:
+        rows = db.execute("SELECT kind, started_at, status FROM operation_history WHERE folder_key=? "
+                          "ORDER BY id DESC LIMIT 200", (os.path.normcase(os.path.abspath(folder)),)).fetchall()
+    finally:
+        db.close()
+    return [{"kind": kind, "name": LABELS.get(kind, kind), "started_at": started, "status": status}
+            for kind, started, status in rows]
+
 def done_for(folder):
     """主页卡片右上角的「做过了」：这个文件夹（或它的上级文件夹）跑完过哪些操作。
 

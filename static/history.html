@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>文件夹任务历史 - Excel 处理工具</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
+  <style>
+    .history-layout { display:grid; grid-template-columns:minmax(250px, 1fr) minmax(0, 3fr); gap:20px }
+    .history-folder { display:block; width:100%; margin:0 0 12px; padding:14px; text-align:left; overflow-wrap:anywhere; background:white; border:2px solid #1e2b5e; border-radius:12px; cursor:pointer }
+    .history-folder[aria-pressed=true] { background:#e8f0ff; border-color:#2563ba }
+    .history-folder small { display:block; margin-top:8px }
+    .history-path { overflow-wrap:anywhere }
+    .history-scroll { overflow:auto; max-height:520px }
+    .history-log { white-space:pre-wrap; overflow-wrap:anywhere; max-height:300px; overflow:auto }
+    @media(max-width:800px) { .history-layout { grid-template-columns:1fr } }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <a href="/" class="header-brand"><div class="header-logo-badge">🗂️</div><div class="header-title"><h1>文件夹任务历史</h1><span class="subtitle">分别保存进度，随时查看和继续处理</span></div></a>
+    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/workbench" class="nav-link">📐 工作台</a><a href="/records" class="nav-link">📊 当前执行记录</a><a href="/history" class="nav-link active">🗂️ 文件夹历史</a></nav>
+  </header>
+  <main class="container">
+    <section class="panel"><p>选择文件夹查看已保存的结果和执行明细。浏览历史不会切换当前工作台；恢复后可继续审核、复检，或继续暂停的任务。</p><input id="filter" type="search" placeholder="搜索文件夹路径" aria-label="搜索文件夹"><button id="refresh" class="btn btn-outline">刷新记录</button><p id="error" role="alert"></p></section>
+    <div class="history-layout">
+      <aside id="folders" aria-label="已保存的文件夹"></aside>
+      <section id="detail" class="panel" aria-live="polite"><p>选择一个文件夹查看记录。</p></section>
+    </div>
+  </main>
+  <script src="/static/history.js"></script>
+</body>
+</html>
