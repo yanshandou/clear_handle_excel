@@ -546,9 +546,16 @@ input[type="checkbox"]:not(.hidden):focus-visible {
   stroke-width: 1.6;
 }
 
+/* 白字 + 深色描边：描边画在字外面（paint-order），字不会被吃细；加一点右下错开的硬阴影，和彩色块的错位呼应 */
 .excel-open-toast .toast-text {
   position: relative;
   text-wrap: balance;
+  color: #fff;
+  font-weight: 600;
+  letter-spacing: 1px;
+  -webkit-text-stroke: 3.5px #1d1d1f;
+  paint-order: stroke fill;
+  text-shadow: 2px 2px 0 #1d1d1f;
 }
 
 .excel-open-toast .toast-icon {
@@ -564,7 +571,7 @@ input[type="checkbox"]:not(.hidden):focus-visible {
   height: 100%;
   fill: none;
   stroke: #1d1d1f;
-  stroke-width: 1.6;
+  stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
