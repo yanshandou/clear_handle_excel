@@ -112,6 +112,36 @@ class UploadManagerIntegrationTests(unittest.TestCase):
         self.assertFalse((dest / '甲' / '父' / '子' / 'notes.txt').exists())
         self.assertTrue((folder / 'test.xlsx').exists())
 
+    def test_current_task_upload_routes_record_only_selected_files(self):
+        shared = self.root / 'mock-shared'
+        shared.mkdir()
+        status, result = self.request('POST', '/api/tasks/new', {
+            'shared': str(shared), 'work_root': str(self.root / 'local'),
+        })
+        self.assertEqual(status, 200)
+        task = result['task']
+        for name in ['selected.xlsx', 'other.xlsx']:
+            (Path(task['work']) / name).write_bytes(b'local Excel')
+        payload = {'task_id': task['id']}
+        status, result = self.request('POST', '/api/distribute/task_files', payload)
+        self.assertEqual(status, 200)
+        self.assertEqual([f['rel'] for f in result['files']], ['other.xlsx', 'selected.xlsx'])
+        self.assertEqual(self.request('POST', '/api/distribute/task_upload', {**payload, 'files': ['../outside.xlsx']})[0], 400)
+        with patch.dict(workflow.STATE, {'busy': False, 'maintenance': ''}):
+            self.assertEqual(self.request('POST', '/api/distribute/task_upload', {
+                **payload, 'files': ['selected.xlsx'],
+            })[0], 200)
+            deadline = time.monotonic() + 10
+            while distribute.status().get('running') and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertFalse(distribute.status().get('running'))
+        self.assertEqual((shared / 'selected.xlsx').read_bytes(), b'local Excel')
+        self.assertFalse((shared / 'other.xlsx').exists())
+        status, result = self.request('POST', '/api/distribute/task_files', payload)
+        self.assertEqual(status, 200)
+        self.assertTrue(result['files'][1]['uploaded_current'])
+        self.assertFalse(result['files'][0]['uploaded'])
+
 
 if __name__ == '__main__':
     unittest.main()

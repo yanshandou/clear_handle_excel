@@ -44,6 +44,10 @@
     .dist-task-paths { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; margin: 0 0 6px; font-size: 13px; }
     .dist-task-paths dt { font-weight: 700; }
     .dist-task-paths dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; }
+    .dist-task-list { max-height: 25rem; overflow: auto; }
+    .dist-task-list input { width: auto; }
+    #distTaskCount { width: 6rem; margin-inline: 6px; }
+    .link-actions [hidden] { display: none; }
     .tag-keep { color: #1d4f91; font-weight: 700; }
     .tag-same { color: var(--ink-3); font-weight: 700; }
     .dist-conflict { color: #b42318; font-weight: 700; }
@@ -62,7 +66,7 @@
   <main class="container clean-container">
     <section class="panel">
       <p class="toolbar-hint">需要生成 JSON？<a href="/distribute/manage">打开文件管理与上传方案 →</a>，确认方案后可直接带入此页。</p>
-      <h1>先生成清单，确认后再复制</h1>
+      <h1 id="distHeading">先生成清单，确认后再复制</h1>
       <div id="distJsonIntro">
       <p class="toolbar-hint">JSON 里每个文件夹的 source 接在「来源根目录」后面，destination 接在「目的地根目录」后面。先按目录结构把目的地文件夹全部建好（来源里的子文件夹、空文件夹也照样建，来源找不到的也建一个空的），再把 Excel 复制进对应的文件夹：只复制 Excel 表格文件（.xls / .xlsx / .xlsm / .xlsb / .xlt / .xltx / .xltm，~$ 临时文件不算），其他文件不管。只复制不移动，来源文件原样保留。目的地已有同名文件时覆盖，文件名不改，覆盖了哪些写在复制记录里。</p>
       <p class="toolbar-hint"><strong>覆盖前检查别人改过没有：</strong>用「⬇ 从目的地拿最新版」把目的地（共享文件夹）的 Excel 拿回来源时，会记下每个文件拿到的版本。复制时如果目的地的文件和记下的不一样（拿走之后被别人改过），这个文件<strong>不覆盖</strong>、标红列出来；请再拿一次最新版，在新版上改好再复制。复制成功的文件也会记下放进去的版本，下次接着检查。没有记录的文件（以前手动拿的）没法检查，照旧覆盖，清单里会标出来。</p>
@@ -70,7 +74,17 @@
       <div id="distTaskBox" class="dist-task" hidden>
         <p class="dist-task-head">📁 当前任务：<strong id="distTaskName"></strong></p>
         <dl id="distTaskPaths" class="dist-task-paths"></dl>
-        <p class="toolbar-hint">按任务处理：「⬇ 从共享拿最新版」把共享的 Excel 拿到处理文件夹（同时放一份原件到参考文件夹、记下快照）；处理完点「📋 生成上传清单」→「📥 按清单上传到共享」，覆盖前先检查别人改过没有。<a href="/distribute?mode=json">不按任务，用上传记录 JSON 复制 →</a></p>
+        <p class="toolbar-hint">在处理文件夹中勾选要传回共享的 Excel，或按数量选择。系统只检查选中文件的共享版本，有更新就先同步到参考和处理文件夹，等你重新处理并复检。</p>
+        <div class="dist-plan-row">
+          <label for="distTaskCount">按数量选取<input id="distTaskCount" type="number" min="1" step="1" value="10" required></label>
+          <button id="distTaskPickCount" class="btn btn-outline btn-sm" type="button">选取前 N 个待上传文件</button>
+          <button id="distTaskClear" class="btn btn-outline btn-sm" type="button">清空选择</button>
+          <button id="distTaskReload" class="btn btn-outline btn-sm" type="button">刷新文件列表</button>
+          <span id="distTaskSelection" role="status" aria-live="polite"></span>
+        </div>
+        <div id="distTaskFiles" class="link-table-wrap dist-task-list"><p>正在读取本地文件…</p></div>
+        <p id="distTaskReview" class="toolbar-hint" hidden>待重新处理的文件可点名称在 Excel 中打开。处理并保存后，可前往<a href="/?task=export_pdf" target="_blank" rel="noopener">第 7 步导出 PDF 并复检 ↗</a>，然后回到此页再次检查。</p>
+        <button id="distTaskUpload" class="btn btn-danger" type="button" disabled>检查并批量上传</button>
       </div>
       <div id="distJsonFields">
       <p id="distBackToTask" class="toolbar-hint" hidden><a href="/distribute">← 回到当前任务</a></p>
@@ -92,7 +106,7 @@
         <button id="distFetch" class="btn btn-outline" type="button" disabled>⬇ 从目的地拿最新版</button>
         <button id="distStart" class="btn btn-danger" type="button" disabled>📥 按清单开始复制</button>
       </div>
-      <p class="toolbar-hint">两个按钮都是先生成清单（只读不改），确认后点右边的按钮才动文件。开始复制前会再查一遍来源，生成清单后来源有变化就不复制，需要重新生成；每个文件覆盖前还会再查一次目的地有没有被别人改过。拿最新版时，本地改过、目的地没人动的文件保留你改的不拿；本地被替换的文件先备份到来源根目录旁边的「…_拿最新版前的备份」文件夹。关闭网页后任务继续。</p>
+      <p id="distJsonHelp" class="toolbar-hint">两个按钮都是先生成清单（只读不改），确认后点右边的按钮才动文件。开始复制前会再查一遍来源，生成清单后来源有变化就不复制，需要重新生成；每个文件覆盖前还会再查一次目的地有没有被别人改过。拿最新版时，本地改过、目的地没人动的文件保留你改的不拿；本地被替换的文件先备份到来源根目录旁边的「…_拿最新版前的备份」文件夹。关闭网页后任务继续。</p>
       <p id="distProgress" role="status" aria-live="polite">填好两个根目录和 JSON 后点「生成复制清单」。</p>
       <div class="progress-track progress-track-sm"><div id="distProgressFill" class="progress-fill" style="width:0%"></div></div>
       <p id="distError" class="batch-error" role="alert"></p>

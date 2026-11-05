@@ -490,3 +490,4 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) refreshDoneMarks();
 });
 pollState();
+if (new URLSearchParams(location.search).get('task') === 'export_pdf') openTask('export_pdf');

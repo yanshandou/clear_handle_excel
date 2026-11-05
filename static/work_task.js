@@ -23,6 +23,7 @@
   function render() {
     const current = data.tasks.find(t => t.id === data.current);
     const single = data.single === true;
+    $('workTaskUploadLink').href = current && !single ? '/distribute' : '/distribute/manage';
     $('workTaskPanel').classList.toggle('single', single);
     $('workTaskSingle').textContent = single ? '📁 回到任务模式' : '🔧 单项模式';
     $('workTaskName').textContent = single ? '🔧 单项模式（各页面自己填本地文件夹）'
@@ -123,7 +124,8 @@
         if (window.gameFx) window.gameFx.celebrate('任务完成！', `${current.name} · ${result.files} 个文件都已传回共享`, 3);
         else window.appAlert(`${current.name} 的 ${result.files} 个文件都已传回共享，任务已标记完成。`, { title: '任务完成' });
       } else {
-        const names = { '没上传': '改过但还没传回共享（请到第 9 步上传）', '别人改过': '别人在共享里改过（请到第 9 步先拿最新版，改好再传）',
+        const names = { '待重新处理': '待重新处理及复检（完成后请到第 9 步再次检查并上传）',
+          '没上传': '改过但还没传回共享（请到第 9 步上传）', '别人改过': '别人在共享里改过（请到第 9 步先拿最新版，改好再传）',
           '共享里没有': '处理文件夹里有、共享里没有（新文件还没传）', '读不到': '读不到（可能正在 Excel 中打开）' };
         const lines = [];
         for (const [key, list] of Object.entries(result.issues)) {

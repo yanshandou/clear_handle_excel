@@ -473,8 +473,15 @@ class WebHandler(upload_manager.Handler):
             bl_links.start(_require_folder(payload))
             self._send_json({"ok": True})
         elif self.path == "/api/distribute/preview":
+            if payload.get("task_id"):
+                raise ValueError("当前任务请先选择要批量上传的文件")
             self._send_json({"ok": True, "preview": distribute.preview(
-                payload.get("plan"), payload.get("source_root"), payload.get("dest_root"), payload.get("task_id"))})
+                payload.get("plan"), payload.get("source_root"), payload.get("dest_root"))})
+        elif self.path == "/api/distribute/task_files":
+            self._send_json({"ok": True, **distribute.task_files(payload.get("task_id"))})
+        elif self.path == "/api/distribute/task_upload":
+            distribute.start_task_upload(payload.get("task_id"), payload.get("files"), payload.get("reviewed", {}))
+            self._send_json({"ok": True})
         elif self.path == "/api/distribute/fetch_preview":
             self._send_json({"ok": True, "preview": distribute.preview_fetch(
                 payload.get("plan"), payload.get("source_root"), payload.get("dest_root"), payload.get("task_id"))})
@@ -489,7 +496,7 @@ class WebHandler(upload_manager.Handler):
         elif self.path == "/api/tasks/switch":
             self._send_json({"ok": True, "task": work_task.switch(str(payload.get("id") or ""))})
         elif self.path == "/api/distribute/start":
-            distribute.start()
+            distribute.start(payload.get("preview_id"))
             self._send_json({"ok": True})
         elif self.path == "/api/bl_links/clear":
             bl_links.clear()

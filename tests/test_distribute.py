@@ -137,9 +137,10 @@ class DistributeTests(unittest.TestCase):
     def test_open_source_asks_and_is_skipped(self):
         write(self.src / "A" / "a.xlsx")
         write(self.src / "A" / "~$a.xlsx")
-        prev = distribute.preview(plan([{"source": ["A"], "destination": ["X"], "files": 1}]), str(self.src), str(self.dst))
-        self.assertTrue(prev["folders"][0]["files"][0]["source_open"])
-        result = self.run_copy()
+        with patch.object(distribute, "_held_open", return_value=True):
+            prev = distribute.preview(plan([{"source": ["A"], "destination": ["X"], "files": 1}]), str(self.src), str(self.dst))
+            self.assertTrue(prev["folders"][0]["files"][0]["source_open"])
+            result = self.run_copy()
         self.assertEqual(result["folders"][0]["files"][0]["status"], "failed")
         self.assertIn("Excel 中打开", result["folders"][0]["files"][0]["error"])
         self.assertTrue((self.src / "A" / "~$a.xlsx").exists())  # 来源一点不动

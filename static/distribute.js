@@ -12,6 +12,8 @@
   // 当前任务（主页「🆕 新任务」）：有任务时按任务的处理 / 共享文件夹，不用填 JSON；?mode=json 改回 JSON 复制
   const params = new URLSearchParams(location.search);
   let task = null;
+  let taskFiles = [], readingFiles = false;
+  const selected = new Set();
   const jsonMode = params.get('mode') === 'json' || params.has('plan');
   document.querySelector('[data-dist-mode="' + (jsonMode ? 'json' : 'task') + '"]')?.setAttribute('aria-current', 'page');
   let needsPreview = params.has('plan');
@@ -26,6 +28,7 @@
   const badChecks = folder => (folder.checks || []).filter(c => !c.ok);
   const conflicts = folder => (folder.files || []).filter(f => f.conflict || f.status === 'conflict');
   const isFetch = data => data && data.kind === 'fetch';
+  const isUpload = data => data && data.kind === 'task_upload';
   const isBad = folder => !!(folder.error || conflicts(folder).length || (folder.dir_errors || []).length || badChecks(folder).length || (folder.files || []).some(f => f.status && f.status !== 'ok')
     || (folder.dest_extra || []).length);
 
@@ -37,10 +40,57 @@
     const fetchMode = isFetch(latest.preview) || (latest.running && latest.kind === 'fetch');
     const canStart = !busy && !needsPreview && latest.preview && latest.preview.folders.some(f => f.files.length || (f.dirs_to_create || []).length);
     $('distStart').disabled = !canStart;
+    $('distPreview').hidden = !!task;
+    $('distStart').hidden = !!task && !fetchMode;
     $('distPreview').textContent = submitting === 'preview' ? '正在生成清单…' : task ? '📋 生成上传清单' : '📋 生成复制清单';
     $('distFetch').textContent = submitting === 'fetch' ? '正在对比共享和本地…' : task ? '⬇ 从共享拿最新版' : '⬇ 从目的地拿最新版';
     $('distStart').textContent = fetchMode ? (latest.running ? '正在拿…' : '⬇ 按清单拿文件')
       : (latest.running ? (task ? '正在上传…' : '正在复制…') : (task ? '📥 按清单上传到共享' : '📥 按清单开始复制'));
+    if (task) taskControls(busy || readingFiles);
+  }
+
+  function taskControls(busy) {
+    const files = taskFiles.filter(file => selected.has(file.rel));
+    const reviewCount = files.filter(file => file.review?.ready).length;
+    for (const id of ['distTaskCount', 'distTaskPickCount', 'distTaskClear', 'distTaskReload']) $(id).disabled = !!busy;
+    for (const box of $('distTaskFiles').querySelectorAll('input[type="checkbox"]')) {
+      box.disabled = !!busy;
+      box.checked = selected.has(box.value);
+    }
+    $('distTaskSelection').textContent = `已选 ${files.length} / ${taskFiles.length} 个`;
+    $('distTaskUpload').disabled = !!busy || !files.length;
+    $('distTaskUpload').textContent = reviewCount ? '确认重新处理完毕，再检查并上传' : '检查并批量上传';
+  }
+
+  async function reloadTaskFiles() {
+    readingFiles = true;
+    controls();
+    try {
+      const data = await post(api + '/task_files', { task_id: task.id });
+      taskFiles = data.files;
+      const found = new Set(taskFiles.map(file => file.rel));
+      for (const rel of selected) if (!found.has(rel)) selected.delete(rel);
+      const rows = taskFiles.map(file => {
+        const upload = file.uploaded ? `<span class="link-ok">已上传${file.uploaded_at ? ' · ' + esc(file.uploaded_at.replace('T', ' ')) : ''}</span>` : '';
+        const status = file.review
+          ? (file.review.ready ? '待重新处理' : '同步未完成，请重新检查')
+          : file.uploaded_current === true ? '当前版本已上传'
+          : file.uploaded_current === false ? '本地有新版本待上传'
+          : file.uploaded ? '当前版本待核对' : '待上传';
+        return `<tr><td><input type="checkbox" aria-label="选择 ${esc(file.rel)}" value="${esc(file.rel)}"></td><td>${fileLink(file.rel, task.work, file.rel)}</td><td>${status}</td><td>${upload || '—'}</td></tr>`;
+      });
+      $('distTaskFiles').innerHTML = (rows.length
+        ? '<table class="link-table"><thead><tr><th>选择</th><th>处理文件</th><th>状态</th><th>上次上传</th></tr></thead><tbody>' + rows.join('') + '</tbody></table>'
+        : '<p>处理文件夹里还没有 Excel 文件。可先从共享拿最新版。</p>')
+        + data.errors.map(err => `<p class="link-error">${esc(err)}</p>`).join('');
+      $('distTaskReview').hidden = !taskFiles.some(file => file.review?.ready);
+    } catch (error) {
+      taskFiles = [];
+      $('distTaskFiles').textContent = error.message;
+    } finally {
+      readingFiles = false;
+      controls();
+    }
   }
 
   // 进度区：跑着显示进度条；结束后收起进度条，结果写成完成提示（有问题用黄色）
@@ -251,7 +301,22 @@
     return html.join('');
   }
 
-  const renderAny = (data, applied) => isFetch(data) ? renderFetch(data, applied) : renderData(data, applied);
+  function renderUpload(data) {
+    const s = data.summary || {};
+    const text = data.stopped || (s['待重新处理']
+      ? '上传已暂停。请在最新版上重新处理并复检，完成后再次检查所选文件。'
+      : s['没复制成功'] ? '上传已暂停。请检查下方的文件提示后重试。' : '本批文件已上传。');
+    const rows = (data.files || []).map(file => {
+      const status = file.status === 'ok' ? '✓ 已上传' : file.error || '未上传';
+      const base = file.status === 'ok' ? data.dest_root : data.source_root;
+      return `<li>${fileLink(file.rel, base, file.rel)} · ${esc(status)}${file.backup_path ? `<br><small>旧处理副本：${esc(file.backup_path)}</small>` : ''}</li>`;
+    });
+    return `<p>${esc(text)} 已上传 ${s['已复制'] || 0} / ${rows.length} 个。</p><ul class="dist-list">${rows.join('')}</ul>`
+      + (data.id ? `<p><a class="btn btn-outline btn-sm" href="${api}/markdown?id=${encodeURIComponent(data.id)}">⬇ 下载上传记录</a></p>` : '');
+  }
+
+  const renderAny = (data, applied) => isFetch(data) ? renderFetch(data, applied)
+    : isUpload(data) ? renderUpload(data) : renderData(data, applied);
 
   function renderHistory() {
     const runs = latest.history || [];
@@ -260,7 +325,8 @@
       const s = run.summary || {};
       const chip = run.attention ? (s['别人改过没覆盖'] ? '<span class="dist-chip dist-chip-err">🛑 有别人改过的</span>' : '<span class="dist-chip dist-chip-warn">⚠️ 有对不上的地方</span>')
         : '<span class="dist-chip dist-chip-ok">✓ 全部一致</span>';
-      const what = run.kind === 'fetch' ? `⬇ 拿最新版 ${s['已拿'] ?? 0} 个（替换 ${s['替换'] ?? 0}）`
+      const what = isUpload(run) ? `上传 ${s['已复制'] ?? 0} 个${s['待重新处理'] ? ' · 待重新处理 ' + s['待重新处理'] + ' 个' : ''}`
+        : run.kind === 'fetch' ? `⬇ 拿最新版 ${s['已拿'] ?? 0} 个（替换 ${s['替换'] ?? 0}）`
         : `复制 ${s['已复制'] ?? 0} 个（覆盖 ${s['覆盖'] ?? 0}${s['别人改过没覆盖'] ? `，别人改过没覆盖 ${s['别人改过没覆盖']}` : ''}）`;
       return `<li><span class="dist-route">${esc(run.label || '（没有 label）')}<small>${esc(run.finished || '')} · ${what} · ${esc(run.dest_root || '')}</small></span>${chip}`
         + `<button type="button" class="btn btn-outline btn-sm" data-dist-view="${esc(run.id)}">查看</button>`
@@ -273,23 +339,35 @@
     renderHistory();
     if (latest.running) {
       showProgress('running');
-      $('distProgress').textContent = `${latest.kind === 'fetch' ? '正在拿最新版' : '正在复制'} ${Math.min((latest.done || 0) + 1, latest.total || 0)} / ${latest.total || 0}：${latest.current || '准备中…'}`;
+      $('distProgress').textContent = `${isUpload(latest) ? '正在检查或上传' : isFetch(latest) ? '正在拿最新版' : '正在复制'} ${Math.min((latest.done || 0) + 1, latest.total || 0)} / ${latest.total || 0}：${latest.current || '准备中…'}`;
       $('distProgressFill').style.width = `${latest.total ? latest.done / latest.total * 100 : 0}%`;
       window.ProgressEta?.update('distProgressFill', `dist:${latest.kind}`, latest.total ? latest.done / latest.total : 0, true);
-      $('distResultTitle').textContent = latest.kind === 'fetch' ? '拿取结果' : '复制结果';
-      $('distResults').textContent = latest.kind === 'fetch' ? '正在拿最新版，完成后显示每个文件夹的结果。' : '正在复制，完成后显示每个文件夹的核对结果。';
+      $('distResultTitle').textContent = isUpload(latest) ? '批量上传结果' : isFetch(latest) ? '拿取结果' : '复制结果';
+      $('distResults').textContent = '后台处理中，完成后显示结果。';
       return;
     }
     window.ProgressEta?.update('distProgressFill', `dist:${latest.kind}`, 0, false);
     if (viewing) {
-      $('distResultTitle').textContent = `${isFetch(viewing) ? '拿取记录' : '复制记录'}：${viewing.label || ''}`;
+      $('distResultTitle').textContent = `${isUpload(viewing) ? '上传记录' : isFetch(viewing) ? '拿取记录' : '复制记录'}：${viewing.label || ''}`;
       $('distResults').innerHTML = '<p><button type="button" class="btn btn-outline btn-sm" data-dist-back>← 回到当前清单</button></p>' + renderAny(viewing, true);
       return;
     }
     const applied = latest.applied;
     const data = latest.preview || applied;
-    if (!data) return;
+    if (!data) {
+      $('distResultTitle').textContent = task ? '批量上传结果' : '复制清单';
+      $('distResults').textContent = task ? '选好文件后，点击「检查并批量上传」。' : '尚未生成清单。';
+      return;
+    }
     $('distProgressFill').style.width = '100%';
+    if (isUpload(data)) {
+      const s = data.summary || {};
+      const paused = data.stopped || s['待重新处理'] || s['没复制成功'];
+      $('distResultTitle').textContent = '批量上传结果';
+      showProgress('done', paused ? '上传已暂停。' : '上传完成。', ` 已上传 ${s['已复制'] || 0} / ${data.files.length} 个。`, !!paused);
+      $('distResults').innerHTML = renderUpload(data);
+      return;
+    }
     if (isFetch(data)) {
       const s = data.summary || {};
       if (latest.preview) {
@@ -329,10 +407,18 @@
       const response = await fetch(api, { cache: 'no-store' });
       if (!response.ok) throw Error('读取任务进度失败，正在重试');
       latest = await response.json();
+      if (latest.preview && (latest.preview.task?.id || '') !== (task?.id || '')) latest.preview = null;
+      if (latest.applied && (latest.applied.task?.id || '') !== (task?.id || '')) latest.applied = null;
       if (pollError && $('distError').textContent === pollError) $('distError').textContent = '';
       pollError = '';
       loading = false;
-      if (wasRunning && !latest.running && latest.applied && !latest.applied.stopped && !isFetch(latest.applied)) {
+      if (task && wasRunning && !latest.running) {
+        if (isUpload(latest.applied)) {
+          for (const file of latest.applied.files) if (file.status === 'ok') selected.delete(file.rel);
+        }
+        await reloadTaskFiles();
+      }
+      if (wasRunning && !latest.running && latest.applied && !latest.applied.stopped && !isFetch(latest.applied) && !isUpload(latest.applied)) {
         const s = latest.applied.summary || {};
         if (s['别人改过没覆盖']) {
           window.appAlert(`有 ${s['别人改过没覆盖']} 个文件在你拿走之后被别人改过，没有覆盖（别人的修改还在）。\n请点「⬇ 从目的地拿最新版」拿回新版（你改的那份会先备份），在新版上改好再复制。\n其他文件已照常复制。`, { title: '有文件被别人改过', tone: 'warn' });
@@ -383,10 +469,11 @@
 
   async function startCopy() {
     if (loading || submitting || latest.running || needsPreview || !latest.preview) return;
+    const preview_id = latest.preview.id;
     if (isFetch(latest.preview)) {
       if (!await startFetch()) return;
       submitting = 'start'; viewing = null; controls();
-      try { await post(api + '/start', {}); wasRunning = true; } catch (error) { $('distError').textContent = error.message; }
+      try { await post(api + '/start', { preview_id }); wasRunning = true; } catch (error) { $('distError').textContent = error.message; }
       finally { submitting = false; await refresh(); }
       return;
     }
@@ -401,12 +488,37 @@
     if (!ok) return;
     submitting = 'start'; viewing = null; controls();
     try {
-      await post(api + '/start', {});
+      await post(api + '/start', { preview_id });
       filter = 'all';
       wasRunning = true;
     } catch (error) {
       $('distError').textContent = error.message;
     } finally { submitting = false; await refresh(); }
+  }
+
+  async function startTaskUpload() {
+    if (!task || loading || submitting || latest.running || readingFiles) return;
+    const files = taskFiles.filter(file => selected.has(file.rel));
+    if (!files.length) return;
+    const reviews = files.filter(file => file.review?.ready);
+    const message = reviews.length
+      ? `请确认这 ${reviews.length} 个待重新处理的文件已经保存并完成复检。系统将再次核对本批 ${files.length} 个文件的共享版本，检查通过后上传。\n\n${reviews.slice(0, 8).map(file => file.rel).join('\n')}${reviews.length > 8 ? '\n…' : ''}`
+      : `检查选中的 ${files.length} 个 Excel。发现共享端有更新时，先同步到参考和处理文件夹，备份有差异的旧处理副本，并暂停上传。检查通过后将文件传回当前任务的共享文件夹。`;
+    submitting = 'upload';
+    controls();
+    try {
+      if (!await window.appConfirm(message, { title: '批量上传到共享', okText: '开始检查', tone: 'danger' })) return;
+      viewing = null;
+      $('distError').textContent = '';
+      const reviewed = Object.fromEntries(reviews.map(file => [file.rel, file.review.token]));
+      await post(api + '/task_upload', { task_id: task.id, files: files.map(file => file.rel), reviewed });
+      wasRunning = true;
+    } catch (error) {
+      $('distError').textContent = error.message;
+    } finally {
+      submitting = false;
+      await refresh();
+    }
   }
 
   async function viewRun(id) {
@@ -432,6 +544,23 @@
   $('distPreview').addEventListener('click', () => makePreview('preview'));
   $('distFetch').addEventListener('click', () => makePreview('fetch'));
   $('distStart').addEventListener('click', startCopy);
+  $('distTaskUpload').addEventListener('click', startTaskUpload);
+  $('distTaskReload').addEventListener('click', reloadTaskFiles);
+  $('distTaskFiles').addEventListener('change', event => {
+    const box = event.target;
+    if (box.checked) selected.add(box.value);
+    else selected.delete(box.value);
+    controls();
+  });
+  $('distTaskPickCount').addEventListener('click', () => {
+    const input = $('distTaskCount');
+    if (!input.reportValidity() || !input.value) return;
+    selected.clear();
+    const waiting = taskFiles.filter(file => file.review || !file.uploaded_current);
+    for (const file of waiting.slice(0, input.valueAsNumber)) selected.add(file.rel);
+    controls();
+  });
+  $('distTaskClear').addEventListener('click', () => { selected.clear(); controls(); });
   for (const id of ['distSource', 'distDest', 'distPlan']) {
     $(id).addEventListener('input', () => { needsPreview = true; controls(); });
   }
@@ -453,6 +582,9 @@
         $('distTaskBox').hidden = false;
         $('distJsonFields').hidden = true;
         $('distJsonIntro').hidden = true;
+        $('distJsonHelp').hidden = true;
+        $('distHeading').textContent = '选择处理好的 Excel，批量传回共享';
+        $('distProgress').textContent = '等待选择文件。';
       } else if (current) {
         $('distBackToTask').hidden = false;
       }
@@ -480,6 +612,7 @@
       }
     }
     await refresh();
+    if (task) await reloadTaskFiles();
     // 主页开了新任务过来：先自动生成拿取清单（确认后才真正拿）
     if (task && params.get('fetch') === '1' && !latest.running) {
       history.replaceState(null, '', '/distribute');

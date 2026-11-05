@@ -125,8 +125,55 @@ server.serve_forever()
     await navigate(base + '/distribute?mode=json&plan=missing');
     await until(() => evaluate(`document.getElementById('distError')?.textContent.includes('不存在')`), 'Missing plan did not show its error');
     assert.equal(await evaluate(`document.getElementById('distPlan').value`), '');
+
+    async function post(route, payload) {
+      const response = await fetch(base + route, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
+      });
+      const result = await response.json();
+      assert.equal(response.ok, true, result.error);
+      return result;
+    }
+    const shared = path.join(temp, 'mock-shared');
+    fs.mkdirSync(shared);
+    fs.writeFileSync(path.join(shared, 'a.xlsx'), 'original');
+    fs.writeFileSync(path.join(shared, 'b.xlsx'), 'unselected');
+    const {task} = await post('/api/tasks/new', {shared, work_root:path.join(temp, 'local')});
+    const {preview} = await post('/api/distribute/fetch_preview', {task_id:task.id});
+    await post('/api/distribute/start', {preview_id:preview.id});
+    await until(async () => !(await (await fetch(base + '/api/distribute')).json()).running, 'Initial fetch did not finish');
+    fs.writeFileSync(path.join(shared, 'a.xlsx'), 'colleague edit');
+    fs.writeFileSync(path.join(task.work, 'a.xlsx'), 'my old edit');
+
+    await navigate(base + '/');
+    await until(() => evaluate(`document.getElementById('workTaskUploadLink').pathname === '/distribute'`), 'Step 9 did not link to current-task upload');
+    await navigate(base + '/distribute');
+    await until(() => evaluate(`document.querySelectorAll('#distTaskFiles input').length === 2`), 'Task files did not load');
+    await evaluate(`document.getElementById('distTaskCount').value='1';document.getElementById('distTaskPickCount').click();`);
+    assert.deepEqual(await evaluate(`[...document.querySelectorAll('#distTaskFiles input:checked')].map(box=>box.value)`), ['a.xlsx']);
+    const upload = async () => {
+      await evaluate(`document.getElementById('distTaskUpload').click()`);
+      await until(() => evaluate(`!!document.querySelector('dialog[open]')`), 'Upload confirmation missing');
+      await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button=>button.textContent==='开始检查').click()`);
+    };
+    await upload();
+    await until(() => evaluate(`document.getElementById('distTaskUpload').textContent.includes('确认重新处理完毕') && !document.getElementById('distTaskUpload').disabled`), 'Review pause missing');
+    assert.equal(fs.readFileSync(path.join(task.reference, 'a.xlsx'), 'utf8'), 'colleague edit');
+    const pdfLink = await evaluate(`document.querySelector('#distTaskReview a').href`);
+    await navigate(pdfLink);
+    await until(() => evaluate(`document.getElementById('taskDialog').open && document.getElementById('taskFolderInput').value===${JSON.stringify(task.work)}`), 'PDF export link did not open Step 7 for the working folder');
+    fs.writeFileSync(path.join(task.work, 'a.xlsx'), 'my reviewed edit');
+    await navigate(base + '/distribute');
+    await until(() => evaluate(`document.querySelectorAll('#distTaskFiles input').length === 2`), 'Task files did not reload');
+    await evaluate(`document.querySelector('#distTaskFiles input').click()`);
+    await upload();
+    await until(() => evaluate(`document.getElementById('distTaskFiles').textContent.includes('当前版本已上传')`), 'Upload record missing');
+    assert.equal(fs.readFileSync(path.join(shared, 'a.xlsx'), 'utf8'), 'my reviewed edit');
+    assert.equal(fs.readFileSync(path.join(shared, 'b.xlsx'), 'utf8'), 'unselected');
+    await evaluate(`document.getElementById('distTaskPickCount').click()`);
+    assert.deepEqual(await evaluate(`[...document.querySelectorAll('#distTaskFiles input:checked')].map(box=>box.value)`), ['b.xlsx']);
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({checks:['manager loads SQLite records','no Node/CDN runtime','native date controls','allocation preview','save with confirmation','saved snapshot handoff','mobile layout','missing-plan handling','copy requires new preview'], screenshot:screenshotPath},null,2));
+    console.log(JSON.stringify({checks:['manager loads SQLite records','no Node/CDN runtime','native date controls','allocation preview','save with confirmation','saved snapshot handoff','mobile layout','missing-plan handling','copy requires new preview','selected batch upload and review','PDF export link','persistent upload status'], screenshot:screenshotPath},null,2));
   } finally {
     socket?.close();
     for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(Error('Browser closing')); }

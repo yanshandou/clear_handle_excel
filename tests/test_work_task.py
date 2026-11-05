@@ -33,10 +33,14 @@ class WorkTaskTests(unittest.TestCase):
 
     def wait(self):
         distribute.start()
+        return self.wait_applied()
+
+    def wait_applied(self):
         for _ in range(200):
             if not distribute.status().get("running"):
                 break
             time.sleep(0.05)
+        self.assertFalse(distribute.status().get("running"))
         return distribute.status()["applied"]
 
     def test_relative_part_after_onedrive(self):
@@ -164,6 +168,108 @@ class WorkTaskTests(unittest.TestCase):
         self.assertTrue(result["done"], result["issues"])
         self.assertTrue(work_task.get(task["id"])["done"])
         self.assertFalse(work_task.create(str(self.shared), str(self.work_root))["done"])  # 再开一次重新开始
+
+    def test_selected_upload_rechecks_only_its_batch_until_review_is_current(self):
+        write(self.shared / "unselected.xlsx", "original")
+        task = work_task.create(str(self.shared), str(self.work_root))
+        work, ref = Path(task["work"]), Path(task["reference"])
+        task_id = task["id"]
+        distribute.preview_fetch("", "", "", task_id)
+        self.wait()
+        write(work / "a.xlsx", "my first changes")
+        write(work / "子/孫/b.xlsx", "b2")
+        write(self.shared / "a.xlsx", "shared v2")
+        write(self.shared / "unselected.xlsx", "someone updated this too")
+        digest = distribute._digest
+        hashed = set()
+
+        def record_hash(path):
+            if path.is_relative_to(self.shared):
+                hashed.add(path.relative_to(self.shared).as_posix())
+            return digest(path)
+
+        batch = ["a.xlsx", "子/孫/b.xlsx"]
+        with patch.object(distribute, "_digest", side_effect=record_hash):
+            self.assertEqual(len(distribute.task_files(task_id)["files"]), 3)
+            self.assertEqual(hashed, set())
+            distribute.start_task_upload(task_id, batch, {})
+            first = self.wait_applied()
+            self.assertEqual(hashed, set(batch))
+        self.assertEqual(first["summary"], {"已复制": 0, "待重新处理": 1, "没复制成功": 0})
+        self.assertEqual((work / "a.xlsx").read_text(encoding="utf-8"), "shared v2")
+        self.assertEqual((ref / "a.xlsx").read_text(encoding="utf-8"), "shared v2")
+        self.assertEqual(work_task.finish_check(task_id)["issues"]["待重新处理"], ["a.xlsx"])
+        self.assertEqual((self.shared / batch[1]).read_text(encoding="utf-8"), "b1")
+        self.assertEqual((work / "unselected.xlsx").read_text(encoding="utf-8"), "original")
+        self.assertEqual(Path(first["files"][0]["backup_path"]).read_text(encoding="utf-8"), "my first changes")
+        base = distribute.load_baseline()[distribute._base_key(self.shared / "a.xlsx")]
+        self.assertEqual(base["sha256"], digest(self.shared / "a.xlsx"))
+        first_token = distribute.task_files(task_id)["files"][0]["review"]["token"]
+
+        distribute.start_task_upload(task_id, batch, {})
+        self.assertEqual(self.wait_applied()["summary"]["已复制"], 0)
+        write(work / "a.xlsx", "my second changes")
+        write(self.shared / "a.xlsx", "shared v3")
+        distribute.start_task_upload(task_id, batch, {"a.xlsx": first_token})
+        self.assertEqual(self.wait_applied()["summary"]["已复制"], 0)
+        second_token = distribute.task_files(task_id)["files"][0]["review"]["token"]
+        self.assertNotEqual(first_token, second_token)
+        self.assertEqual((ref / "a.xlsx").read_text(encoding="utf-8"), "shared v3")
+        self.assertEqual((work / "a.xlsx").read_text(encoding="utf-8"), "shared v3")
+
+        write(work / "a.xlsx", "final")
+        distribute.start_task_upload(task_id, batch, {"a.xlsx": first_token})
+        self.assertEqual(self.wait_applied()["summary"]["已复制"], 0)
+        distribute.start_task_upload(task_id, batch, {"a.xlsx": second_token})
+        result = self.wait_applied()
+        self.assertEqual(result["summary"]["已复制"], 2)
+        self.assertEqual((self.shared / "a.xlsx").read_text(encoding="utf-8"), "final")
+        self.assertEqual((self.shared / batch[1]).read_text(encoding="utf-8"), "b2")
+        self.assertEqual((ref / "a.xlsx").read_text(encoding="utf-8"), "shared v3")
+
+        distribute._STATUS.clear()
+        self.assertIn("a.xlsx | 已上传", distribute.markdown(distribute.get_run(result["id"])))
+        uploaded = distribute.task_files(task_id)["files"][0]
+        self.assertTrue(uploaded["uploaded_current"])
+        self.assertTrue(uploaded["uploaded_at"])
+        self.assertIsNone(uploaded["review"])
+        write(work / "a.xlsx", "edited again")
+        uploaded = distribute.task_files(task_id)["files"][0]
+        self.assertTrue(uploaded["uploaded"])
+        self.assertFalse(uploaded["uploaded_current"])
+
+    def test_upload_rechecks_after_staging_and_recovers_incomplete_sync(self):
+        task = work_task.create(str(self.shared), str(self.work_root))
+        task_id, work, ref = task["id"], Path(task["work"]), Path(task["reference"])
+        distribute.preview_fetch("", "", "", task_id)
+        self.wait()
+        write(work / "a.xlsx", "local edits")
+        target = self.shared / "a.xlsx"
+        original_copy = distribute.copy_one
+
+        def copy_with_race(src, dst, **kwargs):
+            if dst == target:
+                verify = kwargs["before_replace"]
+
+                def changed():
+                    write(target, "arrived during staging")
+                    verify()
+
+                kwargs["before_replace"] = changed
+            return original_copy(src, dst, **kwargs)
+
+        with (patch.object(distribute, "copy_one", side_effect=copy_with_race),
+              patch.object(distribute, "_refresh_reference", side_effect=PermissionError("locked"))):
+            distribute.start_task_upload(task_id, ["a.xlsx"], {})
+            self.assertEqual(self.wait_applied()["summary"]["没复制成功"], 1)
+        self.assertEqual(target.read_text(encoding="utf-8"), "arrived during staging")
+        self.assertEqual((work / "a.xlsx").read_text(encoding="utf-8"), "arrived during staging")
+        self.assertEqual((ref / "a.xlsx").read_text(encoding="utf-8"), "AAA")
+        self.assertFalse(distribute.task_files(task_id)["files"][0]["review"]["ready"])
+        distribute.start_task_upload(task_id, ["a.xlsx"], {})
+        self.assertEqual(self.wait_applied()["summary"]["待重新处理"], 1)
+        self.assertEqual((ref / "a.xlsx").read_text(encoding="utf-8"), "arrived during staging")
+        self.assertTrue(distribute.task_files(task_id)["files"][0]["review"]["ready"])
 
 
 if __name__ == "__main__":

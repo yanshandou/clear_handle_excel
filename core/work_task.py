@@ -223,7 +223,7 @@ def finish_check(task_id: str) -> dict[str, Any]:
     from core import distribute
     task = get(task_id)
     work, shared = Path(task["work"]), Path(task["shared"])
-    issues: dict[str, list[str]] = {"没上传": [], "别人改过": [], "共享里没有": [], "读不到": []}
+    issues: dict[str, list[str]] = {"待重新处理": [], "没上传": [], "别人改过": [], "共享里没有": [], "读不到": []}
     with debug_log.side_task("work_task_finish_check", {"shared": str(shared), "work": str(work)}):
         if not work.is_dir() or not shared.is_dir():
             raise ValueError("处理文件夹或共享文件夹不存在了，请确认路径")
@@ -235,6 +235,10 @@ def finish_check(task_id: str) -> dict[str, Any]:
             if not other:
                 issues["共享里没有"].append(rel)
                 continue
+            base = distribute._task_baseline(baseline.get(distribute._base_key(shared / other), {}), task["id"])
+            if base.get("review"):
+                issues["待重新处理"].append(rel)
+                continue
             try:
                 a, b = distribute._digest(work / rel), distribute._digest(shared / other)
             except OSError as err:
@@ -242,7 +246,6 @@ def finish_check(task_id: str) -> dict[str, Any]:
                 continue
             if a == b:
                 continue
-            base = baseline.get(distribute._base_key(shared / other))
             issues["别人改过" if base and base.get("sha256") != b else "没上传"].append(rel)
         result = {"passed": not any(issues.values()), "issues": issues, "files": len(mine)}
         debug_log.event("🏁 收尾检查", 文件=len(mine), **{k: len(v) for k, v in issues.items()})
