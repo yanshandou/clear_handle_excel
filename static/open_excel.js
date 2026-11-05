@@ -49,24 +49,19 @@
   // 工作台缓存链接 HTML 时，也要跟随访问标记更新（含暂时被筛选隐藏的卡片）。
   window.excelLinkHtml.revision = 0;
 
-  // 水墨背景：5 张长短不同的图（宽/高比），挑形状最接近的那张，再拉到刚好盖住文字
-  const INK_RATIOS = [1.86, 2.3, 2.61, 3.16, 3.05];
-  function fitInk(box) {
-    const cs = getComputedStyle(box);
-    const textW = box.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-    const textH = box.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-    // 背景只是装饰：不必完全包住字，大致托在字下面就行
-    const h = Math.max(110, Math.min(textH * 2, textH + 60));
-    const w = Math.max(textW * 1.15, h * INK_RATIOS[0]);
-    const want = w / h;
-    let best = 0;
-    INK_RATIOS.forEach((r, i) => {
-      if (Math.abs(Math.log(r / want)) < Math.abs(Math.log(INK_RATIOS[best] / want))) best = i;
-    });
-    box.style.setProperty('--ink-img', `url("/static/icons/ca/ink_${best + 1}.png")`);
-    box.style.setProperty('--ink-w', `${Math.round(w)}px`);
-    box.style.setProperty('--ink-h', `${Math.round(h)}px`);
+  // 提示条：彩色块 + 断线框 + 右边线条图标。颜色按种类：正在… 蓝、成功 绿、有附注 橙、打不开/出错 红
+  const TOAST_ICONS = {
+    busy: '<path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v4.5h-4.5"/>',
+    ok: '<circle cx="12" cy="12" r="9"/><path d="M7.8 12.3l2.8 2.8 5.6-5.8"/>',
+    warn: '<path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5"/><path d="M12 17.3v.2"/>',
+    error: '<circle cx="12" cy="12" r="9"/><path d="M8.8 8.8l6.4 6.4M15.2 8.8l-6.4 6.4"/>',
+  };
+  function toastKind(text, isError) {
+    if (isError) return /^(无法|暂时不能|没能|请)/.test(text) ? 'error' : 'warn';
+    return /^正在/.test(text) ? 'busy' : 'ok';
   }
+  // 线框按像素断开几处：长线、空、短线、空……（rect 的周长从左上角顺时针量）
+  const FRAME_DASH = '150 9 7 9 110 12 60 10 9 10 180 8 40 12';
 
   let toastTimer = null;
   function toast(text, isError) {
@@ -75,16 +70,22 @@
       box = document.createElement('div');
       box.id = 'excelOpenToast';
       box.className = 'excel-open-toast';
+      box.innerHTML = '<svg class="toast-frame" aria-hidden="true"><rect x="0" y="0" width="100%" height="100%"'
+        + ` stroke-dasharray="${FRAME_DASH}"/></svg>`
+        + '<span class="toast-text"></span><span class="toast-icon" aria-hidden="true"></span>';
       document.body.appendChild(box);
     }
     // 弹窗（showModal）盖在页面最上层：提示要放进打开着的弹窗里才看得到
     const host = document.querySelector('dialog[open]') || document.body;
     if (box.parentElement !== host) host.appendChild(box);
-    box.textContent = text;
-    box.classList.toggle('is-error', !!isError);
-    // 每条新提示都重新从小变大淡入一次（像游戏里每次击杀都重播播报）
+    const kind = toastKind(text, isError);
+    box.querySelector('.toast-text').textContent = text;
+    box.querySelector('.toast-icon').innerHTML = `<svg viewBox="0 0 24 24">${TOAST_ICONS[kind]}</svg>`;
+    box.classList.remove('is-busy', 'is-ok', 'is-warn', 'is-error');
+    box.classList.add(`is-${kind}`);
+    // 每条新提示都重新淡入一次
     box.classList.remove('is-visible');
-    fitInk(box);
+    void box.offsetWidth;
     box.classList.add('is-visible');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => box.classList.remove('is-visible'), isError ? 6000 : 2500);
