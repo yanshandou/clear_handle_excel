@@ -568,13 +568,13 @@ function handlingText(card) {
   return '';
 }
 
-// 扫描时开了自动换行、加了行高：写明改了什么，效果由人工看
+// 旧版扫描留下的修改记录；新版扫描不再开换行、加行高。
 function grownText(card) {
   const g = card.grown;
   if (!g || !Number.isFinite(g.applied)) return '';
   const wrap = g.wrap ? `${card.cell_addr} 开启自动换行，` : '';
   const added = Number.isFinite(g.base) ? `${pt(g.base)} → ${pt(g.applied)}（+${pt(g.applied - g.base)}，字号 ${pt(g.font).replace('pt', '')} × ${g.ratio}）` : pt(g.applied);
-  return `处理：${wrap}第 ${g.row} 行行高 ${added}，已保存；效果请人工确认${card.highlighted ? '；已在 Excel 中标色' : ''}`;
+  return `历史处理记录：${wrap}第 ${g.row} 行行高 ${added}，已保存；本次不调整行高${card.highlighted ? '；已在 Excel 中标色' : ''}`;
 }
 
 function blueNote(card) {
@@ -590,7 +590,7 @@ function blueNote(card) {
 
 // 没有修改后图时，在单图下面说明原因
 function afterNote(card) {
-  if (['scan_only', 'handover'].includes(card.after_kind)) return card.grown ? '还没有修改后的图：已开换行、加高，复检后再显示' : '还没有修改后的图：人工修改后复检通过再显示';
+  if (['scan_only', 'handover'].includes(card.after_kind)) return card.grown ? '还没有修改后的图：历史曾开换行、加高，人工修改后复检再显示' : '还没有修改后的图：人工修改后复检通过再显示';
   if (card.after_kind === 'attempt') return '最后一次尝试没有截到图，原文件未修改';
   return card.after_kind ? '没有截到修改后的图，可点击表名在 Excel 中核对' : '还没有修改后的图';
 }

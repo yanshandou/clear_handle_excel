@@ -74,6 +74,19 @@ function categoryBusyReason() {
   return batchState.busy ? `后台正在${busyJobName()}，结束后再点` : '';
 }
 
+function categoryOpenBlockReason(cards) {
+  if (requestBusy) return '正在提交请求';
+  if (openChoosing || (batchState.busy && batchState.job?.kind === 'batch_open')) return '正在打开文件';
+  if (batchState.busy && cards.length && cards.every(c => openBlocked(c))) return openBlocked(cards[0]);
+  return '';
+}
+
+function categoryRecheckBlockReason(cards) {
+  if (requestBusy) return '正在提交请求';
+  const ready = recheckAllCards(cards);
+  return recheckBlockReason(ready.length ? ready : cards);
+}
+
 const yellowCards = cat => cat.cards.filter(c => c.color === 'yellow' && c.finalized);
 
 function fileListHtml(files, current) {
@@ -111,7 +124,7 @@ function categoryListOnlyHtml(cats, current) {
 
 function categoryState(card) {
   if (card.color !== 'yellow') return ['marked', card.color === 'blue' ? '已标蓝' : '已标绿'];
-  if (card.grown && !card.grown.error) return ['grown', '加高后没过'];
+  if (card.grown && !card.grown.error) return ['grown', '历史曾加高'];
   return ['todo', '待改'];
 }
 
@@ -136,40 +149,37 @@ function categoryCellsHtml(cat) {
   return `<div class="learn-table-wrap"><table class="learn-table"><thead><tr><th>状态</th><th>${byFile ? '文件' : '分类'}</th><th>格子</th><th>内容</th></tr></thead><tbody>${rows}</tbody></table></div>${more}`;
 }
 
-// 收紧行高：改的时候先给问题行一个很大的行高，保存后让程序量出要多高、收回多余的，再整份复检
-function tightenButtonHtml(disabledAttr) {
-  return `<button type="button" class="btn btn-outline" id="categoryTightenBtn"${disabledAttr} title="改的时候可以先给问题行一个很大的行高（例如 200），保存后点这里：程序量出每行要多高，收到刚好够再留「字号 × 倍数」的余量（只收不加），然后整份复检；复检没过的行退回你原来给的行高；复检在别的行查出新的切字，照样开换行、加高再复检">↕️ 收紧行高并复检</button>`;
-}
-
 function categoryDetailHtml(cat) {
   if (!cat) return '';
-  const busy = categoryBusyReason();
-  const yellow = yellowCards(cat).length;
+  const cards = yellowCards(cat);
+  const yellow = cards.length;
+  const openBusy = categoryOpenBlockReason(cards);
+  const recheckBusy = categoryRecheckBlockReason(cards);
   const grown = cat.cards.filter(c => categoryState(c)[0] === 'grown').length;
   const disabled = reason => reason ? ` disabled title="${esc(reason)}"` : '';
   if (cat.key === OPENED_KEY) {
     return `<div class="learn-head"><h3>已打开、待复检</h3><span class="learn-meta">${cat.files} 个文件 · ${cat.count} 格</span></div>`
       + '<ol class="learn-steps">'
-      + `<li><span class="learn-step-no">✓</span><div><strong>这些文件已经打开过</strong><p>在 Excel 里改完保存，再复检。复检前别的分类里不再列这些文件，免得重复打开；复检后还有问题的会回到各分类。想重新打开，点清单里的文件名。行高不好估的，可以先给一个很大的行高（例如 200），保存后点「收紧行高并复检」，多余的会收回来。</p>`
-      + `<button type="button" class="btn btn-primary" id="categoryRecheckBtn"${disabled(busy || (!yellow && '没有要复检的格子'))}>🔁 复检这 ${cat.files} 个文件</button> ${tightenButtonHtml(disabled(busy || (!yellow && '没有要复检的格子')))}</div></li>`
+      + `<li><span class="learn-step-no">✓</span><div><strong>这些文件已经打开过</strong><p>在 Excel 里改完保存，再复检。复检前别的分类里不再列这些文件，免得重复打开；复检后还有问题的会回到各分类。想重新打开，点清单里的文件名。复检只检测和更新标记，不自动调整行高、列宽、换行、原有样式或分页线。</p>`
+      + `<button type="button" class="btn btn-primary" id="categoryRecheckBtn"${disabled(recheckBusy || (!yellow && '没有要复检的格子'))}>🔁 复检这 ${cat.files} 个文件</button></div></li>`
       + '</ol>' + categoryCellsHtml(cat);
   }
   if (categoryMode === 'file') {
     return `<div class="learn-head"><h3>${esc(cat.label)}</h3><span class="learn-meta">${cat.count} 格 · ${esc(cat.summary)}</span></div>`
       + '<ol class="learn-steps">'
       + `<li><span class="learn-step-no">1</span><div><strong>打开改</strong><p>打开这个文件，把下面的问题一次改完（Excel 里都标了色），保存。单击清单里的格子可以直接跳过去。</p>`
-      + `<button type="button" class="btn btn-outline" id="categoryOpenBtn"${disabled(busy || (!yellow && '这个文件没有要改的格子'))}>📂 打开这个文件</button></div></li>`
-      + `<li><span class="learn-step-no">2</span><div><strong>复检</strong><p>改完保存后复检这个文件：整份重新检测，通过的移出列表、去掉标色；还有问题的留在这里继续改。行高不好估的，可以先给一个很大的行高（例如 200），保存后点「收紧行高并复检」，多余的会收回来。</p>`
-      + `<button type="button" class="btn btn-primary" id="categoryRecheckBtn"${disabled(busy || (!yellow && '这个文件没有要复检的格子'))}>🔁 复检这个文件</button> ${tightenButtonHtml(disabled(busy || (!yellow && '这个文件没有要复检的格子')))}</div></li>`
+      + `<button type="button" class="btn btn-outline" id="categoryOpenBtn"${disabled(openBusy || (!yellow && '这个文件没有要改的格子'))}>📂 打开这个文件</button></div></li>`
+      + `<li><span class="learn-step-no">2</span><div><strong>复检</strong><p>改完保存后复检这个文件：整份重新检测，通过的移出列表、去掉标色；还有问题的留在这里继续改。复检只检测和更新标记，不自动调整行高、列宽、换行、原有样式或分页线。</p>`
+      + `<button type="button" class="btn btn-primary" id="categoryRecheckBtn"${disabled(recheckBusy || (!yellow && '这个文件没有要复检的格子'))}>🔁 复检这个文件</button></div></li>`
       + '</ol>' + categoryCellsHtml(cat);
   }
   return `<div class="learn-head"><h3>${esc(cat.label)}</h3><span class="learn-meta">${cat.count} 格 · ${cat.files} 个文件`
-    + (grown ? ` · ${grown} 格扫描后已开换行加高、复检没过` : '') + '</span></div>'
+    + (grown ? ` · ${grown} 格有历史加高记录，本次不调整行高` : '') + '</span></div>'
     + '<ol class="learn-steps">'
     + `<li><span class="learn-step-no">1</span><div><strong>打开改</strong><p>打开这一类的文件，在 Excel 里改好这些格子（行高、列宽、换行、缩小填充、字号、插分页都行），保存。单击清单里的文件名可以直接跳到那一格。</p>`
-    + `<button type="button" class="btn btn-outline" id="categoryOpenBtn"${disabled(busy || (!yellow && '这一类没有可打开的文件'))}>📂 打开这一类的文件（每次最多 10 个）</button></div></li>`
+    + `<button type="button" class="btn btn-outline" id="categoryOpenBtn"${disabled(openBusy || (!yellow && '这一类没有可打开的文件'))}>📂 打开这一类的文件（每次最多 10 个）</button></div></li>`
     + `<li><span class="learn-step-no">2</span><div><strong>复检</strong><p>改完保存后复检这一类涉及的文件：整份重新检测，通过的移出列表、去掉标色；还有问题的留在这里继续改。同一份文件里别的分类的格子也会一起出结果。</p>`
-    + `<button type="button" class="btn btn-primary" id="categoryRecheckBtn"${disabled(busy || (!yellow && '这一类没有要复检的格子'))}>🔁 复检这一类（${cat.files} 个文件）</button> ${tightenButtonHtml(disabled(busy || (!yellow && '这一类没有要复检的格子')))}</div></li>`
+    + `<button type="button" class="btn btn-primary" id="categoryRecheckBtn"${disabled(recheckBusy || (!yellow && '这一类没有要复检的格子'))}>🔁 复检这一类（${cat.files} 个文件）</button></div></li>`
     + '</ol>' + categoryCellsHtml(cat);
 }
 
@@ -179,7 +189,8 @@ function renderCategories() {
   const cats = groupList();
   const current = groupCurrent(cats);
   const key = JSON.stringify([categoryMode, batchState.opened_files, cats.map(c => [c.key, c.cards.map(x => [x.id, x.color, x.finalized, !!x.grown])]), current?.key,
-    categoryBusyReason(), batchState.folder, excelLinkHtml.revision, batchState.open_blocked]);
+    categoryBusyReason(), openChoosing, batchState.job?.kind, batchState.job?.closing,
+    batchState.folder, excelLinkHtml.revision, batchState.open_blocked]);
   renderOpenNext();
   if (key === categoryRenderKey) return;
   categoryRenderKey = key;
@@ -205,9 +216,11 @@ function nextBatchCards() {
 function renderOpenNext() {
   const button = $('categoryOpenNextBtn');
   if (!button) return;
-  const files = new Set(nextBatchCards().map(c => c.wb_path)).size;
-  const busy = categoryBusyReason();
-  button.textContent = files ? `📂 打开下一批（还有 ${files} 个文件，每次 10 个）` : '📂 文件都打开过了';
+  const cards = nextBatchCards();
+  const files = new Set(cards.map(c => c.wb_path)).size;
+  const available = new Set(cards.filter(c => !batchState.busy || !openBlocked(c)).map(c => c.wb_path)).size;
+  const busy = categoryOpenBlockReason(cards);
+  button.textContent = files ? `📂 打开下一批（还有 ${files} 个文件，当前可打开 ${available} 个）` : '📂 文件都打开过了';
   button.disabled = !!busy || !files;
   button.title = busy || '按左边列表的顺序，打开还没打开过的文件，每次最多 10 个；打开的放进「已打开、待复检」';
 }
@@ -220,20 +233,14 @@ async function categoryOpen() {
 async function categoryRecheck() {
   const cat = groupCurrent(groupList());
   if (!cat) return;
+  const all = yellowCards(cat);
+  const cards = recheckAllCards(all);
+  if (!cards.length) return appAlert(categoryRecheckBlockReason(all) || '没有要复检的格子');
+  const waiting = new Set(all.filter(c => !cards.includes(c)).map(c => c.wb_path)).size;
   const what = cat.key === OPENED_KEY ? `已打开的 ${cat.files} 个文件` : categoryMode === 'file' ? `「${cat.label}」` : `「${cat.label}」涉及的 ${cat.files} 个文件`;
-  if (!(await appConfirm(`复检${what}：整份重新检测，通过的移出列表、去掉标色。\n请先在 Excel 里保存修改。`,
+  if (!(await appConfirm(`复检${what}：整份重新检测，通过的移出列表、去掉标色。${queueNote('复检')}\n请先在 Excel 里保存修改。${waiting ? `\n还有 ${waiting} 个文件待后台处理，本次不加入复检。` : ''}`,
     { title: cat.key === OPENED_KEY || categoryMode === 'file' ? '复检文件' : '复检这一类', okText: '🔁 复检', tone: 'info' }))) return;
-  await startJob('/api/batch/recheck', { card_ids: yellowCards(cat).map(c => c.id) });
-}
-
-async function categoryTighten() {
-  const cat = groupCurrent(groupList());
-  if (!cat) return;
-  const what = cat.key === OPENED_KEY ? `已打开的 ${cat.files} 个文件` : categoryMode === 'file' ? `「${cat.label}」` : `「${cat.label}」涉及的 ${cat.files} 个文件`;
-  const ratio = document.getElementById('growRatio')?.value || '1.5';
-  if (!(await appConfirm(`收紧${what}里出过切字问题的行：\n· 量出每行的字全部显示要多高，再留「字号 × ${ratio}」的余量，比这个高的收回来，只收不加\n· 收完整份复检，复检没过的行退回原来的行高\n· 复检在别的行（以前没出过问题）查出新的切字：开换行、加高再复检\n· 有图片、竖排字的行不动\n请先在 Excel 里保存修改。`,
-    { title: '收紧行高并复检', okText: '↕️ 收紧并复检', tone: 'info' }))) return;
-  await startJob('/api/batch/tighten', { card_ids: yellowCards(cat).map(c => c.id), grow_ratio: Number(ratio) });
+  await startJob('/api/batch/recheck', { card_ids: cards.map(c => c.id) });
 }
 
 $('categoryOpenNextBtn')?.addEventListener('click', () => {
@@ -260,6 +267,5 @@ $('learnDetail').addEventListener('click', event => {
   const id = event.target.closest('button')?.id;
   if (id === 'categoryOpenBtn') categoryOpen();
   else if (id === 'categoryRecheckBtn') categoryRecheck();
-  else if (id === 'categoryTightenBtn') categoryTighten();
 });
 renderCategories();

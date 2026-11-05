@@ -119,7 +119,7 @@ class IncrementalScanTests(unittest.TestCase):
         with patch.object(self.workflow.page_fill, "compact_scan_tail", side_effect=compact), \
                 patch.object(self.workflow, "_export_sheet_pdf", side_effect=export) as exported, \
                 patch.object(self.workflow, "prepare_print_layout") as orientation, \
-                patch.object(self.workflow, "_detect_sheet_results", side_effect=lambda *_: events.append("detect") or ({}, {})), \
+                patch.object(self.workflow, "_detect_sheet_results", side_effect=lambda *_, **__: events.append("detect") or ({}, {})) as detected, \
                 patch.object(self.workflow, "_save_scan_print_settings", side_effect=save) as saved:
             self.workflow._scan_one_workbook(
                 self.excel, path, {"mode": "full", "scanned": False}, [], job=None,
@@ -128,6 +128,7 @@ class IncrementalScanTests(unittest.TestCase):
                 before_print_save=lambda: events.append("clear_deadline"))
         self.assertEqual(events, ["estimate", "export", "detect", "clear_deadline", "save_print"])
         exported.assert_called_once()
+        self.assertIs(detected.call_args.kwargs["confirm_locations"], False)
         orientation.assert_not_called()
         self.save_preview.assert_not_called()
         self.assertEqual(saved.call_args.args[3], {"S1": change})
@@ -640,7 +641,7 @@ class IncrementalScanTests(unittest.TestCase):
         (item,) = self.workflow.STATE["items"].values()
         self.assertEqual(item["status"], "fixed")
 
-    def test_clip_among_same_texts_is_confirmed_by_font_color(self):
+    def test_ambiguous_clip_does_not_change_fonts_or_export_a_second_pdf(self):
         self.add_book("book", ["S1"])
         sheet = self.books["book"].Sheets[0]
         colors = {}  # (行, 列) -> Excel 字体颜色（BGR）
@@ -662,7 +663,10 @@ class IncrementalScanTests(unittest.TestCase):
         sheet.Rows = Mock(return_value=Mock(RowHeight=15.0, Hidden=False))
         workflow = self.workflow
 
+        export_count = 0
         def export(**kwargs):
+            nonlocal export_count
+            export_count += 1
             # 按格子当前的字体颜色画出三行同样的文字
             with workflow.fitz.open() as doc:
                 page = doc.new_page()
@@ -676,7 +680,7 @@ class IncrementalScanTests(unittest.TestCase):
         self.patch_value(workflow, "extract_sheet_snapshot", Mock(return_value={
             "start_r": 2, "start_c": 1, "rows_vals": [(t,) for t in rows.values()],
         }))
-        # 推算的行号故意给错，确认以颜色为准
+        # 推算的行号故意给错：单次导出模式不能靠临时改字体、额外导出来确认。
         self.patch_value(workflow, "locate_cell", Mock(return_value=(2, 1)))
 
         def clips(page):
@@ -691,8 +695,9 @@ class IncrementalScanTests(unittest.TestCase):
 
         clip_items = [it for it in workflow.STATE["items"].values() if it["kind"] == "clip"]
         self.assertEqual(len(clip_items), 1)
-        self.assertEqual((clip_items[0]["cell_addr"], clip_items[0]["location_confirmed"]), ("A3", True))
-        self.assertEqual(colors, {(2, 1): 0, (3, 1): 0, (4, 1): 0})  # 颜色已还原
+        self.assertEqual((clip_items[0]["cell_addr"], clip_items[0]["location_confirmed"]), ("A2", False))
+        self.assertEqual(colors, {})  # 原字体完全没有被修改。
+        self.assertEqual(export_count, 1)
         self.assertFalse(any(p.name.startswith("~定位_") for p in self.folder.iterdir()))
 
     def test_new_file_is_fully_scanned_and_not_marked_new(self):

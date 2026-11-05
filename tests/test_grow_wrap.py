@@ -283,14 +283,14 @@ class GrowWrapTests(unittest.TestCase):
         batch._hand_over(self.path, done)
         snap = {c["cell_addr"]: c for c in batch.snapshot()["cards"]}
         key, label = snap["A5"]["category"]
-        self.assertEqual(label, "文字截断 · 单格 · 已加高 · 缺 1 行")
-        self.assertEqual(key, "text_truncated|single|grown|lines1")
+        self.assertEqual(label, "文字截断 · 单格 · 缺 1 行")
+        self.assertEqual(key, "text_truncated|single|lines1")
         self.assertEqual(snap["A5"]["cell_text"], "文字")
         self.assertNotIn("已加高", snap["E9"]["category"][1])
         merged = batch._card_category({"error_types": ["border_clip"], "cell_addr": "B2", "grown": {"merged": True}}, [])
-        self.assertEqual(merged[1], "边框压线 · 合并格 · 已加高")
+        self.assertEqual(merged[1], "边框压线 · 合并格")
         many = batch._card_category({"error_types": ["text_truncated"], "cell_addr": "B2:C3"}, [{"missing_lines": 4}])
-        self.assertEqual(many[1], "文字截断 · 合并格 · 没加高 · 缺 3 行以上")
+        self.assertEqual(many[1], "文字截断 · 合并格 · 缺 3 行以上")
 
     def test_opened_file_waits_for_recheck_then_comes_back(self):
         self.add("A5", 5)

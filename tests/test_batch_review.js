@@ -2,6 +2,55 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { page } = require('./workbench_page');
 
+test('all review layouts show historical height changes without an adjustment action', () => {
+  const p = page();
+  p.run(require('node:fs').readFileSync(require('node:path').join(__dirname, '../static/category.js'), 'utf8'));
+  p.run(`batchState.cards = [{...batchState.cards[1], id:'old-height', wb_path:'old.xlsx', wb_name:'old.xlsx',
+    sheet_name:'S', cell_addr:'A1', color:'yellow', finalized:true, grown:{base:15, applied:30},
+    category:['border_clip|single','边框压线 · 单格']}]; batchState.opened_files=[];`);
+  for (const mode of ['file', 'category']) {
+    p.run(`categoryMode=${JSON.stringify(mode)}`);
+    const html = p.run('categoryDetailHtml(groupList()[0])');
+    assert.match(html, /历史曾加高/);
+    assert.doesNotMatch(html, /categoryTightenBtn|收紧行高并复检|扫描后已开换行加高/);
+  }
+  p.run(`batchState.opened_files=['old.xlsx']`);
+  assert.doesNotMatch(p.run('categoryDetailHtml(groupList()[0])'), /categoryTightenBtn|收紧行高并复检/);
+});
+
+test('category opening during scanning allows finished files and keeps pending files locked', () => {
+  const p = page();
+  p.run(`batchState.busy=true; batchState.job={kind:'batch_scan',workbooks:['done.xlsx','wait.xlsx']};
+    batchState.cards=['done','wait'].map((name,i)=>({...batchState.cards[1],id:name,seq:i,
+      wb_name:name+'.xlsx',wb_path:name+'.xlsx',category:['border_clip|single','边框压线 · 单格']}));
+    batchState.open_blocked={'wait.xlsx':'还没轮到这份文件，处理完才能打开'};`);
+  p.run(require('node:fs').readFileSync(require('node:path').join(__dirname, '../static/category.js'), 'utf8'));
+  const button = name => p.run(`categoryDetailHtml(fileList().find(c=>c.key===${JSON.stringify(name + '.xlsx')}))`)
+    .match(/<button[^>]*id="categoryOpenBtn"[^>]*>/)[0];
+  assert.doesNotMatch(button('done'), /disabled/);
+  assert.match(button('wait'), /disabled/);
+  p.run('renderOpenNext()');
+  assert.equal(p.elements.get('categoryOpenNextBtn').disabled, false);
+  assert.match(p.elements.get('categoryOpenNextBtn').textContent, /当前可打开 1 个/);
+  p.run(`batchState.open_blocked['done.xlsx']='后台正在处理这份文件，处理完才能打开';renderOpenNext()`);
+  assert.equal(p.elements.get('categoryOpenNextBtn').disabled, true);
+});
+
+test('category recheck during scanning queues finished files and excludes pending ones', async () => {
+  const p = page();
+  p.run(`batchState.busy=true; batchState.job={kind:'batch_scan',workbooks:['done.xlsx','wait.xlsx']};
+    batchState.cards=['done','wait'].map((name,i)=>({...batchState.cards[1],id:name,seq:i,
+      wb_name:name+'.xlsx',wb_path:name+'.xlsx',category:['border_clip|single','边框压线 · 单格']}));
+    batchState.open_blocked={'wait.xlsx':'还没轮到这份文件，处理完才能打开'};`);
+  p.run(require('node:fs').readFileSync(require('node:path').join(__dirname, '../static/category.js'), 'utf8'));
+  p.run(`categoryMode='category'; appConfirm=async ()=>true;
+    startJob=async (url,payload)=>{requests.push({url,payload});};`);
+  assert.doesNotMatch(p.run('categoryDetailHtml(categoryList()[0])').match(/<button[^>]*id="categoryRecheckBtn"[^>]*>/)[0], /disabled/);
+  await p.run('categoryRecheck()');
+  assert.equal(p.requests.at(-1).url, '/api/batch/recheck');
+  assert.deepEqual(Array.from(p.requests.at(-1).payload.card_ids), ['done']);
+});
+
 test('clear result filters retain failed files and show only matching cells', () => {
   const p = page();
   p.run(`batchState.job={kind:'batch_unhighlight',result:{one:{name:'one.xlsx',cells:[
@@ -332,7 +381,7 @@ test('cards without an after image show only one larger before image', () => {
     assert.match(html, /人工修改后复检通过再显示/);
   }
   p.run(`batchState.cards[1].grown = {wrap:true, row:5, font:11, base:18.75, applied:35.25, ratio:1.5}`);
-  assert.match(p.run(`cardHtml(batchState.cards[1])`), /已开换行、加高，复检后再显示/);
+  assert.match(p.run(`cardHtml(batchState.cards[1])`), /历史曾开换行、加高，人工修改后复检再显示/);
   p.run(`batchState.cards[1].images.after = '/a.png'`);
   const both = p.run(`cardHtml(batchState.cards[1])`);
   assert.equal((both.match(/<figure>/g) || []).length, 2);
@@ -756,7 +805,7 @@ test('grown cards say what was wrapped and how much the row was raised, and offe
   p.run(`Object.assign(batchState.cards[1], {after_kind:'scan_only', color:'yellow', finalized:true, cell_addr:'B5',
     grown:{wrap:true, row:5, font:11, base:18.75, applied:35.25, ratio:1.5}})`);
   const html = p.run(`cardHtml(batchState.cards[1])`);
-  assert.match(html, /B5 开启自动换行，第 5 行行高 18\.8pt → 35\.3pt（\+16\.5pt，字号 11 × 1\.5），已保存；效果请人工确认/);
+  assert.match(html, /历史处理记录：B5 开启自动换行，第 5 行行高 18\.8pt → 35\.3pt（\+16\.5pt，字号 11 × 1\.5），已保存；本次不调整行高/);
   assert.doesNotMatch(html, /自动调整|data-action="auto"/);
   assert.doesNotMatch(p.run(`fileHeadHtml(fileKey(batchState.cards[1]))`), /自动调整/);
 });

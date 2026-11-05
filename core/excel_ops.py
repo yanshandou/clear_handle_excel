@@ -932,15 +932,57 @@ def extract_sheet_snapshot(sheet: Any) -> dict[str, Any]:
 
 
 def snapshot_cells(sheet_snapshot: dict[str, Any]) -> list[tuple[int, int, Any]]:
-    """快照里所有非空单元格: [(行, 列, 值)]"""
+    """快照里非空、实际独立显示的单元格；合并区域只保留左上角一次。
+
+    部分文件的 UsedRange.Value 会在合并区域的非左上格也返回值。它们不单独打印，
+    不能重复占用 PDF 文字或报「未匹配」。按真实合并区域排除，不能仅按文字去重。
+    """
     start_r = sheet_snapshot.get("start_r", 1)
     start_c = sheet_snapshot.get("start_c", 1)
-    return [
+    cells = [
         (start_r + r_idx, start_c + c_idx, value)
         for r_idx, row in enumerate(sheet_snapshot.get("rows_vals", []))
         for c_idx, value in enumerate(row)
         if value is not None
     ]
+    sheet = sheet_snapshot.get("sheet")
+    if sheet is None:
+        return cells
+    result = []
+    active_merges: list[tuple[int, int, int, int]] = []
+    current_row, unmerged_row, removed, unknown = None, False, 0, 0
+    for row, col, value in cells:
+        if row != current_row:
+            current_row = row
+            active_merges = [box for box in active_merges if box[2] >= row]
+            try:
+                unmerged_row = sheet.Rows(row).MergeCells is False
+            except Exception:
+                unmerged_row = False
+        keep = True
+        covered = next((box for box in active_merges if box[0] <= row <= box[2] and box[1] <= col <= box[3]), None)
+        if covered:
+            keep = (row, col) == covered[:2]
+        elif not unmerged_row:
+            try:
+                cell = sheet.Cells(row, col)
+                if cell.MergeCells is True:
+                    area = cell.MergeArea
+                    top, left = int(area.Row), int(area.Column)
+                    bottom, right = top + int(area.Rows.Count) - 1, left + int(area.Columns.Count) - 1
+                    if not (top <= row <= bottom and left <= col <= right):
+                        raise ValueError("合并区域不包含当前格")
+                    active_merges.append((top, left, bottom, right))
+                    keep = (row, col) == (top, left)
+            except Exception:
+                unknown += 1  # 读不到合并信息时保留原值，不能靠猜测删掉真实单元格。
+        if keep:
+            result.append((row, col, value))
+        else:
+            removed += 1
+    if removed or unknown:
+        debug_log.event("🧩 合并格取值", 表=getattr(sheet, "Name", ""), 非左上重复值=removed, 合并信息读不到=unknown)
+    return result
 
 
 class CellProbe:

@@ -732,7 +732,7 @@ def _detect_sheet_results(
 
 
 # 检测规则变化时加一：之前按旧规则查过的文件即使没改过，下次扫描也要整份重新检查
-DETECTOR_VERSION = 22  # 22：扫描先从 Excel 估算稀疏末页并调整打印页数，只导出一次 PDF、不修改单元格
+DETECTOR_VERSION = 23  # 23：合并区域只匹配左上角一次，排除非左上格残留值造成的「PDF 未匹配」误报
 
 
 def _confirm_clip_cells(
@@ -796,7 +796,7 @@ HIDDEN_FIX_REASONS = {
     REASON_TRUNCATED: "文字没显示全，后半段被截掉（行高或列宽不够）",
     REASON_CLIPPED: "文字超出单元格被裁掉（列宽或行高不够）",
     REASON_HASH: "列宽不够，数字显示成 ###",
-    REASON_MISSING: "文字打印不出来（行高或列宽太小）",
+    REASON_MISSING: "PDF 未匹配到对应文字（需人工核对）",
 }
 
 
@@ -1609,7 +1609,8 @@ def _scan_one_workbook(
             timing["export"] = timing.get("export", 0.0) + export_seconds
             started = time.perf_counter()
             with scan_analysis.operation("detect", s_name):
-                pages, items = _detect_sheet_results(sheet, wb_path, s_name, pdf_path, next_seq)
+                pages, items = _detect_sheet_results(sheet, wb_path, s_name, pdf_path, next_seq,
+                                                     confirm_locations=False)
             scan_analysis.detected(s_name, items)
             timing["detect"] = timing.get("detect", 0.0) + time.perf_counter() - started
             debug_log.event("📄 检测表", 表=s_name, 复用PDF=exported is not None, 导出秒=export_seconds,

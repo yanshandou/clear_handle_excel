@@ -107,3 +107,36 @@ class SavePrintSettingsTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "文件已修改"):
                     workflow._save_scan_print_settings(Mock(), path, before, {"S1": {}})
             opened.assert_not_called()
+
+
+class DisabledAdjustmentTests(unittest.TestCase):
+    def test_light_progress_unlocks_finished_files_without_loading_cards(self):
+        from core import batch
+        job = {"kind": "batch_scan", "workbooks": ["done.xlsx", "current.xlsx", "later.xlsx"],
+               "scanned": ["done.xlsx"], "completed": ["done.xlsx"]}
+        state = {**workflow.STATE, "job": job, "busy": True}
+        with patch.object(workflow, "STATE", state), patch.object(batch, "_scan_eta", return_value=None), \
+                patch.object(batch, "_data", return_value={}), \
+                patch.object(batch, "_open_blocked", side_effect=AssertionError("unexpected full path scan")):
+            progress = batch.progress_snapshot()
+        self.assertNotIn("done.xlsx", progress["open_blocked"])
+        self.assertIn("正在处理", progress["open_blocked"]["current.xlsx"])
+        self.assertIn("还没轮到", progress["open_blocked"]["later.xlsx"])
+        self.assertNotIn("cards", progress)
+
+    def test_old_tighten_job_cannot_open_excel_or_resume_adjustments(self):
+        from core import batch
+        with patch.object(workflow, "STATE", {"job": {"kind": "batch_tighten", "options": {}}}), \
+                patch.object(batch.autofix, "_ExcelSession") as opened:
+            with self.assertRaisesRegex(ValueError, "自动调整行高已停用"):
+                batch.run()
+        opened.assert_not_called()
+
+    def test_old_tighten_api_cannot_start_a_job(self):
+        from web_clip_fixer import WebHandler
+        handler = object.__new__(WebHandler)
+        handler.path = "/api/batch/tighten"
+        handler._start_job = Mock()
+        with self.assertRaisesRegex(ValueError, "自动调整行高已停用"):
+            handler._handle_post({"card_ids": ["old-card"]})
+        handler._start_job.assert_not_called()

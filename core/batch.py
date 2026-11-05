@@ -574,7 +574,7 @@ def _missing_lines(items: list[dict]) -> int | None:
 
 
 def _card_category(card: dict, items: list[dict]) -> tuple[str, str]:
-    """返回 (分类键, 给人看的名字)，例：「文字截断 · 合并格 · 已加高 · 缺 1 行」。
+    """返回 (分类键, 给人看的名字)，例：「文字截断 · 合并格 · 缺 1 行」。
     一格有几种问题时按 CELL_ERROR_SPECS 的顺序取第一种。只用来分组显示，不改格子。"""
     types = [t for t in card.get("error_types") or [] if t in autofix.CELL_ERROR_SPECS]
     if not types:
@@ -586,11 +586,6 @@ def _card_category(card: dict, items: list[dict]) -> tuple[str, str]:
         merged = grown["merged"] if "merged" in grown else ":" in (card.get("cell_addr") or "")
         parts.append("merged" if merged else "single")
         names.append("合并格" if merged else "单格")
-    if kind in autofix.CUT_ERROR_TYPES:
-        grown = card.get("grown") or {}
-        ok = bool(grown) and "error" not in grown
-        parts.append("grown" if ok else "plain")
-        names.append("已加高" if ok else "没加高")
     if kind == autofix.ERROR_TYPE_TEXT_TRUNCATED:
         lines = _missing_lines(items)
         if lines:
@@ -682,8 +677,20 @@ def progress_snapshot() -> dict:
     免得每次刷新都把几百个文件的卡片整理一遍、拖慢扫描。"""
     with wf.STATE_LOCK:
         job = wf.STATE["job"]
+        blocked = {}
+        if wf.STATE["busy"] and job and job.get("kind") == "batch_scan":
+            # 任务里都是规范化的完整路径，直接用集合更新按钮状态，不遍历卡片或逐次解析文件路径。
+            completed, scanned = set(job.get("completed", [])), set(job.get("scanned", []))
+            current = next((p for p in job.get("workbooks", []) if p not in scanned), None)
+            for path in job.get("workbooks", []):
+                if path in job.get("deferred_adjustments", {}):
+                    blocked[path] = "这份文件还有没写完的修改，后台还要回来处理"
+                elif path not in completed:
+                    blocked[path] = ("后台正在处理这份文件，处理完才能打开" if path == current
+                                     else "还没轮到这份文件，处理完才能打开")
         return {"light": True, "busy": wf.STATE["busy"], "folder": wf.STATE["folder"],
                 "job": copy.deepcopy(job), "progress": dict(wf.STATE["scan_progress"]),
+                "open_blocked": blocked,
                 "scan_eta": _scan_eta(job) if job else None,
                 "slow_files": [{"path": p, "name": Path(p).name, **info} for p, info in _data().get("slow_files", {}).items()],
                 "logs": wf.STATE["logs"][-100:]}
@@ -3736,6 +3743,8 @@ def run() -> list[str]:
     """由 workflow 的单一任务槽执行；不依赖浏览器心跳。"""
     job = wf.STATE["job"]
     kind, options = job["kind"], job["options"]
+    if kind == "batch_tighten":
+        raise ValueError("自动调整行高已停用，请在 Excel 中人工修改并保存后复检")
     session = autofix._ExcelSession()
     # 每种任务都看着后台 Excel：它在看不见的地方卡住（弹了没人能点的框等）时结束它，不让任务永远卡着。
     # 清除颜色每改一格都报进度，卡 5 分钟就算卡住；检测类一张大表导出可能要很久，按默认时长
@@ -4048,61 +4057,6 @@ def run() -> list[str]:
                 for path in _leftover_mark_paths(expected):
                     if not workbook_locked(Path(path)):  # 你正在 Excel 里改的文件不动，下次再还原
                         _sync_highlights_safely(session, path)
-        elif kind == "batch_tighten":
-            # 收紧行高：每份文件收紧 → 整份复检 → 没过的行退回原行高再复检；出错的文件问你重试还是跳过
-            ratio = grow_ratio(options.get("grow_ratio"))
-            expected = list(job["workbooks"])
-            results = job.setdefault("result", {})
-            for i, path in enumerate(expected, 1):
-                if path in job["completed"] or _unsettled(job, path):
-                    continue
-                if _stopping(job):
-                    break
-                label = workbook_rel_name(Path(path), wf.STATE["folder"])
-                debug_log.begin(f"收紧行高 {i} / {len(expected)}：{label}")
-                wf.log_msg(f"↕️ 正在收紧行高（{i} / {len(expected)}）：{Path(path).name}")
-                tries = -1
-                while True:
-                    tries += 1
-                    try:
-                        watchdog.progress()
-                        result = _tighten_file(session, path, ratio)
-                        watchdog.progress()
-                        with wf.STATE_LOCK:
-                            results[path] = result
-                            job.get("file_errors", {}).pop(path, None)
-                            job["completed"].append(path)
-                            wf._persist_state()
-                        _forget_opened(path)
-                        _sync_highlights_safely(session, path)
-                        break
-                    except Exception as err:
-                        if (not isinstance(err, (ValueError, TimeoutError)) and not watchdog.timed_out
-                                and tries < autofix.MAX_ERROR_RETRIES):
-                            wf.log_msg(f"⚠️ {Path(path).name} 收紧行高出错，重启 Excel 后重试：{err}{_where(err)}")
-                            _restart_excel(session)
-                            continue
-                        session.close()  # 别让后台 Excel 占着文件：你可能要打开它修
-                        message = file_problem.message_for(err, watchdog)
-                        if file_problem.should_ask(err, message) and not _stopping(job):
-                            wf.log_msg(f"⏸ {Path(path).name} 出错，等你选择重试还是跳过：{message}")
-                            choice = file_problem.ask(path, label, message, folder=wf.STATE["folder"],
-                                                      tick=watchdog.progress, should_stop=lambda: _stopping(job))
-                            watchdog.progress()
-                            if choice == "retry":
-                                wf.log_msg(f"🔁 重试 {Path(path).name}")
-                                tries = -1
-                                continue
-                        wf.log_msg(f"❌ {Path(path).name} 收紧行高没做完，已跳过，可续跑：{message}")
-                        debug_log.event("❌ 收紧行高跳过", 文件=Path(path).name, 原因=message[:200])
-                        with wf.STATE_LOCK:
-                            job.setdefault("file_errors", {})[path] = message
-                            results[path] = {"error": message}
-                            wf._persist_state()
-                        break
-            done = [r for r in results.values() if "error" not in r]
-            wf.log_msg(f"↕️ 收紧行高完成：{len(done)} 份文件，收紧 {sum(r['tightened'] for r in done)} 行，"
-                       f"复检没过退回 {sum(r['restored'] for r in done)} 行")
         elif kind == "batch_unhighlight":
             expected = list(options["paths"])
             wf.log_msg(f"🧽 开始清除标记颜色：{len(expected)} 份文件")
