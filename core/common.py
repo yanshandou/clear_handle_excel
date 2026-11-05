@@ -198,7 +198,7 @@ def _comparable_name(name: str) -> str:
     return NAME_SEPARATOR_PATTERN.sub("", text)
 
 
-def _original_name_of(backup_name: str) -> str:
+def _original_name_of(backup_name: str, *, strip_copy_suffix: bool = True) -> str:
     """去掉备份标记后的原表名称，如 基本情報_20241003 → 基本情報"""
     text = unicodedata.normalize("NFKC", backup_name)
     text = DATE_PATTERN.sub(lambda m: "" if _date_of(m) else m.group(0), text)
@@ -206,7 +206,8 @@ def _original_name_of(backup_name: str) -> str:
         text = YYMMDD_SUFFIX_PATTERN.sub("", text)
     if _yymmdd_prefix_date(text) is not None:
         text = YYMMDD_PREFIX_PATTERN.sub("", text)
-    text = EXCEL_COPY_SUFFIX_PATTERN.sub("", text)
+    if strip_copy_suffix:
+        text = EXCEL_COPY_SUFFIX_PATTERN.sub("", text)
     text = COPY_PHRASE_PATTERN.sub("", text)
     text = BACKUP_WORD_PATTERN.sub("", text)
     text = BACKUP_TEXT_PATTERN.sub("", text)
@@ -247,11 +248,20 @@ def find_backup_sheets(sheet_names: list[str]) -> list[str]:
     """
     candidates = [name for name in sheet_names if has_backup_marker(name)]
     originals = {_comparable_name(name) for name in sheet_names if name not in candidates}
+    # 编号原表自身也会被当成候选，日期备份须先保留编号来匹配，避免把「帳票(1)」误归成「帳票」。
+    numbered_originals = {
+        _comparable_name(name) for name in sheet_names
+        if has_numbered_suffix(name) and _latest_date_in(name) is None
+    }
     series = copy_series_sheets(sheet_names)
     candidates = [name for name in candidates if name not in series]
     backups: set[str] = set()
     dated_without_original: dict[str, list[tuple[str, str]]] = {}
     for name in candidates:
+        if (_latest_date_in(name) is not None
+                and _original_name_of(name, strip_copy_suffix=False) in numbered_originals):
+            backups.add(name)
+            continue
         base = _original_name_of(name)
         if not base:
             continue

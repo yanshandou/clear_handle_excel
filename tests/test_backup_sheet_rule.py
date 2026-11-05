@@ -200,6 +200,21 @@ class FindBackupSheetsTests(unittest.TestCase):
             with self.subTest(backup=backup):
                 self.assertEqual(find_backup_sheets([names[0], backup, *names[2:]]), [backup])
 
+    def test_dated_backup_matches_numbered_original(self):
+        names = [
+            "変更履歴", "居宅サービス計画書（1）", "居宅サービス計画書（1）_20261019",
+            "AIプロンプト", "居宅サービス計画書（2・1）", "居宅サービス計画書（2・2）", "別紙_削除処理",
+        ]
+        self.assertEqual(find_backup_sheets(names), [names[2]])
+        self.assertEqual(find_clean_targets(names), [names[2]])
+        self.assertEqual(find_contained_sheets(names), [])
+        for backup in ("帳票(1)_20261019", "帳票（１）（2026-10-19）", "171013_帳票(1)"):
+            with self.subTest(backup=backup):
+                self.assertEqual(find_backup_sheets(["帳票（1）", "帳票(2)", backup]), [backup])
+        # 不同编号不是同一张原表；只有带日期版本时继续保留。
+        self.assertEqual(find_backup_sheets(["帳票(2)", "帳票(1)_20261019"]), [])
+        self.assertEqual(find_backup_sheets(["帳票(1)_20261019"]), [])
+
     def test_dated_versions_keep_different_sheet_ids_separate(self):
         names = ["雛型SSSEE0114_20231023", "雛型SSSEE0114_20240101", "雛型SSSEE0115_20250101"]
         self.assertEqual(find_backup_sheets(names), [names[0]])

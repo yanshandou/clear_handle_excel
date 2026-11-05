@@ -931,6 +931,18 @@ class QuickTaskTests(unittest.TestCase):
             "月次お客様実施数集計ビュー (20220916)", "月次お客様実施数集計ビュー（20221001）", "一覧（2022-09-16）",
         ])
 
+    def test_numbered_original_with_dated_backup_in_clean_preview(self):
+        names = [
+            "変更履歴", "居宅サービス計画書（1）", "居宅サービス計画書（1）_20261019",
+            "AIプロンプト", "居宅サービス計画書（2・1）", "居宅サービス計画書（2・2）", "別紙_削除処理",
+        ]
+        self.add_book("KSCPG0000_居宅サービス計画書.xlsx", names)
+        file = self.workflow.preview_backup_sheets(str(self.folder))["files"][0]
+        self.assertEqual(file["backups"], [names[2]])
+        self.assertEqual(file["uncertain"], [])
+        self.assertEqual(file["sheets"], names)
+        self.assertEqual(self.books[file["name"]].saved, [])
+
     def test_two_digit_year_suffix_is_date(self):
         # 用户 2026-11-02：「お客様介保社福軽減ビュー_170120」的 17 是 2017 年，有原表时默认删除
         names = [
