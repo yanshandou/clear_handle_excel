@@ -443,6 +443,32 @@
     $('distResults').innerHTML = renderData(data, !latest.preview);
   }
 
+  // 拿完文件：成功撒花（game_fx.js），再弹提示说拿了多少、下一步做什么；有没拿成的只弹黄色提示
+  function fetchDone(data) {
+    const s = data.summary || {};
+    const got = s['已拿'] ?? 0;
+    if (data.stopped) {
+      window.appAlert(`没有拿：${data.stopped}`, { title: '没有拿文件', tone: 'warn' });
+      return;
+    }
+    if (s['没拿成功'] || s['没有拿'] || s['有问题的文件夹']) {
+      window.appAlert(`拿了 ${got} 个，但有 ${(s['没拿成功'] || 0) + (s['没有拿'] || 0)} 个文件没拿成功、${s['有问题的文件夹'] || 0} 个文件夹有问题。\n请看页面上标黄的文件夹（常见原因：文件正在 Excel 里打开），处理后再点「⬇ 从共享拿最新版」。`, { title: '拿完了，有没拿成功的', tone: 'warn' });
+      return;
+    }
+    const lines = got
+      ? [`从共享拿了 ${got} 个 Excel 到处理文件夹（新拿 ${s['新拿'] ?? 0}、替换 ${s['替换'] ?? 0}${s['备份'] ? `，替换前备份了你的 ${s['备份']} 个` : ''}）。`,
+         task ? '参考文件夹里也放了一份原件，修复颜色 / 引用 / 隐藏页时用来对照。' : '']
+      : ['共享和本地已经一样，这次没有要拿的文件。'];
+    if (s['保留你改的']) lines.push(`${s['保留你改的']} 个你改过、共享没人动的文件保留了你改的。`);
+    lines.push('下一步：回主页从第 1 步「精简 Sheet」开始处理。');
+    if (got) window.gameFx?.celebrate('拿完了！', `${got} 个文件已拿到处理文件夹`, 3);
+    // 先让横幅和撒花播一会儿，再弹提示
+    setTimeout(async () => {
+      const go = await window.appConfirm(lines.filter(Boolean).join('\n'), { title: '文件拿完了', tone: 'info', icon: '✓', okText: '回主页开始处理 ➜', cancelText: '留在这页' });
+      if (go) location.href = '/';
+    }, got ? 2600 : 0);
+  }
+
   async function refresh() {
     clearTimeout(timer);
     let failed = false;
@@ -464,6 +490,7 @@
         }
         await reloadTaskFiles();
       }
+      if (wasRunning && !latest.running && isFetch(latest.applied)) fetchDone(latest.applied);
       if (wasRunning && !latest.running && latest.applied && !latest.applied.stopped && !isFetch(latest.applied) && !isUpload(latest.applied)) {
         const s = latest.applied.summary || {};
         if (s['别人改过没覆盖']) {
