@@ -86,6 +86,13 @@ class WorkTaskTests(unittest.TestCase):
         backup = Path(next(f for f in fetched["folders"][0]["files"] if f["rel"] == "a.xlsx")["backup_path"])
         self.assertEqual(backup.read_text(encoding="utf-8"), "BBB")
         self.assertIn(str(self.work_root / "拿最新版前的备份"), str(backup))
+        self.assertEqual(backup.parent.name, "处理")
+        # 参考被覆盖前也备份（用户 2026-11-06 定）：旧参考 AAA 在同一次备份的「参考」子文件夹
+        a_item = next(f for f in fetched["folders"][0]["files"] if f["rel"] == "a.xlsx")
+        ref_backup = Path(a_item["ref_backup_path"])
+        self.assertEqual(ref_backup.read_text(encoding="utf-8"), "AAA")
+        self.assertEqual(ref_backup.parent, backup.parent.parent / "参考")
+        self.assertEqual(fetched["summary"]["备份参考"], 2)  # b 共享已是我们传的 b2，参考从 b1 更新，旧的也备份
 
     def test_tasks_are_kept_and_switchable(self):
         first = work_task.create(str(self.shared), str(self.work_root))
@@ -274,8 +281,12 @@ class WorkTaskTests(unittest.TestCase):
         self.assertEqual((ref / "a.xlsx").read_text(encoding="utf-8"), "AAA")
         self.assertFalse(distribute.task_files(task_id)["files"][0]["review"]["ready"])
         distribute.start_task_upload(task_id, ["a.xlsx"], {})
-        self.assertEqual(self.wait_applied()["summary"]["待重新处理"], 1)
+        applied = self.wait_applied()
+        self.assertEqual(applied["summary"]["待重新处理"], 1)
         self.assertEqual((ref / "a.xlsx").read_text(encoding="utf-8"), "arrived during staging")
+        ref_backup = Path(applied["files"][0]["ref_backup_path"])  # 上传前同步也先备份旧参考
+        self.assertEqual(ref_backup.read_text(encoding="utf-8"), "AAA")
+        self.assertEqual(ref_backup.parent.name, "参考")
         self.assertTrue(distribute.task_files(task_id)["files"][0]["review"]["ready"])
 
 
