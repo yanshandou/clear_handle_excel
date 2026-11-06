@@ -695,7 +695,7 @@
   // 框里不预填，上次的路径只放在占位提示里：聚焦后提示还在，直接粘贴新路径
   const showLastShared = last => {
     if (!last) return;
-    $('distNewLastHead').textContent = '上次：';
+    $('distNewLastHead').textContent = '上次用过';
     $('distNewLast').textContent = last;
     $('distNewLast').closest('.dist-last').title = `上次：${last}`;
   };
