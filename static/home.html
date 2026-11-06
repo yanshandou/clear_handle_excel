@@ -7,7 +7,7 @@
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/theme.css">
-  <link rel="stylesheet" href="/static/home_route.css"><link rel="stylesheet" href="/static/work_task.css?v=4"><script src="/static/game_fx.js"></script>
+  <link rel="stylesheet" href="/static/home_route.css"><link rel="stylesheet" href="/static/work_task.css?v=5"><script src="/static/game_fx.js"></script>
 </head>
 <body>
   <header class="app-header">
@@ -82,9 +82,13 @@
       <span class="work-task-title">📁 当前任务：<strong id="workTaskName">还没有任务</strong></span>
       <details class="work-task-more"><summary>看路径</summary><dl id="workTaskPaths" class="work-task-paths"></dl>
         <p id="workTaskHint" class="work-task-hint"></p></details>
-      <label class="work-task-switch" for="workTaskSwitch">切换
-        <select id="workTaskSwitch"><option value="">（没有以前的任务）</option></select>
-      </label>
+      <div class="work-task-switch">切换
+        <div class="wt-pick">
+          <button id="workTaskSwitch" class="wt-pick-btn" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="workTaskSwitchList">
+            <span id="workTaskSwitchText">（没有以前的任务）</span><span class="wt-pick-arrow" aria-hidden="true">▾</span></button>
+          <ul id="workTaskSwitchList" class="wt-pick-list" role="listbox" aria-label="以前的任务" hidden></ul>
+        </div>
+      </div>
       <button id="workTaskSingle" class="work-task-single" type="button"
         title="只调整默认路径的来源；各功能的文件夹始终可以自由修改">📂 自选路径优先</button>
     </section>
