@@ -80,7 +80,8 @@
     if (box.parentElement !== host) host.appendChild(box);
     const kind = toastKind(text, isError);
     box.querySelector('.toast-text').textContent = text;
-    box.querySelector('.toast-icon').innerHTML = `<svg viewBox="0 0 24 24">${TOAST_ICONS[kind]}</svg>`;
+    // 图标和字一样：先画一层粗的深色线当描边，再在上面画细的白线
+    box.querySelector('.toast-icon').innerHTML = `<svg viewBox="-2 -2 28 28"><g class="icon-edge">${TOAST_ICONS[kind]}</g><g class="icon-fill">${TOAST_ICONS[kind]}</g></svg>`;
     box.classList.remove('is-busy', 'is-ok', 'is-warn', 'is-error');
     box.classList.add(`is-${kind}`);
     // 每条新提示都重新淡入一次
