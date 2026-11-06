@@ -82,6 +82,11 @@
     .dist-new-preview .dist-task-paths dd { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .dist-new-preview .dist-task-paths dd.is-empty { font-family: inherit; color: var(--ink-3); }
     #distNewShared::placeholder { color: #6b7894; }
+    /* 上次的共享路径：太长时从前面截掉（显示「…后半段」），悬停看全 */
+    .dist-last { display: flex; min-width: 0; }
+    .dist-last > span:first-child { flex: none; }
+    .dist-last-path { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; direction: rtl; text-align: left; }
+    .dist-last-path bdi { direction: ltr; unicode-bidi: isolate; }
     .link-fields label small { font-weight: 400; }
     #distNewBox > summary { cursor: pointer; font-weight: 700; color: var(--ink-2); }
     #distNewBox[open] > summary { margin-bottom: 10px; }
@@ -177,8 +182,8 @@
             <summary id="distNewSummary">填写共享文件夹路径</summary>
             <p class="toolbar-hint">只填共享文件夹路径，本地的参考、处理文件夹自动生成（子文件夹一起处理）。建好后马上在下面生成拿取清单，确认后才真正拿文件。</p>
             <div class="link-fields">
-              <label for="distNewShared">共享文件夹路径
-                <input id="distNewShared" type="text" spellcheck="false" autocomplete="off" placeholder="例如 D:\Users\s.go\OneDrive - 会社名\介舟ファミリー\20基本設計\10DB\12.ビュー定義書"></label>
+              <label for="distNewShared">共享文件夹路径 <small class="toolbar-hint dist-last"><span id="distNewLastHead">例如：</span><span class="dist-last-path"><bdi id="distNewLast">D:\Users\s.go\OneDrive - 会社名\介舟ファミリー\20基本設計\10DB\12.ビュー定義書</bdi></span></small>
+                <input id="distNewShared" type="text" spellcheck="false" autocomplete="off" placeholder="粘贴新的共享文件夹路径"></label>
               <label for="distNewRoot">本地工作文件夹 <small class="toolbar-hint">参考、处理文件夹放在这里面，一般不用改；不能放在 OneDrive 里</small>
                 <input id="distNewRoot" type="text" spellcheck="false" autocomplete="off" placeholder="不填：桌面下的 handle-excel"></label>
             </div>

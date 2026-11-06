@@ -694,7 +694,10 @@
   const NEW_EMPTY = ['共享', '参考', '处理'].map(name => `<dt>${name}</dt><dd class="is-empty">填好共享文件夹路径后显示</dd>`).join('');
   // 框里不预填，上次的路径只放在占位提示里：聚焦后提示还在，直接粘贴新路径
   const showLastShared = last => {
-    if (last) { $('distNewShared').placeholder = `上次：${last}`; $('distNewShared').title = `上次：${last}`; }
+    if (!last) return;
+    $('distNewLastHead').textContent = '上次：';
+    $('distNewLast').textContent = last;
+    $('distNewLast').closest('.dist-last').title = `上次：${last}`;
   };
   const pathsHtml = t => [['共享', t.shared], ['参考', t.reference], ['处理', t.work]].map(([name, path]) => `<dt>${name}</dt><dd title="${esc(path)}">${esc(path)}</dd>`).join('');
   function scheduleDerive() {
