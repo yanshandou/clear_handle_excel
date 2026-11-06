@@ -657,6 +657,7 @@
       }
       if (startMode) $('distNewRoot').value = result.last_work_root || '';
       if (!current) {
+        if (startMode) { $('distNewShared').value = result.tasks[0]?.shared || ''; scheduleDerive(); focusShared(); }
         $('distTaskNoticeText').textContent = startMode ? '还没有当前任务。在下面填共享文件夹路径，开一个新任务。'
           : '还没有当前任务。请先开一个新任务，再选择处理好的 Excel。';
         $('distTaskHome').hidden = startMode;
@@ -668,6 +669,9 @@
         $('distNewBox').open = false;
         $('distNewSummary').textContent = '当前任务是「' + task.name + '」。要换一个共享文件夹？展开开一个新任务';
         $('distNewTaskTitle').textContent = '开另一个新任务';
+        // 预先填上次用的共享路径，展开时全选，直接粘贴就能覆盖
+        $('distNewShared').value = task.shared || '';
+        scheduleDerive();
       }
       $('distTaskName').textContent = task.name;
       $('distTaskPaths').innerHTML = `<dt>共享</dt><dd>${esc(task.shared)}</dd><dt>参考</dt><dd>${esc(task.reference)}</dd><dt>处理</dt><dd>${esc(task.work)}</dd>`;
@@ -728,7 +732,9 @@
       controls();
     }
   }
+  const focusShared = () => { const input = $('distNewShared'); input.focus({ preventScroll: true }); input.select(); };
   if (startMode) {
+    $('distNewBox').addEventListener('toggle', () => { if ($('distNewBox').open) focusShared(); });
     $('distNewShared').addEventListener('input', scheduleDerive);
     $('distNewRoot').addEventListener('input', scheduleDerive);
     $('distNewShared').addEventListener('keydown', event => { if (event.key === 'Enter') createTask(); });
