@@ -657,7 +657,7 @@
       }
       if (startMode) $('distNewRoot').value = result.last_work_root || '';
       if (!current) {
-        if (startMode) { $('distNewShared').value = result.tasks[0]?.shared || ''; scheduleDerive(); focusShared(); }
+        if (startMode) { showLastShared(result.tasks[0]?.shared); focusShared(); }
         $('distTaskNoticeText').textContent = startMode ? '还没有当前任务。在下面填共享文件夹路径，开一个新任务。'
           : '还没有当前任务。请先开一个新任务，再选择处理好的 Excel。';
         $('distTaskHome').hidden = startMode;
@@ -670,8 +670,7 @@
         $('distNewSummary').textContent = '当前任务是「' + task.name + '」。要换一个共享文件夹？展开开一个新任务';
         $('distNewTaskTitle').textContent = '开另一个新任务';
         // 预先填上次用的共享路径，展开时全选，直接粘贴就能覆盖
-        $('distNewShared').value = task.shared || '';
-        scheduleDerive();
+        showLastShared(task.shared);
       }
       $('distTaskName').textContent = task.name;
       $('distTaskPaths').innerHTML = `<dt>共享</dt><dd>${esc(task.shared)}</dd><dt>参考</dt><dd>${esc(task.reference)}</dd><dt>处理</dt><dd>${esc(task.work)}</dd>`;
@@ -691,8 +690,13 @@
 
   // ───── 开新任务（只填共享路径，参考 / 处理文件夹自动生成，后端 core/work_task.py） ─────
   let deriveTimer = 0, deriveSeq = 0;
-  const NEW_EMPTY = '<dt></dt><dd>填好共享文件夹路径后，这里显示参考、处理文件夹的位置。</dd>';
-  const pathsHtml = t => `<dt>共享</dt><dd>${esc(t.shared)}</dd><dt>参考</dt><dd>${esc(t.reference)}</dd><dt>处理</dt><dd>${esc(t.work)}</dd>`;
+  // 没填时也占好三行，填好后换成真路径，这块高度不变
+  const NEW_EMPTY = ['共享', '参考', '处理'].map(name => `<dt>${name}</dt><dd class="is-empty">填好共享文件夹路径后显示</dd>`).join('');
+  // 框里不预填，上次的路径只放在占位提示里：聚焦后提示还在，直接粘贴新路径
+  const showLastShared = last => {
+    if (last) { $('distNewShared').placeholder = `上次：${last}`; $('distNewShared').title = `上次：${last}`; }
+  };
+  const pathsHtml = t => [['共享', t.shared], ['参考', t.reference], ['处理', t.work]].map(([name, path]) => `<dt>${name}</dt><dd title="${esc(path)}">${esc(path)}</dd>`).join('');
   function scheduleDerive() {
     clearTimeout(deriveTimer);
     deriveTimer = setTimeout(async () => {

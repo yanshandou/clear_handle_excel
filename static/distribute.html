@@ -78,8 +78,10 @@
     .dist-start .dist-overview-grid .overview-intro { grid-column: 1 / -1; }
     .dist-new-preview { margin: 0 0 14px; padding: 12px 14px; border: 2px dashed #b7c7e6; border-radius: 12px; background: #fff; }
     .dist-new-preview .dist-task-paths { color: var(--ink-2); }
-    .dist-new-preview .dist-task-paths dt:empty { display: none; }
-    .dist-new-preview .dist-task-paths dt:empty + dd { grid-column: 1 / -1; font-family: inherit; color: var(--ink-3); }
+    /* 三行固定一行高：长路径截断成「…」，悬停看完整路径；没填时显示灰色占位，高度不变 */
+    .dist-new-preview .dist-task-paths dd { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .dist-new-preview .dist-task-paths dd.is-empty { font-family: inherit; color: var(--ink-3); }
+    #distNewShared::placeholder { color: #6b7894; }
     .link-fields label small { font-weight: 400; }
     #distNewBox > summary { cursor: pointer; font-weight: 700; color: var(--ink-2); }
     #distNewBox[open] > summary { margin-bottom: 10px; }
@@ -182,7 +184,7 @@
             </div>
             <div class="dist-new-preview" aria-live="polite">
               <strong>将会使用这三个文件夹</strong>
-              <dl id="distNewPaths" class="dist-task-paths"><dt></dt><dd>填好共享文件夹路径后，这里显示参考、处理文件夹的位置。</dd></dl>
+              <dl id="distNewPaths" class="dist-task-paths"><dt>共享</dt><dd class="is-empty">填好共享文件夹路径后显示</dd><dt>参考</dt><dd class="is-empty">填好共享文件夹路径后显示</dd><dt>处理</dt><dd class="is-empty">填好共享文件夹路径后显示</dd></dl>
             </div>
             <p id="distNewError" class="batch-error dist-activity" role="alert"></p>
             <button id="distNewCreate" class="button primary" type="button">🆕 建好任务，生成拿取清单</button>
