@@ -678,7 +678,7 @@ def _sync_task_file(task: dict[str, Any], item: dict[str, Any], local: Path, sha
     _save_baseline({key: {"tasks": {task_id: {"review": review}}}})
     local_sha = _digest(local)
     if local_sha != current:
-        backup = _task_file(backup_root, item["rel"])
+        backup = _task_file(backup_root / "处理", item["rel"])
         if copy_one(local, backup) != local_sha:
             raise ValueError("备份期间处理文件发生变化，请关闭 Excel 后重试")
         item["backup_path"] = str(backup)
@@ -688,7 +688,9 @@ def _sync_task_file(task: dict[str, Any], item: dict[str, Any], local: Path, sha
             raise ValueError("同步期间处理文件发生变化，请关闭 Excel 后重试")
 
     digest = copy_one(shared, local, check_source_open=False, before_replace=verify_local)
-    _refresh_reference(local, reference)
+    ref_backup = _refresh_reference(local, reference, _task_file(backup_root / "参考", item["rel"]))
+    if ref_backup:
+        item["ref_backup_path"] = ref_backup
     if _digest(reference) != digest:
         raise ValueError("参考与处理副本的版本不一致，请重试同步")
     entry = _base_entry(shared, digest, "上传前同步", task_id)
@@ -1047,6 +1049,10 @@ def markdown(result: dict[str, Any]) -> str:
                  "| 文件 | 结果 |", "| --- | --- |"]
         for item in result["files"]:
             status = "已上传" if item.get("status") == "ok" else item.get("error") or "未上传"
+            if item.get("backup_path"):
+                status += f"（旧处理副本备份在 `{item['backup_path']}`）"
+            if item.get("ref_backup_path"):
+                status += f"（旧参考备份在 `{item['ref_backup_path']}`）"
             lines.append(f"| {_md(item['rel'])} | {_md(status)} |")
         return "\n".join(lines) + "\n"
     s = result.get("summary") or {}
@@ -1219,6 +1225,7 @@ def _fetch_summary(folders: list[dict[str, Any]], applied: bool = False) -> dict
             "新拿": sum(f["action"] == "copy" for f in done),
             "替换": sum(f["action"] == "replace" for f in done),
             "备份": sum(bool(f.get("backup_path")) for f in done),
+            "备份参考": sum(bool(f.get("ref_backup_path")) for f in done),
             "保留你改的": sum(f["action"] == "keep" for f in done),
             "已一样": sum(f["action"] == "same" for f in done),
             "记下版本": sum(bool(f.get("recorded")) for f in done),
@@ -1278,15 +1285,23 @@ def _backup_root(src_root: Path) -> Path:
     return storage.DATABASE_PATH.parent / "拿最新版前的备份" / stamp
 
 
-def _refresh_reference(fresh_local: Path, ref_file: Path) -> None:
-    """任务的参考文件夹：放一份和共享一样的原件（刚拿下来、和共享一致的本地文件），已经一样就不复制"""
+def _refresh_reference(fresh_local: Path, ref_file: Path, backup: Path | None = None) -> str:
+    """任务的参考文件夹：放一份和共享一样的原件（刚拿下来、和共享一致的本地文件），已经一样就不复制。
+    参考里原来那份不一样时，先备份到 backup（用户 2026-11-06 定：处理和参考覆盖前都要备份），返回备份路径。"""
     try:
         if ref_file.exists() and _digest(ref_file) == _digest(fresh_local):
-            return
+            return ""
     except OSError:
         pass
+    saved = ""
+    if backup is not None and ref_file.is_file():
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ref_file, backup)
+        saved = str(backup)
+        debug_log.event("💾 备份参考原件", 文件=str(ref_file), 备份到=saved)
     copy_one(fresh_local, ref_file, check_source_open=False)
     debug_log.event("📚 更新参考原件", 文件=str(ref_file))
+    return saved
 
 
 def _run_fetch(preview_data: dict[str, Any]) -> dict[str, Any]:
@@ -1324,7 +1339,8 @@ def _run_fetch(preview_data: dict[str, Any]) -> dict[str, Any]:
                             digest = item["sha"]
                         elif item["action"] in ("copy", "replace"):
                             if item["backup"] and local_file.exists():
-                                backup = backup_root / (item["local_rel"] if task else f"{folder['source_rel']}/{item['local_rel']}")
+                                backup = (backup_root / "处理" / item["local_rel"]) if reference \
+                                    else backup_root / (item["local_rel"] if task else f"{folder['source_rel']}/{item['local_rel']}")
                                 backup.parent.mkdir(parents=True, exist_ok=True)
                                 shutil.copy2(local_file, backup)
                                 item["backup_path"] = str(backup)
@@ -1332,7 +1348,9 @@ def _run_fetch(preview_data: dict[str, Any]) -> dict[str, Any]:
                             digest = copy_one(shared_file, local_file, check_source_open=False)
                         if item["action"] != "keep":
                             if reference:
-                                _refresh_reference(local_file, reference / item["rel"])
+                                ref_backup = _refresh_reference(local_file, reference / item["rel"], backup_root / "参考" / item["rel"])
+                                if ref_backup:
+                                    item["ref_backup_path"] = ref_backup
                                 item["reference"] = True
                             how = "拿取（本地已一样）" if item["action"] == "same" else "拿取"
                             changes[key] = _base_entry(shared_file, digest, how, task.get("id", ""))
@@ -1383,7 +1401,8 @@ def markdown_fetch(result: dict[str, Any]) -> str:
     lines += [f"- 从目的地根目录：`{result.get('dest_root', '')}`", f"- 拿回来源根目录：`{result.get('source_root', '')}`",
               "- 只拿 Excel 表格文件（包括子文件夹），拿的时候记下版本，复制（覆盖）前用来检查别人改过没有。"]
     if result.get("backup_root"):
-        lines.append(f"- 本地被替换的文件备份在：`{result['backup_root']}`")
+        lines.append(f"- 本地被替换的文件备份在：`{result['backup_root']}`"
+                     + ("（处理文件夹的在「处理」、参考文件夹的在「参考」子文件夹）" if (result.get("task") or {}).get("reference") else ""))
     lines.append("")
     if s:
         lines += ["## 合计", "", "| 项目 | 数量 |", "| --- | --- |"] + [f"| {k} | {v} |" for k, v in s.items()] + [""]
@@ -1403,6 +1422,8 @@ def markdown_fetch(result: dict[str, Any]) -> str:
                 state = {"ok": "✅", "failed": f"❌ {x.get('error', '')}"}.get(x.get("status"), "没有拿")
                 if x.get("backup_path"):
                     state += f"（你的那份备份在 `{x['backup_path']}`）"
+                if x.get("ref_backup_path"):
+                    state += f"（旧参考备份在 `{x['ref_backup_path']}`）"
                 lines.append(f"| {_md(x['rel'])} | {names.get(x['action'], x['action'])} | {_md(state)} |")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"

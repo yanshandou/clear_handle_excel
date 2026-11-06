@@ -309,7 +309,7 @@
         let state = esc(FETCH_HINT[f.action] || '');
         if (!applied && f.backup) state += '（你这份先备份）';
         if (!applied && f.shared_open) state += '<br><span class="link-skip">⚠️ 目的地这份有人正在 Excel 里打开，可能马上又会改</span>';
-        if (applied) state = f.status === 'ok' ? `<span class="link-ok">✅</span>${f.backup_path ? ` 你的那份备份在 ${esc(f.backup_path)}` : ''}`
+        if (applied) state = f.status === 'ok' ? `<span class="link-ok">✅</span>${f.backup_path ? ` 你的那份备份在 ${esc(f.backup_path)}` : ''}${f.ref_backup_path ? `${f.backup_path ? '<br>' : ' '}旧参考备份在 ${esc(f.ref_backup_path)}` : ''}`
           : f.status === 'failed' ? `<span class="link-error">❌ ${esc(f.error)}</span>` : '<span class="link-skip">没有拿</span>';
         const base = applied ? folder.source_path : folder.dest_path;
         return `<tr><td>${fileLink(f.rel, base, applied ? f.local_rel : f.rel)}</td><td>${FETCH_ACTION[f.action] || esc(f.action)}</td><td>${size(f.size)}</td><td>${state}</td></tr>`;
@@ -324,6 +324,7 @@
     const s = data.summary || {};
     const list = applied
       ? [['ok', `已拿 ${s['已拿'] ?? 0} 个`], ['info', `新拿 ${s['新拿'] ?? 0} · 替换 ${s['替换'] ?? 0}`], ['info', `备份你的 ${s['备份'] ?? 0} 个`],
+         [s['备份参考'] ? 'info' : '', `备份旧参考 ${s['备份参考']} 个`],
          ['info', `保留你改的 ${s['保留你改的'] ?? 0} 个`], ['info', `已一样 ${s['已一样'] ?? 0} 个`], ['ok', `记下版本 ${s['记下版本'] ?? 0} 个`],
          [s['没拿成功'] ? 'err' : '', `没拿成功 ${s['没拿成功']} 个`], [s['没有拿'] ? 'warn' : '', `没有拿 ${s['没有拿']} 个`],
          [s['有问题的文件夹'] ? 'err' : '', `找不到目的地等 ${s['有问题的文件夹']} 个文件夹`]]
@@ -331,7 +332,7 @@
          [s['要备份'] ? 'warn' : '', `替换前备份你的 ${s['要备份']} 个`], ['info', `保留你改的 ${s['保留你改的'] ?? 0} 个`],
          ['info', `已一样 ${s['已一样'] ?? 0} 个`], [s['有问题'] ? 'err' : '', `有问题 ${s['有问题']} 个文件夹`]];
     const html = ['<div class="dist-summary">' + list.filter(([cls]) => cls).map(([cls, text]) => `<span class="dist-chip dist-chip-${cls}">${esc(text)}</span>`).join('') + '</div>'];
-    if (applied && data.backup_root) html.push(`<p class="toolbar-hint">本地被替换的文件备份在：${esc(data.backup_root)}</p>`);
+    if (applied && data.backup_root) html.push(`<p class="toolbar-hint">被替换的文件备份在：${esc(data.backup_root)}${data.task?.reference ? '（处理文件夹的在「处理」、参考文件夹的在「参考」子文件夹）' : ''}</p>`);
     if (applied && data.id) html.push(`<p><a class="btn btn-outline btn-sm" href="${api}/markdown?id=${encodeURIComponent(data.id)}">⬇ 下载拿取记录（Markdown）</a></p>`);
     html.push(`<p class="toolbar-hint">从目的地根目录：${esc(data.dest_root)}　拿回来源根目录：${esc(data.source_root)}</p>`);
     let person = null;
@@ -350,7 +351,7 @@
     const rows = (data.files || []).map(file => {
       const status = file.status === 'ok' ? '✓ 已上传' : file.error || '未上传';
       const base = file.status === 'ok' ? data.dest_root : data.source_root;
-      return `<li>${fileLink(file.rel, base, file.rel)} · ${esc(status)}${file.backup_path ? `<br><small>旧处理副本：${esc(file.backup_path)}</small>` : ''}</li>`;
+      return `<li>${fileLink(file.rel, base, file.rel)} · ${esc(status)}${file.backup_path ? `<br><small>旧处理副本：${esc(file.backup_path)}</small>` : ''}${file.ref_backup_path ? `<br><small>旧参考副本：${esc(file.ref_backup_path)}</small>` : ''}</li>`;
     });
     return `<p>${esc(text)} 已上传 ${s['已复制'] || 0} / ${rows.length} 个。</p><ul class="dist-list">${rows.join('')}</ul>`
       + (data.id ? `<p><a class="btn btn-outline btn-sm" href="${api}/markdown?id=${encodeURIComponent(data.id)}">⬇ 下载上传记录</a></p>` : '');
@@ -420,7 +421,7 @@
         const warn = !!(data.stopped || s['没拿成功'] || s['没有拿'] || s['有问题的文件夹']);
         $('distResultTitle').textContent = `拿取结果${data.label ? '：' + data.label : ''}`;
         showProgress('done', data.stopped ? '没有拿：' : warn ? '拿完了，有没拿成功的：' : '拿完了：',
-          data.stopped || `拿了 ${s['已拿'] ?? 0} 个（替换 ${s['替换'] ?? 0}、备份你的 ${s['备份'] ?? 0}），记下 ${s['记下版本'] ?? 0} 个文件的版本，复制前会用它检查别人改过没有。`, warn);
+          data.stopped || `拿了 ${s['已拿'] ?? 0} 个（替换 ${s['替换'] ?? 0}、备份你的 ${s['备份'] ?? 0}${s['备份参考'] ? `、备份旧参考 ${s['备份参考']}` : ''}），记下 ${s['记下版本'] ?? 0} 个文件的版本，复制前会用它检查别人改过没有。`, warn);
       }
       $('distResults').innerHTML = renderFetch(data, !latest.preview);
       return;
@@ -441,6 +442,32 @@
           + (warn ? '。请看下面标红、标黄的文件夹，或下载复制记录。' : '，每个文件夹三个数都一致。'), warn);
     }
     $('distResults').innerHTML = renderData(data, !latest.preview);
+  }
+
+  // 拿完文件：成功撒花（game_fx.js），再弹提示说拿了多少、下一步做什么；有没拿成的只弹黄色提示
+  function fetchDone(data) {
+    const s = data.summary || {};
+    const got = s['已拿'] ?? 0;
+    if (data.stopped) {
+      window.appAlert(`没有拿：${data.stopped}`, { title: '没有拿文件', tone: 'warn' });
+      return;
+    }
+    if (s['没拿成功'] || s['没有拿'] || s['有问题的文件夹']) {
+      window.appAlert(`拿了 ${got} 个，但有 ${(s['没拿成功'] || 0) + (s['没有拿'] || 0)} 个文件没拿成功、${s['有问题的文件夹'] || 0} 个文件夹有问题。\n请看页面上标黄的文件夹（常见原因：文件正在 Excel 里打开），处理后再点「⬇ 从共享拿最新版」。`, { title: '拿完了，有没拿成功的', tone: 'warn' });
+      return;
+    }
+    const lines = got
+      ? [`从共享拿了 ${got} 个 Excel 到处理文件夹（新拿 ${s['新拿'] ?? 0}、替换 ${s['替换'] ?? 0}${s['备份'] ? `，替换前备份了你的 ${s['备份']} 个` : ''}${s['备份参考'] ? `，参考里 ${s['备份参考']} 个旧版也备份了` : ''}）。`,
+         task ? '参考文件夹里也放了一份原件，修复颜色 / 引用 / 隐藏页时用来对照。' : '']
+      : ['共享和本地已经一样，这次没有要拿的文件。'];
+    if (s['保留你改的']) lines.push(`${s['保留你改的']} 个你改过、共享没人动的文件保留了你改的。`);
+    lines.push('下一步：回主页从第 1 步「精简 Sheet」开始处理。');
+    if (got) window.gameFx?.celebrate('拿完了！', `${got} 个文件已拿到处理文件夹`, 3);
+    // 先让横幅和撒花播一会儿，再弹提示
+    setTimeout(async () => {
+      const go = await window.appConfirm(lines.filter(Boolean).join('\n'), { title: '文件拿完了', tone: 'info', icon: '✓', okText: '回主页开始处理 ➜', cancelText: '留在这页' });
+      if (go) location.href = '/';
+    }, got ? 2600 : 0);
   }
 
   async function refresh() {
@@ -464,6 +491,7 @@
         }
         await reloadTaskFiles();
       }
+      if (wasRunning && !latest.running && isFetch(latest.applied)) fetchDone(latest.applied);
       if (wasRunning && !latest.running && latest.applied && !latest.applied.stopped && !isFetch(latest.applied) && !isUpload(latest.applied)) {
         const s = latest.applied.summary || {};
         if (s['别人改过没覆盖']) {
@@ -507,7 +535,7 @@
     const s = latest.preview.summary;
     const lines = [`从「${latest.preview.dest_root}」拿 ${s['要拿']} 个 Excel 回「${latest.preview.source_root}」：新拿 ${s['新拿']} 个，替换本地 ${s['替换']} 个。`];
     if (s['要备份']) lines.push(`替换的文件里有 ${s['要备份']} 个你本地改过，会先备份到${task ? '工作根目录下的「拿最新版前的备份」' : '来源根目录旁边的「…_拿最新版前的备份」'}文件夹，再换成目的地的新版。`);
-    if (task) lines.push('拿下来的原件同时放一份到参考文件夹（修复颜色 / 引用 / 隐藏页对照用）。');
+    if (task) lines.push('拿下来的原件同时放一份到参考文件夹（修复颜色 / 引用 / 隐藏页对照用），参考里原来的旧版也先备份。');
     if (s['保留你改的']) lines.push(`${s['保留你改的']} 个你改过、目的地没人动，不拿，保留你改的。`);
     lines.push('所有文件都会记下拿到的版本，之后复制（覆盖）前用来检查别人改过没有。目的地的文件不会被改动。');
     return window.appConfirm(lines.join('\n'), { title: '按清单拿最新版', okText: '开始拿', tone: s['替换'] ? 'danger' : undefined });
@@ -549,7 +577,7 @@
     const reviews = files.filter(file => file.review?.ready);
     const message = reviews.length
       ? `请确认这 ${reviews.length} 个待重新处理的文件已经保存并完成复检。系统将再次核对本批 ${files.length} 个文件的共享版本，检查通过后上传。\n\n${reviews.slice(0, 8).map(file => file.rel).join('\n')}${reviews.length > 8 ? '\n…' : ''}`
-      : `检查选中的 ${files.length} 个 Excel。发现共享端有更新时，先同步到参考和处理文件夹，备份有差异的旧处理副本，并暂停上传。检查通过后将文件传回当前任务的共享文件夹。`;
+      : `检查选中的 ${files.length} 个 Excel。发现共享端有更新时，先同步到参考和处理文件夹（两边的旧版都先备份），并暂停上传。检查通过后将文件传回当前任务的共享文件夹。`;
     submitting = 'upload';
     controls();
     try {
@@ -629,6 +657,7 @@
       }
       if (startMode) $('distNewRoot').value = result.last_work_root || '';
       if (!current) {
+        if (startMode) { showLastShared(result.tasks[0]?.shared); focusShared(); }
         $('distTaskNoticeText').textContent = startMode ? '还没有当前任务。在下面填共享文件夹路径，开一个新任务。'
           : '还没有当前任务。请先开一个新任务，再选择处理好的 Excel。';
         $('distTaskHome').hidden = startMode;
@@ -640,6 +669,8 @@
         $('distNewBox').open = false;
         $('distNewSummary').textContent = '当前任务是「' + task.name + '」。要换一个共享文件夹？展开开一个新任务';
         $('distNewTaskTitle').textContent = '开另一个新任务';
+        // 预先填上次用的共享路径，展开时全选，直接粘贴就能覆盖
+        showLastShared(task.shared);
       }
       $('distTaskName').textContent = task.name;
       $('distTaskPaths').innerHTML = `<dt>共享</dt><dd>${esc(task.shared)}</dd><dt>参考</dt><dd>${esc(task.reference)}</dd><dt>处理</dt><dd>${esc(task.work)}</dd>`;
@@ -659,8 +690,16 @@
 
   // ───── 开新任务（只填共享路径，参考 / 处理文件夹自动生成，后端 core/work_task.py） ─────
   let deriveTimer = 0, deriveSeq = 0;
-  const NEW_EMPTY = '<dt></dt><dd>填好共享文件夹路径后，这里显示参考、处理文件夹的位置。</dd>';
-  const pathsHtml = t => `<dt>共享</dt><dd>${esc(t.shared)}</dd><dt>参考</dt><dd>${esc(t.reference)}</dd><dt>处理</dt><dd>${esc(t.work)}</dd>`;
+  // 没填时也占好三行，填好后换成真路径，这块高度不变
+  const NEW_EMPTY = ['共享', '参考', '处理'].map(name => `<dt>${name}</dt><dd class="is-empty">填好共享文件夹路径后显示</dd>`).join('');
+  // 框里不预填，上次的路径只放在占位提示里：聚焦后提示还在，直接粘贴新路径
+  const showLastShared = last => {
+    if (!last) return;
+    $('distNewLastHead').textContent = '上次用过';
+    $('distNewLast').textContent = last;
+    $('distNewLast').closest('.dist-last').title = `上次：${last}`;
+  };
+  const pathsHtml = t => [['共享', t.shared], ['参考', t.reference], ['处理', t.work]].map(([name, path]) => `<dt>${name}</dt><dd title="${esc(path)}">${esc(path)}</dd>`).join('');
   function scheduleDerive() {
     clearTimeout(deriveTimer);
     deriveTimer = setTimeout(async () => {
@@ -700,7 +739,9 @@
       controls();
     }
   }
+  const focusShared = () => { const input = $('distNewShared'); input.focus({ preventScroll: true }); input.select(); };
   if (startMode) {
+    $('distNewBox').addEventListener('toggle', () => { if ($('distNewBox').open) focusShared(); });
     $('distNewShared').addEventListener('input', scheduleDerive);
     $('distNewRoot').addEventListener('input', scheduleDerive);
     $('distNewShared').addEventListener('keydown', event => { if (event.key === 'Enter') createTask(); });
