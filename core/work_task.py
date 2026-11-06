@@ -124,6 +124,7 @@ def create(shared_text: Any, work_root_text: Any = "") -> dict[str, Any]:
         if same:
             data["tasks"].remove(same)
             task = {**same, **paths, "done": False}  # 同一个文件夹再开一次 = 重新开始做
+            task.pop("focus", None)
         else:
             task = {"id": uuid.uuid4().hex[:12], **paths, "created": datetime.now().strftime("%Y-%m-%d %H:%M")}
         task["used"] = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -182,6 +183,97 @@ def plan_for(task: dict[str, Any]) -> dict[str, Any]:
     return {"plan": json.dumps(plan, ensure_ascii=False), "source_root": str(work.parent),
             "dest_root": str(shared.parent), "reference": task["reference"],
             "fetch_backup": task["fetch_backup"]}
+
+
+# ───────────────────────── 本轮只处理待重新处理文件（用户 2026-11-06 定） ─────────────────────────
+# 上传前发现共享有更新，同步下来的文件标成「待重新处理」。上传页一键把这些文件记成本轮清单（task["focus"]），
+# 1～8 步列文件时（workflow.list_workbooks）只列清单里的；清单里的文件上传成功就划掉，全划掉自动回到整个文件夹。
+
+def _focus_key(rel: str) -> str:
+    from core.common import strip_review_prefix
+    parts = rel.replace("\\", "/").split("/")
+    parts[-1] = strip_review_prefix(parts[-1])
+    return "/".join(parts).casefold()
+
+
+def focus_files(task: dict[str, Any] | None) -> list[str]:
+    focus = (task or {}).get("focus") or {}
+    files = focus.get("files") if isinstance(focus, dict) else None
+    return [rel for rel in files or [] if isinstance(rel, str) and rel]
+
+
+def set_focus(task_id: str, files: Any) -> dict[str, Any]:
+    """本轮只处理这几个文件（处理文件夹下的相对路径）"""
+    if not isinstance(files, list) or not files or not all(isinstance(rel, str) and rel for rel in files):
+        raise ValueError("没有待重新处理的文件")
+    with _LOCK:
+        data = _load()
+        task = next((t for t in data["tasks"] if t.get("id") == task_id), None)
+        if not task:
+            raise ValueError("找不到这个任务")
+        work = Path(task["work"])
+        keep: dict[str, str] = {}
+        for rel in files:
+            if "\\" in rel or ":" in rel or any(part in ("", ".", "..") for part in rel.split("/")):
+                raise ValueError(f"文件路径无效：{rel}")
+            if not (work / rel).is_file():
+                raise ValueError(f"处理文件夹里找不到：{rel}，请刷新文件列表")
+            keep.setdefault(_focus_key(rel), rel)
+        task["focus"] = {"files": list(keep.values()), "since": datetime.now().strftime("%Y-%m-%d %H:%M")}
+        _save(data)
+    debug_log.event("🎯 本轮只处理待重新处理文件", 任务=task["name"], 文件=len(keep))
+    return task
+
+
+def clear_focus(task_id: str, files: list[str] | None = None, *, why: str = "退出") -> dict[str, Any] | None:
+    """files=None：整个清单退出；否则只划掉这几个，划完了就自动退出"""
+    with _LOCK:
+        data = _load()
+        task = next((t for t in data["tasks"] if t.get("id") == task_id), None)
+        if not task or not focus_files(task):
+            return task
+        before = focus_files(task)
+        drop = None if files is None else {_focus_key(rel) for rel in files}
+        left = [] if drop is None else [rel for rel in before if _focus_key(rel) not in drop]
+        if len(left) == len(before):
+            return task
+        if left:
+            task["focus"] = {**task["focus"], "files": left}
+        else:
+            task.pop("focus", None)
+        _save(data)
+    debug_log.event("🎯 本轮清单" + ("划掉已上传" if left else "结束，回到整个文件夹"), 任务=task.get("name"),
+                    原因=why, 还剩=len(left))
+    return task
+
+
+def _same_or_inside(folder: Path, root_text: str) -> str | None:
+    """folder 是 root 本身或它的子文件夹 → 返回相对前缀（本身是 ""）"""
+    try:
+        root = Path(root_text).expanduser().resolve()
+    except (OSError, TypeError, ValueError):
+        return None
+    a, b = str(folder).replace("\\", "/").casefold(), str(root).replace("\\", "/").casefold()
+    if a == b:
+        return ""
+    if a.startswith(b.rstrip("/") + "/"):
+        return a[len(b.rstrip("/")) + 1:]
+    return None
+
+
+def focus_filter(folder: Path) -> tuple[dict[str, Any], set[str], str] | None:
+    """当前任务有本轮清单、且 folder 是它的处理 / 参考文件夹（或子文件夹）时，
+    返回 (任务, 清单 key 集合, 子文件夹前缀)；否则 None（照常列整个文件夹）"""
+    data = _load()
+    task = next((t for t in data["tasks"] if t.get("id") == data["current"]), None)
+    files = focus_files(task)
+    if not task or not files:
+        return None
+    for field in ("work", "reference"):
+        prefix = _same_or_inside(folder, task.get(field) or "")
+        if prefix is not None:
+            return task, {_focus_key(rel) for rel in files}, prefix
+    return None
 
 
 # ───────────────────────── 完成任务（主页 FINISH） ─────────────────────────

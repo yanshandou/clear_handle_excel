@@ -1248,7 +1248,27 @@ def list_workbooks(folder_str: str) -> tuple[Path, list[Path]]:
     )
     if not workbooks:
         raise ValueError("未找到 Excel 文件")
-    return folder, workbooks
+    return folder, focus_workbooks(folder, workbooks)
+
+
+def focus_workbooks(folder: Path, workbooks: list[Path]) -> list[Path]:
+    """当前任务开着「本轮只处理待重新处理文件」时，处理 / 参考文件夹只列清单里的文件（用户 2026-11-06 定）"""
+    from core import work_task
+    try:
+        hit = work_task.focus_filter(folder)
+    except Exception as err:  # 任务记录读不出来就照常列整个文件夹
+        debug_log.event("⚠️ 读不出本轮清单，照常处理整个文件夹", 原因=str(err))
+        return workbooks
+    if not hit:
+        return workbooks
+    _task, keys, prefix = hit
+    lead = prefix + "/" if prefix else ""
+    picked = [p for p in workbooks if work_task._focus_key(lead + workbook_rel_name(p, folder)) in keys]
+    debug_log.event("🎯 本轮只处理待重新处理文件", 文件夹=str(folder), 清单=len(keys), 列出=len(picked), 共有=len(workbooks))
+    if not picked:
+        raise ValueError(f"本轮只处理 {len(keys)} 个待重新处理的文件，这个文件夹里一个也没有。"
+                         "要处理整个文件夹，请在页面顶部点「退出，处理整个文件夹」")
+    return picked
 
 
 def _exportable_sheets(wb: Any) -> list[Any]:

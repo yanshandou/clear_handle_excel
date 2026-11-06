@@ -767,6 +767,13 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
             item.update(status="ok", uploaded_at=entry["upload"]["at"])
             entry["tasks"][task["id"]]["review"] = None
             _save_baseline({_base_key(dest): entry})
+    done = [item["rel"] for item in items if item.get("status") == "ok"]
+    if done:  # 本轮清单里的文件传上去了就划掉，全划掉自动回到整个文件夹
+        from core import work_task
+        try:
+            work_task.clear_focus(task["id"], done, why="已上传")
+        except Exception as err:
+            debug_log.event("⚠️ 没能更新本轮清单", 原因=str(err))
     summary = {"已复制": sum(item.get("status") == "ok" for item in items),
                "待重新处理": sum(item.get("status") == "review" for item in items),
                "没复制成功": sum(item.get("status") == "failed" for item in items)}
