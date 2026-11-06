@@ -32,10 +32,12 @@
       : '可以直接在各功能填写本地文件夹。需要从共享拿取、上传文件时，再点「🆕 新任务」建立共享、参考和处理路径。';
     $('workTaskName').title = current ? `共享：${current.shared}\n参考：${current.reference}\n处理：${current.work}` : '';
     const others = data.tasks.filter(t => t.id !== data.current);
-    $('workTaskSwitch').innerHTML = others.length
-      ? '<option value="">选择一个任务…</option>' + others.map(t => `<option value="${esc(t.id)}">${t.done ? '✓ 已完成 · ' : '进行中 · '}${esc(t.name)}（${esc(t.used || t.created || '')}）</option>`).join('')
-      : '<option value="">（没有以前的任务）</option>';
+    $('workTaskSwitchText').textContent = others.length ? `选择一个任务…（${others.length} 个）` : '（没有以前的任务）';
+    $('workTaskSwitchList').innerHTML = others.map(t => `<li role="option" tabindex="-1" data-id="${esc(t.id)}" title="共享：${esc(t.shared)}">`
+      + `<span class="wt-chip ${t.done ? 'is-done' : 'is-doing'}">${t.done ? '✓ 已完成' : '进行中'}</span>`
+      + `<span class="wt-name">${esc(t.name)}</span><span class="wt-time">${esc(t.used || t.created || '')}</span></li>`).join('');
     $('workTaskSwitch').disabled = !others.length;
+    if (!others.length) closePicker();
   }
 
   async function load() {
@@ -103,17 +105,49 @@
       window.appAlert(error.message, { tone: 'error' });
     }
   });
-  $('workTaskSwitch').addEventListener('change', async event => {
-    const id = event.target.value;
-    if (!id) return;
+  // 「切换」下拉：自己画的列表（原生 select 弹出的列表改不了样式）
+  const options = () => [...$('workTaskSwitchList').querySelectorAll('[role="option"]')];
+  function closePicker(focusButton = false) {
+    $('workTaskSwitchList').hidden = true;
+    $('workTaskSwitch').setAttribute('aria-expanded', 'false');
+    if (focusButton) $('workTaskSwitch').focus();
+  }
+  function openPicker() {
+    if ($('workTaskSwitch').disabled) return;
+    $('workTaskSwitchList').hidden = false;
+    $('workTaskSwitch').setAttribute('aria-expanded', 'true');
+    options()[0]?.focus();
+  }
+  async function pick(id) {
+    closePicker(true);
     try {
       const { task } = await post('/api/tasks/switch', { id });
       applyTask(task);
       await load();
     } catch (error) {
       window.appAlert(error.message, { tone: 'error' });
-      event.target.value = '';
     }
+  }
+  $('workTaskSwitch').addEventListener('click', () => ($('workTaskSwitchList').hidden ? openPicker() : closePicker()));
+  $('workTaskSwitch').addEventListener('keydown', event => {
+    if (event.key === 'ArrowDown') { event.preventDefault(); openPicker(); }
+  });
+  $('workTaskSwitchList').addEventListener('click', event => {
+    const item = event.target.closest('[role="option"]');
+    if (item) pick(item.dataset.id);
+  });
+  // 鼠标移到哪行就高亮哪行（和键盘选中是同一个高亮，不会同时亮两行）
+  $('workTaskSwitchList').addEventListener('mouseover', event => event.target.closest('[role="option"]')?.focus());
+  $('workTaskSwitchList').addEventListener('keydown', event => {
+    const list = options(), index = list.indexOf(document.activeElement);
+    if (event.key === 'ArrowDown') { event.preventDefault(); list[Math.min(index + 1, list.length - 1)]?.focus(); }
+    else if (event.key === 'ArrowUp') { event.preventDefault(); list[Math.max(index - 1, 0)]?.focus(); }
+    else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (list[index]) pick(list[index].dataset.id); }
+    else if (event.key === 'Escape') closePicker(true);
+    else if (event.key === 'Tab') closePicker();
+  });
+  document.addEventListener('click', event => {
+    if (!event.target.closest('.wt-pick')) closePicker();
   });
   load();
 })();
