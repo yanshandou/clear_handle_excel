@@ -123,6 +123,13 @@
         : '<p>处理文件夹里还没有 Excel 文件。请先到 <a href="/distribute/start">新任务 · 拿文件</a> 页从共享拿最新版。</p>')
         + data.errors.map(err => `<p class="link-error">${esc(err)}</p>`).join('');
       $('distTaskReview').hidden = !taskFiles.some(file => file.review?.ready);
+      try {  // 上传成功的会从本轮清单划掉，重新读一下
+        const tasks = await (await fetch('/api/tasks', { cache: 'no-store' })).json();
+        const mine = (tasks.tasks || []).find(t => t.id === task.id);
+        if (mine) task.focus = mine.focus || null;
+      } catch (_) {}
+      focusControls();
+      if (window.refreshFocusBanner) window.refreshFocusBanner();
     } catch (error) {
       taskFiles = [];
       $('distTaskFiles').textContent = error.message;
@@ -594,6 +601,40 @@
       await refresh();
     }
   }
+
+  // ───── 本轮只处理待重新处理文件（后端 work_task.set_focus；1～8 步只列这些文件，全部上传后自动结束） ─────
+  const focusList = () => task?.focus?.files || [];
+  const readyRels = () => taskFiles.filter(file => file.review?.ready).map(file => file.rel);
+  const sameSet = (a, b) => a.length === b.length && a.every(rel => b.map(x => x.toLowerCase()).includes(rel.toLowerCase()));
+  function focusControls() {
+    if (!task || startMode) return;
+    const ready = readyRels(), focus = focusList();
+    $('distTaskFocusRow').hidden = !ready.length && !focus.length;
+    const on = focus.length && sameSet(ready, focus);
+    $('distTaskFocus').hidden = !ready.length || on;
+    $('distTaskFocus').textContent = focus.length ? `🎯 把本轮清单换成这 ${ready.length} 个待重新处理文件`
+      : `🎯 让 1～8 步只处理这 ${ready.length} 个待重新处理文件`;
+    $('distTaskFocusNote').textContent = on ? `✓ 已开启：1～8 步这一轮只处理这 ${focus.length} 个文件。处理、复检完回来上传，传完自动回到整个文件夹。`
+      : focus.length ? `本轮清单现在是 ${focus.length} 个文件（看页面顶部），和待重新处理的不一样。`
+      : '其他文件这一轮不动，省得整个文件夹重跑一遍。';
+  }
+  async function startFocus() {
+    const ready = readyRels();
+    if (!task || !ready.length) return;
+    const list = ready.slice(0, 8).join('\n') + (ready.length > 8 ? '\n…' : '');
+    if (!await window.appConfirm(`这一轮 1～8 步（精简 Sheet、切字、修复颜色……人工复检）只处理这 ${ready.length} 个文件，其他文件不动：\n\n${list}\n\n`
+      + '这几个全部上传成功后自动回到整个文件夹；也可以随时点页面顶部的「退出」。', { title: '本轮只处理待重新处理文件', okText: '开启', cancelText: '先不用' })) return;
+    try {
+      const result = await post('/api/tasks/focus', { id: task.id, files: ready });
+      task.focus = result.task.focus;
+    } catch (error) { $('distError').textContent = error.message; return; }
+    focusControls();
+    if (window.refreshFocusBanner) await window.refreshFocusBanner();
+    if (await window.appConfirm(`已开启。去主页按顺序处理这 ${ready.length} 个文件，处理、复检完回这页上传。`,
+      { title: '开启了', okText: '回主页开始处理 ➜', cancelText: '留在这页' })) location.href = '/';
+  }
+  $('distTaskFocus').addEventListener('click', startFocus);
+  document.addEventListener('focus-changed', () => { if (task) { task.focus = null; focusControls(); } });
 
   async function viewRun(id) {
     try {

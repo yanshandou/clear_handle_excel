@@ -72,6 +72,10 @@
     .dist-section .table-card > :first-child { margin-top: 0; }
     .dist-section .table-card > :last-child { margin-bottom: 0; }
     #distTaskUpload { margin-top: 12px; }
+    .dist-focus-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; padding: 10px 12px;
+      border: 1.5px dashed #b45309; border-radius: 10px; background: #fffbeb; }
+    .dist-focus-row[hidden] { display: none; }
+    .dist-focus-row .toolbar-hint { margin: 0; color: #5b3a06; }
     #distTaskCount { width: 6rem; margin-inline: 6px; border: 2px solid var(--outline); border-radius: 10px; }
     .dist-debug { margin-top: 24px; }
     .dist-start .dist-upload-metric { display: none; }
@@ -216,6 +220,10 @@
             <div id="distTaskFiles" class="link-table-wrap dist-task-list"><p>正在读取本地文件…</p></div>
             <p class="toolbar-hint">要从共享拿最新版、或开新任务，请到 <a href="/distribute/start">新任务 · 拿文件</a> 页。</p>
             <p id="distTaskReview" class="toolbar-hint" hidden>待重新处理的文件可点名称在 Excel 中打开。处理并保存后，可前往<a href="/?task=export_pdf" target="_blank" rel="noopener">第 7 步导出 PDF 并复检 ↗</a>，然后回到此页再次检查。</p>
+            <div id="distTaskFocusRow" class="dist-focus-row" hidden>
+              <button id="distTaskFocus" class="button secondary" type="button">🎯 让 1～8 步只处理这几个待重新处理文件</button>
+              <span id="distTaskFocusNote" class="toolbar-hint"></span>
+            </div>
             <button id="distTaskUpload" class="button primary" type="button" disabled>检查并批量上传</button>
           </div>
           <div id="distJsonFields" class="dist-surface" hidden>
@@ -257,7 +265,7 @@
     </main>
   </div>
   <script src="/static/upload_manager/icons.js"></script>
-  <script src="/static/game_fx.js"></script><script src="/static/eta.js"></script><script src="/static/dialog.js"></script><script src="/static/open_excel.js"></script><script src="/static/distribute.js"></script><script src="/static/debug_log.js"></script>
+  <script src="/static/game_fx.js"></script><script src="/static/eta.js"></script><script src="/static/dialog.js"></script><script src="/static/open_excel.js"></script><script src="/static/distribute.js"></script><script src="/static/focus_banner.js"></script><script src="/static/debug_log.js"></script>
   <script src="/static/file_problem.js"></script>
 </body>
 </html>

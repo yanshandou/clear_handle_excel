@@ -127,8 +127,21 @@ def list_pdfs(folder: str) -> dict:
         if notes.get(str(pdf)):
             entry["notes"] = notes[str(pdf)]  # 导出时发现的内容很少的页（page_fill）
         entries.append(entry)
-    debug_log.event("🔎 PDF 复检列出", 文件夹=root, 看的是=shown_from, PDF=len(entries), 找到Excel=sum(1 for e in entries if e.get("wb_path")))
-    return {"folder": str(root), "pdf_folder": str(shown_from), "in_pdfs": shown_from == base, "pdfs": entries}
+    focus = None
+    from core import work_task
+    try:
+        hit = work_task.focus_filter(root)
+    except Exception:
+        hit = None
+    if hit:  # 本轮只处理待重新处理文件：只看这几份 Excel 的 PDF
+        _task, keys, prefix = hit
+        lead = prefix + "/" if prefix else ""
+        before = len(entries)
+        entries = [e for e in entries if e.get("wb_name") and work_task._focus_key(lead + e["wb_name"]) in keys]
+        focus = {"files": len(keys), "hidden": before - len(entries)}
+    debug_log.event("🔎 PDF 复检列出", 文件夹=root, 看的是=shown_from, PDF=len(entries), 找到Excel=sum(1 for e in entries if e.get("wb_path")),
+                    本轮清单=bool(focus))
+    return {"folder": str(root), "pdf_folder": str(shown_from), "in_pdfs": shown_from == base, "pdfs": entries, "focus": focus}
 
 
 def page_png(pdf: str, page: int) -> bytes:

@@ -252,6 +252,60 @@ class WorkTaskTests(unittest.TestCase):
         self.assertTrue(uploaded["uploaded"])
         self.assertFalse(uploaded["uploaded_current"])
 
+    def test_focus_lists_only_review_files_until_they_are_uploaded(self):
+        task = work_task.create(str(self.shared), str(self.work_root))
+        work, ref, task_id = Path(task["work"]), Path(task["reference"]), task["id"]
+        distribute.preview_fetch("", "", "", task_id)
+        self.wait()
+        write(work / "c.xlsx", "local only")
+        _, all_books = wf.list_workbooks(str(work))
+        self.assertEqual(len(all_books), 3)
+        with self.assertRaises(ValueError):
+            work_task.set_focus(task_id, ["不存在.xlsx"])
+        work_task.set_focus(task_id, ["子/孫/b.xlsx", "a.xlsx", "子/孫/b.xlsx"])
+        self.assertEqual(work_task.focus_files(work_task.get(task_id)), ["子/孫/b.xlsx", "a.xlsx"])
+        # 处理、参考、子文件夹都只列清单里的；文件名前面的 ★ 不影响
+        (work / "a.xlsx").rename(work / "★a.xlsx")
+        _, books = wf.list_workbooks(str(work))
+        self.assertEqual(sorted(p.name for p in books), ["b.xlsx", "★a.xlsx"])
+        _, books = wf.list_workbooks(str(ref))
+        self.assertEqual(sorted(p.name for p in books), ["a.xlsx", "b.xlsx"])
+        _, books = wf.list_workbooks(str(work / "子"))
+        self.assertEqual([p.name for p in books], ["b.xlsx"])
+        (work / "★a.xlsx").rename(work / "a.xlsx")
+        # 别的文件夹不受影响
+        other = Path(self.tmp.name) / "other"
+        write(other / "a.xlsx")
+        write(other / "z.xlsx")
+        self.assertEqual(len(wf.list_workbooks(str(other))[1]), 2)
+        # 只传了 a：a 从清单划掉，b 还在
+        write(work / "a.xlsx", "fixed a")
+        distribute.start_task_upload(task_id, ["a.xlsx"], {})
+        self.assertEqual(self.wait_applied()["summary"]["已复制"], 1)
+        self.assertEqual(work_task.focus_files(work_task.get(task_id)), ["子/孫/b.xlsx"])
+        self.assertEqual([p.name for p in wf.list_workbooks(str(work))[1]], ["b.xlsx"])
+        distribute.start_task_upload(task_id, ["子/孫/b.xlsx"], {})
+        self.assertEqual(self.wait_applied()["summary"]["已复制"], 1)
+        self.assertEqual(work_task.focus_files(work_task.get(task_id)), [])
+        self.assertEqual(len(wf.list_workbooks(str(work))[1]), 3)  # 自动回到整个文件夹
+
+    def test_focus_exit_and_missing_files(self):
+        task = work_task.create(str(self.shared), str(self.work_root))
+        work, task_id = Path(task["work"]), task["id"]
+        distribute.preview_fetch("", "", "", task_id)
+        self.wait()
+        work_task.set_focus(task_id, ["a.xlsx"])
+        (work / "a.xlsx").unlink()
+        with self.assertRaisesRegex(ValueError, "退出，处理整个文件夹"):
+            wf.list_workbooks(str(work))
+        work_task.clear_focus(task_id)
+        self.assertEqual(len(wf.list_workbooks(str(work))[1]), 1)
+        # 同一个共享文件夹重新开任务 = 重新开始，清单也清掉
+        write(work / "a.xlsx")
+        work_task.set_focus(task_id, ["a.xlsx"])
+        work_task.create(str(self.shared), str(self.work_root))
+        self.assertEqual(work_task.focus_files(work_task.get(task_id)), [])
+
     def test_upload_rechecks_after_staging_and_recovers_incomplete_sync(self):
         task = work_task.create(str(self.shared), str(self.work_root))
         task_id, work, ref = task["id"], Path(task["work"]), Path(task["reference"])

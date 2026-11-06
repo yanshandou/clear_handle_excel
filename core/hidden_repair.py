@@ -35,7 +35,8 @@ def list_workbooks(folder: str) -> tuple[Path, list[Path]]:
                    key=lambda path: workbook_rel_name(path, root))
     if not paths:
         raise ValueError("未找到 Excel 文件")
-    return root, paths
+    from core import workflow as wf  # 本轮只处理待重新处理文件时只列清单里的
+    return root, wf.focus_workbooks(root, paths)
 
 
 def options_for(options: dict | None = None) -> dict:
