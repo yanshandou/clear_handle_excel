@@ -128,7 +128,8 @@ class GrowWrapTests(unittest.TestCase):
         self.book.Save.assert_not_called()
         self.assertEqual(card["message"], batch.HORIZONTAL_LAYOUT_MESSAGE)
         self.assertNotIn("grown", card)
-        self.assertNotIn(card["id"], batch._wanted_marks(self.path))
+        # 留在人工处理名单里的格子都要标色，跨格横排也一样（2026-11-06）
+        self.assertIn(card["id"], batch._wanted_marks(self.path))
 
     def horizontal_format_trial(self, visible_lengths, *, formula="=TRUE()"):
         area = self.horizontal_title()

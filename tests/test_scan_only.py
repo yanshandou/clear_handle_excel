@@ -327,6 +327,35 @@ class ScanOnlyTests(unittest.TestCase):
         self.assertIn(mine, self.sheet.rules)
         self.assertEqual((self.card("C5")["color"], self.card("C5")["finalized"]), ("yellow", True))
 
+    def test_recheck_marks_old_horizontal_layout_cards_and_keeps_tab(self):
+        """2026-11-06：旧扫描留下「疑似跨格横排」记号的格子，复检还有问题时照常标色、标签保持橙黄"""
+        self.add_item("A5")
+        self.add_item("B5")
+        self.scan()
+        # 模拟旧版本：B5 带横排记号、从没标过色
+        b5 = self.card("B5")
+        b5.update(horizontal_layout=True, message=batch.HORIZONTAL_LAYOUT_MESSAGE)
+        tag = batch._marks().pop(b5["id"])["tag"]
+        self.sheet.rules[:] = [r for r in self.sheet.rules if tag not in str(getattr(r, "Formula1", ""))]
+        self.assertIsNone(self.sheet.shown("B5"))
+        saved = list(self.sheet.rules)
+        def discard(SaveChanges):  # 复检只读打开、内存里删规则、不保存
+            self.sheet.rules[:] = saved
+            self.book.Close.side_effect = None
+        self.book.Close.side_effect = discard
+        def refresh(*_, workbook=None, **__):
+            self.wf.STATE["items"]["iA5"]["status"] = "fixed"   # A5 改好了
+            self.wf.STATE["items"]["iB5"]["status"] = "pending"  # B5 还有问题
+        with patch.object(batch, "_refresh", side_effect=refresh):
+            batch._recheck_file(self.excel, self.path, [self.card("A5"), self.card("B5")])
+        card = self.card("B5")
+        self.assertNotIn("horizontal_layout", card)
+        self.assertNotEqual(card["message"], batch.HORIZONTAL_LAYOUT_MESSAGE)
+        self.assertIn(card["id"], batch._wanted_marks(self.path))
+        batch._sync_highlights(lambda: self.excel, self.path)
+        self.assertIsNone(self.sheet.shown("A5"))
+        self.assertIsNotNone(self.sheet.shown("B5"))
+
     def test_only_our_rule_for_that_card_is_removed(self):
         """表里原有的条件格式不动、顺序不变；我们的规则排最前；只删这张卡自己的规则"""
         mine = self.user_rule("A5")
