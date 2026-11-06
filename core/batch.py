@@ -1477,12 +1477,10 @@ def _recheck_file(excel: Any, path: str, cards: list[dict], *, passed_message: s
                 continue  # 全自动还没轮到的，或你已标蓝 / 绿还没提交的，保留原样
             found += 1
             card.pop("horizontal_fix", None)
-            if card.get("horizontal_layout") and not any(autofix.item_error_type(it) in GROW_ERROR_TYPES for it in group):
-                card.pop("horizontal_layout", None)
-            if card.get("horizontal_layout"):
-                message = HORIZONTAL_LAYOUT_MESSAGE
-            else:
-                message = found_message if card.get("grown") else "复检查出的问题：请修改并保存后再复检"
+            # 旧扫描留下的「疑似跨格横排」记号：扫描已不自动加高，复检查出的问题一律当普通人工项、照常标色
+            # （2026-11-06 用户实测：带这个记号的格子在「打开下一批」里却没标色，标签也被改回原色）
+            card.pop("horizontal_layout", None)
+            message = found_message if card.get("grown") else "复检查出的问题：请修改并保存后再复检"
             card.update(color="yellow", verified=False, manual=True, finalized=True, waiting=False,
                         dismissed=False, message=message)
             for item in group:
@@ -3342,7 +3340,7 @@ def _wanted_marks(path: str) -> set[str]:
         return set()
     return {c["id"] for c in data["cards"].values()
             if c["wb_path"] == path and not c.get("dismissed") and c["color"] == "yellow"
-            and c.get("manual") and not c.get("horizontal_layout") and _can_highlight(c)}
+            and c.get("manual") and _can_highlight(c)}
 
 
 def _leftover_mark_paths(skip: list[str]) -> list[str]:
