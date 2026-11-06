@@ -250,6 +250,7 @@ code {
 /* ---------- 输入框 ---------- */
 .input-groove-wrap,
 input[type="text"],
+input[type="search"],
 input[type="number"] {
   background: #ffffff;
   border: 2px solid var(--ink);
@@ -258,20 +259,23 @@ input[type="number"] {
   color: var(--ink);
 }
 
-.input-groove-wrap input[type="text"] {
+.input-groove-wrap input[type="text"],
+.input-groove-wrap input[type="search"] {
   color: var(--ink);
   border: 0;
 }
 
 .input-groove-wrap:focus-within,
 input[type="text"]:focus,
+input[type="search"]:focus,
 input[type="number"]:focus {
   background: #ffffff;
   border-color: var(--ink);
   box-shadow: 0 0 0 4px var(--lime);
 }
 
-.input-groove-wrap input[type="text"]:focus {
+.input-groove-wrap input[type="text"]:focus,
+.input-groove-wrap input[type="search"]:focus {
   box-shadow: none;
 }
 
@@ -279,7 +283,8 @@ input[type="number"]:focus {
   filter: none;
 }
 
-input[type="text"]::placeholder {
+input[type="text"]::placeholder,
+input[type="search"]::placeholder {
   color: var(--ink-4);
 }
 
