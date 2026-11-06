@@ -207,7 +207,8 @@ class WebHandler(upload_manager.Handler):
             self._send_bytes(image, "image/png", cacheable=True)
         elif parsed.path == "/repair-bl-links":
             self._serve_static_file("bl_links.html")
-        elif parsed.path == "/distribute":
+        elif parsed.path in {"/distribute", "/distribute/start", "/distribute/start/"}:
+            # /distribute/start：新任务 + 从共享拿文件；/distribute：当前任务上传（同一个页面文件，按路径切换）
             self._serve_static_file("distribute.html")
         elif parsed.path == "/api/tasks":
             self._send_json({"ok": True, **work_task.overview()})

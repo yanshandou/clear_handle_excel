@@ -1,10 +1,10 @@
-// 当前任务批量上传，以及按上传记录 JSON 复制 Excel（后端 core/distribute.py）
+// 三个页面共用：/distribute/start 新任务 + 从共享拿文件、/distribute 当前任务批量上传、/distribute?mode=json 按上传记录 JSON 复制 Excel（后端 core/distribute.py）
 (() => {
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[ch]));
   const api = '/api/distribute';
   const KEYS = { source: 'clear_handle_excel.distributeSource', dest: 'clear_handle_excel.distributeDest', plan: 'clear_handle_excel.distributePlan' };
-  let latest = {}, submitting = false, loading = true, timer, pollError = '';
+  let latest = {}, submitting = false, loading = true, timer, pollError = '', creating = false;
   let viewing = null;          // 正在看的历史记录（null = 看当前清单 / 最近一次结果）
   let filter = 'all';
   let wasRunning = false;
@@ -14,7 +14,12 @@
   let taskFiles = [], readingFiles = false;
   const selected = new Set();
   const jsonMode = params.get('mode') === 'json' || params.has('plan');
-  document.querySelector('[data-dist-mode="' + (jsonMode ? 'json' : 'task') + '"]')?.setAttribute('aria-current', 'page');
+  // 新任务 / 拿文件单独一页，上传页只管上传（以前都挤在 /distribute）
+  const startMode = !jsonMode && /^\/distribute\/start\/?$/.test(location.pathname);
+  if (!jsonMode && !startMode && params.get('fetch') === '1') { location.replace('/distribute/start?fetch=1'); return; }
+  // 每页只看自己那一类：拿文件页只看拿取，上传页不看拿取
+  const inScope = data => !data || jsonMode || (startMode ? isFetch(data) : !isFetch(data));
+  document.querySelector('[data-dist-mode="' + (jsonMode ? 'json' : startMode ? 'start' : 'task') + '"]')?.setAttribute('aria-current', 'page');
   $('distToday').textContent = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'long' }).format(new Date());
   window.lucide?.createIcons();
   let needsPreview = params.has('plan');
@@ -28,6 +33,23 @@
     $('distSubtitle').textContent = '导入上传方案，按清单复制 Excel。';
     $('distControlsTitle').textContent = '设置复制清单';
     $('distProgress').textContent = '填好两个根目录和 JSON 后点「生成复制清单」。';
+  } else if (startMode) {
+    document.body.classList.add('dist-start');
+    document.title = '新任务 · 拿文件 - Excel 整理工具箱';
+    $('distNavOverview').textContent = '新任务 · 拿文件';
+    $('distBreadcrumb').textContent = '新任务 · 拿文件';
+    $('distHeading').textContent = '新任务 · 从共享拿文件';
+    $('distSubtitle').textContent = '开一个新任务，或给当前任务从共享拿最新版。拿完回主页做 1～8 步，处理好再去「当前任务上传」。';
+    $('distControlsKicker').innerHTML = 'FETCH FILES <span>03 / 拿文件</span>';
+    $('distControlsTitle').textContent = '从共享拿文件';
+    $('distResultTitle').textContent = '拿取清单';
+    $('distHistoryKicker').innerHTML = 'FETCH HISTORY <span>04 / 记录</span>';
+    $('distHistoryTitle').textContent = '历史拿取记录';
+    $('distNewTask').hidden = false;
+    $('distGoUpload').hidden = false;
+    $('distGoManage').hidden = true;
+  } else {
+    $('distGoStart').hidden = false;
   }
 
   const load = key => { try { return localStorage.getItem(key) || ''; } catch (_) { return ''; } };
@@ -54,11 +76,13 @@
     $('distStart').disabled = !canStart;
     $('distPreview').hidden = !jsonMode;
     $('distStart').hidden = !jsonMode && !fetchMode;
+    $('distNewCreate').disabled = !!busy || creating;
+    $('distNewCreate').textContent = creating ? '正在建文件夹…' : '🆕 建好任务，生成拿取清单';
     $('distPreview').textContent = submitting === 'preview' ? '正在生成清单…' : '📋 生成复制清单';
     $('distFetch').textContent = submitting === 'fetch' ? '正在对比共享和本地…' : task ? '⬇ 从共享拿最新版' : '⬇ 从目的地拿最新版';
     $('distStart').textContent = fetchMode ? (latest.running ? '正在拿…' : '⬇ 按清单拿文件')
       : (latest.running ? '正在复制…' : '📥 按清单开始复制');
-    if (task) taskControls(busy || readingFiles);
+    if (task && !startMode) taskControls(busy || readingFiles);
   }
 
   function taskControls(busy) {
@@ -96,7 +120,7 @@
       });
       $('distTaskFiles').innerHTML = (rows.length
         ? '<table class="link-table"><thead><tr><th>选择</th><th>处理文件</th><th>状态</th><th>上次上传</th></tr></thead><tbody>' + rows.join('') + '</tbody></table>'
-        : '<p>处理文件夹里还没有 Excel 文件。可先从共享拿最新版。</p>')
+        : '<p>处理文件夹里还没有 Excel 文件。请先到 <a href="/distribute/start">新任务 · 拿文件</a> 页从共享拿最新版。</p>')
         + data.errors.map(err => `<p class="link-error">${esc(err)}</p>`).join('');
       $('distTaskReview').hidden = !taskFiles.some(file => file.review?.ready);
     } catch (error) {
@@ -336,7 +360,7 @@
     : isUpload(data) ? renderUpload(data) : renderData(data, applied);
 
   function renderHistory() {
-    const runs = latest.history || [];
+    const runs = (latest.history || []).filter(inScope);
     if (!runs.length) { $('distHistory').innerHTML = '<p>还没有记录。</p>'; return; }
     $('distHistory').innerHTML = '<ul class="dist-history">' + runs.map(run => {
       const s = run.summary || {};
@@ -372,8 +396,9 @@
     const applied = latest.applied;
     const data = latest.preview || applied;
     if (!data) {
-      $('distResultTitle').textContent = jsonMode ? '复制清单' : '批量上传结果';
+      $('distResultTitle').textContent = jsonMode ? '复制清单' : startMode ? '拿取清单' : '批量上传结果';
       $('distResults').textContent = jsonMode ? '尚未生成清单。'
+        : startMode ? (task ? '点「⬇ 从共享拿最新版」先生成拿取清单（只读不改），核对后再拿。' : '先在上面开一个新任务。')
         : task ? '选好文件后，点击「检查并批量上传」。' : '还没有上传结果。';
       return;
     }
@@ -428,10 +453,12 @@
       const scope = jsonMode ? '' : task?.id;
       if (latest.preview && (latest.preview.task?.id || '') !== scope) latest.preview = null;
       if (latest.applied && (latest.applied.task?.id || '') !== scope) latest.applied = null;
+      if (!inScope(latest.preview)) latest.preview = null;
+      if (!inScope(latest.applied)) latest.applied = null;
       if (pollError && $('distError').textContent === pollError) $('distError').textContent = '';
       pollError = '';
       loading = false;
-      if (task && wasRunning && !latest.running) {
+      if (task && !startMode && wasRunning && !latest.running) {
         if (isUpload(latest.applied)) {
           for (const file of latest.applied.files) if (file.status === 'ok') selected.delete(file.rel);
         }
@@ -600,22 +627,84 @@
         $('distBackToTask').hidden = !current;
         return;
       }
+      if (startMode) $('distNewRoot').value = result.last_work_root || '';
       if (!current) {
-        $('distTaskNoticeText').textContent = '还没有当前任务。请先新建或切换任务，再选择处理好的 Excel。';
-        $('distTaskHome').hidden = false;
+        $('distTaskNoticeText').textContent = startMode ? '还没有当前任务。在下面填共享文件夹路径，开一个新任务。'
+          : '还没有当前任务。请先开一个新任务，再选择处理好的 Excel。';
+        $('distTaskHome').hidden = startMode;
         return;
       }
       task = current;
+      // 已经有任务：开新任务的表单先收起来，拿文件在前面
+      if (startMode) {
+        $('distNewBox').open = false;
+        $('distNewSummary').textContent = '当前任务是「' + task.name + '」。要换一个共享文件夹？展开开一个新任务';
+        $('distNewTaskTitle').textContent = '开另一个新任务';
+      }
       $('distTaskName').textContent = task.name;
       $('distTaskPaths').innerHTML = `<dt>共享</dt><dd>${esc(task.shared)}</dd><dt>参考</dt><dd>${esc(task.reference)}</dd><dt>处理</dt><dd>${esc(task.work)}</dd>`;
       $('distTaskNotice').hidden = true;
       $('distTaskSummary').hidden = false;
-      $('distTaskBox').hidden = false;
-      $('distActions').hidden = false;
-      $('distProgress').textContent = '等待选择文件。';
+      if (startMode) {
+        $('distActions').hidden = false;
+        $('distProgress').textContent = '';
+      } else {
+        $('distTaskBox').hidden = false;
+        $('distProgress').textContent = '等待选择文件。';
+      }
     } catch (_) {
       if (!jsonMode) $('distTaskNoticeText').textContent = '无法读取当前任务，请刷新页面重试。';
     }
+  }
+
+  // ───── 开新任务（只填共享路径，参考 / 处理文件夹自动生成，后端 core/work_task.py） ─────
+  let deriveTimer = 0, deriveSeq = 0;
+  const NEW_EMPTY = '<dt></dt><dd>填好共享文件夹路径后，这里显示参考、处理文件夹的位置。</dd>';
+  const pathsHtml = t => `<dt>共享</dt><dd>${esc(t.shared)}</dd><dt>参考</dt><dd>${esc(t.reference)}</dd><dt>处理</dt><dd>${esc(t.work)}</dd>`;
+  function scheduleDerive() {
+    clearTimeout(deriveTimer);
+    deriveTimer = setTimeout(async () => {
+      const seq = ++deriveSeq;
+      const shared = $('distNewShared').value.trim();
+      $('distNewError').textContent = '';
+      if (!shared) { $('distNewPaths').innerHTML = NEW_EMPTY; return; }
+      try {
+        const result = await post('/api/tasks/derive', { shared, work_root: $('distNewRoot').value.trim() });
+        if (seq !== deriveSeq) return;
+        $('distNewPaths').innerHTML = pathsHtml(result.paths);
+        if (!$('distNewRoot').value.trim()) $('distNewRoot').placeholder = result.paths.work_root;
+      } catch (error) {
+        if (seq !== deriveSeq) return;
+        $('distNewPaths').innerHTML = NEW_EMPTY;
+        $('distNewError').textContent = error.message;
+      }
+    }, 350);
+  }
+  async function createTask() {
+    if (creating || latest.running) return;
+    const shared = $('distNewShared').value.trim();
+    if (!shared) { $('distNewError').textContent = '请填写共享文件夹路径'; $('distNewShared').focus(); return; }
+    creating = true;
+    controls();
+    try {
+      const { task: made } = await post('/api/tasks/new', { shared, work_root: $('distNewRoot').value.trim() });
+      // 1～8 步默认用这个任务的处理 / 参考文件夹
+      try {
+        localStorage.setItem('clear_handle_excel.lastFolder', made.work);
+        localStorage.setItem('clear_handle_excel.oldFolder', made.reference);
+      } catch (_) {}
+      location.href = '/distribute/start?fetch=1';
+    } catch (error) {
+      $('distNewError').textContent = error.message;
+      creating = false;
+      controls();
+    }
+  }
+  if (startMode) {
+    $('distNewShared').addEventListener('input', scheduleDerive);
+    $('distNewRoot').addEventListener('input', scheduleDerive);
+    $('distNewShared').addEventListener('keydown', event => { if (event.key === 'Enter') createTask(); });
+    $('distNewCreate').addEventListener('click', createTask);
   }
 
   controls();
@@ -639,10 +728,10 @@
       }
     }
     await refresh();
-    if (task) await reloadTaskFiles();
-    // 主页开了新任务过来：先自动生成拿取清单（确认后才真正拿）
-    if (task && params.get('fetch') === '1' && !latest.running) {
-      history.replaceState(null, '', '/distribute');
+    if (task && !startMode) await reloadTaskFiles();
+    // 刚开了新任务：先自动生成拿取清单（确认后才真正拿）
+    if (startMode && task && params.get('fetch') === '1' && !latest.running) {
+      history.replaceState(null, '', '/distribute/start');
       makePreview('fetch');
     }
   });

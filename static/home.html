@@ -89,44 +89,15 @@
         title="只调整默认路径的来源；各功能的文件夹始终可以自由修改">📂 自选路径优先</button>
     </section>
 
-    <dialog id="workTaskDialog" class="nt-dialog" aria-labelledby="workTaskDialogTitle">
-      <header class="nt-head">
-        <span class="nt-sign" aria-hidden="true">🆕</span>
-        <div>
-          <h2 id="workTaskDialogTitle">开一个新任务</h2>
-          <p>只填共享文件夹路径，本地的参考、处理文件夹自动生成（子文件夹一起处理）</p>
-        </div>
-      </header>
-      <div class="nt-body">
-        <label class="nt-field" for="workTaskShared">
-          <span class="nt-label">共享文件夹路径</span>
-          <input id="workTaskShared" type="text" spellcheck="false" autocomplete="off"
-            placeholder="例如 D:\Users\s.go\OneDrive - 会社名\介舟ファミリー\20基本設計\10DB\12.ビュー定義書">
-        </label>
-        <label class="nt-field" for="workTaskRoot">
-          <span class="nt-label">本地工作文件夹 <small>参考、处理文件夹放在这里面，一般不用改；不能放在 OneDrive 里</small></span>
-          <input id="workTaskRoot" type="text" spellcheck="false" autocomplete="off" placeholder="不填：桌面下的 handle-excel">
-        </label>
-        <div class="nt-preview" aria-live="polite">
-          <p class="nt-preview-title">将会使用这三个文件夹</p>
-          <dl id="workTaskPreview" class="nt-paths"><div class="nt-empty">填好共享文件夹路径后，这里显示参考、处理文件夹的位置。</div></dl>
-        </div>
-        <p id="workTaskError" class="nt-error" role="alert"></p>
-      </div>
-      <footer class="nt-foot">
-        <button type="button" class="btn btn-outline" id="workTaskCancel">取消</button>
-        <button type="button" class="btn btn-primary" id="workTaskCreate">开始，去拿文件 ➜</button>
-      </footer>
-    </dialog>
 
     <!-- 处理流程路线图：按实际处理顺序从 START 走到 FINISH。
          宽屏三行蛇形（第二行从右往左），窄屏竖排；卡片本身和以前一样（链接、按钮、状态文字 id 都没变） -->
     <section class="route-map" aria-label="处理流程">
       <!-- 起点：高速入口那样的绿色路牌 -->
       <div class="route-sign-row route-sign-row-start">
-        <button type="button" class="route-sign route-sign-entry" id="workTaskNew" title="开一个新任务：填共享文件夹路径，自动生成参考、处理文件夹">
+        <a href="/distribute/start" class="route-sign route-sign-entry" id="workTaskNew" title="打开「新任务 · 拿文件」页：填共享文件夹路径，自动生成参考、处理文件夹，再从共享拿文件">
           <span class="route-sign-main">🆕 新任务</span><span class="route-sign-sub">入口 ➜</span>
-        </button>
+        </a>
       </div>
       <ol class="route-steps">
         <li data-ops="clean" class="route-stop">
