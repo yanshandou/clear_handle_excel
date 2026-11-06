@@ -79,6 +79,8 @@
     #distTaskCount { width: 6rem; margin-inline: 6px; border: 2px solid var(--outline); border-radius: 10px; }
     .dist-debug { margin-top: 24px; }
     .dist-start .dist-upload-metric { display: none; }
+    /* 入口页只做三件事：填路径、建任务、拿文件；第 9 步的导航、上传记录都不显示（用户 2026-11-06 定） */
+    .dist-start .distribution-nav a:not(:first-child), .dist-start #distNavHistory, .dist-start #distHistoryPanel { display: none; }
     .dist-start .dist-overview-grid .overview-intro { grid-column: 1 / -1; }
     .dist-new-preview { margin: 0 0 14px; padding: 12px 14px; border: 2px dashed #b7c7e6; border-radius: 12px; background: #fff; }
     .dist-new-preview .dist-task-paths { color: var(--ink-2); }
@@ -113,8 +115,8 @@
 </head>
 <body>
   <header class="distribution-header">
-    <a href="/" class="distribution-brand"><span class="distribution-brand-mark" aria-hidden="true">📦</span><span><strong>Excel 上传</strong><small>Excel 整理工具箱 · 第 9 步</small></span></a>
-    <nav class="distribution-nav" aria-label="第 9 步功能导航"><a href="/">🏠 主页</a><a href="/distribute/manage">文件管理与上传方案</a><a href="/distribute?mode=json" data-dist-mode="json">复制 Excel</a><a href="/distribute/start" data-dist-mode="start">新任务 · 拿文件</a><a href="/distribute" data-dist-mode="task">当前任务上传</a></nav>
+    <a href="/" class="distribution-brand"><span id="distBrandMark" class="distribution-brand-mark" aria-hidden="true">📦</span><span><strong id="distBrandName">Excel 上传</strong><small id="distBrandSub">Excel 整理工具箱 · 第 9 步</small></span></a>
+    <nav class="distribution-nav" aria-label="第 9 步功能导航"><a href="/">🏠 主页</a><a href="/distribute/manage">文件管理与上传方案</a><a href="/distribute?mode=json" data-dist-mode="json">复制 Excel</a><a href="/distribute" data-dist-mode="task">当前任务上传</a></nav>
     <span class="today"><i data-lucide="calendar-days" aria-hidden="true"></i><time id="distToday"></time></span>
   </header>
   <div class="app-shell dist-workspace">
@@ -122,15 +124,15 @@
       <div class="sidebar-label">工作空间 <span>WORKSPACE</span></div>
       <nav class="navigation" aria-label="上传页面导航">
         <a class="nav-item active" href="#distWorkspace"><i data-lucide="layout-dashboard" aria-hidden="true"></i><span id="distNavOverview">当前任务上传</span><i class="nav-arrow" data-lucide="chevron-right" aria-hidden="true"></i></a>
-        <a class="nav-item" href="#distResultsPanel"><i data-lucide="circle-check" aria-hidden="true"></i><span>本次结果</span></a>
-        <a class="nav-item" href="#distHistoryPanel"><i data-lucide="history" aria-hidden="true"></i><span>历史记录</span></a>
+        <a class="nav-item" href="#distResultsPanel"><i data-lucide="circle-check" aria-hidden="true"></i><span id="distNavResults">本次结果</span></a>
+        <a id="distNavHistory" class="nav-item" href="#distHistoryPanel"><i data-lucide="history" aria-hidden="true"></i><span>历史记录</span></a>
       </nav>
     </aside>
     <main class="main-content">
       <div class="content">
         <section id="distWorkspace" class="page-heading dist-section">
           <div>
-            <div class="eyebrow"><span></span> Excel 上传 / <strong id="distBreadcrumb">当前任务</strong></div>
+            <div class="eyebrow"><span></span> <span id="distCrumbRoot">Excel 上传</span> / <strong id="distBreadcrumb">当前任务</strong></div>
             <h1><span id="distHeading">当前任务批量上传</span> <span class="heading-spark" aria-hidden="true">✳</span></h1>
             <p id="distSubtitle">选择处理好的 Excel，核对共享版本后批量上传。</p>
           </div>
@@ -260,7 +262,7 @@
           <div id="distHistory" class="table-card"><p>还没有记录。</p></div>
         </section>
         <details class="dist-surface dist-debug"><summary>调试日志</summary><div data-debug-log-tools></div></details>
-        <footer class="page-footer"><span>EXCEL 整理工具箱 / 第 9 步</span></footer>
+        <footer class="page-footer"><span id="distFooter">EXCEL 整理工具箱 / 第 9 步</span></footer>
       </div>
     </main>
   </div>

@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>完成任务 · 收尾检查 - Excel 整理工具箱</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/finish.css">
+</head>
+<body>
+  <header class="app-header">
+    <a href="/" class="header-brand"><div class="header-logo-badge">🏁</div><div class="header-title"><h1>完成任务 · 收尾检查</h1><span class="subtitle">终点 · 处理好的文件都传回共享了吗？都传了才算完成</span></div></a>
+    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/distribute" class="nav-link">📦 第 9 步 上传</a></nav>
+  </header>
+  <main class="container clean-container">
+    <section class="panel fin-task">
+      <h2>当前任务：<span id="finTaskName">正在读取…</span> <span id="finTaskDone" class="fin-chip" hidden>✓ 已完成</span></h2>
+      <dl id="finTaskPaths" class="fin-paths"></dl>
+      <p id="finNoTask" class="toolbar-hint" hidden>还没有任务。请回主页点「🆕 新任务」开一个任务。</p>
+      <p class="toolbar-hint">收尾检查只读不改：把处理文件夹里的每个 Excel 和共享文件夹里的那份比一比，看看有没有漏传的。全部通过就把任务标成「已完成」。</p>
+      <div class="link-actions"><button id="finStart" class="btn btn-primary" type="button" disabled>🏁 开始收尾检查</button></div>
+    </section>
+
+    <section class="panel">
+      <h2>检查项目</h2>
+      <ol id="finSteps" class="fin-steps"></ol>
+      <p id="finProgress" class="fin-progress" role="status" aria-live="polite">点「开始收尾检查」后，这里逐项显示进度，过了就打勾。</p>
+      <div class="progress-track progress-track-sm is-done"><div id="finProgressFill" class="progress-fill" style="width:0%"></div></div>
+      <p id="finError" class="batch-error" role="alert"></p>
+    </section>
+
+    <section id="finVerdict" class="panel fin-verdict" hidden></section>
+
+    <section id="finFilesPanel" class="panel" hidden>
+      <h2>逐个文件</h2>
+      <div id="finFilter" class="fin-filter" role="group" aria-label="只看"></div>
+      <div id="finFiles" class="fin-files"></div>
+    </section>
+    <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
+  </main>
+  <script src="/static/game_fx.js"></script><script src="/static/eta.js"></script><script src="/static/dialog.js"></script><script src="/static/open_excel.js"></script>
+  <script src="/static/finish.js"></script><script src="/static/debug_log.js"></script>
+</body>
+</html>
