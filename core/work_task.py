@@ -278,48 +278,74 @@ def focus_filter(folder: Path) -> tuple[dict[str, Any], set[str], str] | None:
 
 # ───────────────────────── 完成任务（主页 FINISH） ─────────────────────────
 
+ISSUE_KEYS = ("待重新处理", "没上传", "别人改过", "共享里没有", "读不到")
+
+
+def _check(task: dict[str, Any], progress=None) -> dict[str, Any]:
+    """收尾检查本体：先列两边的文件、查共享里有没有和待重新处理（不读内容，很快），
+    再逐个比对内容（要读文件，慢，progress(done, total, rel) 报进度）。只读，不改文件。"""
+    from core import distribute
+    work, shared = Path(task["work"]), Path(task["shared"])
+    issues: dict[str, list[str]] = {key: [] for key in ISSUE_KEYS}
+    files: dict[str, dict[str, str]] = {}
+    report = progress or (lambda *a, **k: None)
+    with debug_log.side_task("work_task_finish_check", {"shared": str(shared), "work": str(work)}):
+        if not work.is_dir() or not shared.is_dir():
+            raise ValueError("处理文件夹或共享文件夹不存在了，请确认路径")
+        report(phase="list")
+        baseline = distribute.load_baseline()
+        mine = list(distribute.scan_folder(work)["excel"])
+        shared_files = distribute.scan_folder(shared)["excel"]
+        theirs = {distribute._key(rel): rel for rel in shared_files}
+        report(phase="listed", work_files=len(mine), shared_files=len(shared_files))
+        to_compare = []
+        for rel in mine:
+            other = theirs.get(distribute._key(rel))
+            if not other:
+                issues["共享里没有"].append(rel)
+                files[rel] = {"state": "共享里没有"}
+                continue
+            base = distribute._task_baseline(baseline.get(distribute._base_key(shared / other), {}), task["id"])
+            if base.get("review"):
+                issues["待重新处理"].append(rel)
+                files[rel] = {"state": "待重新处理"}
+                continue
+            to_compare.append((rel, other, base))
+            files[rel] = {"state": "wait"}
+        report(phase="compare", done=0, total=len(to_compare),
+               early={key: list(issues[key]) for key in ("共享里没有", "待重新处理")})
+        for index, (rel, other, base) in enumerate(to_compare):
+            report(phase="compare", done=index, total=len(to_compare), current=rel)
+            try:
+                a, b = distribute._digest(work / rel), distribute._digest(shared / other)
+            except OSError as err:
+                note = f"{err.strerror or err}"
+                issues["读不到"].append(f"{rel}：{note}")
+                files[rel] = {"state": "读不到", "note": note}
+                continue
+            if a == b:
+                files[rel] = {"state": "ok"}
+                continue
+            key = "别人改过" if base and base.get("sha256") != b else "没上传"
+            issues[key].append(rel)
+            files[rel] = {"state": key}
+        report(phase="compare", done=len(to_compare), total=len(to_compare))
+        result = {"passed": not any(issues.values()), "issues": issues, "files": len(mine),
+                  "shared_files": len(shared_files),
+                  "file_states": [{"rel": rel, **files[rel]} for rel in mine]}
+        debug_log.event("🏁 收尾检查", 文件=len(mine), **{k: len(v) for k, v in issues.items()})
+    return result
+
+
 def finish_check(task_id: str) -> dict[str, Any]:
     """收尾检查：处理文件夹里还有没有没传回共享的修改。只读，不改文件。
     - 没上传：处理里改过，和共享不一样，共享还是拿的时候的版本；
     - 别人改过：和共享不一样，共享也被别人改过了（要先拿最新版）；
     - 共享里没有：处理里有、共享里没有的 Excel（新文件还没传）。"""
-    from core import distribute
-    task = get(task_id)
-    work, shared = Path(task["work"]), Path(task["shared"])
-    issues: dict[str, list[str]] = {"待重新处理": [], "没上传": [], "别人改过": [], "共享里没有": [], "读不到": []}
-    with debug_log.side_task("work_task_finish_check", {"shared": str(shared), "work": str(work)}):
-        if not work.is_dir() or not shared.is_dir():
-            raise ValueError("处理文件夹或共享文件夹不存在了，请确认路径")
-        baseline = distribute.load_baseline()
-        mine = distribute.scan_folder(work)["excel"]
-        theirs = {distribute._key(rel): rel for rel in distribute.scan_folder(shared)["excel"]}
-        for rel in mine:
-            other = theirs.get(distribute._key(rel))
-            if not other:
-                issues["共享里没有"].append(rel)
-                continue
-            base = distribute._task_baseline(baseline.get(distribute._base_key(shared / other), {}), task["id"])
-            if base.get("review"):
-                issues["待重新处理"].append(rel)
-                continue
-            try:
-                a, b = distribute._digest(work / rel), distribute._digest(shared / other)
-            except OSError as err:
-                issues["读不到"].append(f"{rel}：{err.strerror or err}")
-                continue
-            if a == b:
-                continue
-            issues["别人改过" if base and base.get("sha256") != b else "没上传"].append(rel)
-        result = {"passed": not any(issues.values()), "issues": issues, "files": len(mine)}
-        debug_log.event("🏁 收尾检查", 文件=len(mine), **{k: len(v) for k, v in issues.items()})
-    return result
+    return _check(get(task_id))
 
 
-def finish(task_id: str) -> dict[str, Any]:
-    """收尾检查通过才标成已完成；没通过返回检查结果，不标"""
-    check = finish_check(task_id)
-    if not check["passed"]:
-        return {**check, "done": False}
+def _mark_done(task_id: str) -> None:
     with _LOCK:
         data = _load()
         for task in data["tasks"]:
@@ -328,4 +354,52 @@ def finish(task_id: str) -> dict[str, Any]:
                 task["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         _save(data)
     debug_log.event("🏁 任务完成", 任务=task_id)
+
+
+# 收尾页 /finish：后台跑检查，页面每秒取一次进度（用户 2026-11-06 要：检查哪一项、进度多少、过了打勾）
+_FINISH: dict[str, Any] = {"running": False}
+
+
+def start_finish(task_id: str) -> None:
+    task = get(task_id)
+    with _LOCK:
+        if _FINISH.get("running"):
+            raise ValueError("收尾检查正在进行，请等它做完")
+        _FINISH.clear()
+        _FINISH.update(running=True, task=task, phase="start", done=0, total=0, current="",
+                       started=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    def progress(**info: Any) -> None:
+        with _LOCK:
+            _FINISH.update(info)
+
+    def run() -> None:
+        try:
+            result = _check(task, progress)
+            if result["passed"]:
+                _mark_done(task["id"])
+            with _LOCK:
+                _FINISH.update(result=result, done_task=result["passed"])
+        except Exception as err:  # 页面上显示原因
+            debug_log.event("⚠️ 收尾检查没做完", 原因=str(err))
+            with _LOCK:
+                _FINISH.update(error=str(err))
+        finally:
+            with _LOCK:
+                _FINISH.update(running=False, current="", finished=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    threading.Thread(target=run, name="work_task_finish", daemon=True).start()
+
+
+def finish_status() -> dict[str, Any]:
+    with _LOCK:
+        return json.loads(json.dumps(_FINISH, ensure_ascii=False))
+
+
+def finish(task_id: str) -> dict[str, Any]:
+    """收尾检查通过才标成已完成；没通过返回检查结果，不标"""
+    check = finish_check(task_id)
+    if not check["passed"]:
+        return {**check, "done": False}
+    _mark_done(task_id)
     return {**check, "done": True}

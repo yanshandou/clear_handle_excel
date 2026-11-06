@@ -210,6 +210,10 @@ class WebHandler(upload_manager.Handler):
         elif parsed.path in {"/distribute", "/distribute/start", "/distribute/start/"}:
             # /distribute/start：新任务 + 从共享拿文件；/distribute：当前任务上传（同一个页面文件，按路径切换）
             self._serve_static_file("distribute.html")
+        elif parsed.path == "/api/tasks/finish/status":
+            self._send_json({"ok": True, **work_task.finish_status()})
+        elif parsed.path == "/finish":
+            self._serve_static_file("finish.html")
         elif parsed.path == "/api/tasks":
             self._send_json({"ok": True, **work_task.overview()})
         elif parsed.path == "/api/distribute":
@@ -507,6 +511,9 @@ class WebHandler(upload_manager.Handler):
             self._send_json({"ok": True, "paths": work_task.derive(payload.get("shared"), payload.get("work_root") or "")})
         elif self.path == "/api/tasks/new":
             self._send_json({"ok": True, "task": work_task.create(payload.get("shared"), payload.get("work_root") or "")})
+        elif self.path == "/api/tasks/finish/start":
+            work_task.start_finish(str(payload.get("id") or ""))
+            self._send_json({"ok": True, **work_task.finish_status()})
         elif self.path == "/api/tasks/finish":
             self._send_json({"ok": True, **work_task.finish(str(payload.get("id") or ""))})
         elif self.path == "/api/tasks/single":

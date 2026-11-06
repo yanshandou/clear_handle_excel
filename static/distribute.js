@@ -39,15 +39,20 @@
     $('distNavOverview').textContent = '新任务 · 拿文件';
     $('distBreadcrumb').textContent = '新任务 · 拿文件';
     $('distHeading').textContent = '新任务 · 从共享拿文件';
-    $('distSubtitle').textContent = '开一个新任务，或给当前任务从共享拿最新版。拿完回主页做 1～8 步，处理好再去「当前任务上传」。';
+    $('distSubtitle').textContent = '填共享文件夹路径，建好任务，从共享拿文件。拿完回主页按顺序做 1～8 步。';
     $('distControlsKicker').innerHTML = 'FETCH FILES <span>03 / 拿文件</span>';
     $('distControlsTitle').textContent = '从共享拿文件';
     $('distResultTitle').textContent = '拿取清单';
     $('distHistoryKicker').innerHTML = 'FETCH HISTORY <span>04 / 记录</span>';
     $('distHistoryTitle').textContent = '历史拿取记录';
     $('distNewTask').hidden = false;
-    $('distGoUpload').hidden = false;
     $('distGoManage').hidden = true;
+    $('distBrandMark').textContent = '🆕';
+    $('distBrandName').textContent = '新任务 · 入口';
+    $('distBrandSub').textContent = 'Excel 整理工具箱 · 起点';
+    $('distNavResults').textContent = '拿取清单';
+    $('distCrumbRoot').textContent = '起点';
+    $('distFooter').textContent = 'EXCEL 整理工具箱 / 起点 · 新任务';
   } else {
     $('distGoStart').hidden = false;
   }

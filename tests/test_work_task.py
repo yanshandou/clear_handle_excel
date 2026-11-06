@@ -183,6 +183,40 @@ class WorkTaskTests(unittest.TestCase):
         self.assertTrue(work_task.get(task["id"])["done"])
         self.assertFalse(work_task.create(str(self.shared), str(self.work_root))["done"])  # 再开一次重新开始
 
+    def wait_finish(self):
+        for _ in range(200):
+            status = work_task.finish_status()
+            if not status.get("running"):
+                return status
+            time.sleep(0.05)
+        self.fail("收尾检查没结束")
+
+    def test_finish_page_runs_in_background_with_steps(self):
+        task = work_task.create(str(self.shared), str(self.work_root))
+        work = Path(task["work"])
+        distribute.preview_fetch("", "", "", task["id"])
+        self.wait()
+        write(work / "a.xlsx", "BBB")
+        write(work / "新.xlsx", "new")
+        work_task.start_finish(task["id"])
+        status = self.wait_finish()
+        self.assertEqual(status["task"]["id"], task["id"])
+        self.assertEqual(status["early"], {"共享里没有": ["新.xlsx"], "待重新处理": []})
+        self.assertEqual((status["done"], status["total"]), (2, 2))  # 只比对共享里有的两个
+        result = status["result"]
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["shared_files"], 2)
+        states = {row["rel"]: row["state"] for row in result["file_states"]}
+        self.assertEqual(states, {"a.xlsx": "没上传", "子/孫/b.xlsx": "ok", "新.xlsx": "共享里没有"})
+        self.assertFalse(work_task.get(task["id"]).get("done"))
+        (work / "新.xlsx").unlink()
+        write(work / "a.xlsx", "AAA")
+        work_task.start_finish(task["id"])
+        status = self.wait_finish()
+        self.assertTrue(status["result"]["passed"])
+        self.assertTrue(status["done_task"])
+        self.assertTrue(work_task.get(task["id"])["done"])
+
     def test_selected_upload_rechecks_only_its_batch_until_review_is_current(self):
         write(self.shared / "unselected.xlsx", "original")
         task = work_task.create(str(self.shared), str(self.work_root))

@@ -55,44 +55,7 @@
     return result;
   }
 
-  // 终点「🏁 完成任务」：收尾检查（处理文件夹里的修改都传回共享了吗）→ 标记完成 → 撒花
-  let finishing = false;
-  async function finishTask() {
-    if (finishing) return;
-    const current = data.tasks.find(t => t.id === data.current);
-    if (!current) { window.appAlert('还没有任务。先点 START 旁边的「🆕 新任务」开一个任务。', { title: '没有任务' }); return; }
-    finishing = true;
-    const button = $('workTaskFinish');
-    const label = button.querySelector('.route-sign-sub');
-    label.textContent = '正在检查…';
-    try {
-      const result = await post('/api/tasks/finish', { id: current.id });
-      if (result.done) {
-        await load();
-        if (window.gameFx) window.gameFx.celebrate('任务完成！', `${current.name} · ${result.files} 个文件都已传回共享`, 3);
-        else window.appAlert(`${current.name} 的 ${result.files} 个文件都已传回共享，任务已标记完成。`, { title: '任务完成' });
-      } else {
-        const names = { '待重新处理': '待重新处理及复检（完成后请到第 9 步再次检查并上传）',
-          '没上传': '改过但还没传回共享（请到第 9 步上传）', '别人改过': '别人在共享里改过（请到「新任务 · 拿文件」页先拿最新版，改好再传）',
-          '共享里没有': '处理文件夹里有、共享里没有（新文件还没传）', '读不到': '读不到（可能正在 Excel 中打开）' };
-        const lines = [];
-        for (const [key, list] of Object.entries(result.issues)) {
-          if (!list.length) continue;
-          lines.push(`■ ${list.length} 个${names[key] || key}：`);
-          lines.push(...list.slice(0, 8).map(rel => `　${rel}`));
-          if (list.length > 8) lines.push(`　……另外 ${list.length - 8} 个`);
-        }
-        window.appAlert(lines.join('\n') + '\n\n处理完这些再点「🏁 完成任务」。', { title: '还不能完成：有文件没传回共享', tone: 'warn' });
-      }
-    } catch (error) {
-      window.appAlert(error.message, { tone: 'error' });
-    } finally {
-      label.textContent = '收尾检查';
-      finishing = false;
-    }
-  }
-
-  $('workTaskFinish').addEventListener('click', finishTask);
+  // 终点「🏁 完成任务」是链接，打开收尾页 /finish（static/finish.js）
   // 路径偏好只决定默认值，两种偏好都允许直接修改输入框。
   $('workTaskSingle').addEventListener('click', async () => {
     const on = data.single !== true;
