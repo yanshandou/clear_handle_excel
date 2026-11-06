@@ -1,4 +1,4 @@
-/* 主页「当前任务」和新任务对话框（static/work_task.js） */
+/* 主页「当前任务」和路线起点、终点路牌（static/work_task.js） */
 /* 路线图上面的一行：当前任务名、看路径、切换 */
 .work-task-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin: 0 0 6px; font-size: 14px; color: var(--ink-2); }
 .work-task-title { overflow-wrap: anywhere; }
@@ -19,46 +19,12 @@
 .work-task-bar.single .work-task-single { background: #b45309; border-color: #7c3a06; color: #ffffff; }
 .work-task-bar.single .work-task-title strong { color: #9a3412; }
 
-/* 新任务对话框 */
-.nt-dialog {
-  width: 760px; max-width: calc(100vw - 48px); padding: 0; overflow: hidden;
-  border: 3px solid var(--ink); border-radius: 22px; background: #ffffff; color: var(--ink-2);
-  box-shadow: 8px 8px 0 var(--ink); text-shadow: none;
-}
-.nt-dialog::backdrop { background: rgba(15, 29, 70, 0.45); backdrop-filter: blur(3px); }
-.nt-head { display: flex; align-items: center; gap: 16px; padding: 22px 28px 18px; background: #1f7a2e; color: #ffffff; }
-.nt-head h2 { margin: 0; font-size: 22px; font-weight: 900; color: #ffffff; }
-.nt-head p { margin: 4px 0 0; font-size: 14px; color: #ffffff; }
-.nt-sign { display: grid; place-items: center; width: 52px; height: 52px; flex: none; border-radius: 12px;
-  background: #ffffff; border: 3px solid #ffffff; outline: 3px solid #145c22; font-size: 28px; }
-.nt-body { display: grid; gap: 18px; padding: 24px 28px 8px; }
-.nt-field { display: grid; gap: 8px; }
-.nt-label { font-size: 15px; font-weight: 800; color: var(--ink); }
-.nt-label small { margin-left: 8px; font-size: 13px; font-weight: 500; color: var(--ink-3); }
-.nt-field input {
-  width: 100%; box-sizing: border-box; padding: 11px 14px; font-size: 14px;
-  font-family: ui-monospace, Consolas, "MS Gothic", monospace;
-  border: 2px solid #9aa8c7; border-radius: 12px; background: #f7f9fd; color: var(--ink);
-}
-.nt-field input:focus { outline: none; border-color: #2f80ff; background: #ffffff; box-shadow: 0 0 0 4px rgba(47, 128, 255, .18); }
-.nt-preview { border: 2px dashed #b9c5de; border-radius: 14px; padding: 14px 16px; background: #f5f8ff; }
-.nt-preview-title { margin: 0 0 10px; font-size: 13px; font-weight: 800; color: var(--ink-3); }
-.nt-paths { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 12px; margin: 0; align-items: baseline; }
-.nt-paths dt { font-size: 13px; font-weight: 800; padding: 2px 10px; border-radius: 999px; text-align: center; }
-.nt-paths dt:nth-of-type(1) { background: #e3eeff; color: #1d4f91; }
-.nt-paths dt:nth-of-type(2) { background: #e4f5ea; color: #14633c; }
-.nt-paths dt:nth-of-type(3) { background: #fff1db; color: #7a4a00; }
-.nt-paths dd { margin: 0; font-size: 13px; color: var(--ink); overflow-wrap: anywhere; font-family: ui-monospace, Consolas, "MS Gothic", monospace; }
-.nt-empty { grid-column: 1 / -1; font-size: 13px; color: var(--ink-3); }
-.nt-error { margin: 0; min-height: 1.4em; font-size: 14px; font-weight: 700; color: #b42318; }
-.nt-foot { display: flex; justify-content: flex-end; gap: 12px; padding: 12px 28px 24px; }
-
 /* 路线起点、终点的路牌按钮：起点像高速入口的绿色路牌，终点是黑白格 */
 .route-sign-row { display: flex; margin: 0 0 18px; }
 .route-sign-row-finish { justify-content: flex-end; margin: 18px 0 0; }
 .route-sign {
   display: inline-flex; align-items: center; gap: 10px;
-  padding: 8px 16px; border-radius: 10px; cursor: pointer;
+  padding: 8px 16px; border-radius: 10px; cursor: pointer; text-decoration: none;
   font-weight: 900; line-height: 1.2; box-shadow: 0 4px 0 var(--road-edge);
   transition: transform .12s ease, box-shadow .12s ease;
 }

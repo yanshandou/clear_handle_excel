@@ -1,11 +1,10 @@
-// 主页「当前任务」：新任务（只填共享路径，自动生成参考 / 处理文件夹）、切换以前的任务（后端 core/work_task.py）
+// 主页「当前任务」：显示当前任务、切换以前的任务、收尾检查（后端 core/work_task.py）
+// 开新任务在单独的「新任务 · 拿文件」页（/distribute/start，static/distribute.js）
 // 开新任务或切换后，把 1～8 步共用的文件夹（lastFolder）设成处理文件夹、原始备份（oldFolder）设成参考文件夹
 (() => {
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[ch]));
   let data = { tasks: [], current: '' };
-  const EMPTY = '<div class="nt-empty">填好共享文件夹路径后，这里显示参考、处理文件夹的位置。</div>';
-  let deriveTimer = 0, deriveSeq = 0, creating = false;
 
   const pathsHtml = t => `<dt>共享</dt><dd>${esc(t.shared)}</dd><dt>参考</dt><dd>${esc(t.reference)}</dd><dt>处理</dt><dd>${esc(t.work)}</dd>`;
 
@@ -54,58 +53,6 @@
     return result;
   }
 
-  function scheduleDerive() {
-    clearTimeout(deriveTimer);
-    deriveTimer = setTimeout(async () => {
-      const seq = ++deriveSeq;
-      const shared = $('workTaskShared').value.trim();
-      $('workTaskError').textContent = '';
-      if (!shared) { $('workTaskPreview').innerHTML = EMPTY; return; }
-      try {
-        const result = await post('/api/tasks/derive', { shared, work_root: $('workTaskRoot').value.trim() });
-        if (seq !== deriveSeq) return;
-        $('workTaskPreview').innerHTML = pathsHtml(result.paths);
-        if (!$('workTaskRoot').value.trim()) $('workTaskRoot').placeholder = result.paths.work_root;
-      } catch (error) {
-        if (seq !== deriveSeq) return;
-        $('workTaskPreview').innerHTML = EMPTY;
-        $('workTaskError').textContent = error.message;
-      }
-    }, 350);
-  }
-
-  function openDialog() {
-    const current = data.tasks.find(t => t.id === data.current);
-    $('workTaskShared').value = current ? current.shared : '';
-    $('workTaskRoot').value = data.last_work_root || '';
-    $('workTaskError').textContent = '';
-    $('workTaskPreview').innerHTML = EMPTY;
-    $('workTaskDialog').showModal();
-    $('workTaskShared').focus();
-    $('workTaskShared').select();
-    scheduleDerive();
-  }
-
-  async function create() {
-    if (creating) return;
-    const shared = $('workTaskShared').value.trim();
-    if (!shared) { $('workTaskError').textContent = '请填写共享文件夹路径'; return; }
-    creating = true;
-    $('workTaskCreate').disabled = true;
-    $('workTaskCreate').textContent = '正在建文件夹…';
-    try {
-      const { task } = await post('/api/tasks/new', { shared, work_root: $('workTaskRoot').value.trim() });
-      applyTask(task);
-      // 第 0 步：去第 9 步的页面拿文件（自动生成拿取清单，确认后才拿）
-      window.location.href = '/distribute?fetch=1';
-    } catch (error) {
-      $('workTaskError').textContent = error.message;
-      $('workTaskCreate').disabled = false;
-      $('workTaskCreate').textContent = '开始，去拿文件 ➜';
-      creating = false;
-    }
-  }
-
   // 终点「🏁 完成任务」：收尾检查（处理文件夹里的修改都传回共享了吗）→ 标记完成 → 撒花
   let finishing = false;
   async function finishTask() {
@@ -124,7 +71,7 @@
         else window.appAlert(`${current.name} 的 ${result.files} 个文件都已传回共享，任务已标记完成。`, { title: '任务完成' });
       } else {
         const names = { '待重新处理': '待重新处理及复检（完成后请到第 9 步再次检查并上传）',
-          '没上传': '改过但还没传回共享（请到第 9 步上传）', '别人改过': '别人在共享里改过（请到第 9 步先拿最新版，改好再传）',
+          '没上传': '改过但还没传回共享（请到第 9 步上传）', '别人改过': '别人在共享里改过（请到「新任务 · 拿文件」页先拿最新版，改好再传）',
           '共享里没有': '处理文件夹里有、共享里没有（新文件还没传）', '读不到': '读不到（可能正在 Excel 中打开）' };
         const lines = [];
         for (const [key, list] of Object.entries(result.issues)) {
@@ -143,13 +90,7 @@
     }
   }
 
-  $('workTaskNew').addEventListener('click', openDialog);
   $('workTaskFinish').addEventListener('click', finishTask);
-  $('workTaskCancel').addEventListener('click', () => $('workTaskDialog').close());
-  $('workTaskCreate').addEventListener('click', create);
-  $('workTaskShared').addEventListener('input', scheduleDerive);
-  $('workTaskRoot').addEventListener('input', scheduleDerive);
-  $('workTaskShared').addEventListener('keydown', event => { if (event.key === 'Enter') create(); });
   // 路径偏好只决定默认值，两种偏好都允许直接修改输入框。
   $('workTaskSingle').addEventListener('click', async () => {
     const on = data.single !== true;

@@ -98,6 +98,8 @@
 
 原有 `/distribute` 当前任务上传、`/distribute?mode=json` 手工粘贴 JSON、版本冲突检查和复制记录继续使用。带入新方案或修改复制参数后，必须重新生成清单。
 
+开新任务和从共享拿文件在单独的 `/distribute/start`「新任务 · 拿文件」页（主页「🆕 新任务」入口）：填共享路径建任务，建好后自动生成拿取清单，确认后才拿。`/distribute` 只管当前任务上传，页面上不再出现拿文件的按钮和清单。
+
 管理系统与工具箱共用一个 Python 服务；后端使用 Python 标准库和已有的 openpyxl，浏览器使用普通 JavaScript，无需安装 Node.js 或运行 npm。日期选择改用浏览器日历，字体和图标使用本地资源，无需外部 CDN。
 
 管理数据单独保存在程序数据目录下的 `upload_manager.sqlite3`（默认 `桌面/handle-excel/程序数据`，也随 `CLEAR_HANDLE_EXCEL_DATA` 修改）。首次使用为空库，`rebuild.md` 的源码快照不含原系统的工作数据。可通过页面导入旧 Excel / JSON 备份；若保留原 SQLite 数据库，也可在启动前用 `UPLOAD_DESK_DB` 指定其路径，首次使用前建议保留一份副本。管理系统的数据和历史方案不包含在主页「导出进度」的工具箱备份中；管理页面的 JSON 备份只含文件夹记录，完整历史需备份 SQLite 数据库。

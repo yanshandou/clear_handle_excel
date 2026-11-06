@@ -74,6 +74,15 @@
     #distTaskUpload { margin-top: 12px; }
     #distTaskCount { width: 6rem; margin-inline: 6px; border: 2px solid var(--outline); border-radius: 10px; }
     .dist-debug { margin-top: 24px; }
+    .dist-start .dist-upload-metric { display: none; }
+    .dist-start .dist-overview-grid .overview-intro { grid-column: 1 / -1; }
+    .dist-new-preview { margin: 0 0 14px; padding: 12px 14px; border: 2px dashed #b7c7e6; border-radius: 12px; background: #fff; }
+    .dist-new-preview .dist-task-paths { color: var(--ink-2); }
+    .dist-new-preview .dist-task-paths dt:empty { display: none; }
+    .dist-new-preview .dist-task-paths dt:empty + dd { grid-column: 1 / -1; font-family: inherit; color: var(--ink-3); }
+    .link-fields label small { font-weight: 400; }
+    #distNewBox > summary { cursor: pointer; font-weight: 700; color: var(--ink-2); }
+    #distNewBox[open] > summary { margin-bottom: 10px; }
     @media (max-width: 700px) {
       .dist-workspace .navigation { padding: 3px 3px 8px; }
       .dist-overview-copy { padding-inline: 16px; }
@@ -92,7 +101,7 @@
 <body>
   <header class="distribution-header">
     <a href="/" class="distribution-brand"><span class="distribution-brand-mark" aria-hidden="true">📦</span><span><strong>Excel 上传</strong><small>Excel 整理工具箱 · 第 9 步</small></span></a>
-    <nav class="distribution-nav" aria-label="第 9 步功能导航"><a href="/">🏠 主页</a><a href="/distribute/manage">文件管理与上传方案</a><a href="/distribute?mode=json" data-dist-mode="json">复制 Excel</a><a href="/distribute" data-dist-mode="task">当前任务上传</a></nav>
+    <nav class="distribution-nav" aria-label="第 9 步功能导航"><a href="/">🏠 主页</a><a href="/distribute/manage">文件管理与上传方案</a><a href="/distribute?mode=json" data-dist-mode="json">复制 Excel</a><a href="/distribute/start" data-dist-mode="start">新任务 · 拿文件</a><a href="/distribute" data-dist-mode="task">当前任务上传</a></nav>
     <span class="today"><i data-lucide="calendar-days" aria-hidden="true"></i><time id="distToday"></time></span>
   </header>
   <div class="app-shell dist-workspace">
@@ -113,7 +122,9 @@
             <p id="distSubtitle">选择处理好的 Excel，核对共享版本后批量上传。</p>
           </div>
           <div class="page-heading-actions">
-            <a class="button secondary" href="/distribute/manage"><i data-lucide="files" aria-hidden="true"></i> 文件管理与上传方案</a>
+            <a id="distGoStart" class="button secondary" href="/distribute/start" hidden><i data-lucide="download" aria-hidden="true"></i> 新任务 · 从共享拿文件</a>
+            <a id="distGoUpload" class="button secondary" href="/distribute" hidden><i data-lucide="upload" aria-hidden="true"></i> 去当前任务上传</a>
+            <a id="distGoManage" class="button secondary" href="/distribute/manage"><i data-lucide="files" aria-hidden="true"></i> 文件管理与上传方案</a>
           </div>
         </section>
         <section class="overview dist-overview" aria-label="上传概况">
@@ -121,7 +132,7 @@
             <div class="section-kicker">TASK OVERVIEW <span>01 / 当前任务</span></div>
             <div class="overview-title"><h2>当前任务</h2></div>
             <p id="distTaskNoticeText" role="status">正在读取当前任务…</p>
-            <a id="distTaskHome" class="button primary" href="/#workTaskPanel" hidden>回主页新建或切换任务 →</a>
+            <a id="distTaskHome" class="button primary" href="/distribute/start#distNewTask" hidden>开一个新任务 →</a>
           </div>
           <div id="distTaskSummary" class="dist-overview-grid" hidden>
             <div class="overview-intro">
@@ -129,17 +140,17 @@
               <div class="overview-title"><h2 id="distTaskName"></h2></div>
               <dl id="distTaskPaths" class="dist-task-paths"></dl>
             </div>
-            <div class="metric">
+            <div class="metric dist-upload-metric">
               <div class="metric-label"><span class="metric-icon blue"><i data-lucide="files" aria-hidden="true"></i></span> 文件总数</div>
               <div class="metric-value"><strong id="distTaskTotal">—</strong><span>个文件</span></div>
               <div class="metric-foot">处理文件夹中的 Excel</div>
             </div>
-            <div class="metric">
+            <div class="metric dist-upload-metric">
               <div class="metric-label"><span class="metric-icon green"><i data-lucide="circle-check" aria-hidden="true"></i></span> 当前版本已上传</div>
               <div class="metric-value"><strong id="distTaskUploaded">—</strong><span>个文件</span></div>
               <div class="metric-foot">按数量选取时会跳过</div>
             </div>
-            <div class="metric">
+            <div class="metric dist-upload-metric">
               <div class="metric-label"><span class="metric-icon amber"><i data-lucide="history" aria-hidden="true"></i></span> 待重新处理</div>
               <div class="metric-value"><strong id="distTaskPending">—</strong><span>个文件</span></div>
               <div class="metric-foot">共享版本更新后需复检</div>
@@ -153,10 +164,34 @@
             <p><strong>覆盖前检查别人改过没有：</strong>用「⬇ 从目的地拿最新版」把目的地（共享文件夹）的 Excel 拿回来源时，会记下每个文件拿到的版本。复制时如果目的地的文件和记下的不一样（拿走之后被别人改过），这个文件<strong>不覆盖</strong>、标红列出来；请再拿一次最新版，在新版上改好再复制。复制成功的文件也会记下放进去的版本，下次接着检查。没有记录的文件（以前手动拿的）没法检查，照旧覆盖，清单里会标出来。</p>
           </div>
         </section>
+        <section id="distNewTask" class="planner dist-section" aria-labelledby="distNewTaskTitle" hidden>
+          <div class="planner-heading">
+            <div>
+              <div class="section-kicker">NEW TASK <span>02 / 开新任务</span></div>
+              <h2 id="distNewTaskTitle">开一个新任务</h2>
+            </div>
+          </div>
+          <details id="distNewBox" class="dist-surface" open>
+            <summary id="distNewSummary">填写共享文件夹路径</summary>
+            <p class="toolbar-hint">只填共享文件夹路径，本地的参考、处理文件夹自动生成（子文件夹一起处理）。建好后马上在下面生成拿取清单，确认后才真正拿文件。</p>
+            <div class="link-fields">
+              <label for="distNewShared">共享文件夹路径
+                <input id="distNewShared" type="text" spellcheck="false" autocomplete="off" placeholder="例如 D:\Users\s.go\OneDrive - 会社名\介舟ファミリー\20基本設計\10DB\12.ビュー定義書"></label>
+              <label for="distNewRoot">本地工作文件夹 <small class="toolbar-hint">参考、处理文件夹放在这里面，一般不用改；不能放在 OneDrive 里</small>
+                <input id="distNewRoot" type="text" spellcheck="false" autocomplete="off" placeholder="不填：桌面下的 handle-excel"></label>
+            </div>
+            <div class="dist-new-preview" aria-live="polite">
+              <strong>将会使用这三个文件夹</strong>
+              <dl id="distNewPaths" class="dist-task-paths"><dt></dt><dd>填好共享文件夹路径后，这里显示参考、处理文件夹的位置。</dd></dl>
+            </div>
+            <p id="distNewError" class="batch-error dist-activity" role="alert"></p>
+            <button id="distNewCreate" class="button primary" type="button">🆕 建好任务，生成拿取清单</button>
+          </details>
+        </section>
         <section class="planner dist-section" aria-labelledby="distControlsTitle">
           <div class="planner-heading">
             <div>
-              <div class="section-kicker">FILE UPLOAD <span>02 / 操作</span></div>
+              <div id="distControlsKicker" class="section-kicker">FILE UPLOAD <span>02 / 操作</span></div>
               <h2 id="distControlsTitle">上传操作</h2>
             </div>
           </div>
@@ -170,6 +205,7 @@
               <span id="distTaskSelection" role="status" aria-live="polite"></span>
             </div>
             <div id="distTaskFiles" class="link-table-wrap dist-task-list"><p>正在读取本地文件…</p></div>
+            <p class="toolbar-hint">要从共享拿最新版、或开新任务，请到 <a href="/distribute/start">新任务 · 拿文件</a> 页。</p>
             <p id="distTaskReview" class="toolbar-hint" hidden>待重新处理的文件可点名称在 Excel 中打开。处理并保存后，可前往<a href="/?task=export_pdf" target="_blank" rel="noopener">第 7 步导出 PDF 并复检 ↗</a>，然后回到此页再次检查。</p>
             <button id="distTaskUpload" class="button primary" type="button" disabled>检查并批量上传</button>
           </div>
@@ -203,7 +239,7 @@
           </section>
         </section>
         <section id="distHistoryPanel" class="list-section dist-section" aria-labelledby="distHistoryTitle">
-          <div class="list-heading"><div><div class="section-kicker">UPLOAD HISTORY <span>03 / 记录</span></div><h2 id="distHistoryTitle">历史上传和复制记录</h2></div></div>
+          <div class="list-heading"><div><div id="distHistoryKicker" class="section-kicker">UPLOAD HISTORY <span>03 / 记录</span></div><h2 id="distHistoryTitle">历史上传和复制记录</h2></div></div>
           <div id="distHistory" class="table-card"><p>还没有记录。</p></div>
         </section>
         <details class="dist-surface dist-debug"><summary>调试日志</summary><div data-debug-log-tools></div></details>
