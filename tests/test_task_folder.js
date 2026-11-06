@@ -86,3 +86,11 @@ test('self-chosen preference does not force task defaults into empty inputs', as
   assert.equal(p.elements.get('taskFolderInput').value,'');
   assert.equal(p.elements.get('taskFolderInput').readOnly,false);
 });
+
+test('paths left over from another task switch to the current task, custom paths stay', async () => {
+  const old = { id:'two', name:'任务二', work:'C:\\old\\work', reference:'C:\\old\\reference' };
+  const p=page({work:'c:/OLD/work/',reference:'D:/custom',data:{ok:true,current:'one',tasks:[task,old]}});
+  await settle();
+  assert.equal(p.elements.get('taskFolderInput').value,task.work);
+  assert.equal(p.elements.get('repairOldFolder').value,'D:/custom');
+});

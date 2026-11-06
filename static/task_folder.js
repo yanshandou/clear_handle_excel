@@ -15,6 +15,9 @@
   document.head.appendChild(style);
   let sequence = 0;
 
+  const norm = value => String(value || '').trim().replace(/[\\/]+/g, '/').replace(/\/$/, '').toLowerCase();
+  const KEYS = { work:'clear_handle_excel.lastFolder', reference:'clear_handle_excel.oldFolder' };
+
   function setValue(input, value) {
     if (input.value === value) return;
     input.value = value;
@@ -50,12 +53,19 @@
       data = await response.json();
       if (!data.ok || version !== sequence) return;
     } catch (_) { return; }
-    const task = (data.tasks || []).find(t => t.id === data.current);
+    const tasks = data.tasks || [];
+    const task = tasks.find(t => t.id === data.current);
     if (task && !data.single) {
-      for (const [group, value] of [[work, task.work], [refs, task.reference]]) {
+      for (const [group, field] of [[work, 'work'], [refs, 'reference']]) {
+        // 框里是「别的任务」的默认路径（浏览器记住的是旧任务）→ 换成当前任务的；自己填的其他路径照样保留
+        const otherTasks = new Set(tasks.filter(t => t.id !== task.id).map(t => norm(t[field])));
         for (const input of group) {
+          const stale = otherTasks.has(norm(input.value)) && norm(input.value) !== norm(task[field]);
           // 异步加载任务信息期间输入的路径也要保留。
-          if (input.value === before.get(input) && (useTaskDefaults || !input.value.trim())) setValue(input, value);
+          if (input.value === before.get(input) && (useTaskDefaults || !input.value.trim() || stale)) {
+            setValue(input, task[field]);
+            if (stale) { try { localStorage.setItem(KEYS[field], task[field]); } catch (_) {} }
+          }
         }
       }
       note(`当前任务「${esc(task.name)}」仅提供默认路径；可以直接修改文件夹，按实际选择执行。`);
