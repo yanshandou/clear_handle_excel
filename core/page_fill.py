@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import math
+import statistics
+import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
@@ -25,6 +27,7 @@ from core.pdf_detector import fitz
 FILL_LOW = 0.15   # 一页用了不到这么多算「很少」
 FILL_FULL = 0.60  # 相邻页用了这么多以上算「挺满」
 SCAN_TAIL_FILL = 0.40  # 扫描时自动分页的末页不到 40%，缩放到少一页
+FLOOR_MIN_SCALE = 0.85  # 向下取整：字缩到不到原来的这么多就不改（太小看不清）
 MAX_FIXES = 6     # 一张表最多连着修几次（每修一次都要重新导出核对）
 SCAN_ROWS_LIMIT = 400  # Excel 里逐行找字最多找这么多行（Find 用不了时）
 XL_VALUES, XL_PART, XL_BY_ROWS, XL_PREVIOUS = -4163, 2, 1, 2
@@ -490,3 +493,140 @@ def flags(found: dict | None, failed: dict[tuple, str] | None = None) -> list[di
                     f"原因是第 {it['row']} 行上方的手动分页；{why}，没有删，请人工调整")
         notes.append({"page": it["page"], "fixed": False, "text": text})
     return notes
+
+
+# ---------- 工具箱：向下取整（用户 2026-11-07 定） ----------
+# 复检时看到 PDF 是 4.1 页这种（最后一页只多一点），点按钮标记，一键处理时把这张表设成
+# 「1 页宽、N-1 页高」挤回上一页。真导出一次核对：页数少了一页、字没缩到 85% 以下、
+# PDF 正文里原来有的每一段字缩完都还在（没缩出 ### 或丢字），三条都满足才保留，否则改回原来的打印设置。
+
+def _texts(pdf_path: Path, top_margin: float, bottom_margin: float) -> set[str]:
+    """PDF 正文（上下边距之间，页眉页脚不算：「第几页 / 共几页」缩完会变）里出现过的每一段字"""
+    texts: set[str] = set()
+    with fitz.open(str(pdf_path)) as doc:
+        for page in doc:
+            height = float(page.rect.height)
+            top, bottom = top_margin, height - bottom_margin
+            if bottom - top < height * .3:  # 边距读出来不对劲：整页都算
+                top, bottom = 0.0, height
+            for block in page.get_text("dict").get("blocks", []):
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        text = str(span.get("text", "")).strip()
+                        mid = (span["bbox"][1] + span["bbox"][3]) / 2
+                        if text and top - 1 <= mid <= bottom + 1:
+                            texts.add(text)
+    return texts
+
+
+def _span_widths(pdf_path: Path) -> dict[str, float]:
+    """只出现一次的文字块 -> 宽度（量缩放用）"""
+    seen: dict[str, list[float]] = {}
+    with fitz.open(str(pdf_path)) as doc:
+        for page in doc:
+            for block in page.get_text("dict").get("blocks", []):
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        text = str(span.get("text", "")).strip()
+                        if len(text) >= 2 and not text.isdigit():
+                            seen.setdefault(text, []).append(float(span["bbox"][2] - span["bbox"][0]))
+    return {text: widths[0] for text, widths in seen.items() if len(widths) == 1 and widths[0] > 0}
+
+
+def _scale(before: Path, after: Path) -> float | None:
+    """同一段字缩完后宽度是原来的几成（取中位数）；量不出返回 None"""
+    old, new = _span_widths(before), _span_widths(after)
+    ratios = [new[text] / old[text] for text in old.keys() & new.keys()]
+    return statistics.median(ratios) if ratios else None
+
+
+def _restore_fit(setup: Any, original: dict) -> None:
+    if original["Zoom"] is False:
+        setup.Zoom = False
+        setup.FitToPagesWide = original["FitToPagesWide"]
+        setup.FitToPagesTall = original["FitToPagesTall"]
+    else:
+        setup.Zoom = original["Zoom"]
+
+
+def floor_pages(sheet: Any, pdf_path: Path, export: Callable[[Any, Path], None]) -> dict:
+    """sheet 要是可以保存的；pdf_path 是复检页上看到的那份 PDF（N 页）。
+    返回 {"ok", "reason", "before", "after", "scale", "manual"}；ok=False 时 Excel 的打印设置已改回原样"""
+    name = getattr(sheet, "Name", "")
+    result: dict[str, Any] = {"ok": False, "reason": "", "before": _page_count(pdf_path), "after": None,
+                              "scale": None, "manual": False}
+    pages = result["before"]
+    if not pages:
+        result["reason"] = "PDF 读不了"
+        return result
+    if pages < 2:
+        result["reason"] = "只有 1 页，不能再少了"
+        return result
+    if _area(sheet) is None:
+        result["reason"] = "设了几块打印区域，没法挤成一块"
+        return result
+    breaks = page_breaks.read_breaks(sheet)
+    if breaks is None:
+        result["reason"] = "读不到 Excel 的分页（可能没装打印机），没有改"
+        return result
+    if breaks["v"]:
+        result["reason"] = "这张表打印时按列拆成了几页宽，向下取整会改成 1 页宽、变化太大，没有改"
+        return result
+    result["manual"] = any(manual for _, manual in breaks["h"])
+    setup = sheet.PageSetup
+    try:
+        original = {key: getattr(setup, key) for key in ("Zoom", "FitToPagesWide", "FitToPagesTall")}
+    except Exception as err:
+        result["reason"] = f"读不到打印缩放（{err}）"
+        return result
+    try:
+        setup.Zoom = False
+        setup.FitToPagesWide = 1
+        setup.FitToPagesTall = pages - 1
+    except Exception as err:
+        try:
+            _restore_fit(setup, original)
+        except Exception:
+            pass
+        result["reason"] = f"Excel 没让改打印缩放（{err}）"
+        return result
+    with tempfile.TemporaryDirectory(prefix="floor_") as tmp:
+        trial = Path(tmp) / "trial.pdf"
+        reason = ""
+        try:
+            export(sheet, trial)
+            after = _page_count(trial)
+            result["after"] = after
+            if after is None:
+                reason = "缩完的 PDF 读不了"
+            elif after >= pages:
+                reason = f"设了 {pages - 1} 页高，导出来还是 {after} 页"
+            else:
+                scale = _scale(pdf_path, trial)
+                result["scale"] = scale
+                if scale is None:
+                    reason = "量不出字缩了多少（PDF 里没有可比的文字）"
+                elif scale < FLOOR_MIN_SCALE:
+                    reason = f"要把字缩到约 {_pct(scale)}% 才挤得进 {pages - 1} 页，太小了"
+                else:
+                    top_margin, bottom_margin = _margins(sheet)
+                    lost = _texts(pdf_path, top_margin, bottom_margin) - _texts(trial, top_margin, bottom_margin)
+                    if lost:
+                        sample = "」「".join(sorted(lost)[:3])
+                        reason = f"缩完 PDF 里有 {len(lost)} 处字对不上（如「{sample}」），可能缩出了切字或 ###"
+        except Exception as err:
+            reason = f"缩完导出 PDF 出错（{err}）"
+    if reason:
+        try:
+            _restore_fit(setup, original)
+        except Exception as err:
+            debug_log.event("⚠️ 向下取整改不回去", 表=name, 原因=str(err))
+            reason += "；打印设置也没能改回去，这份 Excel 不保存"
+            result["dirty"] = True
+        result["reason"] = reason
+        debug_log.event("📄 向下取整没用上", 表=name, 原页数=pages, 原因=reason, 原设置=original)
+        return result
+    result["ok"] = True
+    debug_log.event("📄 向下取整", 表=name, 原页数=pages, 新页数=result["after"], 字缩到=round(result["scale"], 3),
+                    原设置=original, 有手动分页=result["manual"])
+    return result

@@ -783,3 +783,57 @@
   pointer-events: auto;
   cursor: help;
 }
+
+/* ---------- 工具箱（用户 2026-11-07）：标题上「⤓ 取整」按钮，点了亮绿、再点取消；只改颜色，宽度不变 ---------- */
+.pr-tools {
+  display: inline-flex;
+  flex: none;
+  gap: 6px;
+}
+
+.pr-tool-btn {
+  flex: none;
+  min-width: 8.6em;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  color: #1b5e0a;
+  background: #fff;
+  border: 2px solid #23780a;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.pr-tool-btn:hover:not(:disabled):not(.is-on) {
+  background: #e9f8e1;
+}
+
+.pr-tool-btn.is-on {
+  color: #fff;
+  background: #23780a;
+  -webkit-text-stroke: 0;
+}
+
+.pr-tool-btn:disabled {
+  cursor: not-allowed;
+}
+
+.pr-tool-btn:disabled:not(.is-on) {
+  color: var(--ink-3);
+  background: #f1f3f8;
+  border-color: var(--ink-4);
+}
+
+/* 标了工具的表：标题左边一道绿条（不占位，内容不挪） */
+.pr-doc[data-tool="floor"] .pr-doc-head {
+  box-shadow: inset 6px 0 0 #23780a, var(--hard-sm);
+}
+
+.pr-doc[data-tool="floor"][data-mark="yellow"] .pr-doc-head,
+.pr-doc[data-tool="floor"][data-mark="red"] .pr-doc-head {
+  box-shadow: inset 6px 0 0 #23780a, 0 3px 0 var(--mark);
+}
+
+.pr-count.is-tool { color: #fff; background: #1b5e0a; }
