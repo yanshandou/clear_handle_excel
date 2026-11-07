@@ -595,8 +595,10 @@ def _upload_task(task_id: Any) -> dict[str, Any]:
 
 def task_files(task_id: Any) -> dict[str, Any]:
     """只列本地文件和已有记录。选定文件后才读取共享端内容。"""
+    from core import work_task
     task = _upload_task(task_id)
     work, shared = Path(task["work"]), Path(task["shared"])
+    dest_root = work_task.upload_dest(task)
     if not work.is_dir():
         raise ValueError("处理文件夹不存在，请确认路径")
     baseline = load_baseline(strict=True)
@@ -612,9 +614,9 @@ def task_files(task_id: Any) -> dict[str, Any]:
                     old_upload_dates[key] = run.get("finished") or ""
     files = []
     for rel in sorted(found["excel"], key=_key):
-        key = _base_key(shared / rel)
+        review = baseline.get(_base_key(shared / rel), {}).get("tasks", {}).get(task["id"], {}).get("review")
+        key = _base_key(dest_root / rel)  # 上传记录按终点记（中转时是团队文件夹）
         base = baseline.get(key, {})
-        review = base.get("tasks", {}).get(task["id"], {}).get("review")
         upload = base.get("upload")
         if not upload and base.get("how") == "复制":  # 旧版只在版本快照里标记复制
             upload = {"sha256": base["sha256"], "at": ""}
@@ -626,7 +628,7 @@ def task_files(task_id: Any) -> dict[str, Any]:
                 pass
         files.append({"rel": rel, "review": review, "uploaded": bool(upload) or key in old_upload_dates,
                       "uploaded_at": (upload or {}).get("at") or old_upload_dates.get(key, ""), "uploaded_current": same})
-    return {"files": files, "errors": found["errors"]}
+    return {"files": files, "errors": found["errors"], "dest": str(dest_root), "relay": work_task.is_relay(task)}
 
 
 def _task_baseline(base: dict[str, Any], task_id: str) -> dict[str, Any]:
@@ -659,8 +661,10 @@ def start_task_upload(task_id: Any, files: Any, reviewed: Any) -> None:
             raise ValueError(f"文件不存在或重复选择：{rel}")
         seen.add(_key(rel))
         items.append({"rel": rel, "reviewed": reviewed.get(rel)})
+    from core import work_task
     start(upload={"kind": "task_upload", "task": task, "label": f"任务：{task['name']}",
-                  "source_root": task["work"], "dest_root": task["shared"], "files": items})
+                  "source_root": task["work"], "dest_root": str(work_task.upload_dest(task)),
+                  "shared": task["shared"], "relay": work_task.is_relay(task), "files": items})
 
 
 def _shared_digest(path: Path) -> str | None:
@@ -775,6 +779,10 @@ def _prepare_task_files(task: dict[str, Any], checked: list[tuple], total: int) 
 def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
     task = data["task"]
     work, shared = Path(task["work"]), Path(task["shared"])
+    relay = Path(data["dest_root"]) if data.get("relay") else None
+    if relay is not None and not relay.is_dir():
+        raise ValueError(f"终点文件夹不可用：{relay}（OneDrive 的话请确认已经同步到这台电脑）")
+    relayed: dict[str, dict[str, Any]] = {}
     items = data["files"]
     backup_root = Path(task["fetch_backup"]) / (datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8])
     baseline = load_baseline(strict=True)
@@ -799,8 +807,10 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
                 if not shared.is_dir() or _shared_digest(dest) != expected:
                     raise _SharedVersionChanged
 
+            # 中转：公司共享照样核对版本，文件复制到终点（团队文件夹），公司那份不动
+            target = _task_file(relay, item["rel"]) if relay is not None else dest
             try:
-                digest = copy_one(local, dest, before_replace=verify_shared)
+                digest = copy_one(local, target, before_replace=verify_shared)
             except _SharedVersionChanged:
                 try:
                     _check_task_file(task, item, local, dest, backup_root, load_baseline(strict=True))
@@ -812,10 +822,21 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
             except (OSError, ValueError) as err:
                 item.update(status="failed", error=_explain(err))
                 break
-            entry = _base_entry(dest, digest, "复制", task["id"])
+            entry = _base_entry(target, digest, "复制", task["id"])
             item.update(status="ok", uploaded_at=entry["upload"]["at"])
             entry["tasks"][task["id"]]["review"] = None
-            _save_baseline({_base_key(dest): entry})
+            changes = {_base_key(target): entry}
+            if relay is not None:
+                changes[_base_key(dest)] = {"tasks": {task["id"]: {"review": None}}}
+                relayed[item["rel"]] = {"shared_sha256": expected, "sha256": digest, "uploaded_at": entry["upload"]["at"]}
+            _save_baseline(changes)
+    if relayed:
+        try:
+            item_path = write_manifest(relay, shared, relayed, task["name"])
+            data["manifest"] = str(item_path)
+        except (OSError, ValueError) as err:
+            debug_log.exception(err, "写拿取版本清单")
+            data["manifest_error"] = _explain(err)
     done = [item["rel"] for item in items if item.get("status") == "ok"]
     if done:  # 本轮清单里的文件传上去了就划掉，全划掉自动回到整个文件夹
         from core import work_task
@@ -957,8 +978,8 @@ def run_summary(result: dict[str, Any]) -> dict[str, int]:
 
 def needs_attention(result: dict[str, Any]) -> bool:
     s = result["summary"]
-    if result.get("kind") == "task_upload":
-        return bool(result.get("stopped") or s["已复制"] != len(result["files"]))
+    if result.get("kind") in ("task_upload", "free_upload"):
+        return bool(result.get("stopped") or s.get("已复制", 0) != len(result["files"]))
     if result.get("kind") == "fetch":
         return bool(result.get("stopped") or s.get("没拿成功") or s.get("没有拿") or s.get("有问题的文件夹"))
     return bool(result.get("stopped") or s["没复制成功"] or s["没有复制"] or s["数量不一致"]
@@ -978,14 +999,15 @@ def start(preview_id: str | None = None, *, upload: dict[str, Any] | None = None
             raise ValueError("后台任务正在执行，请等它结束（别的任务可能正在改这些文件）")
         fetching = preview_data.get("kind") == "fetch"
         task_upload = preview_data.get("kind") == "task_upload"
+        free_upload = preview_data.get("kind") == "free_upload"
         if fetching and not any(f["files"] for f in preview_data["folders"]):
             raise ValueError("目的地这些文件夹里没有 Excel 文件可拿")
-        if not fetching and not task_upload and not any(f["files"] or f.get("dirs_to_create") for f in preview_data["folders"]):
+        if not fetching and not task_upload and not free_upload and not any(f["files"] or f.get("dirs_to_create") for f in preview_data["folders"]):
             raise ValueError("清单里没有要复制的 Excel 文件，也没有要新建的文件夹")
         wf.STATE["busy"] = True
         wf.STATE["maintenance"] = "distribute"
         preview_data["_started"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        total = len(preview_data["files"]) if task_upload else sum(len(f["files"]) for f in preview_data["folders"])
+        total = len(preview_data["files"]) if task_upload or free_upload else sum(len(f["files"]) for f in preview_data["folders"])
         _STATUS.update(running=True, done=0, total=total, current="", label=preview_data["label"],
                        kind=preview_data["kind"])
         if task_upload:
@@ -1003,11 +1025,13 @@ def start(preview_id: str | None = None, *, upload: dict[str, Any] | None = None
                 ids = operation_history.begin(preview_data["source_root" if fetching or task_upload else "dest_root"], ["distribute"])
                 if task_upload:
                     result = _run_task_upload(preview_data)
+                elif free_upload:
+                    result = _run_free(preview_data)
                 else:
                     with file_problem.task("从目的地拿最新版" if fetching else "按 JSON 复制 Excel"):
                         result = _run_fetch(preview_data) if fetching else _run(preview_data)
                 _save_history(result)
-                message = "批量上传" if task_upload else "拿最新版" if fetching else "按 JSON 复制"
+                message = "批量上传" if task_upload or free_upload else "拿最新版" if fetching else "按 JSON 复制"
                 debug_log.event(f"✅ {message}结束", **result["summary"])
             operation_history.finish(ids, "failed" if needs_attention(result) else "completed")
         except Exception as err:
@@ -1020,7 +1044,7 @@ def start(preview_id: str | None = None, *, upload: dict[str, Any] | None = None
                                 "source_root": preview_data["source_root"], "dest_root": preview_data["dest_root"],
                                 "stopped": f"程序出错：{err}（详细信息已写进调试日志）", "stale": [],
                                 "summary": {"已复制": sum(f.get("status") == "ok" for f in preview_data["files"])}
-                                if task_upload else {}}
+                                if task_upload or free_upload else {}}
         finally:
             with wf.STATE_LOCK, _LOCK:
                 _STATUS.update(running=False, current="")
@@ -1046,6 +1070,302 @@ def status() -> dict[str, Any]:
     if data.get("preview"):
         data["preview"] = _public(data["preview"])
     return data
+
+
+# ───────────────────────── 拿取版本清单 + 自由上传（起点 → 终点） ─────────────────────────
+# 用户 2026-11-07：几个账号分着做，张三把处理好的文件先传到团队 OneDrive（中转），李四再从团队传到公司 OneDrive。
+# 张三上传到中转时，在中转文件夹里放一份「拿取版本.json」，记下每份文件当初从公司拿的是哪个版本；
+# 李四从中转传到公司时读这份清单：公司那份还是这个版本就覆盖，变了（期间有人改过）就不覆盖、标红。
+# 上传前在本机临时副本上清标记 + 视图标准化（保存的人就是最終更新者），起点那份不动。
+
+MANIFEST_NAME = "拿取版本.json"
+MANIFEST_NOTE = ("Excel 整理工具箱写的：记着这些文件是从共享文件夹哪个版本拿的。"
+                 "从这里上传到共享时用来检查期间有没有人改过，请不要删除或改动。")
+
+
+def read_manifest(folder: Path) -> dict[str, Any] | None:
+    path = folder / MANIFEST_NAME
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as err:
+        raise ValueError(f"「{path}」读不出来（可能被改坏了）：{err}") from err
+    if not isinstance(data, dict) or not isinstance(data.get("shared"), str) or not isinstance(data.get("files"), dict):
+        raise ValueError(f"「{path}」格式不对，请不要手动改它")
+    return data
+
+
+def write_manifest(relay: Path, shared: Path, entries: dict[str, dict[str, Any]], task_name: str = "") -> Path:
+    """把这次传到中转的文件并进中转文件夹的拿取版本清单（同名文件以这次为准）"""
+    old = read_manifest(relay) or {"shared": str(shared), "files": {}}
+    if _base_key(old["shared"]) != _base_key(shared):
+        raise ValueError(f"中转文件夹「{relay}」里已经有另一个共享文件夹（{old['shared']}）的拿取版本清单，"
+                         "请给这个任务换一个中转文件夹")
+    files = {rel: v for rel, v in old["files"].items() if _key(rel) not in {_key(r) for r in entries}}
+    for rel, entry in entries.items():
+        files[rel] = {**entry, **({"task": task_name} if task_name else {})}
+    shared_files = sorted(scan_folder(shared)["excel"]) if shared.is_dir() else old.get("shared_files", [])
+    data = {"说明": MANIFEST_NOTE, "version": 1, "shared": str(shared), "files": dict(sorted(files.items())),
+            "shared_files": shared_files}
+    path = relay / MANIFEST_NAME
+    temp = path.with_name(f".{uuid.uuid4().hex}{TEMP_SUFFIX}")
+    try:
+        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temp, path)
+    finally:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+    debug_log.event("🧾 写拿取版本清单", 文件=str(path), 这次=len(entries), 合计=len(files))
+    return path
+
+
+def _find_manifests(src: Path) -> list[tuple[Path, dict[str, Any]]]:
+    """起点里（包括子文件夹）和起点往上几层的拿取版本清单，深的在前"""
+    found: list[tuple[Path, dict[str, Any]]] = []
+    for parent in list(src.parents)[:6]:
+        data = read_manifest(parent)
+        if data:
+            found.append((parent, data))
+            break
+    for dirpath, _dirs, files in os.walk(src):
+        if MANIFEST_NAME in files:
+            found.append((Path(dirpath), read_manifest(Path(dirpath))))
+    return sorted(found, key=lambda pair: len(pair[0].parts), reverse=True)
+
+
+def _manifest_for(src_file: Path, manifests: list[tuple[Path, dict[str, Any]]]) -> tuple[Path, dict[str, Any], str] | None:
+    for folder, data in manifests:
+        if _inside(src_file, folder):
+            return folder, data, src_file.relative_to(folder).as_posix()
+    return None
+
+
+def preview_free(source_text: Any, dest_text: Any) -> dict[str, Any]:
+    """自由上传的清单（只读不改）：起点里的每个 Excel 传到终点同样的位置，先看终点那份能不能覆盖"""
+    src, dst = _clean_root(source_text, "起点文件夹"), _clean_root(dest_text, "终点文件夹")
+    if src == dst or _inside(src, dst) or _inside(dst, src):
+        raise ValueError("起点和终点不能是同一个文件夹，也不能互相包含")
+    found = scan_folder(src)
+    if not found["excel"]:
+        raise ValueError(f"起点里没有 Excel 文件：{src}")
+    manifests = _find_manifests(src)
+    baseline = load_baseline(strict=True)
+    files, notes = [], []
+    mismatch: set[str] = set()
+    listed_shared: dict[str, tuple[Path, set[str]]] = {}  # 用上的清单：共享根目录 → 当时共享里有的文件
+    for rel in sorted(found["excel"], key=_key):
+        src_file, dest_file = src / rel, dst / rel
+        info = found["excel"][rel]
+        item = {"rel": rel, "size": info["size"], "mtime": info["mtime"], "src_sha256": _digest(src_file),
+                "dest_sha256": _shared_digest(dest_file)}
+        hit = _manifest_for(src_file, manifests)
+        record = None
+        if hit:
+            folder, data, inner = hit
+            company = Path(data["shared"]) / inner
+            if _base_key(company) == _base_key(dest_file):
+                record = next((v for r, v in data["files"].items() if _key(r) == _key(inner)), None)
+                listed_shared.setdefault(_base_key(data["shared"]), (Path(data["shared"]), {_key(r) for r in data.get("shared_files", [])}))
+            elif str(folder) not in mismatch:
+                mismatch.add(str(folder))
+                notes.append(f"「{folder / MANIFEST_NAME}」记的共享文件夹是「{data['shared']}」，和这次的终点对不上，"
+                             "里面记的版本没法用（请确认终点有没有填错）")
+        if record is not None:
+            item["guard"] = "manifest"
+            if item["dest_sha256"] is None:
+                item["action"] = "new"
+                if record.get("shared_sha256"):
+                    item["note"] = "清单里记着共享原来有这个文件，现在没有了（可能被别人移走或删掉），会新建"
+            elif item["dest_sha256"] == record.get("shared_sha256"):
+                item["action"] = "overwrite"
+            else:
+                item["action"] = "conflict"
+                item["error"] = ("拿走之后共享里的这份被别人改过，没有覆盖" if record.get("shared_sha256")
+                                 else "拿的时候共享里还没有这份，后来别人新放了一份同名的，没有覆盖")
+        else:
+            base = baseline.get(_base_key(dest_file), {})
+            known = {v for v in [base.get("sha256"), (base.get("upload") or {}).get("sha256")] if v}
+            item["guard"] = "baseline" if known else "none"
+            if item["dest_sha256"] is None:
+                item["action"] = "new"
+            elif item["dest_sha256"] in known:
+                item["action"] = "overwrite"
+            else:
+                item["action"] = "confirm"
+                item["note"] = "终点已有同名文件，没有拿取记录，没法知道期间有没有人改过"
+        files.append(item)
+    # 终点里有、起点没有的 Excel：不动，只列出来；有清单的话分出「期间别人新加的」
+    after = scan_folder(dst)
+    src_keys = {_key(rel) for rel in found["excel"]}
+    extra, added = [], []
+    for rel in sorted(after["excel"], key=_key):
+        if _key(rel) in src_keys:
+            continue
+        full = dst / rel
+        owner = next(((root, names) for root, names in listed_shared.values() if _inside(full, root)), None)
+        if owner and _key(full.relative_to(owner[0]).as_posix()) not in owner[1]:
+            added.append(rel)
+        else:
+            extra.append(rel)
+    summary = {"要上传": sum(f["action"] != "conflict" for f in files), "新建": sum(f["action"] == "new" for f in files),
+               "覆盖": sum(f["action"] == "overwrite" for f in files), "要确认": sum(f["action"] == "confirm" for f in files),
+               "别人改过": sum(f["action"] == "conflict" for f in files), "期间新加": len(added), "终点多出": len(extra),
+               "有清单": sum(f["guard"] == "manifest" for f in files)}
+    result = {"id": uuid.uuid4().hex[:12], "kind": "free_upload", "label": f"{src.name} → {dst.name}",
+              "source_root": str(src), "dest_root": str(dst), "files": files, "added": added, "extra": extra,
+              "notes": notes, "errors": found["errors"] + after["errors"], "summary": summary,
+              "manifests": [str(folder / MANIFEST_NAME) for folder, _ in manifests]}
+    debug_log.event("📋 自由上传清单", 起点=str(src), 终点=str(dst), **summary)
+    with _LOCK:
+        if not _STATUS.get("running"):
+            _STATUS["preview"] = result
+            _STATUS.pop("applied", None)
+    return result
+
+
+def start_free(preview_id: Any, confirm_overwrite: bool) -> None:
+    with _LOCK:
+        preview_data = copy.deepcopy(_STATUS.get("preview"))
+    if not preview_data or preview_data.get("kind") != "free_upload" or preview_data.get("id") != preview_id:
+        raise ValueError("清单已变化，请重新生成")
+    if preview_data["summary"]["要确认"] and not confirm_overwrite:
+        raise ValueError("有终点已有、没法检查的同名文件，请先确认覆盖")
+    if not preview_data["summary"]["要上传"]:
+        raise ValueError("清单里没有能上传的文件（都被别人改过）")
+    start(preview_data["id"])
+
+
+def _prepare_free(items: list[dict[str, Any]], temp_root: Path, src: Path) -> None:
+    """在本机临时副本上清标记 + 视图标准化（没有参考，不恢复颜色）；有一份没做成，这一批都不传"""
+    from core import upload_prep
+    from core.excel_ops import quit_background_excel, start_background_excel
+
+    excel = None
+    guard = file_problem.Guard("上传前处理（清标记 · 视图标准化）")
+
+    def get_excel() -> Any:
+        nonlocal excel
+        if excel is None:
+            excel = guard.watch(start_background_excel())
+        return excel
+
+    wf.pythoncom.CoInitialize()
+    try:
+        for index, item in enumerate(items):
+            local = temp_root / str(index) / Path(item["rel"]).name
+            item["_temp"] = str(local)
+            while True:
+                _progress(index, len(items), f"上传前处理 {item['rel']}")
+                guard.progress()
+                where: dict[str, str] = {}
+                try:
+                    local.parent.mkdir(parents=True, exist_ok=True)
+                    if copy_one(src / item["rel"], local) != item["src_sha256"]:
+                        raise ValueError("起点的文件在生成清单之后变了，请重新生成清单")
+                    item["prep"] = {**upload_prep.prepare(get_excel, local, None, where), "no_reference": True}
+                    wf.log_msg(f"🧽 {item['rel']}：{upload_prep.text(item['prep'])}")
+                    break
+                except Exception as err:
+                    debug_log.exception(err, f"上传前处理 {item['rel']}")
+                    retry, message = guard.problem(err, src / item["rel"], item["rel"], src,
+                                                   close=lambda: file_problem.quit_quietly(excel))
+                    if guard.closed:
+                        excel = None
+                    if retry:
+                        wf.log_msg(f"🔁 重试 {item['rel']}")
+                        continue
+                    item.update(status="failed", error=f"上传前{where.get('step') or '处理'}没做成：{message}")
+                    break
+            if item.get("status"):
+                break
+    finally:
+        try:
+            if excel is not None:
+                quit_background_excel(excel)
+        finally:
+            guard.stop()
+            wf.pythoncom.CoUninitialize()
+
+
+def _run_free(data: dict[str, Any]) -> dict[str, Any]:
+    import tempfile
+    src, dst = Path(data["source_root"]), Path(data["dest_root"])
+    items = [item for item in data["files"] if item["action"] != "conflict"]
+    for item in data["files"]:
+        if item["action"] == "conflict":
+            item["status"] = "conflict"
+    temp_root = Path(tempfile.mkdtemp(prefix="自由上传_"))
+    try:
+        if not dst.is_dir():
+            raise ValueError(f"终点文件夹不可用：{dst}")
+        _prepare_free(items, temp_root, src)
+        if not any(item.get("status") for item in items):
+            changes: dict[str, dict[str, Any]] = {}
+            try:
+                for index, item in enumerate(items):
+                    _progress(index, len(items), f"上传 {item['rel']}")
+                    dest = dst / item["rel"]
+
+                    def verify_dest() -> None:
+                        if _shared_digest(dest) != item["dest_sha256"]:
+                            raise _SharedVersionChanged
+
+                    try:
+                        digest = copy_one(Path(item["_temp"]), dest, check_source_open=False, before_replace=verify_dest)
+                    except _SharedVersionChanged:
+                        item.update(status="conflict", error="生成清单之后终点的这份被改过，没有覆盖，请重新生成清单")
+                        continue
+                    except (OSError, ValueError) as err:
+                        item.update(status="failed", error=_explain(err))
+                        continue
+                    entry = _base_entry(dest, digest, "复制")
+                    changes[_base_key(dest)] = entry
+                    item.update(status="ok", uploaded_at=entry["upload"]["at"])
+            finally:
+                _save_baseline(changes)
+        else:
+            for item in items:
+                if not item.get("status"):
+                    item.update(status="failed", error="同一批里有文件上传前处理没做成，这一批都没有上传")
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+    for item in data["files"]:
+        item.pop("_temp", None)
+    files = data["files"]
+    data["summary"] = {**data["summary"], "已复制": sum(f.get("status") == "ok" for f in files),
+                       "别人改过没覆盖": sum(f.get("status") == "conflict" for f in files),
+                       "没复制成功": sum(f.get("status") == "failed" for f in files)}
+    return {**data, "id": uuid.uuid4().hex[:12], "finished": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+
+def markdown_free(result: dict[str, Any]) -> str:
+    s = result.get("summary") or {}
+    lines = [f"# 上传记录：{result['label']}", "", f"- 起点：`{result['source_root']}`", f"- 终点：`{result['dest_root']}`",
+             "- 每个文件先在本机临时副本上清掉标记色、视图标准化（A1、100%），再复制到终点；起点的文件没有改动。", ""]
+    if result.get("stopped"):
+        lines += [f"> ⛔ {result['stopped']}", ""]
+    for note in result.get("notes", []):
+        lines.append(f"> ⚠️ {_md(note)}")
+    lines += ["", f"已上传 {s.get('已复制', 0)} / {len(result.get('files', []))} 个；"
+              f"别人改过没覆盖 {s.get('别人改过没覆盖', 0)} 个；没上传成功 {s.get('没复制成功', 0)} 个。", "",
+              "| 文件 | 结果 |", "| --- | --- |"]
+    from core import upload_prep
+    for item in result.get("files", []):
+        status = {"ok": "已上传", "conflict": "🛑 " + (item.get("error") or "别人改过，没有覆盖")}.get(
+            item.get("status"), item.get("error") or "未上传")
+        if item.get("status") == "ok":
+            status += "（覆盖）" if item["action"] in ("overwrite", "confirm") else "（新建）"
+        if item.get("prep"):
+            status += f"（上传前：{upload_prep.text(item['prep'])}）"
+        lines.append(f"| {_md(item['rel'])} | {_md(status)} |")
+    if result.get("added"):
+        lines += ["", "## 期间别人新加到终点的 Excel（没有动）", ""] + [f"- {_md(rel)}" for rel in result["added"]]
+    if result.get("extra"):
+        lines += ["", "## 终点里有、起点没有的 Excel（没有动）", ""] + [f"- {_md(rel)}" for rel in result["extra"]]
+    return "\n".join(lines) + "\n"
 
 
 # ───────────────────────── 记录 ─────────────────────────
@@ -1099,10 +1419,19 @@ def markdown(result: dict[str, Any]) -> str:
     """复制记录文档：不写日期和时间"""
     if result.get("kind") == "fetch":
         return markdown_fetch(result)
+    if result.get("kind") == "free_upload":
+        return markdown_free(result)
     if result.get("kind") == "task_upload":
-        lines = [f"# 批量上传记录：{result['label']}", "",
-                 f"- 处理文件夹：`{result['source_root']}`", f"- 共享文件夹：`{result['dest_root']}`", "",
-                 "| 文件 | 结果 |", "| --- | --- |"]
+        lines = [f"# 批量上传记录：{result['label']}", "", f"- 处理文件夹：`{result['source_root']}`"]
+        if result.get("relay"):
+            lines += [f"- 上传到（中转）：`{result['dest_root']}`", f"- 公司共享文件夹（只核对版本，没有改动）：`{result.get('shared', '')}`"]
+            if result.get("manifest"):
+                lines.append(f"- 拿取版本清单：`{result['manifest']}`（从中转上传到公司时用来检查期间有没有人改过，请不要删除）")
+            if result.get("manifest_error"):
+                lines.append(f"- ⚠️ 拿取版本清单没写成：{_md(result['manifest_error'])}")
+        else:
+            lines.append(f"- 共享文件夹：`{result['dest_root']}`")
+        lines += ["", "| 文件 | 结果 |", "| --- | --- |"]
         for item in result["files"]:
             status = "已上传" if item.get("status") == "ok" else item.get("error") or "未上传"
             if item.get("backup_path"):

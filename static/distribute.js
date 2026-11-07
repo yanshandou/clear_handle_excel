@@ -3,7 +3,8 @@
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[ch]));
   const api = '/api/distribute';
-  const KEYS = { source: 'clear_handle_excel.distributeSource', dest: 'clear_handle_excel.distributeDest', plan: 'clear_handle_excel.distributePlan' };
+  const KEYS = { source: 'clear_handle_excel.distributeSource', dest: 'clear_handle_excel.distributeDest', plan: 'clear_handle_excel.distributePlan',
+    freeSource: 'clear_handle_excel.freeUploadSource', freeDest: 'clear_handle_excel.freeUploadDest' };
   let latest = {}, submitting = false, loading = true, timer, pollError = '', creating = false;
   let viewing = null;          // 正在看的历史记录（null = 看当前清单 / 最近一次结果）
   let filter = 'all';
@@ -14,12 +15,15 @@
   let taskFiles = [], readingFiles = false;
   const selected = new Set();
   const jsonMode = params.get('mode') === 'json' || params.has('plan');
+  // 起点 → 终点 上传（用户 2026-11-07：几个账号分着做，汇总的人从团队 OneDrive 传到公司 OneDrive）
+  const freeMode = !jsonMode && params.get('mode') === 'free';
+  let needsFreePreview = true;
   // 新任务 / 拿文件单独一页，上传页只管上传（以前都挤在 /distribute）
   const startMode = !jsonMode && /^\/distribute\/start\/?$/.test(location.pathname);
   if (!jsonMode && !startMode && params.get('fetch') === '1') { location.replace('/distribute/start?fetch=1'); return; }
   // 每页只看自己那一类：拿文件页只看拿取，上传页不看拿取
-  const inScope = data => !data || jsonMode || (startMode ? isFetch(data) : !isFetch(data));
-  document.querySelector('[data-dist-mode="' + (jsonMode ? 'json' : startMode ? 'start' : 'task') + '"]')?.setAttribute('aria-current', 'page');
+  const inScope = data => !data || jsonMode || (freeMode ? isFree(data) : startMode ? isFetch(data) : !isFetch(data) && !isFree(data));
+  document.querySelector('[data-dist-mode="' + (jsonMode ? 'json' : freeMode ? 'free' : startMode ? 'start' : 'task') + '"]')?.setAttribute('aria-current', 'page');
   $('distToday').textContent = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'long' }).format(new Date());
   window.lucide?.createIcons();
   let needsPreview = params.has('plan');
@@ -33,6 +37,21 @@
     $('distSubtitle').textContent = '导入上传方案，按清单复制 Excel。';
     $('distControlsTitle').textContent = '设置复制清单';
     $('distProgress').textContent = '填好两个根目录和 JSON 后点「生成复制清单」。';
+  } else if (freeMode) {
+    $('distFreeFields').hidden = false;
+    $('distTaskNotice').hidden = true;
+    $('distJsonIntro').hidden = false;
+    $('distJsonIntro').querySelector('h2').textContent = '起点 → 终点 上传';
+    $('distJsonIntro').querySelector('.section-kicker').innerHTML = 'UPLOAD <span>01 / 从哪儿传到哪儿</span>';
+    for (const el of $('distJsonIntro').querySelectorAll('p')) el.hidden = true;
+    document.title = '起点 → 终点 上传 - Excel 整理工具箱';
+    $('distNavOverview').textContent = '起点 → 终点 上传';
+    $('distBreadcrumb').textContent = '起点 → 终点';
+    $('distHeading').textContent = '从起点传到终点';
+    $('distSubtitle').textContent = '自己填从哪儿传到哪儿，比如从团队 OneDrive 传到公司 OneDrive。先生成清单，确认后再传。';
+    $('distControlsTitle').textContent = '填起点和终点';
+    $('distResultTitle').textContent = '上传清单';
+    $('distGoUpload').hidden = false;
   } else if (startMode) {
     document.body.classList.add('dist-start');
     document.title = '新任务 · 拿文件 - Excel 整理工具箱';
@@ -56,18 +75,22 @@
   } else {
     $('distGoStart').hidden = false;
   }
+  if (!freeMode && !startMode) $('distGoFree').hidden = false;
 
   const load = key => { try { return localStorage.getItem(key) || ''; } catch (_) { return ''; } };
   const save = (key, value) => { try { localStorage.setItem(key, value); } catch (_) {} };
   $('distSource').value = load(KEYS.source);
   $('distDest').value = load(KEYS.dest);
   $('distPlan').value = load(KEYS.plan);
+  $('distFreeSource').value = load(KEYS.freeSource);
+  $('distFreeDest').value = load(KEYS.freeDest);
 
   const size = n => n == null ? '-' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
   const badChecks = folder => (folder.checks || []).filter(c => !c.ok);
   const conflicts = folder => (folder.files || []).filter(f => f.conflict || f.status === 'conflict');
   const isFetch = data => data && data.kind === 'fetch';
   const isUpload = data => data && data.kind === 'task_upload';
+  function isFree(data) { return !!data && data.kind === 'free_upload'; }
   const isBad = folder => !!(folder.error || conflicts(folder).length || (folder.dir_errors || []).length || badChecks(folder).length || (folder.files || []).some(f => f.status && f.status !== 'ok')
     || (folder.dest_extra || []).length);
 
@@ -77,7 +100,7 @@
     $('distPreview').disabled = !!busy;
     $('distFetch').disabled = !!busy;
     const fetchMode = isFetch(latest.preview) || (latest.running && latest.kind === 'fetch');
-    const canStart = !busy && !needsPreview && latest.preview && latest.preview.folders.some(f => f.files.length || (f.dirs_to_create || []).length);
+    const canStart = !busy && !needsPreview && latest.preview && (latest.preview.folders || []).some(f => f.files.length || (f.dirs_to_create || []).length);
     $('distStart').disabled = !canStart;
     $('distPreview').hidden = !jsonMode;
     $('distStart').hidden = !jsonMode && !fetchMode;
@@ -88,6 +111,14 @@
     $('distStart').textContent = fetchMode ? (latest.running ? '正在拿…' : '⬇ 按清单拿文件')
       : (latest.running ? '正在复制…' : '📥 按清单开始复制');
     if (task && !startMode) taskControls(busy || readingFiles);
+    if (freeMode) {
+      $('distFreeSource').disabled = $('distFreeDest').disabled = !!busy;
+      $('distFreePreview').disabled = !!busy;
+      $('distFreePreview').textContent = submitting === 'free' ? '正在生成清单（要读每个文件算哈希）…' : '📋 生成上传清单';
+      const p = isFree(latest.preview) ? latest.preview : null;
+      $('distFreeStart').disabled = !!busy || needsFreePreview || !p || !p.summary['要上传'];
+      $('distFreeStart').textContent = latest.running ? '正在上传…' : '🚚 按清单上传';
+    }
   }
 
   function taskControls(busy) {
@@ -377,7 +408,8 @@
     if (!p) return '';
     const parts = [p.marks ? `清掉标记 ${p.marks} 条` : '没有标记要清'];
     if (p.tabs) parts.push(`还原表标签 ${p.tabs} 张`);
-    if (!p.reference) parts.push('参考里没有这份文件，没对照颜色');
+    if (p.no_reference) parts.push('没有参考，不对照颜色');
+    else if (!p.reference) parts.push('参考里没有这份文件，没对照颜色');
     else parts.push(p.colors ? `按参考改回颜色 ${p.colors} 处` : '颜色和参考一致');
     if (p.normalized) parts.push('视图已标准化');
     const skipped = p.color_skipped ? `<details class="dist-prep-skip"><summary>颜色改不了 ${p.color_skipped} 处（点开看是哪些，请人工看一下）</summary><ul>`
@@ -387,7 +419,38 @@
   }
 
   const renderAny = (data, applied) => isFetch(data) ? renderFetch(data, applied)
-    : isUpload(data) ? renderUpload(data) : renderData(data, applied);
+    : isFree(data) ? renderFree(data, applied) : isUpload(data) ? renderUpload(data) : renderData(data, applied);
+
+  // 起点 → 终点：清单（applied=false）和结果（applied=true）共用
+  const FREE_ACTION = { new: ['tag-new', '新建'], overwrite: ['tag-overwrite', '覆盖'], confirm: ['tag-confirm', '覆盖（要确认）'], conflict: ['dist-conflict', '🛑 别人改过，不覆盖'] };
+  const FREE_GUARD = { manifest: '按拿取版本清单核对', baseline: '按你上次的拿取 / 上传记录核对', none: '没有记录' };
+  function renderFree(data, applied) {
+    const s = data.summary || {};
+    const chipsHtml = applied
+      ? `<span class="dist-chip dist-chip-ok">已上传 ${s['已复制'] || 0}</span>`
+        + (s['别人改过没覆盖'] ? `<span class="dist-chip dist-chip-err">🛑 别人改过没覆盖 ${s['别人改过没覆盖']}</span>` : '')
+        + (s['没复制成功'] ? `<span class="dist-chip dist-chip-warn">没上传成功 ${s['没复制成功']}</span>` : '')
+      : `<span class="dist-chip dist-chip-info">要上传 ${s['要上传']}（新建 ${s['新建']}、覆盖 ${s['覆盖'] + s['要确认']}）</span>`
+        + (s['要确认'] ? `<span class="dist-chip dist-chip-warn">要确认覆盖 ${s['要确认']}</span>` : '')
+        + (s['别人改过'] ? `<span class="dist-chip dist-chip-err">🛑 别人改过 ${s['别人改过']}</span>` : '')
+        + `<span class="dist-chip ${s['有清单'] ? 'dist-chip-ok' : 'dist-chip-info'}">${s['有清单'] ? `${s['有清单']} 个按拿取版本清单核对` : '起点里没有拿取版本清单'}</span>`;
+    const notes = (data.notes || []).map(note => `<li>${esc(note)}</li>`).join('');
+    const rows = (data.files || []).map(file => {
+      const [cls, label] = FREE_ACTION[file.action] || ['', file.action];
+      const state = !applied ? '' : file.status === 'ok' ? '✓ 已上传' : file.status === 'conflict' ? '' : esc(file.error || '未上传');
+      const why = file.action === 'conflict' || file.status === 'conflict' ? esc(file.error || '') : esc(file.note || '');
+      const link = applied && file.status === 'ok' ? fileLink(file.rel, data.dest_root, file.rel) : fileLink(file.rel, data.source_root, file.rel);
+      return `<tr class="${file.action === 'conflict' || file.status === 'conflict' ? 'is-conflict' : ''}"><td>${link}</td><td><span class="${cls}">${label}</span></td>`
+        + `<td>${state}${state && why ? '<br>' : ''}${why ? `<small>${why}</small>` : ''}${prepHtml(file, data)}</td><td><small>${FREE_GUARD[file.guard] || ''}</small></td></tr>`;
+    });
+    const list = (title, items) => items && items.length ? `<h4 class="dist-sub">${title}（${items.length}）</h4><ul class="dist-list">${items.map(rel => `<li>${fileLink(rel, data.dest_root, rel)}</li>`).join('')}</ul>` : '';
+    return `<p class="dist-meta">起点：${esc(data.source_root)}<br>终点：${esc(data.dest_root)}</p><div class="dist-summary">${chipsHtml}</div>`
+      + (notes ? `<div class="dist-alert"><ul>${notes}</ul></div>` : '')
+      + `<div class="link-table-wrap"><table class="link-table"><thead><tr><th>文件</th><th>做法</th><th>${applied ? '结果' : '说明'}</th><th>怎么核对的</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`
+      + list('期间别人新加到终点的 Excel（不动）', data.added) + list('终点里有、起点没有的 Excel（不动）', data.extra)
+      + (data.errors || []).map(err => `<p class="link-error">${esc(err)}</p>`).join('')
+      + (applied && data.id ? `<p class="next-step-row"><a class="btn btn-outline btn-sm" href="${api}/markdown?id=${encodeURIComponent(data.id)}">⬇ 下载上传记录</a></p>` : '');
+  }
 
   function renderHistory() {
     const runs = (latest.history || []).filter(inScope);
@@ -396,7 +459,8 @@
       const s = run.summary || {};
       const chip = run.attention ? (s['别人改过没覆盖'] ? '<span class="dist-chip dist-chip-err">🛑 有别人改过的</span>' : '<span class="dist-chip dist-chip-warn">⚠️ 有对不上的地方</span>')
         : '<span class="dist-chip dist-chip-ok">✓ 全部一致</span>';
-      const what = isUpload(run) ? `上传 ${s['已复制'] ?? 0} 个${s['待重新处理'] ? ' · 待重新处理 ' + s['待重新处理'] + ' 个' : ''}`
+      const what = isFree(run) ? `🚚 起点 → 终点 上传 ${s['已复制'] ?? 0} 个${s['别人改过没覆盖'] ? `，别人改过没覆盖 ${s['别人改过没覆盖']}` : ''}`
+        : isUpload(run) ? `上传 ${s['已复制'] ?? 0} 个${s['待重新处理'] ? ' · 待重新处理 ' + s['待重新处理'] + ' 个' : ''}`
         : run.kind === 'fetch' ? `⬇ 拿最新版 ${s['已拿'] ?? 0} 个（替换 ${s['替换'] ?? 0}）`
         : `复制 ${s['已复制'] ?? 0} 个（覆盖 ${s['覆盖'] ?? 0}${s['别人改过没覆盖'] ? `，别人改过没覆盖 ${s['别人改过没覆盖']}` : ''}）`;
       return `<li><span class="dist-route">${esc(run.label || '（没有 label）')}<small>${esc(run.finished || '')} · ${what} · ${esc(run.dest_root || '')}</small></span>${chip}`
@@ -410,7 +474,7 @@
     renderHistory();
     if (latest.running) {
       showProgress('running');
-      $('distProgress').textContent = `${isUpload(latest) ? '正在检查或上传' : isFetch(latest) ? '正在拿最新版' : '正在复制'} ${Math.min((latest.done || 0) + 1, latest.total || 0)} / ${latest.total || 0}：${latest.current || '准备中…'}`;
+      $('distProgress').textContent = `${isUpload(latest) || isFree(latest) ? '正在检查或上传' : isFetch(latest) ? '正在拿最新版' : '正在复制'} ${Math.min((latest.done || 0) + 1, latest.total || 0)} / ${latest.total || 0}：${latest.current || '准备中…'}`;
       $('distProgressFill').style.width = `${latest.total ? latest.done / latest.total * 100 : 0}%`;
       window.ProgressEta?.update('distProgressFill', `dist:${latest.kind}`, latest.total ? latest.done / latest.total : 0, true);
       $('distResultTitle').textContent = isUpload(latest) ? '批量上传结果' : isFetch(latest) ? '拿取结果' : '复制结果';
@@ -426,13 +490,28 @@
     const applied = latest.applied;
     const data = latest.preview || applied;
     if (!data) {
-      $('distResultTitle').textContent = jsonMode ? '复制清单' : startMode ? '拿取清单' : '批量上传结果';
-      $('distResults').textContent = jsonMode ? '尚未生成清单。'
+      $('distResultTitle').textContent = freeMode ? '上传清单' : jsonMode ? '复制清单' : startMode ? '拿取清单' : '批量上传结果';
+      $('distResults').textContent = jsonMode ? '尚未生成清单。' : freeMode ? '填好起点和终点后点「📋 生成上传清单」（只读不改）。'
         : startMode ? (task ? '点「⬇ 从共享拿最新版」先生成拿取清单（只读不改），核对后再拿。' : '先在上面开一个新任务。')
         : task ? '选好文件后，点击「检查并批量上传」。' : '还没有上传结果。';
       return;
     }
     $('distProgressFill').style.width = '100%';
+    if (isFree(data)) {
+      const s = data.summary || {};
+      if (latest.preview) {
+        $('distResultTitle').textContent = '上传清单';
+        showProgress('done', '清单已生成：', `要上传 ${s['要上传']} 个（新建 ${s['新建']}、覆盖 ${s['覆盖'] + s['要确认']}）`
+          + (s['别人改过'] ? `；🛑 ${s['别人改过']} 个别人改过，不会覆盖` : '') + '。核对后点「🚚 按清单上传」。', !!(s['别人改过'] || s['要确认'] || data.notes.length));
+      } else {
+        const warn = !!(data.stopped || s['别人改过没覆盖'] || s['没复制成功']);
+        $('distResultTitle').textContent = '上传结果';
+        showProgress('done', data.stopped ? '没有上传：' : warn ? '上传结束，有没传上去的：' : '上传完成：',
+          data.stopped || `已上传 ${s['已复制'] || 0} / ${data.files.length} 个。`, warn);
+      }
+      $('distResults').innerHTML = renderFree(data, !latest.preview);
+      return;
+    }
     if (isUpload(data)) {
       const s = data.summary || {};
       const paused = data.stopped || s['待重新处理'] || s['没复制成功'];
@@ -506,11 +585,16 @@
       const response = await fetch(api, { cache: 'no-store' });
       if (!response.ok) throw Error('读取任务进度失败，正在重试');
       latest = await response.json();
-      const scope = jsonMode ? '' : task?.id;
+      const scope = jsonMode || freeMode ? '' : task?.id;
       if (latest.preview && (latest.preview.task?.id || '') !== scope) latest.preview = null;
       if (latest.applied && (latest.applied.task?.id || '') !== scope) latest.applied = null;
       if (!inScope(latest.preview)) latest.preview = null;
       if (!inScope(latest.applied)) latest.applied = null;
+      if (freeMode && loading && isFree(latest.preview)) {  // 刷新页面：接着用还没执行的清单
+        $('distFreeSource').value = latest.preview.source_root;
+        $('distFreeDest').value = latest.preview.dest_root;
+        needsFreePreview = false;
+      }
       if (pollError && $('distError').textContent === pollError) $('distError').textContent = '';
       pollError = '';
       loading = false;
@@ -521,6 +605,16 @@
         await reloadTaskFiles();
       }
       if (wasRunning && !latest.running && isFetch(latest.applied)) fetchDone(latest.applied);
+      if (wasRunning && !latest.running && isFree(latest.applied)) {
+        const s = latest.applied.summary || {};
+        if (s['别人改过没覆盖'] || s['没复制成功'] || latest.applied.stopped) {
+          window.appAlert(latest.applied.stopped || `已上传 ${s['已复制'] || 0} 个。${s['别人改过没覆盖'] ? `\n🛑 ${s['别人改过没覆盖']} 个在拿走之后被别人改过，没有覆盖（别人的修改还在）。请让做这份的人在新版上重新改。` : ''}${s['没复制成功'] ? `\n${s['没复制成功']} 个没传上去，请看下面的说明。` : ''}`,
+            { title: '有文件没传上去', tone: 'warn' });
+        } else if (s['已复制']) {
+          window.gameFx?.celebrate('传完了！', `${s['已复制']} 个文件已传到终点`, 3);
+        }
+        needsFreePreview = true;
+      }
       if (wasRunning && !latest.running && latest.applied && !latest.applied.stopped && !isFetch(latest.applied) && !isUpload(latest.applied)) {
         const s = latest.applied.summary || {};
         if (s['别人改过没覆盖']) {
@@ -606,11 +700,12 @@
     const reviews = files.filter(file => file.review?.ready);
     const message = reviews.length
       ? `请确认这 ${reviews.length} 个待重新处理的文件已经保存并完成复检。系统将再次核对本批 ${files.length} 个文件的共享版本，检查通过后上传。\n\n${reviews.slice(0, 8).map(file => file.rel).join('\n')}${reviews.length > 8 ? '\n…' : ''}`
-      : `检查选中的 ${files.length} 个 Excel。发现共享端有更新时，先同步到参考和处理文件夹（两边的旧版都先备份），并暂停上传。检查通过后，每个文件先自动清掉标记色、对照参考改回残留的颜色、视图标准化（A1、100%），都做成了再传回当前任务的共享文件夹。`;
+      : `检查选中的 ${files.length} 个 Excel。发现共享端有更新时，先同步到参考和处理文件夹（两边的旧版都先备份），并暂停上传。检查通过后，每个文件先自动清掉标记色、对照参考改回残留的颜色、视图标准化（A1、100%），都做成了再`
+        + (task.upload_to ? `传到中转文件夹「${task.upload_to}」（公司共享不动），并在那里记下拿取版本。` : '传回当前任务的共享文件夹。');
     submitting = 'upload';
     controls();
     try {
-      if (!await window.appConfirm(message, { title: '批量上传到共享', okText: '开始检查', tone: 'danger' })) return;
+      if (!await window.appConfirm(message, { title: task.upload_to ? '批量上传到中转' : '批量上传到共享', okText: '开始检查', tone: 'danger' })) return;
       viewing = null;
       $('distError').textContent = '';
       const reviewed = Object.fromEntries(reviews.map(file => [file.rel, file.review.token]));
@@ -678,6 +773,45 @@
     $('distFileName').textContent = `已读入 ${file.name}`;
     $('distFile').value = '';
   });
+  async function makeFreePreview() {
+    if (loading || submitting || latest.running) return;
+    const source = $('distFreeSource').value.trim(), dest = $('distFreeDest').value.trim();
+    $('distError').textContent = '';
+    if (!source || !dest) { $('distError').textContent = '请填写起点和终点'; return; }
+    save(KEYS.freeSource, source); save(KEYS.freeDest, dest);
+    submitting = 'free'; viewing = null; controls();
+    showProgress('running', '', '正在列出起点和终点的文件，检查终点那份期间有没有被人改过…');
+    try {
+      await post(api + '/free_preview', { source, dest });
+      needsFreePreview = false;
+    } catch (error) { $('distError').textContent = error.message; }
+    finally { submitting = false; await refresh(); }
+  }
+
+  async function startFree() {
+    const p = latest.preview;
+    if (!isFree(p) || loading || submitting || latest.running || needsFreePreview) return;
+    const s = p.summary;
+    const lines = [`从「${p.source_root}」传 ${s['要上传']} 个 Excel 到「${p.dest_root}」：新建 ${s['新建']} 个，覆盖 ${s['覆盖'] + s['要确认']} 个。`,
+      '每个文件先在本机临时副本上清掉标记色、视图标准化（A1、100%）再传，起点的文件不动。有一个没做成，这一批都不传。'];
+    if (s['别人改过']) lines.push(`🛑 ${s['别人改过']} 个在拿走之后被别人改过，不会覆盖。`);
+    const confirmList = p.files.filter(file => file.action === 'confirm');
+    if (confirmList.length) {
+      lines.push(`⚠️ 下面 ${confirmList.length} 个终点已有同名文件，又没有拿取记录，没法知道期间有没有人改过。确定要覆盖吗？`);
+      lines.push(confirmList.slice(0, 8).map(file => '　' + file.rel).join('\n') + (confirmList.length > 8 ? '\n　…' : ''));
+    }
+    if (!await window.appConfirm(lines.join('\n'), { title: '按清单上传', okText: confirmList.length ? '覆盖并上传' : '开始上传', tone: s['覆盖'] + s['要确认'] ? 'danger' : undefined })) return;
+    submitting = 'start'; viewing = null; controls();
+    try { await post(api + '/free_start', { preview_id: p.id, confirm_overwrite: confirmList.length > 0 }); wasRunning = true; }
+    catch (error) { $('distError').textContent = error.message; }
+    finally { submitting = false; await refresh(); }
+  }
+  $('distFreePreview').addEventListener('click', makeFreePreview);
+  $('distFreeStart').addEventListener('click', startFree);
+  for (const id of ['distFreeSource', 'distFreeDest']) {
+    $(id).addEventListener('input', () => { needsFreePreview = true; controls(); });
+    $(id).addEventListener('keydown', event => { if (event.key === 'Enter') makeFreePreview(); });
+  }
   $('distPreview').addEventListener('click', () => makePreview('preview'));
   $('distFetch').addEventListener('click', () => makePreview('fetch'));
   $('distStart').addEventListener('click', startCopy);
@@ -708,14 +842,41 @@
     if (view) { viewRun(view.dataset.distView); return; }
     if (event.target.closest('[data-dist-back]')) { viewing = null; filter = 'all'; render(); }
   });
+  function showTaskPaths() {
+    $('distTaskPaths').innerHTML = `<dt>共享</dt><dd>${esc(task.shared)}</dd><dt>参考</dt><dd>${esc(task.reference)}</dd><dt>处理</dt><dd>${esc(task.work)}</dd>`
+      + (task.upload_to ? `<dt>上传到</dt><dd>${esc(task.upload_to)}（中转）</dd>` : '');
+    $('distTaskDest').placeholder = task.shared;
+    $('distTaskDest').value = task.upload_to || '';
+    $('distTaskDest').closest('.dist-dest-row').classList.toggle('is-relay', !!task.upload_to);
+    $('distTaskDestNote').textContent = task.upload_to
+      ? `现在传到中转：${task.upload_to}。公司共享那份照样先核对版本，但不会被改；中转里会放一份「拿取版本.json」，汇总的人上传到公司时用它检查期间有没有人改过，请不要删。`
+      : `现在直接传回共享文件夹：${task.shared}`;
+  }
+
+  async function saveTaskDest() {
+    if (!task || latest.running) return;
+    $('distError').textContent = '';
+    try {
+      const result = await post('/api/tasks/upload_to', { id: task.id, path: $('distTaskDest').value.trim() });
+      task = { ...task, upload_to: result.task.upload_to };
+      showTaskPaths();
+      await reloadTaskFiles();
+    } catch (error) { $('distError').textContent = error.message; }
+  }
+  if (!jsonMode && !startMode && !freeMode) {
+    $('distTaskDestSave').addEventListener('click', saveTaskDest);
+    $('distTaskDest').addEventListener('keydown', event => { if (event.key === 'Enter') saveTaskDest(); });
+  }
+
   async function loadTask() {
     try {
       const response = await fetch('/api/tasks', { cache: 'no-store' });
       const result = await response.json();
       if (!response.ok || !result.ok) throw Error('无法读取当前任务');
       const current = result.tasks.find(t => t.id === result.current);
-      if (jsonMode) {
+      if (jsonMode || freeMode) {
         $('distBackToTask').hidden = !current;
+        if (freeMode) $('distGoUpload').hidden = !current;
         return;
       }
       if (startMode) $('distNewRoot').value = result.last_work_root || '';
@@ -736,7 +897,7 @@
         showLastShared(task.shared);
       }
       $('distTaskName').textContent = task.name;
-      $('distTaskPaths').innerHTML = `<dt>共享</dt><dd>${esc(task.shared)}</dd><dt>参考</dt><dd>${esc(task.reference)}</dd><dt>处理</dt><dd>${esc(task.work)}</dd>`;
+      showTaskPaths();
       $('distTaskNotice').hidden = true;
       $('distTaskSummary').hidden = false;
       if (startMode) {
