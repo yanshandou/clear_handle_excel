@@ -589,7 +589,7 @@ def _upload_task(task_id: Any) -> dict[str, Any]:
 
     task = work_task.get(str(task_id))
     if work_task.overview()["current"] != task["id"]:
-        raise ValueError("当前任务已切换，请重新打开第 9 步")
+        raise ValueError("当前任务已切换，请重新打开第 4 步「上传」")
     return task
 
 
@@ -727,6 +727,51 @@ class _SharedVersionChanged(Exception):
     pass
 
 
+def _prepare_task_files(task: dict[str, Any], checked: list[tuple], total: int) -> None:
+    from core import upload_prep
+    from core.excel_ops import quit_background_excel, start_background_excel
+
+    excel = None
+    guard = file_problem.Guard("上传前处理（清标记 · 恢复颜色 · 视图标准化）")
+
+    def get_excel() -> Any:
+        nonlocal excel
+        if excel is None:
+            excel = guard.watch(start_background_excel())
+        return excel
+
+    wf.pythoncom.CoInitialize()
+    try:
+        for index, (item, local, _dest, _expected) in enumerate(checked):
+            reference = _task_file(Path(task["reference"]), item["rel"]) if task.get("reference") else None
+            while True:  # 出错时问用户：「重试」重开 Excel 再做这份，「跳过」就不传（这一批都不传）
+                _progress(index, total, f"上传前处理 {item['rel']}")
+                guard.progress()
+                where: dict[str, str] = {}
+                try:
+                    item["prep"] = upload_prep.prepare(get_excel, local, reference, where)
+                    wf.log_msg(f"🧽 {item['rel']}：{upload_prep.text(item['prep'])}")
+                    break
+                except Exception as err:
+                    debug_log.exception(err, f"上传前处理 {item['rel']}")
+                    retry, message = guard.problem(err, local, item["rel"], Path(task["work"]),
+                                                   close=lambda: file_problem.quit_quietly(excel))
+                    if guard.closed:
+                        excel = None
+                    if retry:
+                        wf.log_msg(f"🔁 重试 {item['rel']}")
+                        continue
+                    item.update(status="failed", error=f"上传前{where.get('step') or '处理'}没做成：{message}")
+                    break
+    finally:
+        try:
+            if excel is not None:
+                quit_background_excel(excel)
+        finally:
+            guard.stop()
+            wf.pythoncom.CoUninitialize()
+
+
 def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
     task = data["task"]
     work, shared = Path(task["work"]), Path(task["shared"])
@@ -742,6 +787,10 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
             checked.append((item, local, dest, current))
         except (OSError, ValueError) as err:
             item.update(status="failed", error=_explain(err))
+    if not any(item.get("status") for item in items):
+        # 上传前每个文件都先清标记色、对照参考恢复残留颜色、视图标准化（core/upload_prep.py）；
+        # 有一个没做成就和检查没通过一样，这一批一个都不传
+        _prepare_task_files(task, checked, len(items))
     if not any(item.get("status") for item in items):
         for index, (item, local, dest, expected) in enumerate(checked):
             _progress(index, len(items), f"上传 {item['rel']}")
@@ -1060,6 +1109,9 @@ def markdown(result: dict[str, Any]) -> str:
                 status += f"（旧处理副本备份在 `{item['backup_path']}`）"
             if item.get("ref_backup_path"):
                 status += f"（旧参考备份在 `{item['ref_backup_path']}`）"
+            if item.get("prep"):
+                from core import upload_prep
+                status += f"（上传前：{upload_prep.text(item['prep'])}）"
             lines.append(f"| {_md(item['rel'])} | {_md(status)} |")
         return "\n".join(lines) + "\n"
     s = result.get("summary") or {}

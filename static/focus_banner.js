@@ -1,6 +1,6 @@
 // 「本轮只处理待重新处理文件」顶部提示（后端 core/work_task.py 的 focus，用户 2026-11-06 定）
-// 上传页一键开启后，1～8 步列文件时只列清单里的文件；清单里的文件全部上传成功自动结束。
-// 主页、1～8 步各页、上传页都显示这条提示，可以看清单、手动退出。
+// 上传页一键开启后，前 3 步列文件时只列清单里的文件；清单里的文件全部上传成功自动结束。
+// 主页、前 3 步各页、上传页都显示这条提示，可以看清单、手动退出。
 (() => {
   const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[ch]));
   const style = document.createElement('style');
@@ -73,9 +73,9 @@
   async function exit() {
     if (!task) return;
     const ask = window.appConfirm
-      ? window.appConfirm('退出后，1～8 步重新处理整个文件夹的全部 Excel。\n还没上传的待重新处理文件仍在上传页标着「待重新处理」，随时可以再开。',
+      ? window.appConfirm('退出后，前 3 步重新处理整个文件夹的全部 Excel。\n还没上传的待重新处理文件仍在上传页标着「待重新处理」，随时可以再开。',
         { title: '退出本轮清单', okText: '退出', cancelText: '先不退' })
-      : Promise.resolve(confirm('退出后 1～8 步处理整个文件夹，确定吗？'));
+      : Promise.resolve(confirm('退出后 前 3 步处理整个文件夹，确定吗？'));
     if (!await ask) return;
     try {
       const response = await fetch('/api/tasks/focus/clear', { method:'POST', headers:{ 'Content-Type':'application/json' },

@@ -9,8 +9,11 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from core import storage, upload_manager, distribute, workflow
+from core import storage, upload_manager, upload_prep, distribute, workflow
 from web_clip_fixer import WebHandler
+
+PREP_DONE = {"marks": 0, "tabs": 0, "colors": 0, "color_skipped": 0, "color_problems": [],
+             "reference": True, "normalized": True}
 
 
 class UploadManagerIntegrationTests(unittest.TestCase):
@@ -22,6 +25,8 @@ class UploadManagerIntegrationTests(unittest.TestCase):
             (upload_manager, 'DATABASE', self.root / 'manager.sqlite3'),
             (storage, 'DATABASE_PATH', self.root / 'execution.sqlite3'),
             (distribute, '_STATUS', {'running': False}),
+            # 上传前的清标记 / 恢复颜色 / 视图标准化要开 Excel，这里只测上传本身
+            (upload_prep, 'prepare', lambda *args, **kwargs: dict(PREP_DONE)),
         ]:
             patcher = patch.object(module, key, value)
             patcher.start()
@@ -62,7 +67,7 @@ class UploadManagerIntegrationTests(unittest.TestCase):
         status, home = self.request('GET', '/')
         self.assertEqual(status, 200)
         self.assertIn(b'href="/distribute" id="workTaskUploadLink"', home)
-        self.assertEqual(home.count(b'class="feature-title"'), 9)
+        self.assertEqual(home.count(b'class="feature-title"'), 4)  # 2026-11-07 起主页只有 4 站
         for filename in ('app.js', 'planner.js', 'icons.js', 'integration.css'):
             self.assertEqual(self.request('GET', '/static/upload_manager/' + filename)[0], 200)
         self.assertEqual(self.request('GET', '/api/upload-manager/items'), (200, []))

@@ -1,6 +1,8 @@
 // 精简 Sheet 独立页面：填写文件夹 → 扫描预览 → 单击标签调整 → 执行 → 查看结果
 const CLEAN_KIND = 'clean_sheets';
 const FOLDER_STORAGE_KEY = 'clear_handle_excel.lastFolder';
+const OLD_FOLDER_STORAGE_KEY = 'clear_handle_excel.oldFolder'; // 和修复引用 / 隐藏页 / 颜色页共用
+const HIDDEN_STORAGE_KEY = 'clear_handle_excel.cleanHidden'; // 「做完后也修复隐藏页」上次勾没勾
 
 let overview = null;
 let phase = 'form'; // form | preview | running | done
@@ -544,6 +546,11 @@ function isBusyOther() {
   return Boolean(overview && overview.busy && !isCleanRunning());
 }
 
+// 精简完以后自动接着做的检查还在跑（每一步之间后台会短暂空闲，不能只看 busy）
+function isChainRunning() {
+  return Boolean(window.CleanChain?.running);
+}
+
 function canResumeClean() {
   return Boolean(overview && overview.can_resume && overview.job && overview.job.kind === CLEAN_KIND);
 }
@@ -567,8 +574,9 @@ function renderHeader() {
   const pct = Number(p.progress_pct || 0);
   document.getElementById('navProgressBadge').textContent =
     p.total_files > 0 ? `${p.completed_files}/${p.total_files} (${pct}%)` : '0%';
-  document.getElementById('statusText').innerText = overview.busy
-    ? '⏳ 后台处理中...' : (overview.can_resume ? '任务已中断，可继续上次任务' : '✅ 就绪');
+  document.getElementById('statusText').innerText = overview.busy || isChainRunning()
+    ? (isChainRunning() && !isCleanRunning() ? '⏳ 精简后自动检查中...' : '⏳ 后台处理中...')
+    : (overview.can_resume ? '任务已中断，可继续上次任务' : '✅ 就绪');
 }
 
 function renderPage() {
@@ -578,6 +586,7 @@ function renderPage() {
   const hint = document.getElementById('cleanHint');
 
   document.getElementById('cleanFolderInput').disabled = working;
+  document.getElementById('cleanOldFolder').disabled = working;
   document.getElementById('cleanActionBar').classList.toggle('hidden', phase !== 'preview');
   document.getElementById('cleanLegend').classList.toggle('hidden', phase !== 'preview');
   document.getElementById('cleanFilter').classList.toggle('hidden', phase !== 'preview');
@@ -605,7 +614,8 @@ function renderPage() {
     // 待定只是本次不删，不改文件；只去掉「新」字（没有旧表的新X）或只改名也要执行
     const hasAction = stats.deletedTotal > 0 || stats.renameTotal > 0 || stats.customRenameTotal > 0 || stats.reorderTotal > 0;
     const hasError = stats.emptyFiles.length > 0;
-    execBtn.disabled = working || !hasAction || hasError || isBusyOther() || isCleanRunning();
+    // 没有要删 / 改名的表也能点：只做后面的自动检查（BL 超链接、引用错误、隐藏页）
+    execBtn.disabled = working || hasError || isBusyOther() || isCleanRunning() || isChainRunning();
     if (pending === 'start') {
       execBtn.textContent = `⏳ 整理中…${elapsedText()}`;
     } else if (hasError) {
@@ -619,15 +629,22 @@ function renderPage() {
     } else if (stats.customRenameTotal > 0) {
       execBtn.textContent = `✏️ 改名 ${stats.customRenameTotal} 个工作表`;
     } else {
-      execBtn.textContent = '没有标记删除的工作表';
+      execBtn.textContent = '🤖 不删表，只做自动检查';
     }
-    if (isBusyOther()) {
+    if (hasAction && pending !== 'start' && !hasError) execBtn.textContent += ' + 自动检查';
+    if (isChainRunning() && !isBusyOther()) {
+      hint.textContent = '上次精简后的自动检查还在做，做完才能开始';
+    } else if (isBusyOther()) {
       hint.textContent = `后台正在执行「${overview.progress.task_name}」，完成后才能开始`;
     } else if (isCleanRunning()) {
       hint.textContent = '预览窗口正在处理文件，完成后才能开始';
     }
   }
   if (phase === 'running' || phase === 'done') renderRunBox();
+  // 自动检查的结果：这个文件夹最近一次的，扫描预览时先收起
+  const folder = document.getElementById('cleanFolderInput').value;
+  window.CleanChain?.render(document.getElementById('cleanChainBox'),
+    phase !== 'preview' && pending !== 'scan' && window.CleanChain.isFor(folder));
 }
 
 function renderSummary(stats) {
@@ -891,12 +908,22 @@ async function startTask() {
   const folder = readFolderInput();
   if (!folder) return;
   if (overview && overview.can_resume && !(await appConfirm('开始新任务会替换上次中断任务的续跑进度，确定吗？', { okText: '开始新任务' }))) return;
+  const oldFolder = document.getElementById('cleanOldFolder').value.trim();
+  const hidden = document.getElementById('cleanHiddenToggle').checked;
+  if (hidden && !oldFolder) {
+    appAlert('修复隐藏页要对照参考（原始备份）文件夹，请先填上，或者去掉「做完后也修复隐藏页」的勾。', { tone: 'warn' });
+    return;
+  }
   setPending('start');
   try {
-    const payload = { kind: CLEAN_KIND, folder, plan: buildCleanPlan() };
+    const payload = { kind: CLEAN_KIND, folder, plan: buildCleanPlan(), chain: { hidden, old_folder: oldFolder } };
     if (processedFiles.size) payload.files = Object.keys(payload.plan); // 跳过已在预览窗口处理过的文件
     await postAction('/api/quick_task', payload);
     saveLastFolder(folder);
+    try {
+      if (oldFolder) localStorage.setItem(OLD_FOLDER_STORAGE_KEY, oldFolder);
+      localStorage.setItem(HIDDEN_STORAGE_KEY, hidden ? '1' : '0');
+    } catch (_) {}
     phase = 'running';
     minAcceptedSeq = pollSeq + 1;
   } catch (e) {
@@ -926,7 +953,7 @@ async function resumeTask() {
 async function pollState() {
   const seq = ++pollSeq;
   try {
-    const res = await fetch('/api/overview');
+    const [res] = await Promise.all([fetch('/api/overview'), window.CleanChain?.refresh()]);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '读取状态失败');
     if (seq < minAcceptedSeq) return;
@@ -952,6 +979,7 @@ async function pollState() {
 
 // 后台任务刚跑完且全部成功：撒花庆祝（失败或中断不庆祝，结果框里会提示）
 function celebrateFinished() {
+  if (isChainRunning()) return; // 后面还有自动检查：全部做完再庆祝（见下面 onFinished）
   const p = overview.progress || {};
   if (overview.can_resume || p.status === 'interrupted' || p.error_files) return;
   const files = p.total_files ? ` · ${p.total_files} 个文件` : '';
@@ -971,6 +999,22 @@ async function postAction(path, payload) {
 
 const cleanFolderInput = document.getElementById('cleanFolderInput');
 cleanFolderInput.value = readLastFolder();
+
+window.CleanChain?.onFinished(chain => {
+  renderPage();
+  if (chain.steps.some(step => step.state === 'failed')) return;
+  window.gameFx?.celebrate('全部做完！', '精简 Sheet + 自动检查');
+});
+
+const cleanOldFolder = document.getElementById('cleanOldFolder');
+const cleanHiddenToggle = document.getElementById('cleanHiddenToggle');
+try {
+  cleanOldFolder.value = localStorage.getItem(OLD_FOLDER_STORAGE_KEY) || '';
+  cleanHiddenToggle.checked = localStorage.getItem(HIDDEN_STORAGE_KEY) === '1';
+} catch (_) {}
+cleanHiddenToggle.addEventListener('change', () => {
+  try { localStorage.setItem(HIDDEN_STORAGE_KEY, cleanHiddenToggle.checked ? '1' : '0'); } catch (_) {}
+});
 cleanFolderInput.addEventListener('input', () => {
   if (phase === 'preview' || phase === 'done') {
     phase = 'form';

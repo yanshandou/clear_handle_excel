@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path, PureWindowsPath
 from unittest.mock import patch
 
-from core import distribute, storage, work_task, workflow as wf
+from core import distribute, storage, upload_prep, work_task, workflow as wf
 
 
 def write(path: Path, text: str = "x") -> None:
@@ -23,6 +23,11 @@ class WorkTaskTests(unittest.TestCase):
         write(self.shared / "说明.pdf", "pdf")
         self.db = patch.object(storage, "DATABASE_PATH", root / "test.sqlite3")
         self.db.start()
+        # 上传前的清标记 / 恢复颜色 / 视图标准化要开 Excel，这里只测上传本身（见 test_upload_prep.py）
+        prep = patch.object(upload_prep, "prepare", return_value={"marks": 0, "tabs": 0, "colors": 0, "color_skipped": 0,
+                                                                  "color_problems": [], "reference": True, "normalized": True})
+        prep.start()
+        self.addCleanup(prep.stop)
         distribute._STATUS.clear()
         distribute._STATUS["running"] = False
         wf.STATE["busy"] = False

@@ -563,6 +563,15 @@ def run_pending_workflow() -> None:
                     followup = batch.start_followup(ran)
                 except Exception as err:
                     log_msg(f"❌ 排队的复检 / 提交没能开始：{err}")
+        chain = (ran.get("options") or {}).get("chain") if ran["kind"] == "clean_sheets" else None
+        if chain:
+            # 精简 Sheet 做完接着自动排查 BL 超链接、修复引用错误、（勾选时）修复隐藏页（core/clean_chain.py）
+            from core import clean_chain
+            try:
+                clean_chain.run(ran["options"]["folder"], chain)
+            except Exception as err:
+                debug_log.exception(err, "精简后自动检查")
+                log_msg(f"❌ 精简后的自动检查没能做完：{err}")
         if followup:
             run_pending_workflow()
 
