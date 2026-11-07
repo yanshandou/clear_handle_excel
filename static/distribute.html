@@ -103,6 +103,13 @@
       .dist-overview-copy { padding-inline: 16px; }
       .dist-surface { padding: 12px; }
     }
+    .dist-dest-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin: 0 0 14px; padding: 12px 14px; border: 2px dashed #b7c7e6; border-radius: 12px; background: #fff; }
+    .dist-dest-row label { flex: 1 1 32rem; display: grid; gap: 6px; font-weight: 700; }
+    .dist-dest-row label small { font-weight: 400; }
+    .dist-dest-row input { font-family: ui-monospace, Consolas, "MS Gothic", monospace; }
+    .dist-dest-row .toolbar-hint[role="status"] { flex-basis: 100%; margin: 0; }
+    .dist-dest-row.is-relay { border-color: #b45309; background: #fffbeb; }
+    .tag-confirm { color: #6b3f00; font-weight: 700; }
     .tag-keep { color: #1d4f91; font-weight: 700; }
     .tag-same { color: var(--ink-3); font-weight: 700; }
     .dist-conflict { color: #b42318; font-weight: 700; }
@@ -139,6 +146,7 @@
           <div class="page-heading-actions">
             <a id="distGoStart" class="button secondary" href="/distribute/start" hidden><i data-lucide="download" aria-hidden="true"></i> 新任务 · 从共享拿文件</a>
             <a id="distGoUpload" class="button secondary" href="/distribute" hidden><i data-lucide="upload" aria-hidden="true"></i> 去当前任务上传</a>
+            <a id="distGoFree" class="button secondary" href="/distribute?mode=free" hidden><i data-lucide="upload" aria-hidden="true"></i> 起点 → 终点 上传</a>
             <a id="distGoManage" class="button secondary" href="/distribute/manage"><i data-lucide="files" aria-hidden="true"></i> 文件管理与上传方案</a>
           </div>
         </section>
@@ -212,6 +220,12 @@
           </div>
           <div id="distTaskBox" class="dist-surface" hidden>
             <p class="toolbar-hint">在处理文件夹中勾选要传回共享的 Excel，或按数量选择。系统只检查选中文件的共享版本，有更新就先同步到参考和处理文件夹，等你重新处理并复检。</p>
+            <div class="dist-dest-row">
+              <label for="distTaskDest">上传到（终点）<small class="toolbar-hint">不填就是共享文件夹。几个人分着做时，填团队 OneDrive 的中转文件夹，汇总的人再用「起点 → 终点 上传」传到公司</small>
+                <input id="distTaskDest" type="text" spellcheck="false" autocomplete="off"></label>
+              <button id="distTaskDestSave" class="button secondary" type="button">保存终点</button>
+              <span id="distTaskDestNote" class="toolbar-hint" role="status"></span>
+            </div>
             <div class="dist-plan-row">
               <label for="distTaskCount">按数量选取<input id="distTaskCount" type="number" min="1" step="1" value="10" required></label>
               <button id="distTaskPickCount" class="button secondary" type="button">选取前 N 个待上传文件</button>
@@ -227,6 +241,18 @@
               <span id="distTaskFocusNote" class="toolbar-hint"></span>
             </div>
             <button id="distTaskUpload" class="button primary" type="button" disabled>检查并批量上传</button>
+          </div>
+          <div id="distFreeFields" class="dist-surface" hidden>
+            <p class="toolbar-hint">起点里的 Excel（包括子文件夹）按同样的目录结构传到终点。每个文件先复制到本机临时文件夹，清掉标记色、视图标准化（A1、100%）再传，所以「最終更新者」是你；起点的文件不动。
+              起点里有「拿取版本.json」（别人用本工具传到中转时放的）就用它检查终点期间有没有被人改过，改过的不覆盖。</p>
+            <div class="link-fields">
+              <label for="distFreeSource">起点<input id="distFreeSource" type="text" spellcheck="false" autocomplete="off" placeholder="例如 团队 OneDrive 里的 AAA 文件夹"></label>
+              <label for="distFreeDest">终点<input id="distFreeDest" type="text" spellcheck="false" autocomplete="off" placeholder="例如 公司 OneDrive 里对应的文件夹"></label>
+            </div>
+            <div class="link-actions">
+              <button id="distFreePreview" class="button primary" type="button">📋 生成上传清单</button>
+              <button id="distFreeStart" class="button primary" type="button" disabled>🚚 按清单上传</button>
+            </div>
           </div>
           <div id="distJsonFields" class="dist-surface" hidden>
             <p id="distBackToTask" class="toolbar-hint" hidden><a href="/distribute">← 回到当前任务</a></p>

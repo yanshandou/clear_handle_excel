@@ -524,6 +524,13 @@ class WebHandler(upload_manager.Handler):
             self._send_json({"ok": True, "task": work_task.set_focus(str(payload.get("id") or ""), payload.get("files"))})
         elif self.path == "/api/tasks/focus/clear":
             self._send_json({"ok": True, "task": work_task.clear_focus(str(payload.get("id") or ""))})
+        elif self.path == "/api/tasks/upload_to":
+            self._send_json({"ok": True, "task": work_task.set_upload_to(str(payload.get("id") or ""), payload.get("path"))})
+        elif self.path == "/api/distribute/free_preview":
+            self._send_json({"ok": True, "preview": distribute.preview_free(payload.get("source"), payload.get("dest"))})
+        elif self.path == "/api/distribute/free_start":
+            distribute.start_free(payload.get("preview_id"), payload.get("confirm_overwrite") is True)
+            self._send_json({"ok": True})
         elif self.path == "/api/tasks/switch":
             self._send_json({"ok": True, "task": work_task.switch(str(payload.get("id") or ""))})
         elif self.path == "/api/folders/activate":

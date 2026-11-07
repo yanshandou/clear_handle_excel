@@ -99,7 +99,9 @@ def text(prep: dict | None) -> str:
     parts = [f"清掉标记 {prep['marks']} 条" if prep["marks"] else "没有标记要清"]
     if prep["tabs"]:
         parts.append(f"还原表标签 {prep['tabs']} 张")
-    if not prep["reference"]:
+    if prep.get("no_reference"):
+        parts.append("起点 → 终点上传没有参考，不对照颜色")
+    elif not prep["reference"]:
         parts.append("参考里没有这份文件，没对照颜色")
     else:
         parts.append(f"按参考改回颜色 {prep['colors']} 处" if prep["colors"] else "颜色和参考一致")

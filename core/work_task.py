@@ -154,6 +154,43 @@ def switch(task_id: str) -> dict[str, Any]:
     return task
 
 
+def upload_dest(task: dict[str, Any]) -> Path:
+    """上传的终点：没另外填就是共享文件夹（用户 2026-11-07：几个账号分着做时，先传到团队 OneDrive 的中转文件夹）"""
+    return Path(task.get("upload_to") or task["shared"])
+
+
+def is_relay(task: dict[str, Any]) -> bool:
+    return bool(task.get("upload_to")) and Path(task["upload_to"]) != Path(task["shared"])
+
+
+def set_upload_to(task_id: str, path_text: Any) -> dict[str, Any]:
+    """改任务的上传终点。空 = 回到直接传共享文件夹"""
+    text = path_text.strip().strip('"').strip("'") if isinstance(path_text, str) else ""
+    with _LOCK:
+        data = _load()
+        task = next((t for t in data["tasks"] if t.get("id") == task_id), None)
+        if not task:
+            raise ValueError("找不到这个任务")
+        if text:
+            dest = Path(text).expanduser()
+            if not dest.is_dir():
+                raise ValueError(f"终点文件夹不存在：{dest}（OneDrive 的话请确认已经同步到这台电脑）")
+            dest = dest.resolve()
+            for name, own in (("处理", task["work"]), ("参考", task["reference"])):
+                mine = Path(own).resolve()
+                if dest == mine or mine in dest.parents or dest in mine.parents:
+                    raise ValueError(f"终点不能和本任务的{name}文件夹互相包含：{dest}")
+            shared = Path(task["shared"]).resolve()
+            if dest != shared and (shared in dest.parents or dest in shared.parents):
+                raise ValueError("终点不能放在共享文件夹里面，也不能是它的上级文件夹")
+            task["upload_to"] = "" if dest == shared else str(dest)
+        else:
+            task["upload_to"] = ""
+        _save(data)
+    debug_log.event("🚚 上传终点", 任务=task["name"], 终点=task["upload_to"] or task["shared"])
+    return task
+
+
 def set_single(on: Any) -> dict[str, Any]:
     """保留旧版的路径偏好开关：是否优先使用自选路径；两种偏好都允许修改路径。"""
     with _LOCK:
@@ -296,20 +333,30 @@ def _check(task: dict[str, Any], progress=None) -> dict[str, Any]:
         baseline = distribute.load_baseline()
         mine = list(distribute.scan_folder(work)["excel"])
         shared_files = distribute.scan_folder(shared)["excel"]
+        relay = upload_dest(task) if is_relay(task) else None
+        if relay is not None and not relay.is_dir():
+            raise ValueError(f"中转文件夹不存在了：{relay}")
+        relay_files = {distribute._key(rel): rel for rel in distribute.scan_folder(relay)["excel"]} if relay else {}
         theirs = {distribute._key(rel): rel for rel in shared_files}
         report(phase="listed", work_files=len(mine), shared_files=len(shared_files))
         to_compare = []
         for rel in mine:
             other = theirs.get(distribute._key(rel))
-            if not other:
+            if not other and relay is None:
                 issues["共享里没有"].append(rel)
                 files[rel] = {"state": "共享里没有"}
                 continue
-            base = distribute._task_baseline(baseline.get(distribute._base_key(shared / other), {}), task["id"])
+            base = distribute._task_baseline(baseline.get(distribute._base_key(shared / (other or rel)), {}), task["id"])
             if base.get("review"):
                 issues["待重新处理"].append(rel)
                 files[rel] = {"state": "待重新处理"}
                 continue
+            if relay is not None:  # 中转：和传到中转的那份比（公司那份等汇总的人上传）
+                other = relay_files.get(distribute._key(rel))
+                if not other:
+                    issues["没上传"].append(rel)
+                    files[rel] = {"state": "没上传"}
+                    continue
             to_compare.append((rel, other, base))
             files[rel] = {"state": "wait"}
         report(phase="compare", done=0, total=len(to_compare),
@@ -317,7 +364,7 @@ def _check(task: dict[str, Any], progress=None) -> dict[str, Any]:
         for index, (rel, other, base) in enumerate(to_compare):
             report(phase="compare", done=index, total=len(to_compare), current=rel)
             try:
-                a, b = distribute._digest(work / rel), distribute._digest(shared / other)
+                a, b = distribute._digest(work / rel), distribute._digest((relay or shared) / other)
             except OSError as err:
                 note = f"{err.strerror or err}"
                 issues["读不到"].append(f"{rel}：{note}")
@@ -326,11 +373,12 @@ def _check(task: dict[str, Any], progress=None) -> dict[str, Any]:
             if a == b:
                 files[rel] = {"state": "ok"}
                 continue
-            key = "别人改过" if base and base.get("sha256") != b else "没上传"
+            key = "别人改过" if relay is None and base and base.get("sha256") != b else "没上传"
             issues[key].append(rel)
             files[rel] = {"state": key}
         report(phase="compare", done=len(to_compare), total=len(to_compare))
         result = {"passed": not any(issues.values()), "issues": issues, "files": len(mine),
+                  "relay": str(relay) if relay else "",
                   "shared_files": len(shared_files),
                   "file_states": [{"rel": rel, **files[rel]} for rel in mine]}
         debug_log.event("🏁 收尾检查", 文件=len(mine), **{k: len(v) for k, v in issues.items()})
