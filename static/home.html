@@ -117,29 +117,29 @@
             <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-clean">🧹</span></span>
           </a>
         </li>
+        <li data-ops="pdf" class="route-stop">
+          <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
+          <button type="button" class="feature-card feature-sky tone-teal" onclick="openTask('export_pdf')" style="--tile-cat: 'STEP 2'">
+            <span class="feature-text">
+              <span class="feature-title">调整页面</span>
+              <span class="feature-sub">宽一页 · 横竖 · 向下取整</span>
+              <span class="feature-meta" id="meta_export_pdf">导出 PDF，点按钮让程序改</span>
+            </span>
+            <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-pdf">📄</span></span>
+          </button>
+        </li>
         <li data-ops="scan autofix" class="route-stop">
           <i class="route-road" aria-hidden="true"></i>
           <span class="route-done hidden" role="img"></span>
-          <a href="/workbench" class="feature-card feature-rose tone-yellow" style="--tile-cat: 'STEP 2'">
+          <a href="/workbench" class="feature-card feature-rose tone-yellow" style="--tile-cat: 'STEP 3'">
             <span class="feature-text">
               <span class="feature-title">查看切字</span>
-              <span class="feature-sub">末页缩放 · PDF 检测标记 · 三色审核</span>
+              <span class="feature-sub">扫描标色 · 三色审核 · 复检</span>
               <span class="feature-meta" id="meta_clips">尚未扫描</span>
             </span>
             <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-inspect">🔍</span></span>
           </a>
-        </li>
-        <li data-ops="pdf" class="route-stop">
-          <i class="route-road" aria-hidden="true"></i>
-          <span class="route-done hidden" role="img"></span>
-          <button type="button" class="feature-card feature-sky tone-teal" onclick="openTask('export_pdf')" style="--tile-cat: 'STEP 3'">
-            <span class="feature-text">
-              <span class="feature-title">人工复检</span>
-              <span class="feature-sub">导出 PDF · 逐页查看 · 标记处理</span>
-              <span class="feature-meta" id="meta_export_pdf">只读打开，不改原文件</span>
-            </span>
-            <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-pdf">📄</span></span>
-          </button>
         </li>
         <li data-ops="distribute" class="route-stop">
           <i class="route-road" aria-hidden="true"></i>
@@ -180,7 +180,7 @@
     <div id="taskDialogHead" class="task-dialog-head feature-sky">
       <span id="taskDialogIcon" class="task-dialog-icon" aria-hidden="true">📄</span>
       <div class="task-dialog-heading">
-        <h2 id="taskDialogTitle">人工复检</h2>
+        <h2 id="taskDialogTitle">调整页面</h2>
         <p id="taskDialogSub"></p>
       </div>
       <button type="button" class="task-dialog-close" onclick="closeTask()" aria-label="关闭">✕</button>

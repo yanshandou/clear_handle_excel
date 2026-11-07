@@ -114,6 +114,7 @@ def list_pdfs(folder: str) -> dict:
                 _exports().pop(gone)  # PDF 已经删掉的记录不留着
         owners = {str(p): _owner(p) for p in pdfs}
     notes = pdf_store.notes_map(root) if base.is_dir() else {}
+    layouts = pdf_store.layout_map(root) if base.is_dir() else {}
     for pdf in pdfs:
         entry: dict[str, Any] = {"pdf": str(pdf), "name": workbook_rel_name(pdf, shown_from), "v": pdf.stat().st_mtime_ns}
         try:
@@ -126,6 +127,8 @@ def list_pdfs(folder: str) -> dict:
                          sheet=owner["sheet"], guessed=bool(owner.get("guessed")))
         if notes.get(str(pdf)):
             entry["notes"] = notes[str(pdf)]  # 导出时发现的内容很少的页（page_fill）
+        if layouts.get(str(pdf)):
+            entry["layout"] = layouts[str(pdf)]  # 方向、页高、末页印了多少（调整页面）
         entries.append(entry)
     focus = None
     from core import work_task
@@ -267,6 +270,9 @@ def process_status() -> dict:
         return {**_PROCESS, "result": _PROCESS.get("result")}
 
 
+TOOLS = ("floor", "auto", "orient")  # 向下取整 / 页高改回自动 / 改方向（value 1 竖、2 横）
+
+
 def _process_item(raw: Any, color: str) -> dict:
     if not isinstance(raw, dict) or not isinstance(raw.get("pdf"), str):
         raise ValueError("标记的数据不对，请刷新页面再试")
@@ -286,15 +292,25 @@ def _process_item(raw: Any, color: str) -> dict:
             continue
         item["spots"].append({"page": page})
     item["spots"].sort(key=lambda spot: spot["page"])
+    if color == "tool":
+        tool = raw.get("tool", "floor")
+        if tool not in TOOLS:
+            raise ValueError(f"不认识的工具「{tool}」，请刷新页面再试")
+        item["tool"] = tool
+        if tool == "orient":
+            value = raw.get("value")
+            if value not in (page_fill.XL_PORTRAIT, page_fill.XL_LANDSCAPE) or isinstance(value, bool):
+                raise ValueError("改方向要说明是横向还是竖向，请刷新页面再试")
+            item["value"] = value
     return item
 
 
-def process(red: Any, yellow: Any, floor: Any = None) -> None:
-    """一键处理：后台删掉标红的表，按工具箱标记改打印设置（向下取整），再打开标黄的。
-    网页轮询 process_status() 看进度和结果"""
+def process(red: Any, yellow: Any, tools: Any = None) -> None:
+    """一键处理：后台删掉标红的表，按工具箱标记改打印设置（向下取整、页高改回自动、改方向），再打开标黄的。
+    tools：[{pdf, tool, value}]，tool 不写是向下取整。网页轮询 process_status() 看进度和结果"""
     reds = [_process_item(raw, "red") for raw in (red or [])]
     yellows = [_process_item(raw, "yellow") for raw in (yellow or [])]
-    floors = [_process_item(raw, "floor") for raw in (floor or [])]
+    floors = [_process_item(raw, "tool") for raw in (tools or [])]
     if not reds and not yellows and not floors:
         raise ValueError("没有标黄、标红或标了工具的表")
     from core import bl_links, hidden_repair, link_repair, mark_finder
@@ -314,13 +330,13 @@ def process(red: Any, yellow: Any, floor: Any = None) -> None:
 
     def run() -> None:
         result: dict[str, list] = {"deleted": [], "failed": [], "opened": [], "open_failed": [], "later": [],
-                                   "floored": [], "floor_failed": []}
+                                   "changed": [], "change_failed": []}
         try:
             with debug_log.side_task("pdf_review_process", {"folder": root, "red": len(reds), "yellow": len(yellows),
                                                              "floor": len(floors)}):
                 for item in reds + yellows + floors:
                     debug_log.event("🎨 PDF 复检标记",
-                                    颜色={"red": "红", "yellow": "黄", "floor": "向下取整"}[item["color"]],
+                                    颜色={"red": "红", "yellow": "黄"}.get(item["color"]) or item.get("tool"),
                                     PDF=item["name"], 表=item["sheet"],
                                     页=[spot["page"] + 1 for spot in item["spots"]] or "-")
                 if reds:
@@ -335,7 +351,7 @@ def process(red: Any, yellow: Any, floor: Any = None) -> None:
                         wf.STATE.pop("maintenance", None)
                     _open_yellow(yellows, root, result)
                 debug_log.event("✅ PDF 复检一键处理完成", 删掉=len(result["deleted"]), 没删掉=len(result["failed"]),
-                                向下取整=len(result["floored"]), 没取整=len(result["floor_failed"]),
+                                改了页面=len(result["changed"]), 没改成=len(result["change_failed"]),
                                 打开=len(result["opened"]), 没打开=len(result["open_failed"]), 下次开=len(result["later"]))
         except Exception as err:
             result["failed"].append({"name": "任务", "sheet": "", "reason": f"处理出错：{err}"})
@@ -464,15 +480,16 @@ def _delete_in_workbook(excel: Any, wb_path: Path, items: list[dict], label: str
 
 
 def _floor_marked(floors: list[dict], root: str, result: dict) -> None:
-    """工具箱「向下取整」：每份 Excel 打开一次，标了的表设成 1 页宽、N-1 页高，真导出核对过才保存；
-    保存后把这份 Excel 的 PDF 全部重新导出（和「🔄 重新生成」一样），复检页上看到的就是新的"""
+    """工具箱：每份 Excel 打开一次，按标记改打印设置——向下取整（1 页宽、N-1 页高，真导出核对过才算）、
+    页高改回自动、改方向；改成了的保存，再把这份 Excel 的 PDF 全部重新导出（和「🔄 重新生成」一样），
+    网页上看到的就是新的，末页只多一点的会重新判断、重新标黄（改方向后要不要取整就不一定了）"""
     from core import reporter
     groups: dict[str, list[dict]] = {}
     for item in floors:
         groups.setdefault(item["wb_path"], []).append(item)
     with _PROCESS_LOCK:
         _PROCESS.update(stage="floor", total=len(groups), done=0, current="")
-    guard = file_problem.Guard("PDF 复检：向下取整")
+    guard = file_problem.Guard("调整页面：改打印设置")
     excel = None
     reporter.suspend_updates(True)  # 不是主页的批量任务：不写进执行记录
     wf.pythoncom.CoInitialize()
@@ -495,7 +512,7 @@ def _floor_marked(floors: list[dict], root: str, result: dict) -> None:
                     outcome = _floor_in_workbook(get_excel, Path(wb_path), items, export_root, label)
                     break
                 except Exception as err:
-                    debug_log.exception(err, f"PDF 复检向下取整 {label}")
+                    debug_log.exception(err, f"调整页面 {label}")
                     retry, message = guard.problem(err, wb_path, label, root,
                                                    close=lambda: file_problem.quit_quietly(excel))
                     if guard.closed:
@@ -507,7 +524,8 @@ def _floor_marked(floors: list[dict], root: str, result: dict) -> None:
                     break
             for item in outcome:
                 entry = {"pdf": item["pdf"], "name": label, "sheet": item["sheet"], "reason": item.get("reason", "")}
-                result["floored" if item["ok"] else "floor_failed"].append(entry)
+                entry["tool"] = item["tool"]
+                result["changed" if item["ok"] else "change_failed"].append(entry)
             with _PROCESS_LOCK:
                 _PROCESS.update(done=index + 1)
     finally:
@@ -530,16 +548,28 @@ def _floor_in_workbook(get_excel: Any, wb_path: Path, items: list[dict], export_
     book = open_workbook_checked(get_excel(), str(wb_path.resolve()), UpdateLinks=0)
     outcome: list[dict] = []
     try:
-        done: set[str] = set()
+        done: set[tuple[str, str]] = set()
+        oriented = {item["sheet"] for item in items if item["tool"] == "orient"}
         for item in items:
             sheet = _find_sheet(book, item["sheet"])
             if sheet is None:
                 outcome.append({**item, "ok": False, "reason": "文件里已经没有这张表（可能改名或删掉了）"})
                 continue
-            if str(sheet.Name) in done:
+            key = (str(sheet.Name), item["tool"])
+            if key in done:
                 outcome.append({**item, "ok": False, "reason": "同一张表标了两次，只改一次"})
                 continue
-            done.add(str(sheet.Name))
+            done.add(key)
+            if item["tool"] == "orient":
+                outcome.append(_set_orientation(sheet, item))
+                continue
+            if item["tool"] == "auto":
+                outcome.append(_set_auto_tall(sheet, item))
+                continue
+            if item["sheet"] in oriented:
+                # 方向一改，页数全变了，按旧 PDF 取整不准：先改方向，看了新 PDF 再决定
+                outcome.append({**item, "ok": False, "reason": "这张表同时改了方向，改完方向看新的 PDF 再决定要不要取整"})
+                continue
             found = page_fill.floor_pages(sheet, Path(item["pdf"]), wf._export_sheet_pdf)
             if found["ok"]:
                 reason = f"{found['before']} 页 → {found['after']} 页，字缩到约 {round(found['scale'] * 100)}%"
@@ -559,9 +589,9 @@ def _floor_in_workbook(get_excel: Any, wb_path: Path, items: list[dict], export_
         book.Save()
     finally:
         book.Close(SaveChanges=False)
-    floored = [item["sheet"] for item in outcome if item["ok"]]
-    debug_log.event("📄 PDF 复检向下取整已保存", 文件=label, 表=floored)
-    wf.log_msg(f"📄 {label}：{'、'.join(floored)} 向下取整，少印一页")
+    floored = [f"[{item['sheet']}] {item['reason']}" for item in outcome if item["ok"]]
+    debug_log.event("📐 调整页面已保存", 文件=label, 改了=floored)
+    wf.log_msg(f"📐 {label}：{'；'.join(floored)}")
     try:
         wf._export_workbook_pdfs(get_excel, wb_path, export_root, set(), force=True)
     except Exception as err:
@@ -570,6 +600,38 @@ def _floor_in_workbook(get_excel: Any, wb_path: Path, items: list[dict], export_
             if item["ok"]:
                 item["reason"] += f"；Excel 已保存，但重新导出 PDF 出错（{err}），请点「🔄 重新生成」"
     return outcome
+
+
+ORIENT_TEXT = {page_fill.XL_PORTRAIT: "竖向", page_fill.XL_LANDSCAPE: "横向"}
+
+
+def _set_orientation(sheet: Any, item: dict) -> dict:
+    """改打印方向；宽一页、页高照旧（页高定死的 N 页改方向后不一定合适，改回自动）"""
+    try:
+        setup = sheet.PageSetup
+        before = int(setup.Orientation)
+        setup.Orientation = item["value"]
+        tall_fixed = setup.Zoom is False and setup.FitToPagesTall not in (False, None, 0)
+        if tall_fixed:
+            setup.FitToPagesTall = False
+    except Exception as err:
+        return {**item, "ok": False, "reason": f"Excel 没让改方向（{err}）"}
+    reason = f"{ORIENT_TEXT.get(before, '原方向')} → {ORIENT_TEXT[item['value']]}"
+    if tall_fixed:
+        reason += "；原来定死的页高改回自动，看新的 PDF 再决定要不要取整"
+    return {**item, "ok": True, "reason": reason}
+
+
+def _set_auto_tall(sheet: Any, item: dict) -> dict:
+    """页高改回自动：宽一页、高交给 Excel 自动分页（取过整后想撤回）"""
+    try:
+        setup = sheet.PageSetup
+        setup.Zoom = False
+        setup.FitToPagesWide = 1
+        setup.FitToPagesTall = False
+    except Exception as err:
+        return {**item, "ok": False, "reason": f"Excel 没让改页高（{err}）"}
+    return {**item, "ok": True, "reason": "页高改回自动（宽一页、高由 Excel 定）"}
 
 
 def _open_yellow(yellows: list[dict], root: str, result: dict) -> None:

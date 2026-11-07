@@ -630,3 +630,73 @@ def floor_pages(sheet: Any, pdf_path: Path, export: Callable[[Any, Path], None])
     debug_log.event("📄 向下取整", 表=name, 原页数=pages, 新页数=result["after"], 字缩到=round(result["scale"], 3),
                     原设置=original, 有手动分页=result["manual"])
     return result
+
+
+# ---------- 调整页面：宽一页、高自动（用户 2026-11-07 定） ----------
+# 横向不许拆成几页（99 列在第一页、1 列单独印一页是不允许的），所以导出 PDF 前每张表都设成「1 页宽」；
+# 纵向先不定死，交给 Excel 自动分页（要 4 页就 4 页）。已经是 1 页宽的表不动（页高是取整定过的 N 页就留着）。
+# 导出后末页只印了一点（不到 SCAN_TAIL_FILL）的，网页上自动标黄，建议向下取整。
+
+XL_PORTRAIT, XL_LANDSCAPE = 1, 2
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 and number == value else None
+
+
+def one_page_wide(sheet: Any) -> dict | None:
+    """sheet 要是可以保存的。不是 1 页宽的设成 Zoom=False、1 页宽、页高自动；改了返回 {"before": 原缩放说明}，
+    已经是 1 页宽返回 None。读不到打印设置（例如没装打印机）也返回 None，只记调试日志"""
+    name = getattr(sheet, "Name", "")
+    try:
+        setup = sheet.PageSetup
+        zoom, wide = setup.Zoom, setup.FitToPagesWide
+    except Exception as err:
+        debug_log.event("📐 宽一页跳过", 表=name, 原因=f"读不到打印设置：{err}")
+        return None
+    if zoom is False and _int_or_none(wide) == 1:
+        return None
+    if zoom is False:
+        tall = _int_or_none(getattr(setup, "FitToPagesTall", None))
+        before = f"缩放到 {_int_or_none(wide) or '自动'} 页宽、{tall or '自动'} 页高"
+    else:
+        before = f"缩放 {zoom}%"
+    setup.Zoom = False
+    setup.FitToPagesWide = 1
+    setup.FitToPagesTall = False
+    debug_log.event("📐 设成宽一页、高自动", 表=name, 原来=before)
+    return {"before": before}
+
+
+def sheet_layout(sheet: Any) -> dict:
+    """调整页面网页要显示的打印设置：方向（1 竖 / 2 横）、页高（取整定死的 N 页，自动是 None）、上下边距"""
+    info: dict[str, Any] = {"orient": None, "tall": None}
+    try:
+        setup = sheet.PageSetup
+        orient = _int_or_none(setup.Orientation)
+        info["orient"] = orient if orient in (XL_PORTRAIT, XL_LANDSCAPE) else None
+        if setup.Zoom is False:
+            info["tall"] = _int_or_none(setup.FitToPagesTall)
+    except Exception:
+        pass
+    info["margins"] = _margins(sheet)
+    return info
+
+
+def tail_hint(pdf_path: Path | str, margins: tuple[float, float]) -> dict:
+    """导出好的 PDF：几页、最后一页印了多少（0~100）、要不要建议向下取整（末页不到 40%）"""
+    try:
+        pages = measure(pdf_path, *margins)
+    except Exception as err:
+        debug_log.event("📐 末页量不了", PDF=Path(pdf_path).name, 原因=str(err))
+        return {"pages": None, "tail": None, "floor": False}
+    if len(pages) < 2:
+        return {"pages": len(pages), "tail": None, "floor": False}
+    fill = pages[-1]["fill"]
+    return {"pages": len(pages), "tail": _pct(fill), "floor": fill < SCAN_TAIL_FILL}

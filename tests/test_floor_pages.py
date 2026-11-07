@@ -3,6 +3,7 @@ import math
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from core import page_breaks, page_fill
@@ -106,3 +107,55 @@ class FloorPagesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OnePageWideTests(unittest.TestCase):
+    """调整页面（用户 2026-11-07）：导出前设成宽一页、高自动；末页只多一点的建议取整"""
+
+    def sheet(self, **setup):
+        values = dict(Zoom=100, FitToPagesWide=False, FitToPagesTall=False, Orientation=1, TopMargin=0, BottomMargin=0)
+        values.update(setup)
+        return SimpleNamespace(Name="表", PageSetup=SimpleNamespace(**values))
+
+    def test_percent_zoom_becomes_one_page_wide_auto_tall(self):
+        sheet = self.sheet(Zoom=85)
+        self.assertEqual(page_fill.one_page_wide(sheet), {"before": "缩放 85%"})
+        self.assertEqual((sheet.PageSetup.Zoom, sheet.PageSetup.FitToPagesWide, sheet.PageSetup.FitToPagesTall),
+                         (False, 1, False))
+
+    def test_fit_two_pages_wide_becomes_one(self):
+        sheet = self.sheet(Zoom=False, FitToPagesWide=2, FitToPagesTall=5)
+        self.assertEqual(page_fill.one_page_wide(sheet), {"before": "缩放到 2 页宽、5 页高"})
+        self.assertEqual(sheet.PageSetup.FitToPagesTall, False)
+
+    def test_already_one_page_wide_keeps_floored_tall(self):
+        sheet = self.sheet(Zoom=False, FitToPagesWide=1, FitToPagesTall=3)
+        self.assertIsNone(page_fill.one_page_wide(sheet))
+        self.assertEqual(sheet.PageSetup.FitToPagesTall, 3)
+
+    def test_unreadable_setup_is_skipped(self):
+        self.assertIsNone(page_fill.one_page_wide(SimpleNamespace(Name="表")))
+
+    def test_layout_reads_orientation_and_fixed_tall(self):
+        self.assertEqual(page_fill.sheet_layout(self.sheet(Zoom=False, FitToPagesWide=1, FitToPagesTall=3, Orientation=2)),
+                         {"orient": 2, "tall": 3, "margins": (0.0, 0.0)})
+        self.assertEqual(page_fill.sheet_layout(self.sheet())["tall"], None)
+
+    def test_tail_hint_suggests_floor_when_last_page_is_short(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = Path(tmp) / "a.pdf"
+            doc = fitz.open()
+            for bottom in (800, 800, 150):
+                page = doc.new_page(width=595, height=842)
+                page.insert_text((50, 50), "上")
+                page.insert_text((50, bottom), "下")
+            doc.save(pdf)
+            hint = page_fill.tail_hint(pdf, (0.0, 0.0))
+            self.assertEqual(hint["pages"], 3)
+            self.assertTrue(hint["floor"])
+            self.assertLess(hint["tail"], 40)
+            one = Path(tmp) / "b.pdf"
+            doc = fitz.open()
+            doc.new_page(width=595, height=842)
+            doc.save(one)
+            self.assertEqual(page_fill.tail_hint(one, (0.0, 0.0)), {"pages": 1, "tail": None, "floor": False})
