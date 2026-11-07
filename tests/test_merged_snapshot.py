@@ -58,3 +58,57 @@ class MergedSnapshotTests(unittest.TestCase):
         sheet.Cells.side_effect = RuntimeError("COM unavailable")
         self.assertEqual(snapshot_cells({"sheet": sheet, "rows_vals": [("one", "two")]}),
                          [(1, 1, "one"), (1, 2, "two")])
+
+
+class MergeBoxesFromFileTests(unittest.TestCase):
+    """合并区域直接从 .xlsx 读（用户 2026-11-07：逐格问 Excel 一张 700 格的表要 9 秒），结果要和问 Excel 一样"""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.dir = Path(self.temp.name)
+
+    def book(self, name, sheets):
+        from openpyxl import Workbook
+        wb = Workbook()
+        wb.remove(wb.active)
+        for title, merges in sheets.items():
+            ws = wb.create_sheet(title)
+            ws["A1"] = "x"
+            for ref in merges:
+                ws.merge_cells(ref)
+        path = self.dir / name
+        wb.save(path)
+        return path
+
+    def test_reads_each_sheets_own_merges(self):
+        from core.excel_ops import read_merge_boxes
+        path = self.book("b.xlsx", {"概要": ["C97:G97", "A1:B2", "AA10:AB300"], "別紙&<>": ["B3:C3"]})
+        self.assertEqual(sorted(read_merge_boxes(path, "概要")),
+                         [(1, 1, 2, 2), (10, 27, 300, 28), (97, 3, 97, 7)])
+        self.assertEqual(read_merge_boxes(path, "別紙&<>"), [(3, 2, 3, 3)])
+
+    def test_unknown_sheet_xls_or_broken_file_falls_back_to_excel(self):
+        from core.excel_ops import read_merge_boxes
+        path = self.book("b.xlsx", {"S1": []})
+        self.assertEqual(read_merge_boxes(path, "S1"), [])
+        self.assertIsNone(read_merge_boxes(path, "S2"))
+        xls = self.dir / "old.xls"
+        xls.write_bytes(b"not zip")
+        self.assertIsNone(read_merge_boxes(xls, "S1"))
+        broken = self.dir / "broken.xlsx"
+        broken.write_bytes(b"not zip")
+        self.assertIsNone(read_merge_boxes(broken, "S1"))
+
+    def test_same_cells_as_asking_excel(self):
+        merges = [(1, 1, 2, 2), (3, 2, 3, 4), (5, 1, 9, 1), (6, 3, 6, 3)]
+        rows = [tuple(f"v{r}{c}" for c in range(1, 6)) for r in range(1, 10)]
+        snapshot = {"sheet": MergedSnapshotTests.sheet(None, merges), "start_r": 1, "start_c": 1, "rows_vals": rows}
+        by_excel = snapshot_cells(snapshot)
+        fresh = {**snapshot, "sheet": MergedSnapshotTests.sheet(None, merges)}
+        by_file = snapshot_cells(fresh, merges)
+        self.assertEqual(by_file, by_excel)
+        fresh["sheet"].Cells.assert_not_called()
+        fresh["sheet"].Rows.assert_not_called()

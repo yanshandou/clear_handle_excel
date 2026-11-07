@@ -64,6 +64,7 @@ from core.excel_ops import (
     open_workbook_checked,
     page_break_preview_needed,
     page_layout_view_needed,
+    read_merge_boxes,
     pythoncom,
     quit_background_excel,
     scan_workbook_sheets,
@@ -695,10 +696,13 @@ def _detect_sheet_results(
     sheet: Any, wb_path: Path, sheet_name: str, pdf_path: Path, start_seq: int,
     *, confirm_locations: bool = True,
     page_span: tuple[int, int] | None = None, area: tuple[int, int, int, int] | None = None,
+    source_file: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """从当前 PDF 构建新快照；不沿用旧文字、坐标或问题状态。
     单格复检时 PDF 只导出了 page_span 这几页（从 1 起），area=(首行, 末行, 首列, 末列) 是这几页上的格子：
-    只拿这些格子去对，别页同样文字的格子不会抢走这几页的文字；分页切开按整张表算，这里不查，由调用方判断。"""
+    只拿这些格子去对，别页同样文字的格子不会抢走这几页的文字；分页切开按整张表算，这里不查，由调用方判断。
+    source_file：sheet 所在工作簿就是这个文件原样打开的（没在内存里改过合并格）时传入，
+    合并区域直接从文件里读，不逐格问 Excel（.xls 读不了，照旧问 Excel）。"""
     if is_inspection_exempt_sheet(sheet_name):
         return {}, {}
     pages: dict[str, Any] = {}
@@ -724,7 +728,8 @@ def _detect_sheet_results(
         text_spans = collect_text_spans(doc)
         lap("读PDF")
         probe = CellProbe(sheet)
-        all_cells = snapshot_cells(sheet_snapshot)
+        merges = read_merge_boxes(source_file, sheet_name) if source_file is not None else None
+        all_cells = snapshot_cells(sheet_snapshot, merges)
         lap("合并格")
         cells = [cell for cell in all_cells if probe.printed(cell[0], cell[1]) is not False
                  and (area is None or (area[0] <= cell[0] <= area[1] and area[2] <= cell[1] <= area[3]))]
@@ -854,6 +859,7 @@ def _detect_sheet_results(
         lap("分页切开")
     total = sum(laps.values())
     debug_log.event("⏱ 检测分步", 表=sheet_name, 合计秒=round(total, 2), 格子数=len(cells),
+                    合并格来源="文件" if merges is not None else "Excel",
                     问显示文字次数=text_reads["次"], 问显示文字秒=round(text_reads["秒"], 2),
                     没显示全里比对PDF秒=round(laps.get("没显示全", 0.0) - text_reads["秒"], 2),
                     **laps)
@@ -1777,7 +1783,8 @@ def _scan_one_workbook(
             started = time.perf_counter()
             with scan_analysis.operation("detect", s_name):
                 pages, items = _detect_sheet_results(sheet, wb_path, s_name, pdf_path, next_seq,
-                                                     confirm_locations=False)
+                                                     confirm_locations=False,
+                                                     source_file=wb_path if workbook is None else None)
             scan_analysis.detected(s_name, items)
             timing["detect"] = timing.get("detect", 0.0) + time.perf_counter() - started
             debug_log.event("📄 检测表", 表=s_name, 复用PDF=exported is not None, 导出秒=export_seconds,

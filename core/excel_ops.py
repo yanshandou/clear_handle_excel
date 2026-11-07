@@ -1,3 +1,4 @@
+import bisect
 import ctypes
 import re
 import sys
@@ -558,6 +559,57 @@ def _read_xlsx_tab_colors(workbook_path: Path) -> dict[str, str]:
     return colors
 
 
+_CELL_REF = re.compile(r"\$?([A-Za-z]{1,3})\$?(\d+)")
+
+
+def _ref_rc(ref: str) -> tuple[int, int]:
+    m = _CELL_REF.fullmatch(ref.strip())
+    if not m:
+        raise ValueError(f"认不出的格子地址：{ref}")
+    col = 0
+    for ch in m.group(1).upper():
+        col = col * 26 + ord(ch) - 64
+    return int(m.group(2)), col
+
+
+def read_merge_boxes(workbook_path: Path, sheet_name: str) -> list[tuple[int, int, int, int]] | None:
+    """从 .xlsx / .xlsm 文件里直接读这张表的合并区域 [(首行, 首列, 末行, 末列)]，不经过 Excel。
+    以前逐格问 Excel「是不是合并格、合并到哪」，一张 700 格的表要 9 秒（用户 2026-11-07 日志）。
+    读不了（.xls、找不到这张表、文件格式不认识）返回 None，调用方照旧问 Excel。"""
+    path = Path(workbook_path)
+    if path.suffix.lower() not in {".xlsx", ".xlsm"}:
+        return None
+    try:
+        with zipfile.ZipFile(path) as archive:
+            book = ElementTree.fromstring(archive.read("xl/workbook.xml"))
+            ns = book.tag[: book.tag.index("}") + 1] if book.tag.startswith("{") else ""
+            rels = ElementTree.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+            targets = {rel.get("Id"): rel.get("Target") for rel in rels.findall(f"{_XML_PKG_REL_NS}Relationship")}
+            found = [s for s in book.iter(f"{ns}sheet") if s.get("name") == sheet_name]
+            if len(found) != 1:
+                return None
+            target = targets.get(found[0].get(f"{_XML_REL_NS}id")) or ""
+            if not target:
+                return None
+            part = target.lstrip("/") if target.startswith("/") else f"xl/{target}"
+            boxes: list[tuple[int, int, int, int]] = []
+            with archive.open(part) as fh:
+                for _, el in ElementTree.iterparse(fh):
+                    tag = el.tag.rsplit("}", 1)[-1]
+                    if tag == "mergeCell":
+                        ref = el.get("ref") or ""
+                        first, _, last = ref.partition(":")
+                        top, left = _ref_rc(first)
+                        bottom, right = _ref_rc(last) if last else (top, left)
+                        boxes.append((min(top, bottom), min(left, right), max(top, bottom), max(left, right)))
+                    elif tag in {"c", "row"}:
+                        el.clear()  # 大表的格子内容不留在内存里
+            return boxes
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile, ElementTree.ParseError) as err:
+        debug_log.event("⚠️ 从文件读合并格失败，改问 Excel", 文件=path.name, 表=sheet_name, 错误=str(err))
+        return None
+
+
 # 工作表 XML 里表示「有图片、图形、批注、嵌入对象、背景图」的元素：有这些的表不算空白
 _SHEET_OBJECT_TAGS = {"drawing", "legacyDrawing", "legacyDrawingHF", "oleObjects", "picture", "controls"}
 XL_FORMULAS = -4123  # Range.Find 的 LookIn：按公式（含常量）找
@@ -946,11 +998,32 @@ def extract_sheet_snapshot(sheet: Any) -> dict[str, Any]:
     }
 
 
-def snapshot_cells(sheet_snapshot: dict[str, Any]) -> list[tuple[int, int, Any]]:
+def _cells_outside_merges(cells: list[tuple[int, int, Any]],
+                          boxes: list[tuple[int, int, int, int]]) -> tuple[list[tuple[int, int, Any]], int]:
+    """按已知的合并区域去掉非左上格；返回 (留下的格子, 去掉几格)"""
+    by_row: dict[int, list[tuple[int, int, int, int]]] = {}
+    rows = sorted({row for row, _, _ in cells})
+    for box in boxes:
+        top, _, bottom, _ = box
+        for row in rows[bisect.bisect_left(rows, top):bisect.bisect_right(rows, bottom)]:
+            by_row.setdefault(row, []).append(box)
+    result, removed = [], 0
+    for row, col, value in cells:
+        covered = next((b for b in by_row.get(row, ()) if b[1] <= col <= b[3]), None)
+        if covered is None or (row, col) == (covered[0], covered[1]):
+            result.append((row, col, value))
+        else:
+            removed += 1
+    return result, removed
+
+
+def snapshot_cells(sheet_snapshot: dict[str, Any],
+                   merges: list[tuple[int, int, int, int]] | None = None) -> list[tuple[int, int, Any]]:
     """快照里非空、实际独立显示的单元格；合并区域只保留左上角一次。
 
     部分文件的 UsedRange.Value 会在合并区域的非左上格也返回值。它们不单独打印，
     不能重复占用 PDF 文字或报「未匹配」。按真实合并区域排除，不能仅按文字去重。
+    merges：已经从文件里读到的这张表的全部合并区域（read_merge_boxes）；给了就不逐格问 Excel。
     """
     start_r = sheet_snapshot.get("start_r", 1)
     start_c = sheet_snapshot.get("start_c", 1)
@@ -961,6 +1034,11 @@ def snapshot_cells(sheet_snapshot: dict[str, Any]) -> list[tuple[int, int, Any]]
         if value is not None
     ]
     sheet = sheet_snapshot.get("sheet")
+    if merges is not None:
+        result, removed = _cells_outside_merges(cells, merges)
+        if removed:
+            debug_log.event("🧩 合并格取值", 表=getattr(sheet, "Name", ""), 非左上重复值=removed, 来源="文件")
+        return result
     if sheet is None:
         return cells
     result = []
