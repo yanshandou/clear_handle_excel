@@ -703,7 +703,18 @@ def _detect_sheet_results(
         return {}, {}
     pages: dict[str, Any] = {}
     items: dict[str, Any] = {}
+    # 检测内部各步耗时（用户 2026-11-07 要求：一张表检测 108 秒、导出才 5 秒，要找出慢在哪一步）
+    laps: dict[str, float] = {}
+    lap_mark = time.perf_counter()
+
+    def lap(name: str) -> None:
+        nonlocal lap_mark
+        now = time.perf_counter()
+        laps[name] = round(laps.get(name, 0.0) + now - lap_mark, 2)
+        lap_mark = now
+
     sheet_snapshot = extract_sheet_snapshot(sheet)
+    lap("读格子值")
     generation = uuid4().hex
     wb_label = workbook_rel_name(wb_path, STATE.get("folder"))
     with fitz.open(pdf_path) as doc:
@@ -711,11 +722,16 @@ def _detect_sheet_results(
             raise ValueError(f"导出的 PDF 没有页面: {pdf_path}")
         scan_analysis.count("pdf_pages", len(doc))
         text_spans = collect_text_spans(doc)
+        lap("读PDF")
         probe = CellProbe(sheet)
-        cells = [cell for cell in snapshot_cells(sheet_snapshot) if probe.printed(cell[0], cell[1]) is not False
+        all_cells = snapshot_cells(sheet_snapshot)
+        lap("合并格")
+        cells = [cell for cell in all_cells if probe.printed(cell[0], cell[1]) is not False
                  and (area is None or (area[0] <= cell[0] <= area[1] and area[2] <= cell[1] <= area[3]))]
+        lap("打印范围")
         pieces = collect_text_pieces(doc)
         anchors = build_anchors(cells, pieces)
+        lap("读PDF")
 
         def page_entry(page_index: int) -> str:
             page_id = f"page_{generation}_{page_index}"
@@ -762,10 +778,24 @@ def _detect_sheet_results(
                     "status": "pending", "iterations": 0,
                 }
 
+        lap("压线")
         _confirm_clip_cells(sheet, pdf_path, items, candidates, probe, allow_export=confirm_locations, pages=page_span)
+        lap("压线定位")
 
         # 隐藏截断：单元格完整内容在 PDF 里没显示全（外观上看不出来）
-        hidden = find_hidden_cells(cells, pieces, probe.text, probe.printed)
+        text_reads = {"次": 0, "秒": 0.0}
+
+        def display_text(row: int, col: int) -> str | None:
+            # 问 Excel「这格显示成什么」（Range.Text，每次一问一答），记次数和秒数
+            started = time.perf_counter()
+            try:
+                return probe.text(row, col)
+            finally:
+                text_reads["次"] += 1
+                text_reads["秒"] += time.perf_counter() - started
+
+        hidden = find_hidden_cells(cells, pieces, display_text, probe.printed)
+        lap("没显示全")
         per_page: dict[int | None, int] = {}
         for found in hidden:
             page_index = found["page"]
@@ -797,6 +827,8 @@ def _detect_sheet_results(
                 "status": "pending", "iterations": 0,
             }
 
+        lap("没显示全截图")
+
         # 分页切开合并单元格：自动分页落在多行合并区域中间（PDF 上不一定看得出缺字，按 Excel 的分页判断）
         breaks = page_breaks.read_breaks(sheet) if page_span is None else None
         for block in page_breaks.find_cut_blocks(sheet, breaks, probe.printed) if breaks is not None else []:
@@ -819,6 +851,12 @@ def _detect_sheet_results(
                 "excel_row": block["top"], "cell_addr": block["addr"], "row_height": probe.row_height(block["top"]),
                 "image": image, "status": "pending", "iterations": 0,
             }
+        lap("分页切开")
+    total = sum(laps.values())
+    debug_log.event("⏱ 检测分步", 表=sheet_name, 合计秒=round(total, 2), 格子数=len(cells),
+                    问显示文字次数=text_reads["次"], 问显示文字秒=round(text_reads["秒"], 2),
+                    没显示全里比对PDF秒=round(laps.get("没显示全", 0.0) - text_reads["秒"], 2),
+                    **laps)
     return pages, items
 
 
