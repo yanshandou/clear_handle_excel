@@ -28,6 +28,7 @@
         <li>顶栏和底部条不碰 3 秒自动隐藏，鼠标移到窗口最上面或最下面就会出来。</li>
         <li>在 Excel 里改完、<b>保存</b>后，点 PDF 标题右边的<b>「🔄 重新生成」</b>：只把这一份 Excel 的 PDF 重新导出一次，马上看到改完的样子。Excel 没改过（还没保存）会先提醒。</li>
         <li>有一页黄标题就是黄，标了红整张表都是红。标题右边的三个按钮一次改整张表。看完点底部按钮，黄和红分开处理：<b>「📗 打开标黄」</b>用 Excel 打开标黄的文件（一次最多 10 个 Excel，同一份 Excel 有几张标黄的表也只算 1 个；按钮上写着「已开 / 共几个」，剩下的再点一次开下一批）；<b>「🗑 删除标红」</b>在后台删掉标红的表并保存。</li>
+        <li><b>工具箱</b>：标题右边的<b>「⤓ 取整 5→4 页」</b>是向下取整，最后一页只多一点（4.1 页这种）时点一下做标记，再点一次取消。看完点底部<b>「⤓ 向下取整」</b>统一处理：表设成 1 页宽、少一页高，后台真导出一次核对（页数少了一页、字没缩到 85% 以下、原来的字一个不少）才保存，不行的改回原样；改好的 Excel 会重新生成 PDF。</li>
       </ul>
       <p id="prStatus" class="pr-status" role="status" aria-live="polite">输入文件夹后点「加载 PDF」。</p>
     </section>
@@ -52,6 +53,12 @@
         title="在后台删掉标红的表并保存，对应的 PDF 也删掉">
         <span class="pr-process-text" data-process-text="red">🗑 删除标红</span>
         <span class="pr-count is-red" title="标红的表（删除这张表）"><span id="prCountRed">0</span></span>
+      </button>
+      <!-- 工具箱（用户 2026-11-07 定）：标题上点了「⤓ 取整」的表，在这里统一挤成少一页 -->
+      <button id="prFloor" type="button" class="btn btn-primary pr-process" data-process="floor" disabled
+        title="把标了「⤓ 取整」的表设成 1 页宽、少一页高，后台真导出核对过才保存，并重新生成 PDF">
+        <span class="pr-process-text" data-process-text="floor">⤓ 向下取整</span>
+        <span class="pr-count is-tool" title="标了「⤓ 取整」的表"><span id="prCountFloor">0</span></span>
       </button>
       <div id="prView" class="pv-size-switch pr-view" role="group" aria-label="页面大小">
         <button type="button" class="btn btn-outline btn-sm" data-view="large" title="每页宽度占满整个屏幕宽">大图</button>

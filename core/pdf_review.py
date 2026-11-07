@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core import batch, debug_log, file_problem, page_breaks, pdf_store, repair_compare, sheet_history, workflow as wf
+from core import batch, debug_log, file_problem, page_breaks, page_fill, pdf_store, repair_compare, sheet_history, workflow as wf
 from core.backup_compare import pair_files
 from core.common import (EXCEL_EXTENSIONS, sanitize_filename, strip_review_prefix,
                          workbook_locked, workbook_rel_name)
@@ -289,37 +289,44 @@ def _process_item(raw: Any, color: str) -> dict:
     return item
 
 
-def process(red: Any, yellow: Any) -> None:
-    """一键处理：后台删掉标红的表，再打开标黄的。网页轮询 process_status() 看进度和结果"""
+def process(red: Any, yellow: Any, floor: Any = None) -> None:
+    """一键处理：后台删掉标红的表，按工具箱标记改打印设置（向下取整），再打开标黄的。
+    网页轮询 process_status() 看进度和结果"""
     reds = [_process_item(raw, "red") for raw in (red or [])]
     yellows = [_process_item(raw, "yellow") for raw in (yellow or [])]
-    if not reds and not yellows:
-        raise ValueError("没有标黄或标红的表")
+    floors = [_process_item(raw, "floor") for raw in (floor or [])]
+    if not reds and not yellows and not floors:
+        raise ValueError("没有标黄、标红或标了工具的表")
     from core import bl_links, hidden_repair, link_repair, mark_finder
     with wf.STATE_LOCK, _PROCESS_LOCK:
         if (wf.STATE.get("busy") or _PROCESS.get("running") or link_repair.status().get("running")
                 or mark_finder.status().get("running") or hidden_repair.status().get("running")
                 or bl_links.status().get("running")):
             raise ValueError("后台任务正在执行，请等它结束再处理")
-        if reds:
+        if reds or floors:
             wf.STATE["busy"] = True  # 要改文件：别的任务这时候不能开
             wf.STATE["maintenance"] = "pdf_review_process"
         books = list(dict.fromkeys(item["wb_path"] for item in reds))
         _PROCESS.clear()
-        _PROCESS.update(running=True, stage="delete" if reds else "open", total=len(books), done=0, current="",
-                        result=None)
+        _PROCESS.update(running=True, stage="delete" if reds else "floor" if floors else "open", total=len(books),
+                        done=0, current="", result=None)
     root = wf.STATE.get("pdf_review", {}).get("folder") or ""
 
     def run() -> None:
-        result: dict[str, list] = {"deleted": [], "failed": [], "opened": [], "open_failed": [], "later": []}
+        result: dict[str, list] = {"deleted": [], "failed": [], "opened": [], "open_failed": [], "later": [],
+                                   "floored": [], "floor_failed": []}
         try:
-            with debug_log.side_task("pdf_review_process", {"folder": root, "red": len(reds), "yellow": len(yellows)}):
-                for item in reds + yellows:
-                    debug_log.event("🎨 PDF 复检标记", 颜色="红" if item["color"] == "red" else "黄",
+            with debug_log.side_task("pdf_review_process", {"folder": root, "red": len(reds), "yellow": len(yellows),
+                                                             "floor": len(floors)}):
+                for item in reds + yellows + floors:
+                    debug_log.event("🎨 PDF 复检标记",
+                                    颜色={"red": "红", "yellow": "黄", "floor": "向下取整"}[item["color"]],
                                     PDF=item["name"], 表=item["sheet"],
                                     页=[spot["page"] + 1 for spot in item["spots"]] or "-")
                 if reds:
                     _delete_red(reds, root, result)
+                if floors:
+                    _floor_marked(floors, root, result)
                 if yellows:
                     with _PROCESS_LOCK:
                         _PROCESS.update(stage="open", current="")
@@ -328,6 +335,7 @@ def process(red: Any, yellow: Any) -> None:
                         wf.STATE.pop("maintenance", None)
                     _open_yellow(yellows, root, result)
                 debug_log.event("✅ PDF 复检一键处理完成", 删掉=len(result["deleted"]), 没删掉=len(result["failed"]),
+                                向下取整=len(result["floored"]), 没取整=len(result["floor_failed"]),
                                 打开=len(result["opened"]), 没打开=len(result["open_failed"]), 下次开=len(result["later"]))
         except Exception as err:
             result["failed"].append({"name": "任务", "sheet": "", "reason": f"处理出错：{err}"})
@@ -452,6 +460,115 @@ def _delete_in_workbook(excel: Any, wb_path: Path, items: list[dict], label: str
         for item in outcome:
             if item["ok"] and not item.get("reason"):
                 item["reason"] = f"别的表引用它的 {len(kept_values)} 处公式已转成值"
+    return outcome
+
+
+def _floor_marked(floors: list[dict], root: str, result: dict) -> None:
+    """工具箱「向下取整」：每份 Excel 打开一次，标了的表设成 1 页宽、N-1 页高，真导出核对过才保存；
+    保存后把这份 Excel 的 PDF 全部重新导出（和「🔄 重新生成」一样），复检页上看到的就是新的"""
+    from core import reporter
+    groups: dict[str, list[dict]] = {}
+    for item in floors:
+        groups.setdefault(item["wb_path"], []).append(item)
+    with _PROCESS_LOCK:
+        _PROCESS.update(stage="floor", total=len(groups), done=0, current="")
+    guard = file_problem.Guard("PDF 复检：向下取整")
+    excel = None
+    reporter.suspend_updates(True)  # 不是主页的批量任务：不写进执行记录
+    wf.pythoncom.CoInitialize()
+
+    def get_excel() -> Any:
+        nonlocal excel
+        if excel is None:
+            excel = guard.watch(start_background_excel())
+        return excel
+
+    try:
+        for index, (wb_path, items) in enumerate(groups.items()):
+            export_root = pdf_store.export_root_of(Path(items[0]["pdf"])) or Path(root)
+            label = workbook_rel_name(Path(wb_path), export_root)
+            with _PROCESS_LOCK:
+                _PROCESS.update(done=index, current=label)
+            while True:
+                guard.progress()
+                try:
+                    outcome = _floor_in_workbook(get_excel, Path(wb_path), items, export_root, label)
+                    break
+                except Exception as err:
+                    debug_log.exception(err, f"PDF 复检向下取整 {label}")
+                    retry, message = guard.problem(err, wb_path, label, root,
+                                                   close=lambda: file_problem.quit_quietly(excel))
+                    if guard.closed:
+                        excel = None
+                    if retry:
+                        wf.log_msg(f"🔁 重试 {label}")
+                        continue
+                    outcome = [{**item, "ok": False, "reason": message} for item in items]
+                    break
+            for item in outcome:
+                entry = {"pdf": item["pdf"], "name": label, "sheet": item["sheet"], "reason": item.get("reason", "")}
+                result["floored" if item["ok"] else "floor_failed"].append(entry)
+            with _PROCESS_LOCK:
+                _PROCESS.update(done=index + 1)
+    finally:
+        reporter.suspend_updates(False)
+        try:
+            file_problem.quit_quietly(excel)
+        finally:
+            guard.stop()
+            wf.pythoncom.CoUninitialize()
+
+
+def _floor_in_workbook(get_excel: Any, wb_path: Path, items: list[dict], export_root: Path, label: str) -> list[dict]:
+    if not wb_path.is_file():
+        return [{**item, "ok": False, "reason": "Excel 文件已经不在了"} for item in items]
+    if workbook_locked(wb_path):
+        raise ValueError("文件正在 Excel 中打开，请先在 Excel 里关掉它（改过的先保存），再点「重试」")
+    if not pdf_store.unchanged(export_root, wb_path, sheet_history.fingerprint(wb_path)):
+        reason = "Excel 在导出这份 PDF 之后改过（或者找不到导出记录），PDF 的页数不一定对；先点「🔄 重新生成」再标"
+        return [{**item, "ok": False, "reason": reason} for item in items]
+    book = open_workbook_checked(get_excel(), str(wb_path.resolve()), UpdateLinks=0)
+    outcome: list[dict] = []
+    try:
+        done: set[str] = set()
+        for item in items:
+            sheet = _find_sheet(book, item["sheet"])
+            if sheet is None:
+                outcome.append({**item, "ok": False, "reason": "文件里已经没有这张表（可能改名或删掉了）"})
+                continue
+            if str(sheet.Name) in done:
+                outcome.append({**item, "ok": False, "reason": "同一张表标了两次，只改一次"})
+                continue
+            done.add(str(sheet.Name))
+            found = page_fill.floor_pages(sheet, Path(item["pdf"]), wf._export_sheet_pdf)
+            if found["ok"]:
+                reason = f"{found['before']} 页 → {found['after']} 页，字缩到约 {round(found['scale'] * 100)}%"
+                if found["manual"]:
+                    reason += "；原来的手动分页不再起作用"
+            else:
+                reason = found["reason"]
+            outcome.append({**item, "ok": found["ok"], "reason": reason, "dirty": found.get("dirty", False)})
+        if any(item.get("dirty") for item in outcome):
+            # 有一张表改不回去：整份不保存，改好的也不算
+            for item in outcome:
+                if item["ok"]:
+                    item.update(ok=False, reason="同一份 Excel 里另一张表的打印设置改不回去，这份没有保存")
+            return outcome
+        if not any(item["ok"] for item in outcome):
+            return outcome
+        book.Save()
+    finally:
+        book.Close(SaveChanges=False)
+    floored = [item["sheet"] for item in outcome if item["ok"]]
+    debug_log.event("📄 PDF 复检向下取整已保存", 文件=label, 表=floored)
+    wf.log_msg(f"📄 {label}：{'、'.join(floored)} 向下取整，少印一页")
+    try:
+        wf._export_workbook_pdfs(get_excel, wb_path, export_root, set(), force=True)
+    except Exception as err:
+        debug_log.exception(err, f"向下取整后重新导出 {label}")
+        for item in outcome:
+            if item["ok"]:
+                item["reason"] += f"；Excel 已保存，但重新导出 PDF 出错（{err}），请点「🔄 重新生成」"
     return outcome
 
 
