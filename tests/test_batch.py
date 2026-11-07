@@ -81,7 +81,7 @@ class BatchTests(unittest.TestCase):
             batch.run()
         # 没东西要标色（标色没打开文件）时才单独存视图
         self.assertEqual(events, ["scan", "color", "preview"])
-        self.assertTrue(self.refresh.call_args.kwargs["compact_print_tail"])
+        self.assertFalse(self.refresh.call_args.kwargs["compact_print_tail"])  # 末页取整在调整页面由用户定
         self.save_scan_preview.assert_called_once()
         self.assertEqual(job["completed"], [self.path])
         from core import scan_analysis

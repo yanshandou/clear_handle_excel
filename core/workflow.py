@@ -1997,7 +1997,7 @@ def scan_folder_workflow(
                             delete_backups=delete_backups, used_pdf_paths=used_pdf_paths,
                             # 未要求删表时只读检测，避免旧版 .xls 首次打开就更新时间。
                             read_only=not delete_backups,
-                            compact_print_tail=True,
+                            compact_print_tail=False,  # 末页取整改在「调整页面」由用户定（2026-11-07）
                             scan_view="page_layout",
                         )
                 except Exception as err:
@@ -3384,10 +3384,12 @@ def _export_workbook_pdfs(
 ) -> list[Path]:
     """导出到 根目录/PDFS/<子文件夹>（pdf_store）。Excel 哈希和上次导出时一样、PDF 都还在就直接沿用，
     不打开 Excel；force=True（人工复检页「重新生成」）不管哈希，照样重新导出。
-    choose_orientation=False：不比较横向竖向，直接导出一次（以前定过方向、文件没改过的照旧用那个方向）"""
+    choose_orientation=False：不比较横向竖向，直接导出一次（以前定过方向、文件没改过的照旧用那个方向）
+    调整页面（用户 2026-11-07 定）：导出前每张表都设成宽一页、高自动（已经是宽一页的不动）并保存进 Excel；
+    导出后记下每张表的方向、页高、末页印了多少，网页上末页只多一点的标黄建议向下取整"""
     wb_label = workbook_rel_name(wb_path, root_folder)
     digest = sheet_history.fingerprint(wb_path)
-    reused = None if force else pdf_store.reusable(root_folder, wb_path, digest)
+    reused = None if force else pdf_store.reusable(root_folder, wb_path, digest, need_fit=True)
     if reused is not None:
         paths = [pdf for pdf, _ in reused]
         used_pdf_paths.update(paths)
@@ -3407,7 +3409,13 @@ def _export_workbook_pdfs(
     out_dir = pdf_store.pdf_dir(wb_path, root_folder)
     out_dir.mkdir(parents=True, exist_ok=True)
     taken = pdf_store.owned_by_others(root_folder, wb_path)
-    wb = open_workbook_checked(get_excel(), str(wb_path.resolve()), ReadOnly=True, UpdateLinks=0)
+    # 要把「宽一页」存进 Excel：文件没被人打开就可写打开；打开着的只读导出，下次再设
+    fit = not workbook_locked(wb_path)
+    if not fit:
+        log_msg(f"  ⚠️ {wb_label} 正在 Excel 里打开，没能设成宽一页，PDF 按原来的打印设置导出；关掉文件后点「🔄 重新生成」")
+    wb = open_workbook_checked(get_excel(), str(wb_path.resolve()), ReadOnly=not fit, UpdateLinks=0)
+    fitted: list[str] = []
+    layouts: dict[str, dict] = {}
     print_layout.bind(wb, str(wb_path))
     try:
         layout_keys = [print_layout.identity(sheet) for sheet in wb.Sheets]
@@ -3422,6 +3430,11 @@ def _export_workbook_pdfs(
             # 别的 Excel 沿用着的 PDF 名字不占（极少见：a.xlsx 的表「b_c」和 a_b.xlsx 的表「c」同名）
             pdf_path = unique_pdf_path(out_dir, file_stem, sanitize_filename(sheet.Name), used_pdf_paths | taken)
             used_pdf_paths.add(pdf_path)
+            if fit:
+                changed = page_fill.one_page_wide(sheet)
+                if changed:
+                    fitted.append(f"[{sheet.Name}]（原来{changed['before']}）")
+            layouts[str(pdf_path)] = page_fill.sheet_layout(sheet)
             if not choose_orientation or not prepare_print_layout(sheet, str(wb_path), pdf_path):
                 _export_sheet_pdf(sheet, pdf_path)
             target = print_layout.to_save(sheet)
@@ -3442,8 +3455,14 @@ def _export_workbook_pdfs(
         action = f"已导出 {len(exported)} 份 PDF"
         log_msg(f"  {action}")
         all_sheets = [sheet.Name for sheet in wb.Sheets]
+        if fitted:
+            update_file_progress(wb_label, current_action="正在把「宽一页、高自动」保存进 Excel...")
+            wb.Save()
+            log_msg(f"  📐 设成宽一页、高自动并保存：{'、'.join(fitted)}")
     finally:
         wb.Close(SaveChanges=False)
+    if fitted:
+        digest = sheet_history.fingerprint(wb_path)  # 存进 Excel 后文件变了，记保存后的
     if to_save:
         update_file_progress(wb_label, current_action="正在把打印方向保存进 Excel...")
         _save_print_orientations(get_excel, wb_path, to_save)
@@ -3453,8 +3472,11 @@ def _export_workbook_pdfs(
         update_file_progress(wb_label, current_action="有内容很少的页，正在检查能不能修...")
         notes = _fix_sparse_pages(get_excel, wb_path, page_checks)
         digest = sheet_history.fingerprint(wb_path)  # 修了就是保存后的
-    # 记下这次导出时 Excel 的哈希：下次没变就沿用这些 PDF（内容太少的页的提示也跟着记）
-    pdf_store.record(root_folder, wb_path, digest, sheets_done, notes)
+    # 末页印了多少：内容很少的页修完（PDF 可能重新导出过）再量
+    for pdf, info in layouts.items():
+        info.update(page_fill.tail_hint(pdf, tuple(info.pop("margins", (0.0, 0.0)))))
+    # 记下这次导出时 Excel 的哈希：下次没变就沿用这些 PDF（内容太少的页的提示、打印设置也跟着记）
+    pdf_store.record(root_folder, wb_path, digest, sheets_done, notes, layouts, fit=fit)
     update_file_progress(
         wb_label, status="done", exported_pdfs=len(exported), current_action=action,
         all_sheets=all_sheets,

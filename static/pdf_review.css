@@ -446,13 +446,9 @@
 }
 
 .pr-page[data-mark="yellow"]::before {
-  content: "🟡 这一页要人工改";
+  content: attr(data-badge);
   color: #3d2a00;
   background: #ffc21f;
-}
-
-.is-opened .pr-page[data-mark="yellow"]::before {
-  content: "🟡 这一页要人工改 · 已打开过";
 }
 
 .pr-page[data-mark="red"]::before {
@@ -827,13 +823,99 @@
 }
 
 /* 标了工具的表：标题左边一道绿条（不占位，内容不挪） */
-.pr-doc[data-tool="floor"] .pr-doc-head {
+.pr-doc[data-tool="set"] .pr-doc-head {
   box-shadow: inset 6px 0 0 #23780a, var(--hard-sm);
 }
 
-.pr-doc[data-tool="floor"][data-mark="yellow"] .pr-doc-head,
-.pr-doc[data-tool="floor"][data-mark="red"] .pr-doc-head {
+.pr-doc[data-tool="set"][data-mark="yellow"] .pr-doc-head,
+.pr-doc[data-tool="set"][data-mark="red"] .pr-doc-head {
   box-shadow: inset 6px 0 0 #23780a, 0 3px 0 var(--mark);
 }
 
 .pr-count.is-tool { color: #fff; background: #1b5e0a; }
+
+/* ---------- 调整页面（用户 2026-11-07）：方向、页高、删除三组按钮；只换颜色和文字，宽度不变 ---------- */
+.pr-set .pr-mark-btn { min-width: 4.2em; text-align: center; }
+.pr-set .pr-mark-btn[data-tall="auto"] { min-width: 6.5em; }
+.pr-set .pr-mark-btn[data-tall="floor"] { min-width: 8.6em; }
+/* 现在的设置：深紫底白字 */
+.pr-set .pr-mark-btn.is-on { color: #fff; background: var(--purple-ink); }
+/* 要改成的：绿底白字（统一修改时改）；鼠标放上去也不变色 */
+.pr-set .pr-mark-btn.is-pending, .pr-set .pr-mark-btn.is-pending:hover:not(:disabled) { color: #fff; background: #23780a; }
+/* 要改掉的原设置：虚线框 */
+.pr-set .pr-mark-btn.is-was { color: var(--ink-2); background: #fff; box-shadow: inset 0 0 0 2px var(--ink-4); text-decoration: line-through; }
+/* 向下取整：黄色（末页只多一点自动标的也是这个） */
+.pr-set .pr-mark-btn.is-yellow, .pr-set .pr-mark-btn.is-yellow:hover:not(:disabled) { color: #3d2a00; background: #ffc21f; }
+
+.pr-red-btn {
+  flex: none;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: #9d0b22;
+  background: #fff;
+  border: 2px solid #c8102e;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.pr-red-btn:hover:not(:disabled):not(.is-on) { background: #ffe6ea; }
+.pr-red-btn.is-on { color: #fff; background: #c8102e; }
+.pr-red-btn:disabled { cursor: not-allowed; color: var(--ink-3); background: #f1f3f8; border-color: var(--ink-4); }
+
+.pr-doc-tail {
+  flex: none;
+  padding: 1px 8px;
+  font-size: 12px;
+  font-weight: 800;
+  color: #3d2a00;
+  background: #ffe27a;
+  border: 1.5px solid #a37700;
+  border-radius: 999px;
+}
+
+/* 按问题分类：只看某一类，右边一个按钮一次改这一类 */
+.pr-cats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.pr-cats[hidden] { display: none; }
+
+.pr-cat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink-2);
+  background: #fff;
+  border: 2px solid var(--ink-4);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.pr-cat:hover:not(:disabled):not(.is-on) { background: var(--purple-soft); }
+.pr-cat.is-on { color: #fff; background: var(--purple-ink); border-color: var(--purple-ink); }
+.pr-cat:disabled { cursor: not-allowed; color: var(--ink-3); background: #f1f3f8; }
+
+.pr-cat-n {
+  min-width: 1.6em;
+  padding: 0 6px;
+  font-size: 12px;
+  text-align: center;
+  color: var(--ink-2);
+  background: #eef0f7;
+  border-radius: 999px;
+  -webkit-text-stroke: 0;
+}
+
+.pr-cat-gap { flex: 1; }
+
+.pr-bulk[hidden] { display: none; }

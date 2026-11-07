@@ -96,11 +96,14 @@ def _entry_pdfs(root: Path | str, entry: dict) -> list[tuple[Path, str, dict]]:
             for item in entry.get("pdfs", []) if isinstance(item, dict) and item.get("pdf")]
 
 
-def reusable(root: Path | str, wb_path: Path, digest: str) -> list[tuple[Path, str]] | None:
-    """Excel 哈希和上次导出时一样、那次导出的 PDF 都还在且没被别的东西换过：返回 [(PDF, 表名)]，否则 None"""
+def reusable(root: Path | str, wb_path: Path, digest: str, *, need_fit: bool = False) -> list[tuple[Path, str]] | None:
+    """Excel 哈希和上次导出时一样、那次导出的 PDF 都还在且没被别的东西换过：返回 [(PDF, 表名)]，否则 None。
+    need_fit：还要那次导出时每张表都已经设成「宽一页」（调整页面，2026-11-07），旧版本导出的记录不算"""
     with _LOCK:
         entry = load(root)["files"].get(file_key(wb_path, root))
     if not entry or entry.get("hash") != digest:
+        return None
+    if need_fit and not entry.get("fit"):
         return None
     found: list[tuple[Path, str]] = []
     for pdf, sheet, item in _entry_pdfs(root, entry):
@@ -111,8 +114,11 @@ def reusable(root: Path | str, wb_path: Path, digest: str) -> list[tuple[Path, s
 
 
 def record(root: Path | str, wb_path: Path, digest: str, exported: list[tuple[Path, str]],
-           notes: dict[str, list[dict]] | None = None) -> None:
-    """notes：PDF -> 内容很少的页的提示（page_fill），沿用 PDF 时提示也跟着沿用"""
+           notes: dict[str, list[dict]] | None = None, layouts: dict[str, dict] | None = None,
+           fit: bool = False) -> None:
+    """notes：PDF -> 内容很少的页的提示（page_fill），沿用 PDF 时提示也跟着沿用。
+    layouts：PDF -> 这张表的打印设置（方向、页高、末页印了多少），调整页面时网页按这个显示和分类。
+    fit：每张表都已经设成「宽一页」了"""
     base = pdf_root(root)
     pdfs = []
     for pdf, sheet in exported:
@@ -122,6 +128,8 @@ def record(root: Path | str, wb_path: Path, digest: str, exported: list[tuple[Pa
         item = {"pdf": pdf.relative_to(base).as_posix(), "sheet": sheet, "size": stat[0], "mtime_ns": stat[1]}
         if notes and notes.get(str(pdf)):
             item["notes"] = notes[str(pdf)]
+        if layouts and layouts.get(str(pdf)):
+            item["layout"] = layouts[str(pdf)]
         pdfs.append(item)
     with _LOCK:
         data = load(root)
@@ -131,7 +139,24 @@ def record(root: Path | str, wb_path: Path, digest: str, exported: list[tuple[Pa
             if _inside(wb_path, root) else wb_path.name,
             "hash": digest, "pdfs": pdfs,
         }
+        if fit:
+            data["files"][file_key(wb_path, root)]["fit"] = True
         _save(root, data)
+
+
+def layout_map(root: Path | str) -> dict[str, dict]:
+    """记录里每份 PDF（绝对路径）导出时这张表的打印设置；PDF 被换过的不算"""
+    with _LOCK:
+        files = load(root)["files"]
+    found: dict[str, dict] = {}
+    for entry in files.values():
+        if not isinstance(entry, dict):
+            continue
+        for pdf, _, item in _entry_pdfs(root, entry):
+            layout = item.get("layout")
+            if isinstance(layout, dict) and _stat(pdf) == (item.get("size"), item.get("mtime_ns")):
+                found[str(pdf)] = layout
+    return found
 
 
 def notes_map(root: Path | str) -> dict[str, list[dict]]:
@@ -295,4 +320,4 @@ def unchanged(root: Path | str, wb_path: Path, digest: str) -> bool:
 
 
 __all__ = ["DIR_NAME", "MANIFEST_NAME", "pdf_root", "pdf_dir", "export_root_of", "reusable", "record",
-           "clear_workbook", "prune", "owner", "owned_by_others", "excel_folder_for", "unchanged"]
+           "clear_workbook", "prune", "owner", "layout_map", "notes_map", "owned_by_others", "excel_folder_for", "unchanged"]
