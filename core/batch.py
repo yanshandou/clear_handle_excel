@@ -22,7 +22,7 @@ from uuid import uuid4
 from core import autofix, debug_log, file_problem, fix_images, page_breaks, print_layout, scan_analysis, workflow as wf
 from core.common import STALE_LOCK_HINT, is_inspection_exempt_sheet, workbook_locked, workbook_rel_name
 from core.excel_ops import (
-    CellProbe, close_saved_workbooks, normalize_workbook_view,
+    CellProbe, close_saved_workbooks, enable_page_layout_view, normalize_workbook_view,
     open_workbooks_for_review, open_workbook_checked,
 )
 from core.excel_watchdog import ExcelWatchdog, idle_timeout
@@ -3073,12 +3073,16 @@ def _sync_tabs(book: Any, path: str, holders: dict[str, Any], report: dict | Non
 
 
 def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = False,
-                     tick: Callable[[], None] | None = None, report: dict | None = None) -> None:
+                     tick: Callable[[], None] | None = None, report: dict | None = None,
+                     scan_view: Any = None) -> bool:
     """让原 Excel 里的标记和卡片一致：黄色人工待处理的格子加一条条件格式规则；
     复检通过（变蓝）、提交为蓝 / 绿、或要求清除时把规则删掉。打开一次、保存一次。
     旧版本改过单元格底色的记录照旧还原原来的颜色。
     tick：每处理一格告诉看门狗还在动，问题格很多的大文件要好几分钟，不会被当成 Excel 卡死。
-    report：清除标记时传入，逐格记下去掉了没有、没去掉的原因（cells），以及清掉的残留规则条数，页面上显示结果。"""
+    report：清除标记时传入，逐格记下去掉了没有、没去掉的原因（cells），以及清掉的残留规则条数，页面上显示结果。
+    scan_view：扫描时传入后台会话（autofix._ExcelSession）：标色这次打开文件时顺便存页面布局视图，
+    和标色一起只保存一次（以前另外再打开、保存一次，用户 2026-11-07 同意合并）。
+    返回是否已经顺便存了视图；没东西要标、根本没打开文件时返回 False，调用方照旧单独存视图。"""
     with wf.STATE_LOCK:
         data, marks = _data(), _marks()
         style = data.get("highlight_files", {}).get(path)
@@ -3096,8 +3100,16 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
         tabs_stale = _tabs_stale(path, {marks[cid]["sheet"] for cid in have if cid not in remove}
                                  | {c["sheet_name"] for c in add})
     if not add and not remove and not unsure and not tabs_stale:
-        return
+        return False
     _check_file(path)
+    view_before = None
+    if scan_view is not None:
+        # 和单独存视图时一样：检测之后文件被别人改过就不存，要重新扫描
+        view_before = wf._file_version(Path(path))
+        with wf.STATE_LOCK:
+            checked = wf.STATE["checked_files"].get(path)
+        if checked != view_before:
+            raise ValueError(f"扫描后文件已修改，请重新扫描：{Path(path).name}")
     debug_log.event("🎨 同步标色", 文件=Path(path).name, 清除=clear, 要标=len(add), 要去掉=len(remove),
                     待核对=len(unsure), 换色=len(recolor), 标签要核对=tabs_stale, 样式=style or "-")
     app = excel_for()
@@ -3109,6 +3121,7 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
     tabs = {"marked": 0, "restored": 0, "failed": 0}
     stuck: list[str] = []  # 去掉 / 还原时出错的记录，留着下次再试
     book_name, last_log = Path(path).name, time.monotonic()
+    marks_changed = view_changed = False
 
     def note(mark: dict, status: str, reason: str) -> None:
         """status：ok 已去掉 / check 需要人看一下 / failed 没去掉"""
@@ -3131,6 +3144,10 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
             pass
         if book.ReadOnly:
             raise ValueError(f"{Path(path).name} 以只读方式打开，未能标色")
+        if (view_before is not None and Path(path).suffix.lower() != ".xls"
+                and wf._file_version(Path(path)) != view_before):
+            # 旧版 .xls 可写打开时 Excel 会改文件时间，不算别人改过
+            raise ValueError(f"扫描后文件已修改，请重新扫描：{Path(path).name}")
         # 条件格式规则：留下还要标的，其余带标识的全部删掉（包括崩溃留下的、复制粘贴带出去的）
         keep = {marks[cid]["tag"] for cid in have if cid not in remove and _is_rule(marks[cid])}
         holders: dict[str, Any] = {}  # 还留着标记的工作表，标签要标橙黄色
@@ -3283,7 +3300,14 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                 if sheet is not None:
                     holders.setdefault(_tab_key(sheet), sheet)
         tabs = _sync_tabs(book, path, holders, report)
-        if added or remove or dropped or tabs["marked"] or tabs["restored"]:  # 只核对、没有要改的：不保存
+        marks_changed = bool(added or remove or dropped or tabs["marked"] or tabs["restored"])
+        if view_before is not None:
+            try:
+                app.ScreenUpdating = True  # 切视图要真的切到各张表上，先恢复刷新
+            except Exception:
+                pass
+            view_changed = enable_page_layout_view(app, book)
+        if marks_changed or view_changed:  # 只核对、没有要改的：不保存
             if tick is not None:
                 tick()
             before = _version_or_none(path)
@@ -3305,6 +3329,16 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
             card = data["cards"].get(cid)
             if card:
                 card["message"] = f"未能在 Excel 中标色（{error}），请按截图查找后人工处理"
+        if view_before is not None and not marks_changed:
+            # 只改了视图：打印内容没变，和单独存视图一样，文件仍算「检测过的版本」，导出的 PDF 照样能用。
+            # 标色也改了文件时不跟进（和以前标色另存一次一样，保守按改过处理）
+            after = wf._file_version(Path(path))
+            wf.STATE["checked_files"][path] = after
+            checks = _sheet_checks().get(path, {})
+            for name, checked in list(checks.items()):
+                if checked == view_before:
+                    checks[name] = after
+            scan_view.view_saved(path, view_before, after)
         wf._persist_state()
     parts = [f"标色 {len(added)} 格"] if added else []
     recolored = len(recolor & set(added))
@@ -3329,8 +3363,11 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
     if failed:
         reasons = sorted(set(failed.values()))
         parts.append(f"{len(failed)} 格未能标色（{'；'.join(reasons[:3])}{'……' if len(reasons) > 3 else ''}）")
+    if view_changed:
+        parts.append("同时存了页面布局视图")
     if parts:
         wf.log_msg(f"🎨 {Path(path).name}：" + "，".join(parts))
+    return view_before is not None
 
 
 def _wanted_marks(path: str) -> set[str]:
@@ -3900,11 +3937,6 @@ def run() -> list[str]:
                 finally:
                     watchdog.deadline(None)
                 step("检测")
-                # PDF 检测完成后只保存页面布局视图，不改选区或缩放。
-                if view.get("needed", True):
-                    with scan_analysis.operation("save_view"):
-                        _save_scan_preview(excel, path, session)
-                step("存页面布局视图")
                 with wf.STATE_LOCK:
                     job.setdefault("scan_seconds", {})[path] = round(time.perf_counter() - started, 1)
                     _data().get("slow_files", {}).pop(path, None)  # 以前超时跳过的，这次扫完了
@@ -3916,9 +3948,17 @@ def run() -> list[str]:
                     _data().setdefault("highlight_files", {})[path] = highlight_style(options.get("highlight"))
                 _hand_over(path)
                 step("转人工")
+                # 页面布局视图（只改视图，不改选区或缩放）和标色一起打开、一起保存，少开存一次文件（用户 2026-11-07 同意）；
+                # 没有要标色的文件不会打开，照旧单独存视图
+                view_needed = view.get("needed", True)
                 with scan_analysis.operation("highlight"):
-                    _sync_highlights(session.app, path, tick=session.touch)
+                    viewed = _sync_highlights(session.app, path, tick=session.touch,
+                                              scan_view=session if view_needed else None)
                 step("标色")
+                if view_needed and not viewed:
+                    with scan_analysis.operation("save_view"):
+                        _save_scan_preview(excel, path, session)
+                step("存页面布局视图")
                 with wf.STATE_LOCK:
                     job.setdefault("file_seconds", {})[path] = round(time.perf_counter() - started, 1)
                 debug_log.event("⏱ 分步", 文件=Path(path).name, 合计秒=round(time.perf_counter() - file_started, 2),

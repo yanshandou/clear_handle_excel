@@ -178,6 +178,7 @@ class ScanOnlyTests(unittest.TestCase):
         self.excel.Workbooks.Open.return_value = self.book
         patch.object(batch, "normalize_workbook_view").start()
         patch.object(batch, "_save_scan_preview").start()
+        self.page_layout = patch.object(batch, "enable_page_layout_view", return_value=False).start()
         self.real_matches = batch._marked_matches
         self.matches = patch.object(batch, "_marked_matches", return_value=[]).start()
         patch.object(self.wf, "_sync_problem_counts").start()
@@ -966,8 +967,69 @@ class ScanOnlyTests(unittest.TestCase):
         self.assertEqual(self.card("A5")["color"], "green")
         self.excel.Workbooks.Open.assert_not_called()
 
+    def view_scan(self, session):
+        batch._data().setdefault("highlight_files", {})[self.path] = batch.highlight_style(None)
+        batch._hand_over(self.path)
+        return batch._sync_highlights(lambda: self.excel, self.path, scan_view=session)
+
+    def test_scan_colors_and_page_layout_share_one_open_and_save(self):
+        """扫描时标色顺便存页面布局视图：只打开一次、保存一次（用户 2026-11-07 同意）"""
+        self.add_item("A5")
+        self.mark_checked()
+        before = self.wf.STATE["checked_files"][self.path]
+        self.page_layout.return_value = True
+        session = Mock()
+        self.assertTrue(self.view_scan(session))
+        self.assertEqual(self.excel.Workbooks.Open.call_count, 1)
+        self.book.Save.assert_called_once()
+        self.page_layout.assert_called_once_with(self.excel, self.book)
+        self.assertIsNotNone(self.sheet.shown("A5"))
+        # 标色也改了文件：和以前标色另存一次一样，不当成检测过的版本，缓存的 PDF 也不沿用
+        self.assertEqual(self.wf.STATE["checked_files"][self.path], before)
+        session.view_saved.assert_not_called()
+
+    def test_scan_view_only_follows_checked_version_like_separate_save(self):
+        """要核对的旧标记都还在、没有要改的：只存视图，文件仍算检测过的版本"""
+        self.add_item("A5")
+        self.mark_checked()
+        self.view_scan(Mock())  # 先标上
+        self.mark_checked()
+        before = self.wf.STATE["checked_files"][self.path]
+        for mark in batch._marks().values():
+            mark["saved"] = False  # 让标色再打开文件核对一次，但不用改
+        self.page_layout.return_value = True
+        self.book.Save.reset_mock()
+        session = Mock()
+        def save():
+            Path(self.path).write_bytes(b"saved with page layout view")
+        self.book.Save.side_effect = save
+        self.assertTrue(self.view_scan(session))
+        self.book.Save.assert_called_once()
+        after = self.wf._file_version(Path(self.path))
+        self.assertNotEqual(after, before)
+        self.assertEqual(self.wf.STATE["checked_files"][self.path], after)
+        session.view_saved.assert_called_once_with(self.path, before, after)
+
+    def test_scan_view_refuses_file_changed_after_scan(self):
+        self.add_item("A5")
+        self.mark_checked()
+        Path(self.path).write_bytes(b"edited after scan")
+        with self.assertRaisesRegex(ValueError, "扫描后文件已修改"):
+            self.view_scan(Mock())
+        self.excel.Workbooks.Open.assert_not_called()
+
+    def test_nothing_to_color_leaves_view_to_separate_save(self):
+        self.mark_checked()
+        self.assertFalse(self.view_scan(Mock()))
+        self.excel.Workbooks.Open.assert_not_called()
+
+    def mark_checked(self):
+        """真的 _refresh 会记下检测时的文件版本；测试替身也照记，标色时顺便存视图要核对它"""
+        self.wf.STATE["checked_files"][self.path] = self.wf._file_version(Path(self.path))
+
     def test_run_scan_marks_cells_without_growing_even_with_legacy_ratio(self):
         self.add_item("A5")
+        self.mark_checked()
         self.wf.STATE["job"]["options"] = {"folder": str(self.root), "grow_ratio": 1.2,
                                            "highlight": {"types": {"text_truncated": {"fill": "#6D28D9", "font": "#FFFFFF"}}}}
         session = Mock()
@@ -988,6 +1050,7 @@ class ScanOnlyTests(unittest.TestCase):
 
     def run_scan_with_grow(self, grown, refresh):
         self.wf.STATE["job"]["options"] = {"folder": str(self.root)}
+        self.mark_checked()
         session = Mock()
         session.app.return_value = self.excel
         with patch.object(batch.autofix, "_ExcelSession", return_value=session), \
