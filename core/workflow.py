@@ -1997,7 +1997,7 @@ def scan_folder_workflow(
                             delete_backups=delete_backups, used_pdf_paths=used_pdf_paths,
                             # 未要求删表时只读检测，避免旧版 .xls 首次打开就更新时间。
                             read_only=not delete_backups,
-                            compact_print_tail=True,
+                            compact_print_tail=False,  # 末页取整改在「调整页面」由用户定（2026-11-07）
                             scan_view="page_layout",
                         )
                 except Exception as err:
