@@ -1,6 +1,6 @@
 // 主页「当前任务」：显示当前任务、切换以前的任务、收尾检查（后端 core/work_task.py）
 // 开新任务在单独的「新任务 · 拿文件」页（/distribute/start，static/distribute.js）
-// 开新任务或切换后，把 1～8 步共用的文件夹（lastFolder）设成处理文件夹、原始备份（oldFolder）设成参考文件夹
+// 开新任务或切换后，把 前 3 步共用的文件夹（lastFolder）设成处理文件夹、原始备份（oldFolder）设成参考文件夹
 (() => {
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[ch]));
@@ -28,7 +28,7 @@
       : current ? current.name + (current.done ? '（✓ 已完成）' : '') : '还没有任务';
     $('workTaskPaths').innerHTML = current ? pathsHtml(current) : '';
     $('workTaskHint').textContent = current
-      ? '任务提供默认的处理、参考路径，各功能都可以自由修改。每个文件夹独立保存进度和处理记录，切回后可继续。第 9 步按任务设置传回共享。'
+      ? '任务提供默认的处理、参考路径，各功能都可以自由修改。每个文件夹独立保存进度和处理记录，切回后可继续。第 4 步按任务设置传回共享。'
       : '可以直接在各功能填写本地文件夹。需要从共享拿取、上传文件时，再点「🆕 新任务」建立共享、参考和处理路径。';
     $('workTaskName').title = current ? `共享：${current.shared}\n参考：${current.reference}\n处理：${current.work}` : '';
     const others = data.tasks.filter(t => t.id !== data.current);

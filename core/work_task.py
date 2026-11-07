@@ -170,7 +170,7 @@ def require_folder(folder: Any, role: str = "work") -> str:
     path = _clean(folder, what)
     if any(_is_onedrive(p) for p in path.parts):
         raise ValueError(f"这个文件夹在 OneDrive 里，就是共享文件夹，程序不能直接改：{path}"
-                         "。请回主页点「🆕 新任务」，在本地的处理文件夹里改，改好再用第 9 步传回去")
+                         "。请回主页点「🆕 新任务」，在本地的处理文件夹里改，改好再用第 4 步「上传」传回去")
     return str(folder)
 
 

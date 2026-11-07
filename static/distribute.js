@@ -39,7 +39,7 @@
     $('distNavOverview').textContent = '新任务 · 拿文件';
     $('distBreadcrumb').textContent = '新任务 · 拿文件';
     $('distHeading').textContent = '新任务 · 从共享拿文件';
-    $('distSubtitle').textContent = '填共享文件夹路径，建好任务，从共享拿文件。拿完回主页按顺序做 1～8 步。';
+    $('distSubtitle').textContent = '填共享文件夹路径，建好任务，从共享拿文件。拿完点「下一步」去精简 Sheet，按主页顺序往下做。';
     $('distControlsKicker').innerHTML = 'FETCH FILES <span>03 / 拿文件</span>';
     $('distControlsTitle').textContent = '从共享拿文件';
     $('distResultTitle').textContent = '拿取清单';
@@ -165,8 +165,8 @@
     return `<span class="dist-nums">${one('JSON', folder.json_files ?? '没写')}${one('来源', folder.source_count)}${applied ? one('目的地', folder.dest_count) : ''}</span>`;
   }
 
-  function fileLink(label, folder, rel) {
-    return window.excelLinkHtml(esc(label), { folder, file: rel });
+  function fileLink(label, folder, rel, sheet = '', cell = '') {
+    return window.excelLinkHtml(esc(label), { folder, file: rel, sheet, cell });
   }
 
   function folderCard(folder, data, applied) {
@@ -363,10 +363,27 @@
     const rows = (data.files || []).map(file => {
       const status = file.status === 'ok' ? '✓ 已上传' : file.error || '未上传';
       const base = file.status === 'ok' ? data.dest_root : data.source_root;
-      return `<li>${fileLink(file.rel, base, file.rel)} · ${esc(status)}${file.backup_path ? `<br><small>旧处理副本：${esc(file.backup_path)}</small>` : ''}${file.ref_backup_path ? `<br><small>旧参考副本：${esc(file.ref_backup_path)}</small>` : ''}</li>`;
+      return `<li>${fileLink(file.rel, base, file.rel)} · ${esc(status)}${prepHtml(file, data)}${file.backup_path ? `<br><small>旧处理副本：${esc(file.backup_path)}</small>` : ''}${file.ref_backup_path ? `<br><small>旧参考副本：${esc(file.ref_backup_path)}</small>` : ''}</li>`;
     });
+    const allDone = rows.length && (s['已复制'] || 0) === rows.length && !data.stopped;
     return `<p>${esc(text)} 已上传 ${s['已复制'] || 0} / ${rows.length} 个。</p><ul class="dist-list">${rows.join('')}</ul>`
-      + (data.id ? `<p><a class="btn btn-outline btn-sm" href="${api}/markdown?id=${encodeURIComponent(data.id)}">⬇ 下载上传记录</a></p>` : '');
+      + `<p class="next-step-row">${data.id ? `<a class="btn btn-outline btn-sm" href="${api}/markdown?id=${encodeURIComponent(data.id)}">⬇ 下载上传记录</a>` : ''}`
+      + (allDone ? '<a class="btn btn-primary next-step-btn" href="/finish?start=1">下一步：收尾检查 ➜</a>' : '') + '</p>';
+  }
+
+  // 上传前自动做的清标记 / 对照参考恢复颜色 / 视图标准化（core/upload_prep.py）
+  function prepHtml(file, data) {
+    const p = file.prep;
+    if (!p) return '';
+    const parts = [p.marks ? `清掉标记 ${p.marks} 条` : '没有标记要清'];
+    if (p.tabs) parts.push(`还原表标签 ${p.tabs} 张`);
+    if (!p.reference) parts.push('参考里没有这份文件，没对照颜色');
+    else parts.push(p.colors ? `按参考改回颜色 ${p.colors} 处` : '颜色和参考一致');
+    if (p.normalized) parts.push('视图已标准化');
+    const skipped = p.color_skipped ? `<details class="dist-prep-skip"><summary>颜色改不了 ${p.color_skipped} 处（点开看是哪些，请人工看一下）</summary><ul>`
+      + (p.color_problems || []).map(cell => `<li>${fileLink(`${cell.sheet}!${cell.cell}`, data.source_root, file.rel, cell.sheet, cell.cell)} · ${esc(cell.reason)}</li>`).join('')
+      + (p.color_skipped > (p.color_problems || []).length ? `<li>还有 ${p.color_skipped - p.color_problems.length} 处没列出</li>` : '') + '</ul></details>' : '';
+    return `<br><small>🧽 上传前：${esc(parts.join('，'))}</small>${skipped}`;
   }
 
   const renderAny = (data, applied) => isFetch(data) ? renderFetch(data, applied)
@@ -473,12 +490,12 @@
          task ? '参考文件夹里也放了一份原件，修复颜色 / 引用 / 隐藏页时用来对照。' : '']
       : ['共享和本地已经一样，这次没有要拿的文件。'];
     if (s['保留你改的']) lines.push(`${s['保留你改的']} 个你改过、共享没人动的文件保留了你改的。`);
-    lines.push('下一步：回主页从第 1 步「精简 Sheet」开始处理。');
+    lines.push('下一步：第 1 步「精简 Sheet」（做完会自动排查 BL 超链接、修复引用错误）。');
     if (got) window.gameFx?.celebrate('拿完了！', `${got} 个文件已拿到处理文件夹`, 3);
     // 先让横幅和撒花播一会儿，再弹提示
     setTimeout(async () => {
-      const go = await window.appConfirm(lines.filter(Boolean).join('\n'), { title: '文件拿完了', tone: 'info', icon: '✓', okText: '回主页开始处理 ➜', cancelText: '留在这页' });
-      if (go) location.href = '/';
+      const go = await window.appConfirm(lines.filter(Boolean).join('\n'), { title: '文件拿完了', tone: 'info', icon: '✓', okText: '下一步：精简 Sheet ➜', cancelText: '留在这页' });
+      if (go) location.href = '/clean';
     }, got ? 2600 : 0);
   }
 
@@ -589,7 +606,7 @@
     const reviews = files.filter(file => file.review?.ready);
     const message = reviews.length
       ? `请确认这 ${reviews.length} 个待重新处理的文件已经保存并完成复检。系统将再次核对本批 ${files.length} 个文件的共享版本，检查通过后上传。\n\n${reviews.slice(0, 8).map(file => file.rel).join('\n')}${reviews.length > 8 ? '\n…' : ''}`
-      : `检查选中的 ${files.length} 个 Excel。发现共享端有更新时，先同步到参考和处理文件夹（两边的旧版都先备份），并暂停上传。检查通过后将文件传回当前任务的共享文件夹。`;
+      : `检查选中的 ${files.length} 个 Excel。发现共享端有更新时，先同步到参考和处理文件夹（两边的旧版都先备份），并暂停上传。检查通过后，每个文件先自动清掉标记色、对照参考改回残留的颜色、视图标准化（A1、100%），都做成了再传回当前任务的共享文件夹。`;
     submitting = 'upload';
     controls();
     try {
@@ -607,7 +624,7 @@
     }
   }
 
-  // ───── 本轮只处理待重新处理文件（后端 work_task.set_focus；1～8 步只列这些文件，全部上传后自动结束） ─────
+  // ───── 本轮只处理待重新处理文件（后端 work_task.set_focus；前 3 步只列这些文件，全部上传后自动结束） ─────
   const focusList = () => task?.focus?.files || [];
   const readyRels = () => taskFiles.filter(file => file.review?.ready).map(file => file.rel);
   const sameSet = (a, b) => a.length === b.length && a.every(rel => b.map(x => x.toLowerCase()).includes(rel.toLowerCase()));
@@ -618,8 +635,8 @@
     const on = focus.length && sameSet(ready, focus);
     $('distTaskFocus').hidden = !ready.length || on;
     $('distTaskFocus').textContent = focus.length ? `🎯 把本轮清单换成这 ${ready.length} 个待重新处理文件`
-      : `🎯 让 1～8 步只处理这 ${ready.length} 个待重新处理文件`;
-    $('distTaskFocusNote').textContent = on ? `✓ 已开启：1～8 步这一轮只处理这 ${focus.length} 个文件。处理、复检完回来上传，传完自动回到整个文件夹。`
+      : `🎯 让 前 3 步只处理这 ${ready.length} 个待重新处理文件`;
+    $('distTaskFocusNote').textContent = on ? `✓ 已开启：前 3 步这一轮只处理这 ${focus.length} 个文件。处理、复检完回来上传，传完自动回到整个文件夹。`
       : focus.length ? `本轮清单现在是 ${focus.length} 个文件（看页面顶部），和待重新处理的不一样。`
       : '其他文件这一轮不动，省得整个文件夹重跑一遍。';
   }
@@ -627,7 +644,7 @@
     const ready = readyRels();
     if (!task || !ready.length) return;
     const list = ready.slice(0, 8).join('\n') + (ready.length > 8 ? '\n…' : '');
-    if (!await window.appConfirm(`这一轮 1～8 步（精简 Sheet、切字、修复颜色……人工复检）只处理这 ${ready.length} 个文件，其他文件不动：\n\n${list}\n\n`
+    if (!await window.appConfirm(`这一轮 前 3 步（精简 Sheet、查看切字、人工复检）只处理这 ${ready.length} 个文件，其他文件不动：\n\n${list}\n\n`
       + '这几个全部上传成功后自动回到整个文件夹；也可以随时点页面顶部的「退出」。', { title: '本轮只处理待重新处理文件', okText: '开启', cancelText: '先不用' })) return;
     try {
       const result = await post('/api/tasks/focus', { id: task.id, files: ready });
@@ -636,7 +653,7 @@
     focusControls();
     if (window.refreshFocusBanner) await window.refreshFocusBanner();
     if (await window.appConfirm(`已开启。去主页按顺序处理这 ${ready.length} 个文件，处理、复检完回这页上传。`,
-      { title: '开启了', okText: '回主页开始处理 ➜', cancelText: '留在这页' })) location.href = '/';
+      { title: '开启了', okText: '下一步：精简 Sheet ➜', cancelText: '留在这页' })) location.href = '/clean';
   }
   $('distTaskFocus').addEventListener('click', startFocus);
   document.addEventListener('focus-changed', () => { if (task) { task.focus = null; focusControls(); } });
@@ -773,7 +790,7 @@
     controls();
     try {
       const { task: made } = await post('/api/tasks/new', { shared, work_root: $('distNewRoot').value.trim() });
-      // 1～8 步默认用这个任务的处理 / 参考文件夹
+      // 前 3 步默认用这个任务的处理 / 参考文件夹
       try {
         localStorage.setItem('clear_handle_excel.lastFolder', made.work);
         localStorage.setItem('clear_handle_excel.oldFolder', made.reference);

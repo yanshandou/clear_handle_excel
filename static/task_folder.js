@@ -1,7 +1,7 @@
 // 当前任务只提供默认路径；各功能始终可以独立修改文件夹。
 (() => {
   const WORK_IDS = ['folderInput', 'blFolder', 'cleanFolderInput', 'repairFolder', 'prFolder', 'taskFolderInput'];
-  const REF_IDS = ['repairOldFolder', 'prOldFolder'];
+  const REF_IDS = ['repairOldFolder', 'prOldFolder', 'cleanOldFolder'];
   const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[ch]));
   const inputs = ids => ids.map(id => document.getElementById(id)).filter(Boolean);
   const work = inputs(WORK_IDS), refs = inputs(REF_IDS), all = [...work, ...refs];

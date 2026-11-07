@@ -13,7 +13,7 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from core import autofix, batch, bl_links, debug_log, distribute, file_problem, work_task, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review
+from core import autofix, batch, bl_links, clean_chain, debug_log, distribute, file_problem, work_task, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review
 from core import upload_manager
 from core.common import (
     STATIC_DIR,
@@ -233,6 +233,8 @@ class WebHandler(upload_manager.Handler):
                                 filename="fetch_record.md" if run.get("kind") == "fetch" else "copy_record.md")
         elif parsed.path == "/api/file-problem":
             self._send_json({"ok": True, "problem": file_problem.pending(), "settings": file_problem.get_settings()})
+        elif parsed.path == "/api/clean/chain":
+            self._send_json({"ok": True, **clean_chain.status()})
         elif parsed.path == "/api/bl_links":
             self._send_json(bl_links.status())
         elif parsed.path == "/api/hidden_repair":
@@ -670,7 +672,14 @@ class WebHandler(upload_manager.Handler):
             if kind == "export_pdf":
                 # 用户可选：不比较横竖方向能省一半以上时间（2026-10-30）
                 options["choose_orientation"] = payload.get("choose_orientation", True) is not False
-            self._start_job(kind, options)
+            chain = clean_chain.options_from(payload.get("chain")) if kind == "clean_sheets" else None
+            if chain and chain["old_folder"]:
+                chain["old_folder"] = _require_folder({"folder": chain["old_folder"]}, "reference")
+            if chain:
+                options["chain"] = chain  # 精简完接着自动排查 BL、修复引用错误（、隐藏页）
+                clean_chain.prepare(str(folder), chain)  # 先排上，任务一开始页面就能显示后面几步
+            if not self._start_job(kind, options) and chain:
+                clean_chain.drop(str(folder))
 
         elif self.path == "/api/clean/preview":
             self._send_json({"ok": True, **preview_backup_sheets(_require_folder(payload))})
@@ -861,16 +870,16 @@ class WebHandler(upload_manager.Handler):
         else:
             self.send_error(404)
 
-    def _start_job(self, kind: str, options: dict | None = None) -> None:
+    def _start_job(self, kind: str, options: dict | None = None) -> bool:
         if kind == "manual_open":
             # 立即排队并反馈；可见 Excel 使用独立实例，不等待副本导出及 Quit。
             queued = queue_job(kind, options)
             if not queued:
                 self._send_json({"ok": False, "error": "已有任务正在执行"}, status=409)
-                return
+                return False
             threading.Thread(target=run_pending_workflow, name="任务", daemon=True).start()
             self._send_json({"ok": True})
-            return
+            return True
         # 先让自动处理的后台关掉它的 Excel，任务排上队后它会一直等到任务结束
         autofix.release_excel()
         try:
@@ -879,9 +888,10 @@ class WebHandler(upload_manager.Handler):
             autofix.resume_after_release()
         if not queued:
             self._send_json({"ok": False, "error": "已有任务正在执行"}, status=409)
-            return
+            return False
         threading.Thread(target=run_pending_workflow, name="任务", daemon=True).start()
         self._send_json({"ok": True})
+        return True
 
 
 def _line_buffered_console() -> None:

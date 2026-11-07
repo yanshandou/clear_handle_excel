@@ -2965,3 +2965,62 @@ input[type="checkbox"]:not(.hidden):checked::before {
 .progress-eta { margin: 6px 0 0; font-size: 13px; line-height: 1.5; font-weight: 600; color: var(--ink, #1c2858); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .progress-eta[hidden] { display: none; }
 .home-strip-progress .progress-eta { margin-top: 0; text-align: right; font-size: 12.5px; white-space: normal; }
+
+/* ---------- 精简 Sheet：参考文件夹、「修复隐藏页」勾选、做完后的自动检查（clean_chain.js） ---------- */
+.clean-old-label { display: block; margin-top: 14px; }
+.field-optional { margin-left: 8px; font-size: 13px; font-weight: 600; color: var(--ink-3); }
+.clean-hidden-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border: 2px solid var(--ink); border-radius: 10px;
+  background: #ffffff; color: var(--ink); font-size: 14px; font-weight: 800; cursor: pointer; white-space: nowrap;
+}
+.clean-hidden-toggle input { width: 16px; height: 16px; accent-color: var(--purple); }
+
+.clean-chain { margin-top: 18px; border: var(--stroke); box-shadow: var(--hard); }
+.clean-chain.is-ok { background: #f2fbea; }
+.clean-chain.is-warn { background: #fff8e1; }
+.clean-chain.is-failed { background: #fff0f2; }
+.chain-head h3 { margin: 0 0 4px; font-size: 18px; color: var(--ink); }
+.chain-head p { margin: 0 0 12px; font-size: 13.5px; color: var(--ink-2); }
+.chain-steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; }
+.chain-step {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 10px 14px; border: 2px solid var(--ink); border-radius: 12px; background: #ffffff;
+}
+.chain-icon {
+  flex: 0 0 30px; height: 30px; display: grid; place-items: center;
+  border: 2px solid var(--ink); border-radius: 50%; font-weight: 900; color: var(--ink); background: #eef2fa;
+}
+.chain-step.is-done .chain-icon { background: #3dbb5c; color: #ffffff; }
+.chain-step.is-warn .chain-icon { background: var(--lime); color: var(--ink); }
+.chain-step.is-failed .chain-icon { background: var(--red); color: #ffffff; }
+.chain-step.is-running .chain-icon { background: var(--purple-soft); }
+.chain-step.is-skipped, .chain-step.is-off { opacity: 0.75; }
+.chain-body { flex: 1 1 auto; min-width: 0; }
+.chain-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; font-size: 14.5px; color: var(--ink); }
+.chain-state { padding: 0 8px; border-radius: 999px; border: 1.5px solid var(--ink); font-size: 12.5px; font-weight: 800; background: #ffffff; }
+.chain-text { color: var(--ink-2); }
+.chain-detail { margin-left: auto; font-size: 13px; font-weight: 800; color: var(--purple-ink); }
+.chain-problems { margin-top: 8px; font-size: 13.5px; }
+.chain-problems summary { cursor: pointer; font-weight: 800; color: #6b4700; }
+.chain-problems ul { margin: 6px 0 0; padding-left: 18px; max-height: 320px; overflow: auto; }
+.chain-problems li { margin: 3px 0; line-height: 1.55; }
+.chain-problems li.is-error .chain-reason { color: #b0102f; }
+.chain-where { color: var(--ink-3); font-weight: 600; }
+.chain-reason { margin-left: 8px; color: var(--ink-2); }
+.chain-more { list-style: none; color: var(--ink-3); }
+.chain-next { display: flex; justify-content: flex-end; margin-top: 14px; }
+
+/* 各页做完后的「下一步 ➜」：不用回主页 */
+.next-step-btn { font-size: 15px; font-weight: 900; }
+.next-step-row { display: flex; justify-content: flex-end; gap: 10px; margin-top: 12px; }
+
+/* 页头里的「下一步 ➜」：黄色，和别的导航分得开（深色字，对比度 > 4.5:1） */
+.nav-link.nav-next,
+.nav-link.nav-next:hover {
+  color: var(--ink);
+  border-color: #0e1533;
+  background: linear-gradient(180deg, #ffdb6e 0%, #ffc21f 100%);
+  box-shadow: inset 0 -4px 0 #d89b00;
+  font-weight: 900;
+}

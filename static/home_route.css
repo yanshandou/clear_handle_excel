@@ -1,6 +1,6 @@
 /* ==========================================
    主页：处理流程路线图（START → FINISH）
-   - 宽屏：三行蛇形，第一行左→右，第二行右→左，第三行左→右，行尾用弯道连起来
+   - 宽屏：一行四站，从左到右一条直路（2026-11-07 用户把 9 步合并成 4 步）
    - 窄屏（< 1200px）：竖排，路在左边
    - 路是装饰，放在卡片后面，不能点、不挡操作；卡片本身沿用游戏风卡牌，悬停不位移
    ========================================== */
@@ -26,7 +26,7 @@
 .route-steps {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   grid-auto-rows: 1fr;
   column-gap: var(--col-gap);
   row-gap: var(--row-gap);
@@ -35,16 +35,11 @@
   list-style: none;
 }
 
-/* 蛇形排列：第二行从右往左 */
+/* 一行四站，从左到右 */
 .route-stop:nth-child(1) { grid-area: 1 / 1; }
 .route-stop:nth-child(2) { grid-area: 1 / 2; }
 .route-stop:nth-child(3) { grid-area: 1 / 3; }
-.route-stop:nth-child(4) { grid-area: 2 / 3; }
-.route-stop:nth-child(5) { grid-area: 2 / 2; }
-.route-stop:nth-child(6) { grid-area: 2 / 1; }
-.route-stop:nth-child(7) { grid-area: 3 / 1; }
-.route-stop:nth-child(8) { grid-area: 3 / 2; }
-.route-stop:nth-child(9) { grid-area: 3 / 3; }
+.route-stop:nth-child(4) { grid-area: 1 / 4; }
 
 .route-stop {
   position: relative;
@@ -74,7 +69,7 @@
 
 /* 起点、终点的路一直通到旗子 */
 .route-stop:nth-child(1) .route-road { left: calc(var(--side) * -1); }
-.route-stop:nth-child(9) .route-road { right: calc(var(--side) * -1); }
+.route-stop:last-child .route-road { right: calc(var(--side) * -1); }
 
 /* 弯道：从这一行中线拐到下一行中线；外圈描边、中间路面、中心虚线三层 */
 .route-turn {
@@ -129,11 +124,6 @@
 
 .route-turn-left::after { right: 0; }
 
-/* 行尾的直路只铺到卡片底下，外侧交给弯道 */
-.route-stop:nth-child(3) .route-road,
-.route-stop:nth-child(4) .route-road { right: var(--turn-tuck); }
-.route-stop:nth-child(6) .route-road,
-.route-stop:nth-child(7) .route-road { left: var(--turn-tuck); }
 
 /* ---------- START / FINISH 路牌（只是标识，不像按钮） ---------- */
 .route-flag {
@@ -244,7 +234,7 @@
   box-shadow: inset 0 0 0 2px var(--ink, #1c2858);
 }
 
-/* ---------- 中等宽度：三列放不下，改竖排 ---------- */
+/* ---------- 中等宽度：四列放不下，改竖排 ---------- */
 @media (max-width: 1199px) {
   .route-map {
     --road-w: 22px;
@@ -271,7 +261,7 @@
 
   .route-road,
   .route-stop:nth-child(1) .route-road,
-  .route-stop:nth-child(9) .route-road {
+  .route-stop:last-child .route-road {
     top: -11px;
     bottom: -11px;
     height: auto;
@@ -286,7 +276,7 @@
   }
 
   .route-stop:nth-child(1) .route-road { top: -34px; }
-  .route-stop:nth-child(9) .route-road { bottom: -34px; }
+  .route-stop:last-child .route-road { bottom: -34px; }
 
   .route-flag {
     left: calc(var(--rail) * -1) !important;
@@ -341,3 +331,50 @@
   color: #1f7a2e;
 }
 
+
+/* ---------- 更多工具：合并进 4 站的原来几步，单独用时从这里打开 ---------- */
+.home-more-tools {
+  margin-top: 18px;
+  padding: 12px 18px;
+}
+
+.home-more-tools > summary {
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 900;
+  color: var(--ink, #1c2858);
+}
+
+.home-more-tools > summary small {
+  margin-left: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-3, #56628f);
+}
+
+.home-more-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.home-more-tool {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px;
+  border: 2px solid var(--ink, #1c2858);
+  border-radius: 12px;
+  background: #ffffff;
+  color: var(--ink, #1c2858);
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  box-shadow: 0 3px 0 var(--ink, #1c2858);
+}
+
+.home-more-tool:hover { background: #f2f6ff; }
+.home-more-tool b { font-size: 15px; }
+.home-more-tool span { font-size: 12.5px; color: var(--ink-2, #26326a); }

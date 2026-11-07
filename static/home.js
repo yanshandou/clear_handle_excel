@@ -126,6 +126,7 @@ function renderCards() {
   const pct = Number(overview.progress.progress_pct || 0);
   [...Object.keys(TASKS), 'clean_sheets'].forEach(kind => {
     const meta = document.getElementById('meta_' + kind);
+    if (!meta) return; // 视图标准化已并进上传，只在「更多工具」里有入口，没有状态文字
     if (!meta.dataset.idleText) meta.dataset.idleText = meta.textContent;
     meta.textContent = isTaskRunning(kind) ? `⏳ 进行中 ${pct}%` : meta.dataset.idleText;
   });
@@ -480,7 +481,7 @@ async function refreshDoneMarks() {
   });
   const note = document.getElementById('routeDoneNote');
   note.classList.toggle('hidden', !folder);
-  note.textContent = folder ? `✓ 表示在「${folder}」里已经做过（${doneCount} / 9 步）` : '';
+  note.textContent = folder ? `✓ 表示在「${folder}」里已经做过（${doneCount} / 4 步）` : '';
   note.title = folder;
 }
 

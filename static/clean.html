@@ -67,6 +67,7 @@
       </details>
 
       <p class="toolbar-hint">删表前，其他工作表中依赖待删表的公式会自动转成当前计算值，保留格式。无法保留引用值或发现新增引用错误时，该文件不保存。</p>
+      <p class="toolbar-hint">确认执行后会自动接着做：排查 BL 超链接 → 修复引用错误 →（勾选时）修复隐藏页，不用再去别的页面点。改不了的会列出来。</p>
       <label class="task-field-label" for="cleanFolderInput">Excel 文件夹路径</label>
       <div class="clean-folder-row">
         <div class="input-groove-wrap">
@@ -74,6 +75,12 @@
           <input type="text" id="cleanFolderInput" placeholder="例如 C:\Users\...\Desktop\excel_files">
         </div>
         <button type="button" class="btn btn-primary" id="scanBtn" onclick="runPreview()">🔎 扫描备份表</button>
+      </div>
+      <label class="task-field-label clean-old-label" for="cleanOldFolder">参考（原始备份）文件夹
+        <span class="field-optional">修复引用错误、隐藏页要对照它；不填就跳过这两步</span></label>
+      <div class="input-groove-wrap clean-old-row">
+        <span class="input-groove-icon" aria-hidden="true">📚</span>
+        <input type="text" id="cleanOldFolder" placeholder="例如 C:\Users\...\Desktop\handle-excel\参考\...">
       </div>
     </section>
 
@@ -118,6 +125,8 @@
           <button type="button" class="btn btn-outline btn-sm preview-reset-btn" onclick="resetSheetDecisions()" title="恢复为系统自动识别的初始标记状态">
             ↺ 恢复默认
           </button>
+          <label class="clean-hidden-toggle" title="对照参考文件夹，把被显示出来的隐藏工作表、隐藏列、超窄列恢复回去">
+            <input type="checkbox" id="cleanHiddenToggle"> 做完后也修复隐藏页</label>
           <button type="button" class="btn btn-primary" id="execBtn" onclick="startTask()">🧹 执行</button>
         </div>
       </div>
@@ -145,10 +154,14 @@
         <div class="log-box" id="cleanLogBox">等待操作...</div>
       </div>
     </section>
+
+    <!-- 精简后自动接着做的检查（static/clean_chain.js） -->
+    <section id="cleanChainBox" class="panel clean-chain hidden" aria-live="polite"></section>
   </main>
 
   <script src="/static/eta.js"></script><script src="/static/dialog.js"></script>
   <script src="/static/open_excel.js"></script>
+  <script src="/static/clean_chain.js"></script>
   <script src="/static/clean.js"></script>
   <script src="/static/task_folder.js"></script><script src="/static/focus_banner.js"></script><script src="/static/file_problem.js"></script>
 </body>
