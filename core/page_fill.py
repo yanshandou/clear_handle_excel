@@ -5,8 +5,9 @@
 
 判断：
 - 中间页：用了不到 15%，而前一页或后一页用了 60% 以上（别的页都挺满，就这一页突然空了）。
-  这一页底下是手动分页 → 删掉这条分页，重新导出核对：页数没变多、这样的空页变少、没有新切开有字的合并格，
-  才算修好，否则改回去标黄；是 Excel 自动分页 → 不改，标黄。
+  这一页底下是手动分页 → 把这张表的手动分页全部清掉、改成自动分页（用户 2026-11-08 定：一处处删会留下
+  别的手动分页，排得不如全清），重新导出核对：页数没变多、这样的空页变少、没有新切开有字的合并格，
+  才算修好，否则全部改回去标黄；是 Excel 自动分页 → 不改，标黄。向下取整不自动做，留给「调整页面」的按钮。
 - 最后几页：PDF 里一个字都没有（Excel 只会因为空格子带边框、底色才印出这种页），Excel 里这几行也没有字、
   没有图片图形 → 打印区域收到上一页为止，重新导出核对页数变少才算修好；有图形的标黄。
   最后一页有字但只用了不到 15%、前一页 60% 以上 → 标黄。
@@ -398,28 +399,88 @@ def _area_text(layout: dict, bottom: int) -> str:
             f"{col_index_to_letters(layout['right'])}{bottom}")
 
 
+def _clear_manual_breaks(sheet: Any, pdf_path: Path, export: Callable[[Any, Path], None],
+                         current: dict) -> tuple[dict | None, str, str, bool]:
+    """有手动分页造成的空页：把打印区域里的手动分页全部清掉，改成自动分页，重新导出核对。
+    返回 (清完/改回后的检查结果, 修好的说明 或 "", 没修好的原因 或 "", 有没有改回不去的)"""
+    name = getattr(sheet, "Name", "")
+    layout, pages = current["layout"], current["pages"]
+    manual = [row for row, is_manual in layout["h"] if is_manual]
+    sparse = [it for it in current["items"] if it["kind"] == "break"]
+    before_cuts = _cuts(sheet, current)
+    cleared: list[int] = []
+    reason = ""
+    dirty = False
+    try:
+        for row in manual:
+            sheet.Rows(row).PageBreak = page_breaks.XL_PAGEBREAK_NONE
+            cleared.append(row)
+    except Exception as err:
+        reason = f"Excel 没让清手动分页（{err}）"
+    after = None
+    after_pages = pages
+    if not reason:
+        export(sheet, pdf_path)
+        after = inspect(sheet, pdf_path)
+        after_pages = after["pages"] if after else _page_count(pdf_path)
+        after_cuts = _cuts(sheet, after)
+        if after_pages is None:
+            reason = "清完 PDF 读不了"
+        elif after_pages > pages:
+            reason = "清掉全部手动分页后页数反而变多"
+        elif _sparse_count(after) >= _sparse_count(current):
+            reason = "清掉全部手动分页后还是有内容很少的页"
+        elif before_cuts is None or after_cuts is None:
+            reason = "读不到分页，没法确认会不会切开合并格"
+        elif after_cuts - before_cuts:
+            reason = f"清掉全部手动分页会切开合并格 {'、'.join(sorted(after_cuts - before_cuts))}"
+    if reason:
+        for row in cleared:
+            try:
+                sheet.Rows(row).PageBreak = page_breaks.XL_PAGEBREAK_MANUAL
+            except Exception as err:
+                debug_log.event("⚠️ 手动分页改不回去", 表=name, 行=row, 原因=str(err))
+                dirty = True  # 改不回去也得保存时知道 Excel 变了
+        if cleared:
+            export(sheet, pdf_path)
+        debug_log.event("📄 清手动分页没用上", 表=name, 分页=len(manual), 原因=reason)
+        return inspect(sheet, pdf_path), "", reason, dirty
+    where = "；".join(f"第 {it['page'] + 1} 页只印了约 {_pct(it['fill'])}%（{it['rows']}）" for it in sparse)
+    rows = "、".join(str(row) for row in manual)
+    text = (f"原来{where}：清掉了全部 {len(manual)} 处手动分页（第 {rows} 行上方），改成自动分页，"
+            f"{pages} 页 → {after_pages} 页")
+    debug_log.event("📄 空页已修", 表=name, 说明=text)
+    return after, text, "", False
+
+
 def fix_sheet(sheet: Any, pdf_path: Path, export: Callable[[Any, Path], None], found: dict) -> tuple[list[dict], bool]:
-    """sheet 要是可以保存的。一条一条修、每次重新导出核对；修不好的改回去。
-    返回 (这张表的提示 [{"page", "fixed", "text"}], 有没有改了 Excel)"""
+    """sheet 要是可以保存的。有手动分页造成的空页 → 手动分页全部清掉再核对；最后几页全是空格子 → 一处处收打印区域。
+    每次改完都重新导出核对，修不好的改回去。返回 (这张表的提示 [{"page", "fixed", "text"}], 有没有改了 Excel)"""
     name = getattr(sheet, "Name", "")
     fixed_notes: list[dict] = []
     failed: dict[tuple, str] = {}
     changed = False
     current = found
+    if any(it["kind"] == "break" for it in current["items"]):
+        breaks = [it for it in current["items"] if it["kind"] == "break"]
+        current, text, reason, dirty = _clear_manual_breaks(sheet, pdf_path, export, current)
+        changed = changed or dirty
+        if text:
+            changed = True
+            fixed_notes.append({"page": None, "fixed": True, "text": text})
+        else:
+            for it in breaks:
+                failed[("break", it["row"])] = reason
     for _ in range(MAX_FIXES):
-        todo = [it for it in (current or {}).get("items", []) if it["kind"] in ("tail", "break")
-                and (it["kind"], it.get("row") or it.get("start")) not in failed]
+        todo = [it for it in (current or {}).get("items", []) if it["kind"] == "tail"
+                and ("tail", it["start"]) not in failed]
         if not todo:
             break
-        item = next((it for it in todo if it["kind"] == "tail"), todo[0])
-        key = (item["kind"], item.get("row") or item.get("start"))
+        item = todo[0]
+        key = ("tail", item["start"])
         layout, pages = current["layout"], current["pages"]
-        before_cuts = _cuts(sheet, current)
         try:
-            if item["kind"] == "tail":
-                _set_area(sheet, layout, item["start"] - 1)
-            else:
-                sheet.Rows(item["row"]).PageBreak = page_breaks.XL_PAGEBREAK_NONE
+            _set_area(sheet, layout, item["start"] - 1)
         except Exception as err:
             failed[key] = f"Excel 没让改（{err}）"
             continue
@@ -429,40 +490,22 @@ def fix_sheet(sheet: Any, pdf_path: Path, export: Callable[[Any, Path], None], f
         reason = ""
         if after_pages is None:
             reason = "改完 PDF 读不了"
-        elif item["kind"] == "tail":
-            if after_pages >= pages or _tail_count(after):
-                reason = "收了打印区域页数也没变少"
-        else:
-            after_cuts = _cuts(sheet, after)
-            if after_pages > pages:
-                reason = "删掉后页数反而变多"
-            elif _sparse_count(after) >= _sparse_count(current):
-                reason = "删掉后还是有内容很少的页"
-            elif before_cuts is None or after_cuts is None:
-                reason = "读不到分页，没法确认会不会切开合并格"
-            elif after_cuts - before_cuts:
-                reason = f"删掉会切开合并格 {'、'.join(sorted(after_cuts - before_cuts))}"
+        elif after_pages >= pages or _tail_count(after):
+            reason = "收了打印区域页数也没变少"
         if reason:
             try:
-                if item["kind"] == "tail":
-                    sheet.PageSetup.PrintArea = layout["area"]
-                else:
-                    sheet.Rows(item["row"]).PageBreak = page_breaks.XL_PAGEBREAK_MANUAL
+                sheet.PageSetup.PrintArea = layout["area"]
             except Exception as err:
                 debug_log.event("⚠️ 空页修复改不回去", 表=name, 原因=str(err))
                 changed = True  # 改不回去也得保存时知道 Excel 变了
             export(sheet, pdf_path)
             failed[key] = reason
-            debug_log.event("📄 空页修复没用上", 表=name, 改法=item["kind"], 原因=reason)
+            debug_log.event("📄 空页修复没用上", 表=name, 改法="tail", 原因=reason)
             current = inspect(sheet, pdf_path)
             continue
         changed = True
-        if item["kind"] == "tail":
-            text = (f"{item['where']}全是没有字的空格子：打印区域收到 {_area_text(layout, item['start'] - 1)}，"
-                    f"{pages} 页 → {after_pages} 页")
-        else:
-            text = (f"原来第 {item['page'] + 1} 页只印了约 {_pct(item['fill'])}%（{item['rows']}）："
-                    f"删掉了第 {item['row']} 行上方的手动分页，{pages} 页 → {after_pages} 页")
+        text = (f"{item['where']}全是没有字的空格子：打印区域收到 {_area_text(layout, item['start'] - 1)}，"
+                f"{pages} 页 → {after_pages} 页")
         fixed_notes.append({"page": None, "fixed": True, "text": text})
         debug_log.event("📄 空页已修", 表=name, 说明=text)
         current = after

@@ -101,7 +101,7 @@ class PageFillTests(unittest.TestCase):
         self.assertNotIn(22, sheet.manual)
         self.assertEqual(len(notes), 1)
         self.assertTrue(notes[0]["fixed"])
-        self.assertIn("删掉了第 22 行上方的手动分页，5 页 → 4 页", notes[0]["text"])
+        self.assertIn("清掉了全部 1 处手动分页（第 22 行上方），改成自动分页，5 页 → 4 页", notes[0]["text"])
         with fitz.open(str(self.pdf)) as doc:
             self.assertEqual(len(doc), 4)
 
@@ -119,9 +119,39 @@ class PageFillTests(unittest.TestCase):
         self.assertEqual(len(notes), 1)
         self.assertFalse(notes[0]["fixed"])
         self.assertEqual(notes[0]["page"], 1)
-        self.assertIn("切开合并格 A19:C21", notes[0]["text"])
+        self.assertIn("清掉全部手动分页会切开合并格 A19:C21", notes[0]["text"])
         with fitz.open(str(self.pdf)) as doc:
             self.assertEqual(len(doc), 5)  # PDF 也恢复成原来的样子
+
+    def test_all_manual_breaks_are_cleared_at_once(self):
+        # 用户 2026-11-08 的例子：一处空页是手动分页造成的，就连别的手动分页一起清掉，一次排好
+        # 第 21 行单独一页（第 22 行上方手动分页），第 28 行上方还有一处手动分页让第 4 页只有 6 行
+        sheet = PrintSheet(rows=45, texts=texts(range(1, 46)))
+        sheet.manual.update({22, 28})
+        sheet.export(sheet, self.pdf)
+        found = page_fill.inspect(sheet, self.pdf)
+        self.assertEqual([(it["kind"], it.get("row")) for it in found["items"]], [("break", 22)])
+
+        notes, changed = page_fill.fix_sheet(sheet, self.pdf, sheet.export, found)
+        self.assertTrue(changed)
+        self.assertEqual(sheet.manual, set())
+        self.assertEqual(len(notes), 1)
+        self.assertIn("清掉了全部 2 处手动分页（第 22、28 行上方），改成自动分页，6 页 → 5 页", notes[0]["text"])
+        with fitz.open(str(self.pdf)) as doc:
+            self.assertEqual(len(doc), 5)
+
+    def test_all_manual_breaks_restored_when_clearing_cuts_merged_block(self):
+        sheet = PrintSheet(rows=45, texts=texts(range(1, 46)), merges=[(29, 1, 31, 3)])
+        sheet.manual.update({12, 28})
+        sheet.export(sheet, self.pdf)
+        found = page_fill.inspect(sheet, self.pdf)
+        self.assertEqual([it["kind"] for it in found["items"]], ["break"])
+
+        notes, changed = page_fill.fix_sheet(sheet, self.pdf, sheet.export, found)
+        self.assertFalse(changed)
+        self.assertEqual(sheet.manual, {12, 28})  # 全部改回去
+        self.assertFalse(notes[0]["fixed"])
+        self.assertIn("清掉全部手动分页会切开合并格 A29:C31", notes[0]["text"])
 
     def test_trailing_page_of_empty_bordered_rows_is_dropped_from_print_area(self):
         sheet = PrintSheet(rows=25, texts=texts(range(1, 21)), bordered=range(21, 26))
