@@ -375,7 +375,8 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(floor.call_count, 2)
         self.assertEqual(book.saved, 1)
         export.assert_called_once()
-        self.assertEqual(export.call_args.kwargs, {"force": True})
+        # 只重新导出改好的那张表，别的表的 PDF 不动（用户 2026-11-08 定按表来）
+        self.assertEqual(export.call_args.kwargs, {"force": True, "only_sheets": {"一覧"}})
         self.assertEqual([(e["sheet"], e["reason"]) for e in result["changed"]], [("一覧", "5 页 → 4 页，字缩到约 96%")])
         self.assertEqual([e["sheet"] for e in result["change_failed"]], ["明細"])
 
@@ -527,7 +528,7 @@ class RegenerateTests(unittest.TestCase):
                              {"started": False, "unchanged": True, "name": "売上.xlsx"})
         export.assert_not_called()
 
-    def test_changed_or_confirmed_exports_only_this_workbook(self):
+    def test_changed_or_confirmed_exports_only_this_sheet(self):
         self.book.write_bytes(b"edited and saved")
         with patch.object(wf, "_export_workbook_pdfs", return_value=[self.pdf]) as export:
             self.assertEqual(pdf_review.regenerate(str(self.pdf)), {"started": True, "name": "売上.xlsx"})
@@ -535,7 +536,7 @@ class RegenerateTests(unittest.TestCase):
         self.assertEqual(result["ok"], True)
         self.assertEqual(result["pdfs"], [str(self.pdf)])
         args, kwargs = export.call_args
-        self.assertEqual((args[1], args[2], kwargs), (self.book, self.tmp.resolve(), {"force": True}))
+        self.assertEqual((args[1], args[2], kwargs), (self.book, self.tmp.resolve(), {"force": True, "only_sheets": {"一覧"}}))
         self.assertFalse(self.state["busy"])
 
     def test_failure_is_reported_and_busy_released(self):

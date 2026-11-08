@@ -34,11 +34,12 @@ let marks = {};         // pdf -> {v, red: true}：删除这张表
 let tools = {};         // pdf -> {v, floor: true} | {v, auto: true} | {v, orient: 1|2} | {v, breaks: true}，可以 orient + auto/breaks
 let deleted = new Set(); // 这次一键处理删掉的表（PDF 也删了，页面上灰掉，刷新后就不在了）
 let processing = false;
-let regenWb = '';       // 正在重新生成 PDF 的那份 Excel（wb_path）
-let busyWb = '';        // 点了「重新生成」、还在等的那份 Excel（含先改标记再生成）：页面上显示「正在重新生成」
+// 重新生成按表来（用户 2026-11-08 定）：只导点的那张表，同一份 Excel 别的表的 PDF 不动
+let regenWb = '';       // 正在重新生成的那张表的 PDF 路径
+let busyWb = '';        // 点了「重新生成」、还在等的那张表的 PDF（含先改标记再生成）：只这张表显示「正在重新生成」
 let busySince = 0;      // 从什么时候开始等，按钮上显示已经等了几秒
 let busyTimer = 0;
-let busySheets = 1;     // 这份 Excel 有几张表（估时间用）
+let busySheets = 1;     // 要导几张表（估时间用；重新生成只导一张）
 const REGEN_SPEED_KEY = 'clear_handle_excel.pdfReviewRegenSecs'; // 这台电脑上次重新生成平均每张表几秒
 
 // 预计要几秒：按这台电脑上次重新生成实际用的时间（每张表平均几秒 × 这份的表数）；没量过就不说
@@ -283,7 +284,7 @@ function renderDocs() {
     const markable = doc.wb_path && !doc.error;
     const tail = suggestsFloor(doc) ? `<span class="pr-doc-tail" title="最后一页只印了约 ${doc.layout.tail}%，建议向下取整">末页 ${doc.layout.tail}%</span>` : '';
     const regen = doc.wb_path ? `<button type="button" class="pr-regen-btn" data-regen="${d}"
-      title="只把这一份 Excel 的 PDF 重新导出一次，马上看效果。这份 Excel 上点了改方向、取整等还没改的，会先改进 Excel 再导出">🔄 重新生成</button>` : '';
+      title="只把这一张表的 PDF 重新导出一次，马上看效果；同一份 Excel 别的表的 PDF 不动。这张表上点了改方向、取整等还没改的，会先改进 Excel 再导出">🔄 重新生成</button>` : '';
     return `<article class="pr-doc" id="prDoc${d}" data-doc="${d}" data-mark="blue">
       <header class="pr-doc-head" title="${escapeHtml(doc.pdf)}">
         <span class="pr-doc-name">📄 ${escapeHtml(doc.name)}</span>
@@ -669,7 +670,7 @@ function toolLine({ doc, tool, value }) {
   return `${doc.wb_name} › ${doc.sheet}：${what}`;
 }
 
-// onlyWb：只改这一份 Excel 上的标记（点这份的「🔄 重新生成」时）
+// onlyWb：只改这一张表上的标记（点这张表的「🔄 重新生成」时，传它的 PDF 路径）
 async function runProcess(kind, onlyWb = '') {
   if (processing || regenWb) return;
   const files = docs => new Set(docs.map(doc => doc.wb_path)).size;
@@ -677,9 +678,9 @@ async function runProcess(kind, onlyWb = '') {
   let items = [];
   let text;
   if (kind === 'tools') {
-    items = toolItems().filter(i => !onlyWb || i.doc.wb_path === onlyWb);
+    items = toolItems().filter(i => !onlyWb || i.doc.pdf === onlyWb);
     if (!items.length) return;
-    text = (onlyWb ? `「${items[0].doc.wb_name}」上点的标记还没改进 Excel，先改好、保存，再重新生成这份 Excel 的 PDF。\n\n` : '')
+    text = (onlyWb ? `「${items[0].doc.wb_name} › ${items[0].doc.sheet}」上点的标记还没改进 Excel，先改好、保存，再重新生成这张表的 PDF。\n\n` : '')
       + `🛠 统一修改 ${items.length} 处（${files(items.map(i => i.doc))} 份 Excel）：\n${listLines(items.map(toolLine))}`
       + (items.some(i => i.tool === 'floor') ? '\n\n向下取整会先真导出一次核对：页数少了一页、字没缩到 85% 以下才算数，不行的改回原样；缩小后可能切字的照样改，结果里会写出来，后面「查看切字」会查。' : '\n')
       + '\n改好的 Excel 保存后重新生成 PDF，末页只多一点的会重新判断、重新标黄（改了方向、清了手动分页的要看新的 PDF 再决定取不取整）。';
@@ -787,8 +788,8 @@ async function finishProcess(result) {
   $('prResult').showModal();
 }
 
-/* ---------- 单份 Excel 重新生成 PDF ---------- */
-// 复检时在 Excel 里改了、保存了，想马上看改完的效果：只把这一份 Excel 的 PDF 重新导出一次。
+/* ---------- 单张表重新生成 PDF ---------- */
+// 复检时在 Excel 里改了、保存了，想马上看改完的效果：只把这一张表的 PDF 重新导出一次（2026-11-08 起按表，以前是整份 Excel）。
 // 做完重新读一遍列表；页面停在原来那份上（按标题位置对齐），不跳走。
 
 // 重新生成大约要 10 秒：一点下去，按钮马上变「⏳ 生成中 N 秒」，这份 Excel 的页面盖一层「正在重新生成」，
@@ -798,7 +799,7 @@ function setBusy(wb) {
   clearInterval(busyTimer);
   if (busyWb) {
     busySince = Date.now();
-    busySheets = allPdfs.filter(x => x.wb_path === busyWb).length || 1;
+    busySheets = 1;
     busyTimer = setInterval(paintRegen, 1000);
   }
   paintRegen();
@@ -809,18 +810,18 @@ function paintRegen() {
   const secs = Math.max(0, Math.round((Date.now() - busySince) / 1000));
   document.querySelectorAll('[data-regen]').forEach(b => {
     const doc = pdfs[Number(b.dataset.regen)];
-    const mine = wb && doc && doc.wb_path === wb;
+    const mine = wb && doc && doc.pdf === wb;
     b.textContent = mine ? (busyWb ? `⏳ 生成中 ${secs} 秒` : '⏳ 生成中…') : '🔄 重新生成';
     b.classList.toggle('is-running', !!mine);
     b.disabled = !!wb || processing || deleted.has(doc?.pdf);
   });
   const est = regenEstimate();
   const left = est ? est - secs : 0;
-  const hint = `⏳ 正在重新生成这份 Excel 的 PDF，已经 ${secs} 秒`
+  const hint = `⏳ 正在重新生成这张表的 PDF，已经 ${secs} 秒`
     + (!est ? '，请稍等…' : left > 0 ? `，上次的速度估计还要约 ${left} 秒…` : '，比上次慢一些，请再等一下…');
   document.querySelectorAll('.pr-doc').forEach(article => {
     const doc = pdfs[Number(article.dataset.doc)];
-    const mine = !!(wb && doc && doc.wb_path === wb);
+    const mine = !!(wb && doc && doc.pdf === wb);
     article.classList.toggle('is-regen', mine);
     const pages = article.querySelector('.pr-pages'); // 盖层是 .pr-pages 的伪元素，文字放它身上
     if (pages) { if (mine) pages.dataset.regenText = hint; else delete pages.dataset.regenText; }
@@ -833,8 +834,8 @@ async function regenerate(d) {
   if (!doc || !doc.wb_path || regenWb || processing) return;
   // 这份 Excel 上点了还没改的（改方向、取整、页高改回自动）：先改进 Excel 再重新生成，
   // 不然 Excel 没动、哈希一样，用户会以为没反应（用户 2026-11-08 提）
-  if (toolItems().some(i => i.doc.wb_path === doc.wb_path)) {
-    runProcess('tools', doc.wb_path);
+  if (toolItems().some(i => i.doc.pdf === doc.pdf)) {
+    runProcess('tools', doc.pdf);
     return;
   }
   try {
@@ -845,15 +846,15 @@ async function regenerate(d) {
 }
 
 async function regenerateNow(doc) {
-  if (allPdfs.some(x => x.wb_path === doc.wb_path && marks[x.pdf])) {
+  if (marks[doc.pdf]) {
     const ok = await appConfirm(
-      `重新生成「${doc.wb_name}」的 PDF（${allPdfs.filter(x => x.wb_path === doc.wb_path).length} 张表）？\n\n这份 Excel 上标的「删除这张表」会清掉：新的 PDF 是另一版，标记对不上了。`,
+      `重新生成「${doc.wb_name} › ${doc.sheet}」的 PDF？\n\n这张表上标的「删除这张表」会清掉：新的 PDF 是另一版，标记对不上了。`,
       { title: '重新生成 PDF', tone: 'warn', okText: '重新生成' });
     if (!ok) return;
   }
   let data;
   try {
-    setBusy(doc.wb_path);
+    setBusy(doc.pdf);
     data = await api('/api/pdf_review/regenerate', { pdf: doc.pdf });
     if (data.unchanged) {
       setBusy('');
@@ -861,16 +862,16 @@ async function regenerateNow(doc) {
         `「${data.name}」和上次导出 PDF 时一模一样（哈希值没变），PDF 已经是最新的。\n\n刚在 Excel 里改过的话，多半还没保存：先在 Excel 里保存，再点「重新生成」。\n\n还是要照样重新生成一次吗？`,
         { title: 'Excel 没有改过', tone: 'warn', okText: '照样重新生成' });
       if (!again) return;
-      setBusy(doc.wb_path);
+      setBusy(doc.pdf);
       data = await api('/api/pdf_review/regenerate', { pdf: doc.pdf, force: true });
     }
   } catch (e) {
     appAlert(e.message, { tone: 'error' });
     return;
   }
-  regenWb = doc.wb_path;
+  regenWb = doc.pdf;
   paintRegen();
-  toast(`正在重新生成「${doc.wb_name}」的 PDF…`);
+  toast(`正在重新生成「${doc.wb_name} › ${doc.sheet}」的 PDF…`);
   pollRegen(doc.pdf);
 }
 
@@ -883,13 +884,12 @@ async function pollRegen(anchorPdf) {
     return;
   }
   if (status.running) {
-    regenWb = status.wb_path || regenWb;
+    regenWb = status.pdf || regenWb;
     paintRegen();
     setTimeout(() => pollRegen(anchorPdf), 1000);
     return;
   }
   const result = status.result;
-  const wb = regenWb;
   regenWb = '';
   if (result?.ok) rememberRegenSpeed();
   setBusy('');
@@ -899,8 +899,8 @@ async function pollRegen(anchorPdf) {
     toast(`「${result.name}」没能重新生成`, true);
     appAlert(`「${result.name}」没能重新生成 PDF：\n${result.reason || '未知原因'}\n\n原来的 PDF 可能已经删掉了，修好后再点一次「重新生成」，或者回主页重新导出。`, { tone: 'error' });
   }
-  await reloadKeeping(anchorPdf || status.pdf, wb || result.wb_path);
-  if (result.ok) toast(`已重新生成「${result.name}」的 ${result.pdfs.length} 份 PDF`);
+  await reloadKeeping(anchorPdf || status.pdf, result.wb_path);
+  if (result.ok) toast(`已重新生成「${result.name}${result.sheet ? ` › ${result.sheet}` : ''}」的 PDF`);
 }
 
 // 重新读列表，页面停在原来那份 Excel 的标题上（同一个 PDF 还在就对齐它，不在了对齐同一份 Excel 的第一张）
@@ -1151,5 +1151,5 @@ if ($('prFolder').value) load();
 api('/api/pdf_review/process').then(status => { if (status.running) { setProcessing(true); pollProcess(); } }).catch(() => {});
 // 重新生成还在后台跑：接着看，做完刷新列表
 api('/api/pdf_review/regenerate').then(status => {
-  if (status.running) { regenWb = status.wb_path || ''; paintRegen(); pollRegen(status.pdf); }
+  if (status.running) { regenWb = status.pdf || ''; paintRegen(); pollRegen(status.pdf); }
 }).catch(() => {});

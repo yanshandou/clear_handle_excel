@@ -3404,7 +3404,7 @@ def _clean_backup_sheets(
 
 def _export_workbook_pdfs(
     get_excel: Callable[[], Any], wb_path: Path, root_folder: Path, used_pdf_paths: set[Path],
-    choose_orientation: bool = True, *, force: bool = False,
+    choose_orientation: bool = True, *, force: bool = False, only_sheets: set[str] | None = None,
 ) -> list[Path]:
     """导出到 根目录/PDFS/<子文件夹>（pdf_store）。Excel 哈希和上次导出时一样、PDF 都还在就直接沿用，
     不打开 Excel；force=True（人工复检页「重新生成」）不管哈希，照样重新导出。
@@ -3425,11 +3425,26 @@ def _export_workbook_pdfs(
         log_msg(f"  ♻️ {action}")
         update_file_progress(wb_label, status="done", exported_pdfs=len(paths), current_action=action)
         return paths
-    removed = pdf_store.clear_workbook(root_folder, wb_path)
-    if removed:
+    # 只重新导出指定的表（调整页面「重新生成」「统一修改」按表来，用户 2026-11-08 定）：
+    # 这几张表原来的 PDF 原地覆盖，别的表的 PDF 和记录都不动。记录里找不到这几张表就整份重新导出
+    keep_paths: dict[str, Path] = {}
+    if only_sheets:
+        recorded = pdf_store.sheet_pdfs(root_folder, wb_path)
+        if all(name in recorded for name in only_sheets):
+            keep_paths = {name: recorded[name] for name in only_sheets}
+        else:
+            debug_log.event("📄 记录里没有这张表，整份重新导出", 文件=wb_label, 表=sorted(only_sheets))
+    if keep_paths:
         from core import pdf_review
+        removed = list(keep_paths.values())
         pdf_review.forget_pdfs(removed)
-    debug_log.event("📄 PDF 重新导出", 文件=wb_label, 哈希=digest[:12], 强制=force, 删掉旧PDF=[p.name for p in removed])
+    else:
+        removed = pdf_store.clear_workbook(root_folder, wb_path)
+        if removed:
+            from core import pdf_review
+            pdf_review.forget_pdfs(removed)
+    debug_log.event("📄 PDF 重新导出", 文件=wb_label, 哈希=digest[:12], 强制=force, 只导=sorted(keep_paths) or "整份",
+                    删掉旧PDF=[p.name for p in removed])
     out_dir = pdf_store.pdf_dir(wb_path, root_folder)
     out_dir.mkdir(parents=True, exist_ok=True)
     taken = pdf_store.owned_by_others(root_folder, wb_path)
@@ -3442,17 +3457,24 @@ def _export_workbook_pdfs(
     layouts: dict[str, dict] = {}
     print_layout.bind(wb, str(wb_path))
     try:
-        layout_keys = [print_layout.identity(sheet) for sheet in wb.Sheets]
-        with STATE_LOCK:
-            print_layout.prune(STATE.setdefault("print_layouts", {}), str(wb_path), layout_keys)
+        if not keep_paths:
+            layout_keys = [print_layout.identity(sheet) for sheet in wb.Sheets]
+            with STATE_LOCK:
+                print_layout.prune(STATE.setdefault("print_layouts", {}), str(wb_path), layout_keys)
         file_stem = sanitize_filename(strip_review_prefix(wb_path.stem))
         exported: list[Path] = []
         sheets_done: list[tuple[Path, str]] = []
         to_save: dict[str, tuple[str, int]] = {}
         page_checks: dict[str, tuple[str, dict]] = {}  # PDF -> (表名, 内容太少的页)
         for sheet in _exportable_sheets(wb):
-            # 别的 Excel 沿用着的 PDF 名字不占（极少见：a.xlsx 的表「b_c」和 a_b.xlsx 的表「c」同名）
-            pdf_path = unique_pdf_path(out_dir, file_stem, sanitize_filename(sheet.Name), used_pdf_paths | taken)
+            if keep_paths:
+                if str(sheet.Name) not in keep_paths:
+                    continue
+                pdf_path = keep_paths[str(sheet.Name)]  # 原地覆盖，名字不变
+                pdf_path.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                # 别的 Excel 沿用着的 PDF 名字不占（极少见：a.xlsx 的表「b_c」和 a_b.xlsx 的表「c」同名）
+                pdf_path = unique_pdf_path(out_dir, file_stem, sanitize_filename(sheet.Name), used_pdf_paths | taken)
             used_pdf_paths.add(pdf_path)
             if fit:
                 changed = page_fill.one_page_wide(sheet)
@@ -3502,7 +3524,7 @@ def _export_workbook_pdfs(
         if any(note.get("cleared") for note in notes.get(pdf, [])):
             info["manual"] = 0  # 空页修复清掉了全部手动分页
     # 记下这次导出时 Excel 的哈希：下次没变就沿用这些 PDF（内容太少的页的提示、打印设置也跟着记）
-    pdf_store.record(root_folder, wb_path, digest, sheets_done, notes, layouts, fit=fit)
+    pdf_store.record(root_folder, wb_path, digest, sheets_done, notes, layouts, fit=fit, merge=bool(keep_paths))
     update_file_progress(
         wb_label, status="done", exported_pdfs=len(exported), current_action=action,
         all_sheets=all_sheets,

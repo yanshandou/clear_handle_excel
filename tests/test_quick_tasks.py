@@ -478,6 +478,31 @@ class QuickTaskTests(unittest.TestCase):
         self.assertEqual(paths, [self.folder.resolve() / "PDFS" / "a_Sheet1.pdf"])
         self.assertEqual(paths[0].read_bytes(), b"pdf of a.xlsx")
 
+    def test_only_sheets_exports_just_that_sheet_and_keeps_the_others(self):
+        """调整页面「重新生成」按表来（用户 2026-11-08）：只覆盖点的那张表的 PDF，别的表的 PDF 和记录都不动"""
+        a = self.add_book("a.xlsx", ["Sheet1", "Sheet2"])
+        self.run_task("export_pdf")
+        pdfs = self.folder.resolve() / "PDFS"
+        other = pdfs / "a_Sheet2.pdf"
+        other.write_bytes(b"old sheet2")  # 改一下好认出有没有被重导
+        before = json.loads((pdfs / "PDF导出记录.json").read_text(encoding="utf-8"))["files"]["a.xlsx"]
+        entry2 = next(item for item in before["pdfs"] if item["sheet"] == "Sheet2")
+        st = other.stat()
+        entry2.update(size=st.st_size, mtime_ns=st.st_mtime_ns)
+        manifest = json.loads((pdfs / "PDF导出记录.json").read_text(encoding="utf-8"))
+        manifest["files"]["a.xlsx"] = before
+        (pdfs / "PDF导出记录.json").write_text(json.dumps(manifest), encoding="utf-8")
+        a.write_bytes(a.read_bytes() + b" edited")
+        paths = self.workflow._export_workbook_pdfs(lambda: self.excel, a, self.folder.resolve(), set(), force=True,
+                                                    only_sheets={"Sheet1"})
+        self.assertEqual(paths, [pdfs / "a_Sheet1.pdf"])
+        self.assertEqual(other.read_bytes(), b"old sheet2")
+        after = json.loads((pdfs / "PDF导出记录.json").read_text(encoding="utf-8"))["files"]["a.xlsx"]
+        self.assertEqual([item["sheet"] for item in after["pdfs"]], ["Sheet1", "Sheet2"])
+        self.assertNotEqual(after["hash"], before["hash"])
+        # 记录里的 Sheet2 还对得上：下次没改过就整份沿用
+        self.assertIsNotNone(self.workflow.pdf_store.reusable(self.folder.resolve(), a, after["hash"]))
+
     def test_failed_file_waits_for_user_and_retry_reuses_same_pdf_name(self):
         self.add_book("a.xlsx", ["Sheet1"])
         self.books["a.xlsx"].fail_export = True

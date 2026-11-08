@@ -604,7 +604,9 @@ def _floor_in_workbook(get_excel: Any, wb_path: Path, items: list[dict], export_
     debug_log.event("📐 调整页面已保存", 文件=label, 改了=floored)
     wf.log_msg(f"📐 {label}：{'；'.join(floored)}")
     try:
-        wf._export_workbook_pdfs(get_excel, wb_path, export_root, set(), force=True)
+        # 只重新导出改过的表，别的表的 PDF 不动（用户 2026-11-08 定按表来）
+        changed = {str(item["sheet"]) for item in outcome if item["ok"]}
+        wf._export_workbook_pdfs(get_excel, wb_path, export_root, set(), force=True, only_sheets=changed)
     except Exception as err:
         debug_log.exception(err, f"向下取整后重新导出 {label}")
         for item in outcome:
@@ -704,12 +706,13 @@ def regenerate(pdf: Any, force: Any = False) -> dict:
     if not owner or not Path(owner["wb_path"]).is_file():
         raise ValueError(f"「{path.name}」找不到对应的 Excel 文件")
     wb_path = Path(owner["wb_path"])
+    sheet = str(owner.get("sheet") or "")
     # PDF 在哪个 PDFS 里就导回哪个；旧的混放 PDF 导到现在这个文件夹的 PDFS 里
     root = pdf_store.export_root_of(path) or Path(review_root)
     label = workbook_rel_name(wb_path, root)
     digest = sheet_history.fingerprint(wb_path)
     same = pdf_store.unchanged(root, wb_path, digest)
-    debug_log.event("🔄 PDF 复检重新生成", 文件=label, PDF=path.name, 哈希=digest[:12], 没变=same, 确认=bool(force))
+    debug_log.event("🔄 PDF 复检重新生成", 文件=label, 表=sheet or "整份", PDF=path.name, 哈希=digest[:12], 没变=same, 确认=bool(force))
     if same and force is not True:
         return {"started": False, "unchanged": True, "name": label}
     from core import bl_links, hidden_repair, link_repair, mark_finder
@@ -724,10 +727,11 @@ def regenerate(pdf: Any, force: Any = False) -> dict:
         _REGEN.update(running=True, name=label, pdf=str(path), wb_path=str(wb_path), result=None)
 
     def run() -> None:
-        result: dict[str, Any] = {"ok": False, "name": label, "wb_path": str(wb_path), "pdfs": [], "reason": ""}
+        result: dict[str, Any] = {"ok": False, "name": label, "sheet": sheet, "wb_path": str(wb_path), "pdf": str(path),
+                                  "pdfs": [], "reason": ""}
         try:
             with debug_log.side_task("pdf_review_regen", {"folder": str(root), "file": label}):
-                result.update(_regenerate_workbook(wb_path, root, label))
+                result.update(_regenerate_workbook(wb_path, root, label, sheet))
                 debug_log.event("✅ PDF 复检重新生成完成" if result["ok"] else "⚠️ PDF 复检重新生成没成功",
                                 文件=label, PDF=len(result["pdfs"]), 原因=result["reason"] or "-")
         except Exception as err:
@@ -753,8 +757,10 @@ def regenerate(pdf: Any, force: Any = False) -> dict:
     return {"started": True, "name": label}
 
 
-def _regenerate_workbook(wb_path: Path, root: Path, label: str) -> dict:
-    """后台 Excel 只读打开这一份，把它要导出的表都重新导出到 PDFS（和主页导出 PDF 同一套规则），记下新的哈希"""
+def _regenerate_workbook(wb_path: Path, root: Path, label: str, sheet: str = "") -> dict:
+    """后台 Excel 打开这一份，只把点的那张表重新导出到 PDFS（和主页导出 PDF 同一套规则），别的表的 PDF 不动，
+    记下新的哈希（用户 2026-11-08 定：调整页面是一张表一张表看的，重新生成也按表来）。
+    sheet 为空（找不到是哪张表）就整份重新导出"""
     from core import reporter
     guard = file_problem.Guard("PDF 复检：重新生成 PDF")
     excel = None
@@ -771,7 +777,10 @@ def _regenerate_workbook(wb_path: Path, root: Path, label: str) -> dict:
         while True:
             guard.progress()
             try:
-                paths = wf._export_workbook_pdfs(get_excel, wb_path, root, set(), force=True)
+                paths = wf._export_workbook_pdfs(get_excel, wb_path, root, set(), force=True,
+                                                 only_sheets={sheet} if sheet else None)
+                if not paths:
+                    return {"ok": False, "pdfs": [], "reason": f"「{sheet}」现在不用导出 PDF（可能隐藏了、改名了或成了备份表）"}
                 return {"ok": True, "pdfs": [str(p) for p in paths], "reason": ""}
             except Exception as err:
                 debug_log.exception(err, f"PDF 复检重新生成 {label}")
