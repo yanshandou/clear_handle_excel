@@ -1,7 +1,7 @@
 'use strict';
 const REVIEW_COLORS = ['blue', 'green', 'yellow'];
 const REVIEW_LABELS = { blue: '蓝 · 已修复', green: '绿 · 忽略', yellow: '黄 · 人工处理' };
-const REVIEW_JOB_NAMES = { batch_commit: '提交审核', batch_recheck: '复检', batch_tighten: '收紧行高', batch_open: '打开文件', batch_unhighlight: '清除标记颜色' };
+const REVIEW_JOB_NAMES = { batch_commit: '提交审核', batch_recheck: '复检', batch_tighten: '收紧行高', batch_fix: '统一修改', batch_open: '打开文件', batch_unhighlight: '清除标记颜色' };
 let batchState = { cards: [], busy: false, job: null, progress: {}, logs: [] };
 let selectedFilter = 'all';
 let largeMode = false;
@@ -325,7 +325,7 @@ $('unhighlightBody').addEventListener('click', event => {
 });
 
 // 后台任务刚结束且成功：撒花。提交 / 复检时若有暂停的扫描会被放回来，任务种类变了也算提交完成
-const FINISH_TITLES = { batch_scan: '扫描完成！', batch_commit: '审核已提交！', batch_recheck: '复检完成！', batch_tighten: '行高已收紧！' };
+const FINISH_TITLES = { batch_scan: '扫描完成！', batch_commit: '审核已提交！', batch_recheck: '复检完成！', batch_tighten: '行高已收紧！', batch_fix: '统一修改完成！' };
 function celebrateFinished(before, after) {
   const kind = before.job?.kind;
   if (!before.busy || after.busy || !FINISH_TITLES[kind]) return;
@@ -458,7 +458,7 @@ function tightenSummary(job) {
     + (failed ? `，${failed} 个文件没做完（看下面的日志）` : '') + '。';
 }
 // 任务已全部完成：收起满格进度条，换成明确的完成提示，免得以为卡在最后一个文件
-const DONE_TITLES = { batch_scan: '扫描完成', batch_commit: '审核已提交', batch_recheck: '复检完成', batch_tighten: '行高已收紧、已复检', batch_open: '文件已打开', batch_unhighlight: '标记颜色已清除' };
+const DONE_TITLES = { batch_scan: '扫描完成', batch_commit: '审核已提交', batch_recheck: '复检完成', batch_tighten: '行高已收紧、已复检', batch_fix: '统一修改完成、已复检', batch_open: '文件已打开', batch_unhighlight: '标记颜色已清除' };
 function renderDoneBanner(finished, job, total) {
   $('progressText').classList.toggle('hidden', finished);
   $('progressTrack').classList.toggle('hidden', finished);
@@ -470,7 +470,8 @@ function renderDoneBanner(finished, job, total) {
   const left = batchState.cards.length;
   $('doneTitle').textContent = `${title}：${total} / ${total} 个文件全部处理完`;
   const rest = left ? `还有 ${left} 个单元格要人工处理，请在下方按分类打开文件修改，保存后复检。` : '没有待审核的单元格了。';
-  $('doneDetail').textContent = kind === 'batch_tighten' ? `${tightenSummary(job)}${rest}` : rest;
+  $('doneDetail').textContent = kind === 'batch_tighten' ? `${tightenSummary(job)}${rest}`
+    : kind === 'batch_fix' ? `${toolboxResultText(job).split('\n')[0]}${rest}` : rest;
   $('doneGoBtn').classList.toggle('hidden', !left);
 }
 $('doneGoBtn').addEventListener('click', () => ($('learnPanel') || $('filters')).scrollIntoView({ behavior: 'smooth', block: 'start' }));

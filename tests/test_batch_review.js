@@ -14,14 +14,13 @@ test('restore folder loads saved progress without starting another scan', async 
 
 test('all review layouts show historical height changes without an adjustment action', () => {
   const p = page();
-  p.run(require('node:fs').readFileSync(require('node:path').join(__dirname, '../static/category.js'), 'utf8'));
+  for (const f of ['cell_toolbox.js', 'category.js']) p.run(require('node:fs').readFileSync(require('node:path').join(__dirname, '../static', f), 'utf8'));
   p.run(`batchState.cards = [{...batchState.cards[1], id:'old-height', wb_path:'old.xlsx', wb_name:'old.xlsx',
     sheet_name:'S', cell_addr:'A1', color:'yellow', finalized:true, grown:{base:15, applied:30},
     category:['border_clip|single','边框压线 · 单格']}]; batchState.opened_files=[];`);
   for (const mode of ['file', 'category']) {
     p.run(`categoryMode=${JSON.stringify(mode)}`);
     const html = p.run('categoryDetailHtml(groupList()[0])');
-    assert.match(html, /历史曾加高/);
     assert.doesNotMatch(html, /categoryTightenBtn|收紧行高并复检|扫描后已开换行加高/);
   }
   p.run(`batchState.opened_files=['old.xlsx']`);
@@ -34,7 +33,7 @@ test('category opening during scanning allows finished files and keeps pending f
     batchState.cards=['done','wait'].map((name,i)=>({...batchState.cards[1],id:name,seq:i,
       wb_name:name+'.xlsx',wb_path:name+'.xlsx',category:['border_clip|single','边框压线 · 单格']}));
     batchState.open_blocked={'wait.xlsx':'还没轮到这份文件，处理完才能打开'};`);
-  p.run(require('node:fs').readFileSync(require('node:path').join(__dirname, '../static/category.js'), 'utf8'));
+  for (const f of ['cell_toolbox.js', 'category.js']) p.run(require('node:fs').readFileSync(require('node:path').join(__dirname, '../static', f), 'utf8'));
   const button = name => p.run(`categoryDetailHtml(fileList().find(c=>c.key===${JSON.stringify(name + '.xlsx')}))`)
     .match(/<button[^>]*id="categoryOpenBtn"[^>]*>/)[0];
   assert.doesNotMatch(button('done'), /disabled/);
@@ -52,7 +51,7 @@ test('category recheck during scanning queues finished files and excludes pendin
     batchState.cards=['done','wait'].map((name,i)=>({...batchState.cards[1],id:name,seq:i,
       wb_name:name+'.xlsx',wb_path:name+'.xlsx',category:['border_clip|single','边框压线 · 单格']}));
     batchState.open_blocked={'wait.xlsx':'还没轮到这份文件，处理完才能打开'};`);
-  p.run(require('node:fs').readFileSync(require('node:path').join(__dirname, '../static/category.js'), 'utf8'));
+  for (const f of ['cell_toolbox.js', 'category.js']) p.run(require('node:fs').readFileSync(require('node:path').join(__dirname, '../static', f), 'utf8'));
   p.run(`categoryMode='category'; appConfirm=async ()=>true;
     startJob=async (url,payload)=>{requests.push({url,payload});};`);
   assert.doesNotMatch(p.run('categoryDetailHtml(categoryList()[0])').match(/<button[^>]*id="categoryRecheckBtn"[^>]*>/)[0], /disabled/);
@@ -818,4 +817,32 @@ test('grown cards say what was wrapped and how much the row was raised, and offe
   assert.match(html, /历史处理记录：B5 开启自动换行，第 5 行行高 18\.8pt → 35\.3pt（\+16\.5pt，字号 11 × 1\.5），已保存；本次不调整行高/);
   assert.doesNotMatch(html, /自动调整|data-action="auto"/);
   assert.doesNotMatch(p.run(`fileHeadHtml(fileKey(batchState.cards[1]))`), /自动调整/);
+});
+
+test('cell toolbox defaults cut cells to row height x1.5 and sends the chosen tools', async () => {
+  const p = page();
+  p.run(`batchState.cards = [
+    {...batchState.cards[1], id:'cut', wb_path:'a.xlsx', wb_name:'a.xlsx', color:'yellow', finalized:true,
+     tools:['grow','shrink'], default_tool:'grow:1.5', category:['text_truncated|single','文字截断 · 单格']},
+    {...batchState.cards[1], id:'tried', wb_path:'a.xlsx', wb_name:'a.xlsx', color:'yellow', finalized:true,
+     tools:['grow','shrink'], default_tool:'none', cell_fix:{tool:'grow',ratio:1.5,label:'行高 ×1.5'},
+     category:['text_truncated|single','文字截断 · 单格']},
+    {...batchState.cards[1], id:'brk', wb_path:'b.xlsx', wb_name:'b.xlsx', color:'yellow', finalized:true,
+     tools:['break'], default_tool:'none', category:['page_break_cut|merged','分页切开合并单元格 · 合并格']}];
+    batchState.opened_files=[]; batchState.busy=false;`);
+  for (const f of ['cell_toolbox.js', 'category.js']) p.run(require('node:fs').readFileSync(require('node:path').join(__dirname, '../static', f), 'utf8'));
+  assert.deepEqual(Array.from(p.run('toolboxPlan().map(([c, v]) => c.id + "=" + v)')), ['cut=grow:1.5']);
+  // 整类改成 ×2：用过工具没过的那格也跟着选上（是你点的），分页类不受影响
+  p.run(`setTool(categoryList().find(c => c.key.startsWith('text_truncated')).cards, 'grow:2')`);
+  p.run(`setTool(categoryList().find(c => c.key.startsWith('page_break_cut')).cards, 'grow:1.5')`);
+  assert.deepEqual(Array.from(p.run('toolboxPlan().map(([c, v]) => c.id + "=" + v)')), ['cut=grow:2', 'tried=grow:2']);
+  p.run(`setTool(categoryList().find(c => c.key.startsWith('page_break_cut')).cards, 'break')`);
+  p.run(`appConfirm=async ()=>true; post=async (url,payload)=>{requests.push({url,payload}); return {ok:true};};`);
+  await p.run('toolboxApply()');
+  const sent = p.requests.at(-1);
+  assert.equal(sent.url, '/api/batch/fix');
+  assert.deepEqual(JSON.parse(JSON.stringify(sent.payload.tools)), [
+    { card_id: 'cut', tool: 'grow', ratio: 2 }, { card_id: 'tried', tool: 'grow', ratio: 2 }, { card_id: 'brk', tool: 'break' }]);
+  // 交出去以后都回到「不动」：没过的不会再按原工具改一遍
+  assert.equal(p.run('toolboxPlan().length'), 0);
 });

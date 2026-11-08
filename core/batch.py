@@ -595,6 +595,7 @@ def _card_category(card: dict, items: list[dict]) -> tuple[str, str]:
 
 
 def snapshot(detail_paths: set[str] | None = None) -> dict:
+    from core import cell_toolbox  # 它也引用本模块，放这里免得循环引用
     with wf.STATE_LOCK:
         cards = []
         by_cell: dict[tuple[str, str, str], list[dict]] = {}
@@ -641,6 +642,13 @@ def snapshot(detail_paths: set[str] | None = None) -> dict:
             result["category"] = list(_card_category(result, items))
             result["cell_text"] = str(card.get("text") or "")[:60]  # 分类清单用，文件框收起时 text 不发
             result["adoptable"] = _adoptable(card)
+            fix = (_data().get("cell_fixes") or {}).get(card["id"])
+            if fix:
+                result["cell_fix"] = dict(fix)  # 用过单元格工具箱的什么工具（没过时网页上写出来）
+            # 单元格工具箱：这格能用哪些工具；切字的默认「行高 ×1.5」，用过工具没过的不默认（不自动升一级）
+            result["tools"] = cell_toolbox.allowed_tools(result)
+            result["default_tool"] = ("grow:1.5" if not fix and "grow" in result["tools"]
+                                      and set(result["error_types"]) & set(GROW_ERROR_TYPES) else "none")
             result["highlighted"] = _shows_mark(_marks().get(card["id"]))
             if detailed:
                 result["images"] = {
@@ -669,6 +677,20 @@ def snapshot(detail_paths: set[str] | None = None) -> dict:
                                if in_folder(p)],
                 "job": copy.deepcopy(wf.STATE["job"]), "progress": dict(wf.STATE["scan_progress"]),
                 "logs": wf.STATE["logs"][-100:]}
+
+
+CARD_IMAGES_LIMIT = 200
+
+
+def card_images(ids: Any) -> dict[str, dict[str, str]]:
+    """单元格工具箱按需取截图：{卡片 id: {"before": 检测时的 PDF 截图, "after": 最近一次截图}}"""
+    if not isinstance(ids, list) or any(not isinstance(cid, str) for cid in ids):
+        raise ValueError("请给出卡片")
+    with wf.STATE_LOCK:
+        cards = _data()["cards"]
+        names = {cid: dict(cards[cid].get("fix_images") or {}) for cid in ids[:CARD_IMAGES_LIMIT] if cid in cards}
+    return {cid: {which: _image_url(name) for which, name in shots.items() if fix_images.image_path(name)}
+            for cid, shots in names.items()}
 
 
 def progress_snapshot() -> dict:
@@ -4100,6 +4122,10 @@ def run() -> list[str]:
                 for path in _leftover_mark_paths(expected):
                     if not workbook_locked(Path(path)):  # 你正在 Excel 里改的文件不动，下次再还原
                         _sync_highlights_safely(session, path)
+        elif kind == "batch_fix":
+            # 单元格工具箱：按网页上选好的工具改格子、保存、整份复检（用户 2026-11-08 要）
+            from core import cell_toolbox
+            expected = cell_toolbox.run(job, session, watchdog)
         elif kind == "batch_unhighlight":
             expected = list(options["paths"])
             wf.log_msg(f"🧽 开始清除标记颜色：{len(expected)} 份文件")
