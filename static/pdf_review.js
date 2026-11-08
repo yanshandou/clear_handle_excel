@@ -35,6 +35,9 @@ let tools = {};         // pdf -> {v, floor: true} | {v, auto: true} | {v, orien
 let deleted = new Set(); // 这次一键处理删掉的表（PDF 也删了，页面上灰掉，刷新后就不在了）
 let processing = false;
 let regenWb = '';       // 正在重新生成 PDF 的那份 Excel（wb_path）
+let busyWb = '';        // 点了「重新生成」、还在等的那份 Excel（含先改标记再生成）：页面上显示「正在重新生成」
+let busySince = 0;      // 从什么时候开始等，按钮上显示已经等了几秒
+let busyTimer = 0;
 
 const $ = id => document.getElementById(id);
 
@@ -675,12 +678,14 @@ async function runProcess(kind, onlyWb = '') {
     ? { title: '删除标红的表', tone: 'danger', okText: '删除' }
     : { title: onlyWb ? '改好并重新生成' : '统一修改页面设置', tone: 'warn', okText: onlyWb ? '改好并重新生成' : '开始修改' });
   if (!ok) return;
+  if (onlyWb) setBusy(onlyWb);
   try {
     await api('/api/pdf_review/process', {
       red: red.map(doc => ({ pdf: doc.pdf })), yellow: [],
       tools: items.map(({ doc, tool, value }) => ({ pdf: doc.pdf, tool, ...(value ? { value } : {}) })),
     });
   } catch (e) {
+    setBusy('');
     appAlert(e.message, { tone: 'error' });
     return;
   }
@@ -721,6 +726,7 @@ async function pollProcess() {
     return;
   }
   setProcessing(false);
+  setBusy('');
   if (status.result) finishProcess(status.result);
 }
 
@@ -770,13 +776,31 @@ async function finishProcess(result) {
 // 复检时在 Excel 里改了、保存了，想马上看改完的效果：只把这一份 Excel 的 PDF 重新导出一次。
 // 做完重新读一遍列表；页面停在原来那份上（按标题位置对齐），不跳走。
 
+// 重新生成大约要 10 秒：一点下去，按钮马上变「⏳ 生成中 N 秒」，这份 Excel 的页面盖一层「正在重新生成」，
+// 做完才收起（用户 2026-11-08 提：以前没提示，以为卡住了或者没点上）
+function setBusy(wb) {
+  busyWb = wb || '';
+  clearInterval(busyTimer);
+  if (busyWb) {
+    busySince = Date.now();
+    busyTimer = setInterval(paintRegen, 1000);
+  }
+  paintRegen();
+}
+
 function paintRegen() {
+  const wb = regenWb || busyWb;
+  const secs = Math.max(0, Math.round((Date.now() - busySince) / 1000));
   document.querySelectorAll('[data-regen]').forEach(b => {
     const doc = pdfs[Number(b.dataset.regen)];
-    const mine = regenWb && doc && doc.wb_path === regenWb;
-    b.textContent = mine ? '⏳ 生成中…' : '🔄 重新生成';
+    const mine = wb && doc && doc.wb_path === wb;
+    b.textContent = mine ? (busyWb ? `⏳ 生成中 ${secs} 秒` : '⏳ 生成中…') : '🔄 重新生成';
     b.classList.toggle('is-running', !!mine);
-    b.disabled = !!regenWb || processing || deleted.has(doc?.pdf);
+    b.disabled = !!wb || processing || deleted.has(doc?.pdf);
+  });
+  document.querySelectorAll('.pr-doc').forEach(article => {
+    const doc = pdfs[Number(article.dataset.doc)];
+    article.classList.toggle('is-regen', !!(wb && doc && doc.wb_path === wb));
   });
   updateProcessButton(); // 重新生成时两个处理按钮也先不能点
 }
@@ -790,6 +814,14 @@ async function regenerate(d) {
     runProcess('tools', doc.wb_path);
     return;
   }
+  try {
+    await regenerateNow(doc);
+  } finally {
+    if (!regenWb) setBusy(''); // 取消了、出错了：收起提示；正常开始的等做完再收
+  }
+}
+
+async function regenerateNow(doc) {
   if (allPdfs.some(x => x.wb_path === doc.wb_path && marks[x.pdf])) {
     const ok = await appConfirm(
       `重新生成「${doc.wb_name}」的 PDF（${allPdfs.filter(x => x.wb_path === doc.wb_path).length} 张表）？\n\n这份 Excel 上标的「删除这张表」会清掉：新的 PDF 是另一版，标记对不上了。`,
@@ -798,12 +830,15 @@ async function regenerate(d) {
   }
   let data;
   try {
+    setBusy(doc.wb_path);
     data = await api('/api/pdf_review/regenerate', { pdf: doc.pdf });
     if (data.unchanged) {
+      setBusy('');
       const again = await appConfirm(
         `「${data.name}」和上次导出 PDF 时一模一样（哈希值没变），PDF 已经是最新的。\n\n刚在 Excel 里改过的话，多半还没保存：先在 Excel 里保存，再点「重新生成」。\n\n还是要照样重新生成一次吗？`,
         { title: 'Excel 没有改过', tone: 'warn', okText: '照样重新生成' });
       if (!again) return;
+      setBusy(doc.wb_path);
       data = await api('/api/pdf_review/regenerate', { pdf: doc.pdf, force: true });
     }
   } catch (e) {
@@ -812,7 +847,7 @@ async function regenerate(d) {
   }
   regenWb = doc.wb_path;
   paintRegen();
-  toast(`正在重新生成「${doc.wb_name}」的 PDF…`);
+  toast(`正在重新生成「${doc.wb_name}」的 PDF，大约要 10 秒…`);
   pollRegen(doc.pdf);
 }
 
@@ -833,7 +868,8 @@ async function pollRegen(anchorPdf) {
   const result = status.result;
   const wb = regenWb;
   regenWb = '';
-  if (!result) { paintRegen(); return; }
+  setBusy('');
+  if (!result) return;
   if (!result.ok) {
     paintRegen();
     toast(`「${result.name}」没能重新生成`, true);
