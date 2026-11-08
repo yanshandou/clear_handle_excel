@@ -500,8 +500,9 @@ class QuickTaskTests(unittest.TestCase):
         after = json.loads((pdfs / "PDF导出记录.json").read_text(encoding="utf-8"))["files"]["a.xlsx"]
         self.assertEqual([item["sheet"] for item in after["pdfs"]], ["Sheet1", "Sheet2"])
         self.assertNotEqual(after["hash"], before["hash"])
-        # 记录里的 Sheet2 还对得上：下次没改过就整份沿用
-        self.assertIsNotNone(self.workflow.pdf_store.reusable(self.folder.resolve(), a, after["hash"]))
+        # Excel 在这之前改过，Sheet2 的 PDF 还是改之前的：记旧哈希，不能整份沿用，打开调整页面时会自动重新导出
+        self.assertEqual([item["hash"] == after["hash"] for item in after["pdfs"]], [True, False])
+        self.assertIsNone(self.workflow.pdf_store.reusable(self.folder.resolve(), a, after["hash"]))
 
     def test_failed_file_waits_for_user_and_retry_reuses_same_pdf_name(self):
         self.add_book("a.xlsx", ["Sheet1"])

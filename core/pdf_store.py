@@ -109,10 +109,39 @@ def reusable(root: Path | str, wb_path: Path, digest: str, *, need_fit: bool = F
     for pdf, sheet, item in _entry_pdfs(root, entry):
         if _stat(pdf) != (item.get("size"), item.get("mtime_ns")):
             return None
+        if _item_hash(entry, item) != digest:
+            return None  # 只重新导出过别的表、这张表的 PDF 还是 Excel 改之前的
         if need_fit and "manual" not in (item.get("layout") or {}):
             # 2026-11-08 以前导出的记录没记手动分页：重新导出一次，调整页面才有「清手动分页」按钮
             return None
         found.append((pdf, sheet))
+    return found
+
+
+def _item_hash(entry: dict, item: dict) -> str:
+    """这份 PDF 导出时 Excel 的哈希（2026-11-08 起每张表单独记；以前的记录只有整份的）"""
+    return str(item.get("hash") or entry.get("hash") or "")
+
+
+def stale_pdfs(root: Path | str, fingerprint: Any) -> dict[str, dict]:
+    """导出以后 Excel 又改过（程序改的、人点路径改完保存的）的 PDF：{PDF 绝对路径: {wb_path, sheet}}。
+    fingerprint(Excel 路径) 算现在的哈希；Excel 找不到、读不了的不算"""
+    with _LOCK:
+        files = load(root)["files"]
+    found: dict[str, dict] = {}
+    for key, entry in files.items():
+        if not isinstance(entry, dict):
+            continue
+        wb = _find_excel(Path(root), key, entry.get("excel", ""))
+        if wb is None:
+            continue
+        try:
+            digest = fingerprint(wb)
+        except OSError:
+            continue
+        for pdf, sheet, item in _entry_pdfs(root, entry):
+            if _item_hash(entry, item) != digest and pdf.is_file():
+                found[str(pdf)] = {"wb_path": str(wb), "sheet": sheet}
     return found
 
 
@@ -127,19 +156,22 @@ def sheet_pdfs(root: Path | str, wb_path: Path) -> dict[str, Path]:
 
 def record(root: Path | str, wb_path: Path, digest: str, exported: list[tuple[Path, str]],
            notes: dict[str, list[dict]] | None = None, layouts: dict[str, dict] | None = None,
-           fit: bool = False, *, merge: bool = False) -> None:
+           fit: bool = False, *, merge: bool = False, before: str | None = None) -> None:
     """notes：PDF -> 内容很少的页的提示（page_fill），沿用 PDF 时提示也跟着沿用。
     layouts：PDF -> 这张表的打印设置（方向、页高、末页印了多少），调整页面时网页按这个显示和分类。
     fit：每张表都已经设成「宽一页」了。
     merge：只重新导出了其中几张表（调整页面「重新生成」/「统一修改」，用户 2026-11-08 定按表来）：
-    别的表的 PDF 记录照旧留着，只换这几张，哈希记成现在的"""
+    别的表的 PDF 记录照旧留着，只换这几张，哈希记成现在的。
+    before：这次导出开始前 Excel 的哈希。别的表的 PDF 那时候是最新的，这次只是程序自己存了「宽一页」等设置，
+    跟着记成现在的哈希；那时候就已经旧了的（Excel 先被改过）照旧记旧哈希，打开调整页面时会重新导出"""
     base = pdf_root(root)
     pdfs = []
     for pdf, sheet in exported:
         stat = _stat(pdf)
         if stat is None:
             continue
-        item = {"pdf": pdf.relative_to(base).as_posix(), "sheet": sheet, "size": stat[0], "mtime_ns": stat[1]}
+        item = {"pdf": pdf.relative_to(base).as_posix(), "sheet": sheet, "size": stat[0], "mtime_ns": stat[1],
+                "hash": digest}
         if notes and notes.get(str(pdf)):
             item["notes"] = notes[str(pdf)]
         if layouts and layouts.get(str(pdf)):
@@ -152,7 +184,10 @@ def record(root: Path | str, wb_path: Path, digest: str, exported: list[tuple[Pa
         old = data["files"].get(key) if merge else None
         if isinstance(old, dict):
             mine = {item["pdf"] for item in pdfs}
-            kept = [item for item in old.get("pdfs", []) if isinstance(item, dict) and item.get("pdf") not in mine]
+            kept = [dict(item) for item in old.get("pdfs", []) if isinstance(item, dict) and item.get("pdf") not in mine]
+            for item in kept:
+                was = _item_hash(old, item)
+                item["hash"] = digest if before is not None and was == before else was
             order = [item.get("pdf") for item in old.get("pdfs", []) if isinstance(item, dict)]
             pdfs = sorted(kept + pdfs, key=lambda item: order.index(item["pdf"]) if item["pdf"] in order else len(order))
             fit = fit and bool(old.get("fit"))
@@ -342,4 +377,5 @@ def unchanged(root: Path | str, wb_path: Path, digest: str) -> bool:
 
 
 __all__ = ["DIR_NAME", "MANIFEST_NAME", "pdf_root", "pdf_dir", "export_root_of", "reusable", "record",
-           "clear_workbook", "prune", "owner", "layout_map", "notes_map", "owned_by_others", "excel_folder_for", "unchanged"]
+           "clear_workbook", "prune", "owner", "layout_map", "notes_map", "owned_by_others", "excel_folder_for", "unchanged",
+           "stale_pdfs", "sheet_pdfs"]

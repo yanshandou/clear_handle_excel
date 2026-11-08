@@ -69,12 +69,13 @@ class FloorPagesTests(unittest.TestCase):
         setup = sheet.PageSetup
         self.assertEqual((setup.Zoom, setup.FitToPagesWide, setup.FitToPagesTall), (False, 1, 4))
 
-    def test_too_much_shrink_is_put_back(self):
+    def test_big_shrink_still_floors_with_warning(self):
+        # 用户 2026-11-08 定：点了取整就一定取整，字缩到 85% 以下也照改，只提醒
         sheet = FitSheet(rows=48)  # 4.8 页：一页要放 12 行，缩到 83%
         found = self.floor(sheet)
-        self.assertFalse(found["ok"])
-        self.assertIn("太小", found["reason"])
-        self.assertEqual(sheet.PageSetup.Zoom, 100)
+        self.assertTrue(found["ok"], found["reason"])
+        self.assertIn("字缩到约 83%", found["warn"])
+        self.assertEqual(sheet.PageSetup.FitToPagesTall, 4)
 
     def test_lost_text_still_floors_with_warning(self):
         # 用户 2026-11-08 定：缩出切字也照样取整，只提醒，后面「查看切字」会查
@@ -87,7 +88,11 @@ class FloorPagesTests(unittest.TestCase):
     def test_fit_settings_are_restored_when_already_fit(self):
         sheet = FitSheet(rows=48)
         sheet.PageSetup.Zoom, sheet.PageSetup.FitToPagesWide, sheet.PageSetup.FitToPagesTall = False, 1, 5
-        found = self.floor(sheet)
+        sheet.export(sheet, self.pdf)
+
+        def broken(_sheet, _pdf):  # 缩完导出出错：改回原来的设置
+            raise RuntimeError("printer")
+        found = page_fill.floor_pages(sheet, self.pdf, broken)
         self.assertFalse(found["ok"])
         setup = sheet.PageSetup
         self.assertEqual((setup.Zoom, setup.FitToPagesWide, setup.FitToPagesTall), (False, 1, 5))
