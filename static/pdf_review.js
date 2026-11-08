@@ -681,7 +681,7 @@ async function runProcess(kind, onlyWb = '') {
     if (!items.length) return;
     text = (onlyWb ? `「${items[0].doc.wb_name}」上点的标记还没改进 Excel，先改好、保存，再重新生成这份 Excel 的 PDF。\n\n` : '')
       + `🛠 统一修改 ${items.length} 处（${files(items.map(i => i.doc))} 份 Excel）：\n${listLines(items.map(toolLine))}`
-      + (items.some(i => i.tool === 'floor') ? '\n\n向下取整会先真导出一次核对：页数少了一页、字没缩到 85% 以下、PDF 里原来的字一个不少，才算数，不行的改回原样。' : '\n')
+      + (items.some(i => i.tool === 'floor') ? '\n\n向下取整会先真导出一次核对：页数少了一页、字没缩到 85% 以下才算数，不行的改回原样；缩小后可能切字的照样改，结果里会写出来，后面「查看切字」会查。' : '\n')
       + '\n改好的 Excel 保存后重新生成 PDF，末页只多一点的会重新判断、重新标黄（改了方向、清了手动分页的要看新的 PDF 再决定取不取整）。';
   } else {
     red = redDocs();

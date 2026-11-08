@@ -76,12 +76,13 @@ class FloorPagesTests(unittest.TestCase):
         self.assertIn("太小", found["reason"])
         self.assertEqual(sheet.PageSetup.Zoom, 100)
 
-    def test_lost_text_is_put_back(self):
+    def test_lost_text_still_floors_with_warning(self):
+        # 用户 2026-11-08 定：缩出切字也照样取整，只提醒，后面「查看切字」会查
         sheet = FitSheet(rows=42, hashes_below=0.99)
         found = self.floor(sheet)
-        self.assertFalse(found["ok"])
-        self.assertIn("显示不全", found["reason"])
-        self.assertEqual(sheet.PageSetup.Zoom, 100)
+        self.assertTrue(found["ok"])
+        self.assertIn("显示不全", found["warn"])
+        self.assertEqual(sheet.PageSetup.FitToPagesTall, 4)
 
     def test_fit_settings_are_restored_when_already_fit(self):
         sheet = FitSheet(rows=48)
