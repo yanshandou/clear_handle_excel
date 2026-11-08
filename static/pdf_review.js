@@ -237,7 +237,7 @@ function headButtons(doc, d) {
   const autoTitle = tall === null ? '现在是宽一页、高自动（Excel 自己定几页）'
     : `现在定死了 ${tall} 页高；点这里改回自动（Excel 自己定几页）`;
   const floorTitle = n > 1
-    ? `最后一页只多一点时点这里：「统一修改」时挤成 ${n - 1} 页（宽一页、${n - 1} 页高；字缩到不到 85%、缩出切字就不改）`
+    ? `最后一页只多一点时点这里：「统一修改」时挤成 ${n - 1} 页（宽一页、${n - 1} 页高；字缩多小都照改，缩得太小、缩出切字的在结果里提醒）`
     : '只有 1 页，不能再少';
   const tallGroup = `<span class="pr-mark pr-set" role="group" aria-label="页高">
     <button type="button" class="pr-mark-btn" data-tall="auto" data-doc="${d}" title="${autoTitle}">${tall === null ? '高自动' : `定死 ${tall} 页 → 自动`}</button>
@@ -683,7 +683,7 @@ async function runProcess(kind, onlyWb = '') {
     if (!items.length) return;
     text = (onlyWb ? `「${items[0].doc.wb_name} › ${items[0].doc.sheet}」上点的标记还没改进 Excel，先改好、保存，再重新生成这张表的 PDF。\n\n` : '')
       + `🛠 统一修改 ${items.length} 处（${files(items.map(i => i.doc))} 份 Excel）：\n${listLines(items.map(toolLine))}`
-      + (items.some(i => i.tool === 'floor') ? '\n\n向下取整会先真导出一次核对：页数少了一页、字没缩到 85% 以下才算数，不行的改回原样；缩小后可能切字的照样改，结果里会写出来，后面「查看切字」会查。' : '\n')
+      + (items.some(i => i.tool === 'floor') ? '\n\n向下取整会先真导出一次核对页数确实少了一页；字缩到 85% 以下、缩出切字的都照样改，结果里会写出来，后面「查看切字」会查。' : '\n')
       + '\n改好的 Excel 保存后重新生成 PDF，末页只多一点的会重新判断、重新标黄（改了方向、清了手动分页的要看新的 PDF 再决定取不取整）。';
   } else {
     red = redDocs();

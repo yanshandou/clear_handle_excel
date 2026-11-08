@@ -581,7 +581,8 @@ def _floor_in_workbook(get_excel: Any, wb_path: Path, items: list[dict], export_
                 continue
             found = page_fill.floor_pages(sheet, Path(item["pdf"]), wf._export_sheet_pdf)
             if found["ok"]:
-                reason = f"{found['before']} 页 → {found['after']} 页，字缩到约 {round(found['scale'] * 100)}%"
+                reason = f"{found['before']} 页 → {found['after']} 页" + (
+                    f"，字缩到约 {round(found['scale'] * 100)}%" if found.get("scale") is not None else "")
                 if found["manual"]:
                     reason += "；原来的手动分页不再起作用"
                 if found.get("warn"):

@@ -29,7 +29,7 @@ FILL_LOW = 0.15   # 一页用了不到这么多算「很少」
 FILL_FULL = 0.60  # 相邻页用了这么多以上算「挺满」
 SCAN_TAIL_FILL = 0.40  # 扫描时自动分页的末页不到 40%，缩放到少一页（2026-11-07 起扫描不再用）
 FLOOR_HINT_FILL = 0.20  # 调整页面：末页印了不到 20% 才标黄建议向下取整（用户 2026-11-08 定，38% 已经够了）
-FLOOR_MIN_SCALE = 0.85  # 向下取整：字缩到不到原来的这么多就不改（太小看不清）
+FLOOR_MIN_SCALE = 0.85  # 向下取整：字缩到不到原来的这么多只提醒（2026-11-08 起照样改）
 MAX_FIXES = 6     # 一张表最多连着修几次（每修一次都要重新导出核对）
 SCAN_ROWS_LIMIT = 400  # Excel 里逐行找字最多找这么多行（Find 用不了时）
 XL_VALUES, XL_PART, XL_BY_ROWS, XL_PREVIOUS = -4163, 2, 1, 2
@@ -346,7 +346,7 @@ def inspect(sheet: Any, pdf_path: Path | str) -> dict | None:
     elif pages[-1]["fill"] < FILL_LOW and pages[-2]["fill"] > FILL_FULL:
         items.append({"kind": "flag", "page": n - 1,
                       "text": f"最后一页只印了约 {_pct(pages[-1]['fill'])}%（第 {starts[-1]} 行起），内容很少；"
-                              "没有自动改，要不要缩一点挤回上一页请人工判断"})
+                              "想挤回上一页就点标题上的「⤓ 取整」"})
 
     for i in range(min(n - 1, blank_from)):
         neighbors = [pages[j]["fill"] for j in (i - 1, i + 1) if 0 <= j < blank_from]
@@ -542,8 +542,8 @@ def flags(found: dict | None, failed: dict[tuple, str] | None = None) -> list[di
 
 # ---------- 工具箱：向下取整（用户 2026-11-07 定） ----------
 # 复检时看到 PDF 是 4.1 页这种（最后一页只多一点），点按钮标记，一键处理时把这张表设成
-# 「1 页宽、N-1 页高」挤回上一页。真导出一次核对：页数少了一页、字没缩到 85% 以下、
-# PDF 正文里原来有的每一段字缩完都还在（没缩出 ### 或丢字），三条都满足才保留，否则改回原来的打印设置。
+# 「1 页宽、N-1 页高」挤回上一页。真导出一次核对页数少了一页才保留，否则改回原来的打印设置。
+# 字缩到 85% 以下、缩出丢字的照样改，只在结果里提醒（用户 2026-11-08 定：点了就一定取整）。
 
 def _texts(pdf_path: Path, top_margin: float, bottom_margin: float) -> set[str]:
     """PDF 正文（上下边距之间，页眉页脚不算：「第几页 / 共几页」缩完会变）里出现过的每一段字"""
@@ -649,18 +649,18 @@ def floor_pages(sheet: Any, pdf_path: Path, export: Callable[[Any, Path], None])
             else:
                 scale = _scale(pdf_path, trial)
                 result["scale"] = scale
-                if scale is None:
-                    reason = "量不出字缩了多少（PDF 里没有可比的文字）"
-                elif scale < FLOOR_MIN_SCALE:
-                    reason = f"要把字缩到约 {_pct(scale)}% 才挤得进 {pages - 1} 页，太小了"
-                else:
-                    top_margin, bottom_margin = _margins(sheet)
-                    lost = _texts(pdf_path, top_margin, bottom_margin) - _texts(trial, top_margin, bottom_margin)
-                    if lost:
-                        # 用户 2026-11-08 定：照样取整，缩出来的切字留给后面「查看切字」去查、去修，这里只提醒
-                        sample = "」「".join(sorted(lost)[:3])
-                        result["warn"] = (f"缩小后有 {len(lost)} 处文字可能显示不全（如「{sample}」），"
-                                          "后面「查看切字」会查出来")
+                # 用户 2026-11-08 定：点了取整就一定取整，字缩多小都照改，只在结果里提醒；
+                # 缩出来的切字留给后面「查看切字」去查、去修
+                warns = []
+                if scale is not None and scale < FLOOR_MIN_SCALE:
+                    warns.append(f"字缩到约 {_pct(scale)}%，比较小，请看一下新的 PDF")
+                top_margin, bottom_margin = _margins(sheet)
+                lost = _texts(pdf_path, top_margin, bottom_margin) - _texts(trial, top_margin, bottom_margin)
+                if lost:
+                    sample = "」「".join(sorted(lost)[:3])
+                    warns.append(f"缩小后有 {len(lost)} 处文字可能显示不全（如「{sample}」），后面「查看切字」会查出来")
+                if warns:
+                    result["warn"] = "；".join(warns)
         except Exception as err:
             reason = f"缩完导出 PDF 出错（{err}）"
     if reason:
@@ -674,7 +674,7 @@ def floor_pages(sheet: Any, pdf_path: Path, export: Callable[[Any, Path], None])
         debug_log.event("📄 向下取整没用上", 表=name, 原页数=pages, 原因=reason, 原设置=original)
         return result
     result["ok"] = True
-    debug_log.event("📄 向下取整", 表=name, 原页数=pages, 新页数=result["after"], 字缩到=round(result["scale"], 3),
+    debug_log.event("📄 向下取整", 表=name, 原页数=pages, 新页数=result["after"], 字缩到=round(result["scale"], 3) if result["scale"] is not None else "量不出",
                     原设置=original, 有手动分页=result["manual"], 可能切字=result.get("warn", ""))
     return result
 
