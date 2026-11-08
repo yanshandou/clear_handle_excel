@@ -6,7 +6,7 @@
    ========================================== */
 
 .home-container {
-  max-width: 1280px;
+  max-width: 1440px;       /* 4 张 4:3 上下结构的卡片要宽一点才放得下字 */
 }
 
 .route-map {
@@ -15,9 +15,9 @@
   --road-line: #ffffff;
   --road-w: 30px;          /* 路面宽 */
   --edge: 3px;             /* 路边描边 */
-  --col-gap: 52px;
+  --col-gap: 36px;         /* 站与站之间（缩小一点，让卡片更宽，好做成 4:3 横向） */
   --row-gap: 64px;
-  --side: 72px;            /* 左右留给弯道和旗子的空间 */
+  --side: 66px;            /* 左右留给弯道和旗子的空间 */
   --turn-tuck: 56px;       /* 弯道藏在卡片底下的那一截 */
   position: relative;
   padding: 26px 0 18px;
@@ -44,6 +44,7 @@
 .route-stop {
   position: relative;
   display: flex;
+  align-items: center;     /* 卡片按 4:3 定高，不被拉伸 */
   min-width: 0;
 }
 
@@ -158,42 +159,47 @@
   padding: 5px 11px;
 }
 
-/* ---------- 站点卡片：紧凑横版，图标在左 ---------- */
+/* ---------- 站点卡片：横向 4:3（宽比高长，用户 2026-11-08 定），上下结构：图标在上、白框在下 ---------- */
 .route-map .feature-card {
   position: relative;
   z-index: 1;
   flex: 1 1 auto;
-  flex-direction: row-reverse;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 8px;
+  flex-direction: column-reverse;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 2px;
   min-width: 0;
   min-height: 0;
-  padding: 12px 12px 18px;
+  aspect-ratio: 4 / 3;
+  padding: 6px 12px 18px;
 }
 
 .route-map .feature-orb,
 .route-map .feature-card:nth-child(even) .feature-orb {
-  flex-shrink: 0;
-  align-self: center;
-  width: 84px;
-  height: 84px;
+  flex: 1 1 0;              /* 白框按内容定高，剩下的高度都给图标 */
+  align-self: stretch;
+  display: flex;
+  justify-content: center;
+  width: auto;
+  height: auto;
+  min-height: 50px;
   margin: 0;
 }
 
 .route-map .feature-icon {
-  width: 84px;
-  height: 84px;
+  height: 100%;
+  max-height: 92px;
+  width: auto;
+  aspect-ratio: 1;          /* 精灵图按正方形定位，必须保持方形 */
 }
 
-
 .route-map .feature-text {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   align-self: stretch;
-  justify-content: center;
+  justify-content: flex-start;
   min-width: 0;
-  gap: 3px;
-  padding: 9px 11px 11px;
+  gap: 2px;
+  padding: 7px 10px 9px;
 }
 
 /* 分类小标签改成步骤号 */
@@ -205,20 +211,22 @@
 
 .route-map .feature-title,
 .route-map .feature-card:nth-child(even) .feature-title {
-  font-size: 19px;
+  font-size: 18px;
   line-height: 1.2;
   letter-spacing: 0.5px;
+  white-space: nowrap;     /* 标题一行放下，不折成两行把卡片撑高 */
 }
 
 .route-map .feature-sub {
   margin-top: 0;
   font-size: 12px;
   line-height: 1.4;
+  text-wrap: pretty;       /* 别让最后一行只剩一个字 */
 }
 
 .route-map .feature-meta {
-  margin-top: 5px;
-  padding: 2px 9px;
+  margin-top: 4px;
+  padding: 2px 8px;
   font-size: 11.5px;
   border-radius: 8px;
 }
@@ -253,6 +261,10 @@
 
   .route-stop:nth-child(n) {
     grid-area: auto;
+  }
+
+  .route-map .feature-card {
+    aspect-ratio: auto;
   }
 
   .route-turn {
