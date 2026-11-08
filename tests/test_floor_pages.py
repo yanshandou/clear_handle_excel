@@ -80,7 +80,7 @@ class FloorPagesTests(unittest.TestCase):
         sheet = FitSheet(rows=42, hashes_below=0.99)
         found = self.floor(sheet)
         self.assertFalse(found["ok"])
-        self.assertIn("对不上", found["reason"])
+        self.assertIn("显示不全", found["reason"])
         self.assertEqual(sheet.PageSetup.Zoom, 100)
 
     def test_fit_settings_are_restored_when_already_fit(self):

@@ -658,7 +658,9 @@ def floor_pages(sheet: Any, pdf_path: Path, export: Callable[[Any, Path], None])
                     lost = _texts(pdf_path, top_margin, bottom_margin) - _texts(trial, top_margin, bottom_margin)
                     if lost:
                         sample = "」「".join(sorted(lost)[:3])
-                        reason = f"缩完 PDF 里有 {len(lost)} 处字对不上（如「{sample}」），可能缩出了切字或 ###"
+                        reason = (f"挤成 {pages - 1} 页要把字缩小，缩小后有 {len(lost)} 处文字显示不全（如「{sample}」，"
+                                  "缩小前完整、缩小后被截掉或变成 ###）。为了不弄出新的切字，已改回原样。"
+                                  "可以不取整，或者试试改横向")
         except Exception as err:
             reason = f"缩完导出 PDF 出错（{err}）"
     if reason:

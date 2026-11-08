@@ -772,7 +772,7 @@ async function finishProcess(result) {
     section(`🗑 删掉了 ${result.deleted?.length} 张表（已保存，PDF 也删了）`, result.deleted, { link: false }),
     section(`⚠ 没删掉 ${result.failed?.length} 张（还是红色，可以再点一次）`, result.failed),
     section(`🛠 改好了 ${result.changed?.length} 处（Excel 已保存，PDF 已重新生成，请再看一遍）`, result.changed),
-    section(`⚠ 没改成 ${result.change_failed?.length} 处（打印设置没动，标记还在）`, result.change_failed),
+    section(`⚠ 没改成 ${result.change_failed?.length} 处（改了会出问题，程序已把 Excel 改回原样，标记还在，可以换一种改法）`, result.change_failed),
   ].join('');
   const bad = result.failed?.length || result.change_failed?.length;
   toast(bad ? '处理完成，有没处理成功的，请看结果' : '处理完成', !!bad);
