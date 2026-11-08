@@ -3405,6 +3405,7 @@ def _clean_backup_sheets(
 def _export_workbook_pdfs(
     get_excel: Callable[[], Any], wb_path: Path, root_folder: Path, used_pdf_paths: set[Path],
     choose_orientation: bool = True, *, force: bool = False, only_sheets: set[str] | None = None,
+    fresh_before: str | None = None,
 ) -> list[Path]:
     """导出到 根目录/PDFS/<子文件夹>（pdf_store）。Excel 哈希和上次导出时一样、PDF 都还在就直接沿用，
     不打开 Excel；force=True（人工复检页「重新生成」）不管哈希，照样重新导出。
@@ -3413,6 +3414,9 @@ def _export_workbook_pdfs(
     导出后记下每张表的方向、页高、末页印了多少，网页上末页只多一点的标黄建议向下取整"""
     wb_label = workbook_rel_name(wb_path, root_folder)
     digest = sheet_history.fingerprint(wb_path)
+    # 导出前的哈希：只导几张表时，别的表的 PDF 那时候是不是最新的按这个认。
+    # fresh_before：调用方（调整页面统一修改）自己先改了 Excel，传改之前的哈希，别的表不会因为这次程序保存被当成旧的
+    start_digest = fresh_before or digest
     reused = None if force else pdf_store.reusable(root_folder, wb_path, digest, need_fit=True)
     if reused is not None:
         paths = [pdf for pdf, _ in reused]
@@ -3524,7 +3528,8 @@ def _export_workbook_pdfs(
         if any(note.get("cleared") for note in notes.get(pdf, [])):
             info["manual"] = 0  # 空页修复清掉了全部手动分页
     # 记下这次导出时 Excel 的哈希：下次没变就沿用这些 PDF（内容太少的页的提示、打印设置也跟着记）
-    pdf_store.record(root_folder, wb_path, digest, sheets_done, notes, layouts, fit=fit, merge=bool(keep_paths))
+    pdf_store.record(root_folder, wb_path, digest, sheets_done, notes, layouts, fit=fit, merge=bool(keep_paths),
+                     before=start_digest)
     update_file_progress(
         wb_label, status="done", exported_pdfs=len(exported), current_action=action,
         all_sheets=all_sheets,

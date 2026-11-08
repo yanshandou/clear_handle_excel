@@ -376,7 +376,7 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(book.saved, 1)
         export.assert_called_once()
         # 只重新导出改好的那张表，别的表的 PDF 不动（用户 2026-11-08 定按表来）
-        self.assertEqual(export.call_args.kwargs, {"force": True, "only_sheets": {"一覧"}})
+        self.assertEqual(export.call_args.kwargs, {"force": True, "only_sheets": {"一覧"}, "fresh_before": "h"})
         self.assertEqual([(e["sheet"], e["reason"]) for e in result["changed"]], [("一覧", "5 页 → 4 页，字缩到约 96%")])
         self.assertEqual([e["sheet"] for e in result["change_failed"]], ["明細"])
 
@@ -485,8 +485,7 @@ class ProcessTests(unittest.TestCase):
             pdf_review.process([], [])
 
 
-class RegenerateTests(unittest.TestCase):
-    """复检时只重新生成一份 Excel 的 PDF"""
+class RegenBase(unittest.TestCase):
 
     def setUp(self):
         from core import pdf_store
@@ -522,6 +521,10 @@ class RegenerateTests(unittest.TestCase):
         self.assertFalse(status["running"])
         return status["result"]
 
+
+class RegenerateTests(RegenBase):
+    """复检时只重新生成一份 Excel 的 PDF"""
+
     def test_unchanged_excel_asks_first(self):
         with patch.object(wf, "_export_workbook_pdfs") as export:
             self.assertEqual(pdf_review.regenerate(str(self.pdf)),
@@ -552,6 +555,68 @@ class RegenerateTests(unittest.TestCase):
         self.state["busy"] = True
         with self.assertRaises(ValueError):
             pdf_review.regenerate(str(self.pdf), True)
+
+
+class StaleRefreshTests(RegenBase):
+    """打开调整页面时：导出以后 Excel 又改过的表，标成旧的、后台自动重新导出（用户 2026-11-08 提）"""
+
+    def add_second_sheet(self):
+        self.pdf2 = self.tmp / "PDFS" / "売上_明細.pdf"
+        self.pdf2.write_bytes(self.pdf.read_bytes())
+        digest = pdf_review.sheet_history.fingerprint(self.book)
+        self.store.record(self.tmp, self.book, digest, [(self.pdf, "一覧"), (self.pdf2, "明細")])
+        return digest
+
+    def stale_of(self):
+        return {Path(e["pdf"]).name for e in pdf_review.list_pdfs(str(self.tmp))["pdfs"] if e.get("stale")}
+
+    def test_unchanged_excel_is_not_stale(self):
+        self.assertEqual(self.stale_of(), set())
+
+    def test_saved_excel_marks_its_pdfs_stale(self):
+        self.add_second_sheet()
+        self.book.write_bytes(b"edited by hand and saved")
+        self.assertEqual(self.stale_of(), {"売上_一覧.pdf", "売上_明細.pdf"})
+        self.assertIsNone(self.store.reusable(self.tmp, self.book, pdf_review.sheet_history.fingerprint(self.book)))
+
+    def test_regenerating_one_sheet_keeps_other_stale_sheet_stale(self):
+        before = self.add_second_sheet()
+        self.book.write_bytes(b"edited")  # 两张表都改过，只重新生成了「一覧」
+        now = pdf_review.sheet_history.fingerprint(self.book)
+        self.store.record(self.tmp, self.book, now, [(self.pdf, "一覧")], merge=True, before=now)
+        self.assertEqual(self.stale_of(), {"売上_明細.pdf"})
+        self.assertIsNone(self.store.reusable(self.tmp, self.book, now))
+        self.assertNotEqual(before, now)
+
+    def test_own_save_while_regenerating_keeps_other_sheet_fresh(self):
+        before = self.add_second_sheet()
+        self.book.write_bytes(b"program saved one-page-wide")  # 重新生成「一覧」时程序自己存了设置
+        now = pdf_review.sheet_history.fingerprint(self.book)
+        self.store.record(self.tmp, self.book, now, [(self.pdf, "一覧")], merge=True, before=before)
+        self.assertEqual(self.stale_of(), set())
+        self.assertIsNotNone(self.store.reusable(self.tmp, self.book, now))
+
+    def test_refresh_exports_only_stale_sheets_forced(self):
+        self.add_second_sheet()
+        self.book.write_bytes(b"edited")
+        pdf_review.list_pdfs(str(self.tmp))
+        with patch.object(wf, "_export_workbook_pdfs", return_value=[self.pdf, self.pdf2]) as export:
+            started = pdf_review.refresh_stale([str(self.pdf), str(self.pdf2)])
+            self.assertEqual((started["started"], started["files"], started["sheets"]), (True, 1, 2))
+            result = self.wait()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["stale"])
+        args, kwargs = export.call_args
+        self.assertEqual((args[1], kwargs), (self.book, {"force": True, "only_sheets": {"一覧", "明細"}}))
+        self.assertFalse(self.state["busy"])
+
+    def test_refresh_skips_fresh_and_busy(self):
+        self.assertEqual(pdf_review.refresh_stale([str(self.pdf)]), {"started": False, "files": 0})
+        self.book.write_bytes(b"edited")
+        self.state["busy"] = True
+        found = pdf_review.refresh_stale([str(self.pdf)])
+        self.assertFalse(found["started"])
+        self.assertIn("后台任务", found["busy"])
 
 
 if __name__ == "__main__":

@@ -490,6 +490,12 @@ class WebHandler(upload_manager.Handler):
             except ValueError:
                 raise ValueError("后台正在保存 Excel，请几秒后再点") from None
             self._send_json({"ok": True, **pdf_review.regenerate(payload.get("pdf"), payload.get("force", False))})
+        elif self.path == "/api/pdf_review/refresh_stale":
+            try:
+                autofix.wait_for_writes(15)  # 后台正在保存 Excel 时别同时导出
+            except ValueError:
+                raise ValueError("后台正在保存 Excel，请几秒后再刷新") from None
+            self._send_json({"ok": True, **pdf_review.refresh_stale(payload.get("pdfs"))})
         elif self.path == "/api/hidden_repair/run":
             hidden_repair.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}, "reference"), payload.get("options"))
             self._send_json({"ok": True})

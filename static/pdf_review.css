@@ -905,6 +905,18 @@
   border-radius: 999px;
 }
 
+/* 导出以后 Excel 又改过：这是旧的 PDF（打开页面时自动更新） */
+.pr-doc-stale {
+  flex: none;
+  padding: 1px 8px;
+  font-size: 12px;
+  font-weight: 800;
+  color: #4a1d00;
+  background: #ffd9bd;
+  border: 1.5px solid #b84f00;
+  border-radius: 999px;
+}
+
 /* 按问题分类：只看某一类，右边一个按钮一次改这一类 */
 .pr-cats {
   display: flex;
