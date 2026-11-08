@@ -116,12 +116,23 @@ def reusable(root: Path | str, wb_path: Path, digest: str, *, need_fit: bool = F
     return found
 
 
+def sheet_pdfs(root: Path | str, wb_path: Path) -> dict[str, Path]:
+    """记录里这份 Excel 每张表的 PDF：{表名: PDF}（只重新生成一张表时，按这个找原来那份 PDF 覆盖）"""
+    with _LOCK:
+        entry = load(root)["files"].get(file_key(wb_path, root))
+    if not isinstance(entry, dict):
+        return {}
+    return {sheet: pdf for pdf, sheet, _ in _entry_pdfs(root, entry) if sheet}
+
+
 def record(root: Path | str, wb_path: Path, digest: str, exported: list[tuple[Path, str]],
            notes: dict[str, list[dict]] | None = None, layouts: dict[str, dict] | None = None,
-           fit: bool = False) -> None:
+           fit: bool = False, *, merge: bool = False) -> None:
     """notes：PDF -> 内容很少的页的提示（page_fill），沿用 PDF 时提示也跟着沿用。
     layouts：PDF -> 这张表的打印设置（方向、页高、末页印了多少），调整页面时网页按这个显示和分类。
-    fit：每张表都已经设成「宽一页」了"""
+    fit：每张表都已经设成「宽一页」了。
+    merge：只重新导出了其中几张表（调整页面「重新生成」/「统一修改」，用户 2026-11-08 定按表来）：
+    别的表的 PDF 记录照旧留着，只换这几张，哈希记成现在的"""
     base = pdf_root(root)
     pdfs = []
     for pdf, sheet in exported:
@@ -137,7 +148,15 @@ def record(root: Path | str, wb_path: Path, digest: str, exported: list[tuple[Pa
     with _LOCK:
         data = load(root)
         data["v"] = VERSION
-        data["files"][file_key(wb_path, root)] = {
+        key = file_key(wb_path, root)
+        old = data["files"].get(key) if merge else None
+        if isinstance(old, dict):
+            mine = {item["pdf"] for item in pdfs}
+            kept = [item for item in old.get("pdfs", []) if isinstance(item, dict) and item.get("pdf") not in mine]
+            order = [item.get("pdf") for item in old.get("pdfs", []) if isinstance(item, dict)]
+            pdfs = sorted(kept + pdfs, key=lambda item: order.index(item["pdf"]) if item["pdf"] in order else len(order))
+            fit = fit and bool(old.get("fit"))
+        data["files"][key] = {
             "excel": wb_path.resolve().relative_to(Path(root).resolve()).as_posix()
             if _inside(wb_path, root) else wb_path.name,
             "hash": digest, "pdfs": pdfs,
