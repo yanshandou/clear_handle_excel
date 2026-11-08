@@ -26,6 +26,44 @@
     return `<li class="${problem.error ? 'is-error' : ''}">${link}<span class="chain-reason">${esc(problem.reason)}</span></li>`;
   }
 
+  // 正在做的这一步：自己的进度条（第几份 / 共几份 + 预计几点完成）。
+  // 数字和宽度不放进 HTML 里比较，每次轮询只改这几处，不重建整块。
+  function progressSlot(step) {
+    if (step.state !== 'running' || !step.progress || !step.progress.total) return '';
+    return `<div class="chain-progress" data-step="${esc(step.key)}" data-phase="${esc(step.progress.phase)}">
+        <div class="progress-track progress-track-sm"><div class="progress-fill" style="width: 0%;"></div></div>
+        <p class="chain-progress-count"></p><p class="progress-eta chain-progress-eta"></p></div>`;
+  }
+
+  const etaKey = (key, phase) => `clean-chain.${key}.${phase}`;
+  let etaKeys = new Set();
+
+  function fillProgress(box) {
+    const live = new Set();
+    box.querySelectorAll('.chain-progress').forEach(slot => {
+      const step = data.steps.find(item => item.key === slot.dataset.step);
+      const progress = step && step.progress;
+      if (!progress || !progress.total) return;
+      const key = etaKey(step.key, progress.phase);
+      live.add(key);
+      const fraction = Math.min(1, progress.done / progress.total);
+      const fill = slot.querySelector('.progress-fill');
+      const width = `${Math.max(2, fraction * 100).toFixed(1)}%`;
+      if (fill.style.width !== width) fill.style.width = width;
+      const shown = Math.min(progress.total, progress.done + 1);
+      const count = `${progress.phase} 第 ${shown} / ${progress.total} 份` + (progress.current ? ` · ${progress.current}` : '');
+      const countEl = slot.querySelector('.chain-progress-count');
+      if (countEl.textContent !== count) { countEl.textContent = count; countEl.title = count; }
+      const eta = window.ProgressEta ? window.ProgressEta.text(key, fraction) : '';
+      const etaEl = slot.querySelector('.chain-progress-eta');
+      if (etaEl.textContent !== eta) etaEl.textContent = eta;
+      etaEl.hidden = !eta;
+    });
+    // 做完的那一步：清掉预估时间的记录
+    etaKeys.forEach(key => { if (!live.has(key)) window.ProgressEta?.stop(key); });
+    etaKeys = live;
+  }
+
   function stepHtml(step, index) {
     const more = step.problem_total > step.problems.length
       ? `<li class="chain-more">还有 ${step.problem_total - step.problems.length} 处没列出，请点「看详细结果」</li>` : '';
@@ -43,7 +81,7 @@
         <div class="chain-line"><b>${index + 1}. ${esc(step.label)}</b>
           <span class="chain-state">${esc(STATE_TEXT[step.state] || step.state)}</span>
           <span class="chain-text">${esc(step.text || '')}</span>${detail}</div>
-        ${list}
+        ${progressSlot(step)}${list}
       </div>
     </li>`;
   }
@@ -73,6 +111,7 @@
       box.innerHTML = html;
       box.querySelectorAll('details').forEach((el, i) => { if (open[i]) el.open = true; });
     }
+    fillProgress(box);
     box.className = `panel clean-chain${running ? ' is-running' : bad ? ' is-failed' : warn ? ' is-warn' : ' is-ok'}`;
   }
 

@@ -3009,6 +3009,9 @@ input[type="checkbox"]:not(.hidden):checked::before {
 .chain-where { color: var(--ink-3); font-weight: 600; }
 .chain-reason { margin-left: 8px; color: var(--ink-2); }
 .chain-more { list-style: none; color: var(--ink-3); }
+.chain-progress { margin-top: 8px; max-width: 720px; }
+.chain-progress-count { margin: 6px 0 0; font-size: 13px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chain-progress-eta { margin-top: 2px; }
 .chain-next { display: flex; justify-content: flex-end; margin-top: 14px; }
 
 /* 各页做完后的「下一步 ➜」：不用回主页 */
