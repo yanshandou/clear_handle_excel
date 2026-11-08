@@ -4,7 +4,7 @@
 // 可以来回好几轮，页面都没问题了再去下一步（查看切字：扫描标色、调整单元格）。
 // - 导出 PDF 时每张表已经设成「宽一页、高自动」（横向不许拆页，纵向交给 Excel 自动分页）。
 // - 标题上每张表三组按钮：方向（竖向 / 横向）、页高（高自动 / ⤓ 取整 N→N-1）、删除这张表。
-// - 末页只印了一点（不到 40%）的表自动标黄 = 建议向下取整；不想取整再点一下取消。
+// - 末页只印了一点（不到 20%，用户 2026-11-08 定）的表自动标黄 = 建议向下取整；不想取整再点一下取消。
 // - 改了方向后要不要取整就不一定了：先改方向，看新的 PDF 再决定（同一张表方向和取整不能一起改）。
 // - 按问题分类：上面的分类按钮只看某一类（建议取整 / 竖向 / 横向 / 页高定死的），并能一次改这一类。
 // 要自己在 Excel 里改的：点标题上的 Excel 路径，或 Ctrl + 单击页面，Excel 打开并跳到那一页；
@@ -81,7 +81,7 @@ function suggestsFloor(doc) {
 
 const CATEGORIES = [
   { key: 'all', label: '全部', test: () => true },
-  { key: 'floor', label: '🟡 末页只多一点', hint: '末页只印了不到 40%，建议向下取整（已自动标黄）', test: suggestsFloor },
+  { key: 'floor', label: '🟡 末页只多一点', hint: '末页只印了不到 20%，建议向下取整（已自动标黄）', test: suggestsFloor },
   { key: 'portrait', label: '竖向', test: doc => orientOf(doc) === 1 },
   { key: 'landscape', label: '横向', test: doc => orientOf(doc) === 2 },
   { key: 'fixed', label: '页高定死的', hint: '取整过、或者原来就设了「N 页高」的表', test: doc => tallOf(doc) !== null },

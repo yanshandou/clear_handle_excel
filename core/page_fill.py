@@ -26,7 +26,8 @@ from core.pdf_detector import fitz
 
 FILL_LOW = 0.15   # 一页用了不到这么多算「很少」
 FILL_FULL = 0.60  # 相邻页用了这么多以上算「挺满」
-SCAN_TAIL_FILL = 0.40  # 扫描时自动分页的末页不到 40%，缩放到少一页
+SCAN_TAIL_FILL = 0.40  # 扫描时自动分页的末页不到 40%，缩放到少一页（2026-11-07 起扫描不再用）
+FLOOR_HINT_FILL = 0.20  # 调整页面：末页印了不到 20% 才标黄建议向下取整（用户 2026-11-08 定，38% 已经够了）
 FLOOR_MIN_SCALE = 0.85  # 向下取整：字缩到不到原来的这么多就不改（太小看不清）
 MAX_FIXES = 6     # 一张表最多连着修几次（每修一次都要重新导出核对）
 SCAN_ROWS_LIMIT = 400  # Excel 里逐行找字最多找这么多行（Find 用不了时）
@@ -635,7 +636,7 @@ def floor_pages(sheet: Any, pdf_path: Path, export: Callable[[Any, Path], None])
 # ---------- 调整页面：宽一页、高自动（用户 2026-11-07 定） ----------
 # 横向不许拆成几页（99 列在第一页、1 列单独印一页是不允许的），所以导出 PDF 前每张表都设成「1 页宽」；
 # 纵向先不定死，交给 Excel 自动分页（要 4 页就 4 页）。已经是 1 页宽的表不动（页高是取整定过的 N 页就留着）。
-# 导出后末页只印了一点（不到 SCAN_TAIL_FILL）的，网页上自动标黄，建议向下取整。
+# 导出后末页只印了一点（不到 FLOOR_HINT_FILL）的，网页上自动标黄，建议向下取整。
 
 XL_PORTRAIT, XL_LANDSCAPE = 1, 2
 
@@ -690,7 +691,7 @@ def sheet_layout(sheet: Any) -> dict:
 
 
 def tail_hint(pdf_path: Path | str, margins: tuple[float, float]) -> dict:
-    """导出好的 PDF：几页、最后一页印了多少（0~100）、要不要建议向下取整（末页不到 40%）"""
+    """导出好的 PDF：几页、最后一页印了多少（0~100）、要不要建议向下取整（末页不到 20%）"""
     try:
         pages = measure(pdf_path, *margins)
     except Exception as err:
@@ -699,4 +700,4 @@ def tail_hint(pdf_path: Path | str, margins: tuple[float, float]) -> dict:
     if len(pages) < 2:
         return {"pages": len(pages), "tail": None, "floor": False}
     fill = pages[-1]["fill"]
-    return {"pages": len(pages), "tail": _pct(fill), "floor": fill < SCAN_TAIL_FILL}
+    return {"pages": len(pages), "tail": _pct(fill), "floor": fill < FLOOR_HINT_FILL}
