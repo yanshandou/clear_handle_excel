@@ -129,9 +129,39 @@
    - 中图：高度占满整个屏幕高，一页一行、居中
    - 小图：固定 320px 高，一行能放几页放几页 */
 .pr-pages {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* 正在重新生成这份 Excel 的 PDF：页面上盖一层半透明（::before），顶上一条深蓝提示（::after），做完收起。只盖不挤，页面不挪 */
+.pr-doc.is-regen .pr-pages::before {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  z-index: 3;
+  background: rgba(230, 239, 255, .7);
+  border-radius: 12px;
+  cursor: progress;
+}
+
+.pr-doc.is-regen .pr-pages::after {
+  /* 文字由 pdf_review.js 写在 .pr-pages 的 data-regen-text：已经几秒、按上次速度估计还要几秒 */
+  content: attr(data-regen-text);
+  position: absolute;
+  top: 40px;
+  left: 50%;
+  z-index: 4;
+  transform: translateX(-50%);
+  padding: 10px 22px;
+  font-size: 17px;
+  font-weight: 800;
+  white-space: nowrap;
+  color: #fff;
+  background: #1d4f91;
+  border-radius: 12px;
+  box-shadow: 0 6px 18px rgba(16, 37, 70, .35);
 }
 
 .view-large .pr-pages {
