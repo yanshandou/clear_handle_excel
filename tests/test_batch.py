@@ -850,6 +850,43 @@ class BatchTests(unittest.TestCase):
             self.excel.Workbooks.Open.assert_called_once()
             original.Close.assert_called_once()
 
+    def test_scan_uses_adjust_page_pdf_while_excel_unchanged(self):
+        from core import pdf_store, sheet_history
+        sheet = Mock(Name="S1")
+        self.excel.Workbooks.Open.return_value = Mock(Sheets=[sheet])
+        self.wf.STATE["folder"] = str(self.root)
+        wb = Path(self.path)
+        adjusted = pdf_store.pdf_dir(wb, self.root) / f"{wb.stem}_S1.pdf"
+        adjusted.parent.mkdir(parents=True, exist_ok=True)
+        adjusted.write_bytes(b"%PDF adjusted")
+        pdf_store.record(self.root, wb, sheet_history.fingerprint(wb), [(adjusted, "S1")],
+                         layouts={str(adjusted): {"manual": 0}}, fit=True)
+        stamp = adjusted.stat().st_mtime_ns
+        exported, detected = [], []
+        def export(_sheet, pdf):
+            exported.append(pdf)
+            pdf.write_bytes(b"%PDF fresh")
+        def detect(_sheet, _wb, _name, pdf, *args, **kwargs):
+            detected.append(pdf.read_bytes())
+            return {}, {}
+        def scan():
+            self.wf._scan_one_workbook(
+                self.excel, wb, {"mode": "full", "sheets": [], "scanned": False}, [],
+                job=None, resumed=False, rescan_all=True, delete_backups=False, used_pdf_paths=set(),
+                read_only=True)
+        with patch.object(self.wf, "_exportable_sheets", return_value=[sheet]), \
+                patch.object(self.wf, "_export_sheet_pdf", side_effect=export), \
+                patch.object(self.wf, "_detect_sheet_results", side_effect=detect), \
+                patch.object(self.wf, "update_file_progress"), patch.object(self.wf, "_sync_problem_counts"):
+            scan()
+            self.assertEqual(exported, [])  # Excel 调整页面后没改过：直接用那份 PDF
+            self.assertEqual(detected, [b"%PDF adjusted"])
+            self.assertEqual(adjusted.stat().st_mtime_ns, stamp)  # 没重写，回调整页面还能沿用
+            self.assertIsNotNone(pdf_store.reusable(self.root, wb, sheet_history.fingerprint(wb), need_fit=True))
+            wb.write_bytes(b"workbook changed")
+            scan()
+            self.assertEqual(len(exported), 1)  # Excel 改过：照常导出
+
     def wrap_sheet(self, *, wrap=False, merged=True, neighbor="", align=1, blank_value=None, row_height=13.5):
         cells = {}
         def cell(row, col):

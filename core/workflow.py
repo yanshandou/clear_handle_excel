@@ -1614,6 +1614,24 @@ def _save_scan_print_settings(excel: Any, wb_path: Path, expected_version: dict,
     return _file_version(wb_path)
 
 
+def _adjusted_page_pdfs(wb_path: Path, wb_label: str) -> dict[str, Path]:
+    """调整页面导出的 PDF（PDFS/PDF导出记录.json）：Excel 哈希和那次导出时一样、PDF 也没被换过，返回 {表名: PDF}。
+    读不到记录、哈希不一样都返回空，扫描照常自己导出。"""
+    root = STATE.get("folder")
+    if not root:
+        return {}
+    try:
+        found = pdf_store.reusable(root, wb_path, sheet_history.fingerprint(wb_path), need_fit=True)
+    except Exception as err:
+        debug_log.event("⚠️ 读调整页面的 PDF 记录失败，扫描自己导出", 文件=wb_label, 错误=str(err))
+        return {}
+    if not found:
+        return {}
+    log_msg(f"  ♻️ Excel 调整页面后没改过，直接用调整页面导出的 {len(found)} 份 PDF 检测")
+    debug_log.event("♻️ 扫描用调整页面的 PDF", 文件=wb_label, PDF=len(found))
+    return {sheet: pdf for pdf, sheet in found}
+
+
 def _scan_one_workbook(
     excel: Any,
     wb_path: Path,
@@ -1721,6 +1739,9 @@ def _scan_one_workbook(
 
         scan_version = _file_version(wb_path)
         file_stem = sanitize_filename(strip_review_prefix(wb_path.stem))
+        # 调整页面导出过、之后 Excel 没再改过（哈希一样）的表，直接拿那份 PDF 检测，不再导出一遍（用户 2026-11-08 问）。
+        # 同时也不会把调整页面的 PDF 重写一遍，回到调整页面时这份 Excel 还能沿用，不用重新导出。
+        adjusted_pdfs = _adjusted_page_pdfs(wb_path, wb_label) if reuse_pdfs and not compact_print_tail else {}
         exportable = _exportable_sheets(wb)
         missing = _follow_renamed_sheets(path, wb, {s.Name for s in exportable}, entry, previous)
         if missing:
@@ -1770,6 +1791,9 @@ def _scan_one_workbook(
             with scan_analysis.operation("layout", s_name):
                 generated = False if compact_print_tail else prepare_print_layout(sheet, path, pdf_path)
             exported = pdfs.pdf_for(path, s_name, scan_version) if pdfs is not None and reuse_pdfs else None
+            if exported is None and s_name in adjusted_pdfs and adjusted_pdfs[s_name].exists():
+                exported = adjusted_pdfs[s_name]
+                scan_analysis.count("pdf_reused_adjusted")
             if s_name in print_changes:
                 exported = None  # 原设置的缓存不能用于新的打印页数
             try:
