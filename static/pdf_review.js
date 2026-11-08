@@ -44,9 +44,15 @@ function escapeHtml(value) {
 }
 
 async function api(url, body) {
-  const res = await fetch(url, body === undefined ? {} : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  });
+  let res;
+  try {
+    res = await fetch(url, body === undefined ? {} : {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+  } catch (_) {
+    // 浏览器只说「Failed to fetch」：其实是连不上后台程序（黑色窗口关了、程序重启中或崩了）
+    throw new Error('连不上后台程序：请看一下运行本工具的黑色窗口还开着没有（关了就重新双击启动），窗口里有红字报错的话截图发过来。程序开着的话，刷新网页再试一次。');
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
