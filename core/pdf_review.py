@@ -542,11 +542,15 @@ def _floor_in_workbook(get_excel: Any, wb_path: Path, items: list[dict], export_
         return [{**item, "ok": False, "reason": "Excel 文件已经不在了"} for item in items]
     if workbook_locked(wb_path):
         raise ValueError("文件正在 Excel 中打开，请先在 Excel 里关掉它（改过的先保存），再点「重试」")
-    if not pdf_store.unchanged(export_root, wb_path, sheet_history.fingerprint(wb_path)):
-        reason = "Excel 在导出这份 PDF 之后改过（或者找不到导出记录），PDF 的页数不一定对；先点「🔄 重新生成」再标"
-        return [{**item, "ok": False, "reason": reason} for item in items]
-    book = open_workbook_checked(get_excel(), str(wb_path.resolve()), UpdateLinks=0)
     outcome: list[dict] = []
+    if not pdf_store.unchanged(export_root, wb_path, sheet_history.fingerprint(wb_path)):
+        # 只有取整要按 PDF 的页数算；改方向、页高改回自动不看 PDF，照改（不然「重新生成」先改再导会一直被拦）
+        reason = "Excel 在导出这份 PDF 之后改过，PDF 的页数不一定对；先点「🔄 重新生成」看新的 PDF 再标取整"
+        outcome = [{**item, "ok": False, "reason": reason} for item in items if item["tool"] == "floor"]
+        items = [item for item in items if item["tool"] != "floor"]
+        if not items:
+            return outcome
+    book = open_workbook_checked(get_excel(), str(wb_path.resolve()), UpdateLinks=0)
     try:
         done: set[tuple[str, str]] = set()
         oriented = {item["sheet"] for item in items if item["tool"] == "orient"}

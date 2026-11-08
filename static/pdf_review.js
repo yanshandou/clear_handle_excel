@@ -44,9 +44,15 @@ function escapeHtml(value) {
 }
 
 async function api(url, body) {
-  const res = await fetch(url, body === undefined ? {} : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  });
+  let res;
+  try {
+    res = await fetch(url, body === undefined ? {} : {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+  } catch (_) {
+    // 浏览器只说「Failed to fetch」：其实是连不上后台程序（黑色窗口关了、程序重启中或崩了）
+    throw new Error('连不上后台程序：请看一下运行本工具的黑色窗口还开着没有（关了就重新双击启动），窗口里有红字报错的话截图发过来。程序开着的话，刷新网页再试一次。');
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
@@ -366,12 +372,19 @@ function saveMarks() {
 function loadTools() {
   tools = {};
   let saved = {};
+  let autoSeen = {};
   try { saved = JSON.parse(localStorage.getItem(TOOLS_KEY) || '{}')[folder] || {}; } catch (_) {}
+  try { autoSeen = JSON.parse(localStorage.getItem(AUTO_KEY) || '{}')[folder] || {}; } catch (_) {}
   for (const doc of allPdfs) {
     const t = saved[doc.pdf];
     if (!t || t.v !== doc.v || !doc.wb_path || doc.error) continue;
     const kept = { v: t.v };
-    if (t.floor && doc.pages.length > 1) kept.floor = true;
+    // 程序自动标的黄（byAuto，或旧版按 40% 自动标过这一版）：按现在的标准不该标了就去掉，自己点的保留
+    const autoMarked = t.byAuto || autoSeen[doc.pdf] === doc.v;
+    if (t.floor && doc.pages.length > 1 && !(autoMarked && !suggestsFloor(doc))) {
+      kept.floor = true;
+      if (t.byAuto) kept.byAuto = true;
+    }
     if (t.auto) kept.auto = true;
     if (t.orient === 1 || t.orient === 2) kept.orient = t.orient;
     if (t.breaks && manualOf(doc)) kept.breaks = true;
@@ -392,7 +405,7 @@ function autoFloor() {
     now[doc.pdf] = doc.v;
     if (seen[doc.pdf] === doc.v || marks[doc.pdf]?.red) continue;
     const t = tools[doc.pdf];
-    if (!t?.orient && !t?.auto && !t?.breaks) tools[doc.pdf] = { ...(t || {}), v: doc.v, floor: true };
+    if (!t?.orient && !t?.auto && !t?.breaks) tools[doc.pdf] = { ...(t || {}), v: doc.v, floor: true, byAuto: true };
   }
   try {
     if (Object.keys(now).length) all[folder] = now; else delete all[folder];
@@ -416,6 +429,7 @@ function editable(doc) {
 function setTool(doc, tool, on) {
   if (!editable(doc) || marks[doc.pdf]?.red) return;
   const t = { ...(tools[doc.pdf] || {}), v: doc.v };
+  delete t.byAuto; // 自己点过就算自己定的
   if (tool === 'breaks') {
     if (on && !manualOf(doc)) return;
     if (on) { t.breaks = true; delete t.floor; } else delete t.breaks;
@@ -434,6 +448,7 @@ function setTool(doc, tool, on) {
 function setOrient(doc, target) {
   if (!editable(doc) || marks[doc.pdf]?.red) return;
   const t = { ...(tools[doc.pdf] || {}), v: doc.v };
+  delete t.byAuto;
   if (target === orientOf(doc)) delete t.orient;
   else { t.orient = target; delete t.floor; }
   if (Object.keys(t).length > 1) tools[doc.pdf] = t; else delete tools[doc.pdf];
