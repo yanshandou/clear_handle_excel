@@ -372,12 +372,19 @@ function saveMarks() {
 function loadTools() {
   tools = {};
   let saved = {};
+  let autoSeen = {};
   try { saved = JSON.parse(localStorage.getItem(TOOLS_KEY) || '{}')[folder] || {}; } catch (_) {}
+  try { autoSeen = JSON.parse(localStorage.getItem(AUTO_KEY) || '{}')[folder] || {}; } catch (_) {}
   for (const doc of allPdfs) {
     const t = saved[doc.pdf];
     if (!t || t.v !== doc.v || !doc.wb_path || doc.error) continue;
     const kept = { v: t.v };
-    if (t.floor && doc.pages.length > 1) kept.floor = true;
+    // 程序自动标的黄（byAuto，或旧版按 40% 自动标过这一版）：按现在的标准不该标了就去掉，自己点的保留
+    const autoMarked = t.byAuto || autoSeen[doc.pdf] === doc.v;
+    if (t.floor && doc.pages.length > 1 && !(autoMarked && !suggestsFloor(doc))) {
+      kept.floor = true;
+      if (t.byAuto) kept.byAuto = true;
+    }
     if (t.auto) kept.auto = true;
     if (t.orient === 1 || t.orient === 2) kept.orient = t.orient;
     if (t.breaks && manualOf(doc)) kept.breaks = true;
@@ -398,7 +405,7 @@ function autoFloor() {
     now[doc.pdf] = doc.v;
     if (seen[doc.pdf] === doc.v || marks[doc.pdf]?.red) continue;
     const t = tools[doc.pdf];
-    if (!t?.orient && !t?.auto && !t?.breaks) tools[doc.pdf] = { ...(t || {}), v: doc.v, floor: true };
+    if (!t?.orient && !t?.auto && !t?.breaks) tools[doc.pdf] = { ...(t || {}), v: doc.v, floor: true, byAuto: true };
   }
   try {
     if (Object.keys(now).length) all[folder] = now; else delete all[folder];
@@ -422,6 +429,7 @@ function editable(doc) {
 function setTool(doc, tool, on) {
   if (!editable(doc) || marks[doc.pdf]?.red) return;
   const t = { ...(tools[doc.pdf] || {}), v: doc.v };
+  delete t.byAuto; // 自己点过就算自己定的
   if (tool === 'breaks') {
     if (on && !manualOf(doc)) return;
     if (on) { t.breaks = true; delete t.floor; } else delete t.breaks;
@@ -440,6 +448,7 @@ function setTool(doc, tool, on) {
 function setOrient(doc, target) {
   if (!editable(doc) || marks[doc.pdf]?.red) return;
   const t = { ...(tools[doc.pdf] || {}), v: doc.v };
+  delete t.byAuto;
   if (target === orientOf(doc)) delete t.orient;
   else { t.orient = target; delete t.floor; }
   if (Object.keys(t).length > 1) tools[doc.pdf] = t; else delete tools[doc.pdf];
