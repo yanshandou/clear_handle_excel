@@ -46,6 +46,7 @@ def _load() -> None:
             saved["running"] = False
             saved["interrupted"] = True
             for step in saved["steps"]:
+                step.pop("progress", None)
                 if step["state"] in {"waiting", "running"}:
                     step.update(state="failed", text="程序关掉了，这一步没做完")
         _STATUS.update(saved)
@@ -127,6 +128,8 @@ def _problem(file: dict, item: dict | None, reason: str, *, error: bool = False)
 def _finish_step(key: str, fixed: int, problems: list[dict], text: str) -> None:
     errors = sum(1 for p in problems if p["error"])
     state = "failed" if errors else "warn" if problems else "done"
+    with _LOCK:
+        _step(key).pop("progress", None)
     _update(key, state=state, fixed=fixed, problems=problems[:MAX_PROBLEMS], problem_total=len(problems),
             error_total=errors, text=text)
 
@@ -146,10 +149,27 @@ def _launch(start: Callable[[], None], key: str) -> bool:
             return False
 
 
-def _wait(read_status: Callable[[], dict]) -> dict:
+def _set_progress(key: str, phase: str, current: dict) -> None:
+    """把这一步后台的「第几份 / 共几份」抄到自动检查的状态里，页面画进度条用（只在内存里，不存数据库）"""
+    total = int(current.get("total") or 0)
+    done = min(int(current.get("done") or 0), total)
+    progress = {"phase": phase, "done": done, "total": total, "current": str(current.get("current") or "")}
+    with _LOCK:
+        _step(key)["progress"] = progress
+
+
+def _wait(read_status: Callable[[], dict], key: str = "", phase: str = "") -> dict:
     time.sleep(POLL_SECONDS)
-    while read_status().get("running"):
+    while True:
+        current = read_status()
+        if key and current.get("total"):
+            _set_progress(key, phase, current)
+        if not current.get("running"):
+            break
         time.sleep(POLL_SECONDS)
+    if key:
+        with _LOCK:
+            _step(key).pop("progress", None)
     return read_status()
 
 
@@ -162,7 +182,7 @@ def _run_bl(folder: str) -> None:
     _update("bl", state="running", text="正在扫描…")
     if not _launch(lambda: bl_links.start(folder), "bl"):
         return
-    scanned = _wait(bl_links.status).get("result") or {"files": []}
+    scanned = _wait(bl_links.status, "bl", "扫描").get("result") or {"files": []}
     problems = _file_errors(scanned["files"])
     hits = sum(len(file.get("hits", [])) for file in scanned["files"] if not file.get("error"))
     if not hits:
@@ -171,7 +191,7 @@ def _run_bl(folder: str) -> None:
     _update("bl", text=f"找到 {hits} 处，正在清除…")
     if not _launch(bl_links.clear, "bl"):
         return
-    applied = _wait(bl_links.status).get("applied") or {"files": []}
+    applied = _wait(bl_links.status, "bl", "清除").get("applied") or {"files": []}
     fixed = sum(1 for file in applied["files"] for cell in file.get("cells", []) if cell.get("status") == "ok")
     problems += _file_errors(applied["files"])
     _finish_step("bl", fixed, problems, f"清除了 {fixed} 处 BL 超链接" if fixed else "没能清除 BL 超链接")
@@ -191,7 +211,7 @@ def _run_links(folder: str, old_folder: str) -> None:
     _update("links", state="running", text="正在扫描、对照参考、修复…")
     if not _launch(lambda: link_repair.repair(folder, old_folder), "links"):
         return
-    applied = _wait(link_repair.status).get("applied") or {"files": []}
+    applied = _wait(link_repair.status, "links", "扫描并修复").get("applied") or {"files": []}
     fixed, problems = 0, _file_errors(applied["files"])
     for file in applied["files"]:
         if file.get("error"):
@@ -214,7 +234,7 @@ def _run_hidden(folder: str, old_folder: str) -> None:
     _update("hidden", state="running", text="正在对照参考恢复…")
     if not _launch(lambda: hidden_repair.repair(folder, old_folder), "hidden"):
         return
-    applied = _wait(hidden_repair.status).get("applied") or {"files": []}
+    applied = _wait(hidden_repair.status, "hidden", "对照恢复").get("applied") or {"files": []}
     fixed, problems = 0, _file_errors(applied["files"])
     for file in applied["files"]:
         if file.get("error"):

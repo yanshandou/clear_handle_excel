@@ -62,6 +62,24 @@ class CleanChainTests(unittest.TestCase):
     def steps(self):
         return {step["key"]: step for step in clean_chain.status()["steps"]}
 
+    def test_running_step_shows_its_own_file_progress(self):
+        clean_chain.prepare("/x", {"hidden": False, "old_folder": "/ref"})
+        seen = []
+        reads = iter([{"running": True, "total": 4, "done": 2, "current": "c.xlsx"}])
+
+        def status():
+            current = next(reads, None)
+            if current is None:
+                seen.append(self.steps()["links"].get("progress"))
+                return {"running": False, "applied": {"files": []}}
+            return current
+
+        with patch.object(link_repair, "status", status):
+            clean_chain._update("links", state="running")
+            clean_chain._wait(link_repair.status, "links", "扫描并修复")
+        self.assertEqual(seen[0], {"phase": "扫描并修复", "done": 2, "total": 4, "current": "c.xlsx"})
+        self.assertNotIn("progress", self.steps()["links"])  # 做完就收起
+
     def test_runs_bl_then_links_and_lists_what_could_not_be_fixed(self):
         clean_chain.prepare("/x", {"hidden": False, "old_folder": "/ref"})
         self.assertEqual(self.steps()["bl"]["state"], "waiting")
