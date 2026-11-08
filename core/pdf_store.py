@@ -109,6 +109,9 @@ def reusable(root: Path | str, wb_path: Path, digest: str, *, need_fit: bool = F
     for pdf, sheet, item in _entry_pdfs(root, entry):
         if _stat(pdf) != (item.get("size"), item.get("mtime_ns")):
             return None
+        if need_fit and "manual" not in (item.get("layout") or {}):
+            # 2026-11-08 以前导出的记录没记手动分页：重新导出一次，调整页面才有「清手动分页」按钮
+            return None
         found.append((pdf, sheet))
     return found
 

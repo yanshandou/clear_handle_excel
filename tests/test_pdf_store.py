@@ -32,6 +32,18 @@ class PdfStoreTests(unittest.TestCase):
         self.assertIsNone(pdf_store.reusable(self.root, starred, "h2"))
         self.assertEqual(pdf_store.owner(pdf), {"wb_path": str(starred), "sheet": "A"})
 
+    def test_fit_record_without_manual_count_is_exported_again(self):
+        # 2026-11-08 以前的记录没记手动分页数：调整页面要重新导出一次，才有「清手动分页」按钮
+        wb = self.root / "spec.xlsx"
+        wb.write_bytes(b"x")
+        pdf = self.pdf("spec_A.pdf")
+        pdf_store.record(self.root, wb, "h", [(pdf, "A")], layouts={str(pdf): {"orient": 1, "tall": None}}, fit=True)
+        self.assertIsNone(pdf_store.reusable(self.root, wb, "h", need_fit=True))
+        self.assertEqual(pdf_store.reusable(self.root, wb, "h"), [(pdf, "A")])
+        pdf_store.record(self.root, wb, "h", [(pdf, "A")],
+                         layouts={str(pdf): {"orient": 1, "tall": None, "manual": 2}}, fit=True)
+        self.assertEqual(pdf_store.reusable(self.root, wb, "h", need_fit=True), [(pdf, "A")])
+
     def test_clear_keeps_pdfs_of_longer_named_sibling(self):
         a = self.root / "a.xlsx"
         ab = self.root / "a_b.xlsx"
