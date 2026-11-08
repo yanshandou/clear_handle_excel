@@ -36,6 +36,7 @@ let deleted = new Set(); // 这次一键处理删掉的表（PDF 也删了，页
 let processing = false;
 // 重新生成按表来（用户 2026-11-08 定）：只导点的那张表，同一份 Excel 别的表的 PDF 不动
 let regenWb = '';       // 正在重新生成的那张表的 PDF 路径
+let regenAfterProcess = null; // 点「重新生成」时先改标记：改完要不要再强制导一次（那张表）
 let busyWb = '';        // 点了「重新生成」、还在等的那张表的 PDF（含先改标记再生成）：只这张表显示「正在重新生成」
 let busySince = 0;      // 从什么时候开始等，按钮上显示已经等了几秒
 let busyTimer = 0;
@@ -693,7 +694,7 @@ async function runProcess(kind, onlyWb = '') {
   const ok = await appConfirm(text, kind === 'red'
     ? { title: '删除标红的表', tone: 'danger', okText: '删除' }
     : { title: onlyWb ? '改好并重新生成' : '统一修改页面设置', tone: 'warn', okText: onlyWb ? '改好并重新生成' : '开始修改' });
-  if (!ok) return;
+  if (!ok) { regenAfterProcess = null; return; }
   if (onlyWb) setBusy(onlyWb);
   try {
     await api('/api/pdf_review/process', {
@@ -702,6 +703,7 @@ async function runProcess(kind, onlyWb = '') {
     });
   } catch (e) {
     setBusy('');
+    regenAfterProcess = null;
     appAlert(e.message, { tone: 'error' });
     return;
   }
@@ -743,7 +745,13 @@ async function pollProcess() {
   }
   setProcessing(false);
   setBusy('');
-  if (status.result) finishProcess(status.result);
+  const after = regenAfterProcess;
+  regenAfterProcess = null;
+  if (status.result) await finishProcess(status.result);
+  // 从「重新生成」进来的：标记改完了但这张表没改成（PDF 没重导），照样强制重新导出一次
+  if (after && !(status.result?.changed || []).some(i => i.pdf === after.pdf)) {
+    try { await regenerateNow(after); } finally { if (!regenWb) setBusy(''); }
+  }
 }
 
 // 结果框：每一处都是链接，点一下 Excel 跳过去
@@ -832,9 +840,10 @@ function paintRegen() {
 async function regenerate(d) {
   const doc = pdfs[d];
   if (!doc || !doc.wb_path || regenWb || processing) return;
-  // 这份 Excel 上点了还没改的（改方向、取整、页高改回自动）：先改进 Excel 再重新生成，
-  // 不然 Excel 没动、哈希一样，用户会以为没反应（用户 2026-11-08 提）
-  if (toolItems().some(i => i.doc.pdf === doc.pdf)) {
+  // 这张表上自己点了还没改的（改方向、取整、页高改回自动、清分页）：先改进 Excel，改完一定再导一次（用户 2026-11-08 提）。
+  // 程序自动标的「取整」不算：点重新生成就是要原样重新导出，不替你取整
+  if (toolItems().some(i => i.doc.pdf === doc.pdf && !(i.tool === 'floor' && tools[doc.pdf]?.byAuto))) {
+    regenAfterProcess = doc;
     runProcess('tools', doc.pdf);
     return;
   }
@@ -854,17 +863,9 @@ async function regenerateNow(doc) {
   }
   let data;
   try {
+    // 点了重新生成就一定重新导出：不看缓存、不管 Excel 改没改（用户 2026-11-08 定）
     setBusy(doc.pdf);
-    data = await api('/api/pdf_review/regenerate', { pdf: doc.pdf });
-    if (data.unchanged) {
-      setBusy('');
-      const again = await appConfirm(
-        `「${data.name}」和上次导出 PDF 时一模一样（哈希值没变），PDF 已经是最新的。\n\n刚在 Excel 里改过的话，多半还没保存：先在 Excel 里保存，再点「重新生成」。\n\n还是要照样重新生成一次吗？`,
-        { title: 'Excel 没有改过', tone: 'warn', okText: '照样重新生成' });
-      if (!again) return;
-      setBusy(doc.pdf);
-      data = await api('/api/pdf_review/regenerate', { pdf: doc.pdf, force: true });
-    }
+    data = await api('/api/pdf_review/regenerate', { pdf: doc.pdf, force: true });
   } catch (e) {
     appAlert(e.message, { tone: 'error' });
     return;
