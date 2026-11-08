@@ -391,6 +391,20 @@ class ProcessTests(unittest.TestCase):
         floor.assert_not_called()
         self.assertIn("重新生成", result["change_failed"][0]["reason"])
 
+    def test_orientation_still_applies_when_excel_changed_after_export(self):
+        # 用户 2026-11-08：Excel 改过后点「重新生成」会先改方向，不能被「先点重新生成」拦住
+        book = FakeBook(["一覧", "JSONサンプル", "明細"])
+        book.sheets[0].PageSetup = SimpleNamespace(Orientation=2, Zoom=False, FitToPagesWide=1, FitToPagesTall=False)
+        tools = [{"pdf": str(self.pdfs["一覧"]), "tool": "orient", "value": 1},
+                 {"pdf": str(self.pdfs["明細"]), "tool": "floor"}]
+        result, book, floor, export = self.run_floor([], [], unchanged=False, book=book, tools=tools)
+        floor.assert_not_called()
+        self.assertEqual(book.sheets[0].PageSetup.Orientation, 1)
+        self.assertEqual(book.saved, 1)
+        export.assert_called_once()
+        self.assertEqual([e["tool"] for e in result["changed"]], ["orient"])
+        self.assertIn("再标取整", result["change_failed"][0]["reason"])
+
     def test_floor_dirty_sheet_blocks_save(self):
         ok = {"ok": True, "reason": "", "before": 5, "after": 4, "scale": 0.96, "manual": False}
         dirty = {"ok": False, "reason": "改不回去", "dirty": True}
