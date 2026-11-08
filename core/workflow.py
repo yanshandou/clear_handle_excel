@@ -3475,6 +3475,8 @@ def _export_workbook_pdfs(
     # 末页印了多少：内容很少的页修完（PDF 可能重新导出过）再量
     for pdf, info in layouts.items():
         info.update(page_fill.tail_hint(pdf, tuple(info.pop("margins", (0.0, 0.0)))))
+        if any(note.get("cleared") for note in notes.get(pdf, [])):
+            info["manual"] = 0  # 空页修复清掉了全部手动分页
     # 记下这次导出时 Excel 的哈希：下次没变就沿用这些 PDF（内容太少的页的提示、打印设置也跟着记）
     pdf_store.record(root_folder, wb_path, digest, sheets_done, notes, layouts, fit=fit)
     update_file_progress(

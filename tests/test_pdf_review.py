@@ -420,6 +420,27 @@ class ProcessTests(unittest.TestCase):
         self.assertIn("改回自动", reasons["一覧"][1])
         self.assertEqual(reasons["明細"], ("auto", "页高改回自动（宽一页、高由 Excel 定）"))
 
+    def test_clear_manual_breaks_is_saved_and_regenerated(self):
+        cleared = {"ok": True, "count": 3, "reason": ""}
+        tools = [{"pdf": str(self.pdfs["明細"]), "tool": "breaks"}]
+        with patch.object(pdf_review.page_fill, "clear_manual_breaks", return_value=cleared) as clear:
+            result, book, floor, export = self.run_floor([], [], tools=tools)
+        clear.assert_called_once()
+        floor.assert_not_called()
+        self.assertEqual(book.saved, 1)
+        export.assert_called_once()
+        self.assertEqual([(e["tool"], e["reason"]) for e in result["changed"]],
+                         [("breaks", "清掉了 3 处手动分页，改成 Excel 自动分页")])
+
+    def test_clear_manual_breaks_partly_left_is_not_saved(self):
+        left = {"ok": False, "count": 1, "dirty": True, "reason": "还剩 1 处手动分页清不掉，请在 Excel 里手动处理"}
+        tools = [{"pdf": str(self.pdfs["明細"]), "tool": "breaks"}]
+        with patch.object(pdf_review.page_fill, "clear_manual_breaks", return_value=left):
+            result, book, _, export = self.run_floor([], [], tools=tools)
+        self.assertEqual(book.saved, 0)
+        export.assert_not_called()
+        self.assertIn("还剩 1 处", result["change_failed"][0]["reason"])
+
     def test_floor_waits_when_same_sheet_changes_orientation(self):
         book = FakeBook(["一覧", "JSONサンプル", "明細"])
         book.sheets[0].PageSetup = SimpleNamespace(Orientation=1, Zoom=False, FitToPagesWide=1, FitToPagesTall=False)

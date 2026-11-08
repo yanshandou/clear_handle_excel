@@ -270,7 +270,7 @@ def process_status() -> dict:
         return {**_PROCESS, "result": _PROCESS.get("result")}
 
 
-TOOLS = ("floor", "auto", "orient")  # 向下取整 / 页高改回自动 / 改方向（value 1 竖、2 横）
+TOOLS = ("floor", "auto", "orient", "breaks")  # 向下取整 / 页高改回自动 / 改方向（value 1 竖、2 横）/ 清手动分页
 
 
 def _process_item(raw: Any, color: str) -> dict:
@@ -306,7 +306,7 @@ def _process_item(raw: Any, color: str) -> dict:
 
 
 def process(red: Any, yellow: Any, tools: Any = None) -> None:
-    """一键处理：后台删掉标红的表，按工具箱标记改打印设置（向下取整、页高改回自动、改方向），再打开标黄的。
+    """一键处理：后台删掉标红的表，按工具箱标记改打印设置（向下取整、页高改回自动、改方向、清手动分页），再打开标黄的。
     tools：[{pdf, tool, value}]，tool 不写是向下取整。网页轮询 process_status() 看进度和结果"""
     reds = [_process_item(raw, "red") for raw in (red or [])]
     yellows = [_process_item(raw, "yellow") for raw in (yellow or [])]
@@ -481,7 +481,7 @@ def _delete_in_workbook(excel: Any, wb_path: Path, items: list[dict], label: str
 
 def _floor_marked(floors: list[dict], root: str, result: dict) -> None:
     """工具箱：每份 Excel 打开一次，按标记改打印设置——向下取整（1 页宽、N-1 页高，真导出核对过才算）、
-    页高改回自动、改方向；改成了的保存，再把这份 Excel 的 PDF 全部重新导出（和「🔄 重新生成」一样），
+    页高改回自动、改方向、清手动分页；改成了的保存，再把这份 Excel 的 PDF 全部重新导出（和「🔄 重新生成」一样），
     网页上看到的就是新的，末页只多一点的会重新判断、重新标黄（改方向后要不要取整就不一定了）"""
     from core import reporter
     groups: dict[str, list[dict]] = {}
@@ -565,6 +565,11 @@ def _floor_in_workbook(get_excel: Any, wb_path: Path, items: list[dict], export_
                 continue
             if item["tool"] == "auto":
                 outcome.append(_set_auto_tall(sheet, item))
+                continue
+            if item["tool"] == "breaks":
+                found = page_fill.clear_manual_breaks(sheet)
+                reason = f"清掉了 {found['count']} 处手动分页，改成 Excel 自动分页" if found["ok"] else found["reason"]
+                outcome.append({**item, "ok": found["ok"], "reason": reason, "dirty": found.get("dirty", False)})
                 continue
             if item["sheet"] in oriented:
                 # 方向一改，页数全变了，按旧 PDF 取整不准：先改方向，看了新 PDF 再决定

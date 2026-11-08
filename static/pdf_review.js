@@ -15,7 +15,7 @@ const OLD_FOLDER_KEY = 'clear_handle_excel.oldFolder';
 const VIEW_KEY = 'clear_handle_excel.pdfReviewView';
 const VIEWS = ['large', 'medium', 'small']; // 和修复颜色 / 引用 / 隐藏页共用
 const MARKS_KEY = 'clear_handle_excel.pdfReviewMarks'; // {文件夹: {pdf: {v, red}}}：删除这张表
-const TOOLS_KEY = 'clear_handle_excel.pdfReviewTools'; // {文件夹: {pdf: {v, floor | auto | orient}}}：工具箱标记
+const TOOLS_KEY = 'clear_handle_excel.pdfReviewTools'; // {文件夹: {pdf: {v, floor | auto | orient | breaks}}}：工具箱标记
 const AUTO_KEY = 'clear_handle_excel.pdfReviewAutoFloor'; // {文件夹: {pdf: v}}：这一版 PDF 已经自动标过「建议取整」
 const CAT_KEY = 'clear_handle_excel.pdfReviewCategory';
 const MIN_DRAG_PX = 6;  // 按下到松开挪动超过这么多就是在拖（选字、滚动），不算点
@@ -31,7 +31,7 @@ let whereTick = 0;
 let opening = false;
 let press = null;       // 按下的位置，松开时判断是不是点了一下
 let marks = {};         // pdf -> {v, red: true}：删除这张表
-let tools = {};         // pdf -> {v, floor: true} | {v, auto: true} | {v, orient: 1|2}，可以 orient + auto
+let tools = {};         // pdf -> {v, floor: true} | {v, auto: true} | {v, orient: 1|2} | {v, breaks: true}，可以 orient + auto/breaks
 let deleted = new Set(); // 这次一键处理删掉的表（PDF 也删了，页面上灰掉，刷新后就不在了）
 let processing = false;
 let regenWb = '';       // 正在重新生成 PDF 的那份 Excel（wb_path）
@@ -73,6 +73,12 @@ function tallOf(doc) {
   return Number.isInteger(doc.layout?.tall) ? doc.layout.tall : null;
 }
 
+// 有几处手动分页：页高定死（取整过）时 Excel 不管手动分页，不算
+function manualOf(doc) {
+  const n = doc.layout?.manual;
+  return Number.isInteger(n) && n > 0 && tallOf(doc) === null ? n : 0;
+}
+
 const FLOOR_HINT_PCT = 20; // 末页印了不到 20% 才建议取整（用户 2026-11-08 定；和后台 page_fill.FLOOR_HINT_FILL 一样）
 
 // 按记下的末页占比判断，以前按 40% 导出的记录也按新标准算，不用重新导出
@@ -90,6 +96,7 @@ const CATEGORIES = [
   { key: 'portrait', label: '竖向', test: doc => orientOf(doc) === 1 },
   { key: 'landscape', label: '横向', test: doc => orientOf(doc) === 2 },
   { key: 'fixed', label: '页高定死的', hint: '取整过、或者原来就设了「N 页高」的表', test: doc => tallOf(doc) !== null },
+  { key: 'manual', label: '有手动分页', hint: '页高自动、但插了手动分页的表：清掉以后由 Excel 自动分页，常常能排得更满', test: doc => manualOf(doc) > 0 },
 ];
 
 function catOf(key) {
@@ -123,6 +130,12 @@ function bulkPlan() {
   }
   if (category === 'fixed') {
     return { text: `这一类页高全部改回自动（${docs.length}）`, run: () => docs.forEach(doc => setTool(doc, 'auto', true)) };
+  }
+  if (category === 'manual') {
+    const on = docs.filter(doc => tools[doc.pdf]?.breaks);
+    return on.length === docs.length
+      ? { text: `这一类全部不清手动分页（${docs.length}）`, run: () => docs.forEach(doc => setTool(doc, 'breaks', false)) }
+      : { text: `这一类全部清手动分页（${docs.length}）`, run: () => docs.forEach(doc => setTool(doc, 'breaks', true)) };
   }
   return null;
 }
@@ -203,8 +216,12 @@ function headButtons(doc, d) {
   const tallGroup = `<span class="pr-mark pr-set" role="group" aria-label="页高">
     <button type="button" class="pr-mark-btn" data-tall="auto" data-doc="${d}" title="${autoTitle}">${tall === null ? '高自动' : `定死 ${tall} 页 → 自动`}</button>
     <button type="button" class="pr-mark-btn" data-tall="floor" data-doc="${d}" ${n > 1 ? '' : 'disabled'} title="${floorTitle}">⤓ 取整 ${n}→${Math.max(1, n - 1)} 页</button></span>`;
+  const manual = manualOf(doc);
+  const breaks = manual ? `<span class="pr-mark pr-set" role="group" aria-label="手动分页">
+    <button type="button" class="pr-mark-btn" data-breaks="${d}"
+      title="这张表有 ${manual} 处手动分页：点这里，「统一修改」时全部清掉、改成 Excel 自动分页，保存后重新生成 PDF 给你看（末页只多一点的照常建议取整）；再点一次取消">✂ 清手动分页（${manual} 处）</button></span>` : '';
   const red = `<button type="button" class="pr-red-btn" data-red="${d}" title="整张表不要了：点「🗑 删除标红」时在后台删掉并保存，PDF 也删掉；再点一次取消">删除这张表</button>`;
-  return orientGroup + tallGroup + red;
+  return orientGroup + tallGroup + breaks + red;
 }
 
 function renderDocs() {
@@ -323,7 +340,7 @@ function onPointerUp(e) {
 }
 
 /* ---------- 标记 ----------
-   红 = 删除这张表（marks）；工具（tools）：floor 向下取整（黄色）、auto 页高改回自动、orient 改方向。
+   红 = 删除这张表（marks）；工具（tools）：floor 向下取整（黄色）、auto 页高改回自动、orient 改方向、breaks 清手动分页。
    PDF 重新导出过（修改时间变了）标记就不算了：看到的已经不是标记时那一版 */
 
 function loadMarks() {
@@ -357,6 +374,7 @@ function loadTools() {
     if (t.floor && doc.pages.length > 1) kept.floor = true;
     if (t.auto) kept.auto = true;
     if (t.orient === 1 || t.orient === 2) kept.orient = t.orient;
+    if (t.breaks && manualOf(doc)) kept.breaks = true;
     if (Object.keys(kept).length > 1) tools[doc.pdf] = kept;
   }
   autoFloor();
@@ -374,7 +392,7 @@ function autoFloor() {
     now[doc.pdf] = doc.v;
     if (seen[doc.pdf] === doc.v || marks[doc.pdf]?.red) continue;
     const t = tools[doc.pdf];
-    if (!t?.orient && !t?.auto) tools[doc.pdf] = { ...(t || {}), v: doc.v, floor: true };
+    if (!t?.orient && !t?.auto && !t?.breaks) tools[doc.pdf] = { ...(t || {}), v: doc.v, floor: true };
   }
   try {
     if (Object.keys(now).length) all[folder] = now; else delete all[folder];
@@ -394,14 +412,17 @@ function editable(doc) {
   return doc && doc.wb_path && !doc.error && !deleted.has(doc.pdf) && !processing;
 }
 
-// floor 和 auto 是页高的两种改法，只能选一个；改方向时不取整（页数全变了，看新 PDF 再决定）
+// floor 和 auto 是页高的两种改法，只能选一个；改方向、清手动分页时不取整（页数全变了，看新 PDF 再决定）
 function setTool(doc, tool, on) {
   if (!editable(doc) || marks[doc.pdf]?.red) return;
   const t = { ...(tools[doc.pdf] || {}), v: doc.v };
-  if (tool === 'floor') {
+  if (tool === 'breaks') {
+    if (on && !manualOf(doc)) return;
+    if (on) { t.breaks = true; delete t.floor; } else delete t.breaks;
+  } else if (tool === 'floor') {
     if (on && doc.pages.length < 2) return;
     delete t.auto;
-    if (on) { t.floor = true; delete t.orient; } else delete t.floor;
+    if (on) { t.floor = true; delete t.orient; delete t.breaks; } else delete t.floor;
   } else if (tool === 'auto') {
     if (tallOf(doc) === null) on = false; // 本来就是自动
     delete t.floor;
@@ -439,7 +460,7 @@ function paintMark(d) {
   const t = color === 'red' || color === 'deleted' ? {} : (tools[doc.pdf] || {});
   const locked = color === 'deleted' || processing || !!regenWb;
   article.dataset.mark = color;
-  article.dataset.tool = t.orient || t.auto ? 'set' : '';
+  article.dataset.tool = t.orient || t.auto || t.breaks ? 'set' : '';
   const orient = orientOf(doc);
   article.querySelectorAll('[data-orient]').forEach(b => {
     const o = Number(b.dataset.orient);
@@ -460,6 +481,12 @@ function paintMark(d) {
     b.classList.toggle('is-pending', !floor && !!t.auto);
     b.setAttribute('aria-pressed', floor ? !!t.floor : auto || !!t.auto);
     b.disabled = locked || color === 'red' || (floor && doc.pages.length < 2);
+  });
+  article.querySelectorAll('[data-breaks]').forEach(b => {
+    b.classList.toggle('is-pending', !!t.breaks);
+    b.setAttribute('aria-pressed', !!t.breaks);
+    b.textContent = t.breaks ? `→ 清掉 ${manualOf(doc)} 处手动分页` : `✂ 清手动分页（${manualOf(doc)} 处）`;
+    b.disabled = locked || color === 'red';
   });
   article.querySelectorAll('[data-red]').forEach(b => {
     b.classList.toggle('is-on', color === 'red');
@@ -502,6 +529,12 @@ function onTall(d, which) {
   changed(d);
 }
 
+function onBreaks(d) {
+  const doc = pdfs[d];
+  setTool(doc, 'breaks', !tools[doc.pdf]?.breaks);
+  changed(d);
+}
+
 function redDocs() {
   return allPdfs.filter(doc => colorOf(doc) === 'red');
 }
@@ -515,6 +548,7 @@ function toolItems() {
     if (t.orient) items.push({ doc, tool: 'orient', value: t.orient });
     if (t.floor) items.push({ doc, tool: 'floor' });
     if (t.auto) items.push({ doc, tool: 'auto' });
+    if (t.breaks) items.push({ doc, tool: 'breaks' });
   }
   return items;
 }
@@ -531,7 +565,7 @@ function updateProcessButton() {
   $('prCountApply').textContent = counts.tools;
   const by = tool => items.filter(i => i.tool === tool).length;
   $('prApply').title = items.length
-    ? `取整 ${by('floor')} 张、改方向 ${by('orient')} 张、页高改回自动 ${by('auto')} 张：后台改 Excel 并保存，再重新生成 PDF`
+    ? `取整 ${by('floor')} 张、改方向 ${by('orient')} 张、页高改回自动 ${by('auto')} 张、清手动分页 ${by('breaks')} 张：后台改 Excel 并保存，再重新生成 PDF`
     : '在标题上点方向、页高的按钮做标记，再点这里统一修改';
   paintBulk();
   if (processing) return;
@@ -597,6 +631,7 @@ function toolLine({ doc, tool, value }) {
   const n = doc.pages.length;
   const what = tool === 'floor' ? `向下取整 ${n} 页 → ${n - 1} 页`
     : tool === 'auto' ? `页高 定死 ${tallOf(doc)} 页 → 自动`
+    : tool === 'breaks' ? `清掉 ${manualOf(doc)} 处手动分页，改成自动分页`
       : `${ORIENT_TEXT[orientOf(doc)]} → ${ORIENT_TEXT[value]}`;
   return `${doc.wb_name} › ${doc.sheet}：${what}`;
 }
@@ -612,7 +647,7 @@ async function runProcess(kind) {
     if (!items.length) return;
     text = `🛠 统一修改 ${items.length} 处（${files(items.map(i => i.doc))} 份 Excel）：\n${listLines(items.map(toolLine))}`
       + '\n\n向下取整会先真导出一次核对：页数少了一页、字没缩到 85% 以下、PDF 里原来的字一个不少，才算数，不行的改回原样。'
-      + '\n改好的 Excel 保存后重新生成 PDF，末页只多一点的会重新判断、重新标黄（改了方向的要看新的 PDF 再决定取不取整）。';
+      + '\n改好的 Excel 保存后重新生成 PDF，末页只多一点的会重新判断、重新标黄（改了方向、清了手动分页的要看新的 PDF 再决定取不取整）。';
   } else {
     red = redDocs();
     if (!red.length) return;
@@ -991,6 +1026,8 @@ $('prDocs').addEventListener('click', e => {
   if (orient) onOrient(Number(orient.dataset.doc), Number(orient.dataset.orient));
   const tall = e.target.closest('[data-tall]');
   if (tall) onTall(Number(tall.dataset.doc), tall.dataset.tall);
+  const breaks = e.target.closest('[data-breaks]');
+  if (breaks) onBreaks(Number(breaks.dataset.breaks));
   const red = e.target.closest('[data-red]');
   if (red) toggleRed(Number(red.dataset.red));
   const regen = e.target.closest('[data-regen]');

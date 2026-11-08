@@ -467,7 +467,8 @@ def fix_sheet(sheet: Any, pdf_path: Path, export: Callable[[Any, Path], None], f
         changed = changed or dirty
         if text:
             changed = True
-            fixed_notes.append({"page": None, "fixed": True, "text": text})
+            # cleared：调整页面上这张表不再显示「清手动分页」
+            fixed_notes.append({"page": None, "fixed": True, "text": text, "cleared": True})
         else:
             for it in breaks:
                 failed[("break", it["row"])] = reason
@@ -729,8 +730,41 @@ def sheet_layout(sheet: Any) -> dict:
             info["tall"] = _int_or_none(setup.FitToPagesTall)
     except Exception:
         pass
+    # 页高自动时手动分页才起作用：记下有几处，调整页面上给「清手动分页」按钮（用户 2026-11-08 定）
+    info["manual"] = manual_break_count(sheet) if info["tall"] is None else 0
     info["margins"] = _margins(sheet)
     return info
+
+
+def manual_break_count(sheet: Any) -> int:
+    """这张表有几处横向手动分页；读不到算 0（不给按钮，不猜）"""
+    breaks = page_breaks.read_breaks(sheet)
+    return sum(1 for _, manual in (breaks or {}).get("h", []) if manual)
+
+
+def clear_manual_breaks(sheet: Any) -> dict:
+    """调整页面的工具：清掉这张表全部手动分页，改成 Excel 自动分页。
+    不在这里核对排得好不好：改完重新生成 PDF，由人看新的 PDF（末页只多一点的照常建议取整）。
+    返回 {"ok", "count" 清掉几处, "reason" 没清成的原因}"""
+    breaks = page_breaks.read_breaks(sheet)
+    if breaks is None:
+        return {"ok": False, "count": 0, "reason": "读不到这张表的分页"}
+    rows = [row for row, manual in breaks["h"] if manual]
+    if not rows:
+        return {"ok": False, "count": 0, "reason": "这张表已经没有手动分页了"}
+    try:
+        sheet.ResetAllPageBreaks()
+    except Exception:
+        try:
+            for row in rows:
+                sheet.Rows(row).PageBreak = page_breaks.XL_PAGEBREAK_NONE
+        except Exception as err:
+            return {"ok": False, "count": 0, "reason": f"Excel 没让清手动分页（{err}）"}
+    left = manual_break_count(sheet)
+    if left:
+        return {"ok": False, "count": len(rows) - left, "dirty": True,
+                "reason": f"还剩 {left} 处手动分页清不掉，请在 Excel 里手动处理"}
+    return {"ok": True, "count": len(rows), "reason": ""}
 
 
 def tail_hint(pdf_path: Path | str, margins: tuple[float, float]) -> dict:
