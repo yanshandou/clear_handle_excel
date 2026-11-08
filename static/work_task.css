@@ -24,7 +24,7 @@
 .wt-pick-arrow { flex: none; font-size: 12px; transition: transform .15s; }
 .wt-pick-btn[aria-expanded="true"] .wt-pick-arrow { transform: rotate(180deg); }
 .wt-pick-list {
-  position: absolute; z-index: 50; top: calc(100% + 8px); left: 0; width: 460px; max-height: 420px; overflow-y: auto;
+  position: absolute; z-index: 50; top: calc(100% + 8px); left: 0; width: 640px; max-height: 420px; overflow-y: auto;
   margin: 0; padding: 6px; list-style: none; background: #ffffff;
   border: 3px solid var(--ink); border-radius: 14px; box-shadow: 5px 5px 0 var(--ink);
 }
@@ -34,7 +34,8 @@
 }
 .wt-pick-list li + li { margin-top: 2px; }
 .wt-pick-list li:hover, .wt-pick-list li:focus { outline: none; background: #fff3c4; box-shadow: inset 0 0 0 2px #e0a800; }
-.wt-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.wt-name { overflow-wrap: anywhere; line-height: 1.35; }
+.wt-parent { font-weight: 500; color: var(--ink-2); }
 .wt-time { font-size: 12px; font-weight: 500; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .wt-chip { padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; border: 1.5px solid; white-space: nowrap; }
 .wt-chip.is-doing { color: #1d4f91; background: #e3eeff; border-color: #b7d4fb; }

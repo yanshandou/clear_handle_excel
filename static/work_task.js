@@ -6,6 +6,14 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[ch]));
   let data = { tasks: [], current: '' };
 
+  // 任务名只有最后一级文件夹，同名的分不清（如两个 06_SS障害者支援業務），列表里显示共享路径的最后 3 级
+  const tailParts = t => String(t.shared || '').split(/[\\/]+/).filter(Boolean).slice(-3);
+  const tailText = t => { const parts = tailParts(t); return parts.length ? parts.join('\\') : t.name; };
+  const tailHtml = t => {
+    const parts = tailParts(t);
+    if (parts.length < 2) return esc(t.name);
+    return `<span class="wt-parent">${parts.slice(0, -1).map(esc).join('\\')}\\</span>${esc(parts[parts.length - 1])}`;
+  };
   const pathsHtml = t => `<dt>共享</dt><dd>${esc(t.shared)}</dd><dt>参考</dt><dd>${esc(t.reference)}</dd><dt>处理</dt><dd>${esc(t.work)}</dd>`;
 
   function applyTask(task) {
@@ -25,7 +33,7 @@
     $('workTaskPanel').classList.toggle('single', single);
     $('workTaskSingle').textContent = single ? '📁 使用任务默认路径' : '📂 自选路径优先';
     $('workTaskName').textContent = single ? '📂 自选路径优先（各功能可独立指定）'
-      : current ? current.name + (current.done ? '（✓ 已完成）' : '') : '还没有任务';
+      : current ? tailText(current) + (current.done ? '（✓ 已完成）' : '') : '还没有任务';
     $('workTaskPaths').innerHTML = current ? pathsHtml(current) : '';
     $('workTaskHint').textContent = current
       ? '任务提供默认的处理、参考路径，各功能都可以自由修改。每个文件夹独立保存进度和处理记录，切回后可继续。第 4 步按任务设置传回共享。'
@@ -35,7 +43,7 @@
     $('workTaskSwitchText').textContent = others.length ? `选择一个任务…（${others.length} 个）` : '（没有以前的任务）';
     $('workTaskSwitchList').innerHTML = others.map(t => `<li role="option" tabindex="-1" data-id="${esc(t.id)}" title="共享：${esc(t.shared)}">`
       + `<span class="wt-chip ${t.done ? 'is-done' : 'is-doing'}">${t.done ? '✓ 已完成' : '进行中'}</span>`
-      + `<span class="wt-name">${esc(t.name)}</span><span class="wt-time">${esc(t.used || t.created || '')}</span></li>`).join('');
+      + `<span class="wt-name">${tailHtml(t)}</span><span class="wt-time">${esc(t.used || t.created || '')}</span></li>`).join('');
     $('workTaskSwitch').disabled = !others.length;
     if (!others.length) closePicker();
   }
