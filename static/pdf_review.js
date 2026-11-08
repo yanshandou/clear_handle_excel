@@ -242,7 +242,7 @@ function renderDocs() {
     const markable = doc.wb_path && !doc.error;
     const tail = suggestsFloor(doc) ? `<span class="pr-doc-tail" title="最后一页只印了约 ${doc.layout.tail}%，建议向下取整">末页 ${doc.layout.tail}%</span>` : '';
     const regen = doc.wb_path ? `<button type="button" class="pr-regen-btn" data-regen="${d}"
-      title="自己在 Excel 里改完并保存后点这里：只把这一份 Excel 的 PDF 重新导出一次，马上看改完的效果">🔄 重新生成</button>` : '';
+      title="只把这一份 Excel 的 PDF 重新导出一次，马上看效果。这份 Excel 上点了改方向、取整等还没改的，会先改进 Excel 再导出">🔄 重新生成</button>` : '';
     return `<article class="pr-doc" id="prDoc${d}" data-doc="${d}" data-mark="blue">
       <header class="pr-doc-head" title="${escapeHtml(doc.pdf)}">
         <span class="pr-doc-name">📄 ${escapeHtml(doc.name)}</span>
@@ -601,17 +601,19 @@ function toolLine({ doc, tool, value }) {
   return `${doc.wb_name} › ${doc.sheet}：${what}`;
 }
 
-async function runProcess(kind) {
+// onlyWb：只改这一份 Excel 上的标记（点这份的「🔄 重新生成」时）
+async function runProcess(kind, onlyWb = '') {
   if (processing || regenWb) return;
   const files = docs => new Set(docs.map(doc => doc.wb_path)).size;
   let red = [];
   let items = [];
   let text;
   if (kind === 'tools') {
-    items = toolItems();
+    items = toolItems().filter(i => !onlyWb || i.doc.wb_path === onlyWb);
     if (!items.length) return;
-    text = `🛠 统一修改 ${items.length} 处（${files(items.map(i => i.doc))} 份 Excel）：\n${listLines(items.map(toolLine))}`
-      + '\n\n向下取整会先真导出一次核对：页数少了一页、字没缩到 85% 以下、PDF 里原来的字一个不少，才算数，不行的改回原样。'
+    text = (onlyWb ? `「${items[0].doc.wb_name}」上点的标记还没改进 Excel，先改好、保存，再重新生成这份 Excel 的 PDF。\n\n` : '')
+      + `🛠 统一修改 ${items.length} 处（${files(items.map(i => i.doc))} 份 Excel）：\n${listLines(items.map(toolLine))}`
+      + (items.some(i => i.tool === 'floor') ? '\n\n向下取整会先真导出一次核对：页数少了一页、字没缩到 85% 以下、PDF 里原来的字一个不少，才算数，不行的改回原样。' : '\n')
       + '\n改好的 Excel 保存后重新生成 PDF，末页只多一点的会重新判断、重新标黄（改了方向的要看新的 PDF 再决定取不取整）。';
   } else {
     red = redDocs();
@@ -621,7 +623,7 @@ async function runProcess(kind) {
   }
   const ok = await appConfirm(text, kind === 'red'
     ? { title: '删除标红的表', tone: 'danger', okText: '删除' }
-    : { title: '统一修改页面设置', tone: 'warn', okText: '开始修改' });
+    : { title: onlyWb ? '改好并重新生成' : '统一修改页面设置', tone: 'warn', okText: onlyWb ? '改好并重新生成' : '开始修改' });
   if (!ok) return;
   try {
     await api('/api/pdf_review/process', {
@@ -732,9 +734,15 @@ function paintRegen() {
 async function regenerate(d) {
   const doc = pdfs[d];
   if (!doc || !doc.wb_path || regenWb || processing) return;
-  if (allPdfs.some(x => x.wb_path === doc.wb_path && (marks[x.pdf] || tools[x.pdf]))) {
+  // 这份 Excel 上点了还没改的（改方向、取整、页高改回自动）：先改进 Excel 再重新生成，
+  // 不然 Excel 没动、哈希一样，用户会以为没反应（用户 2026-11-08 提）
+  if (toolItems().some(i => i.doc.wb_path === doc.wb_path)) {
+    runProcess('tools', doc.wb_path);
+    return;
+  }
+  if (allPdfs.some(x => x.wb_path === doc.wb_path && marks[x.pdf])) {
     const ok = await appConfirm(
-      `重新生成「${doc.wb_name}」的 PDF（${allPdfs.filter(x => x.wb_path === doc.wb_path).length} 张表）？\n\n这份 Excel 在网页上点的标记（取整、改方向、删除）会清掉：新的 PDF 是改过的一版，末页只多一点的会重新判断、重新标黄。`,
+      `重新生成「${doc.wb_name}」的 PDF（${allPdfs.filter(x => x.wb_path === doc.wb_path).length} 张表）？\n\n这份 Excel 上标的「删除这张表」会清掉：新的 PDF 是另一版，标记对不上了。`,
       { title: '重新生成 PDF', tone: 'warn', okText: '重新生成' });
     if (!ok) return;
   }
