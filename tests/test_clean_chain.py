@@ -80,6 +80,14 @@ class CleanChainTests(unittest.TestCase):
         self.assertEqual(self.hidden.calls, [])
         self.assertFalse(clean_chain.status()["running"])
 
+    def test_problems_remember_the_paired_reference_file(self):
+        self.links.result["files"][0].update(old="/ref/a.xlsx")
+        self.links.result["files"][0]["cells"][1]["old_sheet"] = "S_old"
+        clean_chain.run("/x", {"hidden": False, "old_folder": "/ref"})
+        problem = self.steps()["links"]["problems"][0]
+        self.assertEqual((problem["old"], problem["old_sheet"], problem["cell"]), ("/ref/a.xlsx", "S_old", "D4"))
+        self.assertNotIn("old", self.steps()["bl"]["problems"][0])
+
     def test_hidden_runs_when_ticked_and_result_survives_restart(self):
         clean_chain.run("/x", {"hidden": True, "old_folder": "/ref"})
         self.assertEqual(self.hidden.calls, [("/x", "/ref")])

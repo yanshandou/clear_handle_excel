@@ -28,6 +28,22 @@ class RepairComparisonTests(unittest.TestCase):
                 for sheet, cell in (("", ""), ("NewMain", "B7"), ("NewMain", "$B$7:$D$7")):
                     self.assertEqual(compare.comparison_target(kind, str(self.current.parent), "book.xlsx", sheet, cell), self.target)
 
+    def test_clean_chain_problems_open_with_their_reference_file(self):
+        from core import clean_chain
+        problem = {"file":"book.xlsx", "path":str(self.current), "old":str(self.backup), "sheet":"NewMain",
+                   "old_sheet":"Main", "cell":"B7", "addr":"B7:D7", "reason":"x", "error":False}
+        chain = {"folder":str(self.current.parent), "steps":[{"key":"links", "state":"warn", "problems":[problem]},
+                                                             {"key":"hidden", "state":"running", "problems":[problem]}]}
+        with patch.object(clean_chain, "status", return_value=chain):
+            for sheet, cell in (("", ""), ("NewMain", "B7"), ("NewMain", "$B$7:$D$7")):
+                self.assertEqual(compare.comparison_target("chain_links", str(self.current.parent), "book.xlsx", sheet, cell), self.target)
+            for args in (("chain_links", str(self.backup.parent), "book.xlsx"),
+                         ("chain_links", str(self.current.parent), "book.xlsx", "NewMain", "A1"),
+                         ("chain_hidden", str(self.current.parent), "book.xlsx"),
+                         ("chain_bl", str(self.current.parent), "book.xlsx")):
+                with self.subTest(args=args), self.assertRaises(ValueError):
+                    compare.comparison_target(*args)
+
     def test_only_current_server_results_and_listed_cells_can_be_opened(self):
         with patch.object(link_repair, "status", return_value={"applied":self.data}):
             for args in (("unknown", str(self.current.parent), "book.xlsx"),

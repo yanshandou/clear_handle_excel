@@ -13,10 +13,38 @@ from typing import Any
 from core import excel_ops as ops
 
 
+def _same_cell(item: dict, cell: str) -> bool:
+    return cell.replace("$", "") in {item.get("addr", "").replace("$", ""),
+                                     (item.get("anchor") or item.get("cell") or item.get("addr", "").split(":")[0]).replace("$", "")}
+
+
+def _chain_target(kind: str, folder: str, name: str, sheet: str, cell: str) -> dict:
+    """精简后自动检查的「改不了 / 出错」清单：参考文件按当时配对结果，存在数据库里，重开程序也能打开"""
+    from core import clean_chain
+
+    data = clean_chain.status()
+    if not data.get("folder") or Path(data["folder"]).resolve() != Path(folder).resolve():
+        raise ValueError("自动检查结果已更新，请刷新页面后再打开")
+    step = next((step for step in data.get("steps", []) if step.get("key") == kind), None)
+    if step is None or step.get("state") in {"waiting", "running"}:
+        raise ValueError("这一步还没做完，请等它结束后再打开对比")
+    found = [p for p in step.get("problems", []) if p.get("file") == name and p.get("old")]
+    problem = next((p for p in found if p.get("sheet") == sheet and _same_cell(p, cell)), None) if sheet else (found or [None])[0]
+    if problem is None:
+        raise ValueError("这一处没有配对到参考文件，暂时不能同时打开")
+    current, backup = Path(problem["path"]).resolve(strict=True), Path(problem["old"]).resolve(strict=True)
+    if current == backup:
+        raise ValueError("当前文件和参考文件是同一个文件，不能用于对比")
+    return {"current": current, "backup": backup, "sheet": problem.get("sheet", ""),
+            "old_sheet": problem.get("old_sheet") or problem.get("sheet", ""), "cell": problem.get("cell", "")}
+
+
 def comparison_target(kind: str, folder: str, name: str, sheet: str = "", cell: str = "") -> dict:
     """只接受服务端结果中已经配对的两个文件，旧表定位也由服务端清单决定。"""
     from core import link_repair, mark_finder, hidden_repair
 
+    if kind in {"chain_links", "chain_hidden"}:
+        return _chain_target(kind.removeprefix("chain_"), folder, name, sheet, cell)
     if kind not in {"links", "colors", "hidden"}:
         raise ValueError("未知的修复结果类型")
     status = {"links": link_repair, "colors": mark_finder, "hidden": hidden_repair}[kind].status()
@@ -30,8 +58,7 @@ def comparison_target(kind: str, folder: str, name: str, sheet: str = "", cell: 
         raise ValueError("这份文件没有唯一对应的备份，暂时不能同时打开")
     cells = file.get("cells") or file.get("hits") or []
     if sheet:
-        item = next((item for item in cells if item["sheet"] == sheet
-                     and cell.replace("$", "") in {item["addr"].replace("$", ""), item.get("anchor", item["addr"].split(":")[0]).replace("$", "")}), None)
+        item = next((item for item in cells if item["sheet"] == sheet and _same_cell(item, cell)), None)
         if item is None:
             raise ValueError("这个位置不在当前修复结果中，请刷新页面")
     else:
@@ -123,7 +150,7 @@ class ComparisonWindows:
     def open(self, target: dict) -> dict:
         opened, notes, windows = [], [], {}
         for role, readonly in (("current", False), ("backup", True)):
-            label = "当前文件" if role == "current" else "原始备份"
+            label = "当前文件" if role == "current" else "参考文件"
             try:
                 excel, book = self._open(target[role], readonly)
                 windows[role] = (excel, book)
