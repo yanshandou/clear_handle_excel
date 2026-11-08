@@ -114,9 +114,13 @@ def drop(folder: str) -> None:
 
 def _problem(file: dict, item: dict | None, reason: str, *, error: bool = False) -> dict:
     found = {"file": file.get("name", ""), "path": file.get("path", ""), "reason": reason, "error": error}
+    if file.get("old"):  # 配对到的参考文件：点路径时和当前文件一起打开，人工对照
+        found["old"] = file["old"]
     if item:
         found.update(sheet=item.get("sheet", ""), cell=item.get("anchor") or item.get("addr", ""),
                      addr=item.get("addr", ""))
+        if file.get("old"):
+            found["old_sheet"] = item.get("old_sheet") or item.get("sheet", "")
     return found
 
 

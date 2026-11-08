@@ -17,11 +17,13 @@
   const norm = value => String(value || '').trim().replace(/^["']|["']$/g, '').replace(/[\\/]+/g, '/')
     .replace(/\/$/, '').toLowerCase();
 
-  function problemHtml(problem) {
+  // 有配对到的参考文件（引用错误 / 隐藏页）：点了左边开处理后的文件、右边只读开参考文件，都跳到同一格
+  function problemHtml(problem, step) {
     const where = problem.sheet ? `${problem.sheet}${problem.cell ? `!${problem.cell}` : ''}` : '';
     const label = esc(problem.file || '任务') + (where ? ` <span class="chain-where">${esc(where)}</span>` : '');
     const link = problem.file && window.excelLinkHtml
-      ? window.excelLinkHtml(label, { folder: data.folder, file: problem.file, sheet: problem.sheet, cell: problem.cell })
+      ? window.excelLinkHtml(label, { folder: data.folder, file: problem.file, sheet: problem.sheet, cell: problem.cell,
+        ...(problem.old ? { compare: `chain_${step.key}` } : {}) })
       : label;
     return `<li class="${problem.error ? 'is-error' : ''}">${link}<span class="chain-reason">${esc(problem.reason)}</span></li>`;
   }
@@ -33,7 +35,7 @@
     const skipped = step.problem_total - step.error_total;
     const summary = [skipped ? `改不了 ${skipped} 处` : '', errors].filter(Boolean).join('，');
     const list = step.problem_total
-      ? `<details class="chain-problems"><summary>${esc(summary)}（点开看是哪些）</summary><ul>${step.problems.map(problemHtml).join('')}${more}</ul></details>`
+      ? `<details class="chain-problems"><summary>${esc(summary)}（点开看是哪些）</summary><ul>${step.problems.map(problem => problemHtml(problem, step)).join('')}${more}</ul></details>`
       : '';
     const detail = ['done', 'warn', 'failed'].includes(step.state) && DETAIL_PAGES[step.key]
       ? `<a class="chain-detail" href="${DETAIL_PAGES[step.key]}" title="在原来的页面看这一步每个文件的详细结果">看详细结果 ↗</a>` : '';

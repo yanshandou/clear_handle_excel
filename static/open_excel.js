@@ -39,7 +39,7 @@
       .map(key => ` data-${key}="${escapeAttr(target[key])}"`).join('');
     const where = target.sheet ? `并跳到 ${target.sheet}${target.cell ? `!${target.cell}` : ''}` : '';
     const title = target.blocked ? `暂时不能打开：${target.blocked}` : target.compare
-      ? `同时打开当前文件和原始备份（只读），左右对比${where}` : `点击在 Excel 中打开${where}`;
+      ? `同时打开当前文件和参考文件（只读），左右对比${where}` : `点击在 Excel 中打开${where}`;
     const key = linkKey(target);
     const seen = visited.has(key) ? `is-visited ${key === lastKey ? 'is-last ' : ''}` : '';
     return `<a href="#" class="excel-link ${target.blocked ? 'is-blocked ' : ''}${seen}${extraClass}"${data}`
@@ -101,7 +101,7 @@
     if (opening.has(key)) return;
     opening.add(key);
     link.classList.add('opening');
-    toast(compare ? '正在打开当前文件和备份…' : '正在用 Excel 打开…');
+    toast(compare ? '正在打开当前文件和参考文件…' : '正在用 Excel 打开…');
     try {
       const res = await fetch(compare ? '/api/excel/compare' : '/api/excel/open', {
         method: 'POST',
@@ -113,7 +113,7 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      toast(data.note ? data.note : compare ? '已同时打开：左侧当前文件，右侧原始备份（只读）' : '已在 Excel 中打开', !!data.note);
+      toast(data.note ? data.note : compare ? '已同时打开：左侧当前文件，右侧参考文件（只读）' : '已在 Excel 中打开', !!data.note);
     } catch (e) {
       toast(`无法打开：${e.message}`, true);
     } finally {
