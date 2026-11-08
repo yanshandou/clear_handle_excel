@@ -2,15 +2,15 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PDF 人工复检 - Excel 整理工具箱</title>
+  <title>调整页面 - Excel 整理工具箱</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
   <link rel="stylesheet" href="/static/pdf_review.css">
 </head>
 <body>
   <header class="app-header">
-    <a href="/" class="header-brand"><div class="header-logo-badge">📋</div><div class="header-title"><h1>PDF 人工复检</h1><span class="subtitle">大 / 中 / 小图切换 · 单击换颜色标记 · Ctrl + 单击用 Excel 打开那一页</span></div></a>
-    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/workbench" class="nav-link">📐 切字检查工作台</a><a href="/records" class="nav-link">📋 执行记录</a><a href="/distribute" class="nav-link nav-next" title="复检完了：去第 4 步上传（上传前自动清标记色、恢复颜色、视图标准化）">下一步：上传 ➜</a></nav>
+    <a href="/" class="header-brand"><div class="header-logo-badge">📋</div><div class="header-title"><h1>调整页面</h1><span class="subtitle">点按钮告诉程序怎么改 · 统一修改后看新的 PDF · Ctrl + 单击用 Excel 打开那一页</span></div></a>
+    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/records" class="nav-link">📋 执行记录</a><a href="/workbench" class="nav-link nav-next" title="页面都调好了：去下一步查看切字（扫描标色、调整单元格）">下一步：查看切字 ➜</a></nav>
   </header>
   <main class="container pr-container">
     <section class="panel pr-setup">
@@ -22,14 +22,15 @@
         <button id="prLoad" type="button" class="btn btn-primary">📂 加载 PDF</button>
       </div>
       <ul class="pr-tips">
-        <li><b>单击</b>页面换颜色：蓝（不用管）→ 黄（这一页要人工改）→ 红（删除整张表）→ 蓝。</li>
-        <li>按住 <b>Ctrl 单击</b>页面（或右键菜单）：用 Excel 打开这张表，选中 PDF 这一页打印的范围。</li>
-        <li>填了原始备份文件夹时，老版本也一起打开（只读）、跳到同一块，左右并排对照（按相同的相对路径或唯一的文件名找）。</li>
-        <li>顶栏和底部条不碰 3 秒自动隐藏，鼠标移到窗口最上面或最下面就会出来。</li>
-        <li>在 Excel 里改完、<b>保存</b>后，点 PDF 标题右边的<b>「🔄 重新生成」</b>：只把这一份 Excel 的 PDF 重新导出一次，马上看到改完的样子。Excel 没改过（还没保存）会先提醒。</li>
-        <li>有一页黄标题就是黄，标了红整张表都是红。标题右边的三个按钮一次改整张表。看完点底部按钮，黄和红分开处理：<b>「📗 打开标黄」</b>用 Excel 打开标黄的文件（一次最多 10 个 Excel，同一份 Excel 有几张标黄的表也只算 1 个；按钮上写着「已开 / 共几个」，剩下的再点一次开下一批）；<b>「🗑 删除标红」</b>在后台删掉标红的表并保存。</li>
-        <li><b>工具箱</b>：标题右边的<b>「⤓ 取整 5→4 页」</b>是向下取整，最后一页只多一点（4.1 页这种）时点一下做标记，再点一次取消。看完点底部<b>「⤓ 向下取整」</b>统一处理：表设成 1 页宽、少一页高，后台真导出一次核对（页数少了一页、字没缩到 85% 以下、原来的字一个不少）才保存，不行的改回原样；改好的 Excel 会重新生成 PDF。</li>
+        <li>导出 PDF 时每张表已经设成<b>宽一页、高自动</b>：横向不会拆成几页，纵向几页由 Excel 自己定。</li>
+        <li>每张表标题右边三组按钮：<b>方向</b>（竖向 / 横向）、<b>页高</b>（高自动 / ⤓ 取整 N→N-1）、<b>删除这张表</b>。点了只是做标记，再点一次取消。</li>
+        <li><b>末页只多一点</b>（最后一页印了不到 40%）的表自动标<b>黄</b>，建议向下取整；不想取整就点一下「⤓ 取整」取消。</li>
+        <li>看完点底部<b>「🛠 统一修改」</b>：后台改 Excel、保存，再重新生成 PDF。改了方向后要不要取整就不一定了，看新的 PDF 再决定。可以来回改好几轮，都没问题了再去下一步。</li>
+        <li>上面的<b>分类</b>只看某一类的表，还能一次改这一类（比如末页只多一点的全部取整）。</li>
+        <li>要自己在 Excel 里改：点标题上的 Excel 路径，或按住 <b>Ctrl 单击</b>页面（或右键菜单），Excel 打开并跳到那一页；改完保存后点<b>「🔄 重新生成」</b>。</li>
+        <li>填了原始备份文件夹时，打开时老版本也一起打开（只读）、跳到同一块，左右并排对照。顶栏和底部条不碰 3 秒自动隐藏，鼠标移到窗口最上面或最下面就会出来。</li>
       </ul>
+      <div id="prCats" class="pr-cats" role="group" aria-label="按问题分类" hidden></div>
       <p id="prStatus" class="pr-status" role="status" aria-live="polite">输入文件夹后点「加载 PDF」。</p>
     </section>
 
@@ -43,22 +44,15 @@
         <div id="prWhereText" class="pr-where-text"></div>
         <div id="prTrack" class="pr-track" title="点一下跳到那里"><div id="prFill" class="pr-fill"></div></div>
       </div>
-      <!-- 标黄和标红分开处理（用户 2026-11-02 定）：打开 Excel 和删表是两回事，各一个按钮 -->
-      <button id="prOpenYellow" type="button" class="btn pr-process is-yellow" data-process="yellow" disabled
-        title="用 Excel 打开标黄的文件，跳到标黄时点的那一格（一次最多 10 份 Excel）">
-        <span class="pr-process-text" data-process-text="yellow">📗 打开标黄</span>
-        <span class="pr-count is-yellow" title="标黄的 Excel：已打开 / 共几个"><span id="prCountYellow">0</span></span>
-      </button>
       <button id="prDeleteRed" type="button" class="btn btn-danger pr-process" data-process="red" disabled
         title="在后台删掉标红的表并保存，对应的 PDF 也删掉">
         <span class="pr-process-text" data-process-text="red">🗑 删除标红</span>
         <span class="pr-count is-red" title="标红的表（删除这张表）"><span id="prCountRed">0</span></span>
       </button>
-      <!-- 工具箱（用户 2026-11-07 定）：标题上点了「⤓ 取整」的表，在这里统一挤成少一页 -->
-      <button id="prFloor" type="button" class="btn btn-primary pr-process" data-process="floor" disabled
-        title="把标了「⤓ 取整」的表设成 1 页宽、少一页高，后台真导出核对过才保存，并重新生成 PDF">
-        <span class="pr-process-text" data-process-text="floor">⤓ 向下取整</span>
-        <span class="pr-count is-tool" title="标了「⤓ 取整」的表"><span id="prCountFloor">0</span></span>
+      <!-- 工具箱（用户 2026-11-07 定）：标题上点的取整、改方向、页高改回自动，在这里统一改 -->
+      <button id="prApply" type="button" class="btn btn-primary pr-process" data-process="tools" disabled>
+        <span class="pr-process-text" data-process-text="tools">🛠 统一修改</span>
+        <span class="pr-count is-tool" title="要改的地方"><span id="prCountApply">0</span></span>
       </button>
       <div id="prView" class="pv-size-switch pr-view" role="group" aria-label="页面大小">
         <button type="button" class="btn btn-outline btn-sm" data-view="large" title="每页宽度占满整个屏幕宽">大图</button>
@@ -70,9 +64,7 @@
     <!-- 右键菜单：fixed 浮层，开关都不挪页面 -->
     <div id="prMenu" class="pr-menu" role="menu" hidden>
       <div class="pr-menu-title"></div>
-      <button type="button" role="menuitem" data-menu="blue"><i class="pr-dot is-blue"></i><span><b>这一页不用管</b><small>默认</small></span></button>
-      <button type="button" role="menuitem" data-menu="yellow"><i class="pr-dot is-yellow"></i><span><b>这一页要人工改</b><small></small></span></button>
-      <button type="button" role="menuitem" data-menu="red"><i class="pr-dot is-red"></i><span><b>删除这张表</b><small>整张表所有页，点「删除标红」时在后台删掉并保存</small></span></button>
+      <button type="button" role="menuitem" data-menu="red"><i class="pr-dot is-red"></i><span><b>删除这张表</b><small>点「🗑 删除标红」时在后台删掉并保存</small></span></button>
       <hr>
       <button type="button" role="menuitem" data-menu="open"><i class="pr-dot is-open">📗</i><span><b>在 Excel 打开这一页</b><small>也可以 Ctrl + 单击</small></span></button>
     </div>

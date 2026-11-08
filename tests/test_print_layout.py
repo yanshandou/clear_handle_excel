@@ -365,7 +365,8 @@ class PersistenceTests(unittest.TestCase):
     def test_batch_export_saves_chosen_direction_into_excel(self):
         excel, read_book, write_book, exported = self._export_books()
         read_book.Save.assert_not_called()
-        self.assertTrue(excel.Workbooks.Open.call_args_list[0].kwargs["ReadOnly"])
+        # 导出时要把「宽一页」存进 Excel（调整页面，2026-11-07），文件没打开着就可写打开
+        self.assertFalse(excel.Workbooks.Open.call_args_list[0].kwargs["ReadOnly"])
         self.assertNotIn("ReadOnly", excel.Workbooks.Open.call_args_list[1].kwargs)
         self.assertEqual(self.sheet.PageSetup.Orientation, 1)  # 只读那份用完就恢复
         self.assertEqual(self.saved_sheet.PageSetup.Orientation, 2)

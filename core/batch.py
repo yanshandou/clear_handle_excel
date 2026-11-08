@@ -3932,7 +3932,8 @@ def run() -> list[str]:
                 watchdog.deadline(limit)
                 step("定上限")
                 try:
-                    _refresh(excel, path, session=session, timing=checking, compact_print_tail=True, view=view,
+                    # 末页要不要取整在「调整页面」由用户定（2026-11-07），扫描不再自动缩
+                    _refresh(excel, path, session=session, timing=checking, compact_print_tail=False, view=view,
                              before_print_save=lambda: watchdog.deadline(None))
                 finally:
                     watchdog.deadline(None)

@@ -1397,7 +1397,7 @@ $('scanLimit').addEventListener('change', event => {
 $('slowClearBtn').addEventListener('click', () => action(() => post('/api/batch/slow_files/clear')));
 $('startBtn').addEventListener('click', async () => {
   if (!$('folderInput').value.trim()) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
-  if (!(await appConfirm(`从 Excel 估算末页占用，不足 40% 时缩放到少一页；每张表只导出一次 PDF，检测后标色。\n保存页面布局视图、标记颜色和打印页数设置；保留原选区和显示缩放，不修改行高、列宽、换行、原有样式或分页线。\n\n确定开始扫描吗？`, { title: '开始扫描', okText: '开始扫描' }))) return;
+  if (!(await appConfirm(`每张表导出一次 PDF，检测后标色（打印设置在「调整页面」定，扫描不改）。\n保存页面布局视图和标记颜色；保留原选区和显示缩放，不修改行高、列宽、换行、原有样式或分页线。\n\n确定开始扫描吗？`, { title: '开始扫描', okText: '开始扫描' }))) return;
   await startBatch({ highlight: { types: typeColors } });
 });
 $('unhighlightBtn').addEventListener('click', async () => {

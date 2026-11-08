@@ -352,7 +352,7 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(pdf_review.process_status()["result"]["failed"][0]["reason"], "打不开")
         self.assertTrue(self.pdfs["明細"].exists())
 
-    def run_floor(self, sheets, found, unchanged=True, book=None):
+    def run_floor(self, sheets, found, unchanged=True, book=None, tools=None):
         book = book or FakeBook(["一覧", "JSONサンプル", "明細"])
         with patch.object(pdf_review, "open_workbook_checked", return_value=book), \
                 patch.object(pdf_review, "workbook_locked", return_value=False), \
@@ -360,7 +360,7 @@ class ProcessTests(unittest.TestCase):
                 patch.object(pdf_review.page_fill, "floor_pages", side_effect=found) as floor, \
                 patch.object(wf, "_export_workbook_pdfs") as export, \
                 patch("core.reporter.suspend_updates"):
-            pdf_review.process([], [], [{"pdf": str(self.pdfs[s])} for s in sheets])
+            pdf_review.process([], [], tools if tools is not None else [{"pdf": str(self.pdfs[s])} for s in sheets])
             for _ in range(200):
                 if not pdf_review.process_status()["running"]:
                     break
@@ -376,20 +376,20 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(book.saved, 1)
         export.assert_called_once()
         self.assertEqual(export.call_args.kwargs, {"force": True})
-        self.assertEqual([(e["sheet"], e["reason"]) for e in result["floored"]], [("一覧", "5 页 → 4 页，字缩到约 96%")])
-        self.assertEqual([e["sheet"] for e in result["floor_failed"]], ["明細"])
+        self.assertEqual([(e["sheet"], e["reason"]) for e in result["changed"]], [("一覧", "5 页 → 4 页，字缩到约 96%")])
+        self.assertEqual([e["sheet"] for e in result["change_failed"]], ["明細"])
 
     def test_floor_nothing_ok_is_not_saved(self):
         bad = {"ok": False, "reason": "只有 1 页，不能再少了"}
         result, book, _, export = self.run_floor(["一覧"], [bad])
         self.assertEqual(book.saved, 0)
         export.assert_not_called()
-        self.assertEqual(result["floor_failed"][0]["reason"], "只有 1 页，不能再少了")
+        self.assertEqual(result["change_failed"][0]["reason"], "只有 1 页，不能再少了")
 
     def test_floor_refuses_when_excel_changed_after_export(self):
         result, book, floor, _ = self.run_floor(["一覧"], [], unchanged=False)
         floor.assert_not_called()
-        self.assertIn("重新生成", result["floor_failed"][0]["reason"])
+        self.assertIn("重新生成", result["change_failed"][0]["reason"])
 
     def test_floor_dirty_sheet_blocks_save(self):
         ok = {"ok": True, "reason": "", "before": 5, "after": 4, "scale": 0.96, "manual": False}
@@ -397,8 +397,44 @@ class ProcessTests(unittest.TestCase):
         result, book, _, export = self.run_floor(["一覧", "明細"], [ok, dirty])
         self.assertEqual(book.saved, 0)
         export.assert_not_called()
-        self.assertEqual(result["floored"], [])
-        self.assertEqual(len(result["floor_failed"]), 2)
+        self.assertEqual(result["changed"], [])
+        self.assertEqual(len(result["change_failed"]), 2)
+
+    def test_orientation_and_auto_tall_are_saved_and_regenerated(self):
+        # 调整页面（用户 2026-11-07）：改方向、页高改回自动，和取整一样改完保存、重新导出
+        book = FakeBook(["一覧", "JSONサンプル", "明細"])
+        book.sheets[0].PageSetup = SimpleNamespace(Orientation=1, Zoom=False, FitToPagesWide=1, FitToPagesTall=4)
+        book.sheets[2].PageSetup = SimpleNamespace(Orientation=1, Zoom=False, FitToPagesWide=1, FitToPagesTall=3)
+        tools = [{"pdf": str(self.pdfs["一覧"]), "tool": "orient", "value": 2},
+                 {"pdf": str(self.pdfs["明細"]), "tool": "auto"}]
+        result, book, floor, export = self.run_floor([], [], book=book, tools=tools)
+        floor.assert_not_called()
+        self.assertEqual(book.saved, 1)
+        export.assert_called_once()
+        first, third = book.sheets[0].PageSetup, book.sheets[2].PageSetup
+        self.assertEqual((first.Orientation, first.FitToPagesTall), (2, False))
+        self.assertEqual((third.Zoom, third.FitToPagesWide, third.FitToPagesTall), (False, 1, False))
+        reasons = {e["sheet"]: (e["tool"], e["reason"]) for e in result["changed"]}
+        self.assertEqual(reasons["一覧"][0], "orient")
+        self.assertIn("竖向 → 横向", reasons["一覧"][1])
+        self.assertIn("改回自动", reasons["一覧"][1])
+        self.assertEqual(reasons["明細"], ("auto", "页高改回自动（宽一页、高由 Excel 定）"))
+
+    def test_floor_waits_when_same_sheet_changes_orientation(self):
+        book = FakeBook(["一覧", "JSONサンプル", "明細"])
+        book.sheets[0].PageSetup = SimpleNamespace(Orientation=1, Zoom=False, FitToPagesWide=1, FitToPagesTall=False)
+        tools = [{"pdf": str(self.pdfs["一覧"]), "tool": "floor"},
+                 {"pdf": str(self.pdfs["一覧"]), "tool": "orient", "value": 2}]
+        result, book, floor, _ = self.run_floor([], [], book=book, tools=tools)
+        floor.assert_not_called()
+        self.assertEqual([e["tool"] for e in result["changed"]], ["orient"])
+        self.assertIn("改完方向看新的 PDF", result["change_failed"][0]["reason"])
+
+    def test_unknown_tool_is_rejected(self):
+        with self.assertRaises(ValueError):
+            pdf_review.process([], [], [{"pdf": str(self.pdfs["一覧"]), "tool": "zoom"}])
+        with self.assertRaises(ValueError):
+            pdf_review.process([], [], [{"pdf": str(self.pdfs["一覧"]), "tool": "orient", "value": 3}])
 
     def test_rejects_busy_or_outside_pdf(self):
         self.state["busy"] = True

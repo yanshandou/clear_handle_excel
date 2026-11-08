@@ -285,7 +285,7 @@ class QuickTaskTests(unittest.TestCase):
         self.excel.Quit.assert_called_once()
         self.assertEqual([key for key, _ in self.excel.opened], ["a.xls", "sub/b.xls"])
 
-    def test_export_pdf_is_read_only_and_skips_hidden_history_and_backup_sheets(self):
+    def test_export_pdf_skips_hidden_history_and_backup_sheets(self):
         self.reporter.init_execution_batch(
             "old", self.folder, [], backup_folder=self.root / "old_backup",
         )
@@ -295,7 +295,7 @@ class QuickTaskTests(unittest.TestCase):
         job = self.run_task("export_pdf")
 
         self.assertEqual(job["status"], "completed")
-        self.assertEqual(self.excel.opened, [("spec.xlsx", True)])
+        self.assertEqual(self.excel.opened, [("spec.xlsx", False)])
         book = self.books["spec.xlsx"]
         self.assertEqual(book.saved, [])
         # 表紙_20250101 有原表，是备份表；基本情報_20241003 没有原表，照常导出，且直接保存在 Excel 所在目录下
@@ -364,7 +364,7 @@ class QuickTaskTests(unittest.TestCase):
 
         job = self.workflow.STATE["job"]
         self.assertEqual(job["status"], "completed")
-        self.assertEqual(self.excel.opened, [("a.xlsx", True)])
+        self.assertEqual(self.excel.opened, [("a.xlsx", False)])
         self.assertEqual((self.folder / "PDFS" / "a_Sheet1.pdf").read_bytes(), b"pdf of a.xlsm")
         self.assertEqual((self.folder / "PDFS" / "a_Sheet1_2.pdf").read_bytes(), b"pdf of a.xlsx")
 
@@ -383,7 +383,7 @@ class QuickTaskTests(unittest.TestCase):
         self.excel.opened.clear()
         job = self.run_task("export_pdf")
         self.assertEqual(job["status"], "completed")
-        self.assertEqual(self.excel.opened, [("sub/b.xlsx", True)])
+        self.assertEqual(self.excel.opened, [("sub/b.xlsx", False)])
         self.assertEqual((pdfs / "a_Sheet1.pdf").stat().st_mtime_ns, before[pdfs / "a_Sheet1.pdf"])
         self.assertEqual(self.report_files()["a.xlsx"]["exported_pdfs"], 2)
         self.assertTrue(any("沿用上次导出的 2 份 PDF" in line for line in self.workflow.STATE["logs"]))
@@ -402,7 +402,7 @@ class QuickTaskTests(unittest.TestCase):
         (pdfs / "a_Sheet1.pdf").write_bytes(b"something else entirely")
         self.excel.opened.clear()
         self.run_task("export_pdf")
-        self.assertEqual(self.excel.opened, [("a.xlsx", True)])
+        self.assertEqual(self.excel.opened, [("a.xlsx", False)])
         self.assertEqual((pdfs / "a_Sheet1.pdf").read_bytes(), b"pdf of a.xlsx")
 
     def test_export_moves_away_from_mixed_pdfs_and_prunes_removed_excel(self):
@@ -424,12 +424,57 @@ class QuickTaskTests(unittest.TestCase):
         self.assertEqual(list(manifest["files"]), ["a.xlsx"])
         self.assertTrue(a.exists())
 
+    def test_export_sets_one_page_wide_and_records_layout(self):
+        # 调整页面（用户 2026-11-07）：导出前每张表设成宽一页、高自动并保存；已经是宽一页的（取整定过页高）不动
+        a = self.add_book("a.xlsx", ["縮放", "取整過"])
+        zoomed, floored = self.books["a.xlsx"].sheets
+        zoomed.PageSetup = SimpleNamespace(Zoom=70, FitToPagesWide=False, FitToPagesTall=False, Orientation=1,
+                                           TopMargin=0, BottomMargin=0)
+        floored.PageSetup = SimpleNamespace(Zoom=False, FitToPagesWide=1, FitToPagesTall=3, Orientation=2,
+                                            TopMargin=0, BottomMargin=0)
+        job = self.run_task("export_pdf")
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(self.excel.opened, [("a.xlsx", False)])
+        self.assertEqual((zoomed.PageSetup.Zoom, zoomed.PageSetup.FitToPagesWide, zoomed.PageSetup.FitToPagesTall),
+                         (False, 1, False))
+        self.assertEqual(floored.PageSetup.FitToPagesTall, 3)
+        self.assertEqual(len(self.books["a.xlsx"].saved), 1)
+        manifest = json.loads((self.folder / "PDFS" / "PDF导出记录.json").read_text(encoding="utf-8"))
+        entry = manifest["files"]["a.xlsx"]
+        self.assertTrue(entry["fit"])
+        layouts = {item["sheet"]: item["layout"] for item in entry["pdfs"]}
+        self.assertEqual((layouts["縮放"]["orient"], layouts["縮放"]["tall"]), (1, None))
+        self.assertEqual((layouts["取整過"]["orient"], layouts["取整過"]["tall"]), (2, 3))
+        self.assertTrue(any("设成宽一页、高自动并保存：[縮放]（原来缩放 70%）" in line for line in self.workflow.STATE["logs"]))
+
+        # 旧版本导出的记录（没有 fit）不沿用：要再打开一次设宽一页
+        del entry["fit"]
+        (self.folder / "PDFS" / "PDF导出记录.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        self.excel.opened.clear()
+        self.run_task("export_pdf")
+        self.assertEqual(self.excel.opened, [("a.xlsx", False)])
+        self.assertEqual(len(self.books["a.xlsx"].saved), 1)  # 都已经是宽一页了，不用再保存
+
+    def test_export_of_open_workbook_is_read_only_and_not_marked_fit(self):
+        self.add_book("a.xlsx", ["Sheet1"])
+        sheet = self.books["a.xlsx"].sheets[0]
+        sheet.PageSetup = SimpleNamespace(Zoom=100, FitToPagesWide=False, FitToPagesTall=False, Orientation=1,
+                                          TopMargin=0, BottomMargin=0)
+        self.patch_value(self.workflow, "workbook_locked", lambda path: True)
+        self.run_task("export_pdf")
+        self.assertEqual(self.excel.opened, [("a.xlsx", True)])
+        self.assertEqual(sheet.PageSetup.Zoom, 100)
+        self.assertEqual(self.books["a.xlsx"].saved, [])
+        manifest = json.loads((self.folder / "PDFS" / "PDF导出记录.json").read_text(encoding="utf-8"))
+        self.assertNotIn("fit", manifest["files"]["a.xlsx"])
+        self.assertTrue(any("没能设成宽一页" in line for line in self.workflow.STATE["logs"]))
+
     def test_force_exports_again_even_if_unchanged(self):
         a = self.add_book("a.xlsx", ["Sheet1"])
         self.run_task("export_pdf")
         self.excel.opened.clear()
         paths = self.workflow._export_workbook_pdfs(lambda: self.excel, a, self.folder.resolve(), set(), force=True)
-        self.assertEqual(self.excel.opened, [("a.xlsx", True)])
+        self.assertEqual(self.excel.opened, [("a.xlsx", False)])
         self.assertEqual(paths, [self.folder.resolve() / "PDFS" / "a_Sheet1.pdf"])
         self.assertEqual(paths[0].read_bytes(), b"pdf of a.xlsx")
 

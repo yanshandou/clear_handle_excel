@@ -1,17 +1,17 @@
 const TASKS = {
   export_pdf: {
-    title: '人工复检',
-    icon: '📋',
+    title: '调整页面',
+    icon: '📐',
     theme: 'feature-sky',
-    sub: '先把每个工作簿的可见工作表分别导出为 PDF，再逐页查看、标记、一键处理',
+    sub: '先把每张表设成宽一页、高自动并导出 PDF，再在网页上点按钮告诉程序怎么改（横竖、向下取整），程序改完重新生成 PDF',
     notes: [
-      '全部导出完后按钮变成「📋 查看 PDF」，点了进复检页面',
-      '自动递归扫描所选文件夹及其所有子文件夹，以只读方式打开 Excel 导出',
-      '跳过隐藏表、変更履歴和备份表',
-      '每张 Sheet 按 Excel 里原来设的打印方向导出，不比较横向竖向，也不改 Excel 里的方向',
+      '全部导出完后按钮变成「📐 调整页面」，点了进调整页面',
+      '导出前每张表设成「宽一页、高自动」并保存进 Excel：横向不会拆成几页，纵向几页由 Excel 自己定（已经是宽一页的表不动）',
+      '末页只多一点的表在调整页面上自动标黄，建议向下取整；改方向、取整都在网页上点，程序去改 Excel',
+      '自动递归扫描所选文件夹及其所有子文件夹；跳过隐藏表、変更履歴和备份表',
+      '正在 Excel 里打开的文件不改设置，只按原样导出',
       'PDF 统一放在所选文件夹下的「PDFS」文件夹里，子文件夹结构和 Excel 一样，不和 Excel 混在一起',
       '导出时记下每个 Excel 的哈希值：Excel 没改过就沿用上次的 PDF，改过的才重新导出',
-      '以前和 Excel 放在一起的旧 PDF（名字是「Excel 文件名_….pdf」的）会删掉，其他 PDF 不动',
     ],
     runLabel: '📄 导出 PDF',
   },
@@ -67,7 +67,7 @@ function saveLastFolder(folder) {
   } catch (e) {}
 }
 
-// 导出完点「查看 PDF」：复检页面读这个文件夹，先记下输入框里的路径再过去
+// 导出完点「调整页面」：调整页面读这个文件夹，先记下输入框里的路径再过去
 function openPdfReview() {
   const folder = document.getElementById('taskFolderInput').value.trim();
   if (folder) saveLastFolder(folder);
@@ -188,13 +188,13 @@ function renderDialog() {
     hint.textContent = '可以关闭此窗口，任务会在后台继续';
   } else if (phase === 'done') {
     btn.disabled = false;
-    // 人工复检：导出完一个按钮变成「查看 PDF」；没导完的先继续导
-    btn.textContent = canResumeActiveTask() ? '🔁 继续上次任务' : activeKind === 'export_pdf' ? '📋 查看 PDF' : '再执行一次';
+    // 调整页面：导出完一个按钮变成「调整页面」；没导完的先继续导
+    btn.textContent = canResumeActiveTask() ? '🔁 继续上次任务' : activeKind === 'export_pdf' ? '📐 调整页面' : '再执行一次';
   } else {
     btn.disabled = busyOther;
     btn.textContent = task.runLabel;
   }
-  // 人工复检窗口：导出 PDF 是蓝色，导完的「查看 PDF」是绿色，一眼分得出是哪一步
+  // 调整页面窗口：导出 PDF 是蓝色，导完的「调整页面」是绿色，一眼分得出是哪一步
   const viewing = activeKind === 'export_pdf' && phase === 'done' && !canResumeActiveTask();
   btn.classList.toggle('btn-success', activeKind === 'export_pdf' && !viewing);
   btn.classList.toggle('btn-primary', activeKind !== 'export_pdf' || viewing);

@@ -739,7 +739,7 @@
     const ready = readyRels();
     if (!task || !ready.length) return;
     const list = ready.slice(0, 8).join('\n') + (ready.length > 8 ? '\n…' : '');
-    if (!await window.appConfirm(`这一轮 前 3 步（精简 Sheet、查看切字、人工复检）只处理这 ${ready.length} 个文件，其他文件不动：\n\n${list}\n\n`
+    if (!await window.appConfirm(`这一轮 前 3 步（精简 Sheet、调整页面、查看切字）只处理这 ${ready.length} 个文件，其他文件不动：\n\n${list}\n\n`
       + '这几个全部上传成功后自动回到整个文件夹；也可以随时点页面顶部的「退出」。', { title: '本轮只处理待重新处理文件', okText: '开启', cancelText: '先不用' })) return;
     try {
       const result = await post('/api/tasks/focus', { id: task.id, files: ready });

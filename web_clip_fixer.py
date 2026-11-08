@@ -482,7 +482,7 @@ class WebHandler(upload_manager.Handler):
                                                                 payload.get("pages"), _require_folder({"folder": payload["old_folder"]}, "reference")
                                                                 if payload.get("old_folder") else "")})
         elif self.path == "/api/pdf_review/process":
-            pdf_review.process(payload.get("red"), payload.get("yellow"), payload.get("floor"))
+            pdf_review.process(payload.get("red"), payload.get("yellow"), payload.get("tools", payload.get("floor")))
             self._send_json({"ok": True})
         elif self.path == "/api/pdf_review/regenerate":
             try:
