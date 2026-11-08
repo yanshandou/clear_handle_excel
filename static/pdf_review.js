@@ -73,8 +73,13 @@ function tallOf(doc) {
   return Number.isInteger(doc.layout?.tall) ? doc.layout.tall : null;
 }
 
+const FLOOR_HINT_PCT = 20; // 末页印了不到 20% 才建议取整（用户 2026-11-08 定；和后台 page_fill.FLOOR_HINT_FILL 一样）
+
+// 按记下的末页占比判断，以前按 40% 导出的记录也按新标准算，不用重新导出
 function suggestsFloor(doc) {
-  return !!doc.layout?.floor && doc.pages.length > 1;
+  if (doc.pages.length < 2) return false;
+  const tail = doc.layout?.tail;
+  return typeof tail === 'number' ? tail < FLOOR_HINT_PCT : !!doc.layout?.floor;
 }
 
 /* ---------- 分类 ---------- */
