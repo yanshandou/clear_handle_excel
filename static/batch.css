@@ -233,3 +233,39 @@ tr[data-state="marked"] .learn-state { background: var(--purple-ink, #1f5fc4); c
 .type-color-chip { padding: 4px 10px; border: 2px solid var(--ink, #1c2858); border-radius: 6px; font-size: 12.5px; font-weight: 700; box-shadow: 2px 2px 0 var(--ink, #1c2858); }
 .type-color-chip.is-low { outline: 2px dashed #b42318; outline-offset: 2px; }
 .type-color:focus-within .type-color-chip { outline: 3px solid #1c2858; outline-offset: 2px; }
+
+/* 单元格工具箱（2026-11-08）：分类上的工具按钮、每格截图 + 工具、底部统一修改。按钮只换颜色，尺寸固定，页面不跳 */
+.tb-group-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; padding: 10px 12px; border: 2px solid var(--ink, #1c2858); border-radius: 12px; background: var(--paper, #e9f1fc); }
+.tb-group-label { font-weight: 800; color: var(--ink, #1c2858); }
+.tb-group-hint { flex-basis: 100%; font-size: 13px; color: var(--ink-3, #56628f); }
+.tb-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 0 0 12px; }
+.tb-actions-hint { font-size: 13px; color: var(--ink-3, #56628f); }
+.tb-chip { padding: 3px 9px; border: 2px solid var(--ink, #1c2858); border-radius: 8px; background: #fff; color: var(--ink, #1c2858); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.tb-chip-lg { padding: 5px 12px; font-size: 14px; }
+.tb-chip:hover { background: var(--purple-soft, #e2eeff); }
+.tb-chip[aria-pressed="true"] { color: #fff; text-shadow: var(--white-stroke); }
+.tb-chip[data-tb-kind="grow"][aria-pressed="true"] { background: #1f5fc4; }
+.tb-chip[data-tb-kind="shrink"][aria-pressed="true"] { background: #1e7a45; }
+.tb-chip[data-tb-kind="break"][aria-pressed="true"] { background: #b4470b; }
+.tb-chip[data-tb-kind="none"][aria-pressed="true"] { background: #4f5b7d; }
+.tb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; max-height: 70vh; overflow-y: auto; padding: 2px 4px 4px 2px; }
+.tb-cell { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 2px solid var(--line-soft, #dbe4f3); border-radius: 12px; background: #fff; min-width: 0; }
+.tb-shot { display: grid; place-items: center; height: 110px; padding: 0; border: 1.5px solid var(--line-soft, #dbe4f3); border-radius: 8px; background: #f6f8fc; overflow: hidden; cursor: zoom-in; }
+.tb-shot img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.tb-shot-empty { font-size: 12px; color: var(--ink-3, #56628f); }
+.tb-cell-info { display: flex; flex-direction: column; gap: 1px; font-size: 13px; color: var(--ink, #1c2858); min-width: 0; }
+.tb-where { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tb-file, .tb-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink-2, #26326a); }
+.tb-text { color: var(--ink-3, #56628f); }
+.tb-note { margin: 0; padding: 2px 8px; border-radius: 6px; background: #fff4e0; color: #7a4a00; font-size: 12px; font-weight: 700; }
+.tb-tools { display: flex; flex-wrap: wrap; gap: 4px; }
+.tb-none { font-size: 12px; color: var(--ink-3, #56628f); }
+.tb-more { margin: 8px 0 0; text-align: center; }
+.tb-bar { position: sticky; bottom: 12px; z-index: 20; display: flex; align-items: center; gap: 14px; margin-top: 12px; padding: 10px 16px; border: 2.5px solid var(--ink, #1c2858); border-radius: 14px; background: #fffffff2; box-shadow: 4px 4px 0 var(--ink, #1c2858); }
+.tb-bar-text { flex: 1; min-width: 0; font-size: 14px; color: var(--ink, #1c2858); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tb-apply { flex: none; display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.tb-apply-text { display: inline-block; min-width: 6.5em; text-align: center; }
+.tb-count { display: inline-block; min-width: 2.2em; padding: 0 6px; border-radius: 999px; background: #ffc21f; color: #3d2a00; font-size: 13px; font-weight: 800; text-align: center; text-shadow: none; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.tb-large { width: min(1100px, calc(100vw - 48px)); }
+.tb-large-body { max-height: 75vh; overflow: auto; margin: 0 22px; text-align: center; }
+.tb-large-body img { max-width: 100%; }

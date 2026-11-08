@@ -618,6 +618,13 @@ class WebHandler(upload_manager.Handler):
                 self._start_job(f"batch_{action}", options)
         elif self.path == "/api/batch/tighten":
             raise ValueError("自动调整行高已停用，请在 Excel 中人工修改并保存后复检")
+        elif self.path == "/api/batch/fix":
+            # 单元格工具箱「🛠 统一修改」：按选好的工具改格子、保存、整份复检（用户 2026-11-08 要）
+            from core import cell_toolbox
+            self._start_job("batch_fix", cell_toolbox.job_options(cell_toolbox.validate(payload)))
+        elif self.path == "/api/batch/card_images":
+            # 工具箱里每格的 PDF 截图（卡片快照默认不带图，按需取）
+            self._send_json({"ok": True, "images": batch.card_images(payload.get("card_ids"))})
         elif self.path == "/api/batch/followups/start":
             # 暂停时留着的排队复检 / 提交：现在就开始
             autofix.release_excel()

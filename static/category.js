@@ -1,17 +1,16 @@
 // 按分类人工处理（用户 2026-11-03：留这个排版，去掉「学一下 / 按规律修」）。
-// 左边按问题分类，右边这一类的两步（打开文件改 → 复检这一类）和格子清单。点分类只换颜色，不挪位置、不自动滚动。
+// 左边按问题分类，右边这一类的工具箱（cell_toolbox.js：选工具 → 底部统一修改）、打开 / 复检按钮和格子截图。点分类只换颜色，不挪位置、不自动滚动。
 // 左上角可切换「按文件」：一个文件打开一次，把里面所有问题改完再复检，免得同一个文件在几个分类里反复打开。
 // 依赖 batch.js 里的 batchState、$、esc、startJob、openReady、requestBusy、busyJobName、openBlocked；open_excel.js 的 excelLinkHtml。
 let categorySelected = null;
 let categoryRenderKey = '';
-const CATEGORY_CELL_LIMIT = 300; // 清单最多画这么多行，太多只是拖慢页面
 const CATEGORY_SELECTED_KEY = 'clear_handle_excel.learnCategory';
 const CATEGORY_MODE_KEY = 'clear_handle_excel.categoryMode';
-let categoryMode = 'file'; // 平时按文件，一个文件只开一次
+let categoryMode = 'category'; // 有了工具箱（2026-11-08）默认按分类；切到按文件会记住
 let fileSelected = null;
 try {
   categorySelected = localStorage.getItem(CATEGORY_SELECTED_KEY);
-  if (localStorage.getItem(CATEGORY_MODE_KEY) === 'category') categoryMode = 'category';
+  if (localStorage.getItem(CATEGORY_MODE_KEY) === 'file') categoryMode = 'file';
 } catch (_) {}
 
 const shortLabel = label => label.split(' · ')[0];
@@ -122,65 +121,32 @@ function categoryListOnlyHtml(cats, current) {
   }).join('');
 }
 
-function categoryState(card) {
-  if (card.color !== 'yellow') return ['marked', card.color === 'blue' ? '已标蓝' : '已标绿'];
-  if (card.grown && !card.grown.error) return ['grown', '历史曾加高'];
-  return ['todo', '待改'];
-}
-
-function categoryCellsHtml(cat) {
-  const byFile = categoryMode === 'file' && cat.key !== OPENED_KEY ? null : new Map();
-  if (byFile) for (const c of pendingCards()) byFile.set(c.wb_path, (byFile.get(c.wb_path) || 0) + 1);
-  const cards = byFile ? cat.cards : [...cat.cards].sort((a, b) => (a.category?.[1] || '').localeCompare(b.category?.[1] || '') || a.seq - b.seq);
-  const rows = cards.slice(0, CATEGORY_CELL_LIMIT).map(c => {
-    const [state, label] = categoryState(c);
-    const jump = { file: c.wb_name, folder: batchState.folder, sheet: c.sheet_name, cell: (c.cell_addr || '').split(':')[0], blocked: openBlocked(c) };
-    const where = `${esc(c.sheet_name)}!${esc(c.cell_addr)}`;
-    let second;
-    if (byFile) {
-      // 这个文件在别的分类里还有几处：打开时顺手一起改，复检是整份查的，会一起出结果
-      const others = cat.key === OPENED_KEY ? 0 : byFile.get(c.wb_path) - cat.cards.filter(x => x.wb_path === c.wb_path).length;
-      second = excelLinkHtml(esc(c.wb_name), jump) + (others > 0 ? ` <span class="learn-others" title="Excel 里这些格子也标了色，打开时可以顺手一起改">还有 ${others} 处别的问题</span>` : '');
-    } else second = esc((c.category || ['', ''])[1]);
-    return `<tr data-state="${state}"><td><span class="learn-state">${label}</span></td>`
-      + `<td>${second}</td><td>${byFile ? where : excelLinkHtml(where, jump)}</td><td class="learn-text">${esc(c.cell_text ?? c.text)}</td></tr>`;
-  }).join('');
-  const more = cards.length > CATEGORY_CELL_LIMIT ? `<p class="toolbar-hint">只列出前 ${CATEGORY_CELL_LIMIT} 格，还有 ${cards.length - CATEGORY_CELL_LIMIT} 格。</p>` : '';
-  return `<div class="learn-table-wrap"><table class="learn-table"><thead><tr><th>状态</th><th>${byFile ? '文件' : '分类'}</th><th>格子</th><th>内容</th></tr></thead><tbody>${rows}</tbody></table></div>${more}`;
+// 打开 / 复检两个按钮放一行：主要靠上面的工具，工具解决不了的再打开 Excel 自己改
+function categoryActionsHtml(cat, cards) {
+  const disabled = reason => reason ? ` disabled title="${esc(reason)}"` : '';
+  const yellow = cards.length;
+  const openBusy = categoryOpenBlockReason(cards);
+  const recheckBusy = categoryRecheckBlockReason(cards);
+  const opened = cat.key === OPENED_KEY;
+  const openText = categoryMode === 'file' ? '📂 打开这个文件' : '📂 打开这一类的文件（每次最多 10 个）';
+  const recheckText = opened ? `🔁 复检这 ${cat.files} 个文件` : categoryMode === 'file' ? '🔁 复检这个文件' : `🔁 复检这一类（${cat.files} 个文件）`;
+  return '<div class="tb-actions">'
+    + (opened ? '' : `<button type="button" class="btn btn-outline btn-sm" id="categoryOpenBtn"${disabled(openBusy || (!yellow && '没有可打开的文件'))}>${openText}</button>`)
+    + `<button type="button" class="btn btn-outline btn-sm" id="categoryRecheckBtn"${disabled(recheckBusy || (!yellow && '没有要复检的格子'))}>${recheckText}</button>`
+    + `<span class="tb-actions-hint">${opened ? '这些文件打开过：在 Excel 里改完保存，再复检；复检后还有问题的回到各分类。' : '工具解决不了的，打开 Excel 自己改，保存后复检（复检只检测、不改格子）。单击清单里的格子名直接跳过去。'}</span></div>`;
 }
 
 function categoryDetailHtml(cat) {
   if (!cat) return '';
   const cards = yellowCards(cat);
-  const yellow = cards.length;
-  const openBusy = categoryOpenBlockReason(cards);
-  const recheckBusy = categoryRecheckBlockReason(cards);
-  const grown = cat.cards.filter(c => categoryState(c)[0] === 'grown').length;
-  const disabled = reason => reason ? ` disabled title="${esc(reason)}"` : '';
-  if (cat.key === OPENED_KEY) {
-    return `<div class="learn-head"><h3>已打开、待复检</h3><span class="learn-meta">${cat.files} 个文件 · ${cat.count} 格</span></div>`
-      + '<ol class="learn-steps">'
-      + `<li><span class="learn-step-no">✓</span><div><strong>这些文件已经打开过</strong><p>在 Excel 里改完保存，再复检。复检前别的分类里不再列这些文件，免得重复打开；复检后还有问题的会回到各分类。想重新打开，点清单里的文件名。复检只检测和更新标记，不自动调整行高、列宽、换行、原有样式或分页线。</p>`
-      + `<button type="button" class="btn btn-primary" id="categoryRecheckBtn"${disabled(recheckBusy || (!yellow && '没有要复检的格子'))}>🔁 复检这 ${cat.files} 个文件</button></div></li>`
-      + '</ol>' + categoryCellsHtml(cat);
-  }
-  if (categoryMode === 'file') {
-    return `<div class="learn-head"><h3>${esc(cat.label)}</h3><span class="learn-meta">${cat.count} 格 · ${esc(cat.summary)}</span></div>`
-      + '<ol class="learn-steps">'
-      + `<li><span class="learn-step-no">1</span><div><strong>打开改</strong><p>打开这个文件，把下面的问题一次改完（Excel 里都标了色），保存。单击清单里的格子可以直接跳过去。</p>`
-      + `<button type="button" class="btn btn-outline" id="categoryOpenBtn"${disabled(openBusy || (!yellow && '这个文件没有要改的格子'))}>📂 打开这个文件</button></div></li>`
-      + `<li><span class="learn-step-no">2</span><div><strong>复检</strong><p>改完保存后复检这个文件：整份重新检测，通过的移出列表、去掉标色；还有问题的留在这里继续改。复检只检测和更新标记，不自动调整行高、列宽、换行、原有样式或分页线。</p>`
-      + `<button type="button" class="btn btn-primary" id="categoryRecheckBtn"${disabled(recheckBusy || (!yellow && '这个文件没有要复检的格子'))}>🔁 复检这个文件</button></div></li>`
-      + '</ol>' + categoryCellsHtml(cat);
-  }
-  return `<div class="learn-head"><h3>${esc(cat.label)}</h3><span class="learn-meta">${cat.count} 格 · ${cat.files} 个文件`
-    + (grown ? ` · ${grown} 格有历史加高记录，本次不调整行高` : '') + '</span></div>'
-    + '<ol class="learn-steps">'
-    + `<li><span class="learn-step-no">1</span><div><strong>打开改</strong><p>打开这一类的文件，在 Excel 里改好这些格子（行高、列宽、换行、缩小填充、字号、插分页都行），保存。单击清单里的文件名可以直接跳到那一格。</p>`
-    + `<button type="button" class="btn btn-outline" id="categoryOpenBtn"${disabled(openBusy || (!yellow && '这一类没有可打开的文件'))}>📂 打开这一类的文件（每次最多 10 个）</button></div></li>`
-    + `<li><span class="learn-step-no">2</span><div><strong>复检</strong><p>改完保存后复检这一类涉及的文件：整份重新检测，通过的移出列表、去掉标色；还有问题的留在这里继续改。同一份文件里别的分类的格子也会一起出结果。</p>`
-    + `<button type="button" class="btn btn-primary" id="categoryRecheckBtn"${disabled(recheckBusy || (!yellow && '这一类没有要复检的格子'))}>🔁 复检这一类（${cat.files} 个文件）</button></div></li>`
-    + '</ol>' + categoryCellsHtml(cat);
+  const fixed = cat.cards.filter(c => c.cell_fix).length;
+  const title = cat.key === OPENED_KEY ? '已打开、待复检' : cat.label;
+  const meta = cat.key === OPENED_KEY ? `${cat.files} 个文件 · ${cat.count} 格`
+    : categoryMode === 'file' ? `${cat.count} 格 · ${esc(cat.summary)}` : `${cat.count} 格 · ${cat.files} 个文件`;
+  return `<div class="learn-head"><h3>${esc(title)}</h3><span class="learn-meta">${meta}`
+    + (fixed ? ` · ${fixed} 格用过工具还没过` : '') + '</span></div>'
+    + toolboxGroupBarHtml(cat) + categoryActionsHtml(cat, cards)
+    + toolboxCellsHtml(cat, categoryMode === 'category' || cat.key === OPENED_KEY);
 }
 
 function renderCategories() {
@@ -188,14 +154,14 @@ function renderCategories() {
   if (!panel) return;
   const cats = groupList();
   const current = groupCurrent(cats);
-  const key = JSON.stringify([categoryMode, batchState.opened_files, cats.map(c => [c.key, c.cards.map(x => [x.id, x.color, x.finalized, !!x.grown])]), current?.key,
+  const key = JSON.stringify([categoryMode, batchState.opened_files, cats.map(c => [c.key, c.cards.map(x => [x.id, x.color, x.finalized, x.cell_fix?.label, x.default_tool, (x.tools || []).join()])]), current?.key,
     categoryBusyReason(), openChoosing, batchState.job?.kind, batchState.job?.closing,
     batchState.folder, excelLinkHtml.revision, batchState.open_blocked]);
   renderOpenNext();
-  if (key === categoryRenderKey) return;
+  if (key === categoryRenderKey) { toolboxAfterRender(); return; }
   categoryRenderKey = key;
   // 重画时保留清单框的滚动位置
-  const scroll = $('learnDetail').querySelector('.learn-table-wrap')?.scrollTop || 0;
+  const scroll = $('learnDetail').querySelector('.tb-grid')?.scrollTop || 0;
   const rest = cats.filter(c => c.key !== OPENED_KEY);
   $('learnSummary').textContent = cats.length ? `共 ${cats.reduce((n, c) => n + c.count, 0)} 格，`
     + (categoryMode === 'file' ? `${rest.length} 个文件` : `分成 ${rest.length} 类`)
@@ -203,9 +169,10 @@ function renderCategories() {
   for (const b of document.querySelectorAll('[data-learn-mode]')) b.setAttribute('aria-pressed', String(b.dataset.learnMode === categoryMode));
   $('learnList').innerHTML = categoryListHtml(cats, current);
   $('learnDetail').innerHTML = categoryDetailHtml(current);
-  const wrap = $('learnDetail').querySelector('.learn-table-wrap');
+  const wrap = $('learnDetail').querySelector('.tb-grid');
   if (wrap && `${categoryMode}:${current?.key}` === renderCategories.lastKey) wrap.scrollTop = scroll;
   renderCategories.lastKey = `${categoryMode}:${current?.key}`;
+  toolboxAfterRender();
 }
 
 // 顶上的「打开下一批」：按左边列表的顺序（按文件时问题多的在前），打开还没打开过的文件，每次最多 10 个
@@ -264,6 +231,7 @@ for (const button of document.querySelectorAll('[data-learn-mode]')) button.addE
   renderCategories();
 });
 $('learnDetail').addEventListener('click', event => {
+  if (toolboxHandleClick(event)) return;
   const id = event.target.closest('button')?.id;
   if (id === 'categoryOpenBtn') categoryOpen();
   else if (id === 'categoryRecheckBtn') categoryRecheck();

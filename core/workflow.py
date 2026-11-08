@@ -338,7 +338,7 @@ def _check_decision_item(item: dict[str, Any]) -> None:
     autofix.check_row_not_writing(item)
 
 
-BATCH_REVIEW_KINDS = {"batch_commit", "batch_recheck", "batch_open", "batch_unhighlight", "batch_tighten"}
+BATCH_REVIEW_KINDS = {"batch_commit", "batch_recheck", "batch_open", "batch_unhighlight", "batch_tighten", "batch_fix"}
 
 
 def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
@@ -423,7 +423,7 @@ def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
 
 
 _TASK_TITLES = {
-    "batch_recheck": "复检", "batch_tighten": "收紧行高", "batch_commit": "提交审核结果", "batch_open": "打开文件",
+    "batch_recheck": "复检", "batch_tighten": "收紧行高", "batch_fix": "单元格工具箱统一修改", "batch_commit": "提交审核结果", "batch_open": "打开文件",
     "batch_unhighlight": "清除 Excel 标记颜色", "scan": "Web 切字扫描", "recheck": "复检",
     "refresh": "刷新复检", "fix": "修复", "review_recheck": "稍后人工复检", "review_open": "打开稍后复检的文件",
 }
