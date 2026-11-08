@@ -154,6 +154,17 @@ class OnePageWideTests(unittest.TestCase):
             self.assertEqual(hint["pages"], 3)
             self.assertTrue(hint["floor"])
             self.assertLess(hint["tail"], 40)
+            # 末页印了 38% 已经够了，不建议取整（用户 2026-11-08：不到 20% 才标黄）
+            mid = Path(tmp) / "c.pdf"
+            doc = fitz.open()
+            for bottom in (800, 800, 330):
+                page = doc.new_page(width=595, height=842)
+                page.insert_text((50, 50), "上")
+                page.insert_text((50, bottom), "下")
+            doc.save(mid)
+            hint = page_fill.tail_hint(mid, (0.0, 0.0))
+            self.assertGreater(hint["tail"], 30)
+            self.assertFalse(hint["floor"])
             one = Path(tmp) / "b.pdf"
             doc = fitz.open()
             doc.new_page(width=595, height=842)
