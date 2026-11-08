@@ -138,7 +138,7 @@ class OnePageWideTests(unittest.TestCase):
 
     def test_layout_reads_orientation_and_fixed_tall(self):
         self.assertEqual(page_fill.sheet_layout(self.sheet(Zoom=False, FitToPagesWide=1, FitToPagesTall=3, Orientation=2)),
-                         {"orient": 2, "tall": 3, "margins": (0.0, 0.0)})
+                         {"orient": 2, "tall": 3, "manual": 0, "margins": (0.0, 0.0)})
         self.assertEqual(page_fill.sheet_layout(self.sheet())["tall"], None)
 
     def test_tail_hint_suggests_floor_when_last_page_is_short(self):
