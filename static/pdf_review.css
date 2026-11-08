@@ -147,7 +147,8 @@
 }
 
 .pr-doc.is-regen .pr-pages::after {
-  content: "⏳ 正在重新生成这份 Excel 的 PDF，大约要 10 秒，请稍等…";
+  /* 文字由 pdf_review.js 写在 .pr-pages 的 data-regen-text：已经几秒、按上次速度估计还要几秒 */
+  content: attr(data-regen-text);
   position: absolute;
   top: 40px;
   left: 50%;

@@ -38,6 +38,21 @@ let regenWb = '';       // 正在重新生成 PDF 的那份 Excel（wb_path）
 let busyWb = '';        // 点了「重新生成」、还在等的那份 Excel（含先改标记再生成）：页面上显示「正在重新生成」
 let busySince = 0;      // 从什么时候开始等，按钮上显示已经等了几秒
 let busyTimer = 0;
+let busySheets = 1;     // 这份 Excel 有几张表（估时间用）
+const REGEN_SPEED_KEY = 'clear_handle_excel.pdfReviewRegenSecs'; // 这台电脑上次重新生成平均每张表几秒
+
+// 预计要几秒：按这台电脑上次重新生成实际用的时间（每张表平均几秒 × 这份的表数）；没量过就不说
+function regenEstimate() {
+  let per = 0;
+  try { per = Number(localStorage.getItem(REGEN_SPEED_KEY)) || 0; } catch (_) {}
+  return per > 0 ? Math.max(1, Math.round(per * busySheets)) : 0;
+}
+
+function rememberRegenSpeed() {
+  const secs = (Date.now() - busySince) / 1000;
+  if (!busySince || secs <= 0 || secs > 1800) return;
+  try { localStorage.setItem(REGEN_SPEED_KEY, String(secs / Math.max(1, busySheets))); } catch (_) {}
+}
 
 const $ = id => document.getElementById(id);
 
@@ -783,6 +798,7 @@ function setBusy(wb) {
   clearInterval(busyTimer);
   if (busyWb) {
     busySince = Date.now();
+    busySheets = allPdfs.filter(x => x.wb_path === busyWb).length || 1;
     busyTimer = setInterval(paintRegen, 1000);
   }
   paintRegen();
@@ -798,9 +814,16 @@ function paintRegen() {
     b.classList.toggle('is-running', !!mine);
     b.disabled = !!wb || processing || deleted.has(doc?.pdf);
   });
+  const est = regenEstimate();
+  const left = est ? est - secs : 0;
+  const hint = `⏳ 正在重新生成这份 Excel 的 PDF，已经 ${secs} 秒`
+    + (!est ? '，请稍等…' : left > 0 ? `，上次的速度估计还要约 ${left} 秒…` : '，比上次慢一些，请再等一下…');
   document.querySelectorAll('.pr-doc').forEach(article => {
     const doc = pdfs[Number(article.dataset.doc)];
-    article.classList.toggle('is-regen', !!(wb && doc && doc.wb_path === wb));
+    const mine = !!(wb && doc && doc.wb_path === wb);
+    article.classList.toggle('is-regen', mine);
+    const pages = article.querySelector('.pr-pages'); // 盖层是 .pr-pages 的伪元素，文字放它身上
+    if (pages) { if (mine) pages.dataset.regenText = hint; else delete pages.dataset.regenText; }
   });
   updateProcessButton(); // 重新生成时两个处理按钮也先不能点
 }
@@ -847,7 +870,7 @@ async function regenerateNow(doc) {
   }
   regenWb = doc.wb_path;
   paintRegen();
-  toast(`正在重新生成「${doc.wb_name}」的 PDF，大约要 10 秒…`);
+  toast(`正在重新生成「${doc.wb_name}」的 PDF…`);
   pollRegen(doc.pdf);
 }
 
@@ -868,6 +891,7 @@ async function pollRegen(anchorPdf) {
   const result = status.result;
   const wb = regenWb;
   regenWb = '';
+  if (result?.ok) rememberRegenSpeed();
   setBusy('');
   if (!result) return;
   if (!result.ok) {
