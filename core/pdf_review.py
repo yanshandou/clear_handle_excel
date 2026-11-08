@@ -584,6 +584,8 @@ def _floor_in_workbook(get_excel: Any, wb_path: Path, items: list[dict], export_
                 reason = f"{found['before']} 页 → {found['after']} 页，字缩到约 {round(found['scale'] * 100)}%"
                 if found["manual"]:
                     reason += "；原来的手动分页不再起作用"
+                if found.get("warn"):
+                    reason += "；" + found["warn"]
             else:
                 reason = found["reason"]
             outcome.append({**item, "ok": found["ok"], "reason": reason, "dirty": found.get("dirty", False)})

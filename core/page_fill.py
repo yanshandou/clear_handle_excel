@@ -657,8 +657,10 @@ def floor_pages(sheet: Any, pdf_path: Path, export: Callable[[Any, Path], None])
                     top_margin, bottom_margin = _margins(sheet)
                     lost = _texts(pdf_path, top_margin, bottom_margin) - _texts(trial, top_margin, bottom_margin)
                     if lost:
+                        # 用户 2026-11-08 定：照样取整，缩出来的切字留给后面「查看切字」去查、去修，这里只提醒
                         sample = "」「".join(sorted(lost)[:3])
-                        reason = f"缩完 PDF 里有 {len(lost)} 处字对不上（如「{sample}」），可能缩出了切字或 ###"
+                        result["warn"] = (f"缩小后有 {len(lost)} 处文字可能显示不全（如「{sample}」），"
+                                          "后面「查看切字」会查出来")
         except Exception as err:
             reason = f"缩完导出 PDF 出错（{err}）"
     if reason:
@@ -673,7 +675,7 @@ def floor_pages(sheet: Any, pdf_path: Path, export: Callable[[Any, Path], None])
         return result
     result["ok"] = True
     debug_log.event("📄 向下取整", 表=name, 原页数=pages, 新页数=result["after"], 字缩到=round(result["scale"], 3),
-                    原设置=original, 有手动分页=result["manual"])
+                    原设置=original, 有手动分页=result["manual"], 可能切字=result.get("warn", ""))
     return result
 
 
