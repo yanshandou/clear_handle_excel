@@ -128,19 +128,22 @@ const CATEGORIES = [
   { key: 'manual', label: '有手动分页', hint: '页高自动、但插了手动分页的表：清掉以后由 Excel 自动分页，常常能排得更满', test: doc => manualOf(doc) > 0 },
 ];
 
+// 单元格那一行的分类（有切字的表、文字截断……）在 pdf_cells.js 里，格子读到了才有
 function catOf(key) {
-  return CATEGORIES.find(c => c.key === key) || CATEGORIES[0];
+  return CATEGORIES.find(c => c.key === key) || pcCategories().find(c => c.key === key) || CATEGORIES[0];
 }
 
 function renderCats() {
   const usable = allPdfs.filter(doc => doc.wb_path && !doc.error);
   $('prCats').hidden = !allPdfs.length;
-  $('prCats').innerHTML = CATEGORIES.map(c => {
+  // 两行：页面（打印设置）一行、单元格（切字，pdf_cells.js）一行
+  $('prCats').innerHTML = '<div class="pr-cat-row"><span class="pr-cat-title">页面</span>' + CATEGORIES.map(c => {
     const n = c.key === 'all' ? allPdfs.length : usable.filter(c.test).length;
     return `<button type="button" class="pr-cat${c.key === category ? ' is-on' : ''}" data-cat="${c.key}"
       ${n || c.key === 'all' ? '' : 'disabled'} title="${escapeHtml(c.hint || `只看${c.label}的表`)}" aria-pressed="${c.key === category}">
       ${c.label}<span class="pr-cat-n">${n}</span></button>`;
-  }).join('') + '<span class="pr-cat-gap"></span><button type="button" id="prBulk" class="btn btn-outline btn-sm pr-bulk" hidden></button>';
+  }).join('') + '<span class="pr-cat-gap"></span><button type="button" id="prBulk" class="btn btn-outline btn-sm pr-bulk" hidden></button></div>'
+    + pcCatsRowHtml();
   paintBulk();
 }
 
@@ -198,6 +201,7 @@ function setCategory(key) {
 
 function applyCategory() {
   const cat = catOf(category);
+  if (cat.key !== category) category = cat.key; // 单元格的分类没有了（这一类都处理完了）：回到全部
   pdfs = category === 'all' ? allPdfs : allPdfs.filter(doc => doc.wb_path && !doc.error && cat.test(doc));
   renderCats();
   renderDocs();
@@ -222,7 +226,10 @@ async function load() {
     deleted = new Set();
     loadMarks();
     applyCategory();
-    refreshStale();
+    pcAsked = '';
+    pcLoad();
+    // Excel 改过的表先换成最新的 PDF，换完（或者不用换）再在后台查切字
+    if (!(await refreshStale())) pcAutoCheck();
   } catch (e) {
     $('prStatus').textContent = `读取失败：${e.message}`;
     appAlert(e.message, { tone: 'error' });
@@ -277,7 +284,7 @@ function renderDocs() {
       <div class="pr-page is-loading" data-doc="${d}" data-page="${p}" style="aspect-ratio:${w} / ${h};--ar:${w / h}">
         <img class="pr-img" loading="lazy" decoding="async" draggable="false" alt="第 ${p + 1} 页"
           src="/api/pdf_review/page?pdf=${encodeURIComponent(doc.pdf)}&p=${p}&v=${doc.v}">
-        <div class="pr-layer"></div>
+        <div class="pr-layer">${pcLayerHtml(doc, p)}</div>
         <span class="pr-pageno">${p + 1} / ${doc.pages.length}</span>
         ${pageNote(p) ? `<span class="pr-page-note" title="${escapeHtml(pageNote(p))}">⚠ 内容很少</span>` : ''}
       </div>`).join('');
@@ -297,7 +304,7 @@ function renderDocs() {
         <span class="pr-doc-pages">${doc.pages.length} 页</span>${stale}${tail}${excel}
         <span class="pr-doc-gap"></span>${markable ? headButtons(doc, d) : ''}${regen}
       </header>
-      ${doc.error ? `<p class="pr-doc-warn">${escapeHtml(doc.error)}</p>` : `${noteBox}<div class="pr-pages">${pages}</div>`}
+      ${doc.error ? `<p class="pr-doc-warn">${escapeHtml(doc.error)}</p>` : `${noteBox}<div class="pr-pages">${pages}</div>${pcStripHtml(doc, d)}`}
     </article>`;
   }).join('');
   $('prBar').classList.remove('hidden');
@@ -360,9 +367,12 @@ function onPointerUp(e) {
   const start = press;
   press = null;
   if (!start || Math.hypot(e.clientX - start.x, e.clientY - start.y) > MIN_DRAG_PX) return;
-  // 只有 Ctrl + 单击是用 Excel 打开这一页；单击不做事（改什么都用标题上的按钮）
-  if (!(e.ctrlKey || e.metaKey)) return;
+  // Ctrl + 单击用 Excel 打开这一页；单击看大图（大图上给切字的格子选修法，pdf_cells.js）
   const d = Number(start.pageEl.dataset.doc);
+  if (!(e.ctrlKey || e.metaKey)) {
+    pcOpenBig(d, Number(start.pageEl.dataset.page));
+    return;
+  }
   if (!pdfs[d].wb_path) {
     toast('这份 PDF 找不到对应的 Excel', true);
     return;
@@ -600,13 +610,15 @@ let processKind = '';  // 正在处理的是哪个按钮：red / tools
 
 function updateProcessButton() {
   const items = toolItems();
-  const counts = { red: redDocs().length, tools: items.length };
+  const cells = pcCount(); // 切字的格子：选了修法的 + 标成不用处理的
+  const counts = { red: redDocs().length, tools: items.length + cells };
   $('prCountRed').textContent = counts.red;
   $('prCountApply').textContent = counts.tools;
   const by = tool => items.filter(i => i.tool === tool).length;
-  $('prApply').title = items.length
-    ? `取整 ${by('floor')} 张、改方向 ${by('orient')} 张、页高改回自动 ${by('auto')} 张、清手动分页 ${by('breaks')} 张：后台改 Excel 并保存，再重新生成 PDF`
-    : '在标题上点方向、页高的按钮做标记，再点这里统一修改';
+  $('prApply').title = counts.tools
+    ? `页面：取整 ${by('floor')} 张、改方向 ${by('orient')} 张、页高改回自动 ${by('auto')} 张、清手动分页 ${by('breaks')} 张；单元格 ${cells} 格。`
+      + '先改页面、重新生成 PDF，页面改过的重新查切字，再按选好的工具改格子、复检'
+    : '在标题上点方向、页高的按钮，或给切字的格子选修法，再点这里统一修改';
   paintBulk();
   if (processing) return;
   for (const kind of PROCESS_KINDS) {
@@ -682,14 +694,24 @@ async function runProcess(kind, onlyWb = '') {
   const files = docs => new Set(docs.map(doc => doc.wb_path)).size;
   let red = [];
   let items = [];
+  let cellPlan = { cells: [], skips: [] };
   let text;
   if (kind === 'tools') {
     items = toolItems().filter(i => !onlyWb || i.doc.pdf === onlyWb);
-    if (!items.length) return;
+    // 切字的格子只在点底部「🛠 统一修改」时一起改；点某张表的「🔄 重新生成」只改这张表的页面
+    const cellLines = onlyWb ? [] : pcPlanLines();
+    if (!onlyWb) cellPlan = pcPayload();
+    if (!items.length && !cellLines.length) return;
+    if (!onlyWb && pcData.scan?.running) {
+      appAlert('后台正在查切字，等它查完再统一修改（着急的话点上面的「⏸ 暂停」，这份 Excel 查完就停）。', { tone: 'warn' });
+      return;
+    }
     text = (onlyWb ? `「${items[0].doc.wb_name} › ${items[0].doc.sheet}」上点的标记还没改进 Excel，先改好、保存，再重新生成这张表的 PDF。\n\n` : '')
-      + `🛠 统一修改 ${items.length} 处（${files(items.map(i => i.doc))} 份 Excel）：\n${listLines(items.map(toolLine))}`
-      + (items.some(i => i.tool === 'floor') ? '\n\n向下取整会先真导出一次核对页数确实少了一页；字缩到 85% 以下、缩出切字的都照样改，结果里会写出来，后面「查看切字」会查。' : '\n')
-      + '\n改好的 Excel 保存后重新生成 PDF，末页只多一点的会重新判断、重新标黄（改了方向、清了手动分页的要看新的 PDF 再决定取不取整）。';
+      + (items.length ? `📄 页面 ${items.length} 处（${files(items.map(i => i.doc))} 份 Excel）：\n${listLines(items.map(toolLine))}\n` : '')
+      + (cellLines.length ? `${items.length ? '\n' : ''}🔍 单元格 ${cellPlan.cells.length + cellPlan.skips.length} 格：\n${listLines(cellLines)}\n` : '')
+      + (items.some(i => i.tool === 'floor') ? '\n向下取整会先真导出一次核对页数确实少了一页；字缩到 85% 以下、缩出切字的都照样改，结果里会写出来。' : '')
+      + (items.length ? '\n改好的 Excel 保存后重新生成 PDF，末页只多一点的会重新判断、重新标黄（改了方向、清了手动分页的要看新的 PDF 再决定取不取整）。' : '')
+      + (cellLines.length ? `\n${items.length ? '页面改完，查过切字的表会重新查一遍；' : ''}格子按选好的工具改 Excel、保存、重新生成那几张表的 PDF、复检，没过的留着，可以换个工具再改。` : '');
   } else {
     red = redDocs();
     if (!red.length) return;
@@ -705,12 +727,17 @@ async function runProcess(kind, onlyWb = '') {
     await api('/api/pdf_review/process', {
       red: red.map(doc => ({ pdf: doc.pdf })), yellow: [],
       tools: items.map(({ doc, tool, value }) => ({ pdf: doc.pdf, tool, ...(value ? { value } : {}) })),
+      ...cellPlan, highlight: { types: pcTypeColors() },
     });
   } catch (e) {
     setBusy('');
     regenAfterProcess = null;
     appAlert(e.message, { tone: 'error' });
     return;
+  }
+  // 交出去的格子以后默认「不动」：没过的不自动再用同一个工具（和查看切字的工具箱一样，不自动升一级）
+  if (cellPlan.cells.length) {
+    pcSetTool(cellPlan.cells.map(c => pcById(c.card_id)).filter(Boolean), 'none');
   }
   processKind = kind;
   openProgress(kind);
@@ -878,7 +905,10 @@ async function finishProcess(status, kind) {
   if (done.length) {
     const doc = allPdfs.find(x => x.pdf === done[0].pdf);
     await reloadKeeping(done[0].pdf, doc?.wb_path || '');
+  } else if (result.cells) {
+    await reloadKeeping('', ''); // 改了格子的表 PDF 也重新生成了
   }
+  if (result.cells || done.length) await pcLoad({ quiet: true });
   if ($('prProg').hidden) openProgress(progKind);
   closeProgressRun(status.log || []); // 列表重新读过：结果里的表名重新对应到新的位置，点了能打开
 }
@@ -1006,6 +1036,7 @@ async function pollRegen(anchorPdf) {
     }
     await reloadKeeping(anchorPdf, '');
     if (result.pdfs?.length) toast(`Excel 改过的 ${result.pdfs.length} 张表已换成最新的 PDF`);
+    pcAutoCheck(); // PDF 都是最新的了：接着在后台查切字
     return;
   }
   if (result?.ok) rememberRegenSpeed();
@@ -1022,17 +1053,18 @@ async function pollRegen(anchorPdf) {
 
 // 打开页面时：导出以后 Excel 又改过的表，后台自动强制重新导出，做完换成新的（不用自己一张张点「重新生成」）。
 // 后台正忙（别的任务、统一修改）就先不动，表上标着「⚠ Excel 改过」，可以自己点「🔄 重新生成」
+// 返回 true：开始更新了（更新完会接着查切字）
 async function refreshStale() {
   const stale = allPdfs.filter(doc => doc.stale && doc.wb_path && !doc.error).map(doc => doc.pdf);
-  if (!stale.length || regenWb || processing) return;
+  if (!stale.length || regenWb || processing) return false;
   let data;
   try {
     data = await api('/api/pdf_review/refresh_stale', { pdfs: stale });
   } catch (e) {
     toast(`Excel 改过的表没能自动更新：${e.message}`, true);
-    return;
+    return false;
   }
-  if (!data.started) return;
+  if (!data.started) return false;
   regenMany = new Set(stale);
   regenInfo = { done: 0, total: data.files };
   regenWb = 'stale';
@@ -1042,10 +1074,12 @@ async function refreshStale() {
   paintRegen();
   toast(`${data.files} 份 Excel 导出后改过，正在换成最新的 PDF（${data.sheets} 张表）…`);
   pollRegen(stale.find(pdf => pdfs.some(doc => doc.pdf === pdf)) || stale[0]);
+  return true;
 }
 
 // 重新读列表，页面停在原来那份 Excel 的标题上（同一个 PDF 还在就对齐它，不在了对齐同一份 Excel 的第一张）
 async function reloadKeeping(pdf, wbPath) {
+  if (!pdf && whereDoc >= 0) pdf = pdfs[whereDoc]?.pdf || ''; // 没说对齐哪份：对齐现在看着的那份
   const before = pdfs.findIndex(x => x.pdf === pdf);
   const old = before >= 0 ? $(`prDoc${before}`) : null;
   const top = old ? old.getBoundingClientRect().top : null;

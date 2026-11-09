@@ -287,9 +287,25 @@ _PROCESS: dict[str, Any] = {"running": False}
 _PROCESS_LOCK = threading.Lock()
 
 
+# 统一修改里单元格那几步是工作台任务（标不用处理 / 重新查切字 / 改格子），进度按工作台任务现在做到第几份算
+_CELL_STAGE_JOBS = {"skip": "batch_commit", "scan": "batch_scan", "cells": "batch_fix"}
+
+
 def process_status() -> dict:
     with _PROCESS_LOCK:
-        return {**_PROCESS, "result": _PROCESS.get("result"), "log": list(_PROCESS.get("log") or [])}
+        status = {**_PROCESS, "result": _PROCESS.get("result"), "log": list(_PROCESS.get("log") or [])}
+    kind = _CELL_STAGE_JOBS.get(status.get("stage", ""))
+    if status.get("running") and kind:
+        with wf.STATE_LOCK:
+            job = wf.STATE.get("job") or {}
+            if job.get("kind") == kind and wf.STATE.get("busy"):
+                books = job.get("workbooks") or []
+                done = set(job.get("completed") or [])
+                current = next((p for p in books if p not in done), "")
+                root = wf.STATE.get("folder") or ""
+                status.update(total=len(books), done=len(done & set(books)),
+                              current=workbook_rel_name(Path(current), Path(root)) if current and root else "")
+    return status
 
 
 # 网页上的实时进度框（用户 2026-11-09 提：以前只有按钮上「修改中 10 / 20」，看不到在改哪份、改得怎么样）：
@@ -297,6 +313,11 @@ def process_status() -> dict:
 def _set_step(step: str) -> None:
     with _PROCESS_LOCK:
         _PROCESS["step"] = step
+
+
+def _set_stage(stage: str) -> None:
+    with _PROCESS_LOCK:
+        _PROCESS.update(stage=stage, current="", done=0, total=0)
 
 
 def _log_results(entries: list[dict], ok: bool, kind: str) -> None:
@@ -341,13 +362,18 @@ def _process_item(raw: Any, color: str) -> dict:
     return item
 
 
-def process(red: Any, yellow: Any, tools: Any = None) -> None:
+def process(red: Any, yellow: Any, tools: Any = None, cells: Any = None, skips: Any = None,
+            highlight: Any = None) -> None:
     """一键处理：后台删掉标红的表，按工具箱标记改打印设置（向下取整、页高改回自动、改方向、清手动分页），再打开标黄的。
-    tools：[{pdf, tool, value}]，tool 不写是向下取整。网页轮询 process_status() 看进度和结果"""
+    tools：[{pdf, tool, value}]，tool 不写是向下取整。
+    cells / skips：切字的格子（用户 2026-11-09 把查看切字并进调整页面）：[{card_id, tool, ratio}] 按工具改、
+    [卡片 id] 标成不用处理。先改页面，再做格子（core/adjust_cells.run_steps）。网页轮询 process_status() 看进度和结果"""
+    from core import adjust_cells
     reds = [_process_item(raw, "red") for raw in (red or [])]
     yellows = [_process_item(raw, "yellow") for raw in (yellow or [])]
     floors = [_process_item(raw, "tool") for raw in (tools or [])]
-    if not reds and not yellows and not floors:
+    plan, skip_ids = adjust_cells.validate(cells, skips)
+    if not reds and not yellows and not floors and not plan and not skip_ids:
         raise ValueError("没有标黄、标红或标了工具的表")
     from core import bl_links, hidden_repair, link_repair, mark_finder
     with wf.STATE_LOCK, _PROCESS_LOCK:
@@ -360,8 +386,8 @@ def process(red: Any, yellow: Any, tools: Any = None) -> None:
             wf.STATE["maintenance"] = "pdf_review_process"
         books = list(dict.fromkeys(item["wb_path"] for item in reds))
         _PROCESS.clear()
-        _PROCESS.update(running=True, stage="delete" if reds else "floor" if floors else "open", total=len(books),
-                        done=0, current="", step="", log=[], result=None)
+        _PROCESS.update(running=True, stage="delete" if reds else "floor" if floors else "open" if yellows else "cells",
+                        total=len(books), done=0, current="", step="", log=[], result=None)
     root = wf.STATE.get("pdf_review", {}).get("folder") or ""
 
     def run() -> None:
@@ -379,6 +405,13 @@ def process(red: Any, yellow: Any, tools: Any = None) -> None:
                     _delete_red(reds, root, result)
                 if floors:
                     _floor_marked(floors, root, result)
+                if plan or skip_ids:
+                    with wf.STATE_LOCK:
+                        if wf.STATE.get("maintenance") == "pdf_review_process":
+                            wf.STATE["busy"] = False  # 页面改完了；格子那几步是工作台任务，自己占任务槽
+                            wf.STATE.pop("maintenance", None)
+                    result["cells"] = adjust_cells.run_steps(
+                        root, plan, skip_ids, highlight, _set_step, _log_results, _set_stage)
                 if yellows:
                     with _PROCESS_LOCK:
                         _PROCESS.update(stage="open", current="")

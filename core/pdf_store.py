@@ -201,6 +201,39 @@ def record(root: Path | str, wb_path: Path, digest: str, exported: list[tuple[Pa
         _save(root, data)
 
 
+def has_record(root: Path | str, wb_path: Path) -> bool:
+    """调整页面给这份 Excel 导出过 PDF（记录里有它）"""
+    with _LOCK:
+        entry = load(root)["files"].get(file_key(wb_path, root))
+    return isinstance(entry, dict) and bool(entry.get("pdfs"))
+
+
+def follow_save(root: Path | str, wb_path: Path, before: str, after: str) -> bool:
+    """程序自己存了一下 Excel、打印出来的样子没变（标色、去标色、存分页预览）：导出记录里按改之前的哈希记着的
+    PDF 跟着记成现在的哈希，回到调整页面时不会当成「Excel 改过」整份重新导出（用户 2026-11-09 把切字并进调整页面）。
+    改之前就已经旧了的 PDF 照旧是旧的。返回有没有跟进"""
+    if not before or not after or before == after:
+        return False
+    with _LOCK:
+        data = load(root)
+        entry = data["files"].get(file_key(wb_path, root))
+        if not isinstance(entry, dict):
+            return False
+        moved = False
+        for item in entry.get("pdfs", []):
+            if isinstance(item, dict) and _item_hash(entry, item) == before:
+                item["hash"] = after
+                moved = True
+        if entry.get("hash") == before:
+            entry["hash"] = after
+            moved = True
+        if moved:
+            _save(root, data)
+    if moved:
+        debug_log.event("♻️ PDF 记录跟上程序自己的保存", 文件=file_key(wb_path, root), 原哈希=before[:12], 新哈希=after[:12])
+    return moved
+
+
 def layout_map(root: Path | str) -> dict[str, dict]:
     """记录里每份 PDF（绝对路径）导出时这张表的打印设置；PDF 被换过的不算"""
     with _LOCK:
@@ -378,4 +411,4 @@ def unchanged(root: Path | str, wb_path: Path, digest: str) -> bool:
 
 __all__ = ["DIR_NAME", "MANIFEST_NAME", "pdf_root", "pdf_dir", "export_root_of", "reusable", "record",
            "clear_workbook", "prune", "owner", "layout_map", "notes_map", "owned_by_others", "excel_folder_for", "unchanged",
-           "stale_pdfs", "sheet_pdfs"]
+           "stale_pdfs", "sheet_pdfs", "has_record", "follow_save"]
