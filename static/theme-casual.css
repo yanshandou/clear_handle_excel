@@ -614,3 +614,44 @@ input[type="checkbox"]:not(.hidden):checked::before {
   background: #fbf8ff;
   box-shadow: var(--drop-lg);
 }
+
+/* ---------- 其他页面里直接放在紫色背景上的文字：白字 + 深紫描边 ---------- */
+.clean-legend,
+.clean-filter,
+.clean-filter-hint,
+.analysis-nav a,
+.analysis-eyebrow,
+.analysis-header h1,
+.analysis-header p,
+.analysis-scope {
+  color: #ffffff;
+  text-shadow: 0 1px 0 #2a0f66, 0 0 2px #2a0f66;
+}
+
+.analysis-header h1 {
+  font-family: var(--round-font);
+  text-shadow: 0 2px 0 #2a0f66, 0 0 3px #2a0f66;
+}
+
+/* 标签、筛选按钮本身是浅色底，里面仍是深色字 */
+.clean-legend .preview-sheet-tag,
+.clean-legend .sheet-shared-mark,
+.clean-filter-btn {
+  text-shadow: none;
+}
+
+/* 白色面板里的说明和小标题恢复深色 */
+.panel .analysis-eyebrow {
+  color: var(--purple-ink);
+  text-shadow: none;
+}
+
+.analysis-metric {
+  border-color: var(--rim);
+  box-shadow: 0 4px 0 rgba(61, 26, 122, 0.25);
+}
+
+/* 执行记录筛选按钮：选中用紫色 */
+.filter-pill.active {
+  background: linear-gradient(180deg, #8a5cf0 0%, #6431d0 100%);
+}
