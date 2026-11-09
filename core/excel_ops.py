@@ -13,7 +13,6 @@ from typing import Any
 from core.common import (
     EXCLUDE_PDF_SHEETS,
     XL_PAGE_BREAK_PREVIEW,
-    XL_PAGE_LAYOUT_VIEW,
     XL_SHEET_VISIBLE,
     XL_WORKSHEET,
     col_index_to_letters,
@@ -934,13 +933,14 @@ def page_break_preview_needed(excel: Any, wb: Any) -> bool:
     return enable_page_break_preview(excel, wb, check_only=True)
 
 
-def enable_page_layout_view(excel: Any, wb: Any, *, check_only: bool = False) -> bool:
-    """扫描后保存页面布局视图，保留缩放、选区和当前工作表。"""
-    return _set_workbook_view(excel, wb, XL_PAGE_LAYOUT_VIEW, "页面布局视图", check_only=check_only)
+def enable_scan_view(excel: Any, wb: Any, *, check_only: bool = False) -> bool:
+    """扫描（查看切字、调整页面）顺便存的视图：分页预览（改ページプレビュー），保留缩放、选区和当前工作表。
+    2026-11-04～2026-11-09 存的是页面布局视图，用户试过觉得没必要，改回分页预览（用户 2026-11-09 定）。"""
+    return enable_page_break_preview(excel, wb, check_only=check_only)
 
 
-def page_layout_view_needed(excel: Any, wb: Any) -> bool:
-    return enable_page_layout_view(excel, wb, check_only=True)
+def scan_view_needed(excel: Any, wb: Any) -> bool:
+    return enable_scan_view(excel, wb, check_only=True)
 
 
 def normalize_workbook_view(

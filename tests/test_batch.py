@@ -157,8 +157,8 @@ class BatchTests(unittest.TestCase):
 
     def test_refresh_reports_whether_the_original_still_needs_the_preview(self):
         def scan(*_args, scan_view=None, **_kwargs):
-            self.assertEqual(scan_view, "check_page_layout")
-            _args[2]["page_layout_needed"] = False
+            self.assertEqual(scan_view, "check_scan_view")
+            _args[2]["scan_view_needed"] = False
         view = {}
         with patch.object(self.wf, "_scan_one_workbook", side_effect=scan):
             self.real_refresh(self.excel, self.path, view=view)
@@ -172,7 +172,7 @@ class BatchTests(unittest.TestCase):
             Path(self.path).write_bytes(b"workbook with saved preview")
             return self.wf._file_version(Path(self.path))
         session = Mock()
-        with patch.object(self.wf, "_save_page_layout_view", side_effect=save):
+        with patch.object(self.wf, "_save_scan_view", side_effect=save):
             self.real_save_scan_preview(self.excel, self.path, session)
         after = self.wf._file_version(Path(self.path))
         self.assertEqual(self.wf.STATE["checked_files"][self.path], after)
@@ -182,7 +182,7 @@ class BatchTests(unittest.TestCase):
     def test_changed_file_is_not_saved_as_a_scanned_view(self):
         self.wf.STATE["checked_files"][self.path] = self.wf._file_version(Path(self.path))
         Path(self.path).write_bytes(b"edited after scan")
-        with patch.object(self.wf, "_save_page_layout_view") as save:
+        with patch.object(self.wf, "_save_scan_view") as save:
             with self.assertRaisesRegex(ValueError, "扫描后文件已修改"):
                 self.real_save_scan_preview(self.excel, self.path, Mock())
         save.assert_not_called()
