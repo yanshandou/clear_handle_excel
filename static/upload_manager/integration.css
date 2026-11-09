@@ -2,6 +2,8 @@
 .app-shell { min-height:calc(100vh - 80px); }
 .content { padding-top:32px; }
 .page-heading .eyebrow { color:#d4e6ff; letter-spacing:.5px; }
+/* 面包屑里只有第一个 span 是绿色小圆点；「Excel 上传」这段文字不能套圆点样式（否则被压成 10px 宽、竖着叠在一起） */
+.eyebrow #distCrumbRoot { width:auto; height:auto; background:none; border:0; border-radius:0; box-shadow:none; }
 .page-heading-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:10px; }
 .page-heading-actions .button { margin:0; text-decoration:none; }
 .page-heading-actions a:focus-visible { outline:3px solid #ffe26c; outline-offset:4px; }
