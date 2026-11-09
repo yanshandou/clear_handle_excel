@@ -69,16 +69,28 @@
       <button type="button" role="menuitem" data-menu="open"><i class="pr-dot is-open">📗</i><span><b>在 Excel 打开这一页</b><small>也可以 Ctrl + 单击</small></span></button>
     </div>
 
-    <dialog id="prResult" class="app-dialog pr-result" aria-labelledby="prResultTitle">
-      <div class="app-dialog-head"><span class="app-dialog-icon" aria-hidden="true">⚡</span>
-        <h2 id="prResultTitle" class="app-dialog-title">处理结果</h2></div>
-      <div id="prResultBody" class="pr-result-body"></div>
-      <div class="app-dialog-foot"><form method="dialog"><button class="btn btn-primary">知道了</button></form></div>
-    </dialog>
+    <!-- 统一修改 / 删除标红的实时进度框（用户 2026-11-09 提）：fixed 浮在底部条上面，出现、收起、内容变化都不挪页面。
+         正在改哪份、做到哪一步、进度条 + 预计完成时间；每份做完把每张表的结果（✓ 改好 / ! 没改成和原因）加在列表最上面 -->
+    <section id="prProg" class="pr-prog" role="status" aria-live="polite" aria-labelledby="prProgTitle" hidden>
+      <div class="pr-prog-head">
+        <span id="prProgIcon" class="pr-prog-icon" aria-hidden="true">⏳</span>
+        <h2 id="prProgTitle" class="pr-prog-title">正在统一修改</h2>
+        <span id="prProgCount" class="pr-prog-count"></span>
+        <button id="prProgFold" type="button" class="pr-prog-fold" title="收起成一行，不挡着看 PDF；再点展开">收起</button>
+      </div>
+      <div class="pr-prog-body">
+        <p id="prProgNow" class="pr-prog-now"></p>
+        <p id="prProgStep" class="pr-prog-step"></p>
+        <div id="prProgTrack" class="progress-track"><div id="prProgFill" class="progress-fill" style="width: 0%;"></div></div>
+        <p class="pr-prog-tally"><span id="prProgOk" class="is-ok">✓ 0</span><span id="prProgBad" class="is-bad">! 0</span><span class="pr-prog-hint">点表名在 Excel 打开</span></p>
+        <ul id="prProgLog" class="pr-prog-log"><li class="pr-prog-empty">做完第一份 Excel 就会列出结果…</li></ul>
+        <div id="prProgFoot" class="pr-prog-foot" hidden><button id="prProgClose" type="button" class="btn btn-primary">知道了</button></div>
+      </div>
+    </section>
 
     <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
   </main>
-  <script src="/static/dialog.js"></script><script src="/static/open_excel.js"></script>
+  <script src="/static/dialog.js"></script><script src="/static/open_excel.js"></script><script src="/static/eta.js"></script>
   <script src="/static/pdf_review.js"></script><script src="/static/debug_log.js"></script>
   <script src="/static/task_folder.js"></script><script src="/static/focus_banner.js"></script><script src="/static/file_problem.js"></script>
 </body>
