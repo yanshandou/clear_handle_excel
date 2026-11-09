@@ -846,3 +846,23 @@ test('cell toolbox defaults cut cells to row height x1.5 and sends the chosen to
   // 交出去以后都回到「不动」：没过的不会再按原工具改一遍
   assert.equal(p.run('toolboxPlan().length'), 0);
 });
+
+test('cell toolbox can fix only the current category and leaves the others chosen', async () => {
+  const p = page();
+  p.run(`batchState.cards = [
+    {...batchState.cards[1], id:'cut', wb_path:'a.xlsx', wb_name:'a.xlsx', color:'yellow', finalized:true,
+     tools:['grow','shrink'], default_tool:'grow:1.5', category:['text_truncated|single','文字截断 · 单格']},
+    {...batchState.cards[1], id:'border', wb_path:'b.xlsx', wb_name:'b.xlsx', color:'yellow', finalized:true,
+     tools:['grow','shrink'], default_tool:'grow:1.5', category:['border_clip|single','边框压线 · 单格']}];
+    batchState.opened_files=[]; batchState.busy=false;`);
+  for (const f of ['cell_toolbox.js', 'category.js']) p.run(require('node:fs').readFileSync(require('node:path').join(__dirname, '../static', f), 'utf8'));
+  const group = 'categoryList().find(c => c.key.startsWith("border_clip"))';
+  assert.match(p.run(`toolboxGroupBarHtml(${group})`), /data-tb-group-apply[\s\S]*只修这一类/);
+  p.run(`asked=''; appConfirm=async text=>{asked=text; return true;}; post=async (url,payload)=>{requests.push({url,payload}); return {ok:true};};`);
+  await p.run(`toolboxApply(${group})`);
+  const sent = p.requests.at(-1);
+  assert.deepEqual(JSON.parse(JSON.stringify(sent.payload.tools)), [{ card_id: 'border', tool: 'grow', ratio: 1.5 }]);
+  assert.match(p.run('asked'), /只修「边框压线 · 单格」 1 格[\s\S]*别的分类里选了工具的 1 格这次不动/);
+  // 别的分类照旧选着，等底部「统一修改」或者它自己的「只修这一类」
+  assert.deepEqual(Array.from(p.run('toolboxPlan().map(([c, v]) => c.id + "=" + v)')), ['cut=grow:1.5']);
+});

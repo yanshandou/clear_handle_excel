@@ -269,3 +269,4 @@ tr[data-state="marked"] .learn-state { background: var(--purple-ink, #1f5fc4); c
 .tb-large { width: min(1100px, calc(100vw - 48px)); }
 .tb-large-body { max-height: 75vh; overflow: auto; margin: 0 22px; text-align: center; }
 .tb-large-body img { max-width: 100%; }
+.tb-group-apply { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
