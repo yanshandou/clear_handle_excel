@@ -136,3 +136,51 @@ class RepairTaskTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FallbackCellsTests(unittest.TestCase):
+    """SpecialCells 抛错时：已用区域被格式撑到上百万行，也只按真正有内容的范围分块读（DmFORM_0001_2021）"""
+
+    def _sheet(self, data: dict, used_rows: int = 1_048_576, used_cols: int = 50):
+        reads = []
+
+        def cell(row, col):
+            value = data.get((row, col))
+            return NS(Row=row, Column=col, HasFormula=isinstance(value, str) and value.startswith("="))
+
+        def find(What, After, LookIn, LookAt, SearchOrder, SearchDirection):
+            if not data:
+                return None
+            key = max(data) if SearchOrder == links.XL_BY_ROWS else max(data, key=lambda k: (k[1], k[0]))
+            return cell(*key)
+
+        def rng(a, b):
+            reads.append((a.Row, b.Row))
+            matrix = tuple(tuple(data.get((r, c), "") for c in range(a.Column, b.Column + 1))
+                           for r in range(a.Row, b.Row + 1))
+            return NS(Formula=matrix, Value2=matrix)
+
+        used = NS(Row=1, Column=1, CountLarge=used_rows * used_cols, Address="$A$1:$AX$1048576",
+                  Cells=cell, Find=find)
+        used.SpecialCells = Mock(side_effect=Exception("1004"))
+        return NS(Name="DmFORM_0001_2021", UsedRange=used, Cells=cell, Range=rng), reads
+
+    def test_huge_used_range_without_formulas_is_read_by_real_extent(self):
+        sheet, reads = self._sheet({(1, 1): "ID", (3, 4): "abc"})
+        self.assertEqual(links.special_cells(sheet, links.XL_FORMULAS), [])
+        self.assertEqual(reads, [(1, 3)])
+
+    def test_empty_sheet_reads_nothing(self):
+        sheet, reads = self._sheet({})
+        self.assertEqual(links.special_cells(sheet, links.XL_FORMULAS), [])
+        self.assertEqual(reads, [])
+
+    def test_large_content_is_read_in_blocks_and_formulas_found(self):
+        data = {(row, 1): "x" for row in range(1, 30_001)}
+        data[(25_000, 50)] = "=Old!A1"
+        sheet, reads = self._sheet(data)
+        with patch.object(links, "FALLBACK_BLOCK_CELLS", 500_000):
+            cells = links.special_cells(sheet, links.XL_FORMULAS)
+        self.assertEqual([(c.Row, c.Column) for c in cells], [(25_000, 50)])
+        self.assertEqual(reads[0], (1, 10_000))
+        self.assertEqual(len(reads), 3)

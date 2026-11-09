@@ -12,7 +12,8 @@ from core import debug_log
 XL_FORMULAS, XL_CONSTANTS, XL_ERRORS = -4123, 2, 16
 REF_ERROR = -2146826265
 ERROR_VALUES = {code - 2146828288 for code in range(2000, 2051)}
-MAX_FALLBACK_CELLS = 2_000_000
+XL_BY_ROWS, XL_BY_COLUMNS, XL_PREVIOUS, XL_PART = 1, 2, 2, 2
+FALLBACK_BLOCK_CELLS = 500_000  # 读不了 SpecialCells 时，每次最多读这么多格
 
 
 def address(area: Any) -> str:
@@ -39,20 +40,51 @@ def broken_formula(expression: str) -> bool:
         for item in tokens(expression))
 
 
+def _content_extent(sheet: Any, used: Any) -> tuple[int, int] | None:
+    """真正有内容的最后一行、最后一列（绝对行列号）；一格内容都没有时返回 None。
+
+    UsedRange 常被格式、边框、删过内容的空格子撑到上百万行（DmFORM 这类表），
+    按 UsedRange 整块读会太大；用 Find("*") 倒着找，只看有内容（常量或公式）的格子。"""
+    start = used.Cells(1, 1)
+    found = []
+    for order in (XL_BY_ROWS, XL_BY_COLUMNS):
+        hit = used.Find(What="*", After=start, LookIn=XL_FORMULAS, LookAt=XL_PART,
+                        SearchOrder=order, SearchDirection=XL_PREVIOUS)
+        if hit is None:
+            return None
+        found.append(hit)
+    return int(found[0].Row), int(found[1].Column)
+
+
 def _fallback_cells(sheet: Any, kind: int) -> list[Any]:
     used = sheet.UsedRange
-    if int(used.CountLarge) > MAX_FALLBACK_CELLS:
-        raise ValueError(f"「{sheet.Name}」无法读取公式，已停止处理（已用区域过大）")
-    data = used.Formula if kind == XL_FORMULAS else used.Value2
-    matrix = data if isinstance(data, tuple) else ((data,),)
+    top, left = int(used.Row), int(used.Column)
+    extent = _content_extent(sheet, used)
+    if extent is None:
+        return []
+    bottom, right = extent
+    if bottom < top or right < left:
+        return []
+    width = right - left + 1
+    total = (bottom - top + 1) * width
+    if int(used.CountLarge) > total:
+        debug_log.event("📐 已用区域比内容大，只读有内容的部分", 表=str(sheet.Name),
+                        已用区域=address(used), 有内容到=f"第 {bottom} 行、第 {right} 列", 格数=total)
+    # 分块读，大表也不会一次拿几百万格把 Excel/内存撑爆
+    step = max(1, FALLBACK_BLOCK_CELLS // width)
     result = []
-    for row, values in enumerate(matrix):
-        for col, value in enumerate(values):
-            if ((kind == XL_FORMULAS and isinstance(value, str) and value.startswith("=")) or
-                    (kind == XL_CONSTANTS and isinstance(value, int) and value in ERROR_VALUES)):
-                cell = sheet.Cells(int(used.Row) + row, int(used.Column) + col)
-                if kind == XL_FORMULAS or not bool(cell.HasFormula):
-                    result.append(cell)
+    for first in range(top, bottom + 1, step):
+        last = min(bottom, first + step - 1)
+        block = sheet.Range(sheet.Cells(first, left), sheet.Cells(last, right))
+        data = block.Formula if kind == XL_FORMULAS else block.Value2
+        matrix = data if isinstance(data, tuple) else ((data,),)
+        for row, values in enumerate(matrix):
+            for col, value in enumerate(values):
+                if ((kind == XL_FORMULAS and isinstance(value, str) and value.startswith("=")) or
+                        (kind == XL_CONSTANTS and isinstance(value, int) and value in ERROR_VALUES)):
+                    cell = sheet.Cells(first + row, left + col)
+                    if kind == XL_FORMULAS or not bool(cell.HasFormula):
+                        result.append(cell)
     return result
 
 

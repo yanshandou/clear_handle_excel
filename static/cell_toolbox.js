@@ -66,7 +66,9 @@ function toolboxGroupBarHtml(group) {
   const who = group.type === 'file' ? '这个文件' : group.key === OPENED_KEY ? '这些文件' : '这一类';
   return `<div class="tb-group-bar" data-tb-group><span class="tb-group-label">${who}都用：</span>`
     + usable.map(t => `<button type="button" class="tb-chip tb-chip-lg" data-tb-group-tool="${t.value}" data-tb-kind="${t.tool}" aria-pressed="${cards.every(c => toolOf(c) === t.value || !toolOptions(c).some(o => o.value === t.value))}" title="${esc(t.tip)}">${esc(t.label)}</button>`).join('')
-    + '<span class="tb-group-hint">单个格子在下面另选；选好后点最下面的「🛠 统一修改」</span></div>';
+    // 只修这一类（用户 2026-11-09 要）：只把这一组里选了工具的格子交给后台，别的分类不动
+    + `<button type="button" class="btn btn-primary btn-sm tb-group-apply" data-tb-group-apply><span>🛠 只修${who}</span><span class="tb-count" data-tb-group-count>0</span></button>`
+    + `<span class="tb-group-hint">单个格子在下面另选。点「🛠 只修${who}」只改${who}；最下面的「🛠 统一修改」一次改所有分类里选了工具的格子</span></div>`;
 }
 
 function toolboxCellHtml(card, showFile) {
@@ -138,8 +140,8 @@ async function toolboxLoadImages() {
 }
 
 // 底部悬浮条：这个文件夹里所有选了工具的格子
-function toolboxPlan() {
-  return (batchState.cards || []).filter(toolboxEligible).map(c => [c, toolOf(c)]).filter(([, v]) => v !== 'none');
+function toolboxPlan(cards = batchState.cards || []) {
+  return cards.filter(toolboxEligible).map(c => [c, toolOf(c)]).filter(([, v]) => v !== 'none');
 }
 function toolboxBusyReason() {
   if (requestBusy) return '正在提交请求';
@@ -160,17 +162,29 @@ function toolboxRenderBar() {
   const button = $('tbApply');
   button.disabled = !!busy || !plan.length;
   button.title = busy || (plan.length ? '后台按选好的工具改 Excel、保存，再整份复检' : '先选工具');
+  // 分类上的「只修这一类」：数字、能不能点跟着这一组选了几格变
+  const groupButton = document.querySelector('[data-tb-group-apply]');
+  if (groupButton) {
+    const mine = toolboxPlan(groupCurrent(groupList())?.cards || []);
+    groupButton.querySelector('[data-tb-group-count]').textContent = mine.length;
+    groupButton.disabled = !!busy || !mine.length;
+    groupButton.title = busy || (mine.length ? `只把这里选了工具的 ${mine.length} 格交给后台改、保存，再整份复检；别的分类不动` : '这里还没有选工具的格子');
+  }
 }
 
-async function toolboxApply() {
-  const plan = toolboxPlan();
+// group：只修这一类（这个文件）时传当前分组；不传 = 底部统一修改，所有分类一起改
+async function toolboxApply(group = null) {
+  const plan = toolboxPlan(group ? group.cards : undefined);
   if (!plan.length) return;
   const files = new Set(plan.map(([c]) => c.wb_path)).size;
   const counts = new Map();
   for (const [, v] of plan) counts.set(v, (counts.get(v) || 0) + 1);
   const lines = TOOL_DEFS.filter(t => counts.has(t.value)).map(t => `· ${t.label}：${counts.get(t.value)} 格`).join('\n');
-  if (!(await appConfirm(`统一修改 ${plan.length} 格（${files} 个文件）：\n${lines}\n\n后台改 Excel、保存，再整份复检：通过的移出列表、去掉标色；没过的留在原来的分类，写明用过什么工具，可以换个工具再改。\n加了行高可能多出一页，做完会告诉你哪些表页数变了。\n请先在 Excel 里保存并关闭这些文件。`,
-    { title: '🛠 统一修改', okText: '🛠 开始修改', tone: 'info' }))) return;
+  const scope = !group ? '' : group.key === OPENED_KEY ? '「已打开、待复检」' : `「${group.label}」`;
+  const others = group ? toolboxPlan().length - plan.length : 0;
+  console.info('🛠 单元格工具箱提交', { 范围: scope || '全部分类', 格: plan.length, 文件: files, 别的分类没动: others });
+  if (!(await appConfirm(`${group ? `只修${scope}` : '统一修改'} ${plan.length} 格（${files} 个文件）：\n${lines}${others > 0 ? `\n\n别的分类里选了工具的 ${others} 格这次不动。` : ''}\n\n后台改 Excel、保存，再整份复检：通过的移出列表、去掉标色；没过的留在原来的分类，写明用过什么工具，可以换个工具再改。\n加了行高可能多出一页，做完会告诉你哪些表页数变了。\n请先在 Excel 里保存并关闭这些文件。`,
+    { title: group ? `🛠 只修${scope}` : '🛠 统一修改', okText: '🛠 开始修改', tone: 'info' }))) return;
   const tools = plan.map(([card, value]) => {
     const def = TOOL_BY_VALUE[value];
     return def.tool === 'grow' ? { card_id: card.id, tool: 'grow', ratio: def.ratio } : { card_id: card.id, tool: def.tool };
@@ -227,6 +241,11 @@ function toolboxHandleClick(event) {
     if (card) { setTool([card], chip.dataset.tbTool); toolboxRefreshPressed(); }
     return true;
   }
+  if (event.target.closest('[data-tb-group-apply]')) {
+    const group = groupCurrent(groupList());
+    if (group) toolboxApply(group);
+    return true;
+  }
   const groupChip = event.target.closest('[data-tb-group-tool]');
   if (groupChip) {
     const group = groupCurrent(groupList());
@@ -253,6 +272,6 @@ function toolboxHandleClick(event) {
   return false;
 }
 
-$('tbApply')?.addEventListener('click', toolboxApply);
+$('tbApply')?.addEventListener('click', () => toolboxApply());
 $('tbLargeClose')?.addEventListener('click', () => $('tbLarge').close());
 $('tbLarge')?.addEventListener('click', event => { if (event.target === $('tbLarge')) $('tbLarge').close(); });
