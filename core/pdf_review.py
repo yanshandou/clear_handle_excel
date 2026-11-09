@@ -289,7 +289,21 @@ _PROCESS_LOCK = threading.Lock()
 
 def process_status() -> dict:
     with _PROCESS_LOCK:
-        return {**_PROCESS, "result": _PROCESS.get("result")}
+        return {**_PROCESS, "result": _PROCESS.get("result"), "log": list(_PROCESS.get("log") or [])}
+
+
+# 网页上的实时进度框（用户 2026-11-09 提：以前只有按钮上「修改中 10 / 20」，看不到在改哪份、改得怎么样）：
+# step = 这份 Excel 现在做到哪一步；log = 做完一份就把每张表的结果（成功 / 没成功和原因）追加进去
+def _set_step(step: str) -> None:
+    with _PROCESS_LOCK:
+        _PROCESS["step"] = step
+
+
+def _log_results(entries: list[dict], ok: bool, kind: str) -> None:
+    with _PROCESS_LOCK:
+        log = _PROCESS.setdefault("log", [])
+        for entry in entries:
+            log.append({**entry, "ok": ok, "kind": kind})
 
 
 TOOLS = ("floor", "auto", "orient", "breaks")  # 向下取整 / 页高改回自动 / 改方向（value 1 竖、2 横）/ 清手动分页
@@ -347,7 +361,7 @@ def process(red: Any, yellow: Any, tools: Any = None) -> None:
         books = list(dict.fromkeys(item["wb_path"] for item in reds))
         _PROCESS.clear()
         _PROCESS.update(running=True, stage="delete" if reds else "floor" if floors else "open", total=len(books),
-                        done=0, current="", result=None)
+                        done=0, current="", step="", log=[], result=None)
     root = wf.STATE.get("pdf_review", {}).get("folder") or ""
 
     def run() -> None:
@@ -376,14 +390,17 @@ def process(red: Any, yellow: Any, tools: Any = None) -> None:
                                 改了页面=len(result["changed"]), 没改成=len(result["change_failed"]),
                                 打开=len(result["opened"]), 没打开=len(result["open_failed"]), 下次开=len(result["later"]))
         except Exception as err:
-            result["failed"].append({"name": "任务", "sheet": "", "reason": f"处理出错：{err}"})
+            debug_log.exception(err, "PDF 复检一键处理")
+            entry = {"name": "任务", "sheet": "", "reason": f"处理出错：{err}"}
+            result["failed"].append(entry)
+            _log_results([entry], False, "task")
         finally:
             with wf.STATE_LOCK:
                 if wf.STATE.get("maintenance") == "pdf_review_process":
                     wf.STATE["busy"] = False
                     wf.STATE.pop("maintenance", None)
             with _PROCESS_LOCK:
-                _PROCESS.update(running=False, current="", result=result)
+                _PROCESS.update(running=False, current="", step="", result=result)
 
     try:
         threading.Thread(target=run, name="PDF 复检一键处理", daemon=True).start()
@@ -407,7 +424,7 @@ def _delete_red(reds: list[dict], root: str, result: dict) -> None:
         for index, (wb_path, items) in enumerate(groups.items()):
             label = workbook_rel_name(Path(wb_path), Path(root)) if root else Path(wb_path).name
             with _PROCESS_LOCK:
-                _PROCESS.update(done=index, current=label)
+                _PROCESS.update(done=index, current=label, step=f"打开 Excel，删掉 {len(items)} 张表")
             while True:
                 guard.progress()
                 try:
@@ -417,6 +434,7 @@ def _delete_red(reds: list[dict], root: str, result: dict) -> None:
                     break
                 except Exception as err:
                     debug_log.exception(err, f"PDF 复检删表 {label}")
+                    _set_step(f"出错了，等你在弹框里选「重试」或「跳过」：{err}")
                     retry, message = guard.problem(err, wb_path, label, root,
                                                    close=lambda: file_problem.quit_quietly(excel))
                     if guard.closed:
@@ -431,6 +449,9 @@ def _delete_red(reds: list[dict], root: str, result: dict) -> None:
                 if item["ok"]:
                     entry["pdf_removed"] = item.get("pdf_removed", False)
                 result["deleted" if item["ok"] else "failed"].append(entry)
+                _log_results([entry], item["ok"], "delete")
+            debug_log.event("📋 调整页面进度", 第几份=f"{index + 1}/{len(groups)}", 文件=label,
+                            删掉=sum(1 for i in outcome if i["ok"]), 没删掉=sum(1 for i in outcome if not i["ok"]))
             with _PROCESS_LOCK:
                 _PROCESS.update(done=index + 1)
     finally:
@@ -527,7 +548,7 @@ def _floor_marked(floors: list[dict], root: str, result: dict) -> None:
             export_root = pdf_store.export_root_of(Path(items[0]["pdf"])) or Path(root)
             label = workbook_rel_name(Path(wb_path), export_root)
             with _PROCESS_LOCK:
-                _PROCESS.update(done=index, current=label)
+                _PROCESS.update(done=index, current=label, step=f"打开 Excel，改 {len(items)} 处打印设置")
             while True:
                 guard.progress()
                 try:
@@ -535,6 +556,7 @@ def _floor_marked(floors: list[dict], root: str, result: dict) -> None:
                     break
                 except Exception as err:
                     debug_log.exception(err, f"调整页面 {label}")
+                    _set_step(f"出错了，等你在弹框里选「重试」或「跳过」：{err}")
                     retry, message = guard.problem(err, wb_path, label, root,
                                                    close=lambda: file_problem.quit_quietly(excel))
                     if guard.closed:
@@ -548,6 +570,9 @@ def _floor_marked(floors: list[dict], root: str, result: dict) -> None:
                 entry = {"pdf": item["pdf"], "name": label, "sheet": item["sheet"], "reason": item.get("reason", "")}
                 entry["tool"] = item["tool"]
                 result["changed" if item["ok"] else "change_failed"].append(entry)
+                _log_results([entry], item["ok"], "tool")
+            debug_log.event("📋 调整页面进度", 第几份=f"{index + 1}/{len(groups)}", 文件=label,
+                            改好=sum(1 for i in outcome if i["ok"]), 没改成=sum(1 for i in outcome if not i["ok"]))
             with _PROCESS_LOCK:
                 _PROCESS.update(done=index + 1)
     finally:
@@ -602,6 +627,7 @@ def _floor_in_workbook(get_excel: Any, wb_path: Path, items: list[dict], export_
                 # 方向一改，页数全变了，按旧 PDF 取整不准：先改方向，看了新 PDF 再决定
                 outcome.append({**item, "ok": False, "reason": "这张表同时改了方向，改完方向看新的 PDF 再决定要不要取整"})
                 continue
+            _set_step(f"[{item['sheet']}] 向下取整：先真导出一次核对页数")
             found = page_fill.floor_pages(sheet, Path(item["pdf"]), wf._export_sheet_pdf)
             if found["ok"]:
                 reason = f"{found['before']} 页 → {found['after']} 页" + (
@@ -621,6 +647,7 @@ def _floor_in_workbook(get_excel: Any, wb_path: Path, items: list[dict], export_
             return outcome
         if not any(item["ok"] for item in outcome):
             return outcome
+        _set_step("保存 Excel")
         book.Save()
     finally:
         book.Close(SaveChanges=False)
@@ -630,6 +657,7 @@ def _floor_in_workbook(get_excel: Any, wb_path: Path, items: list[dict], export_
     try:
         # 只重新导出改过的表，别的表的 PDF 不动（用户 2026-11-08 定按表来）
         changed = {str(item["sheet"]) for item in outcome if item["ok"]}
+        _set_step(f"重新导出 PDF（{len(changed)} 张表）")
         wf._export_workbook_pdfs(get_excel, wb_path, export_root, set(), force=True, only_sheets=changed,
                                  fresh_before=fresh)
     except Exception as err:

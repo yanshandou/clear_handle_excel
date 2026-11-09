@@ -713,6 +713,7 @@ async function runProcess(kind, onlyWb = '') {
     return;
   }
   processKind = kind;
+  openProgress(kind);
   setProcessing(true);
   pollProcess();
 }
@@ -745,33 +746,123 @@ async function pollProcess() {
     label.textContent = status.stage === 'delete' ? `⏳ 删除中 ${status.done} / ${status.total}`
       : `⏳ 修改中 ${status.done} / ${status.total}`;
     $(PROCESS_BUTTON[processKind]).classList.add('is-running');
+    if ($('prProg').hidden) openProgress(processKind); // 刷新页面时还在跑：接着显示
+    paintProgress(status);
     setTimeout(pollProcess, 1000);
     return;
   }
+  const kind = processKind || (status.stage === 'delete' ? 'red' : 'tools');
   setProcessing(false);
   setBusy('');
   const after = regenAfterProcess;
   regenAfterProcess = null;
-  if (status.result) await finishProcess(status.result);
+  if (status.result) await finishProcess(status, kind);
   // 从「重新生成」进来的：标记改完了但这张表没改成（PDF 没重导），照样强制重新导出一次
   if (after && !(status.result?.changed || []).some(i => i.pdf === after.pdf)) {
     try { await regenerateNow(after); } finally { if (!regenWb) setBusy(''); }
   }
 }
 
-// 结果框：每一处都是链接，点一下 Excel 跳过去
-function resultLine(item, { link = true } = {}) {
-  const d = pdfs.findIndex(x => x.pdf === item.pdf);
-  const hasPage = item.page !== undefined && item.page !== null;
-  const label = `${escapeHtml(item.name)} › ${escapeHtml(item.sheet)}${hasPage ? ` · 第 ${item.page + 1} 页` : ''}`;
-  const body = link && d >= 0 && pdfs[d].wb_path
-    ? `<button type="button" class="pr-result-open" data-result-doc="${d}" data-result-page="${hasPage ? item.page : 0}" title="在 Excel 打开这一页">📗 ${label}</button>`
-    : label;
-  const note = item.reason ? `<span class="pr-result-note">${escapeHtml(item.reason)}</span>` : '';
-  return `<li>${body}${note}</li>`;
+/* ---------- 实时进度框 ---------- */
+// 以前统一修改只有按钮上「⏳ 修改中 10 / 20」，看不出在改哪份、改得怎么样（用户 2026-11-09 提）。
+// 现在点「开始修改」就在底部条上面浮出一个框：正在改哪份 Excel、做到哪一步、进度条 + 预计几点完成；
+// 每份做完把每张表的结果（✓ 改好 / ! 没改成和原因）加到列表最上面，表名点一下 Excel 跳过去。
+// 做完进度条收起，标题写 ✓ / !，点「知道了」关掉。框是 fixed 浮层：出现、收起、内容变化都不挪页面。
+const PROG_ETA_KEY = 'pdf_review_process';
+const PROG_TEXT = {
+  red: { running: '正在删除标红的表', done: '删除标红完成', unit: '张表删掉了', bad: '张没删掉' },
+  tools: { running: '正在统一修改', done: '统一修改完成', unit: '处改好了', bad: '处没改成' },
+};
+let progKind = 'tools';
+let progLogSize = -1;
+
+function openProgress(kind) {
+  progKind = kind === 'red' ? 'red' : 'tools';
+  progLogSize = -1;
+  const box = $('prProg');
+  box.dataset.state = 'running';
+  box.dataset.kind = progKind;
+  $('prProgIcon').textContent = '⏳';
+  $('prProgTitle').textContent = PROG_TEXT[progKind].running;
+  $('prProgCount').textContent = '准备中…';
+  $('prProgNow').textContent = '正在启动后台 Excel…';
+  $('prProgStep').textContent = '';
+  $('prProgFill').style.width = '0%';
+  $('prProgTrack').classList.remove('is-done');
+  $('prProgFoot').hidden = true;
+  $('prProgLog').innerHTML = '<li class="pr-prog-empty">做完第一份 Excel 就会列出结果…</li>';
+  paintTally([]);
+  box.hidden = false;
+  ProgressEta.update('prProgFill', PROG_ETA_KEY, 0, true);
 }
 
-async function finishProcess(result) {
+function paintTally(log) {
+  const ok = log.filter(i => i.ok).length;
+  $('prProgOk').textContent = `✓ ${ok}`;
+  $('prProgBad').textContent = `! ${log.length - ok}`;
+  $('prProgBad').classList.toggle('is-zero', log.length === ok);
+}
+
+// 一条结果：表名（能打开的是按钮）+ 原因
+function progLine(item) {
+  const d = pdfs.findIndex(x => x.pdf === item.pdf);
+  const label = `${escapeHtml(item.name)}${item.sheet ? ` › ${escapeHtml(item.sheet)}` : ''}`;
+  const canOpen = item.kind !== 'delete' && d >= 0 && pdfs[d].wb_path && !deleted.has(item.pdf);
+  const what = canOpen
+    ? `<button type="button" class="pr-result-open" data-result-doc="${d}" data-result-page="0" title="在 Excel 打开这张表">📗 ${label}</button>`
+    : `<span class="pr-prog-name">${label}</span>`;
+  const note = item.reason ? `<span class="pr-result-note">${escapeHtml(item.reason)}</span>` : '';
+  return `<li class="${item.ok ? 'is-ok' : 'is-bad'}"><i aria-hidden="true">${item.ok ? '✓' : '!'}</i><div>${what}${note}</div></li>`;
+}
+
+// 最新的在最上面：列表只往上长，不用滚动
+function paintLog(log, force = false) {
+  if (!force && log.length === progLogSize) return;
+  progLogSize = log.length;
+  paintTally(log);
+  if (!log.length) return;
+  $('prProgLog').innerHTML = log.slice().reverse().map(progLine).join('');
+}
+
+function paintProgress(status) {
+  const total = status.total || 0;
+  const done = Math.min(status.done || 0, total);
+  const fraction = total ? done / total : 0;
+  $('prProgCount').textContent = total ? `第 ${Math.min(done + 1, total)} / ${total} 份 Excel` : '准备中…';
+  $('prProgNow').textContent = status.current ? `📗 ${status.current}` : '正在启动后台 Excel…';
+  $('prProgStep').textContent = status.step ? `▸ ${status.step}` : '';
+  $('prProg').classList.toggle('is-waiting', /^出错了/.test(status.step || ''));
+  $('prProgFill').style.width = `${(fraction * 100).toFixed(1)}%`;
+  ProgressEta.update('prProgFill', PROG_ETA_KEY, fraction, true);
+  paintLog(status.log || []);
+}
+
+function closeProgressRun(log) {
+  const text = PROG_TEXT[progKind];
+  const ok = log.filter(i => i.ok).length;
+  const bad = log.length - ok;
+  const box = $('prProg');
+  box.dataset.state = bad ? 'warn' : 'done';
+  box.classList.remove('is-waiting');
+  ProgressEta.update('prProgFill', PROG_ETA_KEY, 1, false);
+  $('prProgTrack').classList.add('is-done'); // 进度条收起，只留结果
+  $('prProgIcon').textContent = bad ? '!' : '✓';
+  $('prProgTitle').textContent = bad ? `${text.done}，${bad} ${text.bad}` : text.done;
+  $('prProgCount').textContent = '';
+  $('prProgNow').textContent = log.length
+    ? `${ok} ${text.unit}` + (bad ? `，${bad} ${text.bad}` : '')
+    : '没有要处理的';
+  $('prProgStep').textContent = progKind === 'red'
+    ? '删掉的表已保存、PDF 也删了；没删掉的还是红色，可以再点一次。'
+    : '改好的 Excel 已保存、PDF 已重新生成，请再看一遍；没改成的标记还在，可以换一种改法。';
+  $('prProgFoot').hidden = false;
+  paintLog(log, true);
+  if (box.classList.contains('is-folded')) $('prProgFold').textContent = '展开';
+}
+
+async function finishProcess(status, kind) {
+  const result = status.result;
+  progKind = kind === 'red' ? 'red' : 'tools';
   // 改好的：Excel 已保存、PDF 已重新生成，新 PDF 修改时间变了，旧标记自动不算
   for (const item of result.deleted || []) {
     deleted.add(item.pdf);
@@ -780,25 +871,21 @@ async function finishProcess(result) {
   saveMarks();
   pdfs.forEach((_, d) => paintMark(d));
   updateProcessButton();
-  const section = (title, items, opts) => items?.length
-    ? `<h3>${title}</h3><ul>${items.map(i => resultLine(i, opts)).join('')}</ul>` : '';
-  const html = [
-    section(`🗑 删掉了 ${result.deleted?.length} 张表（已保存，PDF 也删了）`, result.deleted, { link: false }),
-    section(`⚠ 没删掉 ${result.failed?.length} 张（还是红色，可以再点一次）`, result.failed),
-    section(`🛠 改好了 ${result.changed?.length} 处（Excel 已保存，PDF 已重新生成，请再看一遍）`, result.changed),
-    section(`⚠ 没改成 ${result.change_failed?.length} 处（改了会出问题，程序已把 Excel 改回原样，标记还在，可以换一种改法）`, result.change_failed),
-  ].join('');
   const bad = result.failed?.length || result.change_failed?.length;
-  toast(bad ? '处理完成，有没处理成功的，请看结果' : '处理完成', !!bad);
-  $('prResultBody').innerHTML = html || '<p>没有要处理的</p>';
-  $('prResult').dataset.tone = bad ? 'warn' : 'info';
+  toast(bad ? '处理完成，有没处理成功的，请看进度框里的结果' : '处理完成', !!bad);
   // 改了页面的 PDF 换成了新的一版：重新读列表，页面停在原来那份上
   const done = result.changed || [];
   if (done.length) {
     const doc = allPdfs.find(x => x.pdf === done[0].pdf);
     await reloadKeeping(done[0].pdf, doc?.wb_path || '');
   }
-  $('prResult').showModal();
+  if ($('prProg').hidden) openProgress(progKind);
+  closeProgressRun(status.log || []); // 列表重新读过：结果里的表名重新对应到新的位置，点了能打开
+}
+
+function toggleProgressFold() {
+  const folded = $('prProg').classList.toggle('is-folded');
+  $('prProgFold').textContent = folded ? '展开' : '收起';
 }
 
 /* ---------- 单张表重新生成 PDF ---------- */
@@ -1183,7 +1270,9 @@ $('prView').addEventListener('click', e => {
   const button = e.target.closest('[data-view]');
   if (button) setView(button.dataset.view);
 });
-$('prResultBody').addEventListener('click', e => {
+$('prProgFold').addEventListener('click', toggleProgressFold);
+$('prProgClose').addEventListener('click', () => { $('prProg').hidden = true; });
+$('prProgLog').addEventListener('click', e => {
   const button = e.target.closest('[data-result-doc]');
   if (button) openPage(Number(button.dataset.resultDoc), Number(button.dataset.resultPage));
 });

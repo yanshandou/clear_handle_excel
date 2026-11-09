@@ -648,54 +648,189 @@
 .pr-count.is-red { color: #fff; background: #c8102e; }
 
 
-/* 一键处理结果：每一处都能点开 */
-.pr-result {
-  width: min(720px, calc(100vw - 32px));
-  padding: 0;
+/* 统一修改 / 删除标红的实时进度框：fixed 浮在底部条右上方，出现、收起、内容变化都不挪页面。
+   宽度固定；列表区高度有上限，新结果加在最上面，不自动滚动 */
+.pr-prog {
+  position: fixed;
+  right: 28px;
+  bottom: 96px;
+  z-index: 30;
+  width: 520px;
+  max-height: calc(100vh - 140px);
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  background: #fff;
+  border: 3px solid var(--ink);
+  border-radius: 18px;
+  box-shadow: 5px 5px 0 var(--purple);
+  overflow: hidden;
 }
 
-.pr-result-body {
-  max-height: 60vh;
-  overflow: auto;
-  margin: 0 22px;
-  padding: 4px 16px 12px;
-  border: 2px solid var(--ink);
-  border-radius: 14px;
-  background: #f5f8ff;
+.pr-prog[hidden] { display: none; }
+.pr-prog[data-state="done"] { box-shadow: 5px 5px 0 #1f8a4c; }
+.pr-prog[data-state="warn"],
+.pr-prog.is-waiting { box-shadow: 5px 5px 0 #e0a000; }
+
+.pr-prog-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px 10px 16px;
+  border-bottom: 2px solid var(--line-soft, #dfe5f3);
 }
 
-.pr-result-body h3 {
-  margin: 12px 0 6px;
-  font-size: 14px;
+.pr-prog.is-folded .pr-prog-head { border-bottom: 0; }
+.pr-prog.is-folded .pr-prog-body { display: none; }
+
+.pr-prog-icon {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  font-size: 17px;
+  font-weight: 900;
   color: var(--ink);
+  background: #e6efff;
+  border: 2.5px solid var(--ink);
+  border-radius: 10px;
 }
 
-.pr-result-body ul {
+.pr-prog[data-state="done"] .pr-prog-icon { color: #fff; background: #1f7a45; }
+.pr-prog[data-state="warn"] .pr-prog-icon { color: #3d2a00; background: #ffc21f; }
+
+.pr-prog-title {
+  flex: 1;
+  min-width: 0;
   margin: 0;
-  padding-left: 18px;
-  font-size: 13px;
-  line-height: 1.9;
-  word-break: break-all;
+  font-size: 16px;
+  font-weight: 900;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.pr-result-tag {
-  margin-left: 6px;
-  padding: 0 8px;
-  font-size: 12px;
+.pr-prog-count {
+  flex: none;
+  font-size: 13px;
   font-weight: 700;
-  color: #3d2a00;
-  background: #ffc21f;
-  border-radius: 999px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
 }
+
+.pr-prog-fold {
+  flex: none;
+  min-width: 4em;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+  background: #fff;
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.pr-prog-fold:hover { background: #e6efff; }
+
+.pr-prog-body {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 16px 14px;
+}
+
+/* 正在改哪份、做到哪一步：各占一行，太长省略，高度不变 */
+.pr-prog-now,
+.pr-prog-step {
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pr-prog-now { font-size: 14px; font-weight: 700; color: var(--ink); }
+.pr-prog-step { min-height: 1.5em; margin-bottom: 8px; font-size: 13px; line-height: 1.5; color: var(--ink-3); }
+.pr-prog[data-state="done"] .pr-prog-step,
+.pr-prog[data-state="warn"] .pr-prog-step { white-space: normal; }
+.pr-prog.is-waiting .pr-prog-step { font-weight: 700; color: #7a4a00; }
+
+.pr-prog-tally {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 6px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.pr-prog-tally span { padding: 1px 9px; border-radius: 999px; }
+.pr-prog-tally .is-ok { color: #fff; background: #1f7a45; }
+.pr-prog-tally .is-bad { color: #3d2a00; background: #ffc21f; }
+.pr-prog-tally .is-bad.is-zero { color: var(--ink-3); background: #eef1f8; }
+.pr-prog-tally .pr-prog-hint { margin-left: auto; padding: 0; font-weight: 600; color: var(--ink-3); }
+
+.pr-prog-log {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 260px;
+  margin: 0;
+  padding: 4px 10px;
+  overflow: auto;
+  list-style: none;
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: break-all;
+  background: #f5f8ff;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+}
+
+.pr-prog-log li {
+  display: flex;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px dashed #cdd5ea;
+}
+
+.pr-prog-log li:last-child { border-bottom: 0; }
+
+.pr-prog-log li > i {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  display: grid;
+  place-items: center;
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 900;
+  border-radius: 50%;
+}
+
+.pr-prog-log li.is-ok > i { color: #fff; background: #1f7a45; }
+.pr-prog-log li.is-bad > i { color: #3d2a00; background: #ffc21f; border: 1.5px solid #8a6200; }
+.pr-prog-log li > div { min-width: 0; }
+.pr-prog-log .pr-prog-empty { display: block; color: var(--ink-3); }
+.pr-prog-name { color: var(--ink); }
+.pr-prog-log li.is-bad .pr-result-note { color: #7a4a00; }
 
 .pr-result-note {
   display: block;
   color: var(--ink-3);
 }
 
-.pr-result .app-dialog-foot form {
-  display: contents;
+.pr-prog-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
 }
+
+.pr-prog-foot[hidden] { display: none; }
 
 /* 标题上的「重新生成」：只重导这一份 Excel 的 PDF。生成中文字变了宽度也不变，旁边的按钮不挪 */
 .pr-regen-btn {
@@ -732,7 +867,7 @@
   border-color: var(--ink-4);
 }
 
-/* 处理结果里每一处：点一下在 Excel 打开那一页 */
+/* 进度框结果里每一张表：点一下在 Excel 打开 */
 .pr-result-open {
   padding: 0;
   font: inherit;
