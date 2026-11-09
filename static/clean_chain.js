@@ -117,12 +117,42 @@
     box.className = `panel clean-chain${running ? ' is-running' : bad ? ' is-failed' : warn ? ' is-warn' : ' is-ok'}`;
   }
 
+  // 实时进度框（static/job_panel.js，用户 2026-11-09 要：所有批量操作都要有）：精简做完接着自动检查时，
+  // 框里写正在做第几项、哪份文件，做完一项列一条结果
+  function renderPanel() {
+    if (!window.JobPanel || !data || !data.steps || data.stage === 'clean') return;
+    const steps = data.steps.filter(step => step.state !== 'off');
+    const log = [{ ok: true, name: '精简 Sheet', reason: '做完了' }].concat(steps
+      .filter(step => ['done', 'warn', 'failed', 'skipped'].includes(step.state))
+      .map(step => ({ ok: step.state === 'done' || step.state === 'skipped', name: step.label,
+        reason: [STATE_TEXT[step.state], step.text].filter(Boolean).join('：') })));
+    if (data.running) {
+      const index = steps.findIndex(step => step.state === 'running');
+      const step = steps[index] || {};
+      const progress = step.progress || {};
+      window.JobPanel.run('chain', {
+        title: '正在自动检查（精简后）', count: index >= 0 ? `第 ${index + 1} / ${steps.length} 项` : '',
+        now: step.label ? `${step.label}${progress.current ? ` · 📗 ${progress.current}` : ''}` : '准备中…',
+        step: progress.total ? `${progress.phase || ''} 第 ${Math.min(progress.total, (progress.done || 0) + 1)} / ${progress.total} 份` : (step.text || ''),
+        fraction: (Math.max(0, index) + (progress.total ? Math.min(1, progress.done / progress.total) : 0)) / Math.max(1, steps.length),
+        log, folder: data.folder,
+      });
+    } else {
+      const bad = log.filter(item => !item.ok).length;
+      window.JobPanel.finish('chain', {
+        title: bad ? `自动检查做完了，${bad} 项有要人工看的` : '自动检查全部做完了', log, folder: data.folder,
+        step: bad ? '改不了、出错的都列在页面上的「自动检查」里，点文件名可以用 Excel 打开跳到那一格。' : '',
+      });
+    }
+  }
+
   async function refresh() {
     try {
       const res = await fetch('/api/clean/chain', { cache: 'no-store' });
       const body = await res.json();
       if (!res.ok || !body.ok) return data;
       data = body;
+      renderPanel();
       if (wasRunning && !data.running && onFinished) onFinished(data);
       wasRunning = Boolean(data.running);
     } catch (_) { /* 读不到就保持上次的样子 */ }

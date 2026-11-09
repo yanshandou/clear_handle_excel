@@ -195,6 +195,9 @@ async function pollRecords() {
       window.gameFx?.celebrate('任务完成！', data.task_name || '');
     }
     latestReportData = data;
+    // 实时进度框（static/job_panel.js）：重新扫描等任务跑的时候，每份做完的结果
+    window.JobPanel?.overview({ busy: data.status === 'running', folder: data.folder,
+      job: { kind: 'records', status: data.status, folder: data.folder }, progress: data, feed: data.feed });
 
     const isRunning = data.status === 'running';
     document.getElementById('statusText').innerText = isRunning ? '⏳ 任务执行中...'

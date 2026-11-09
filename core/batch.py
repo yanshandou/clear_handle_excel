@@ -677,6 +677,7 @@ def snapshot(detail_paths: set[str] | None = None) -> dict:
                 "slow_files": [{"path": p, "name": Path(p).name, **info} for p, info in _data().get("slow_files", {}).items()
                                if in_folder(p)],
                 "job": copy.deepcopy(wf.STATE["job"]), "progress": dict(wf.STATE["scan_progress"]),
+                "feed": _job_feed(wf.STATE["job"]),
                 "logs": wf.STATE["logs"][-100:]}
 
 
@@ -692,6 +693,89 @@ def card_images(ids: Any) -> dict[str, dict[str, str]]:
         names = {cid: dict(cards[cid].get("fix_images") or {}) for cid in ids[:CARD_IMAGES_LIMIT] if cid in cards}
     return {cid: {which: _image_url(name) for which, name in shots.items() if fix_images.image_path(name)}
             for cid, shots in names.items()}
+
+
+_FEED_COUNTS: dict[str, int] = {}  # 扫描时只取进度：做完的文件查出几处，每份只数一次（不每次把所有卡片过一遍）
+
+
+def _cards_left(paths: list[str], light: bool) -> dict[str, int]:
+    """每份文件还剩几处要人工看。light（扫描中只取进度）时只数新做完的、记住结果"""
+    cards = _data().get("cards") or {}
+    if not light:
+        left: dict[str, int] = {}
+        for card in cards.values():
+            if not card.get("dismissed"):
+                left[card["wb_path"]] = left.get(card["wb_path"], 0) + 1
+        return left
+    new = {p for p in paths if p not in _FEED_COUNTS}
+    if new:
+        for p in new:
+            _FEED_COUNTS[p] = 0
+        for card in cards.values():
+            if card.get("wb_path") in new and not card.get("dismissed"):
+                _FEED_COUNTS[card["wb_path"]] += 1
+    return _FEED_COUNTS
+
+
+def _job_feed(job: dict | None, light: bool = False) -> dict:
+    """调用方持有 STATE_LOCK。查看切字页的实时进度框（用户 2026-11-09 要：所有批量操作都要实时进度框）：
+    正在处理哪份、做到哪一步、每份做完的结果（✓ 做好 / ! 出错或还要再看和原因），最新的放最后"""
+    if not job or not isinstance(job.get("workbooks"), list):
+        return {"current": "", "step": "", "log": []}
+    kind, folder = job.get("kind", ""), wf.STATE.get("folder") or ""
+
+    def label(path: str) -> str:
+        try:
+            return workbook_rel_name(Path(path), folder) if folder else Path(path).name
+        except Exception:
+            return Path(path).name
+
+    results, errors = job.get("result") or {}, job.get("file_errors") or {}
+    completed = list(dict.fromkeys(job.get("completed") or []))
+    if not light:
+        _FEED_COUNTS.clear()
+    left = _cards_left(completed, light) if kind in {"batch_scan", "batch_recheck"} else {}
+    log: list[dict] = []
+    for path in completed:
+        r = results.get(path) or {}
+        ok, reason = True, "做完了"
+        if kind == "batch_fix":
+            pages = len(r.get("pages") or [])
+            ok = not r.get("error") and not r.get("errors") and not r.get("left")
+            reason = r.get("error") or (f"改了 {r.get('done', 0)} 格，复检通过 {r.get('passed', 0)} 格"
+                                        + (f"，还没过 {r['left']} 格" if r.get("left") else "")
+                                        + (f"，{len(r['errors'])} 处出错" if r.get("errors") else "")
+                                        + (f"，{pages} 张表页数变了" if pages else ""))
+        elif kind == "batch_unhighlight":
+            ok = not r.get("error") and not r.get("leftover_failed")
+            reason = r.get("error") or f"清掉 {len(r.get('cells') or [])} 格标色" + ("，有删不掉的标记" if r.get("leftover_failed") else "")
+        elif kind == "batch_scan":
+            reason = f"查出 {left[path]} 处要人工看" if left.get(path) else "没查出问题"
+        elif kind == "batch_recheck":
+            reason = f"复检完，还剩 {left[path]} 处" if left.get(path) else "复检全部通过"
+        elif kind == "batch_open":
+            reason = "已在 Excel 打开"
+        log.append({"name": label(path), "path": path, "ok": ok, "reason": reason, "sheet": ""})
+    for path, message in errors.items():
+        if path not in completed:
+            log.append({"name": label(path), "path": path, "ok": False, "reason": str(message), "sheet": ""})
+    current = job.get("current") or ""
+    if kind == "batch_recheck":
+        for path in job.get("skipped") or []:
+            if path != current and path not in completed and path not in errors:
+                log.append({"name": label(path), "path": path, "ok": False,
+                            "reason": "没复检成功（多半是文件没保存关闭），详情看下面的日志", "sheet": ""})
+    step = ""
+    if wf.STATE["busy"]:
+        if kind == "batch_scan" and wf.SCAN_NOW.get("path") in job["workbooks"]:
+            current = wf.SCAN_NOW["path"]
+            if wf.SCAN_NOW.get("sheet"):
+                step = f"检查第 {wf.SCAN_NOW.get('index', 0)} / {wf.SCAN_NOW.get('total', 0)} 张表：{wf.SCAN_NOW['sheet']}"
+        if not current:
+            current = next((p for p in job["workbooks"] if p not in completed and p not in errors), "")
+        if not step and wf.STATE["logs"]:
+            step = str(wf.STATE["logs"][-1])
+    return {"current": label(current) if current else "", "step": step, "log": log[-500:]}
 
 
 def progress_snapshot() -> dict:
@@ -716,6 +800,7 @@ def progress_snapshot() -> dict:
                 "open_blocked": blocked,
                 "scan_eta": _scan_eta(job) if job else None,
                 "slow_files": [{"path": p, "name": Path(p).name, **info} for p, info in _data().get("slow_files", {}).items()],
+                "feed": _job_feed(job, light=True),
                 "logs": wf.STATE["logs"][-100:]}
 
 

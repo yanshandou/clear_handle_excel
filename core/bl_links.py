@@ -15,7 +15,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from core import debug_log, file_problem, workflow as wf
+from core import debug_log, file_problem, progress_log, workflow as wf
 from core.common import workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, quit_background_excel, start_background_excel
 
@@ -247,6 +247,14 @@ def _run(phase: str, folder: str, targets: list) -> None:
                 count = sum(cell.get("status") == "ok" for cell in entry["cells"])
                 wf.log_msg(f"🧽 {name}：已清除 {count} 处" + (f"；{entry['error']}" if entry["error"] else ""))
             results.append(entry)
+            with _LOCK:  # 网页实时进度框：做完一份就列一条结果
+                if entry["error"]:
+                    note = entry["error"]
+                elif phase == "scan":
+                    note = f"发现 {len(entry['hits'])} 处" if entry["hits"] else "没有要清的超链接"
+                else:
+                    note = f"已清除 {sum(cell.get('status') == 'ok' for cell in entry['cells'])} 处"
+                progress_log.add(_STATUS, name, not entry["error"], note, path=entry.get("path", ""))
     except Exception as error:
         debug_log.exception(error, "BL 超链接任务")
         results.append({"name": "任务", "path": "", "hits": [], "cells": [], "error": str(error)})

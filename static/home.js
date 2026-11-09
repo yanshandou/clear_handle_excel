@@ -382,6 +382,7 @@ async function pollState() {
     renderHeader();
     renderStrip();
     renderCards();
+    window.JobPanel?.overview(overview); // 实时进度框：每份做完的结果
     if (activeKind && phase === 'running' && !isTaskRunning(activeKind)) {
       phase = overview.job && overview.job.kind === activeKind ? 'done' : 'form';
     }

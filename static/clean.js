@@ -859,11 +859,42 @@ function readFolderInput() {
   return folder;
 }
 
+// 扫描时的实时进度框（static/job_panel.js，用户 2026-11-09 要：所有批量操作都要有）：
+// 扫描请求要等全部扫完才返回，另开一个轮询取后台扫到第几份、哪一份、每份几张表
+let previewProgressTimer = 0;
+async function pollPreviewProgress(final = null) {
+  clearTimeout(previewProgressTimer);
+  let data = null;
+  try {
+    const res = await fetch('/api/clean/preview/progress', { cache: 'no-store' });
+    data = await res.json();
+  } catch (_) { /* 读不到下次再试 */ }
+  if (final) {
+    window.JobPanel?.finish('clean:preview', {
+      title: final.error ? '扫描没做完' : '扫描完了', warn: !!final.error || undefined,
+      now: final.error || undefined, log: data?.log || [], folder: data?.folder || '',
+      step: final.error ? '' : '下面按文件夹列出了每份的表，默认要删的已经选好，看一遍再点「确认执行」。',
+    });
+    return;
+  }
+  if (pending !== 'scan') return;
+  if (data && data.running) {
+    window.JobPanel?.run('clean:preview', {
+      title: '正在扫描 Excel 里的表', count: window.JobPanel.count(data.done, data.total, '份 Excel'),
+      now: data.current ? `📗 ${data.current}` : '准备中…', step: '只读，不改文件',
+      fraction: data.total ? data.done / data.total : 0, log: data.log || [], folder: data.folder || '',
+    });
+  }
+  previewProgressTimer = setTimeout(() => pollPreviewProgress(), 800);
+}
+
 async function runPreview() {
   if (pending || phase === 'running') return;
   const folder = readFolderInput();
   if (!folder) return;
   setPending('scan');
+  let previewError = '';
+  if (window.JobPanel) setTimeout(() => pollPreviewProgress(), 300);
   try {
     const data = await postAction('/api/clean/preview', { folder });
     const oldData = previewData;
@@ -896,9 +927,11 @@ async function runPreview() {
     renderPreview();
     syncChannel?.postMessage({ type: 'rescanned', folder: previewData.folder });
   } catch (e) {
+    previewError = e.message;
     appAlert(e.message, { tone: 'error' });
   } finally {
     pending = null;
+    if (window.JobPanel) pollPreviewProgress({ error: previewError });
     renderPage();
   }
 }
@@ -959,6 +992,7 @@ async function pollState() {
     if (seq < minAcceptedSeq) return;
     const wasBusy = Boolean(overview && overview.busy);
     overview = data;
+    window.JobPanel?.overview(overview); // 实时进度框：精简每份做完的结果
     if (wasBusy && !data.busy) celebrateFinished();
 
     renderHeader();

@@ -16,7 +16,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from core import batch, debug_log, file_problem, workflow as wf
+from core import batch, debug_log, file_problem, progress_log, workflow as wf
 from core.backup_compare import inferred_renames, norm as _norm, pair_files as _pair_files, pair_sheets, require_manual_file_check
 from core.common import workbook_locked, workbook_rel_name
 
@@ -330,6 +330,10 @@ def _run(folder: Path, paths: list[Path], styles: list[tuple[str, str]]) -> None
                                 对上=hit["match"], 有记录=hit["recorded"], xls近似色=hit.get("approx", False))
             if entry["hits"] or entry["error"]:
                 files.append(entry)
+            with _LOCK:  # 网页实时进度框：做完一份就列一条结果
+                progress_log.add(_STATUS, name, not entry["error"],
+                                 entry["error"] or (f"找到 {len(entry['hits'])} 格标记色" if entry["hits"] else "没有残留标记色"),
+                                 path=str(path))
         hits = sum(len(f["hits"]) for f in files)
         wf.log_msg(f"🔍 查找残留标记色：{len(paths)} 份文件，{hits} 格底色是标记色"
                    + (f"，{sum(1 for f in files if f['error'])} 份文件读不了" if any(f["error"] for f in files) else ""))
@@ -369,7 +373,7 @@ def _begin(phase: str, total: int) -> None:
             raise ValueError("后台任务正在执行，请等它结束")
         if _STATUS.get("running"):
             raise ValueError("上一步还没做完，请稍等")
-        _STATUS.update(running=True, phase=phase, total=total, done=0, current="")
+        _STATUS.update(running=True, phase=phase, total=total, done=0, current="", log=[])
 
 
 def start(folder: str, colors: Any) -> None:
@@ -558,6 +562,10 @@ def _run_preview(old_root: Path, old_paths: list[Path], files: list[dict], folde
                     debug_log.exception(err, f"对比旧版 {file['name']}")
                     entry["error"] = f"读取失败：{err}"
             plan_files.append(entry)
+            with _LOCK:
+                restore_n = sum(1 for c in entry["cells"] if c.get("action") == "restore")
+                progress_log.add(_STATUS, file["name"], not entry["error"],
+                                 entry["error"] or f"{restore_n} 格可以改回旧版颜色", path=file["path"])
         restore = sum(1 for f in plan_files for c in f["cells"] if c["action"] == "restore")
         wf.log_msg(f"🔍 对比旧版：{len(plan_files)} 份文件，{restore} 格可以改回旧版的颜色（还没改，等确认）")
     finally:
@@ -809,6 +817,11 @@ def _run_apply(files: list[dict], folder: str = "") -> None:
                                 结果=cell["reason"])
             ok = sum(1 for c in entry["cells"] if c["status"] == "ok")
             wf.log_msg(f"🎨 {file['name']}：改回旧版颜色 {ok} 格" + (f"，{entry['error']}" if entry["error"] else ""))
+            left = len(entry["cells"]) - ok
+            with _LOCK:
+                progress_log.add(_STATUS, file["name"], not entry["error"] and not left,
+                                 entry["error"] or f"改回旧版颜色 {ok} 格" + (f"，{left} 格没改" if left else ""),
+                                 path=file["path"])
     except Exception as err:
         debug_log.exception(err, "改回旧版颜色")
         wf.log_msg(f"❌ 改回旧版颜色失败：{err}")
@@ -926,6 +939,11 @@ def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[P
                 debug_log.event("🎨 颜色修复", 位置=f"{cell['sheet']}!{cell['addr']}", 结果=entry["error"] or cell["reason"])
             count = sum(cell.get("status") == "ok" for cell in entry["cells"])
             wf.log_msg(f"🎨 {name}：已恢复 {count} 处" + (f"；{entry['error']}" if entry["error"] else ""))
+            left = len(entry["cells"]) - count
+            with _LOCK:
+                progress_log.add(_STATUS, name, not entry["error"] and not left,
+                                 entry["error"] or (f"已恢复 {count} 处" + (f"，{left} 处没恢复" if left else "") if entry["cells"] else "颜色和备份一样"),
+                                 path=str(path))
     except Exception as error:
         debug_log.exception(error, "颜色修复任务")
         files.append({"name": "任务", "path": "", "cells": [], "error": str(error), "code": "other"})
@@ -1021,6 +1039,11 @@ def _clear_mark_files(root: Path, paths: list[Path], protected: set[Path] | None
                         continue
                 break
             tabs_ok = sum(1 for t in entry["tabs"] if t["status"] == "ok")
+            with _LOCK:
+                bad = entry["error"] or entry["leftover_failed"] or any(t["status"] != "ok" for t in entry["tabs"])
+                progress_log.add(_STATUS, name, not bad,
+                                 entry["error"] or f"清掉 {entry['leftovers']} 条标记，还原标签 {tabs_ok} 张"
+                                 + ("，有删不掉的" if bad else ""), path=str(path))
             wf.log_msg(f"🧽 {name}：清掉 {entry['leftovers']} 条标记，还原标签 {tabs_ok} 张"
                        + (f"；{entry['error']}" if entry["error"] else ""))
     except Exception as error:

@@ -173,7 +173,30 @@ async function pcLoad({ quiet = false } = {}) {
     // 只看单元格某一类时，哪些表算这一类也变了：整个重排；平时只把框和格子条换掉
     if (category.startsWith('cell:')) applyCategory(); else pcRedraw();
   } else pcPaintScan();
+  pcPanel();
   pcSchedule(data.scan?.running);
+}
+
+// 后台查切字的实时进度框（static/job_panel.js，用户 2026-11-09 要：所有批量操作都要有）。
+// 统一修改里重新查切字时用统一修改自己的进度框，这里不出
+function pcPanel() {
+  const scan = pcData.scan || {};
+  if (!window.JobPanel || processing || scan.kind !== 'batch_scan') return;
+  const log = scan.log || [];
+  if (scan.running) {
+    JobPanel.run('pdf_review:scan', {
+      title: '正在后台查切字', count: JobPanel.count(scan.done, scan.total, '份 Excel'),
+      now: scan.current ? `📗 ${scan.current}` : '正在启动后台 Excel…', step: scan.step || '',
+      fraction: scan.total ? scan.done / scan.total : 0, log, folder,
+    });
+  } else {
+    const bad = log.filter(i => !i.ok).length;
+    JobPanel.finish('pdf_review:scan', {
+      title: scan.paused ? '查切字暂停了，可以点「▶ 接着查」' : `切字查完了${bad ? `，${bad} 份没查成` : ''}`,
+      warn: scan.paused || bad > 0, log, folder,
+      step: '查出的格子画在 PDF 上了，单击页面看大图、选修法，再点底部「🛠 统一修改」。',
+    });
+  }
 }
 
 function pcSchedule(fast) {

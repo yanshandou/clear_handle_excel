@@ -41,7 +41,11 @@ def _scan_state() -> dict:
     workbooks = job.get("workbooks") or []
     completed = set(job.get("completed") or [])
     current = next((p for p in workbooks if p not in completed), "") if running else ""
+    # 网页实时进度框（static/job_panel.js）：每份查完的结果。扫描时只数新查完的文件的卡片，不拖慢扫描
+    from core import batch
+    feed = batch._job_feed(job, light=True) if kind == "batch_scan" else {"log": [], "step": ""}
     return {"busy": bool(wf.STATE.get("busy")), "kind": kind, "running": running,
+            "log": feed["log"], "step": feed.get("step", ""),
             "paused": kind == "batch_scan" and job.get("status") == "interrupted",
             "done": len(completed & set(workbooks)), "total": len(workbooks),
             "current": workbook_rel_name(Path(current), wf.STATE.get("folder") or Path(current).parent) if current else ""}

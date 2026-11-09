@@ -174,8 +174,34 @@
     }).join('') || '<p>该分类没有结果。</p>';
   }
 
+  // 实时进度框（static/job_panel.js，用户 2026-11-09 要：所有批量操作都要有）：正在处理哪份、哪一步、每份的结果
+  const PANEL_STAGE = { scan: '扫描', find: '扫描', preview: '对比备份', apply: '修复', clear: '清除标记' };
+  function renderPanel() {
+    if (!window.JobPanel || !latest.phase) return;
+    const kind = document.body.dataset.repairKind || 'links';
+    const id = `repair:${kind}:${latest.phase}`;
+    const what = hidden ? '修复隐藏页' : colors ? (latest.phase === 'clear' ? '清除标记颜色' : '修复颜色') : '修复引用错误';
+    const log = latest.log || [];
+    if (latest.running) {
+      const stage = latest.phase === 'repair' ? latest.stage : latest.phase;
+      window.JobPanel.run(id, {
+        title: `正在${what}`, count: window.JobPanel.count(latest.done, latest.total, '份 Excel'),
+        now: latest.current ? `📗 ${latest.current}` : '正在启动后台 Excel…',
+        step: PANEL_STAGE[stage] ? `正在${PANEL_STAGE[stage]}` : '',
+        fraction: latest.total ? latest.done / latest.total : 0, log, folder: latest.folder || '',
+      });
+    } else {
+      const bad = log.filter(i => !i.ok).length;
+      window.JobPanel.finish(id, {
+        title: `${what}做完了${bad ? `，${bad} 份要人工看` : ''}`, log, folder: latest.folder || '',
+        step: bad ? '黄色的是没修好或出错的，详情看下面的结果；点文件名在 Excel 打开。' : '',
+      });
+    }
+  }
+
   function render() {
     controls();
+    renderPanel();
     const phase = latest.applied ? 'apply' : latest.plan ? 'preview' : 'scan';
     const data = latest.applied || latest.plan || latest.result;
     $('repairFilters').hidden = !!latest.running || phase !== 'apply' || !data;

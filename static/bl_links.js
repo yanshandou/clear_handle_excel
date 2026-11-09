@@ -97,8 +97,27 @@
     line.replaceChildren(strong, document.createTextNode(text));
   }
 
+  // 实时进度框（static/job_panel.js，用户 2026-11-09 要：所有批量操作都要有）
+  function renderPanel() {
+    if (!window.JobPanel || !latest.phase) return;
+    const id = `bl:${latest.phase}`, what = latest.phase === 'clear' ? '清除 BL 超链接' : '扫描 BL 超链接';
+    const log = latest.log || [];
+    if (latest.running) {
+      window.JobPanel.run(id, {
+        title: `正在${what}`, count: window.JobPanel.count(latest.done, latest.total, '份 Excel'),
+        now: latest.current ? `📗 ${latest.current}` : '正在启动后台 Excel…',
+        fraction: latest.total ? latest.done / latest.total : 0, log, folder: latest.folder || '',
+      });
+    } else {
+      const bad = log.filter(i => !i.ok).length;
+      window.JobPanel.finish(id, { title: `${what}做完了${bad ? `，${bad} 份出错` : ''}`, log, folder: latest.folder || '',
+        step: latest.phase === 'scan' && !bad ? '核对下面的清单，没问题再点「🧽 清除这些单元格」。' : '' });
+    }
+  }
+
   function render() {
     controls();
+    renderPanel();
     if (latest.running) {
       const phase = latest.phase === 'clear' ? '清除' : '扫描';
       showProgress('blProgress', 'running');
