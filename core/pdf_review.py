@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core import batch, debug_log, file_problem, page_breaks, page_fill, pdf_store, repair_compare, sheet_history, workflow as wf
+from core import batch, debug_log, file_problem, page_breaks, page_fill, pdf_store, progress_log, repair_compare, sheet_history, workflow as wf
 from core.backup_compare import pair_files
 from core.common import (EXCEL_EXTENSIONS, sanitize_filename, strip_review_prefix,
                          workbook_locked, workbook_rel_name)
@@ -743,7 +743,7 @@ _REGEN_LOCK = threading.Lock()
 
 def regen_status() -> dict:
     with _REGEN_LOCK:
-        return dict(_REGEN)
+        return {**_REGEN, "log": list(_REGEN.get("log") or [])}
 
 
 def regenerate(pdf: Any, force: Any = False) -> dict:
@@ -873,6 +873,10 @@ def refresh_stale(pdfs: Any) -> dict:
                     done.extend(one["pdfs"])
                 else:
                     failed.append(f"{name}：{one['reason'] or '未知原因'}")
+                with _REGEN_LOCK:  # 网页实时进度框：做完一份就列一条结果
+                    progress_log.add(_REGEN, name, one["ok"],
+                                     f"{len(sheets)} 张表换成了最新的 PDF" if one["ok"] else (one["reason"] or "未知原因"),
+                                     path=str(wb_path))
         debug_log.event("✅ 调整页面自动重新导出完成" if not failed else "⚠️ 调整页面自动重新导出有没成功的",
                         PDF=len(done), 没成功=failed or "-")
         return {"ok": not failed, "stale": True, "name": label, "files": len(jobs), "pdfs": done,

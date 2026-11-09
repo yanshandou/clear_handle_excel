@@ -219,8 +219,9 @@ function toolboxAfterRender() {
   toolboxRenderBar();
   toolboxLoadImages();
   if (toolboxWatching && !batchState.busy && batchState.job?.kind === 'batch_fix') {
+    // 结果写在右下角的实时进度框里（每份改了几格、过了几格、页数变了没），不再另外弹框（用户 2026-11-09）
     toolboxWatching = false;
-    appAlert(toolboxResultText(batchState.job), { title: '🛠 统一修改完成', tone: 'info' });
+    console.info('🛠 统一修改完成', toolboxResultText(batchState.job));
   }
 }
 

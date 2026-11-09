@@ -32,6 +32,7 @@ from core.pdf_detector import (
 )
 from core.reporter import (
     EXECUTION_STATE,
+    execution_feed,
     find_recorded_workbook,
     find_workbook,
     get_execution_report_snapshot,
@@ -57,6 +58,7 @@ from core.workflow import (
     import_progress,
     list_workbooks,
     log_msg,
+    clean_preview_progress,
     preview_backup_sheets,
     scan_folder_workflow,
     queue_job,
@@ -233,6 +235,8 @@ class WebHandler(upload_manager.Handler):
                                 filename="fetch_record.md" if run.get("kind") == "fetch" else "copy_record.md")
         elif parsed.path == "/api/file-problem":
             self._send_json({"ok": True, "problem": file_problem.pending(), "settings": file_problem.get_settings()})
+        elif parsed.path == "/api/clean/preview/progress":
+            self._send_json({"ok": True, **clean_preview_progress()})
         elif parsed.path == "/api/clean/chain":
             self._send_json({"ok": True, **clean_chain.status()})
         elif parsed.path == "/api/bl_links":
@@ -362,7 +366,7 @@ class WebHandler(upload_manager.Handler):
             folder = parse_qs(parsed.query).get("folder", [None])[0]
             self._send_json({**operation_history.summary(), "done": operation_history.done_for(folder)})
         elif parsed.path == "/api/records":
-            self._send_json(get_execution_report_snapshot())
+            self._send_json({**get_execution_report_snapshot(), "feed": execution_feed()})
         elif parsed.path == "/api/records/zip":
             self._send_bytes(build_report_zip(), "application/zip", filename="execution_report.zip")
         elif parsed.path == "/api/records/markdown":

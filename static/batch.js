@@ -1034,6 +1034,48 @@ function pruneRenderCaches(allByFile) {
   }
 }
 
+// 实时进度框（static/job_panel.js，用户 2026-11-09 要：所有批量操作都要有）：扫描、复检、统一修改、打开、清除标色……
+// 页面往下翻到分类里时上面的进度条看不到，框浮在右下角：正在处理哪份、这一步、每份做完的结果
+const JOB_DONE_TEXT = { batch_scan: '扫描完了', batch_fix: '统一修改完了', batch_recheck: '复检完了', batch_open: '打开好了',
+  batch_commit: '提交审核完了', batch_tighten: '收紧行高完了', batch_unhighlight: '清除标记颜色完了' };
+function renderJobPanel(own, completed, total, scanEta) {
+  const job = batchState.job;
+  if (!window.JobPanel || !job?.kind?.startsWith('batch_')) return;
+  const feed = batchState.feed || {};
+  const name = job.kind === 'batch_scan' ? '扫描' : REVIEW_JOB_NAMES[job.kind] || '处理';
+  const id = `batch:${job.kind}`;
+  const log = feed.log || [];
+  if (batchState.busy) {
+    const step = feed.step || '';
+    window.JobPanel.run(id, {
+      title: job.pause_requested ? `${name}：当前文件做完后暂停` : `正在${name}`,
+      count: own && total ? window.JobPanel.count(completed, total, '份 Excel') : '',
+      now: feed.current ? `📗 ${feed.current}` : '正在启动后台 Excel…',
+      step, waiting: /等你选择|出错了/.test(step),
+      fraction: total ? completed / total : 0, remaining: scanEta?.remaining,
+      log, folder: batchState.folder,
+    });
+    return;
+  }
+  const paused = job.status === 'interrupted';
+  const bad = log.filter(i => !i.ok).length;
+  let now = '', step = '';
+  if (job.kind === 'batch_fix') {
+    const results = Object.values(job.result || {});
+    const sum = key => results.reduce((n, r) => n + (r[key] || 0), 0);
+    const pages = results.reduce((n, r) => n + (r.pages || []).length, 0);
+    now = `改了 ${sum('done')} 格，复检通过 ${sum('passed')} 格，还没过 ${sum('left')} 格`;
+    step = (pages ? `${pages} 张表加了行高后页数变了，可以去「调整页面」看要不要取整。` : '')
+      + (sum('left') ? '没过的留在原来的分类，写明用过什么工具，可以换个工具再改。' : '');
+  } else if (job.kind === 'batch_scan') {
+    step = '查出的格子在 Excel 里标了色，下面按分类处理。';
+  }
+  window.JobPanel.finish(id, {
+    title: paused ? `${name}暂停了，可以继续上次任务` : `${JOB_DONE_TEXT[job.kind] || '做完了'}${bad ? `，${bad} 份要看一下` : ''}`,
+    warn: paused || bad > 0, now: now || undefined, step, log, folder: batchState.folder,
+  });
+}
+
 function render() {
   renderControls();
   if (typeof renderCategories === 'function') renderCategories();
@@ -1062,6 +1104,7 @@ function render() {
   const scanEta = job?.kind === 'batch_scan' ? batchState.scan_eta : null;
   window.ProgressEta?.update('progressFill', `workbench:${job?.kind || ''}`, total ? completed / total : 0,
     !!(batchState.busy && own && total && completed < total), scanEta?.remaining);
+  renderJobPanel(own, completed, total, scanEta);
   $('logBox').textContent = batchState.logs.join('\n') || '等待操作…';
   const counts = Object.fromEntries(REVIEW_COLORS.map(c => [c, batchState.cards.filter(card => card.color === c).length]));
   // 筛选按钮用对应颜色的边框、底色和圆点；选中时整块填色

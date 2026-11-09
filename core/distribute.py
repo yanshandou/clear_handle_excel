@@ -45,6 +45,7 @@ TEMP_SUFFIX = ".复制中~"
 
 _LOCK = threading.RLock()
 _STATUS: dict[str, Any] = {"running": False}
+_LIVE: dict[str, Any] = {}  # 正在跑的那批清单（线程里就地改每个文件的 status），只给进度框读
 
 
 # ───────────────────────── JSON ─────────────────────────
@@ -1010,6 +1011,7 @@ def start(preview_id: str | None = None, *, upload: dict[str, Any] | None = None
         total = len(preview_data["files"]) if task_upload or free_upload else sum(len(f["files"]) for f in preview_data["folders"])
         _STATUS.update(running=True, done=0, total=total, current="", label=preview_data["label"],
                        kind=preview_data["kind"])
+        _LIVE["data"] = preview_data  # 网页实时进度框：跑的时候按每个文件的 status 列出做完的
         if task_upload:
             _STATUS.pop("preview", None)
         _STATUS.pop("applied", None)
@@ -1048,6 +1050,8 @@ def start(preview_id: str | None = None, *, upload: dict[str, Any] | None = None
         finally:
             with wf.STATE_LOCK, _LOCK:
                 _STATUS.update(running=False, current="")
+                _STATUS["log"] = _live_log()  # 做完也留着，刷新页面还能看到这次每个文件的结果
+                _LIVE.clear()
                 if result is not None:
                     _STATUS["applied"] = result
                     _STATUS.pop("preview", None)
@@ -1064,9 +1068,30 @@ def start(preview_id: str | None = None, *, upload: dict[str, Any] | None = None
         raise
 
 
+def _live_log() -> list[dict[str, Any]]:
+    """正在复制 / 拿 / 上传的这批里已经有结果的文件（调用方持有 _LOCK）：给网页实时进度框逐条列出"""
+    data = _LIVE.get("data") or {}
+    if data.get("kind") in ("task_upload", "free_upload"):
+        pairs = [(item.get("rel", ""), item) for item in data.get("files", [])]
+    else:
+        pairs = [(f"{folder.get('dest_rel' if data.get('kind') == 'fetch' else 'source_rel', '')}/{item.get('rel', '')}", item)
+                 for folder in data.get("folders", []) for item in folder.get("files", [])]
+    words = {"ok": "拿好了" if data.get("kind") == "fetch" else "传好了" if "upload" in str(data.get("kind")) else "复制好了",
+             "conflict": "别人改过，没有覆盖", "review": "要重新处理并复检", "failed": "没成功"}
+    log = []
+    for name, item in pairs:
+        state = item.get("status")
+        if state not in words:
+            continue
+        log.append({"name": name, "ok": state == "ok", "reason": item.get("error") or words[state], "path": "", "sheet": ""})
+    return log[-500:]
+
+
 def status() -> dict[str, Any]:
     with _LOCK:
         data = copy.deepcopy(_STATUS)
+        if data.get("running") and _LIVE.get("data"):
+            data["log"] = _live_log()
     if data.get("preview"):
         data["preview"] = _public(data["preview"])
     return data

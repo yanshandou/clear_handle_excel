@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
-from core import debug_log, file_problem, workflow as wf, sheet_history
+from core import debug_log, file_problem, progress_log, workflow as wf, sheet_history
 from core.backup_compare import inferred_renames, pair_files, pair_sheets, require_manual_file_check
 from core.common import EXCEL_EXTENSIONS, col_index_to_letters, workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, quit_background_excel, start_background_excel
@@ -368,6 +368,11 @@ def _run(root: Path, paths: list[Path], old_root: Path, old_paths: list[Path], o
                                 结果=entry["error"] or item["reason"])
             count = sum(item.get("status") == "ok" for item in entry["cells"])
             wf.log_msg(f"🙈 {name}：已恢复 {count} 处" + (f"；{entry['error']}" if entry["error"] else ""))
+            left = len(entry["cells"]) - count
+            with _LOCK:  # 网页实时进度框：做完一份就列一条结果（有没恢复的算「!」）
+                progress_log.add(_STATUS, name, not entry["error"] and not left,
+                                 entry["error"] or (f"已恢复 {count} 处" + (f"，{left} 处没恢复" if left else "") if entry["cells"] else "没有要恢复的"),
+                                 path=str(path))
     except Exception as error:
         debug_log.exception(error, "隐藏恢复任务")
         files.append({"name": "任务", "path": "", "cells": [], "error": str(error)})

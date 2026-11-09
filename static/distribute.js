@@ -469,9 +469,35 @@
     }).join('') + '</ul>';
   }
 
+  // 实时进度框（static/job_panel.js，用户 2026-11-09 要：所有批量操作都要有）：正在拿 / 传哪份、每份的结果
+  function renderPanel() {
+    if (!window.JobPanel || !latest.kind) return;
+    const id = `dist:${latest.kind}`;
+    const what = isFree(latest) ? '起点 → 终点上传' : isUpload(latest) ? '检查并批量上传' : isFetch(latest) ? '从共享拿最新版' : '按 JSON 复制';
+    const log = latest.log || [];
+    if (latest.running) {
+      const now = String(latest.current || '');
+      const step = now.match(/^(检查|上传前处理|上传)\s/)?.[1] || '';
+      window.JobPanel.run(id, {
+        title: `正在${what}`, count: window.JobPanel.count(latest.done, latest.total, '个文件'),
+        now: now ? `📗 ${step ? now.slice(step.length).trim() : now}` : '准备中…',
+        step: step ? `正在${step}` : '', fraction: latest.total ? latest.done / latest.total : 0, log,
+      });
+    } else {
+      const bad = log.filter(i => !i.ok).length;
+      const stopped = latest.applied?.stopped;
+      window.JobPanel.finish(id, {
+        title: stopped ? `${what}停下了` : `${what}做完了${bad ? `，${bad} 个要看一下` : ''}`,
+        warn: !!stopped || bad > 0, log, now: stopped || undefined,
+        step: bad || stopped ? '详情看页面上标黄的文件夹或下载记录。' : '',
+      });
+    }
+  }
+
   function render() {
     controls();
     renderHistory();
+    renderPanel();
     if (latest.running) {
       showProgress('running');
       $('distProgress').textContent = `${isUpload(latest) || isFree(latest) ? '正在检查或上传' : isFetch(latest) ? '正在拿最新版' : '正在复制'} ${Math.min((latest.done || 0) + 1, latest.total || 0)} / ${latest.total || 0}：${latest.current || '准备中…'}`;

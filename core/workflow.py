@@ -43,7 +43,7 @@ from core.common import (
     workbook_locked,
     workbook_rel_name,
 )
-from core import debug_log, file_problem, fix_images, folder_progress, page_breaks, page_fill, pdf_detector, pdf_store, print_layout, scan_analysis, sheet_history
+from core import debug_log, file_problem, fix_images, folder_progress, page_breaks, page_fill, pdf_detector, pdf_store, print_layout, progress_log, scan_analysis, sheet_history
 from core.excel_watchdog import ExcelWatchdog
 from core.formula_links import delete_sheets_preserving_values
 from core.excel_ops import (
@@ -103,6 +103,7 @@ from core.pdf_detector import (
 )
 from core.reporter import (
     empty_execution_report,
+    execution_feed,
     find_recorded_workbook,
     finish_execution_batch,
     flush_execution_report,
@@ -654,6 +655,7 @@ def get_state_snapshot() -> dict[str, Any]:
 def get_overview_snapshot() -> dict[str, Any]:
     """主页轮询用的轻量快照：不含整页截图与问题项详情。"""
     report_snap = get_execution_report_snapshot()
+    feed = execution_feed()  # 实时进度框：这一步每份做完的结果
     with STATE_LOCK:
         job = STATE["job"]
         unresolved = sum(
@@ -672,6 +674,7 @@ def get_overview_snapshot() -> dict[str, Any]:
             } if job else None,
             "clips": {"total": len(STATE["items"]), "unresolved": unresolved},
             "progress": _progress_summary(report_snap),
+            "feed": feed,
         }
 
 
@@ -2980,9 +2983,31 @@ def fix_selected_workflow(
                 _persist_state()
 
 
+# 精简 Sheet 的「扫描」是网页等着结果的请求，以前只显示「扫描中… 12 秒」。网页另开一个轮询取这里，
+# 在实时进度框里显示扫到第几份、哪一份、每份几张表（用户 2026-11-09 要：所有批量操作都要实时进度框）
+CLEAN_PREVIEW_PROGRESS: dict[str, Any] = {"running": False}
+_CLEAN_PREVIEW_LOCK = threading.Lock()
+
+
+def clean_preview_progress() -> dict[str, Any]:
+    with _CLEAN_PREVIEW_LOCK:
+        return {**CLEAN_PREVIEW_PROGRESS, "log": list(CLEAN_PREVIEW_PROGRESS.get("log") or [])}
+
+
 def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
     """只读递归列出每个工作簿的全部工作表、默认勾选删除的备份表及已带 ❓ 的待定表；不修改文件，也不占用后台任务。"""
+    try:
+        return _preview_backup_sheets(folder_str)
+    finally:
+        with _CLEAN_PREVIEW_LOCK:
+            CLEAN_PREVIEW_PROGRESS.update(running=False, current="")
+
+
+def _preview_backup_sheets(folder_str: str) -> dict[str, Any]:
     folder, workbooks = list_workbooks(folder_str)
+    with _CLEAN_PREVIEW_LOCK:
+        CLEAN_PREVIEW_PROGRESS.clear()
+        CLEAN_PREVIEW_PROGRESS.update(running=True, folder=str(folder), total=len(workbooks), done=0, current="", log=[])
     files: list[dict[str, Any]] = []
     excel = None
 
@@ -3003,10 +3028,19 @@ def preview_backup_sheets(folder_str: str) -> dict[str, Any]:
     try:
         with debug_log.side_task("clean_preview", {"folder": str(folder), "files": len(workbooks)}):
             for index, wb_path in enumerate(workbooks, 1):
+                with _CLEAN_PREVIEW_LOCK:
+                    CLEAN_PREVIEW_PROGRESS.update(done=index - 1, current=workbook_rel_name(wb_path, folder))
                 t0 = time.monotonic()
                 entry = _preview_workbook(wb_path, folder, get_excel)
                 seconds = time.monotonic() - t0
                 files.append(entry)
+                with _CLEAN_PREVIEW_LOCK:
+                    deleting, unsure = len(entry.get("backups") or []), len(entry.get("uncertain") or [])
+                    progress_log.add(CLEAN_PREVIEW_PROGRESS, entry["name"], not entry["note"],
+                                     entry["note"] or f"{entry['sheet_count']} 张表"
+                                     + (f"，默认删 {deleting} 张" if deleting else "") + (f"，{unsure} 张待定" if unsure else ""),
+                                     path=str(wb_path))
+                    CLEAN_PREVIEW_PROGRESS["done"] = index
                 console_print(f"   [{index}/{len(workbooks)}] {entry['name']}  {entry['sheet_count']} 张表  {seconds:.1f} 秒"
                               + (f"  ⚠️ {entry['note']}" if entry["note"] else ""))
                 debug_log.event("📄 精简预览", 文件=entry["name"], 用时秒=seconds, 表数=entry["sheet_count"], 默认删除=entry["backups"],

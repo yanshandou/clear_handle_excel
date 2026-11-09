@@ -294,6 +294,7 @@ def _queue_files_unlocked(folder: Path, workbooks: list[Path]) -> list[str]:
         existing = EXECUTION_STATE["files"].get(wb_name)
         if existing is not None:
             existing["status"] = "pending"
+            existing["finished_seq"] = 0
             existing["path"] = str(wb_path)
             existing["current_action"] = "排队等待处理..."
             existing["error"] = ""
@@ -389,6 +390,7 @@ def update_file_progress(
             if EXECUTION_STATE.get("batch"):
                 EXECUTION_STATE["batch"].append(wb_name)
 
+        was_finished = entry.get("status") in _FINISHED
         if status is not None:
             entry["status"] = status
         if current_action is not None:
@@ -432,6 +434,13 @@ def update_file_progress(
             # 导出 PDF / 视图标准化等步骤做完了，但还有切字没修，不能算完成
             entry["status"] = "needs_fix"
 
+        # 网页实时进度框按做完的先后列结果：记下这份是第几个做完的；又开始处理就清掉
+        if entry["status"] in _FINISHED:
+            if not was_finished or not entry.get("finished_seq"):
+                EXECUTION_STATE["finished_seq"] = int(EXECUTION_STATE.get("finished_seq", 0) or 0) + 1
+                entry["finished_seq"] = EXECUTION_STATE["finished_seq"]
+        else:
+            entry["finished_seq"] = 0
         entry["updated_at"] = _time_str()
         _recompute_counters_unlocked()
         _write_soon_unlocked()
@@ -675,6 +684,35 @@ def _persist_and_write_markdown_unlocked() -> None:
                 )
             except OSError:
                 logging.exception("无法写入目标目录的执行记录 Markdown: %s", folder_path)
+
+
+_FINISHED = {"done", "needs_fix", "error"}
+
+
+def _feed_reason(entry: dict[str, Any], task_name: str) -> str:
+    if entry.get("status") == "error":
+        return str(entry.get("error") or entry.get("current_action") or "没做完")
+    if "精简" in task_name:
+        deleted, unsure = len(entry.get("deleted_backups") or []), len(entry.get("uncertain_sheets") or [])
+        return (f"删了 {deleted} 张备份表" if deleted else "没有要删的表") + (f"，{unsure} 张待定" if unsure else "")
+    if "PDF" in task_name:
+        return f"导出 {int(entry.get('exported_pdfs') or 0)} 个 PDF"
+    if "扫描" in task_name:
+        found = int(entry.get("clip_detected") or 0)
+        return f"查出 {found} 处要人工看" if found else "没查出问题"
+    return str(entry.get("current_action") or "做完了")
+
+
+def execution_feed(limit: int = 300) -> list[dict[str, Any]]:
+    """这一步做完的文件，按做完的先后：给网页实时进度框逐条列出（✓ 做好 / ! 出错和原因）"""
+    with REPORT_LOCK:
+        task_name = str(EXECUTION_STATE.get("task_name") or "")
+        names = EXECUTION_STATE.get("batch") or list(EXECUTION_STATE["files"])
+        done = [EXECUTION_STATE["files"][n] for n in names
+                if n in EXECUTION_STATE["files"] and EXECUTION_STATE["files"][n].get("finished_seq")]
+        done.sort(key=lambda e: e["finished_seq"])
+        return [{"name": e.get("name", ""), "path": e.get("path", ""), "ok": e.get("status") != "error",
+                 "reason": _feed_reason(e, task_name), "sheet": ""} for e in done[-limit:]]
 
 
 def get_execution_report_snapshot() -> dict[str, Any]:

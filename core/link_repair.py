@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 from typing import Any
 
-from core import debug_log, file_problem, formula_links as links, workflow as wf, sheet_history
+from core import debug_log, file_problem, formula_links as links, progress_log, workflow as wf, sheet_history
 from core.backup_compare import pair_files, pair_sheets, require_manual_file_check
 from core.common import workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, start_background_excel, quit_background_excel
@@ -307,6 +307,9 @@ def _run(phase: str, folder: Path, paths: list, old_root: Path | None = None, ol
             message = entry["error"] or (f"已恢复正常 {repaired} 处，未修复 {len(entry.get('cells', [])) - repaired} 处" if phase == "repair" else
                                          f"发现引用错误 {len(entry.get('hits', []))} 处" if phase == "scan" else "对比完成" if phase == "preview" else "修复完成")
             wf.log_msg(f"🔗 {name}：{message}")
+            with _LOCK:  # 网页实时进度框：做完一份就列一条结果（没修好的算「!」）
+                progress_log.add(_STATUS, name, not entry["error"] and (phase != "repair" or repaired == len(entry.get("cells", []))),
+                                 message, path=entry["path"])
     except Exception as error:
         debug_log.exception(error, "引用错误任务")
         files.append({"name": "任务", "path": "", "error": str(error)})
@@ -339,7 +342,7 @@ def _launch(phase: str, folder: Path, paths: list, old_root: Path | None = None,
         wf.STATE["busy"] = True
         wf.STATE["maintenance"] = "link_" + phase
         _STATUS.update(running=True, phase=phase, stage="scan", folder=str(folder), old_folder=str(old_root or ""),
-                       total=len(paths), done=0, current="")
+                       total=len(paths), done=0, current="", log=[])
         for key in {"scan": ("result", "plan", "applied"), "preview": ("plan", "applied"), "apply": ("plan",),
                     "repair": ("result", "plan", "applied")}[phase]:
             _STATUS.pop(key, None)

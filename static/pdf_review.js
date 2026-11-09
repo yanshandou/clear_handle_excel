@@ -988,6 +988,12 @@ async function pollRegen(anchorPdf) {
       regenMany = new Set(status.pdfs || []);
       regenInfo = status;
       regenWb = regenWb || 'stale';
+      // Excel 改过的表自动换成最新 PDF：也用通用的实时进度框（static/job_panel.js，用户 2026-11-09 要所有批量操作都有）
+      window.JobPanel?.run('pdf_review:stale', {
+        title: '正在把 Excel 改过的表换成最新的 PDF', count: JobPanel.count(status.done, status.total, '份 Excel'),
+        now: status.current ? `📗 ${status.current}` : '正在启动后台 Excel…',
+        fraction: status.total ? (status.done || 0) / status.total : 0, log: status.log || [], folder,
+      });
     } else regenWb = status.pdf || regenWb;
     paintRegen();
     setTimeout(() => pollRegen(anchorPdf), 1000);
@@ -996,6 +1002,11 @@ async function pollRegen(anchorPdf) {
   const result = status.result;
   regenWb = '';
   if (result?.stale || regenMany.size) {
+    window.JobPanel?.finish('pdf_review:stale', {
+      title: result?.ok === false ? '有的表没能换成最新的 PDF' : 'Excel 改过的表都换成了最新的 PDF',
+      log: status.log || [], folder,
+      step: result?.ok === false ? '没换成的表上还标着「⚠ Excel 改过」，修好后点那张表的「🔄 重新生成」。' : '',
+    });
     regenMany = new Set();
     regenInfo = null;
     setBusy('');

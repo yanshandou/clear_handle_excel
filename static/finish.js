@@ -65,6 +65,32 @@
     }
     window.ProgressEta?.update(fill, 'finish_check', fraction, running && status.phase === 'compare');
     $('finError').textContent = status.error || '';
+    renderPanel(fraction);
+  }
+
+  // 实时进度框（static/job_panel.js，用户 2026-11-09 要：所有批量操作都要有）
+  function renderPanel(fraction) {
+    if (!window.JobPanel || !status.phase) return;
+    if (status.running) {
+      window.JobPanel.run('finish', {
+        title: '正在收尾检查',
+        count: status.phase === 'compare' ? window.JobPanel.count(status.done, status.total, '个文件') : '第 1 步',
+        now: status.phase === 'compare' ? (status.current ? `📗 ${status.current}` : '准备比对…') : '正在读取处理文件夹和共享文件夹…',
+        step: status.phase === 'compare' ? '逐个比对处理里的文件和共享里的是否一致' : '',
+        fraction, empty: '比对完会在上面逐项打勾，有问题的标黄',
+      });
+      return;
+    }
+    const r = status.result;
+    const log = r ? STEPS.slice(1).map(step => {
+      const list = (r.issues || {})[step.key] || [];
+      return { ok: !list.length, name: step.title, reason: list.length ? `${list.length} 个文件` : '通过' };
+    }) : [];
+    window.JobPanel.finish('finish', {
+      title: status.error ? '收尾检查没做完' : r?.passed ? '收尾检查全部通过' : '收尾检查做完了，有没通过的',
+      warn: !!status.error || !r?.passed, log, now: status.error || (r ? `${r.files} 个文件` : ''),
+      step: r && !r.passed ? '没通过的项目在页面上标黄，按提示处理后再检查一遍。' : '',
+    });
   }
 
   function renderVerdict() {
