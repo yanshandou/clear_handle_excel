@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from core import autofix, debug_log, file_problem, fix_images, page_breaks, print_layout, scan_analysis, workflow as wf
+from core import (autofix, debug_log, file_problem, fix_images, page_breaks, pdf_store, print_layout, scan_analysis,
+                  sheet_history, workflow as wf)
 from core.common import STALE_LOCK_HINT, is_inspection_exempt_sheet, workbook_locked, workbook_rel_name
 from core.excel_ops import (
     CellProbe, close_saved_workbooks, enable_scan_view, normalize_workbook_view,
@@ -794,6 +795,42 @@ def _followed_own_save(path: str, before: Any) -> None:
     """程序自己保存了文件（写行高、标色）：打印方向记录跟着更新，不算你改过文件"""
     with wf.STATE_LOCK:
         print_layout.followed_save(wf.STATE.setdefault("print_layouts", {}), path, before)
+
+
+def _adjust_pdf_digest(path: str) -> str | None:
+    """调整页面给这份 Excel 导出过 PDF 时，保存前的哈希（保存后跟进导出记录用）；没导出过返回 None，不用算"""
+    root = wf.STATE.get("folder")
+    try:
+        if root and pdf_store.has_record(root, Path(path)):
+            return sheet_history.fingerprint(Path(path))
+    except Exception as err:
+        debug_log.event("⚠️ 读调整页面的 PDF 记录失败", 文件=Path(path).name, 错误=str(err))
+    return None
+
+
+def _follow_marks_save(path: str, before: Any, pdf_digest: str | None) -> None:
+    """标色 / 去标色存进 Excel 后：只是条件格式变了，格子位置、行高、分页都没变。
+    - 检测基线跟着前进（以前保守按改过处理：下次扫描整份重查、单元格工具箱也要先复检才能用，
+      调整页面里自动查切字时每次都会把标过色的文件全部重扫一遍；用户 2026-11-09 把切字并进调整页面后改）。
+      保存前文件就已经不是检测时的版本（人改过）的不跟。
+    - 调整页面导出的 PDF 记录也跟着记成新的哈希，回到调整页面不会当成 Excel 改过、整份重新导出"""
+    try:
+        after = wf._file_version(Path(path))
+    except OSError:
+        return
+    with wf.STATE_LOCK:
+        if before is not None and wf.STATE["checked_files"].get(path) == before:
+            wf.STATE["checked_files"][path] = after
+            checks = _sheet_checks().get(path, {})
+            for name, checked in list(checks.items()):
+                if checked == before:
+                    checks[name] = after
+    if pdf_digest:
+        try:
+            pdf_store.follow_save(wf.STATE.get("folder"), Path(path), pdf_digest,
+                                  sheet_history.fingerprint(Path(path)))
+        except Exception as err:
+            debug_log.event("⚠️ PDF 记录没能跟上标色保存", 文件=Path(path).name, 错误=str(err))
 
 
 def _save_scan_preview(excel: Any, path: str, session: Any) -> None:
@@ -3135,6 +3172,8 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
     debug_log.event("🎨 同步标色", 文件=Path(path).name, 清除=clear, 要标=len(add), 要去掉=len(remove),
                     待核对=len(unsure), 换色=len(recolor), 标签要核对=tabs_stale, 样式=style or "-")
     app = excel_for()
+    pre_open = _version_or_none(path)  # 打开前的版本（旧版 .xls 可写打开就会改文件时间，按打开前的认）
+    pdf_digest = _adjust_pdf_digest(path)  # 调整页面的 PDF 记录按哈希认，Excel 打开前先算好
     book = open_workbook_checked(app, str(Path(path).resolve()), UpdateLinks=0)
     added: dict[str, dict] = {}
     failed: dict[str, str] = {}
@@ -3144,6 +3183,7 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
     stuck: list[str] = []  # 去掉 / 还原时出错的记录，留着下次再试
     book_name, last_log = Path(path).name, time.monotonic()
     marks_changed = view_changed = False
+    saved_from: Any = None  # 保存前的文件版本（真的保存了才有）
 
     def note(mark: dict, status: str, reason: str) -> None:
         """status：ok 已去掉 / check 需要人看一下 / failed 没去掉"""
@@ -3335,6 +3375,7 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
             before = _version_or_none(path)
             book.Save()
             _followed_own_save(path, before)
+            saved_from = pre_open
         for mark in added.values():
             mark["saved"] = True
     finally:
@@ -3343,6 +3384,8 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
         except Exception:
             pass
         book.Close(SaveChanges=False)
+    if saved_from is not None:
+        _follow_marks_save(path, saved_from, pdf_digest)
     with wf.STATE_LOCK:
         for cid in remove:
             if cid not in stuck and cid not in added:  # 换色的格子去掉旧规则后又标上了新的

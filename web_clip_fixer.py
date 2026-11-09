@@ -194,6 +194,14 @@ class WebHandler(upload_manager.Handler):
                 self._send_json({"ok": False, "error": str(err)}, status=400)
         elif parsed.path == "/api/pdf_review/process":
             self._send_json({"ok": True, **pdf_review.process_status()})
+        elif parsed.path == "/api/pdf_review/cells":
+            # 调整页面上的切字格子（用户 2026-11-09 把查看切字并进调整页面）
+            from core import adjust_cells
+            folder = parse_qs(parsed.query).get("folder", [""])[0]
+            try:
+                self._send_json({"ok": True, **adjust_cells.snapshot(_require_folder({"folder": folder}))})
+            except ValueError as err:
+                self._send_json({"ok": False, "error": str(err)}, status=400)
         elif parsed.path == "/api/pdf_review/regenerate":
             self._send_json({"ok": True, **pdf_review.regen_status()})
         elif parsed.path == "/api/pdf_review/page":
@@ -482,7 +490,8 @@ class WebHandler(upload_manager.Handler):
                                                                 payload.get("pages"), _require_folder({"folder": payload["old_folder"]}, "reference")
                                                                 if payload.get("old_folder") else "")})
         elif self.path == "/api/pdf_review/process":
-            pdf_review.process(payload.get("red"), payload.get("yellow"), payload.get("tools", payload.get("floor")))
+            pdf_review.process(payload.get("red"), payload.get("yellow"), payload.get("tools", payload.get("floor")),
+                               payload.get("cells"), payload.get("skips"), payload.get("highlight"))
             self._send_json({"ok": True})
         elif self.path == "/api/pdf_review/regenerate":
             try:
@@ -490,6 +499,10 @@ class WebHandler(upload_manager.Handler):
             except ValueError:
                 raise ValueError("后台正在保存 Excel，请几秒后再点") from None
             self._send_json({"ok": True, **pdf_review.regenerate(payload.get("pdf"), payload.get("force", False))})
+        elif self.path == "/api/pdf_review/check":
+            # 打开调整页面、PDF 都是最新的以后：没查过 / 改过的 Excel 在后台查切字
+            from core import adjust_cells
+            self._send_json({"ok": True, **adjust_cells.start_check(_require_folder(payload), payload.get("highlight"))})
         elif self.path == "/api/pdf_review/refresh_stale":
             try:
                 autofix.wait_for_writes(15)  # 后台正在保存 Excel 时别同时导出

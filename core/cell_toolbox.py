@@ -15,10 +15,11 @@
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
-from core import autofix, debug_log, file_problem, print_layout, workflow as wf
+from core import autofix, debug_log, file_problem, pdf_store, print_layout, sheet_history, workflow as wf
 from core import batch as b
 from core.common import workbook_rel_name
 from core.excel_ops import close_saved_workbooks, normalize_workbook_view, open_workbook_checked
@@ -235,7 +236,7 @@ def apply_tools(excel: Any, path: str, plan: dict[str, dict]) -> dict:
     finally:
         measurer.close()
         book.Close(SaveChanges=False)
-    return {"cells": results, "pages": pages, "changed": changed}
+    return {"cells": results, "pages": pages, "changed": changed, "sheets": list(sheets)}
 
 
 def _remember(path: str, plan: dict[str, dict], cells: dict[str, dict]) -> None:
@@ -273,6 +274,9 @@ def _fix_file(session: Any, path: str, plan: dict[str, dict]) -> dict:
     if Path(path) in unsaved:
         raise ValueError(f"{name}：{unsaved[Path(path)]}，请保存并关闭后再点统一修改")
     session.touch()
+    root = wf.STATE.get("folder")
+    adjusted = _adjusted_sheets(root, path)
+    digest = sheet_history.fingerprint(Path(path)) if adjusted else None
     done = apply_tools(session.app(), path, plan)
     report = {"name": workbook_rel_name(Path(path), wf.STATE["folder"]), "pages": done["pages"],
               "done": sum("done" in r for r in done["cells"].values()),
@@ -286,6 +290,10 @@ def _fix_file(session: Any, path: str, plan: dict[str, dict]) -> dict:
         return report
     with wf.STATE_LOCK:
         cards = [b._data()["cards"][cid] for cid in plan if cid in b._data()["cards"]]
+    changed_sheets = sorted(set(done.get("sheets") or []) & adjusted)
+    if changed_sheets:
+        session.touch()
+        report["pdfs"] = _reexport_adjusted(session, root, path, changed_sheets, digest)
     session.touch()
     b._recheck_file(session.app(), path, cards, passed_message=PASSED_MESSAGE)
     with wf.STATE_LOCK:
@@ -296,6 +304,34 @@ def _fix_file(session: Any, path: str, plan: dict[str, dict]) -> dict:
     debug_log.event("🛠 工具箱复检完", 文件=name, 通过=report["passed"], 没过=report["left"],
                     跳过=len(report["skipped"]), 出错=len(report["errors"]))
     return report
+
+
+def _adjusted_sheets(root: Any, path: str) -> set[str]:
+    """调整页面给这份 Excel 导出过 PDF 的表（PDFS/PDF导出记录.json）；没导出过返回空"""
+    if not root:
+        return set()
+    try:
+        return set(pdf_store.sheet_pdfs(root, Path(path)))
+    except Exception as err:
+        debug_log.event("⚠️ 读调整页面的 PDF 记录失败", 文件=Path(path).name, 错误=str(err))
+        return set()
+
+
+def _reexport_adjusted(session: Any, root: str, path: str, sheets: list[str], digest: str | None) -> int:
+    """改了格子的表在调整页面也有 PDF：复检前先把这几张表的 PDF 重新导出（和「🔄 重新生成」一样，按表来），
+    复检直接用这份新的 PDF 检测、不再另导一次，回到调整页面看到的就是改完的样子、不用整份重新导出
+    （用户 2026-11-09 把切字并进调整页面）。导不出来不影响复检，调整页面打开时会按「Excel 改过」自动重新导出"""
+    started = time.perf_counter()
+    try:
+        paths = wf._export_workbook_pdfs(session.app, Path(path), Path(root), set(), force=True,
+                                         only_sheets=set(sheets), fresh_before=digest)
+    except Exception as err:
+        debug_log.exception(err, f"单元格工具箱改完重新导出调整页面的 PDF {Path(path).name}")
+        wf.log_msg(f"⚠️ {Path(path).name} 改完没能重新导出调整页面的 PDF，打开调整页面时会自动再导：{err}")
+        return 0
+    debug_log.event("📄 工具箱改完重新导出 PDF", 文件=Path(path).name, 表=sheets, PDF=len(paths),
+                    秒=round(time.perf_counter() - started, 2))
+    return len(paths)
 
 
 def run(job: dict, session: Any, watchdog: Any) -> list[str]:
