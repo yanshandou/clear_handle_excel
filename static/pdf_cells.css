@@ -1,0 +1,346 @@
+/* 调整页面里的单元格（切字）：分类第二行、小图上的框、表下面的格子条、大图选格子。
+   规则：点了只换颜色，不改尺寸，不挪位置。 */
+
+/* ---------- 分类两行：页面 / 单元格 ---------- */
+.pr-cats {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.pr-cat-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.pr-cat-title {
+  flex: 0 0 64px;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.pc-cat-row { padding-top: 8px; border-top: 2px dashed var(--line-soft); }
+.pc-cat.pr-cat { border-color: #f3a3b6; }
+.pc-cat.pr-cat.is-on { border-color: var(--purple-ink); }
+.pc-cat-empty { color: var(--ink-3); }
+
+.pc-scan {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+.pc-scan-text { font-weight: 700; }
+
+.pc-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-left: 72px;
+  padding: 8px 12px;
+  background: #fbf8ff;
+  border: 2px solid var(--rim);
+  border-radius: 12px;
+}
+
+.pc-bulk-label { font-size: 14px; font-weight: 800; color: var(--ink); margin-right: 4px; }
+.pc-bulk-hint { flex-basis: 100%; font-size: 12px; color: var(--ink-3); }
+
+/* ---------- 修法小按钮 ---------- */
+.pc-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--ink-2);
+  text-decoration: none;
+  background: #fff;
+  border: 2px solid var(--rim);
+  border-radius: 9px;
+  cursor: pointer;
+  -webkit-text-stroke: 0;
+}
+
+.pc-chip:hover { background: var(--purple-soft); }
+.pc-chip[aria-pressed="true"] { color: #fff; background: var(--purple-ink); border-color: var(--purple-ink); }
+.pc-chip.is-skip { color: #5b5470; border-style: dashed; border-color: #8f88a3; }
+.pc-chip.is-skip[aria-pressed="true"] { color: #fff; background: #5b5470; border-style: solid; border-color: #5b5470; }
+.pc-chip-lg { padding: 4px 12px; font-size: 13px; border-radius: 11px; }
+.pc-chip-plain { color: var(--ink-3); border-color: transparent; background: transparent; }
+.pc-chip-plain:hover { background: #f1edf8; }
+.pc-chip.pc-open { color: #1d5e2a; border-color: #8ccf98; }
+.pc-chip.pc-open:hover { background: #eaf8ec; }
+
+/* ---------- 小图上的框 ---------- */
+.pr-layer { cursor: zoom-in; }
+
+.pc-mini {
+  position: absolute;
+  pointer-events: none;
+  border: 2px solid var(--red);
+  background: rgba(232, 51, 90, 0.14);
+  border-radius: 2px;
+}
+
+.pc-mini[data-state="none"] { border-color: #e8335a; background: rgba(232, 51, 90, 0.05); }
+.pc-mini[data-state="skip"] { border: 1.5px dashed #8f88a3; background: none; }
+
+.pc-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  min-width: 22px;
+  padding: 1px 7px;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 18px;
+  text-align: center;
+  color: #fff;
+  background: #c8102e;
+  border-radius: 999px;
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+  -webkit-text-stroke: 0;
+}
+
+/* ---------- 表下面的格子条（固定显示，不折叠） ---------- */
+.pc-strip {
+  margin: 4px 0 0;
+  padding: 10px 14px 12px;
+  background: #fbf8ff;
+  border-top: 2px dashed var(--rim);
+}
+
+.pc-strip.is-empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+}
+
+.pc-strip-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin-bottom: 8px;
+}
+
+.pc-strip-title { font-size: 14px; font-weight: 800; color: var(--ink); }
+.pc-strip-title b { color: #c8102e; }
+.pc-strip-note { font-size: 12px; color: var(--ink-3); }
+
+.pc-cells {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 10px;
+}
+
+.pc-cell {
+  min-width: 0;
+  padding: 8px;
+  background: #fff;
+  border: 2px solid var(--rim);
+  border-radius: 12px;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.pc-cell[data-state="skip"] { border-style: dashed; border-color: #8f88a3; background: #f6f5f9; }
+.pc-cell[data-state="skip"] .pc-cell-text { border-color: #8f88a3; border-style: dashed; color: #5b5470; }
+.pc-cell.is-dim { opacity: 0.55; }
+
+.pc-cell-text {
+  margin-bottom: 6px;
+  padding: 5px 8px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 14px;
+  color: #222;
+  border: 2px solid var(--red);
+  border-radius: 4px;
+}
+
+.pc-cell-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  align-items: baseline;
+  color: var(--ink-3);
+}
+
+.pc-cell-info b { color: var(--ink); }
+
+.pc-tools { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+
+.pc-note {
+  margin: 6px 0 0;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #7a4200;
+  background: #fff3cf;
+  border-radius: 6px;
+}
+
+.pc-more { margin-top: 8px; }
+
+/* ---------- 大图 ---------- */
+.pc-big {
+  width: 100vw;
+  max-width: none;
+  height: 100vh;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: rgba(30, 10, 70, 0.86);
+  color: var(--ink);
+}
+
+.pc-big::backdrop { background: rgba(20, 6, 50, 0.6); }
+
+.pc-big[open] { display: flex; flex-direction: column; }
+
+.pc-big-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px;
+  color: #fff;
+  background: #4a1db0;
+}
+
+.pc-big-title { font-size: 16px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
+.pc-big-hint { flex: 1; font-size: 12px; opacity: 0.92; min-width: 0; }
+.pc-big-count { font-size: 13px; font-weight: 700; white-space: nowrap; }
+
+.pc-big-nav,
+.pc-big-close {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  font: inherit;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+  color: #4a1db0;
+  background: #fff;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.pc-big-nav:disabled { opacity: 0.4; cursor: default; }
+
+.pc-big-body {
+  flex: 1;
+  overflow: auto;
+  padding: 16px 0 40px;
+  outline: none;
+}
+
+.pc-big-page {
+  position: relative;
+  width: calc(100vw - 48px);
+  margin: 0 auto;
+  background: #fff;
+  border-radius: 6px;
+  user-select: none;
+  touch-action: none;
+}
+
+.pc-big-img { display: block; width: 100%; height: 100%; pointer-events: none; }
+.pc-big-layer { position: absolute; inset: 0; }
+
+.pc-box {
+  position: absolute;
+  border: 3px solid var(--red);
+  background: rgba(232, 51, 90, 0.10);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.pc-box[data-state="none"] { background: rgba(232, 51, 90, 0.03); }
+.pc-box[data-state="skip"] { border: 3px dashed #8f88a3; background: none; }
+.pc-box.is-sel { border-color: #2f6fe0; border-style: solid; background: rgba(47, 111, 224, 0.14); box-shadow: 0 0 0 3px rgba(47, 111, 224, 0.35); }
+
+.pc-x {
+  position: absolute;
+  top: -13px;
+  right: -13px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  color: #c8102e;
+  background: #fff;
+  border: 2px solid #c8102e;
+  border-radius: 50%;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.pc-box[data-state="skip"] .pc-x { color: #5b5470; border-color: #8f88a3; }
+
+.pc-tag {
+  position: absolute;
+  left: -3px;
+  bottom: -24px;
+  padding: 1px 7px;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+  color: #fff;
+  background: var(--purple-ink);
+  border-radius: 8px;
+  pointer-events: none;
+  -webkit-text-stroke: 0;
+}
+
+.pc-box[data-state="none"] .pc-tag { color: var(--ink); background: #fff; border: 1px solid var(--rim); }
+.pc-box[data-state="skip"] .pc-tag { background: #5b5470; }
+
+.pc-drag {
+  position: absolute;
+  border: 2px dashed #2f6fe0;
+  background: rgba(47, 111, 224, 0.06);
+  pointer-events: none;
+}
+
+.pc-drag[hidden], .pc-pop[hidden] { display: none; }
+
+.pc-pop {
+  position: fixed;
+  z-index: 5;
+  width: 340px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 3px solid var(--rim-strong);
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  font-size: 14px;
+}
+
+.pc-pop-title { margin: 0; font-weight: 800; color: var(--ink); }
+.pc-pop-title small { display: block; font-size: 12px; font-weight: 700; color: var(--ink-3); }
+.pc-pop-text { margin: 6px 0 0; padding: 4px 8px; font-size: 13px; color: #222; border: 2px solid var(--red); border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pc-pop-tools { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.pc-pop-tools .pc-chip { font-size: 13px; padding: 4px 10px; }
+.pc-pop-none { font-size: 12px; color: var(--ink-3); }

@@ -482,7 +482,7 @@ async function refreshDoneMarks() {
   });
   const note = document.getElementById('routeDoneNote');
   note.classList.toggle('hidden', !folder);
-  note.textContent = folder ? `✓ 表示在「${folder}」里已经做过（${doneCount} / 4 步）` : '';
+  note.textContent = folder ? `✓ 表示在「${folder}」里已经做过（${doneCount} / ${document.querySelectorAll('.route-stop[data-ops]').length} 步）` : '';
   note.title = folder;
 }
 

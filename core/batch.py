@@ -19,10 +19,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from core import autofix, debug_log, file_problem, fix_images, page_breaks, print_layout, scan_analysis, workflow as wf
+from core import (autofix, debug_log, file_problem, fix_images, page_breaks, pdf_store, print_layout, scan_analysis,
+                  sheet_history, workflow as wf)
 from core.common import STALE_LOCK_HINT, is_inspection_exempt_sheet, workbook_locked, workbook_rel_name
 from core.excel_ops import (
-    CellProbe, close_saved_workbooks, enable_page_layout_view, normalize_workbook_view,
+    CellProbe, close_saved_workbooks, enable_scan_view, normalize_workbook_view,
     open_workbooks_for_review, open_workbook_checked,
 )
 from core.excel_watchdog import ExcelWatchdog, idle_timeout
@@ -881,13 +882,49 @@ def _followed_own_save(path: str, before: Any) -> None:
         print_layout.followed_save(wf.STATE.setdefault("print_layouts", {}), path, before)
 
 
+def _adjust_pdf_digest(path: str) -> str | None:
+    """调整页面给这份 Excel 导出过 PDF 时，保存前的哈希（保存后跟进导出记录用）；没导出过返回 None，不用算"""
+    root = wf.STATE.get("folder")
+    try:
+        if root and pdf_store.has_record(root, Path(path)):
+            return sheet_history.fingerprint(Path(path))
+    except Exception as err:
+        debug_log.event("⚠️ 读调整页面的 PDF 记录失败", 文件=Path(path).name, 错误=str(err))
+    return None
+
+
+def _follow_marks_save(path: str, before: Any, pdf_digest: str | None) -> None:
+    """标色 / 去标色存进 Excel 后：只是条件格式变了，格子位置、行高、分页都没变。
+    - 检测基线跟着前进（以前保守按改过处理：下次扫描整份重查、单元格工具箱也要先复检才能用，
+      调整页面里自动查切字时每次都会把标过色的文件全部重扫一遍；用户 2026-11-09 把切字并进调整页面后改）。
+      保存前文件就已经不是检测时的版本（人改过）的不跟。
+    - 调整页面导出的 PDF 记录也跟着记成新的哈希，回到调整页面不会当成 Excel 改过、整份重新导出"""
+    try:
+        after = wf._file_version(Path(path))
+    except OSError:
+        return
+    with wf.STATE_LOCK:
+        if before is not None and wf.STATE["checked_files"].get(path) == before:
+            wf.STATE["checked_files"][path] = after
+            checks = _sheet_checks().get(path, {})
+            for name, checked in list(checks.items()):
+                if checked == before:
+                    checks[name] = after
+    if pdf_digest:
+        try:
+            pdf_store.follow_save(wf.STATE.get("folder"), Path(path), pdf_digest,
+                                  sheet_history.fingerprint(Path(path)))
+        except Exception as err:
+            debug_log.event("⚠️ PDF 记录没能跟上标色保存", 文件=Path(path).name, 错误=str(err))
+
+
 def _save_scan_preview(excel: Any, path: str, session: Any) -> None:
     """扫描的只读工作簿已关闭，另开原文件保存视图，并跟进只涉及视图的版本变化。"""
     _check_file(path)
     before = wf._file_version(Path(path))
     if wf.STATE["checked_files"].get(path) != before:
         raise ValueError(f"扫描后文件已修改，请重新扫描：{Path(path).name}")
-    after = wf._save_page_layout_view(excel, Path(path), before)
+    after = wf._save_scan_view(excel, Path(path), before)
     with wf.STATE_LOCK:
         wf.STATE["checked_files"][path] = after
         checks = _sheet_checks().get(path, {})
@@ -1144,7 +1181,7 @@ def _refresh(
 ) -> list[str]:
     """重新检测（默认整个文件）。session 给了就沿用同一状态已导出的 PDF（reuse=False 时一律重新导出）；
     workbook 给了就直接用它检测（全自动的副本，或复检时在内存里还原过标记色的原文件），不再打开原文件。
-    view 给了就顺便查原文件视图，view["needed"] 表示是否还要另存页面布局视图。
+    view 给了就顺便查原文件视图，view["needed"] 表示是否还要另存分页预览。
     返回这次找不到、没有检测的工作表（被删除、隐藏，或改名后认不出来）。"""
     with wf.STATE_LOCK:
         cards = _data()["cards"]
@@ -1168,11 +1205,11 @@ def _refresh(
         previous, job=None, resumed=True, rescan_all=False, delete_backups=False,
         used_pdf_paths={Path(p["pdf_path"]) for p in wf.STATE["pages"].values()},
         read_only=True, workbook=workbook, pdfs=session, reuse_pdfs=reuse, timing=timing,
-        scan_view="check_page_layout" if view is not None else None,
+        scan_view="check_scan_view" if view is not None else None,
         compact_print_tail=compact_print_tail, before_print_save=before_print_save,
     )
     if view is not None:
-        view["needed"] = entry.get("page_layout_needed", True)
+        view["needed"] = entry.get("scan_view_needed", True)
     with wf.STATE_LOCK:
         missing = list(entry.get("missing", []))
         for card in _data()["cards"].values():
@@ -3187,7 +3224,7 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
     旧版本改过单元格底色的记录照旧还原原来的颜色。
     tick：每处理一格告诉看门狗还在动，问题格很多的大文件要好几分钟，不会被当成 Excel 卡死。
     report：清除标记时传入，逐格记下去掉了没有、没去掉的原因（cells），以及清掉的残留规则条数，页面上显示结果。
-    scan_view：扫描时传入后台会话（autofix._ExcelSession）：标色这次打开文件时顺便存页面布局视图，
+    scan_view：扫描时传入后台会话（autofix._ExcelSession）：标色这次打开文件时顺便存分页预览，
     和标色一起只保存一次（以前另外再打开、保存一次，用户 2026-11-07 同意合并）。
     返回是否已经顺便存了视图；没东西要标、根本没打开文件时返回 False，调用方照旧单独存视图。"""
     with wf.STATE_LOCK:
@@ -3220,6 +3257,8 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
     debug_log.event("🎨 同步标色", 文件=Path(path).name, 清除=clear, 要标=len(add), 要去掉=len(remove),
                     待核对=len(unsure), 换色=len(recolor), 标签要核对=tabs_stale, 样式=style or "-")
     app = excel_for()
+    pre_open = _version_or_none(path)  # 打开前的版本（旧版 .xls 可写打开就会改文件时间，按打开前的认）
+    pdf_digest = _adjust_pdf_digest(path)  # 调整页面的 PDF 记录按哈希认，Excel 打开前先算好
     book = open_workbook_checked(app, str(Path(path).resolve()), UpdateLinks=0)
     added: dict[str, dict] = {}
     failed: dict[str, str] = {}
@@ -3229,6 +3268,7 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
     stuck: list[str] = []  # 去掉 / 还原时出错的记录，留着下次再试
     book_name, last_log = Path(path).name, time.monotonic()
     marks_changed = view_changed = False
+    saved_from: Any = None  # 保存前的文件版本（真的保存了才有）
 
     def note(mark: dict, status: str, reason: str) -> None:
         """status：ok 已去掉 / check 需要人看一下 / failed 没去掉"""
@@ -3413,13 +3453,14 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
                 app.ScreenUpdating = True  # 切视图要真的切到各张表上，先恢复刷新
             except Exception:
                 pass
-            view_changed = enable_page_layout_view(app, book)
+            view_changed = enable_scan_view(app, book)
         if marks_changed or view_changed:  # 只核对、没有要改的：不保存
             if tick is not None:
                 tick()
             before = _version_or_none(path)
             book.Save()
             _followed_own_save(path, before)
+            saved_from = pre_open
         for mark in added.values():
             mark["saved"] = True
     finally:
@@ -3428,6 +3469,8 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
         except Exception:
             pass
         book.Close(SaveChanges=False)
+    if saved_from is not None:
+        _follow_marks_save(path, saved_from, pdf_digest)
     with wf.STATE_LOCK:
         for cid in remove:
             if cid not in stuck and cid not in added:  # 换色的格子去掉旧规则后又标上了新的
@@ -3471,7 +3514,7 @@ def _sync_highlights(excel_for: Callable[[], Any], path: str, *, clear: bool = F
         reasons = sorted(set(failed.values()))
         parts.append(f"{len(failed)} 格未能标色（{'；'.join(reasons[:3])}{'……' if len(reasons) > 3 else ''}）")
     if view_changed:
-        parts.append("同时存了页面布局视图")
+        parts.append("同时存了分页预览")
     if parts:
         wf.log_msg(f"🎨 {Path(path).name}：" + "，".join(parts))
     return view_before is not None
@@ -4056,7 +4099,7 @@ def run() -> list[str]:
                     _data().setdefault("highlight_files", {})[path] = highlight_style(options.get("highlight"))
                 _hand_over(path)
                 step("转人工")
-                # 页面布局视图（只改视图，不改选区或缩放）和标色一起打开、一起保存，少开存一次文件（用户 2026-11-07 同意）；
+                # 分页预览（只改视图，不改选区或缩放）和标色一起打开、一起保存，少开存一次文件（用户 2026-11-07 同意）；
                 # 没有要标色的文件不会打开，照旧单独存视图
                 view_needed = view.get("needed", True)
                 with scan_analysis.operation("highlight"):
@@ -4066,7 +4109,7 @@ def run() -> list[str]:
                 if view_needed and not viewed:
                     with scan_analysis.operation("save_view"):
                         _save_scan_preview(excel, path, session)
-                step("存页面布局视图")
+                step("存分页预览")
                 with wf.STATE_LOCK:
                     job.setdefault("file_seconds", {})[path] = round(time.perf_counter() - started, 1)
                 debug_log.event("⏱ 分步", 文件=Path(path).name, 合计秒=round(time.perf_counter() - file_started, 2),

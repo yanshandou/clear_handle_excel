@@ -49,8 +49,7 @@ from core.formula_links import delete_sheets_preserving_values
 from core.excel_ops import (
     CellProbe,
     close_saved_workbooks,
-    enable_page_break_preview,
-    enable_page_layout_view,
+    enable_scan_view,
     extract_sheet_snapshot,
     gray_tab_sheet_names,
     mark_review_cells,
@@ -63,7 +62,7 @@ from core.excel_ops import (
     open_workbook_for_manual_review,
     open_workbook_checked,
     page_break_preview_needed,
-    page_layout_view_needed,
+    scan_view_needed,
     read_merge_boxes,
     pythoncom,
     quit_background_excel,
@@ -1556,9 +1555,9 @@ def _scan_plan(workbooks: list[Path], *, rescan_all: bool) -> dict[str, dict[str
     return plan
 
 
-def _save_workbook_scan_view(excel: Any, wb_path: Path, expected_version: dict, *, page_layout: bool) -> dict:
-    """重新打开原文件只保存视图，丢弃检测时临时上色等内存修改。"""
-    label = "页面布局视图" if page_layout else "分页预览"
+def _save_scan_view(excel: Any, wb_path: Path, expected_version: dict) -> dict:
+    """重新打开原文件只保存视图（分页预览），丢弃检测时临时上色等内存修改。"""
+    label = "分页预览"
     if _file_version(wb_path) != expected_version:
         raise ValueError(f"扫描后文件已修改，未保存{label}，请重新扫描：{wb_path.name}")
     book = open_workbook_checked(excel, str(wb_path.resolve()), ReadOnly=False, UpdateLinks=0)
@@ -1570,9 +1569,10 @@ def _save_workbook_scan_view(excel: Any, wb_path: Path, expected_version: dict, 
         opened_version = _file_version(wb_path)
         if wb_path.suffix.lower() != ".xls" and opened_version != expected_version:
             raise ValueError(f"扫描后文件已修改，未保存{label}，请重新扫描：{wb_path.name}")
-        changed = enable_page_layout_view(excel, book) if page_layout else enable_page_break_preview(excel, book)
+        changed = enable_scan_view(excel, book)
         if _file_version(wb_path) != opened_version:
             raise ValueError(f"扫描后文件已修改，未保存{label}，请重新扫描：{wb_path.name}")
+        debug_log.event("🗂 扫描存视图", 文件=wb_path.name, 视图=label, 要改=changed)
         if changed:
             book.Save()
             with STATE_LOCK:
@@ -1582,12 +1582,8 @@ def _save_workbook_scan_view(excel: Any, wb_path: Path, expected_version: dict, 
     return _file_version(wb_path)
 
 
-def _save_page_break_preview(excel: Any, wb_path: Path, expected_version: dict) -> dict:
-    return _save_workbook_scan_view(excel, wb_path, expected_version, page_layout=False)
-
-
-def _save_page_layout_view(excel: Any, wb_path: Path, expected_version: dict) -> dict:
-    return _save_workbook_scan_view(excel, wb_path, expected_version, page_layout=True)
+# 旧参数 keep_page_break_preview 走的也是同一个分页预览
+_save_page_break_preview = _save_scan_view
 
 
 def _save_scan_print_settings(excel: Any, wb_path: Path, expected_version: dict, changes: dict) -> dict:
@@ -1664,7 +1660,7 @@ def _scan_one_workbook(
     timing：累计打开 / 导出 / 检测各花了几秒。
     check_page_break_preview：打开原文件后先查视图，结果写入 entry["page_break_preview_needed"]；
     已全是分页预览时不必再可写打开原文件（旧版 .xls 可写打开即使不保存也会改文件时间）。
-    scan_view="check_page_layout" 只检查原页面布局视图；"page_layout" 在检测后另存该视图。"""
+    scan_view="check_scan_view" 只检查原视图是不是分页预览；"save" 在检测后另存该视图。"""
     if compact_print_tail and workbook is not None:
         raise ValueError("末页打印缩放必须独立打开原文件检测")
     timing = {} if timing is None else timing
@@ -1694,10 +1690,10 @@ def _scan_one_workbook(
         if scan_view and workbook is None:
             # 检测会临时切换视图，先检查文件原来保存的状态。
             try:
-                entry["page_layout_needed"] = page_layout_view_needed(excel, wb)
+                entry["scan_view_needed"] = scan_view_needed(excel, wb)
             except Exception as err:
-                debug_log.event("⚠️ 无法检查页面布局视图", 文件=wb_label, 错误=str(err))
-                entry["page_layout_needed"] = True
+                debug_log.event("⚠️ 无法检查视图", 文件=wb_label, 错误=str(err))
+                entry["scan_view_needed"] = True
         if (keep_page_break_preview or check_page_break_preview) and workbook is None:
             # 检测分页时会临时切换视图，必须在检测前查看文件保存的视图。
             try:
@@ -1855,9 +1851,9 @@ def _scan_one_workbook(
         with scan_analysis.operation("save_view"):
             scan_version = _save_page_break_preview(excel, wb_path, scan_version)
 
-    if scan_view == "page_layout" and entry.get("page_layout_needed", True):
+    if scan_view == "save" and entry.get("scan_view_needed", True):
         with scan_analysis.operation("save_view"):
-            scan_version = _save_page_layout_view(excel, wb_path, scan_version)
+            scan_version = _save_scan_view(excel, wb_path, scan_version)
 
     if pdfs is not None:
         for name, pdf in scanned_pdfs.items():
@@ -2025,7 +2021,7 @@ def scan_folder_workflow(
                             # 未要求删表时只读检测，避免旧版 .xls 首次打开就更新时间。
                             read_only=not delete_backups,
                             compact_print_tail=False,  # 末页取整改在「调整页面」由用户定（2026-11-07）
-                            scan_view="page_layout",
+                            scan_view="save",
                         )
                 except Exception as err:
                     wb_label = workbook_rel_name(wb_path, folder)
@@ -3539,13 +3535,29 @@ def _export_workbook_pdfs(
         action = f"已导出 {len(exported)} 份 PDF"
         log_msg(f"  {action}")
         all_sheets = [sheet.Name for sheet in wb.Sheets]
+        # 可写打开了就顺便把可见表存成分页预览（改ページプレビュー，用户 2026-11-09 定）；
+        # 导完 PDF 再切，只改视图，保留缩放、选区和当前表；已是分页预览不改不存
+        view_changed = False
+        if fit:
+            started = time.perf_counter()
+            try:
+                view_changed = enable_scan_view(wb.Application, wb)
+            except Exception as err:
+                debug_log.event("⚠️ 调整页面没能改成分页预览", 文件=wb_label, 错误=str(err))
+            debug_log.event("🗂 调整页面存视图", 文件=wb_label, 视图="分页预览", 改了=view_changed,
+                            秒=round(time.perf_counter() - started, 2))
         if fitted:
             update_file_progress(wb_label, current_action="正在把「宽一页、高自动」保存进 Excel...")
             wb.Save()
             log_msg(f"  📐 设成宽一页、高自动并保存：{'、'.join(fitted)}")
+        elif view_changed:
+            update_file_progress(wb_label, current_action="正在保存分页预览...")
+            wb.Save()
+        if view_changed:
+            log_msg("  🗂 视图存成分页预览")
     finally:
         wb.Close(SaveChanges=False)
-    if fitted:
+    if fitted or view_changed:
         digest = sheet_history.fingerprint(wb_path)  # 存进 Excel 后文件变了，记保存后的
     if to_save:
         update_file_progress(wb_label, current_action="正在把打印方向保存进 Excel...")
