@@ -455,6 +455,38 @@ class QuickTaskTests(unittest.TestCase):
         self.assertEqual(self.excel.opened, [("a.xlsx", False)])
         self.assertEqual(len(self.books["a.xlsx"].saved), 1)  # 都已经是宽一页了，不用再保存
 
+    def test_export_saves_page_break_preview_once_without_changing_print_settings(self):
+        """调整页面导出时顺便把视图存成分页预览（用户 2026-11-09 定）：已是宽一页的表也存一次；已是分页预览不存"""
+        self.add_book("a.xlsx", ["Sheet1"])
+        sheet = self.books["a.xlsx"].sheets[0]
+        sheet.PageSetup = SimpleNamespace(Zoom=False, FitToPagesWide=1, FitToPagesTall=False, Orientation=1,
+                                          TopMargin=0, BottomMargin=0)
+        view = Mock(return_value=True)
+        self.patch_value(self.workflow, "enable_scan_view", view)
+        self.run_task("export_pdf")
+        view.assert_called_once()
+        self.assertIs(view.call_args.args[1], self.books["a.xlsx"])
+        self.assertEqual(len(self.books["a.xlsx"].saved), 1)
+        self.assertEqual((sheet.PageSetup.Zoom, sheet.PageSetup.FitToPagesWide, sheet.PageSetup.FitToPagesTall),
+                         (False, 1, False))
+        self.assertTrue(any("视图存成分页预览" in line for line in self.workflow.STATE["logs"]))
+
+        view.reset_mock(return_value=True)
+        view.return_value = False
+        self.books["a.xlsx"].saved.clear()
+        self.run_task("export_pdf")  # 保存后哈希记的是新的，没改过就沿用 PDF，不再打开
+        view.assert_not_called()
+        self.assertEqual(self.books["a.xlsx"].saved, [])
+
+    def test_open_workbook_export_does_not_touch_view(self):
+        self.add_book("a.xlsx", ["Sheet1"])
+        view = Mock(return_value=True)
+        self.patch_value(self.workflow, "enable_scan_view", view)
+        self.patch_value(self.workflow, "workbook_locked", lambda path: True)
+        self.run_task("export_pdf")
+        view.assert_not_called()
+        self.assertEqual(self.books["a.xlsx"].saved, [])
+
     def test_export_of_open_workbook_is_read_only_and_not_marked_fit(self):
         self.add_book("a.xlsx", ["Sheet1"])
         sheet = self.books["a.xlsx"].sheets[0]

@@ -178,7 +178,7 @@ class ScanOnlyTests(unittest.TestCase):
         self.excel.Workbooks.Open.return_value = self.book
         patch.object(batch, "normalize_workbook_view").start()
         patch.object(batch, "_save_scan_preview").start()
-        self.page_layout = patch.object(batch, "enable_page_layout_view", return_value=False).start()
+        self.page_layout = patch.object(batch, "enable_scan_view", return_value=False).start()
         self.real_matches = batch._marked_matches
         self.matches = patch.object(batch, "_marked_matches", return_value=[]).start()
         patch.object(self.wf, "_sync_problem_counts").start()
