@@ -4,7 +4,7 @@
 // 加在列表最上面，文件名点一下在 Excel 打开；做完进度条收起，标题写 ✓ / !，点「知道了」关掉。
 //
 // 页面每次轮询到后台状态时调用：
-//   JobPanel.run(id, { title, count, now, step, fraction, remaining, waiting, log, empty, folder })  —— 正在跑
+//   JobPanel.run(id, { title, count, now, step, fraction, remaining, etaKey, etaLabel, waiting, log, empty, folder })  —— 正在跑
 //   JobPanel.finish(id, { title, now, step, log, warn })  —— 跑完了（只有这一页看到它在跑、还没点「知道了」才显示）
 // id 是这一类任务的名字（如 'batch'、'repair:links'）；log 每条 { ok, name, reason, path, sheet, folder }。
 // 页面底部有悬浮条时，在 body 上设 --job-panel-bottom 让框浮在悬浮条上面。
@@ -178,7 +178,8 @@
     box.classList.toggle('is-waiting', !!s.waiting);
     const fraction = Math.max(0, Math.min(1, Number(s.fraction) || 0));
     el.fill.style.width = `${(fraction * 100).toFixed(1)}%`;
-    window.ProgressEta?.update(el.fill, `job_panel:${id}`, fraction, true, s.remaining);
+    // etaKey：和页面上同一条进度共用一份预估记录，两处显示的时间就一样；etaLabel 写明算的是什么
+    window.ProgressEta?.update(el.fill, s.etaKey || `job_panel:${id}`, fraction, true, s.remaining, s.etaLabel);
     paintLog(s.log, s.empty, false);
   }
 
