@@ -796,7 +796,8 @@ def _prepare_task_files(task: dict[str, Any], checked: list[tuple], total: int,
 # 选了覆盖的，上传那一刻 PDF 和检查时不一样（期间被人换了）也不覆盖。PDF 出问题不影响 Excel 上传，只在结果里写明。
 
 def _pdf_settings(value: Any) -> dict[str, Any] | None:
-    """网页传来的 PDF 选项：None / False = 不导出；{"options": {...}, "overwrite": {rel: 检查时的哈希}}"""
+    """网页传来的 PDF 选项：None / False = 不导出（只传表格）；
+    {"options": {...}, "overwrite": {rel: 检查时的哈希}, "only": True = 只传 PDF、Excel 不传}"""
     if value in (None, False):
         return None
     if not isinstance(value, dict):
@@ -806,7 +807,10 @@ def _pdf_settings(value: Any) -> dict[str, Any] | None:
     overwrite = value.get("overwrite") or {}
     if not isinstance(overwrite, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in overwrite.items()):
         raise ValueError("要覆盖的同名 PDF 清单格式不正确，请重新检查")
-    return {"options": options, "overwrite": {_key(rel): sha for rel, sha in overwrite.items()}}
+    only = value.get("only", False)
+    if type(only) is not bool:
+        raise ValueError("同名 PDF 选项格式不正确")
+    return {"options": options, "overwrite": {_key(rel): sha for rel, sha in overwrite.items()}, "only": only}
 
 
 def _pdf_target(excel_target: Path) -> Path:
@@ -926,6 +930,16 @@ def _upload_pdf(item: dict[str, Any], excel_target: Path, settings: dict[str, An
             return {}
 
 
+def _pdf_only_status(item: dict[str, Any]) -> None:
+    """只传 PDF 时，这一份的结果就看 PDF：传了或按你的选择没覆盖算做完，没传成算失败"""
+    pdf = item.get("pdf") or {}
+    item["pdf_only"] = True
+    if pdf.get("status") in ("ok", "kept"):
+        item.update(status="ok", error="")
+    else:
+        item.update(status="failed", error=pdf.get("error") or "同名 PDF 没传成")
+
+
 def _pdf_summary(items: list[dict[str, Any]]) -> dict[str, int]:
     pdfs = [item["pdf"] for item in items if item.get("pdf")]
     if not pdfs:
@@ -980,6 +994,13 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
 
             # 中转：公司共享照样核对版本，文件复制到终点（团队文件夹），公司那份不动
             target = _task_file(relay, item["rel"]) if relay is not None else dest
+            if (data.get("pdf") or {}).get("only"):
+                # 只传 PDF（用户 2026-11-10）：共享版本照样核对过（共享 Excel 被人改了就先同步、不导旧版的 PDF），
+                # Excel 不传、不记上传版本，不划掉本轮清单
+                _progress(index, len(items), f"上传同名 PDF {item['rel']}")
+                _save_baseline(_upload_pdf(item, target, data["pdf"], pdf_claimed, task["id"]))
+                _pdf_only_status(item)
+                continue
             try:
                 digest = copy_one(local, target, before_replace=verify_shared)
             except _SharedVersionChanged:
@@ -1011,7 +1032,7 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
         except (OSError, ValueError) as err:
             debug_log.exception(err, "写拿取版本清单")
             data["manifest_error"] = _explain(err)
-    done = [item["rel"] for item in items if item.get("status") == "ok"]
+    done = [item["rel"] for item in items if item.get("status") == "ok" and not item.get("pdf_only")]
     if done:  # 本轮清单里的文件传上去了就划掉，全划掉自动回到整个文件夹
         from core import work_task
         try:
@@ -1257,7 +1278,7 @@ def _live_log() -> list[dict[str, Any]]:
         state = item.get("status")
         if state not in words:
             continue
-        reason = item.get("error") or words[state]
+        reason = item.get("error") or ("只传 PDF" if item.get("pdf_only") and state == "ok" else words[state])
         pdf = item.get("pdf") or {}
         if state == "ok" and pdf.get("status") not in (None, "exported"):
             reason += "；" + _pdf_text(pdf)
@@ -1439,7 +1460,7 @@ def start_free(preview_id: Any, confirm_overwrite: bool, pdf: Any = None) -> Non
         preview_data = copy.deepcopy(preview_data)
     if not preview_data or preview_data.get("kind") != "free_upload" or preview_data.get("id") != preview_id:
         raise ValueError("清单已变化，请重新生成")
-    if preview_data["summary"]["要确认"] and not confirm_overwrite:
+    if preview_data["summary"]["要确认"] and not confirm_overwrite and not (pdf_settings or {}).get("only"):
         raise ValueError("有终点已有、没法检查的同名文件，请先确认覆盖")
     if not preview_data["summary"]["要上传"]:
         raise ValueError("清单里没有能上传的文件（都被别人改过）")
@@ -1526,6 +1547,11 @@ def _run_free(data: dict[str, Any]) -> dict[str, Any]:
                         if _shared_digest(dest) != item["dest_sha256"]:
                             raise _SharedVersionChanged
 
+                    if (data.get("pdf") or {}).get("only"):  # 只传 PDF：终点的 Excel 不动
+                        _progress(index, len(items), f"上传同名 PDF {item['rel']}")
+                        changes.update(_upload_pdf(item, dest, data["pdf"], pdf_claimed))
+                        _pdf_only_status(item)
+                        continue
                     try:
                         digest = copy_one(Path(item["_temp"]), dest, check_source_open=False, before_replace=verify_dest)
                     except _SharedVersionChanged:
@@ -1573,7 +1599,9 @@ def markdown_free(result: dict[str, Any]) -> str:
     for item in result.get("files", []):
         status = {"ok": "已上传", "conflict": "🛑 " + (item.get("error") or "别人改过，没有覆盖")}.get(
             item.get("status"), item.get("error") or "未上传")
-        if item.get("status") == "ok":
+        if item.get("pdf_only"):
+            status = "只传 PDF，Excel 没传" if item.get("status") == "ok" else status
+        elif item.get("status") == "ok":
             status += "（覆盖）" if item["action"] in ("overwrite", "confirm") else "（新建）"
         if item.get("prep"):
             status += f"（上传前：{upload_prep.text(item['prep'])}）"
@@ -1652,7 +1680,8 @@ def markdown(result: dict[str, Any]) -> str:
             lines.append(f"- 共享文件夹：`{result['dest_root']}`")
         lines += ["", "| 文件 | 结果 |", "| --- | --- |"]
         for item in result["files"]:
-            status = "已上传" if item.get("status") == "ok" else item.get("error") or "未上传"
+            status = (("只传 PDF，Excel 没传" if item.get("pdf_only") else "已上传") if item.get("status") == "ok"
+                      else item.get("error") or "未上传")
             if item.get("backup_path"):
                 status += f"（旧处理副本备份在 `{item['backup_path']}`）"
             if item.get("ref_backup_path"):

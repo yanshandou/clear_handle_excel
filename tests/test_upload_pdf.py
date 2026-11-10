@@ -139,5 +139,29 @@ class UploadPdfTests(unittest.TestCase):
         self.assertIn("同名 PDF x.pdf 已覆盖", distribute.markdown(result))
 
 
+    def test_pdf_only_leaves_excel_alone(self):
+        write(self.company / "a.pdf", "别人放的 PDF")
+        result = self.upload({**PDF_ON, "only": True})
+        self.assertEqual(read(self.company / "a.xlsx"), "A")  # Excel 不传
+        self.assertEqual(read(self.company / "a.pdf"), "别人放的 PDF")  # 没选覆盖
+        self.assertEqual(read(self.company / "sub" / "b.pdf"), "PDF of B fixed")
+        self.assertTrue(all(f["pdf_only"] and f["status"] == "ok" for f in result["files"]))
+        self.assertIn("只传 PDF，Excel 没传", distribute.markdown(result))
+        files = {f["rel"]: f for f in distribute.task_files(self.task["id"])["files"]}
+        self.assertFalse(files["a.xlsx"]["uploaded"])  # Excel 没记成已上传
+
+    def test_free_upload_pdf_only_needs_no_excel_confirm(self):
+        other = Path(self.tmp.name) / "中转"
+        write(other / "x.xlsx", "X")
+        dest = Path(self.tmp.name) / "终点"
+        write(dest / "x.xlsx", "终点原来的 Excel")
+        preview = distribute.preview_free(str(other), str(dest))
+        distribute.start_free(preview["id"], False, {**PDF_ON, "only": True})
+        result = self.wait()
+        self.assertEqual(read(dest / "x.xlsx"), "终点原来的 Excel")
+        self.assertEqual(read(dest / "x.pdf"), "PDF of X")
+        self.assertEqual(result["summary"]["PDF 已传"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

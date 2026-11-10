@@ -120,8 +120,14 @@
     .dist-alert.is-conflict { border-color: #d92d20; background: #fdeaea; color: #7a1a12; }
     /* 导出同名 PDF 并一起上传（用户 2026-11-10） */
     .dist-pdf-box { margin: 12px 0; padding: 12px 14px; border: 2px dashed #c4b5fd; border-radius: 12px; background: #fff; }
-    .dist-pdf-box > label { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; cursor: pointer; }
-    .dist-pdf-box > label input { width: 1.1rem; height: 1.1rem; accent-color: #7033b7; }
+    .dist-pdf-mode { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+    .dist-pdf-mode strong { margin-right: 4px; }
+    .dist-pdf-mode label { position: relative; cursor: pointer; }
+    .dist-pdf-mode input { position: absolute; opacity: 0; pointer-events: none; }
+    .dist-pdf-mode span { display: inline-block; padding: 6px 14px; border: 2px solid var(--outline); border-radius: 999px; background: #fff; color: var(--ink-2); font-weight: 700; }
+    .dist-pdf-mode input:checked + span { background: #7033b7; border-color: #4c1d95; color: #fff; }
+    .dist-pdf-mode input:focus-visible + span { outline: 3px solid #ffe45c; outline-offset: 2px; }
+    .dist-pdf-mode input:disabled + span { opacity: .6; cursor: not-allowed; }
     .dist-pdf-box.is-on { border-style: solid; border-color: #7033b7; background: #f8f4ff; }
     .dist-pdf-box .toolbar-hint { margin: 6px 0 0; }
     .dist-pdf-box .toolbar-hint a { color: #5b21b6; font-weight: 700; }
@@ -265,7 +271,12 @@
               <span id="distTaskFocusNote" class="toolbar-hint"></span>
             </div>
             <div id="distPdfBox" class="dist-pdf-box">
-              <label for="distPdfOn"><input id="distPdfOn" type="checkbox"> 📕 导出同名 PDF 并一起上传</label>
+              <div class="dist-pdf-mode" role="radiogroup" aria-labelledby="distPdfModeTitle">
+                <strong id="distPdfModeTitle">上传什么</strong>
+                <label><input type="radio" name="distPdfMode" value="excel" checked><span>📗 只传表格</span></label>
+                <label><input type="radio" name="distPdfMode" value="both"><span>📗+📕 表格和 PDF 一起</span></label>
+                <label><input type="radio" name="distPdfMode" value="pdf"><span>📕 只传 PDF</span></label>
+              </div>
               <p id="distPdfNote" class="toolbar-hint"></p>
             </div>
             <button id="distTaskUpload" class="button primary" type="button" disabled>检查并批量上传</button>
