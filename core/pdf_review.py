@@ -109,8 +109,11 @@ def _pdf_files(root: Path) -> list[Path]:
     """有 PDFS 文件夹就只看里面的（导出的 PDF 都在这）；没有的话（旧版本导出、和 Excel 混放的）看整个文件夹"""
     base = pdf_store.pdf_root(root)
     where = base if base.is_dir() else root
-    return sorted((p for p in where.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf"
-                   and not p.name.startswith(("~", "."))), key=lambda p: workbook_rel_name(p, where))
+    pdfs = [p for p in where.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf" and not p.name.startswith(("~", "."))]
+    if where == root:  # 「批量导出同名 PDF」放在 Excel 旁边的 aaa.pdf 是整本的，不是调整页面按表导出的，不列
+        from core import pdf_bundle
+        pdfs = [p for p in pdfs if not pdf_bundle.is_bundle_pdf(p)]
+    return sorted(pdfs, key=lambda p: workbook_rel_name(p, where))
 
 
 def list_pdfs(folder: str) -> dict:
