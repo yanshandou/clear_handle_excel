@@ -127,7 +127,7 @@
     save(PDF_ON, pdfMode());
     console.info('📕 上传什么', { excel: '只传表格', both: '表格和 PDF 一起', pdf: '只传 PDF' }[pdfMode()], pdfOptions());
     showPdfNote();
-    if (!loading) controls();  // 「选取前 N 个」按钮的说法跟着变
+    if (!loading) controls();  // 「全选待上传」按钮的说法跟着变
   });
   window.addEventListener('focus', showPdfNote);  // 在另一个标签页改了导出设置，回来就更新
   showPdfNote();
@@ -251,13 +251,16 @@
   function taskControls(busy) {
     const files = taskFiles.filter(file => selected.has(file.rel));
     const reviewCount = files.filter(file => file.review?.ready).length;
-    for (const id of ['distTaskCount', 'distTaskPickCount', 'distTaskClear', 'distTaskReload']) $(id).disabled = !!busy;
+    for (const id of ['distTaskPickWaiting', 'distTaskPickAll', 'distTaskClear', 'distTaskReload']) $(id).disabled = !!busy;
     for (const box of $('distTaskFiles').querySelectorAll('input[type="checkbox"]')) {
       box.disabled = !!busy;
       box.checked = selected.has(box.value);
     }
     $('distTaskSelection').textContent = `已选 ${files.length} / ${taskFiles.length} 个`;
-    $('distTaskPickCount').textContent = pdfMode() === 'pdf' ? '选取前 N 个还没传 PDF 的文件' : '选取前 N 个待上传文件';
+    const waitingCount = taskFiles.filter(waitingFilter()).length;
+    $('distTaskPickWaiting').textContent = `☑ 全选${pdfMode() === 'pdf' ? '还没传 PDF 的' : '待上传'}（${waitingCount} 个）`;
+    $('distTaskPickWaiting').disabled = !!busy || !waitingCount;
+    $('distTaskPickAll').textContent = `全选全部（${taskFiles.length} 个）`;
     $('distTaskUpload').disabled = !!busy || !files.length;
     $('distTaskUpload').textContent = reviewCount ? '确认重新处理完毕，再检查并上传' : '检查并批量上传';
   }
@@ -1026,15 +1029,22 @@
     else selected.delete(box.value);
     controls();
   });
-  $('distTaskPickCount').addEventListener('click', () => {
-    const input = $('distTaskCount');
-    if (!input.reportValidity() || !input.value) return;
+  // 用户 2026-11-10：不要「前 N 个」，要么全选、要么自己勾。整批会顺着跑完，选多少都不会卡住
+  // 只传 PDF：待上传 = 没传过 PDF，或传过之后 Excel 又传了新版；其他按 Excel 的当前版本传没传过
+  function waitingFilter() {
+    return pdfMode() === 'pdf' ? file => file.review || !file.pdf_uploaded_at || pdfStale(file)
+      : file => file.review || !file.uploaded_current;
+  }
+  $('distTaskPickWaiting').addEventListener('click', () => {
     selected.clear();
-    // 只传 PDF：按 PDF 挑（没传过 PDF，或传过之后 Excel 又传了新版）；其他按 Excel 挑
-    const waiting = taskFiles.filter(pdfMode() === 'pdf' ? file => file.review || !file.pdf_uploaded_at || pdfStale(file)
-      : file => file.review || !file.uploaded_current);
-    console.info('📋 按数量选取', { 按: pdfMode() === 'pdf' ? 'PDF 有没有传过' : 'Excel 有没有传过当前版本', 待上传: waiting.length });
-    for (const file of waiting.slice(0, input.valueAsNumber)) selected.add(file.rel);
+    const waiting = taskFiles.filter(waitingFilter());
+    for (const file of waiting) selected.add(file.rel);
+    console.info('☑ 全选待上传', { 按: pdfMode() === 'pdf' ? 'PDF 有没有传过' : 'Excel 有没有传过当前版本', 个数: waiting.length });
+    controls();
+  });
+  $('distTaskPickAll').addEventListener('click', () => {
+    for (const file of taskFiles) selected.add(file.rel);
+    console.info('☑ 全选全部', taskFiles.length);
     controls();
   });
   $('distTaskClear').addEventListener('click', () => { selected.clear(); controls(); });
