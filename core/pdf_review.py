@@ -750,6 +750,18 @@ def regen_status() -> dict:
         return {**_REGEN, "log": list(_REGEN.get("log") or [])}
 
 
+def _log_still_stale(root: Path, pdfs: list[Path], how: str) -> None:
+    """重新生成完马上再核对一遍：还被当成「Excel 改过」就写调试日志（详细原因 pdf_store 会写「🔍 Excel 改过判断」）"""
+    try:
+        stale = {str(Path(k).resolve()) for k in pdf_store.stale_pdfs(root, _fingerprint)}
+    except Exception as err:
+        debug_log.event("⚠️ 重新生成后核对失败", 方式=how, 错误=str(err))
+        return
+    left = sorted({p.name for p in pdfs if str(p.resolve()) in stale})
+    debug_log.event("❗ 重新生成后还是旧的" if left else "✅ 重新生成后核对：已是最新", 方式=how,
+                    还是旧的=left or "-", 核对=len(set(pdfs)))
+
+
 def regenerate(pdf: Any, force: Any = False) -> dict:
     """返回 {"started": True} 后台开始；{"unchanged": True} Excel 没改过（force=True 时不问）。网页轮询 regen_status()"""
     if not isinstance(pdf, str) or not pdf:
@@ -758,7 +770,9 @@ def regenerate(pdf: Any, force: Any = False) -> dict:
     if not _in_folder(path) or path.suffix.lower() != ".pdf":
         raise ValueError(f"「{path.name}」不在当前文件夹里或已经不在了，请重新加载 PDF")
     with wf.STATE_LOCK:
-        owner = _owner(path)
+        # 先按导出记录认：判断「Excel 改过」用的就是这份记录，重新生成也要改到同一条上
+        # （用户 2026-11-10：重新生成完刷新页面，「Excel 改过」标记还在）
+        owner = pdf_store.owner(path) or _owner(path)
         review_root = wf.STATE.get("pdf_review", {}).get("folder") or ""
     if not owner or not Path(owner["wb_path"]).is_file():
         raise ValueError(f"「{path.name}」找不到对应的 Excel 文件")
@@ -769,7 +783,9 @@ def regenerate(pdf: Any, force: Any = False) -> dict:
     label = workbook_rel_name(wb_path, root)
     digest = sheet_history.fingerprint(wb_path)
     same = pdf_store.unchanged(root, wb_path, digest)
-    debug_log.event("🔄 PDF 复检重新生成", 文件=label, 表=sheet or "整份", PDF=path.name, 哈希=digest[:12], 没变=same, 确认=bool(force))
+    debug_log.event("🔄 PDF 复检重新生成", 文件=label, 表=sheet or "整份", PDF=path.name, 哈希=digest[:12], 没变=same, 确认=bool(force),
+                    Excel=str(wb_path), 根目录=str(root), 记录里这张表的PDF=str(pdf_store.sheet_pdfs(root, wb_path).get(sheet, "没有")),
+                    工作台记的=str(_exports().get(str(path), {}).get("wb_path", "没有")))
     if same and force is not True:
         return {"started": False, "unchanged": True, "name": label}
     _start_regen(label, {"pdf": str(path), "wb_path": str(wb_path)},
@@ -783,6 +799,7 @@ def _regen_one(wb_path: Path, root: Path, label: str, sheet: str, path: Path) ->
     try:
         with debug_log.side_task("pdf_review_regen", {"folder": str(root), "file": label}):
             result.update(_regenerate_workbook(wb_path, root, label, sheet))
+            _log_still_stale(root, [path, *map(Path, result.get("pdfs") or [])], "重新生成")
             debug_log.event("✅ PDF 复检重新生成完成" if result["ok"] else "⚠️ PDF 复检重新生成没成功",
                             文件=label, PDF=len(result["pdfs"]), 原因=result["reason"] or "-")
     except Exception as err:
@@ -870,6 +887,7 @@ def refresh_stale(pdfs: Any) -> dict:
                     _REGEN.update(done=k, current=name, pdfs=[p for job in jobs[k:] for p in job[4]])
                 try:
                     one = _regenerate_workbook(wb_path, root, name, sheets)
+                    _log_still_stale(root, [Path(p) for p in mine], "打开页面自动更新")
                 except Exception as err:
                     debug_log.exception(err, f"调整页面自动重新导出 {name}")
                     one = {"ok": False, "pdfs": [], "reason": f"出错：{err}"}
