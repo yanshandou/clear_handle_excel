@@ -51,8 +51,8 @@ YYMMDD_SUFFIX_PATTERN = re.compile(r"(?<![a-zA-Z\d])\(?(\d{2})(\d{2})(\d{2})\)?[
 YYMMDD_PREFIX_PATTERN = re.compile(r"^[\s_\-・.]*\(?(\d{2})(\d{2})(\d{2})\)?(?![a-zA-Z\d])[\s_\-・.]*")
 # 工具自动生成的工作表（如 自動生成_引数、自動生成_JSON），没有对应原表，精简 Sheet 时默认删除
 AUTO_GENERATED_PREFIXES = ("自動生成", "自动生成")
-# 精简 Sheet 默认删除的固定表名（用户 2026-11-10：「変更履歴」表要删）；忽略前后空格、全角半角和 ❓ 待定前缀，
-# 只认完整名字，「変更履歴一覧」「変更履歴_20220101」这类照其他规则处理
+# 精简 Sheet 默认删除的固定表名（用户 2026-11-10：「変更履歴」表要删）；忽略空格、全角半角和 ❓ 待定前缀，
+# 带日期等备份标记的（変更履歴_20220101）没有原表也删；「変更履歴一覧」这类多出别的字的不算
 CLEAN_EXACT_NAMES = {"変更履歴"}
 # 表名多出的英文词里像临时版本的（サンプル 与 サンプルtest 仍标待定），其余英文词（JSON、CSV、PDF…）算另一张表
 ENGLISH_TEMP_WORDS = {
@@ -299,8 +299,8 @@ def is_auto_generated_sheet(sheet_name: str) -> bool:
 
 
 def is_clean_exact_name_sheet(sheet_name: str) -> bool:
-    """名字正好是「変更履歴」的表（忽略前后空格、全角半角与 ❓ 待定前缀）"""
-    return unicodedata.normalize("NFKC", strip_uncertain_prefix(sheet_name)).strip() in CLEAN_EXACT_NAMES
+    """名字是「変更履歴」的表，或去掉日期、bak 这类备份标记后是「変更履歴」的表（如 変更履歴_20220101，不需要原表）"""
+    return _original_name_of(strip_uncertain_prefix(sheet_name)) in {_comparable_name(n) for n in CLEAN_EXACT_NAMES}
 
 
 def _new_old_key(sheet_name: str) -> tuple[str, str] | None:

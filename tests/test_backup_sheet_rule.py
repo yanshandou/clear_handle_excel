@@ -23,10 +23,12 @@ class BackupMarkerTests(unittest.TestCase):
         # 用户 2026-11-10：表名是「変更履歴」的也删；前后空格、全角半角、❓ 前缀都算，不需要原表
         for name in ["変更履歴", " 変更履歴 ", "　変更履歴", "❓変更履歴"]:
             self.assertEqual(find_clean_targets(["概要", name]), [name], name)
-        # 只认完整名字：多出别的字的不算（带日期且有原表时照日期备份规则删）
-        self.assertEqual(find_clean_targets(["概要", "変更履歴一覧", "変更履歴書", "画面変更履歴"]), [])
+        # 带日期等备份标记的没有原表也删（用户 2026-11-10 定）
+        for name in ["変更履歴_20220101", "20220101変更履歴", "変更履歴(2022-01-01)", "変更履歴_170120", "変更履歴_bak"]:
+            self.assertEqual(find_clean_targets(["概要", name]), [name], name)
         self.assertEqual(find_clean_targets(["概要", "変更履歴", "変更履歴_20220101"]), ["変更履歴", "変更履歴_20220101"])
-        self.assertEqual(find_clean_targets(["概要", "変更履歴_20220101"]), [])
+        # 多出别的字的不算
+        self.assertEqual(find_clean_targets(["概要", "変更履歴一覧", "変更履歴書", "画面変更履歴"]), [])
         # 导出 PDF 的备份规则不受影响（変更履歴 在导出时另有跳过名单）
         self.assertEqual(find_backup_sheets(["概要", "変更履歴"]), [])
 
