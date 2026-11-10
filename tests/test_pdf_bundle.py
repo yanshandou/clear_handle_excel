@@ -49,6 +49,8 @@ class Sheet:
         self.PageSetup = Setup()
         self.UsedRange = Used(1, "") if blank else Used(20, None)
         self.exported = []
+        self.Cells = type("C", (), {})()
+        self.Cells.FormatConditions = Rules()
 
     @property
     def Visible(self):
@@ -65,9 +67,30 @@ class Sheet:
         write_pdf(kw["Filename"], self.pages)
 
 
+class Rule:
+    def __init__(self, formula, rules):
+        self.Formula1, self.rules = formula, rules
+
+    def Delete(self):
+        self.rules.items.remove(self)
+
+
+class Rules:
+    def __init__(self, formulas=()):
+        self.items = [Rule(f, self) for f in formulas]
+
+    @property
+    def Count(self):
+        return len(self.items)
+
+    def Item(self, i):
+        return self.items[i - 1]
+
+
 class Book:
     def __init__(self, sheets):
         self.Sheets = sheets
+        self.Worksheets = sheets
         self.closed_with = None
 
     def Close(self, SaveChanges):
@@ -159,6 +182,14 @@ class BundleTest(unittest.TestCase):
         self.assertEqual([setup.LeftHeader, setup.RightHeader, setup.CenterFooter, setup.FirstPage.LeftHeader.Text], [""] * 4)
         self.assertFalse(setup.PrintHeadings)
         self.assertEqual(result["headers_cleared"], 5)
+
+    def test_tool_marks_removed_in_memory_user_rules_kept(self):
+        sheet = Sheet("仕様")
+        sheet.Cells.FormatConditions = Rules(['=N("CHE_MARK_deadbeef")=0', '=$A1>100', '=N("CHE_MARK_beef01")=0'])
+        _path, result = self.export("marks.xlsx", [sheet])
+        self.assertEqual(result["marks_cleared"], 2)
+        self.assertEqual(result["marks_failed"], [])
+        self.assertEqual([r.Formula1 for r in sheet.Cells.FormatConditions.items], ["=$A1>100"])  # 用户自己的规则不动
 
     def test_options_validated(self):
         self.assertEqual(pdf_bundle.options_for(None), {"include_hidden": False, "skip_sheets": ["変更履歴"], "no_header_footer": True})
