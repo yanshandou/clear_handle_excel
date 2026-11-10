@@ -48,7 +48,7 @@
         <label class="bundle-skip-field" for="bundleSkip">表名是这些的不放进 PDF（一行一个，也可以用逗号、顿号隔开；不分全角半角、大小写）
           <textarea id="bundleSkip" rows="3" spellcheck="false" placeholder="例如&#10;変更履歴&#10;メモ"></textarea></label>
         <p class="toolbar-hint bundle-skip-note"><span id="bundleSkipCount"></span><button type="button" id="bundleSkipReset" class="btn btn-outline btn-sm">恢复默认（変更履歴）</button></p>
-        <label><input id="bundleNoHeader" type="checkbox" checked> 去掉页眉页脚（每页上下重复的公司名、页码、表名等；导出时临时去掉，Excel 本身不改）</label>
+        <label><input id="bundleNoHeader" type="checkbox" checked> 去掉页眉页脚和打印的行号列标（每页重复的公司名、页码、Copyright、A B C / 1 2 3 等，会干扰 AI 读表；导出时临时去掉，Excel 本身不改）</label>
         <label><input id="bundleHidden" type="checkbox"> 隐藏的工作表也放进 PDF（不勾就跳过；勾了会临时显示出来导出，Excel 本身不改）</label>
       </fieldset>
       <div class="link-actions"><button id="bundleRun" class="btn btn-primary" type="button" disabled>📕 批量导出同名 PDF</button></div>

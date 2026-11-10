@@ -39,6 +39,7 @@ class Setup:
         self.FirstPage = type("H", (), {k: Part() for k in
                                         ["LeftHeader", "CenterHeader", "RightHeader", "LeftFooter", "CenterFooter", "RightFooter"]})()
         self.FirstPage.LeftHeader = Part("表紙だけ")
+        self.PrintHeadings = True
 
 
 class Sheet:
@@ -156,7 +157,8 @@ class BundleTest(unittest.TestCase):
         _, result = self.export("h.xlsx", [cleared], no_header=True)
         setup = cleared.PageSetup
         self.assertEqual([setup.LeftHeader, setup.RightHeader, setup.CenterFooter, setup.FirstPage.LeftHeader.Text], [""] * 4)
-        self.assertEqual(result["headers_cleared"], 4)
+        self.assertFalse(setup.PrintHeadings)
+        self.assertEqual(result["headers_cleared"], 5)
 
     def test_options_validated(self):
         self.assertEqual(pdf_bundle.options_for(None), {"include_hidden": False, "skip_sheets": ["変更履歴"], "no_header_footer": True})

@@ -91,7 +91,7 @@ _HEADER_FOOTER = ("LeftHeader", "CenterHeader", "RightHeader", "LeftFooter", "Ce
 
 
 def _clear_header_footer(sheet: Any) -> int:
-    """导出前临时清掉页眉页脚（公司名、页码、表名……每页重复的字，用户 2026-11-10 要去掉）。
+    """导出前临时清掉页眉页脚（公司名、页码、表名……每页重复的字，用户 2026-11-10 要去掉）和打印的行号列标。
     只读打开、关闭时不保存，Excel 原文件不变。返回清掉了几处；读不到 PageSetup 的（极少见）不管"""
     cleared = 0
     try:
@@ -105,6 +105,12 @@ def _clear_header_footer(sheet: Any) -> int:
                 cleared += 1
         except Exception as err:
             debug_log.event("⚠️ 页眉页脚清不掉", 表=str(getattr(sheet, "Name", "?")), 位置=prop, 错误=str(err))
+    try:  # 「打印行号列标」：每页边上印 A B C… / 1 2 3…，对 AI 也是干扰
+        if setup.PrintHeadings:
+            setup.PrintHeadings = False
+            cleared += 1
+    except Exception:
+        pass
     for page in ("FirstPage", "EvenPage"):  # 「首页不同」「奇偶页不同」时另有一套
         try:
             holder = getattr(setup, page)
