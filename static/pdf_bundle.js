@@ -6,12 +6,14 @@
   const FOLDER = 'clear_handle_excel.lastFolder';
   const HIDDEN = 'clear_handle_excel.pdfBundleHidden';
   const SKIP = 'clear_handle_excel.pdfBundleSkip';
+  const NO_HEADER = 'clear_handle_excel.pdfBundleNoHeader';
   const DEFAULT_SKIP = '変更履歴';
   const LABEL = '📕 批量导出同名 PDF';
   let latest = {}, loading = true, submitting = false, timer = 0, initial = true, wasRunning = false;
   try {
     $('bundleFolder').value = localStorage.getItem(FOLDER) || '';
     $('bundleHidden').checked = localStorage.getItem(HIDDEN) === '1';
+    $('bundleNoHeader').checked = localStorage.getItem(NO_HEADER) !== '0';
   } catch (_) {}
   let savedSkip = null;
   try { savedSkip = localStorage.getItem(SKIP); } catch (_) {}
@@ -32,7 +34,7 @@
 
   function controls() {
     const busy = loading || submitting || latest.running;
-    for (const id of ['bundleFolder', 'bundleHidden', 'bundleSkip', 'bundleSkipReset', 'bundleRun']) $(id).disabled = !!busy;
+    for (const id of ['bundleFolder', 'bundleHidden', 'bundleNoHeader', 'bundleSkip', 'bundleSkipReset', 'bundleRun']) $(id).disabled = !!busy;
     $('bundleRun').textContent = submitting || latest.running ? '正在导出…' : LABEL;
   }
 
@@ -80,6 +82,7 @@
     if (!result) { $('bundleResults').innerHTML = '<p>尚未开始。</p>'; $('bundleResultFolder').textContent = ''; return; }
     const skipList = result.options?.skip_sheets || [];
     $('bundleResultFolder').textContent = `文件夹：${result.folder}${result.options?.include_hidden ? ' · 包含隐藏表' : ' · 跳过隐藏表'}`
+      + `${result.options?.no_header_footer === false ? ' · 保留页眉页脚' : ' · 去掉页眉页脚'}`
       + ` · 不打印：${skipList.length ? skipList.join('、') : '无'}`;
     const files = result.files || [];
     const ok = files.filter(f => !f.error), bad = files.filter(f => f.error);
@@ -114,6 +117,7 @@
         if (latest.folder) $('bundleFolder').value = latest.folder;
         if (latest.options) {
           $('bundleHidden').checked = !!latest.options.include_hidden;
+          $('bundleNoHeader').checked = latest.options.no_header_footer !== false;
           if (latest.running && Array.isArray(latest.options.skip_sheets)) $('bundleSkip').value = latest.options.skip_sheets.join('\n');
         }
       }
@@ -135,23 +139,24 @@
     const folder = $('bundleFolder').value.trim();
     const includeHidden = $('bundleHidden').checked;
     const skip = skipNames();
+    const noHeader = $('bundleNoHeader').checked;
     $('bundleError').textContent = '';
     if (!folder) { $('bundleError').textContent = '请填写 Excel 文件夹'; return; }
     const okGo = await window.appConfirm(
       `要把这个文件夹（含子文件夹）里的每份 Excel 都导出成同名 PDF，放在 Excel 旁边吗？\n\n${folder}\n\n`
-      + `· 已有的同名 PDF 会被覆盖\n· 不打印的表：${skip.length ? skip.join('、') : '无（所有表都打印）'}\n· 隐藏的工作表：${includeHidden ? '也放进 PDF' : '跳过'}\n· Excel 只读打开，不会被改动`,
+      + `· 已有的同名 PDF 会被覆盖\n· 不打印的表：${skip.length ? skip.join('、') : '无（所有表都打印）'}\n· 页眉页脚：${noHeader ? '去掉' : '保留'}\n· 隐藏的工作表：${includeHidden ? '也放进 PDF' : '跳过'}\n· Excel 只读打开，不会被改动`,
       { title: '批量导出同名 PDF', okText: '开始导出' });
     if (!okGo) return;
     submitting = true; controls();
-    console.info('📕 批量导出同名 PDF 开始', { 文件夹: folder, 包含隐藏表: includeHidden, 不打印的表: skip });
+    console.info('📕 批量导出同名 PDF 开始', { 文件夹: folder, 包含隐藏表: includeHidden, 不打印的表: skip, 去掉页眉页脚: noHeader });
     try {
       const response = await fetch(API + '/run', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folder, options: { include_hidden: includeHidden, skip_sheets: skip } }),
+        body: JSON.stringify({ folder, options: { include_hidden: includeHidden, skip_sheets: skip, no_header_footer: noHeader } }),
       });
       const result = await response.json();
       if (!response.ok || !result.ok) throw Error(result.error || '操作失败');
-      try { localStorage.setItem(FOLDER, folder); localStorage.setItem(HIDDEN, includeHidden ? '1' : ''); } catch (_) {}
+      try { localStorage.setItem(FOLDER, folder); localStorage.setItem(HIDDEN, includeHidden ? '1' : ''); localStorage.setItem(NO_HEADER, noHeader ? '1' : '0'); } catch (_) {}
       wasRunning = true;
     } catch (error) {
       console.warn('📕 批量导出同名 PDF 没能开始', error.message);

@@ -5,6 +5,7 @@
 - 打印设置一律按 Excel 现有的（打印区域、缩放、横竖、分页），只读打开、不改不存 Excel。
 - 每张表先单独导出成临时 PDF 再用 PyMuPDF 拼起来：整本一次导出时，各表打印质量不同 Excel 会拆成几份 PDF。
 - 跳过名单里的表（默认 変更履歴，网页上可改，比较时不管全角半角、大小写、前后空格）不放进 PDF。
+- 默认去掉页眉页脚（公司名、页码等每页重复的字，用户 2026-11-10 要），网页上可以不去。
 - 完全空白的表（没内容、没图形）Excel 没东西可印，跳过并在结果里写明。
 
 和「调整页面」的 PDF（根目录/PDFS、按表一份、哈希沿用）完全分开，互不影响。
@@ -29,7 +30,7 @@ from core.excel_ops import open_workbook_checked, quit_background_excel, start_b
 _LOCK = threading.RLock()
 _STATUS: dict[str, Any] = {"running": False}
 DEFAULT_SKIP_SHEETS = ["変更履歴"]  # 不用打印的表（用户 2026-11-10 要），网页上可以改
-DEFAULT_OPTIONS = {"include_hidden": False, "skip_sheets": DEFAULT_SKIP_SHEETS}
+DEFAULT_OPTIONS = {"include_hidden": False, "skip_sheets": DEFAULT_SKIP_SHEETS, "no_header_footer": True}
 MAX_SKIP_NAMES = 200
 
 
@@ -37,8 +38,9 @@ def options_for(options: dict | None = None) -> dict:
     if options is not None and not isinstance(options, dict):
         raise ValueError("导出选项格式不正确")
     result = {**DEFAULT_OPTIONS, **(options or {})}
-    if set(result) != set(DEFAULT_OPTIONS) or type(result["include_hidden"]) is not bool:
-        raise ValueError("导出选项只能选是否包含隐藏表、跳过哪些表")
+    if (set(result) != set(DEFAULT_OPTIONS) or type(result["include_hidden"]) is not bool
+            or type(result["no_header_footer"]) is not bool):
+        raise ValueError("导出选项只能选是否包含隐藏表、跳过哪些表、去不去页眉页脚")
     names = result["skip_sheets"]
     if not isinstance(names, list) or len(names) > MAX_SKIP_NAMES or any(not isinstance(n, str) for n in names):
         raise ValueError("跳过的表名格式不正确")
@@ -85,6 +87,46 @@ def _sheet_blank(sheet: Any) -> bool:
         return False  # 图表页等读不到 UsedRange 的照常导出
 
 
+_HEADER_FOOTER = ("LeftHeader", "CenterHeader", "RightHeader", "LeftFooter", "CenterFooter", "RightFooter")
+
+
+def _clear_header_footer(sheet: Any) -> int:
+    """导出前临时清掉页眉页脚（公司名、页码、表名……每页重复的字，用户 2026-11-10 要去掉）和打印的行号列标。
+    只读打开、关闭时不保存，Excel 原文件不变。返回清掉了几处；读不到 PageSetup 的（极少见）不管"""
+    cleared = 0
+    try:
+        setup = sheet.PageSetup
+    except Exception:
+        return 0
+    for prop in _HEADER_FOOTER:
+        try:
+            if str(getattr(setup, prop) or ""):
+                setattr(setup, prop, "")
+                cleared += 1
+        except Exception as err:
+            debug_log.event("⚠️ 页眉页脚清不掉", 表=str(getattr(sheet, "Name", "?")), 位置=prop, 错误=str(err))
+    try:  # 「打印行号列标」：每页边上印 A B C… / 1 2 3…，对 AI 也是干扰
+        if setup.PrintHeadings:
+            setup.PrintHeadings = False
+            cleared += 1
+    except Exception:
+        pass
+    for page in ("FirstPage", "EvenPage"):  # 「首页不同」「奇偶页不同」时另有一套
+        try:
+            holder = getattr(setup, page)
+        except Exception:
+            continue
+        for prop in _HEADER_FOOTER:
+            try:
+                part = getattr(holder, prop)
+                if str(part.Text or ""):
+                    part.Text = ""
+                    cleared += 1
+            except Exception:
+                pass
+    return cleared
+
+
 def _export_sheet(sheet: Any, target: Path) -> None:
     sheet.ExportAsFixedFormat(
         Type=XL_TYPE_PDF, Filename=str(target), Quality=0, IncludeDocProperties=True,
@@ -93,12 +135,13 @@ def _export_sheet(sheet: Any, target: Path) -> None:
 
 
 def export_workbook(excel: Any, wb_path: Path, include_hidden: bool, on_sheet=None,
-                    skip_sheets: list[str] | None = None) -> dict:
+                    skip_sheets: list[str] | None = None, no_header_footer: bool = False) -> dict:
     """导出一份 Excel 成一份 PDF。返回 {pdf, sheets, pages, skipped:[{sheet, reason}]}"""
     target = pdf_path_for(wb_path)
     tmp_dir = Path(tempfile.mkdtemp(prefix="pdf_bundle_"))
     skipped: list[dict] = []
     skip_keys = {sheet_key(n) for n in skip_sheets or []}
+    headers_cleared = 0
     parts: list[tuple[str, Path]] = []
     wb = open_workbook_checked(excel, str(wb_path.resolve()), ReadOnly=True, UpdateLinks=0)
     try:
@@ -122,6 +165,10 @@ def export_workbook(excel: Any, wb_path: Path, include_hidden: bool, on_sheet=No
             if _sheet_blank(sheet):
                 skipped.append({"sheet": name, "reason": "空白表，没有可打印的内容"})
                 continue
+            if no_header_footer:
+                cleared = _clear_header_footer(sheet)
+                if cleared:
+                    headers_cleared += cleared
             part = tmp_dir / f"{index:04d}.pdf"
             _export_sheet(sheet, part)
             if not part.is_file():
@@ -157,7 +204,10 @@ def export_workbook(excel: Any, wb_path: Path, include_hidden: bool, on_sheet=No
             raise PermissionError(f"{target.name} 正被别的程序打开（PDF 阅读器？），关掉后点「重试」：{err}") from err
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
-    return {"pdf": str(target), "sheets": [n for n, _ in parts], "pages": pages, "skipped": skipped}
+    if headers_cleared:
+        debug_log.event("🧹 导出时去掉页眉页脚", 文件=wb_path.name, 处=headers_cleared)
+    return {"pdf": str(target), "sheets": [n for n, _ in parts], "pages": pages, "skipped": skipped,
+            "headers_cleared": headers_cleared}
 
 
 def _run(root: Path, paths: list[Path], options: dict) -> None:
@@ -189,7 +239,8 @@ def _run(root: Path, paths: list[Path], options: dict) -> None:
                         with _LOCK:
                             progress_log.step(_STATUS, f"正在导出第 {i} / {total} 张表：{sheet}")
 
-                    entry.update(export_workbook(excel, path, options["include_hidden"], on_sheet, options["skip_sheets"]))
+                    entry.update(export_workbook(excel, path, options["include_hidden"], on_sheet, options["skip_sheets"],
+                                                 options["no_header_footer"]))
                     claimed[target] = name
                 except Exception as error:
                     debug_log.exception(error, f"批量导出同名 PDF {name}")
