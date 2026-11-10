@@ -50,11 +50,10 @@
 }
 
 /* ---------- 背景：紫色渐变 + 底部暖橙云朵（固定在窗口上，不随内容走、不挡点击） ---------- */
+/* 背景画在 html 上：整页画布都铺满。以前画在 body 上，页面最后一块的下外边距会
+   「漏」到 body 外面，底部露出一条纯深紫色（主页「更多工具」下面那条）。 */
 html {
-  background: #4a1fae;
-}
-
-body {
+  min-height: 100%;
   background-color: #5a2bc4;
   background-image:
     radial-gradient(ellipse 130px 75px at 3% 100%, #fff1d6 0 97%, transparent 100%),
@@ -68,6 +67,10 @@ body {
   background-size: 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 26px 26px, 100% 100%;
   background-repeat: no-repeat, no-repeat, no-repeat, no-repeat, no-repeat, no-repeat, repeat, no-repeat;
   background-attachment: fixed;
+}
+
+body {
+  background: transparent;
 }
 
 /* 云朵画在背景图层里（固定在窗口底部），不另加元素 */
