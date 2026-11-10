@@ -1392,15 +1392,16 @@ def _export_sheet_pdf_raw(sheet: Any, pdf_path: Path, pages: tuple[int, int] | N
     page_fill.force_one_page_wide(sheet)
     span = {"From": pages[0], "To": pages[1]} if pages else {}
     scan_analysis.count("pdf_exports")
-    sheet.ExportAsFixedFormat(
-        Type=XL_TYPE_PDF,
-        Filename=str(pdf_path.resolve()),
-        Quality=0,
-        IncludeDocProperties=True,
-        IgnorePrintAreas=False,
-        OpenAfterPublish=False,
-        **span,
-    )
+    with print_frames.hidden_frames(sheet):  # 整段外面的空心大框不印（用户 2026-11-10 要），导完放回
+        sheet.ExportAsFixedFormat(
+            Type=XL_TYPE_PDF,
+            Filename=str(pdf_path.resolve()),
+            Quality=0,
+            IncludeDocProperties=True,
+            IgnorePrintAreas=False,
+            OpenAfterPublish=False,
+            **span,
+        )
 
 
 _export_sheet_pdf = print_layout.with_layout(_export_sheet_pdf_raw)
