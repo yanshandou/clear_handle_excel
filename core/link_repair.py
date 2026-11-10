@@ -221,6 +221,7 @@ def apply_file(excel: Any, file: dict) -> list[dict]:
                 raise ValueError(f"{item['sheet']}!{item['addr']} 修复后仍然报错，本文件没有保存")
         if changed:
             book.Save()
+            debug_log.saved_excel("修复引用错误", path)
     finally:
         book.Close(SaveChanges=False)
     return results

@@ -190,6 +190,7 @@ def clear_file(excel: Any, file: dict) -> list[dict]:
                 raise ValueError(f"{hit['sheet']}!{hit['anchor']} 清除校验失败，本文件没有保存")
             results.append({**hit, "status": "ok", "reason": "已删除超链接并清空内容"})
         book.Save()
+        debug_log.saved_excel("排查 BL", path)
     finally:
         book.Close(SaveChanges=False)
     return results
