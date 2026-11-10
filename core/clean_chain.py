@@ -60,17 +60,25 @@ def _save() -> None:
         debug_log.event("⚠️ 自动检查结果没能存进数据库", 原因=str(err))
 
 
+OPTIONAL_STEPS = ("bl", "links", "hidden", "font")  # 网页上能勾掉的几步；hidden 默认不做，其他默认做
+
+
 def options_from(payload: Any) -> dict | None:
-    """网页传来的 chain：{"hidden": bool, "old_folder": str}；没传就不自动检查（旧页面、单项调用）"""
+    """网页传来的 chain：{"hidden": bool, "old_folder": str, "bl"/"links"/"font": bool}；没传就不自动检查（旧页面、单项调用）。
+    主页工具箱的精简卡上可以勾「顺便做」哪几项（用户 2026-11-10 要）；旧页面没传 bl/links/font 时照旧都做"""
     if payload is None:
         return None
     if not isinstance(payload, dict):
         raise ValueError("自动检查选项格式不正确")
-    hidden = payload.get("hidden", False)
     old_folder = payload.get("old_folder", "")
-    if type(hidden) is not bool or not isinstance(old_folder, str):
+    flags = {key: payload.get(key, key != "hidden") for key in OPTIONAL_STEPS}
+    if not isinstance(old_folder, str) or any(type(value) is not bool for value in flags.values()):
         raise ValueError("自动检查选项格式不正确")
-    return {"hidden": hidden, "old_folder": old_folder.strip().strip('"').strip("'")}
+    return {**flags, "old_folder": old_folder.strip().strip('"').strip("'")}
+
+
+def _enabled(chain: dict, key: str) -> bool:
+    return bool(chain.get(key, key != "hidden"))
 
 
 def status() -> dict:
@@ -101,8 +109,9 @@ def prepare(folder: str, chain: dict) -> None:
                        steps=[{"key": key, "label": label, "state": "waiting", "text": "等精简 Sheet 做完",
                                "fixed": 0, "problems": [], "problem_total": 0, "error_total": 0}
                               for key, label in STEPS])
-        if not chain.get("hidden"):
-            _step("hidden").update(state="off", text="这次没勾选")
+        for key in OPTIONAL_STEPS:
+            if not _enabled(chain, key):
+                _step(key).update(state="off", text="这次没勾选")
         _save()
 
 
@@ -275,11 +284,14 @@ def run(folder: str, chain: dict) -> None:
         _STATUS["stage"] = "chain"
         _save()
     old_folder = chain.get("old_folder", "")
-    with debug_log.side_task("clean_chain", {"folder": folder, "old_folder": old_folder, "hidden": chain.get("hidden")}):
+    with debug_log.side_task("clean_chain", {"folder": folder, "old_folder": old_folder,
+                                              **{key: _enabled(chain, key) for key in OPTIONAL_STEPS}}):
         for key, work in (("bl", lambda: _run_bl(folder)),
                           ("links", lambda: _run_links(folder, old_folder)),
-                          ("hidden", lambda: _run_hidden(folder, old_folder) if chain.get("hidden") else None),
+                          ("hidden", lambda: _run_hidden(folder, old_folder)),
                           ("font", lambda: _run_font(folder))):
+            if not _enabled(chain, key):
+                continue
             try:
                 work()
             except Exception as err:  # 一步出错不影响后面几步

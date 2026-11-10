@@ -102,8 +102,9 @@
     const note = running ? '这几步不用再点，做完会在这里写结果。关掉网页也会继续。'
       : bad || warn ? '改不了、出错的都列在下面，点文件名可以用 Excel 打开跳到那一格。没问题的已经直接改好保存了。'
       : '没有要人工处理的地方。';
+    const flowNext = window.Flow?.nextAfter('clean') || { title: '调整页面', url: '/?task=export_pdf' }; // 本次流程里精简后面那一步
     const next = running ? '' : `<div class="chain-next">
-        <a class="btn btn-primary next-step-btn" href="/?task=export_pdf">下一步：调整页面 ➜</a></div>`;
+        <a class="btn btn-primary next-step-btn" href="${esc(flowNext.url)}">下一步：${esc(flowNext.title)} ➜</a></div>`;
     const html = `<div class="chain-head"><h3>🤖 ${esc(title)}</h3><p>${esc(note)}</p></div>
       <ol class="chain-steps">${data.steps.map(stepHtml).join('')}</ol>${next}`;
     // 轮询时内容不变就不重建，免得打断点开的列表和选中复制

@@ -446,6 +446,7 @@ function lastFolder() {
 }
 
 async function refreshDoneMarks() {
+  window.HomeToolbox?.reload(); // 切换了任务（处理文件夹变了）就换成那个任务自己的流程
   const folder = lastFolder();
   let done = {};
   if (folder) {
@@ -456,7 +457,6 @@ async function refreshDoneMarks() {
       return; // 读不到就保持原样，不影响使用
     }
   }
-  let doneCount = 0;
   document.querySelectorAll('.route-stop[data-ops]').forEach(stop => {
     const entries = stop.dataset.ops.split(' ').map(k => done[k]).filter(Boolean);
     const mark = stop.querySelector('.route-done');
@@ -478,11 +478,13 @@ async function refreshDoneMarks() {
     mark.title = label;
     mark.setAttribute('aria-label', label);
     stop.classList.add('is-done');
-    if (completed) doneCount += 1;
   });
   const note = document.getElementById('routeDoneNote');
+  const flowStops = [...document.querySelectorAll('.route-stop.in-flow')];
+  const flowDone = flowStops.filter(stop => stop.classList.contains('is-done') && !stop.querySelector('.route-done.is-warn')).length;
   note.classList.toggle('hidden', !folder);
-  note.textContent = folder ? `✓ 表示在「${folder}」里已经做过（${doneCount} / ${document.querySelectorAll('.route-stop[data-ops]').length} 步）` : '';
+  note.textContent = folder ? `✓ 表示在「${folder}」里已经做过（本次流程 ${flowDone} / ${flowStops.length} 步）` : '';
+  window.HomeToolbox?.renderRoad();
   note.title = folder;
 }
 
@@ -492,4 +494,5 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) refreshDoneMarks();
 });
 pollState();
-if (new URLSearchParams(location.search).get('task') === 'export_pdf') openTask('export_pdf');
+const startTaskKind = new URLSearchParams(location.search).get('task');
+if (TASKS[startTaskKind]) openTask(startTaskKind); // 流程「下一步」到调整页面 / 视图标准化：打开对应对话框

@@ -134,6 +134,15 @@ class CleanChainTests(unittest.TestCase):
         self.assertEqual(steps["hidden"]["state"], "skipped")
         self.assertEqual(self.links.calls, [])
 
+    def test_unticked_steps_are_not_run(self):
+        clean_chain.prepare("/x", {"bl": False, "links": True, "hidden": False, "font": False, "old_folder": "/ref"})
+        self.assertEqual(self.steps()["bl"]["state"], "off")
+        clean_chain.run("/x", {"bl": False, "links": True, "hidden": False, "font": False, "old_folder": "/ref"})
+        steps = self.steps()
+        self.assertEqual((self.bl_start.calls, self.font.calls), ([], []))
+        self.assertEqual((steps["bl"]["state"], steps["font"]["state"]), ("off", "off"))
+        self.assertEqual(steps["links"]["fixed"], 1)
+
     def test_no_bl_hits_skips_clear(self):
         self.bl_start.result = {"folder": "/x", "files": [{"name": "a.xlsx", "path": "/x/a.xlsx", "hits": [], "error": None}]}
         clean_chain.run("/x", {"hidden": False, "old_folder": "/ref"})
@@ -158,8 +167,9 @@ class CleanChainTests(unittest.TestCase):
     def test_options_and_prepare_guard(self):
         self.assertIsNone(clean_chain.options_from(None))
         self.assertEqual(clean_chain.options_from({"hidden": True, "old_folder": ' "D:\\参考" '}),
-                         {"hidden": True, "old_folder": "D:\\参考"})
-        for bad in ("x", {"hidden": "yes"}, {"old_folder": 1}):
+                         {"bl": True, "links": True, "hidden": True, "font": True, "old_folder": "D:\\参考"})
+        self.assertEqual(clean_chain.options_from({"bl": False, "font": False})["bl"], False)
+        for bad in ("x", {"hidden": "yes"}, {"old_folder": 1}, {"bl": 0}):
             with self.assertRaises(ValueError):
                 clean_chain.options_from(bad)
         clean_chain.prepare("/x", {"hidden": False, "old_folder": ""})

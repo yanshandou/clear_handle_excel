@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/theme.css"><script src="/static/game_fx.js"></script>
   <link rel="stylesheet" href="/static/theme-casual.css">
+  <link rel="stylesheet" href="/static/flow.css?v=1"><script src="/static/flow.js?v=1"></script>
 </head>
 <body>
   <header class="app-header">
@@ -126,8 +127,11 @@
           <button type="button" class="btn btn-outline btn-sm preview-reset-btn" onclick="resetSheetDecisions()" title="恢复为系统自动识别的初始标记状态">
             ↺ 恢复默认
           </button>
-          <label class="clean-hidden-toggle" title="对照参考文件夹，把被显示出来的隐藏工作表、隐藏列、超窄列恢复回去">
-            <input type="checkbox" id="cleanHiddenToggle"> 做完后也修复隐藏页</label>
+          <span class="clean-chain-toggles" title="精简做完后接着自动做的几项；主页精简卡上的「顺便做」也是这几个勾">做完后顺便做：
+            <label class="clean-hidden-toggle"><input type="checkbox" data-chain="bl"> BL 超链接</label>
+            <label class="clean-hidden-toggle"><input type="checkbox" data-chain="links"> 引用错误</label>
+            <label class="clean-hidden-toggle" title="对照参考文件夹，把被显示出来的隐藏工作表、隐藏列、超窄列恢复回去"><input type="checkbox" data-chain="hidden" id="cleanHiddenToggle"> 隐藏页</label>
+            <label class="clean-hidden-toggle"><input type="checkbox" data-chain="font"> 统一字体</label></span>
           <button type="button" class="btn btn-primary" id="execBtn" onclick="startTask()">🧹 执行</button>
         </div>
       </div>
