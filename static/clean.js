@@ -2,7 +2,6 @@
 const CLEAN_KIND = 'clean_sheets';
 const FOLDER_STORAGE_KEY = 'clear_handle_excel.lastFolder';
 const OLD_FOLDER_STORAGE_KEY = 'clear_handle_excel.oldFolder'; // 和修复引用 / 隐藏页 / 颜色页共用
-const HIDDEN_STORAGE_KEY = 'clear_handle_excel.cleanHidden'; // 「做完后也修复隐藏页」上次勾没勾
 
 let overview = null;
 let phase = 'form'; // form | preview | running | done
@@ -944,18 +943,17 @@ async function startTask() {
   const oldFolder = document.getElementById('cleanOldFolder').value.trim();
   const hidden = document.getElementById('cleanHiddenToggle').checked;
   if (hidden && !oldFolder) {
-    appAlert('修复隐藏页要对照参考（原始备份）文件夹，请先填上，或者去掉「做完后也修复隐藏页」的勾。', { tone: 'warn' });
+    appAlert('修复隐藏页要对照参考（原始备份）文件夹，请先填上，或者去掉「顺便做：隐藏页」的勾。', { tone: 'warn' });
     return;
   }
   setPending('start');
   try {
-    const payload = { kind: CLEAN_KIND, folder, plan: buildCleanPlan(), chain: { hidden, old_folder: oldFolder } };
+    const payload = { kind: CLEAN_KIND, folder, plan: buildCleanPlan(), chain: { ...chainChecks(), old_folder: oldFolder } };
     if (processedFiles.size) payload.files = Object.keys(payload.plan); // 跳过已在预览窗口处理过的文件
     await postAction('/api/quick_task', payload);
     saveLastFolder(folder);
     try {
       if (oldFolder) localStorage.setItem(OLD_FOLDER_STORAGE_KEY, oldFolder);
-      localStorage.setItem(HIDDEN_STORAGE_KEY, hidden ? '1' : '0');
     } catch (_) {}
     phase = 'running';
     minAcceptedSeq = pollSeq + 1;
@@ -1041,13 +1039,18 @@ window.CleanChain?.onFinished(chain => {
 });
 
 const cleanOldFolder = document.getElementById('cleanOldFolder');
-const cleanHiddenToggle = document.getElementById('cleanHiddenToggle');
+// 做完后顺便做的几项（BL / 引用 / 隐藏页 / 字体）：勾选存在 localStorage，和主页精简卡上的勾共用（static/flow.js Flow.CHAIN）
+const chainBoxes = [...document.querySelectorAll('input[data-chain]')];
+function chainChecks() {
+  return Object.fromEntries(chainBoxes.map(box => [box.dataset.chain, box.checked]));
+}
 try {
   cleanOldFolder.value = localStorage.getItem(OLD_FOLDER_STORAGE_KEY) || '';
-  cleanHiddenToggle.checked = localStorage.getItem(HIDDEN_STORAGE_KEY) === '1';
 } catch (_) {}
-cleanHiddenToggle.addEventListener('change', () => {
-  try { localStorage.setItem(HIDDEN_STORAGE_KEY, cleanHiddenToggle.checked ? '1' : '0'); } catch (_) {}
+const savedChain = window.Flow ? window.Flow.chainOptions() : { bl: true, links: true, hidden: false, font: true };
+chainBoxes.forEach(box => {
+  box.checked = Boolean(savedChain[box.dataset.chain]);
+  box.addEventListener('change', () => window.Flow?.setChainOption(box.dataset.chain, box.checked));
 });
 cleanFolderInput.addEventListener('input', () => {
   if (phase === 'preview' || phase === 'done') {

@@ -7,7 +7,7 @@
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/theme.css">
-  <link rel="stylesheet" href="/static/home_route.css?v=3"><link rel="stylesheet" href="/static/work_task.css?v=6"><link rel="stylesheet" href="/static/theme-casual.css"><script src="/static/game_fx.js"></script>
+  <link rel="stylesheet" href="/static/home_route.css?v=3"><link rel="stylesheet" href="/static/flow.css?v=1"><link rel="stylesheet" href="/static/work_task.css?v=6"><link rel="stylesheet" href="/static/theme-casual.css"><script src="/static/game_fx.js"></script>
 </head>
 <body>
   <header class="app-header">
@@ -35,8 +35,8 @@
   <main class="container home-container">
     <section class="home-hero">
       <div>
-        <h2>处理流程</h2>
-        <p>按顺序从 START 走到 FINISH，一共 4 站，每站做完页面上都有「下一步」。每一步都递归扫描所选文件夹及其子文件夹，进度可在「执行记录与进度看板」查看。</p>
+        <h2>工具箱</h2>
+        <p>挑要用的工具拖进「本次流程」，按第 1 步、第 2 步往下做，每步做完页面顶上有「下一步」。单击卡片直接打开那个工具。每一步都递归扫描所选文件夹及其子文件夹，进度可在「执行记录与进度看板」查看。</p>
         <p id="routeDoneNote" class="route-done-note hidden"></p>
       </div>
       <div class="home-hero-actions">
@@ -94,87 +94,25 @@
     </section>
 
 
-    <!-- 处理流程路线图：按实际处理顺序从 START 走到 FINISH。
-         宽屏三行蛇形（第二行从右往左），窄屏竖排；卡片本身和以前一样（链接、按钮、状态文字 id 都没变） -->
-    <section class="route-map" aria-label="处理流程">
-      <!-- 起点：高速入口那样的绿色路牌 -->
-      <div class="route-sign-row route-sign-row-start">
-        <a href="/distribute/start" class="route-sign route-sign-entry" id="workTaskNew" title="打开「新任务 · 拿文件」页：填共享文件夹路径，自动生成参考、处理文件夹，再从共享拿文件">
-          <span class="route-sign-main">🆕 新任务</span><span class="route-sign-sub">入口 ➜</span>
-        </a>
+    <!-- 工具箱（用户 2026-11-10 要）：上面「本次流程」轨道，下面所有工具卡；按住卡片拖进轨道排成第 1 步、第 2 步……
+         卡片、轨道由 static/home_toolbox.js 画（工具清单在 static/flow.js），状态文字 id、上传卡 id、新任务 / 完成任务的 id 都和以前一样 -->
+    <section class="flow-bar" aria-label="本次流程">
+      <div class="flow-bar-head">
+        <h3>🧭 本次流程</h3>
+        <span class="flow-bar-tip">按住下面的工具卡拖进来就多一步；步骤之间拖动调顺序，✕ 去掉。每一步做完，页面顶上会提示下一步。</span>
+        <span class="flow-bar-btns">
+          <button type="button" class="btn btn-outline btn-sm" id="flowResetBtn" title="改回 精简 Sheet → 调整页面 → 查看切字 → 上传">↺ 恢复默认 4 步</button>
+          <button type="button" class="btn btn-outline btn-sm" id="flowClearBtn">清空</button>
+        </span>
       </div>
-      <ol class="route-steps">
-        <li data-ops="clean" class="route-stop">
-          <i class="route-road" aria-hidden="true"></i>
-          <span class="route-done hidden" role="img"></span>
-          <span class="route-flag route-flag-start" aria-hidden="true">START</span>
-          <a href="/clean" class="feature-card feature-violet tone-green" style="--tile-cat: 'STEP 1'">
-            <span class="feature-text">
-              <span class="feature-title">精简 Sheet</span>
-              <span class="feature-sub">删备份表 · 自动查 BL · 修引用错误</span>
-              <span class="feature-meta" id="meta_clean_sheets">先预览，确认后一次做完</span>
-            </span>
-            <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-clean">🧹</span></span>
-          </a>
-        </li>
-        <li data-ops="pdf" class="route-stop">
-          <i class="route-road" aria-hidden="true"></i>
-          <span class="route-done hidden" role="img"></span>
-          <button type="button" class="feature-card feature-sky tone-teal" onclick="openTask('export_pdf')" style="--tile-cat: 'STEP 2'">
-            <span class="feature-text">
-              <span class="feature-title">调整页面</span>
-              <span class="feature-sub">宽一页 · 横竖 · 向下取整</span>
-              <span class="feature-meta" id="meta_export_pdf">导出 PDF，点按钮让程序改</span>
-            </span>
-            <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-pdf">📄</span></span>
-          </button>
-        </li>
-        <li data-ops="scan autofix" class="route-stop">
-          <i class="route-road" aria-hidden="true"></i>
-          <span class="route-done hidden" role="img"></span>
-          <a href="/workbench" class="feature-card feature-rose tone-yellow" style="--tile-cat: 'STEP 3'">
-            <span class="feature-text">
-              <span class="feature-title">查看切字</span>
-              <span class="feature-sub">扫描标色 · 工具箱修格子 · 复检</span>
-              <span class="feature-meta" id="meta_clips">尚未扫描</span>
-            </span>
-            <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-inspect">🔍</span></span>
-          </a>
-        </li>
-        <li data-ops="distribute" class="route-stop">
-          <i class="route-road" aria-hidden="true"></i>
-          <span class="route-done hidden" role="img"></span>
-          <span class="route-flag route-flag-finish" aria-hidden="true">FINISH</span>
-          <a href="/distribute" id="workTaskUploadLink" class="feature-card feature-sky feature-distribute tone-purple" style="--tile-cat: 'STEP 4'">
-            <span class="feature-text"><span class="feature-title">上传 Excel</span>
-              <span class="feature-sub">自动清标记 · 恢复颜色 · 标准化</span>
-              <span class="feature-meta">选择文件 · 核对共享版本 · 上传</span></span>
-            <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-distribute">📦</span></span>
-          </a>
-        </li>
-      </ol>
-      <!-- 终点：黑白格牌子，收尾检查 → 标记完成 → 撒花 -->
-      <div class="route-sign-row route-sign-row-finish">
-        <a href="/finish?start=1" class="route-sign route-sign-finish" id="workTaskFinish" title="打开「完成任务 · 收尾检查」页：逐项检查处理好的文件都传回共享了没有，通过就标记任务完成">
-          <span class="route-sign-main">🏁 完成任务</span><span class="route-sign-sub">收尾检查</span>
-        </a>
-      </div>
+      <div class="flow-road" id="flowRoad"></div>
     </section>
 
-    <!-- 更多工具：合并进 4 站里的原来那几步，单独用某一步（自选路径、只处理几个文件）时从这里打开 -->
-    <details class="panel home-more-tools" id="homeMoreTools">
-      <summary>🧰 更多工具 <small>原来单独的几步，现在已经合并进上面 4 站自动做；只想单独做某一步时从这里打开</small></summary>
-      <div class="home-more-grid">
-        <a class="home-more-tool" href="/repair-bl-links"><b>🔎 排查 BL 超链接</b><span>已合并进第 1 步，精简后自动做</span></a>
-        <a class="home-more-tool" href="/repair-links"><b>🔗 修复引用错误</b><span>已合并进第 1 步，精简后自动做</span></a>
-        <a class="home-more-tool" href="/repair-hidden"><b>🙈 修复隐藏页</b><span>第 1 步勾选时自动做</span></a>
-        <a class="home-more-tool" href="/repair-colors"><b>🎨 修复颜色</b><span>已合并进第 4 步，上传前自动做</span></a>
-        <button type="button" class="home-more-tool" onclick="openTask('normalize_view')"><b>🎯 视图标准化</b><span>已合并进第 4 步，上传前自动做</span></button>
-        <a class="home-more-tool" href="/fix-fonts"><b>🔤 统一字体</b><span>已合并进第 1 步，精简后自动做</span></a>
-        <a class="home-more-tool" href="/pdf-bundle"><b>📕 批量导出同名 PDF</b><span>aaa.xlsx 旁边生成 aaa.pdf，所有表合成一份</span></a>
-        <a class="home-more-tool" href="/distribute?mode=json"><b>📋 按 JSON 复制 Excel</b><span>按上传记录 JSON 复制、建目录</span></a>
-      </div>
-    </details>
+    <section class="route-map toolbox-map" aria-label="工具箱">
+      <ol class="route-steps toolbox-grid" id="toolGrid"></ol>
+      <h3 class="toolbox-more-title">🧰 更多工具 <small>单独做某一件事时用；也可以拖进上面的流程。标「单独用」的平时已经被精简或上传顺便做了</small></h3>
+      <ol class="route-steps toolbox-grid" id="toolGridMore"></ol>
+    </section>
   </main>
 
   <!-- 单项功能对话框：填写文件夹 → 执行 → 查看结果（精简 Sheet 在独立页面 /clean） -->
@@ -227,6 +165,7 @@
   </dialog>
 
   <script src="/static/eta.js"></script><script src="/static/job_panel.js"></script><script src="/static/dialog.js"></script>
+  <script src="/static/flow.js?v=1"></script><script src="/static/home_toolbox.js?v=1"></script>
   <script src="/static/home.js"></script>
   <script src="/static/work_task.js?v=8"></script>
   <script src="/static/debug_log.js"></script>
