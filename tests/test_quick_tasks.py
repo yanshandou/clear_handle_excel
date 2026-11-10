@@ -253,7 +253,7 @@ class QuickTaskTests(unittest.TestCase):
     def test_dated_sheets_without_original_are_not_deleted(self):
         # 只有 基本情報_20241003、没有 基本情報 时，带日期的就是在用的表
         self.add_book("SSPLG1100_個別支援計画書情報.xlsx", [
-            "変更履歴", "個別支援計画書情報", "基本情報_20241003", "具体的な支援目標及び支援計画_20241003",
+            "表紙", "個別支援計画書情報", "基本情報_20241003", "具体的な支援目標及び支援計画_20241003",
         ])
         job = self.run_task("clean_sheets")
 
@@ -908,7 +908,7 @@ class QuickTaskTests(unittest.TestCase):
     def test_clean_sheets_previews_and_deletes_unpaired_old_layout(self):
         name = "SSPLE0002_個別支援計画書（様式２）.xlsx"
         sheets = [
-            "変更履歴", "概要", "帳票_出力内容", "レイアウト(1ページ)",
+            "表紙", "概要", "帳票_出力内容", "レイアウト(1ページ)",
             "レイアウト(複数ページ)", "旧レイアウト", "JSONサンプル",
         ]
         self.add_book(name, sheets)
@@ -1032,7 +1032,7 @@ class QuickTaskTests(unittest.TestCase):
 
     def test_numbered_original_with_dated_backup_in_clean_preview(self):
         names = [
-            "変更履歴", "居宅サービス計画書（1）", "居宅サービス計画書（1）_20261019",
+            "表紙", "居宅サービス計画書（1）", "居宅サービス計画書（1）_20261019",
             "AIプロンプト", "居宅サービス計画書（2・1）", "居宅サービス計画書（2・2）", "別紙_削除処理",
         ]
         self.add_book("KSCPG0000_居宅サービス計画書.xlsx", names)

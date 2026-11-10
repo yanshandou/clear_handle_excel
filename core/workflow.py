@@ -28,6 +28,7 @@ from core.common import (
     has_numbered_suffix,
     is_gray_tab_color,
     is_change_note_sheet,
+    is_clean_exact_name_sheet,
     is_inspection_exempt_sheet,
     find_clean_targets,
     has_old_word,
@@ -3106,7 +3107,7 @@ def _preview_workbook(wb_path: Path, folder: Path, get_excel: Callable[[], Any])
         # 没有内容的表（空白，或只有一格「無」「－」这类占位字）和灰色标签一样不看名字默认删除（用户 2026-10-30）
         entry["blank_sheets"] = [s for s in all_names if s in blank]
         name_targets = set(find_clean_targets(all_names))
-        default_delete = [s for s in all_names if not has_numbered_suffix(s) and ((s in name_targets and (s not in set(uncertain) or is_change_note_sheet(s))) or s in gray or s in blank)]
+        default_delete = [s for s in all_names if not has_numbered_suffix(s) and ((s in name_targets and (s not in set(uncertain) or is_change_note_sheet(s) or is_clean_exact_name_sheet(s))) or s in gray or s in blank)]
         contained = set(find_contained_sheets(all_names))
         # Sheet1、Sheet 2 这类 Excel 默认名的表标待定提醒（用户 2026-11-02）；空白等默认删除的规则优先
         entry["default_names"] = [s for s in all_names if is_default_sheet_name(s)]

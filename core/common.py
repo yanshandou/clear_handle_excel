@@ -51,6 +51,9 @@ YYMMDD_SUFFIX_PATTERN = re.compile(r"(?<![a-zA-Z\d])\(?(\d{2})(\d{2})(\d{2})\)?[
 YYMMDD_PREFIX_PATTERN = re.compile(r"^[\s_\-・.]*\(?(\d{2})(\d{2})(\d{2})\)?(?![a-zA-Z\d])[\s_\-・.]*")
 # 工具自动生成的工作表（如 自動生成_引数、自動生成_JSON），没有对应原表，精简 Sheet 时默认删除
 AUTO_GENERATED_PREFIXES = ("自動生成", "自动生成")
+# 精简 Sheet 默认删除的固定表名（用户 2026-11-10：「変更履歴」表要删）；忽略前后空格、全角半角和 ❓ 待定前缀，
+# 只认完整名字，「変更履歴一覧」「変更履歴_20220101」这类照其他规则处理
+CLEAN_EXACT_NAMES = {"変更履歴"}
 # 表名多出的英文词里像临时版本的（サンプル 与 サンプルtest 仍标待定），其余英文词（JSON、CSV、PDF…）算另一张表
 ENGLISH_TEMP_WORDS = {
     "new", "tmp", "temp", "test", "wk", "work", "draft", "org", "orig", "original", "prev", "ver",
@@ -295,6 +298,11 @@ def is_auto_generated_sheet(sheet_name: str) -> bool:
     return text.startswith(AUTO_GENERATED_PREFIXES)
 
 
+def is_clean_exact_name_sheet(sheet_name: str) -> bool:
+    """名字正好是「変更履歴」的表（忽略前后空格、全角半角与 ❓ 待定前缀）"""
+    return unicodedata.normalize("NFKC", strip_uncertain_prefix(sheet_name)).strip() in CLEAN_EXACT_NAMES
+
+
 def _new_old_key(sheet_name: str) -> tuple[str, str] | None:
     """「新」「旧」开头的表名拆成 (新/旧, 其余部分的比对名)，其余部分为空时返回 None"""
     text = unicodedata.normalize("NFKC", strip_uncertain_prefix(sheet_name)).lstrip()
@@ -352,7 +360,7 @@ def strip_new_prefix(sheet_name: str) -> str:
 
 def find_clean_targets(sheet_names: list[str]) -> list[str]:
     """精简 Sheet 默认删除的工作表：有原表的备份表、名称明确写着 bk/old/バックアップ 的表（不需要原表）、
-    「旧」开头的旧版表，以及「自動生成」「レイアウト変更」「仕様変更」开头的表（保持原顺序）。
+    「旧」开头的旧版表，「自動生成」「レイアウト変更」「仕様変更」开头的表，以及名字就是「変更履歴」的表（保持原顺序）。
     同一原表 2 张以上的「(n)」编号组不算。
     """
     targets = set(find_backup_sheets(sheet_names))
@@ -363,7 +371,8 @@ def find_clean_targets(sheet_names: list[str]) -> list[str]:
             targets.add(name)
         elif has_explicit_backup_word(name) and name not in series:
             targets.add(name)
-    return [name for name in sheet_names if name in targets or is_auto_generated_sheet(name) or is_change_note_sheet(name)]
+    return [name for name in sheet_names if name in targets or is_auto_generated_sheet(name) or is_change_note_sheet(name)
+            or is_clean_exact_name_sheet(name)]
 
 
 def is_change_note_sheet(sheet_name: str, rule_version: int = 2) -> bool:
