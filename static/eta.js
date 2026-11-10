@@ -59,11 +59,13 @@
     return { start: rec.start ?? guessed, guessed: guessed != null, finish, remaining: (finish - now) / 1000 };
   }
 
-  function text(key, fraction, remainingSeconds) {
+  // label：写在最前面说明算的是什么（如「这一项」），不给就不写
+  function text(key, fraction, remainingSeconds, label) {
     const e = estimate(key, fraction, remainingSeconds);
+    const head = `⏱ ${label ? `${label}：` : ''}`;
     const from = e.start ? `${e.guessed ? '约 ' : ''}${clock(e.start)} 开始 → ` : '';
-    if (e.finish == null) return `⏱ ${from}正在估算完成时间（走完第一份后算出）…`;
-    return `⏱ ${from}预计 ${clock(e.finish)} 完成 · 还要${left(e.remaining)}`;
+    if (e.finish == null) return `${head}${from}正在估算完成时间（走完第一份后算出）…`;
+    return `${head}${from}预计 ${clock(e.finish)} 完成 · 还要${left(e.remaining)}`;
   }
 
   // 在进度条下面放一行预估时间（只建一次，跑着的时候固定占一行，文字变化不挪页面）
@@ -85,7 +87,7 @@
   }
 
   // 每次刷新进度时调用：running 为 false 时收起这一行并清掉记录
-  function update(fillOrId, key, fraction, running, remainingSeconds) {
+  function update(fillOrId, key, fraction, running, remainingSeconds, label) {
     const fill = typeof fillOrId === 'string' ? document.getElementById(fillOrId) : fillOrId;
     const el = line(fill);
     if (!running) {
@@ -93,7 +95,7 @@
       if (el) { el.hidden = true; el.textContent = ''; }
       return;
     }
-    const value = text(key, fraction, remainingSeconds);
+    const value = text(key, fraction, remainingSeconds, label);
     if (el) { el.hidden = false; if (el.textContent !== value) el.textContent = value; }
     return value;
   }

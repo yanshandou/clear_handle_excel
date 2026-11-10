@@ -56,7 +56,7 @@
       const count = `${progress.phase} 第 ${shown} / ${progress.total} 份` + (progress.current ? ` · ${progress.current}` : '');
       const countEl = slot.querySelector('.chain-progress-count');
       if (countEl.textContent !== count) { countEl.textContent = count; countEl.title = count; }
-      const eta = window.ProgressEta ? window.ProgressEta.text(key, fraction) : '';
+      const eta = window.ProgressEta ? window.ProgressEta.text(key, fraction, undefined, '这一项') : '';
       const etaEl = slot.querySelector('.chain-progress-eta');
       if (etaEl.textContent !== eta) etaEl.textContent = eta;
       etaEl.hidden = !eta;
@@ -134,7 +134,10 @@
         title: '正在自动检查（精简后）', count: index >= 0 ? `第 ${index + 1} / ${steps.length} 项` : '',
         now: step.label ? `${step.label}${progress.current ? ` · 📗 ${progress.current}` : ''}` : '准备中…',
         step: progress.total ? `${progress.phase || ''} 第 ${Math.min(progress.total, (progress.done || 0) + 1)} / ${progress.total} 份` : (step.text || ''),
-        fraction: (Math.max(0, index) + (progress.total ? Math.min(1, progress.done / progress.total) : 0)) / Math.max(1, steps.length),
+        // 进度条和预计时间都只算正在做的这一项，和页面上这一项的卡片共用一份预估记录，两处时间一样。
+        // 以前按「整条链」算：用第一项的速度去猜后面几项，后面几项每份快慢差很多，猜出来的时间不准，还和卡片对不上。
+        fraction: progress.total ? Math.min(1, progress.done / progress.total) : 0,
+        ...(progress.total ? { etaKey: etaKey(step.key, progress.phase), etaLabel: '这一项' } : {}),
         log, folder: data.folder,
       });
     } else {
