@@ -85,6 +85,119 @@
   $('distFreeSource').value = load(KEYS.freeSource);
   $('distFreeDest').value = load(KEYS.freeDest);
 
+  // ───── 导出同名 PDF 并一起上传（用户 2026-11-10）：导出设置沿用「批量导出同名 PDF」页（同一份 localStorage） ─────
+  const PDF_ON = 'clear_handle_excel.uploadWithPdf';
+  const PDF_DEFAULT_SKIP = '変更履歴';
+  if (freeMode) {  // 起点 → 终点：放在「生成清单 / 按清单上传」按钮前后
+    const actions = $('distFreeFields').querySelector('.link-actions');
+    actions.before($('distPdfBox'));
+    actions.after($('distPdfAsk'));
+  }
+  function pdfOptions() {
+    let skip = null;  // 没存过 = 默认名单；存过空的 = 所有表都打印
+    try { skip = localStorage.getItem('clear_handle_excel.pdfBundleSkip'); } catch (_) {}
+    skip = skip ?? PDF_DEFAULT_SKIP;
+    return {
+      include_hidden: load('clear_handle_excel.pdfBundleHidden') === '1',
+      skip_sheets: [...new Set(skip.split(/[\n,，、;；]+/).map(v => v.trim()).filter(Boolean))],
+      no_header_footer: load('clear_handle_excel.pdfBundleNoHeader') !== '0',
+    };
+  }
+  const pdfOn = () => $('distPdfOn').checked;
+  function showPdfNote() {
+    const o = pdfOptions();
+    $('distPdfBox').classList.toggle('is-on', pdfOn());
+    $('distPdfNote').innerHTML = `每份 Excel 上传前处理做完后导出同名 PDF（所有表合一份、宽一页），Excel 传好后放在终点 Excel 旁边。`
+      + `按「批量导出同名 PDF」的设置：不打印的表 ${esc(o.skip_sheets.length ? o.skip_sheets.join('、') : '无')}，页眉页脚${o.no_header_footer ? '去掉' : '保留'}，隐藏表${o.include_hidden ? '也放进去' : '跳过'}`
+      + `（<a href="/pdf-bundle" target="_blank" rel="noopener">改设置 ↗</a>）。<br>终点已有同名 PDF 时<strong>默认不覆盖</strong>：上传前先列出来，由你逐个选覆盖还是跳过。`;
+  }
+  $('distPdfOn').checked = load(PDF_ON) === '1';
+  $('distPdfOn').addEventListener('change', () => {
+    save(PDF_ON, pdfOn() ? '1' : '0');
+    console.info('📕 上传时导出同名 PDF', pdfOn() ? '打开' : '关闭', pdfOptions());
+    showPdfNote();
+  });
+  window.addEventListener('focus', showPdfNote);  // 在另一个标签页改了导出设置，回来就更新
+  showPdfNote();
+
+  // 终点已有同名 PDF：在按钮下面列出来，每个选「跳过（默认）/ 覆盖」，点继续才往下走。返回 {rel: 检查时的哈希} 或 null（取消）
+  function askPdfOverwrite(check) {
+    const existing = check.files.filter(f => f.exists);
+    const clash = check.files.filter(f => f.clash);
+    const box = $('distPdfAsk');
+    if (!existing.length && !clash.length) { box.hidden = true; return Promise.resolve({}); }
+    const rows = existing.map((f, i) => `<tr><td>${esc(f.pdf)}<br><small>${esc(f.rel)} 的 PDF</small></td>`
+      + `<td>${f.error ? `<span class="dist-pdf-other">读不出来：${esc(f.error)}</span>` : f.ours ? '<span class="dist-pdf-ours">上次是本工具传的，之后没人动过</span>' : '<span class="dist-pdf-other">不是本工具传的，或传上去之后被人改过</span>'}`
+      + `<br><small>${esc(f.mtime || '')}${f.size != null ? ' · ' + size(f.size) : ''}</small></td>`
+      + `<td><span class="dist-pdf-pick" role="radiogroup" aria-label="${esc(f.pdf)} 怎么处理">`
+      + `<label data-pick="skip"><input type="radio" name="distPdfPick${i}" value="skip" checked>跳过</label>`
+      + `<label data-pick="overwrite"><input type="radio" name="distPdfPick${i}" value="overwrite" ${f.error ? 'disabled' : ''}>覆盖</label></span></td></tr>`);
+    box.innerHTML = `<h4 id="distPdfAskTitle">🛑 终点已经有 ${existing.length} 个同名 PDF，先确认再上传</h4>`
+      + `<p>默认都<strong>跳过</strong>（终点那份不动，Excel 照常上传）。确认可以换掉的选「覆盖」；上传那一刻还会再比一次，检查之后又被人改过的照样不覆盖。</p>`
+      + (existing.length ? `<div class="dist-pdf-bulk"><button type="button" class="btn btn-outline btn-sm" data-pdf-all="skip">全部跳过</button>`
+        + `<button type="button" class="btn btn-outline btn-sm" data-pdf-all="ours">只覆盖本工具上次传的</button>`
+        + `<button type="button" class="btn btn-outline btn-sm" data-pdf-all="overwrite">全部覆盖</button></div>`
+        + `<div class="link-table-wrap"><table class="link-table"><thead><tr><th>终点已有的 PDF</th><th>是谁的</th><th>怎么处理</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>` : '')
+      + (clash.length ? `<p>⚠️ ${clash.map(f => `${esc(f.rel)} 和 ${esc(f.clash)}`).join('、')} 会得到同名 PDF，只传前一份的 PDF。</p>` : '')
+      + `<div class="dist-pdf-go"><button type="button" class="button primary" data-pdf-go>按上面的选择继续</button>`
+      + `<button type="button" class="button secondary" data-pdf-cancel>先不上传</button><span class="toolbar-hint" data-pdf-count></span></div>`;
+    box.hidden = false;
+    const picks = () => existing.map((f, i) => box.querySelector(`input[name="distPdfPick${i}"]:checked`)?.value || 'skip');
+    const count = () => {
+      const p = picks();
+      box.querySelector('[data-pdf-count]').textContent = `覆盖 ${p.filter(v => v === 'overwrite').length} 个、跳过 ${p.filter(v => v === 'skip').length} 个`;
+    };
+    count();
+    console.info('📕 终点已有同名 PDF，等你选择', existing.map(f => ({ PDF: f.pdf, 本工具传的: !!f.ours })));
+    return new Promise(resolve => {
+      const onClick = event => {
+        const all = event.target.closest('[data-pdf-all]')?.dataset.pdfAll;
+        if (all) {
+          existing.forEach((f, i) => {
+            const want = f.error ? 'skip' : all === 'ours' ? (f.ours ? 'overwrite' : 'skip') : all;
+            const input = box.querySelector(`input[name="distPdfPick${i}"][value="${want}"]`);
+            if (input) input.checked = true;
+          });
+          count();
+          return;
+        }
+        const go = event.target.closest('[data-pdf-go]'), cancel = event.target.closest('[data-pdf-cancel]');
+        if (!go && !cancel) return;
+        box.removeEventListener('click', onClick);
+        box.removeEventListener('change', count);
+        box.hidden = true;
+        if (cancel) { console.info('📕 同名 PDF：先不上传'); resolve(null); return; }
+        const p = picks();
+        const overwrite = Object.fromEntries(existing.filter((f, i) => p[i] === 'overwrite').map(f => [f.rel, f.sha256]));
+        console.info('📕 同名 PDF 选择', { 覆盖: Object.keys(overwrite), 跳过: existing.filter((f, i) => p[i] !== 'overwrite').map(f => f.rel) });
+        resolve(overwrite);
+      };
+      box.addEventListener('click', onClick);
+      box.addEventListener('change', count);
+    });
+  }
+
+  // 上传前：查终点同名 PDF、让用户选，返回要发给后台的 pdf 选项（null = 取消）；没勾选项返回 undefined
+  async function pdfPlan(payload) {
+    if (!pdfOn()) return undefined;
+    $('distError').textContent = '';
+    const box = $('distPdfAsk');
+    box.innerHTML = '<p>正在看终点 Excel 旁边有没有同名 PDF…</p>';
+    box.hidden = false;
+    let check;
+    try { check = await post(api + '/pdf_check', payload); }
+    catch (error) { box.hidden = true; throw error; }
+    console.info('📕 查终点同名 PDF', { 终点: check.dest, 文件: check.files.length, 已有: check.files.filter(f => f.exists).length });
+    const overwrite = await askPdfOverwrite(check);
+    if (overwrite === null) return null;
+    const existing = check.files.filter(f => f.exists).length;
+    const clash = check.files.filter(f => f.clash).length;
+    const over = Object.keys(overwrite).length;
+    return { options: pdfOptions(), overwrite,
+      line: `📕 同名 PDF 一起上传：新建 ${check.files.length - existing - clash} 个`
+        + (over ? `，覆盖 ${over} 个` : '') + (existing - over ? `，终点已有、不覆盖 ${existing - over} 个` : '') + '。导出 PDF 没做成时这一批都不传。' };
+  }
+
   const size = n => n == null ? '-' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
   const badChecks = folder => (folder.checks || []).filter(c => !c.ok);
   const conflicts = folder => (folder.files || []).filter(f => f.conflict || f.status === 'conflict');
@@ -97,6 +210,7 @@
   function controls() {
     const busy = loading || submitting || latest.running;
     for (const id of ['distSource', 'distDest', 'distPlan', 'distPick']) $(id).disabled = !!busy;
+    $('distPdfOn').disabled = !!busy;
     $('distPreview').disabled = !!busy;
     $('distFetch').disabled = !!busy;
     const fetchMode = isFetch(latest.preview) || (latest.running && latest.kind === 'fetch');
@@ -386,6 +500,9 @@
     return html.join('');
   }
 
+  const pdfSummary = s => s['PDF 已传'] == null ? '' : `同名 PDF 传了 ${s['PDF 已传']} 个`
+    + (s['PDF 没覆盖'] ? `，终点已有没覆盖 ${s['PDF 没覆盖']} 个` : '') + (s['PDF 没传成'] ? `，没传成 ${s['PDF 没传成']} 个` : '') + '。';
+
   function renderUpload(data) {
     const s = data.summary || {};
     const text = data.stopped || (s['待重新处理']
@@ -394,12 +511,23 @@
     const rows = (data.files || []).map(file => {
       const status = file.status === 'ok' ? '✓ 已上传' : file.error || '未上传';
       const base = file.status === 'ok' ? data.dest_root : data.source_root;
-      return `<li>${fileLink(file.rel, base, file.rel)} · ${esc(status)}${prepHtml(file, data)}${file.backup_path ? `<br><small>旧处理副本：${esc(file.backup_path)}</small>` : ''}${file.ref_backup_path ? `<br><small>旧参考副本：${esc(file.ref_backup_path)}</small>` : ''}</li>`;
+      return `<li>${fileLink(file.rel, base, file.rel)} · ${esc(status)}${prepHtml(file, data)}${pdfHtml(file)}${file.backup_path ? `<br><small>旧处理副本：${esc(file.backup_path)}</small>` : ''}${file.ref_backup_path ? `<br><small>旧参考副本：${esc(file.ref_backup_path)}</small>` : ''}</li>`;
     });
     const allDone = rows.length && (s['已复制'] || 0) === rows.length && !data.stopped;
     return `<p>${esc(text)} 已上传 ${s['已复制'] || 0} / ${rows.length} 个。</p><ul class="dist-list">${rows.join('')}</ul>`
       + `<p class="next-step-row">${data.id ? `<a class="btn btn-outline btn-sm" href="${api}/markdown?id=${encodeURIComponent(data.id)}">⬇ 下载上传记录</a>` : ''}`
       + (allDone ? '<a class="btn btn-primary next-step-btn" href="/finish?start=1">下一步：收尾检查 ➜</a>' : '') + '</p>';
+  }
+
+  // 同名 PDF 这一份的结果（和后端 distribute._pdf_text 一样的说法）
+  function pdfHtml(file) {
+    const p = file.pdf;
+    if (!p) return '';
+    let text;
+    if (p.status === 'ok') text = `同名 PDF ${p.name} 已${p.action === 'overwrite' ? '覆盖' : '新建'}（${p.sheets} 张表、${p.pages} 页）`;
+    else if (p.status === 'exported') text = `同名 PDF ${p.name} 已导出，Excel 没传所以没传`;
+    else text = p.error || '同名 PDF 没传';
+    return `<br><small class="dist-pdf-line${['failed', 'skipped', 'kept'].includes(p.status) ? ' is-bad' : ''}">📕 ${esc(text)}</small>`;
   }
 
   // 上传前自动做的清标记 / 对照参考恢复颜色 / 视图标准化（core/upload_prep.py）
@@ -441,7 +569,7 @@
       const why = file.action === 'conflict' || file.status === 'conflict' ? esc(file.error || '') : esc(file.note || '');
       const link = applied && file.status === 'ok' ? fileLink(file.rel, data.dest_root, file.rel) : fileLink(file.rel, data.source_root, file.rel);
       return `<tr class="${file.action === 'conflict' || file.status === 'conflict' ? 'is-conflict' : ''}"><td>${link}</td><td><span class="${cls}">${label}</span></td>`
-        + `<td>${state}${state && why ? '<br>' : ''}${why ? `<small>${why}</small>` : ''}${prepHtml(file, data)}</td><td><small>${FREE_GUARD[file.guard] || ''}</small></td></tr>`;
+        + `<td>${state}${state && why ? '<br>' : ''}${why ? `<small>${why}</small>` : ''}${prepHtml(file, data)}${pdfHtml(file)}</td><td><small>${FREE_GUARD[file.guard] || ''}</small></td></tr>`;
     });
     const list = (title, items) => items && items.length ? `<h4 class="dist-sub">${title}（${items.length}）</h4><ul class="dist-list">${items.map(rel => `<li>${fileLink(rel, data.dest_root, rel)}</li>`).join('')}</ul>` : '';
     return `<p class="dist-meta">起点：${esc(data.source_root)}<br>终点：${esc(data.dest_root)}</p><div class="dist-summary">${chipsHtml}</div>`
@@ -477,7 +605,7 @@
     const log = latest.log || [];
     if (latest.running) {
       const now = String(latest.current || '');
-      const step = now.match(/^(检查|上传前处理|上传)\s/)?.[1] || '';
+      const step = now.match(/^(检查|上传前处理|导出同名 PDF|上传同名 PDF|上传)\s/)?.[1] || '';
       window.JobPanel.run(id, {
         title: `正在${what}`, count: window.JobPanel.count(latest.done, latest.total, '个文件'),
         now: now ? `📗 ${step ? now.slice(step.length).trim() : now}` : '准备中…',
@@ -533,7 +661,7 @@
         const warn = !!(data.stopped || s['别人改过没覆盖'] || s['没复制成功']);
         $('distResultTitle').textContent = '上传结果';
         showProgress('done', data.stopped ? '没有上传：' : warn ? '上传结束，有没传上去的：' : '上传完成：',
-          data.stopped || `已上传 ${s['已复制'] || 0} / ${data.files.length} 个。`, warn);
+          data.stopped || `已上传 ${s['已复制'] || 0} / ${data.files.length} 个。${pdfSummary(s)}`, warn || !!s['PDF 没传成']);
       }
       $('distResults').innerHTML = renderFree(data, !latest.preview);
       return;
@@ -542,7 +670,7 @@
       const s = data.summary || {};
       const paused = data.stopped || s['待重新处理'] || s['没复制成功'];
       $('distResultTitle').textContent = '批量上传结果';
-      showProgress('done', paused ? '上传已暂停。' : '上传完成。', ` 已上传 ${s['已复制'] || 0} / ${data.files.length} 个。`, !!paused);
+      showProgress('done', paused ? '上传已暂停。' : '上传完成。', ` 已上传 ${s['已复制'] || 0} / ${data.files.length} 个。${pdfSummary(s)}`, !!(paused || s['PDF 没传成']));
       $('distResults').innerHTML = renderUpload(data);
       return;
     }
@@ -731,11 +859,14 @@
     submitting = 'upload';
     controls();
     try {
-      if (!await window.appConfirm(message, { title: task.upload_to ? '批量上传到中转' : '批量上传到共享', okText: '开始检查', tone: 'danger' })) return;
+      const pdf = await pdfPlan({ task_id: task.id, files: files.map(file => file.rel) });
+      if (pdf === null) return;
+      if (!await window.appConfirm(message + (pdf ? '\n\n' + pdf.line : ''), { title: task.upload_to ? '批量上传到中转' : '批量上传到共享', okText: '开始检查', tone: 'danger' })) return;
       viewing = null;
       $('distError').textContent = '';
       const reviewed = Object.fromEntries(reviews.map(file => [file.rel, file.review.token]));
-      await post(api + '/task_upload', { task_id: task.id, files: files.map(file => file.rel), reviewed });
+      await post(api + '/task_upload', { task_id: task.id, files: files.map(file => file.rel), reviewed,
+        pdf: pdf ? { options: pdf.options, overwrite: pdf.overwrite } : null });
       wasRunning = true;
     } catch (error) {
       $('distError').textContent = error.message;
@@ -826,9 +957,17 @@
       lines.push(`⚠️ 下面 ${confirmList.length} 个终点已有同名文件，又没有拿取记录，没法知道期间有没有人改过。确定要覆盖吗？`);
       lines.push(confirmList.slice(0, 8).map(file => '　' + file.rel).join('\n') + (confirmList.length > 8 ? '\n　…' : ''));
     }
-    if (!await window.appConfirm(lines.join('\n'), { title: '按清单上传', okText: confirmList.length ? '覆盖并上传' : '开始上传', tone: s['覆盖'] + s['要确认'] ? 'danger' : undefined })) return;
-    submitting = 'start'; viewing = null; controls();
-    try { await post(api + '/free_start', { preview_id: p.id, confirm_overwrite: confirmList.length > 0 }); wasRunning = true; }
+    submitting = 'start'; controls();
+    try {
+      const pdf = await pdfPlan({ preview_id: p.id });
+      if (pdf === null) return;
+      if (pdf) lines.push(pdf.line);
+      if (!await window.appConfirm(lines.join('\n'), { title: '按清单上传', okText: confirmList.length ? '覆盖并上传' : '开始上传', tone: s['覆盖'] + s['要确认'] ? 'danger' : undefined })) return;
+      viewing = null;
+      await post(api + '/free_start', { preview_id: p.id, confirm_overwrite: confirmList.length > 0,
+        pdf: pdf ? { options: pdf.options, overwrite: pdf.overwrite } : null });
+      wasRunning = true;
+    }
     catch (error) { $('distError').textContent = error.message; }
     finally { submitting = false; await refresh(); }
   }

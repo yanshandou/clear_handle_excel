@@ -647,8 +647,9 @@ def _task_file(root: Path, rel: str) -> Path:
     return path
 
 
-def start_task_upload(task_id: Any, files: Any, reviewed: Any) -> None:
+def start_task_upload(task_id: Any, files: Any, reviewed: Any, pdf: Any = None) -> None:
     task = _upload_task(task_id)
+    pdf_settings = _pdf_settings(pdf)
     if not isinstance(files, list) or not files:
         raise ValueError("请至少选择一个 Excel 文件")
     if not isinstance(reviewed, dict):
@@ -665,7 +666,7 @@ def start_task_upload(task_id: Any, files: Any, reviewed: Any) -> None:
     from core import work_task
     start(upload={"kind": "task_upload", "task": task, "label": f"任务：{task['name']}",
                   "source_root": task["work"], "dest_root": str(work_task.upload_dest(task)),
-                  "shared": task["shared"], "relay": work_task.is_relay(task), "files": items})
+                  "shared": task["shared"], "relay": work_task.is_relay(task), "files": items, "pdf": pdf_settings})
 
 
 def _shared_digest(path: Path) -> str | None:
@@ -732,7 +733,15 @@ class _SharedVersionChanged(Exception):
     pass
 
 
-def _prepare_task_files(task: dict[str, Any], checked: list[tuple], total: int) -> None:
+def _sheet_progress(index: int, total: int, rel: str, guard: Any) -> Callable[[int, int, str], None]:
+    def on_sheet(i: int, count: int, sheet: str) -> None:
+        guard.progress()
+        _progress(index, total, f"导出同名 PDF {rel}：第 {i} / {count} 张表「{sheet}」")
+    return on_sheet
+
+
+def _prepare_task_files(task: dict[str, Any], checked: list[tuple], total: int,
+                        pdf_settings: dict[str, Any] | None = None) -> None:
     from core import upload_prep
     from core.excel_ops import quit_background_excel, start_background_excel
 
@@ -756,6 +765,9 @@ def _prepare_task_files(task: dict[str, Any], checked: list[tuple], total: int) 
                 try:
                     item["prep"] = upload_prep.prepare(get_excel, local, reference, where)
                     wf.log_msg(f"🧽 {item['rel']}：{upload_prep.text(item['prep'])}")
+                    if pdf_settings:  # 清完标记、视图标准化之后再导，PDF 里不会有标记色
+                        where["step"] = "导出同名 PDF"
+                        _export_pdf(get_excel, item, local, pdf_settings, _sheet_progress(index, total, item["rel"], guard))
                     break
                 except Exception as err:
                     debug_log.exception(err, f"上传前处理 {item['rel']}")
@@ -777,6 +789,163 @@ def _prepare_task_files(task: dict[str, Any], checked: list[tuple], total: int) 
             wf.pythoncom.CoUninitialize()
 
 
+# ───────────────────────── 同名 PDF 一起上传（用户 2026-11-10） ─────────────────────────
+# 上传时可以勾「导出同名 PDF 并一起上传」：每份 Excel 上传前处理做完后，用「批量导出同名 PDF」（core/pdf_bundle.py）
+# 同样的做法导出 aaa.pdf（所有表合一份、强制宽一页、跳过名单、去页眉页脚），Excel 传成功后 PDF 放到终点 Excel 旁边。
+# 终点已有同名 PDF 时默认不覆盖：上传前先列出来（pdf_check），用户逐个或全部选「覆盖 / 跳过」才开始；
+# 选了覆盖的，上传那一刻 PDF 和检查时不一样（期间被人换了）也不覆盖。PDF 出问题不影响 Excel 上传，只在结果里写明。
+
+def _pdf_settings(value: Any) -> dict[str, Any] | None:
+    """网页传来的 PDF 选项：None / False = 不导出；{"options": {...}, "overwrite": {rel: 检查时的哈希}}"""
+    if value in (None, False):
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("同名 PDF 选项格式不正确")
+    from core import pdf_bundle
+    options = pdf_bundle.options_for(value.get("options"))
+    overwrite = value.get("overwrite") or {}
+    if not isinstance(overwrite, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in overwrite.items()):
+        raise ValueError("要覆盖的同名 PDF 清单格式不正确，请重新检查")
+    return {"options": options, "overwrite": {_key(rel): sha for rel, sha in overwrite.items()}}
+
+
+def _pdf_target(excel_target: Path) -> Path:
+    from core import pdf_bundle
+    return pdf_bundle.pdf_path_for(excel_target)
+
+
+def pdf_check(task_id: Any = None, files: Any = None, preview_id: Any = None) -> dict[str, Any]:
+    """上传前看终点 Excel 旁边已经有没有同名 PDF（只读）。ours = 上次就是本工具传上去的、之后没人动过"""
+    if preview_id is not None:
+        with _LOCK:
+            data = copy.deepcopy(_STATUS.get("preview"))
+        if not data or data.get("kind") != "free_upload" or data.get("id") != preview_id:
+            raise ValueError("清单已变化，请重新生成")
+        dest_root = Path(data["dest_root"])
+        rels = [f["rel"] for f in data["files"] if f["action"] != "conflict"]
+    else:
+        from core import work_task
+        task = _upload_task(task_id)
+        if not isinstance(files, list) or not files:
+            raise ValueError("请至少选择一个 Excel 文件")
+        dest_root = work_task.upload_dest(task)
+        rels = [rel for rel in files if _task_file(Path(task["work"]), rel)]
+    if not dest_root.is_dir():
+        raise ValueError(f"终点文件夹不可用：{dest_root}（OneDrive 的话请确认已经同步到这台电脑）")
+    baseline = load_baseline(strict=True)
+    found, same_name = [], {}
+    for rel in rels:
+        target = _pdf_target(dest_root / rel)
+        pdf_rel = target.relative_to(dest_root).as_posix()
+        if _base_key(target) in same_name:  # aaa.xlsx 和 aaa.xlsm 在一起：只传第一份的 PDF
+            found.append({"rel": rel, "pdf": pdf_rel, "exists": False, "clash": same_name[_base_key(target)]})
+            continue
+        same_name[_base_key(target)] = rel
+        entry: dict[str, Any] = {"rel": rel, "pdf": pdf_rel, "exists": False}
+        try:
+            if target.is_file():
+                stat = target.stat()
+                digest = _digest(target)
+                uploaded = (baseline.get(_base_key(target), {}).get("upload") or {}).get("sha256")
+                entry.update(exists=True, sha256=digest, size=stat.st_size, ours=digest == uploaded,
+                             mtime=datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"))
+        except OSError as err:
+            entry.update(exists=True, sha256="", error=_explain(err))
+        found.append(entry)
+    existing = [f for f in found if f["exists"]]
+    debug_log.event("📕 上传前查终点同名 PDF", 终点=str(dest_root), 文件=len(rels), 已有=len(existing),
+                    上次本工具传的=sum(bool(f.get("ours")) for f in existing))
+    return {"dest": str(dest_root), "files": found}
+
+
+def _export_pdf(get_excel: Callable[[], Any], item: dict[str, Any], local: Path, settings: dict[str, Any],
+                on_sheet: Callable[[int, int, str], None]) -> None:
+    """上传前处理做完后导出同名 PDF（放在 local 旁边），出错原样抛出，调用方按 file_problem 重试 / 跳过"""
+    from core import pdf_bundle
+    opts = settings["options"]
+    info = pdf_bundle.export_workbook(get_excel(), local, opts["include_hidden"], on_sheet, opts["skip_sheets"],
+                                      opts["no_header_footer"])
+    item["_pdf_local"] = info["pdf"]
+    item["pdf"] = {"status": "exported", "name": Path(info["pdf"]).name, "pages": info["pages"],
+                   "sheets": len(info["sheets"]), "skipped": info["skipped"]}
+    skipped = "、".join(f"{s['sheet']}（{s['reason'].split('，')[0].split('：')[0]}）" for s in info["skipped"])
+    wf.log_msg(f"📕 {item['rel']}：导出 {Path(info['pdf']).name}，{len(info['sheets'])} 张表、{info['pages']} 页"
+               + (f"；跳过 {skipped}" if skipped else ""))
+    debug_log.event("📕 上传前导出同名 PDF", 文件=item["rel"], PDF=info["pdf"], 表=len(info["sheets"]), 页=info["pages"],
+                    跳过=[f"{s['sheet']}（{s['reason']}）" for s in info["skipped"]])
+
+
+def _upload_pdf(item: dict[str, Any], excel_target: Path, settings: dict[str, Any], claimed: set[str],
+                task_id: str = "") -> dict[str, dict[str, Any]]:
+    """Excel 传成功后把同名 PDF 放到它旁边。返回要记下的版本（{key: entry}）"""
+    pdf = item.get("pdf") or {}
+    src = item.pop("_pdf_local", "")
+    if not src or pdf.get("status") != "exported":
+        return {}
+    dest = _pdf_target(excel_target)
+    key = _base_key(dest)
+    label = f"{item['rel']} → {dest.name}"
+    if key in claimed:
+        pdf.update(status="skipped", error=f"和同一批里的另一份 Excel 会得到同名的 {dest.name}，这份的 PDF 没传，请改名后再传")
+        debug_log.event("⏭ 同名 PDF 撞名没传", 文件=label)
+        return {}
+    claimed.add(key)
+    allowed = settings["overwrite"].get(_key(item["rel"]))
+    while True:
+        try:
+            current = _shared_digest(dest)
+            if current is not None and allowed is None:
+                pdf.update(status="kept", error=f"终点已有同名 {dest.name}，没有覆盖（上传前没选「覆盖」）")
+                debug_log.event("🛑 终点已有同名 PDF，没覆盖", 文件=label)
+                return {}
+            if current is not None and allowed != current:
+                pdf.update(status="kept", error=f"终点的 {dest.name} 在检查之后又被改过，没有覆盖，请重新检查")
+                debug_log.event("🛑 同名 PDF 检查之后被改过，没覆盖", 文件=label)
+                return {}
+
+            def verify() -> None:
+                if _shared_digest(dest) != current:
+                    raise _SharedVersionChanged
+
+            digest = copy_one(Path(src), dest, check_source_open=False, before_replace=verify)
+            pdf.update(status="ok", action="overwrite" if current is not None else "new", path=str(dest))
+            debug_log.event("📕 同名 PDF 传好了", 文件=label, 做法="覆盖" if current is not None else "新建")
+            return {key: _base_entry(dest, digest, "复制", task_id)}
+        except _SharedVersionChanged:
+            pdf.update(status="kept", error=f"上传期间终点出现了另一份 {dest.name}，没有覆盖，请重新检查")
+            return {}
+        except (OSError, ValueError) as err:
+            message = _explain(err)
+            if isinstance(err, PermissionError):
+                message = f"{dest.name} 正被占用（可能在 PDF 阅读器里开着），关掉后点「重试」：{err.filename or dest}"
+            debug_log.exception(err, f"上传同名 PDF {label}")
+            if file_problem.ask(dest, label, message, folder=dest.parent) == "retry":
+                wf.log_msg(f"🔁 重试 {label}")
+                continue
+            pdf.update(status="failed", error=f"PDF 没传成：{message}")
+            return {}
+
+
+def _pdf_summary(items: list[dict[str, Any]]) -> dict[str, int]:
+    pdfs = [item["pdf"] for item in items if item.get("pdf")]
+    if not pdfs:
+        return {}
+    return {"PDF 已传": sum(p["status"] == "ok" for p in pdfs),
+            "PDF 没覆盖": sum(p["status"] == "kept" for p in pdfs),
+            "PDF 没传成": sum(p["status"] in ("failed", "skipped") for p in pdfs)}
+
+
+def _pdf_text(pdf: dict[str, Any] | None) -> str:
+    """一行说明，网页和上传记录共用"""
+    if not pdf:
+        return ""
+    if pdf["status"] == "ok":
+        return f"同名 PDF {pdf['name']} 已{'覆盖' if pdf.get('action') == 'overwrite' else '新建'}（{pdf['sheets']} 张表、{pdf['pages']} 页）"
+    if pdf["status"] == "exported":
+        return f"同名 PDF {pdf['name']} 已导出，Excel 没传所以没传"
+    return pdf.get("error") or "同名 PDF 没传"
+
+
 def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
     task = data["task"]
     work, shared = Path(task["work"]), Path(task["shared"])
@@ -787,6 +956,7 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
     items = data["files"]
     backup_root = Path(task["fetch_backup"]) / (datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8])
     baseline = load_baseline(strict=True)
+    pdf_claimed: set[str] = set()
     checked = []
     for index, item in enumerate(items):
         _progress(index, len(items), f"检查 {item['rel']}")
@@ -799,7 +969,7 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
     if not any(item.get("status") for item in items):
         # 上传前每个文件都先清标记色、对照参考恢复残留颜色、视图标准化（core/upload_prep.py）；
         # 有一个没做成就和检查没通过一样，这一批一个都不传
-        _prepare_task_files(task, checked, len(items))
+        _prepare_task_files(task, checked, len(items), data.get("pdf"))
     if not any(item.get("status") for item in items):
         for index, (item, local, dest, expected) in enumerate(checked):
             _progress(index, len(items), f"上传 {item['rel']}")
@@ -827,6 +997,9 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
             item.update(status="ok", uploaded_at=entry["upload"]["at"])
             entry["tasks"][task["id"]]["review"] = None
             changes = {_base_key(target): entry}
+            if data.get("pdf"):
+                _progress(index, len(items), f"上传同名 PDF {item['rel']}")
+                changes.update(_upload_pdf(item, target, data["pdf"], pdf_claimed, task["id"]))
             if relay is not None:
                 changes[_base_key(dest)] = {"tasks": {task["id"]: {"review": None}}}
                 relayed[item["rel"]] = {"shared_sha256": expected, "sha256": digest, "uploaded_at": entry["upload"]["at"]}
@@ -847,9 +1020,10 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
             debug_log.event("⚠️ 没能更新本轮清单", 原因=str(err))
     summary = {"已复制": sum(item.get("status") == "ok" for item in items),
                "待重新处理": sum(item.get("status") == "review" for item in items),
-               "没复制成功": sum(item.get("status") == "failed" for item in items)}
+               "没复制成功": sum(item.get("status") == "failed" for item in items), **_pdf_summary(items)}
     for item in items:
         item.pop("reviewed", None)
+        item.pop("_pdf_local", None)
     return {**data, "id": uuid.uuid4().hex[:12], "summary": summary,
             "finished": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
@@ -980,7 +1154,7 @@ def run_summary(result: dict[str, Any]) -> dict[str, int]:
 def needs_attention(result: dict[str, Any]) -> bool:
     s = result["summary"]
     if result.get("kind") in ("task_upload", "free_upload"):
-        return bool(result.get("stopped") or s.get("已复制", 0) != len(result["files"]))
+        return bool(result.get("stopped") or s.get("已复制", 0) != len(result["files"]) or s.get("PDF 没传成"))
     if result.get("kind") == "fetch":
         return bool(result.get("stopped") or s.get("没拿成功") or s.get("没有拿") or s.get("有问题的文件夹"))
     return bool(result.get("stopped") or s["没复制成功"] or s["没有复制"] or s["数量不一致"]
@@ -1083,7 +1257,12 @@ def _live_log() -> list[dict[str, Any]]:
         state = item.get("status")
         if state not in words:
             continue
-        log.append({"name": name, "ok": state == "ok", "reason": item.get("error") or words[state], "path": "", "sheet": ""})
+        reason = item.get("error") or words[state]
+        pdf = item.get("pdf") or {}
+        if state == "ok" and pdf.get("status") not in (None, "exported"):
+            reason += "；" + _pdf_text(pdf)
+        bad_pdf = pdf.get("status") in ("failed", "skipped")
+        log.append({"name": name, "ok": state == "ok" and not bad_pdf, "reason": reason, "path": "", "sheet": ""})
     return log[-500:]
 
 
@@ -1251,9 +1430,13 @@ def preview_free(source_text: Any, dest_text: Any) -> dict[str, Any]:
     return result
 
 
-def start_free(preview_id: Any, confirm_overwrite: bool) -> None:
+def start_free(preview_id: Any, confirm_overwrite: bool, pdf: Any = None) -> None:
+    pdf_settings = _pdf_settings(pdf)
     with _LOCK:
-        preview_data = copy.deepcopy(_STATUS.get("preview"))
+        preview_data = _STATUS.get("preview")
+        if preview_data and preview_data.get("kind") == "free_upload" and preview_data.get("id") == preview_id:
+            preview_data["pdf"] = pdf_settings
+        preview_data = copy.deepcopy(preview_data)
     if not preview_data or preview_data.get("kind") != "free_upload" or preview_data.get("id") != preview_id:
         raise ValueError("清单已变化，请重新生成")
     if preview_data["summary"]["要确认"] and not confirm_overwrite:
@@ -1263,7 +1446,8 @@ def start_free(preview_id: Any, confirm_overwrite: bool) -> None:
     start(preview_data["id"])
 
 
-def _prepare_free(items: list[dict[str, Any]], temp_root: Path, src: Path) -> None:
+def _prepare_free(items: list[dict[str, Any]], temp_root: Path, src: Path,
+                  pdf_settings: dict[str, Any] | None = None) -> None:
     """在本机临时副本上清标记 + 视图标准化（没有参考，不恢复颜色）；有一份没做成，这一批都不传"""
     from core import upload_prep
     from core.excel_ops import quit_background_excel, start_background_excel
@@ -1292,6 +1476,9 @@ def _prepare_free(items: list[dict[str, Any]], temp_root: Path, src: Path) -> No
                         raise ValueError("起点的文件在生成清单之后变了，请重新生成清单")
                     item["prep"] = {**upload_prep.prepare(get_excel, local, None, where), "no_reference": True}
                     wf.log_msg(f"🧽 {item['rel']}：{upload_prep.text(item['prep'])}")
+                    if pdf_settings:  # 从清过标记的临时副本导出，PDF 放在临时副本旁边
+                        where["step"] = "导出同名 PDF"
+                        _export_pdf(get_excel, item, local, pdf_settings, _sheet_progress(index, len(items), item["rel"], guard))
                     break
                 except Exception as err:
                     debug_log.exception(err, f"上传前处理 {item['rel']}")
@@ -1326,9 +1513,10 @@ def _run_free(data: dict[str, Any]) -> dict[str, Any]:
     try:
         if not dst.is_dir():
             raise ValueError(f"终点文件夹不可用：{dst}")
-        _prepare_free(items, temp_root, src)
+        _prepare_free(items, temp_root, src, data.get("pdf"))
         if not any(item.get("status") for item in items):
             changes: dict[str, dict[str, Any]] = {}
+            pdf_claimed: set[str] = set()
             try:
                 for index, item in enumerate(items):
                     _progress(index, len(items), f"上传 {item['rel']}")
@@ -1349,6 +1537,9 @@ def _run_free(data: dict[str, Any]) -> dict[str, Any]:
                     entry = _base_entry(dest, digest, "复制")
                     changes[_base_key(dest)] = entry
                     item.update(status="ok", uploaded_at=entry["upload"]["at"])
+                    if data.get("pdf"):
+                        _progress(index, len(items), f"上传同名 PDF {item['rel']}")
+                        changes.update(_upload_pdf(item, dest, data["pdf"], pdf_claimed))
             finally:
                 _save_baseline(changes)
         else:
@@ -1359,10 +1550,11 @@ def _run_free(data: dict[str, Any]) -> dict[str, Any]:
         shutil.rmtree(temp_root, ignore_errors=True)
     for item in data["files"]:
         item.pop("_temp", None)
+        item.pop("_pdf_local", None)
     files = data["files"]
     data["summary"] = {**data["summary"], "已复制": sum(f.get("status") == "ok" for f in files),
                        "别人改过没覆盖": sum(f.get("status") == "conflict" for f in files),
-                       "没复制成功": sum(f.get("status") == "failed" for f in files)}
+                       "没复制成功": sum(f.get("status") == "failed" for f in files), **_pdf_summary(files)}
     return {**data, "id": uuid.uuid4().hex[:12], "finished": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 
@@ -1385,6 +1577,8 @@ def markdown_free(result: dict[str, Any]) -> str:
             status += "（覆盖）" if item["action"] in ("overwrite", "confirm") else "（新建）"
         if item.get("prep"):
             status += f"（上传前：{upload_prep.text(item['prep'])}）"
+        if item.get("pdf"):
+            status += f"；{_pdf_text(item['pdf'])}"
         lines.append(f"| {_md(item['rel'])} | {_md(status)} |")
     if result.get("added"):
         lines += ["", "## 期间别人新加到终点的 Excel（没有动）", ""] + [f"- {_md(rel)}" for rel in result["added"]]
@@ -1466,6 +1660,8 @@ def markdown(result: dict[str, Any]) -> str:
             if item.get("prep"):
                 from core import upload_prep
                 status += f"（上传前：{upload_prep.text(item['prep'])}）"
+            if item.get("pdf"):
+                status += f"；{_pdf_text(item['pdf'])}"
             lines.append(f"| {_md(item['rel'])} | {_md(status)} |")
         return "\n".join(lines) + "\n"
     s = result.get("summary") or {}
