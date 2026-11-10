@@ -33,7 +33,7 @@ from datetime import datetime
 from pathlib import Path, PurePath
 from typing import Any, Callable
 
-from core import debug_log, file_problem, storage, workflow as wf
+from core import debug_log, file_problem, pdf_cache, storage, workflow as wf
 from core.common import _held_open, workbook_locked
 
 # Microsoft Excel 的表格文件（加载项 .xla/.xlam、CSV 不算）
@@ -768,6 +768,11 @@ def _prepare_task_files(task: dict[str, Any], checked: list[tuple], total: int,
                 guard.progress()
                 where: dict[str, str] = {}
                 try:
+                    pre = _digest(local) if pdf_settings else ""
+                    cached = pdf_settings and _use_cached_pdf(item, local, _pdf_target(local), pre, pdf_settings)
+                    if cached and temp_root is not None:
+                        # 只传 PDF、Excel 没变过、PDF 是按这一版导的：不再处理、不再导，直接传这份 PDF（用户 2026-11-10）
+                        break
                     target = local
                     if temp_root is not None:
                         target = temp_root / str(index) / local.name
@@ -775,11 +780,17 @@ def _prepare_task_files(task: dict[str, Any], checked: list[tuple], total: int,
                         copy_one(local, target)  # 处理文件夹里那份在 Excel 里开着（有没保存的修改）时这里会报错
                     item["prep"] = upload_prep.prepare(get_excel, target, reference, where)
                     wf.log_msg(f"🧽 {item['rel']}：{upload_prep.text(item['prep'])}")
-                    if pdf_settings:  # 清完标记、视图标准化之后再导，PDF 里不会有标记色
+                    if cached:  # 表格和 PDF 一起：Excel 照样处理、上传，PDF 沿用；处理保存后的 Excel 也认这份 PDF
+                        pdf_cache.add_excel_hash(_pdf_target(local), _digest(local))
+                    elif pdf_settings:  # 清完标记、视图标准化之后再导，PDF 里不会有标记色
                         where["step"] = "导出同名 PDF"
                         _export_pdf(get_excel, item, target, pdf_settings, _sheet_progress(index, total, item["rel"], guard))
                         if temp_root is not None:  # 处理文件夹里也留一份 PDF，和「一起传」时一样
                             shutil.copyfile(item["_pdf_local"], _pdf_target(local))
+                            item["_pdf_local"] = str(_pdf_target(local))
+                        # 记下这份 PDF 是哪版 Excel 导的：处理前那版（只传 PDF 时处理文件夹里就是这版）和处理保存后那版
+                        pdf_cache.remember(_pdf_target(local), [pre, _digest(local)], pdf_settings["options"],
+                                           item["pdf"], "upload")
                     break
                 except Exception as err:
                     debug_log.exception(err, f"上传前处理 {item['rel']}")
@@ -891,6 +902,20 @@ def _export_pdf(get_excel: Callable[[], Any], item: dict[str, Any], local: Path,
                     跳过=[f"{s['sheet']}（{s['reason']}）" for s in info["skipped"]])
 
 
+def _use_cached_pdf(item: dict[str, Any], excel: Path, pdf: Path, excel_hash: str, settings: dict[str, Any]) -> bool:
+    """Excel 的哈希和上次导出 PDF 时记下的一样、导出设置一样、PDF 没被换过 → 直接用这份 PDF，不重新导（core/pdf_cache.py）"""
+    hit = pdf_cache.lookup(pdf, excel_hash, settings["options"])
+    if not hit:
+        return False
+    item["_pdf_local"] = str(pdf)
+    item["pdf"] = {"status": "exported", "name": pdf.name, "pages": hit.get("pages", 0), "sheets": hit.get("sheets", 0),
+                   "skipped": hit.get("skipped") or [], "cached": True}
+    wf.log_msg(f"📕 {item['rel']}：Excel 没变，沿用之前导出的 {pdf.name}（{item['pdf']['pages']} 页），不重新导")
+    debug_log.event("♻️ 同名 PDF 沿用缓存", 文件=item["rel"], PDF=str(pdf), Excel哈希=excel_hash[:12],
+                    来自="批量导出同名 PDF" if hit.get("source") == "bundle" else "上次上传", 导出于=hit.get("at", ""))
+    return True
+
+
 def _upload_pdf(item: dict[str, Any], excel_target: Path, settings: dict[str, Any], claimed: set[str],
                 task_id: str = "") -> dict[str, dict[str, Any]]:
     """Excel 传成功后把同名 PDF 放到它旁边。返回要记下的版本（{key: entry}）"""
@@ -966,7 +991,8 @@ def _pdf_text(pdf: dict[str, Any] | None) -> str:
     if not pdf:
         return ""
     if pdf["status"] == "ok":
-        return f"同名 PDF {pdf['name']} 已{'覆盖' if pdf.get('action') == 'overwrite' else '新建'}（{pdf['sheets']} 张表、{pdf['pages']} 页）"
+        return (f"同名 PDF {pdf['name']} 已{'覆盖' if pdf.get('action') == 'overwrite' else '新建'}（{pdf['sheets']} 张表、{pdf['pages']} 页"
+                + ("，Excel 没变，沿用之前导出的" if pdf.get("cached") else "") + "）")
     if pdf["status"] == "exported":
         return f"同名 PDF {pdf['name']} 已导出，但这份没传上去，PDF 也没传"
     if pdf["status"] == "stale":
@@ -1056,13 +1082,14 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
             debug_log.exception(err, "写拿取版本清单")
             data["manifest_error"] = _explain(err)
     for item in items:  # 复制前一刻发现共享被人改过、已同步回来的：前面的处理和 PDF 都是按旧版做的
-        if item.get("status") == "review" and item.get("prep"):
-            item["prep_stale"] = True
+        if item.get("status") == "review" and (item.get("prep") or item.get("pdf")):
+            item["prep_stale"] = bool(item.get("prep"))
             item["error"] = ("复制前一刻发现共享里的这份被人改过，没有覆盖。已把共享最新版同步到处理和参考文件夹"
                              "（你处理好的那一版先备份了，见下面的路径），请在新版上重新处理并复检")
             pdf = item.get("pdf") or {}
             if pdf.get("status") == "exported":
                 old = _pdf_target(_task_file(work, item["rel"]))
+                pdf_cache.forget(old)
                 try:
                     old.unlink(missing_ok=True)
                 except OSError as err:
@@ -1534,12 +1561,18 @@ def _prepare_free(items: list[dict[str, Any]], temp_root: Path, src: Path,
                 guard.progress()
                 where: dict[str, str] = {}
                 try:
+                    cached = pdf_settings and _use_cached_pdf(item, src / item["rel"], _pdf_target(src / item["rel"]),
+                                                              item["src_sha256"], pdf_settings)
+                    if cached and pdf_settings["only"]:  # 只传 PDF、起点的 Excel 没变：不处理、不导，直接传起点旁边那份 PDF
+                        if _digest(src / item["rel"]) != item["src_sha256"]:
+                            raise ValueError("起点的文件在生成清单之后变了，请重新生成清单")
+                        break
                     local.parent.mkdir(parents=True, exist_ok=True)
                     if copy_one(src / item["rel"], local) != item["src_sha256"]:
                         raise ValueError("起点的文件在生成清单之后变了，请重新生成清单")
                     item["prep"] = {**upload_prep.prepare(get_excel, local, None, where), "no_reference": True}
                     wf.log_msg(f"🧽 {item['rel']}：{upload_prep.text(item['prep'])}")
-                    if pdf_settings:  # 从清过标记的临时副本导出，PDF 放在临时副本旁边
+                    if pdf_settings and not cached:  # 从清过标记的临时副本导出，PDF 放在临时副本旁边
                         where["step"] = "导出同名 PDF"
                         _export_pdf(get_excel, item, local, pdf_settings, _sheet_progress(index, len(items), item["rel"], guard))
                     break

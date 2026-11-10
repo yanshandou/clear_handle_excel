@@ -116,7 +116,9 @@
       ? `<strong>Excel 不传</strong>（终点那份不动），处理文件夹里的 Excel 也不改：照样先核对共享版本，在本机临时副本上做上传前处理，再导出同名 PDF（所有表合一份、宽一页），放在终点 Excel 旁边。`
       : `每份 Excel 上传前处理做完后导出同名 PDF（所有表合一份、宽一页），Excel 传好后放在终点 Excel 旁边。`)
       + `按「批量导出同名 PDF」的设置：不打印的表 ${esc(o.skip_sheets.length ? o.skip_sheets.join('、') : '无')}，页眉页脚${o.no_header_footer ? '去掉' : '保留'}，隐藏表${o.include_hidden ? '也放进去' : '跳过'}`
-      + `（<a href="/pdf-bundle" target="_blank" rel="noopener">改设置 ↗</a>）。<br>终点已有同名 PDF 时<strong>默认不覆盖</strong>：上传前先列出来，由你逐个选覆盖还是跳过。`;
+      + `（<a href="/pdf-bundle" target="_blank" rel="noopener">改设置 ↗</a>）。<br>终点已有同名 PDF 时<strong>默认不覆盖</strong>：上传前先列出来，由你逐个选覆盖还是跳过。`
+      + `<br>Excel 没改过、之前已经导过 PDF（上次上传或「批量导出同名 PDF」导的，设置也一样）的，<strong>直接用那份 PDF</strong>，不再重新导`
+      + (pdfMode() === 'pdf' ? '，也不再做上传前处理。' : '（Excel 照样做上传前处理再传）。');
   }
   {
     const saved = load(PDF_ON);
@@ -545,7 +547,7 @@
     const p = file.pdf;
     if (!p) return '';
     let text;
-    if (p.status === 'ok') text = `同名 PDF ${p.name} 已${p.action === 'overwrite' ? '覆盖' : '新建'}（${p.sheets} 张表、${p.pages} 页）`;
+    if (p.status === 'ok') text = `同名 PDF ${p.name} 已${p.action === 'overwrite' ? '覆盖' : '新建'}（${p.sheets} 张表、${p.pages} 页${p.cached ? '，Excel 没变，沿用之前导出的' : ''}）`;
     else if (p.status === 'exported') text = `同名 PDF ${p.name} 已导出，但这份没传上去，PDF 也没传`;
     else if (p.status === 'stale') text = `同名 PDF ${p.name} 是按同步前那一版导的，没传，处理文件夹里那份也删掉了`;
     else text = p.error || '同名 PDF 没传';

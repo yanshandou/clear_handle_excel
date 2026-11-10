@@ -9,6 +9,7 @@
 - 完全空白的表（没内容、没图形）Excel 没东西可印，跳过并在结果里写明。
 - 本工具加的标记色（条件格式里带 CHE_MARK 标识的规则）导出前在内存里去掉（用户 2026-11-10 要），不保存，
   还没清色的文件导出来的 PDF 也是干净的；删不掉的（比如表有保护）在结果里写明。
+- 导出后按 Excel 哈希记进 pdf_cache：上传页选「只传 PDF / 表格和 PDF 一起」时，Excel 没变就直接用这份。
 
 和「调整页面」的 PDF（根目录/PDFS、按表一份、哈希沿用）完全分开，互不影响。
 """
@@ -25,7 +26,7 @@ from typing import Any
 
 from core.pdf_detector import fitz
 
-from core import debug_log, file_problem, progress_log, workflow as wf
+from core import debug_log, file_problem, pdf_cache, progress_log, workflow as wf
 from core.common import XL_SHEET_VISIBLE, XL_TYPE_PDF, strip_review_prefix, workbook_rel_name
 from core.excel_ops import open_workbook_checked, quit_background_excel, start_background_excel
 
@@ -265,6 +266,8 @@ def _run(root: Path, paths: list[Path], options: dict) -> None:
                     entry.update(export_workbook(excel, path, options["include_hidden"], on_sheet, options["skip_sheets"],
                                                  options["no_header_footer"]))
                     claimed[target] = name
+                    # 记下这份 PDF 是哪版 Excel 导的，上传时 Excel 没变就直接用这份，不再重导（core/pdf_cache.py）
+                    pdf_cache.remember(Path(entry["pdf"]), [pdf_cache.digest(path)], options, entry, "bundle")
                 except Exception as error:
                     debug_log.exception(error, f"批量导出同名 PDF {name}")
                     retry, entry["error"] = guard.problem(error, path, name, root,
