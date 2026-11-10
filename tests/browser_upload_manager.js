@@ -149,7 +149,7 @@ server.serve_forever()
     await until(() => evaluate(`document.getElementById('workTaskUploadLink').pathname === '/distribute'`), 'Step 9 did not link to current-task upload');
     await navigate(base + '/distribute');
     await until(() => evaluate(`document.querySelectorAll('#distTaskFiles input').length === 2`), 'Task files did not load');
-    await evaluate(`document.getElementById('distTaskCount').value='1';document.getElementById('distTaskPickCount').click();`);
+    await evaluate(`document.querySelector('#distTaskFiles input[value="a.xlsx"]').click();`);
     assert.deepEqual(await evaluate(`[...document.querySelectorAll('#distTaskFiles input:checked')].map(box=>box.value)`), ['a.xlsx']);
     const upload = async () => {
       await evaluate(`document.getElementById('distTaskUpload').click()`);
@@ -170,7 +170,7 @@ server.serve_forever()
     await until(() => evaluate(`document.getElementById('distTaskFiles').textContent.includes('当前版本已上传')`), 'Upload record missing');
     assert.equal(fs.readFileSync(path.join(shared, 'a.xlsx'), 'utf8'), 'my reviewed edit');
     assert.equal(fs.readFileSync(path.join(shared, 'b.xlsx'), 'utf8'), 'unselected');
-    await evaluate(`document.getElementById('distTaskPickCount').click()`);
+    await evaluate(`document.getElementById('distTaskPickWaiting').click()`);
     assert.deepEqual(await evaluate(`[...document.querySelectorAll('#distTaskFiles input:checked')].map(box=>box.value)`), ['b.xlsx']);
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({checks:['manager loads SQLite records','no Node/CDN runtime','native date controls','allocation preview','save with confirmation','saved snapshot handoff','mobile layout','missing-plan handling','copy requires new preview','selected batch upload and review','PDF export link','persistent upload status'], screenshot:screenshotPath},null,2));

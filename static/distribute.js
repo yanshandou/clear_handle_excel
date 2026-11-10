@@ -116,7 +116,9 @@
       ? `<strong>Excel 不传</strong>（终点那份不动），处理文件夹里的 Excel 也不改：照样先核对共享版本，在本机临时副本上做上传前处理，再导出同名 PDF（所有表合一份、宽一页），放在终点 Excel 旁边。`
       : `每份 Excel 上传前处理做完后导出同名 PDF（所有表合一份、宽一页），Excel 传好后放在终点 Excel 旁边。`)
       + `按「批量导出同名 PDF」的设置：不打印的表 ${esc(o.skip_sheets.length ? o.skip_sheets.join('、') : '无')}，页眉页脚${o.no_header_footer ? '去掉' : '保留'}，隐藏表${o.include_hidden ? '也放进去' : '跳过'}`
-      + `（<a href="/pdf-bundle" target="_blank" rel="noopener">改设置 ↗</a>）。<br>终点已有同名 PDF 时<strong>默认不覆盖</strong>：上传前先列出来，由你逐个选覆盖还是跳过。`;
+      + `（<a href="/pdf-bundle" target="_blank" rel="noopener">改设置 ↗</a>）。<br>终点已有同名 PDF 时<strong>默认不覆盖</strong>：上传前先列出来，由你逐个选覆盖还是跳过。`
+      + `<br>Excel 没改过、之前已经导过 PDF（上次上传或「批量导出同名 PDF」导的，设置也一样）的，<strong>直接用那份 PDF</strong>，不再重新导`
+      + (pdfMode() === 'pdf' ? '，也不再做上传前处理。' : '（Excel 照样做上传前处理再传）。');
   }
   {
     const saved = load(PDF_ON);
@@ -127,7 +129,7 @@
     save(PDF_ON, pdfMode());
     console.info('📕 上传什么', { excel: '只传表格', both: '表格和 PDF 一起', pdf: '只传 PDF' }[pdfMode()], pdfOptions());
     showPdfNote();
-    if (!loading) controls();  // 「选取前 N 个」按钮的说法跟着变
+    if (!loading) controls();  // 「全选待上传」按钮的说法跟着变
   });
   window.addEventListener('focus', showPdfNote);  // 在另一个标签页改了导出设置，回来就更新
   showPdfNote();
@@ -251,13 +253,16 @@
   function taskControls(busy) {
     const files = taskFiles.filter(file => selected.has(file.rel));
     const reviewCount = files.filter(file => file.review?.ready).length;
-    for (const id of ['distTaskCount', 'distTaskPickCount', 'distTaskClear', 'distTaskReload']) $(id).disabled = !!busy;
+    for (const id of ['distTaskPickWaiting', 'distTaskPickAll', 'distTaskClear', 'distTaskReload']) $(id).disabled = !!busy;
     for (const box of $('distTaskFiles').querySelectorAll('input[type="checkbox"]')) {
       box.disabled = !!busy;
       box.checked = selected.has(box.value);
     }
     $('distTaskSelection').textContent = `已选 ${files.length} / ${taskFiles.length} 个`;
-    $('distTaskPickCount').textContent = pdfMode() === 'pdf' ? '选取前 N 个还没传 PDF 的文件' : '选取前 N 个待上传文件';
+    const waitingCount = taskFiles.filter(waitingFilter()).length;
+    $('distTaskPickWaiting').textContent = `☑ 全选${pdfMode() === 'pdf' ? '还没传 PDF 的' : '待上传'}（${waitingCount} 个）`;
+    $('distTaskPickWaiting').disabled = !!busy || !waitingCount;
+    $('distTaskPickAll').textContent = `全选全部（${taskFiles.length} 个）`;
     $('distTaskUpload').disabled = !!busy || !files.length;
     $('distTaskUpload').textContent = reviewCount ? '确认重新处理完毕，再检查并上传' : '检查并批量上传';
   }
@@ -542,7 +547,7 @@
     const p = file.pdf;
     if (!p) return '';
     let text;
-    if (p.status === 'ok') text = `同名 PDF ${p.name} 已${p.action === 'overwrite' ? '覆盖' : '新建'}（${p.sheets} 张表、${p.pages} 页）`;
+    if (p.status === 'ok') text = `同名 PDF ${p.name} 已${p.action === 'overwrite' ? '覆盖' : '新建'}（${p.sheets} 张表、${p.pages} 页${p.cached ? '，Excel 没变，沿用之前导出的' : ''}）`;
     else if (p.status === 'exported') text = `同名 PDF ${p.name} 已导出，但这份没传上去，PDF 也没传`;
     else if (p.status === 'stale') text = `同名 PDF ${p.name} 是按同步前那一版导的，没传，处理文件夹里那份也删掉了`;
     else text = p.error || '同名 PDF 没传';
@@ -1026,15 +1031,22 @@
     else selected.delete(box.value);
     controls();
   });
-  $('distTaskPickCount').addEventListener('click', () => {
-    const input = $('distTaskCount');
-    if (!input.reportValidity() || !input.value) return;
+  // 用户 2026-11-10：不要「前 N 个」，要么全选、要么自己勾。整批会顺着跑完，选多少都不会卡住
+  // 只传 PDF：待上传 = 没传过 PDF，或传过之后 Excel 又传了新版；其他按 Excel 的当前版本传没传过
+  function waitingFilter() {
+    return pdfMode() === 'pdf' ? file => file.review || !file.pdf_uploaded_at || pdfStale(file)
+      : file => file.review || !file.uploaded_current;
+  }
+  $('distTaskPickWaiting').addEventListener('click', () => {
     selected.clear();
-    // 只传 PDF：按 PDF 挑（没传过 PDF，或传过之后 Excel 又传了新版）；其他按 Excel 挑
-    const waiting = taskFiles.filter(pdfMode() === 'pdf' ? file => file.review || !file.pdf_uploaded_at || pdfStale(file)
-      : file => file.review || !file.uploaded_current);
-    console.info('📋 按数量选取', { 按: pdfMode() === 'pdf' ? 'PDF 有没有传过' : 'Excel 有没有传过当前版本', 待上传: waiting.length });
-    for (const file of waiting.slice(0, input.valueAsNumber)) selected.add(file.rel);
+    const waiting = taskFiles.filter(waitingFilter());
+    for (const file of waiting) selected.add(file.rel);
+    console.info('☑ 全选待上传', { 按: pdfMode() === 'pdf' ? 'PDF 有没有传过' : 'Excel 有没有传过当前版本', 个数: waiting.length });
+    controls();
+  });
+  $('distTaskPickAll').addEventListener('click', () => {
+    for (const file of taskFiles) selected.add(file.rel);
+    console.info('☑ 全选全部', taskFiles.length);
     controls();
   });
   $('distTaskClear').addEventListener('click', () => { selected.clear(); controls(); });

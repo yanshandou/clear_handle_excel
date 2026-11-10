@@ -76,7 +76,6 @@
       border: 1.5px dashed #b45309; border-radius: 10px; background: #fffbeb; }
     .dist-focus-row[hidden] { display: none; }
     .dist-focus-row .toolbar-hint { margin: 0; color: #5b3a06; }
-    #distTaskCount { width: 6rem; margin-inline: 6px; border: 2px solid var(--outline); border-radius: 10px; }
     .dist-debug { margin-top: 24px; }
     .dist-start .dist-upload-metric { display: none; }
     /* 入口页只做三件事：填路径、建任务、拿文件；第 4 步的导航、上传记录都不显示（用户 2026-11-06 定） */
@@ -249,7 +248,7 @@
             </div>
           </div>
           <div id="distTaskBox" class="dist-surface" hidden>
-            <p class="toolbar-hint">在处理文件夹中勾选要传回共享的 Excel，或按数量选择。系统只检查选中文件的共享版本，有更新就先同步到参考和处理文件夹，等你重新处理并复检。</p>
+            <p class="toolbar-hint">在处理文件夹中勾选要传回共享的 Excel，或点「全选待上传」。系统只检查选中文件的共享版本，有更新就先同步到参考和处理文件夹，等你重新处理并复检。</p>
             <div class="dist-dest-row">
               <label for="distTaskDest">上传到（终点）<small class="toolbar-hint">不填就是共享文件夹。几个人分着做时，填团队 OneDrive 的中转文件夹，汇总的人再用「起点 → 终点 上传」传到公司</small>
                 <input id="distTaskDest" type="text" spellcheck="false" autocomplete="off"></label>
@@ -257,8 +256,8 @@
               <span id="distTaskDestNote" class="toolbar-hint" role="status"></span>
             </div>
             <div class="dist-plan-row">
-              <label for="distTaskCount">按数量选取<input id="distTaskCount" type="number" min="1" step="1" value="10" required></label>
-              <button id="distTaskPickCount" class="button secondary" type="button">选取前 N 个待上传文件</button>
+              <button id="distTaskPickWaiting" class="button secondary" type="button">☑ 全选待上传</button>
+              <button id="distTaskPickAll" class="button secondary" type="button">全选全部</button>
               <button id="distTaskClear" class="button secondary" type="button">清空选择</button>
               <button id="distTaskReload" class="button secondary" type="button">刷新文件列表</button>
               <span id="distTaskSelection" role="status" aria-live="polite"></span>

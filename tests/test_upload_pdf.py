@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from core import distribute, pdf_bundle, storage, upload_prep, work_task, workflow as wf
+from core import distribute, pdf_bundle, pdf_cache, storage, upload_prep, work_task, workflow as wf
 
 PREP = {"marks": 0, "tabs": 0, "colors": 0, "color_skipped": 0, "color_problems": [], "reference": False, "normalized": True}
 PDF_ON = {"options": {"include_hidden": False, "skip_sheets": ["変更履歴"], "no_header_footer": True}}
@@ -197,6 +197,75 @@ class UploadPdfTests(unittest.TestCase):
         self.assertEqual(b["status"], "ok")  # 不挡后面的，照常传上去
         self.assertEqual(read(self.company / "sub" / "b.xlsx"), "B fixed")
         self.assertIn("同步前那一版", distribute.markdown(result))
+
+    # ───── 同名 PDF 缓存（用户 2026-11-10）：Excel 没变、设置没变、PDF 没被换 → 不再处理、不再导 ─────
+    def test_pdf_only_reuses_pdf_when_excel_unchanged(self):
+        self.upload({**PDF_ON, "only": True}, ["a.xlsx"])
+        self.assertEqual(self.export.call_count, 1)
+        upload_prep.prepare.reset_mock()
+        (self.company / "a.pdf").unlink()
+        result = self.upload({**PDF_ON, "only": True}, ["a.xlsx"])
+        self.export.assert_called_once()  # 没有重新导
+        upload_prep.prepare.assert_not_called()  # 也没有再做上传前处理
+        self.assertEqual(read(self.company / "a.pdf"), "PDF of A fixed")
+        self.assertTrue(result["files"][0]["pdf"]["cached"])
+        self.assertIn("沿用之前导出的", distribute.markdown(result))
+
+    def test_excel_changed_exports_again(self):
+        self.upload({**PDF_ON, "only": True}, ["a.xlsx"])
+        write(self.work / "a.xlsx", "A fixed v2")
+        (self.company / "a.pdf").unlink()
+        self.upload({**PDF_ON, "only": True}, ["a.xlsx"])
+        self.assertEqual(self.export.call_count, 2)
+        self.assertEqual(read(self.company / "a.pdf"), "PDF of A fixed v2")
+
+    def test_pdf_replaced_or_options_changed_exports_again(self):
+        self.upload({**PDF_ON, "only": True}, ["a.xlsx"])
+        write(self.work / "a.pdf", "别人换掉的 PDF")
+        self.upload({**PDF_ON, "only": True, "overwrite": {"a.xlsx": distribute.pdf_check(self.task["id"], ["a.xlsx"])["files"][0]["sha256"]}}, ["a.xlsx"])
+        self.assertEqual(self.export.call_count, 2)
+        other = {"options": {**PDF_ON["options"], "include_hidden": True}, "only": True,
+                 "overwrite": {"a.xlsx": distribute.pdf_check(self.task["id"], ["a.xlsx"])["files"][0]["sha256"]}}
+        self.upload(other, ["a.xlsx"])
+        self.assertEqual(self.export.call_count, 3)
+
+    def test_both_then_pdf_only_reuses_pdf_after_prep_saved(self):
+        def prepare(get_excel, local, reference, where):
+            if "+处理" not in read(local):
+                local.write_text(read(local) + " +处理", encoding="utf-8")  # 处理后保存，Excel 哈希变了
+            return dict(PREP)
+        upload_prep.prepare.side_effect = prepare
+        self.upload(PDF_ON, ["a.xlsx"])
+        self.assertEqual(read(self.work / "a.xlsx"), "A fixed +处理")
+        (self.company / "a.pdf").unlink()
+        self.upload({**PDF_ON, "only": True}, ["a.xlsx"])
+        self.export.assert_called_once()  # 处理后那一版也认得
+        self.assertEqual(read(self.company / "a.pdf"), "PDF of A fixed +处理")
+
+    def test_both_reuses_bundle_pdf_but_still_uploads_excel(self):
+        info = fake_export(None, self.work / "a.xlsx", False)  # 先在「批量导出同名 PDF」页导过
+        pdf_cache.remember(self.work / "a.pdf", [pdf_cache.digest(self.work / "a.xlsx")], PDF_ON["options"], info, "bundle")
+        result = self.upload(PDF_ON, ["a.xlsx"])
+        self.export.assert_not_called()
+        upload_prep.prepare.assert_called_once()  # Excel 要传，照样处理
+        self.assertEqual(read(self.company / "a.xlsx"), "A fixed")
+        self.assertEqual(read(self.company / "a.pdf"), "PDF of A fixed")
+        self.assertEqual(result["files"][0]["pdf"]["status"], "ok")
+
+    def test_free_pdf_only_uses_cached_pdf_next_to_source(self):
+        other = Path(self.tmp.name) / "中转"
+        write(other / "x.xlsx", "X")
+        info = fake_export(None, other / "x.xlsx", False)
+        pdf_cache.remember(other / "x.pdf", [pdf_cache.digest(other / "x.xlsx")], PDF_ON["options"], info, "bundle")
+        dest = Path(self.tmp.name) / "终点"
+        dest.mkdir()
+        preview = distribute.preview_free(str(other), str(dest))
+        distribute.start_free(preview["id"], False, {**PDF_ON, "only": True})
+        result = self.wait()
+        self.export.assert_not_called()
+        upload_prep.prepare.assert_not_called()
+        self.assertEqual(read(dest / "x.pdf"), "PDF of X")
+        self.assertEqual(result["summary"]["PDF 已传"], 1)
 
 
 if __name__ == "__main__":
