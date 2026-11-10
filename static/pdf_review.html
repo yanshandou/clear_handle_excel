@@ -5,13 +5,13 @@
   <title>调整页面 - Excel 整理工具箱</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
-  <link rel="stylesheet" href="/static/pdf_review.css"><link rel="stylesheet" href="/static/pdf_cells.css">
+  <link rel="stylesheet" href="/static/pdf_review.css">
   <link rel="stylesheet" href="/static/theme-casual.css">
 </head>
 <body>
   <header class="app-header">
-    <a href="/" class="header-brand"><div class="header-logo-badge">📋</div><div class="header-title"><h1>调整页面</h1><span class="subtitle">页面和切字都在这里改 · 单击页面看大图、给格子选修法 · 统一修改后看新的 PDF · Ctrl + 单击用 Excel 打开那一页</span></div></a>
-    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/records" class="nav-link">📋 执行记录</a><a href="/distribute" class="nav-link nav-next" title="页面和切字都处理好了：去下一步上传（上传前自动清标记色、恢复颜色、视图标准化）">下一步：上传 ➜</a></nav>
+    <a href="/" class="header-brand"><div class="header-logo-badge">📋</div><div class="header-title"><h1>调整页面</h1><span class="subtitle">点按钮告诉程序怎么改 · 单击页面看大图 · 统一修改后看新的 PDF · Ctrl + 单击用 Excel 打开那一页</span></div></a>
+    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/records" class="nav-link">📋 执行记录</a><a href="/workbench" class="nav-link nav-next" title="页面都调好了：去下一步查看切字（扫描标色、调整单元格）">下一步：查看切字 ➜</a></nav>
   </header>
   <main class="container pr-container">
     <section class="panel pr-setup">
@@ -28,9 +28,6 @@
         <li><b>末页只多一点</b>（最后一页印了不到 20%）的表自动标<b>黄</b>，建议向下取整；不想取整就点一下「⤓ 取整」取消。</li>
         <li>看完点底部<b>「🛠 统一修改」</b>：后台改 Excel、保存，再重新生成改过的那几张表的 PDF。改了方向后要不要取整就不一定了，看新的 PDF 再决定。可以来回改好几轮，都没问题了再去下一步。</li>
         <li>上面的<b>分类</b>只看某一类的表，还能一次改这一类（比如末页只多一点的全部取整）。</li>
-        <li><b>切字</b>：PDF 都是最新的以后，后台自动查切字（就是原来「查看切字」的扫描，直接用这里的 PDF），查出来的格子在页面上画<b>红框</b>，每张表下面列出这张表的格子。
-          <b>单击页面看大图</b>：单击格子选修法（行高 ×1.2 / ×1.5 / ×2、缩小字体、上面加分页线），<b>Ctrl + 单击</b>多选，从空白处<b>拖一个框</b>把碰到的格子都选上；格子右上角 <b>✕</b> = 不用处理，再点 ↺ 恢复。</li>
-        <li>点<b>「🛠 统一修改」</b>时页面和格子一起改：先改页面、重新生成 PDF，页面改过的表重新查切字，再按选好的工具改格子、保存、复检；复检没过的格子留着，可以换个工具再改，或者打开 Excel 自己改。</li>
         <li>要自己在 Excel 里改：点标题上的 Excel 路径，或按住 <b>Ctrl 单击</b>页面（或右键菜单），Excel 打开并跳到那一页；改完保存后点<b>「🔄 重新生成」</b>。「🔄 重新生成」只导这一张表，同一份 Excel 别的表不动。只想改一张表的话，点完方向、取整后直接点这张表的「🔄 重新生成」也行：先改进 Excel、再重新生成。</li>
         <li>填了原始备份文件夹时，打开时老版本也一起打开（只读）、跳到同一块，左右并排对照。顶栏和底部条不碰 3 秒自动隐藏，鼠标移到窗口最上面或最下面就会出来。</li>
       </ul>
@@ -95,7 +92,7 @@
     <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
   </main>
   <script src="/static/dialog.js"></script><script src="/static/open_excel.js"></script><script src="/static/eta.js"></script><script src="/static/job_panel.js"></script>
-  <script src="/static/pdf_cells.js"></script><script src="/static/pdf_review.js"></script><script src="/static/debug_log.js"></script>
+  <script src="/static/pdf_review.js"></script><script src="/static/debug_log.js"></script>
   <script src="/static/task_folder.js"></script><script src="/static/focus_banner.js"></script><script src="/static/file_problem.js"></script>
 </body>
 </html>
