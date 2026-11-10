@@ -5,18 +5,34 @@
   const API = '/api/pdf_bundle';
   const FOLDER = 'clear_handle_excel.lastFolder';
   const HIDDEN = 'clear_handle_excel.pdfBundleHidden';
+  const SKIP = 'clear_handle_excel.pdfBundleSkip';
+  const DEFAULT_SKIP = '変更履歴';
   const LABEL = '📕 批量导出同名 PDF';
   let latest = {}, loading = true, submitting = false, timer = 0, initial = true, wasRunning = false;
   try {
     $('bundleFolder').value = localStorage.getItem(FOLDER) || '';
     $('bundleHidden').checked = localStorage.getItem(HIDDEN) === '1';
   } catch (_) {}
+  let savedSkip = null;
+  try { savedSkip = localStorage.getItem(SKIP); } catch (_) {}
+  $('bundleSkip').value = savedSkip ?? DEFAULT_SKIP;
+
+  // 不打印的表名：一行一个，逗号、顿号、分号也能隔开
+  const skipNames = () => [...new Set($('bundleSkip').value.split(/[\n,，、;；]+/).map(v => v.trim()).filter(Boolean))];
+  function showSkip() {
+    const names = skipNames();
+    $('bundleSkipCount').textContent = names.length ? `共 ${names.length} 个表名会跳过` : '名单是空的：所有表都打印';
+    try { localStorage.setItem(SKIP, $('bundleSkip').value); } catch (_) {}
+  }
+  $('bundleSkip').addEventListener('input', showSkip);
+  $('bundleSkipReset').addEventListener('click', () => { $('bundleSkip').value = DEFAULT_SKIP; showSkip(); });
+  showSkip();
 
   const baseName = p => String(p || '').split(/[\\/]/).pop();
 
   function controls() {
     const busy = loading || submitting || latest.running;
-    for (const id of ['bundleFolder', 'bundleHidden', 'bundleRun']) $(id).disabled = !!busy;
+    for (const id of ['bundleFolder', 'bundleHidden', 'bundleSkip', 'bundleSkipReset', 'bundleRun']) $(id).disabled = !!busy;
     $('bundleRun').textContent = submitting || latest.running ? '正在导出…' : LABEL;
   }
 
@@ -62,7 +78,9 @@
     const result = latest.result;
     if (latest.running && !result) { $('bundleResults').innerHTML = '<p>正在导出，做完一份会出现在右下角的进度框里。</p>'; return; }
     if (!result) { $('bundleResults').innerHTML = '<p>尚未开始。</p>'; $('bundleResultFolder').textContent = ''; return; }
-    $('bundleResultFolder').textContent = `文件夹：${result.folder}${result.options?.include_hidden ? ' · 包含隐藏表' : ' · 跳过隐藏表'}`;
+    const skipList = result.options?.skip_sheets || [];
+    $('bundleResultFolder').textContent = `文件夹：${result.folder}${result.options?.include_hidden ? ' · 包含隐藏表' : ' · 跳过隐藏表'}`
+      + ` · 不打印：${skipList.length ? skipList.join('、') : '无'}`;
     const files = result.files || [];
     const ok = files.filter(f => !f.error), bad = files.filter(f => f.error);
     const pages = ok.reduce((sum, f) => sum + (f.pages || 0), 0);
@@ -94,7 +112,10 @@
       latest = await response.json();
       if (latest.running || initial) {
         if (latest.folder) $('bundleFolder').value = latest.folder;
-        if (latest.options) $('bundleHidden').checked = !!latest.options.include_hidden;
+        if (latest.options) {
+          $('bundleHidden').checked = !!latest.options.include_hidden;
+          if (latest.running && Array.isArray(latest.options.skip_sheets)) $('bundleSkip').value = latest.options.skip_sheets.join('\n');
+        }
       }
       if (wasRunning && !latest.running) {
         const files = latest.result?.files || [];
@@ -113,19 +134,20 @@
     if (loading || submitting || latest.running) return;
     const folder = $('bundleFolder').value.trim();
     const includeHidden = $('bundleHidden').checked;
+    const skip = skipNames();
     $('bundleError').textContent = '';
     if (!folder) { $('bundleError').textContent = '请填写 Excel 文件夹'; return; }
     const okGo = await window.appConfirm(
       `要把这个文件夹（含子文件夹）里的每份 Excel 都导出成同名 PDF，放在 Excel 旁边吗？\n\n${folder}\n\n`
-      + `· 已有的同名 PDF 会被覆盖\n· 隐藏的工作表：${includeHidden ? '也放进 PDF' : '跳过'}\n· Excel 只读打开，不会被改动`,
+      + `· 已有的同名 PDF 会被覆盖\n· 不打印的表：${skip.length ? skip.join('、') : '无（所有表都打印）'}\n· 隐藏的工作表：${includeHidden ? '也放进 PDF' : '跳过'}\n· Excel 只读打开，不会被改动`,
       { title: '批量导出同名 PDF', okText: '开始导出' });
     if (!okGo) return;
     submitting = true; controls();
-    console.info('📕 批量导出同名 PDF 开始', { 文件夹: folder, 包含隐藏表: includeHidden });
+    console.info('📕 批量导出同名 PDF 开始', { 文件夹: folder, 包含隐藏表: includeHidden, 不打印的表: skip });
     try {
       const response = await fetch(API + '/run', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folder, options: { include_hidden: includeHidden } }),
+        body: JSON.stringify({ folder, options: { include_hidden: includeHidden, skip_sheets: skip } }),
       });
       const result = await response.json();
       if (!response.ok || !result.ok) throw Error(result.error || '操作失败');

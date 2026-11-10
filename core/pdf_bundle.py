@@ -4,6 +4,7 @@
 - 一份 PDF 里按工作表顺序放所有可见表的全部页；勾了「包含隐藏表」时隐藏表也临时显示出来导出（不保存）。
 - 打印设置一律按 Excel 现有的（打印区域、缩放、横竖、分页），只读打开、不改不存 Excel。
 - 每张表先单独导出成临时 PDF 再用 PyMuPDF 拼起来：整本一次导出时，各表打印质量不同 Excel 会拆成几份 PDF。
+- 跳过名单里的表（默认 変更履歴，网页上可改，比较时不管全角半角、大小写、前后空格）不放进 PDF。
 - 完全空白的表（没内容、没图形）Excel 没东西可印，跳过并在结果里写明。
 
 和「调整页面」的 PDF（根目录/PDFS、按表一份、哈希沿用）完全分开，互不影响。
@@ -27,16 +28,28 @@ from core.excel_ops import open_workbook_checked, quit_background_excel, start_b
 
 _LOCK = threading.RLock()
 _STATUS: dict[str, Any] = {"running": False}
-DEFAULT_OPTIONS = {"include_hidden": False}
+DEFAULT_SKIP_SHEETS = ["変更履歴"]  # 不用打印的表（用户 2026-11-10 要），网页上可以改
+DEFAULT_OPTIONS = {"include_hidden": False, "skip_sheets": DEFAULT_SKIP_SHEETS}
+MAX_SKIP_NAMES = 200
 
 
 def options_for(options: dict | None = None) -> dict:
     if options is not None and not isinstance(options, dict):
         raise ValueError("导出选项格式不正确")
     result = {**DEFAULT_OPTIONS, **(options or {})}
-    if set(result) != set(DEFAULT_OPTIONS) or any(type(v) is not bool for v in result.values()):
-        raise ValueError("导出选项只能选是否包含隐藏表")
+    if set(result) != set(DEFAULT_OPTIONS) or type(result["include_hidden"]) is not bool:
+        raise ValueError("导出选项只能选是否包含隐藏表、跳过哪些表")
+    names = result["skip_sheets"]
+    if not isinstance(names, list) or len(names) > MAX_SKIP_NAMES or any(not isinstance(n, str) for n in names):
+        raise ValueError("跳过的表名格式不正确")
+    result["skip_sheets"] = list(dict.fromkeys(n.strip() for n in names if n.strip()))
     return result
+
+
+def sheet_key(name: str) -> str:
+    """表名比较时不管前后空格、全角半角、大小写（「変更履歴 」「ＢＫ」也认）"""
+    import unicodedata
+    return unicodedata.normalize("NFKC", str(name)).strip().casefold()
 
 
 def pdf_path_for(wb_path: Path) -> Path:
@@ -79,11 +92,13 @@ def _export_sheet(sheet: Any, target: Path) -> None:
     )
 
 
-def export_workbook(excel: Any, wb_path: Path, include_hidden: bool, on_sheet=None) -> dict:
+def export_workbook(excel: Any, wb_path: Path, include_hidden: bool, on_sheet=None,
+                    skip_sheets: list[str] | None = None) -> dict:
     """导出一份 Excel 成一份 PDF。返回 {pdf, sheets, pages, skipped:[{sheet, reason}]}"""
     target = pdf_path_for(wb_path)
     tmp_dir = Path(tempfile.mkdtemp(prefix="pdf_bundle_"))
     skipped: list[dict] = []
+    skip_keys = {sheet_key(n) for n in skip_sheets or []}
     parts: list[tuple[str, Path]] = []
     wb = open_workbook_checked(excel, str(wb_path.resolve()), ReadOnly=True, UpdateLinks=0)
     try:
@@ -92,6 +107,9 @@ def export_workbook(excel: Any, wb_path: Path, include_hidden: bool, on_sheet=No
             name = str(sheet.Name)
             if on_sheet:
                 on_sheet(index, len(sheets), name)
+            if sheet_key(name) in skip_keys:
+                skipped.append({"sheet": name, "reason": "在跳过名单里"})
+                continue
             if int(sheet.Visible) != XL_SHEET_VISIBLE:
                 if not include_hidden:
                     skipped.append({"sheet": name, "reason": "隐藏表"})
@@ -113,7 +131,7 @@ def export_workbook(excel: Any, wb_path: Path, include_hidden: bool, on_sheet=No
         wb.Close(SaveChanges=False)
     try:
         if not parts:
-            raise ValueError("没有可以导出的工作表（都是隐藏表或空白表）")
+            raise ValueError("没有可以导出的工作表（都是隐藏表、空白表或在跳过名单里）")
         merged = fitz.open()
         try:
             toc = []  # PDF 书签：每张表一个，点一下跳到这张表
@@ -171,7 +189,7 @@ def _run(root: Path, paths: list[Path], options: dict) -> None:
                         with _LOCK:
                             progress_log.step(_STATUS, f"正在导出第 {i} / {total} 张表：{sheet}")
 
-                    entry.update(export_workbook(excel, path, options["include_hidden"], on_sheet))
+                    entry.update(export_workbook(excel, path, options["include_hidden"], on_sheet, options["skip_sheets"]))
                     claimed[target] = name
                 except Exception as error:
                     debug_log.exception(error, f"批量导出同名 PDF {name}")

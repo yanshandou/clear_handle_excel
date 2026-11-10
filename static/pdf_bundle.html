@@ -7,6 +7,9 @@
   <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
   <link rel="stylesheet" href="/static/repair.css"><script src="/static/game_fx.js"></script>
   <style>
+    .bundle-skip-field { display: grid !important; gap: 8px; font-weight: 600; }
+    .bundle-skip-field textarea { width: 100%; max-width: 760px; box-sizing: border-box; font: inherit; font-weight: 400; padding: 10px 12px; border-radius: 10px; border: 1px solid #c9d8e9; resize: vertical; }
+    .bundle-skip-note { display: flex; align-items: center; gap: 12px; margin: 0; }
     .bundle-rules { margin: 0; padding-left: 22px; line-height: 1.9; }
     .bundle-fields { grid-template-columns: minmax(0, 1fr); max-width: 760px; }
     .bundle-summary { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 6px 0 4px; font-weight: 600; }
@@ -36,12 +39,15 @@
         <li><b>文件名一致</b>：<code>aaa.xlsx</code> 旁边生成 <code>aaa.pdf</code>，同一个文件夹（含子文件夹）；已有同名 PDF 会被覆盖。</li>
         <li><b>内容完整</b>：一份 PDF 里按工作表顺序放这份 Excel 所有工作表的全部页，每张表在 PDF 里有一个书签。</li>
         <li><b>按 Excel 现在的打印设置</b>：打印区域、缩放、横竖、分页都照 Excel 里设的导出；只读打开，不改也不保存 Excel。</li>
-        <li>完全空白的表没有东西可印，会跳过并在结果里写明。</li>
+        <li>下面「不打印的表」名单里的表跳过（默认 <code>変更履歴</code>）；完全空白的表没有东西可印，也跳过。跳过的都在结果里写明。</li>
       </ul>
       <div class="link-fields bundle-fields">
         <label for="bundleFolder">Excel 文件夹（含子文件夹）<input id="bundleFolder" type="text" placeholder="例如 D:\处理后\001"></label>
       </div>
-      <fieldset class="repair-options"><legend>隐藏的工作表</legend>
+      <fieldset class="repair-options"><legend>不打印的表</legend>
+        <label class="bundle-skip-field" for="bundleSkip">表名是这些的不放进 PDF（一行一个，也可以用逗号、顿号隔开；不分全角半角、大小写）
+          <textarea id="bundleSkip" rows="3" spellcheck="false" placeholder="例如&#10;変更履歴&#10;メモ"></textarea></label>
+        <p class="toolbar-hint bundle-skip-note"><span id="bundleSkipCount"></span><button type="button" id="bundleSkipReset" class="btn btn-outline btn-sm">恢复默认（変更履歴）</button></p>
         <label><input id="bundleHidden" type="checkbox"> 隐藏的工作表也放进 PDF（不勾就跳过；勾了会临时显示出来导出，Excel 本身不改）</label>
       </fieldset>
       <div class="link-actions"><button id="bundleRun" class="btn btn-primary" type="button" disabled>📕 批量导出同名 PDF</button></div>

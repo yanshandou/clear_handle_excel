@@ -64,12 +64,12 @@ class BundleTest(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)
 
-    def export(self, name, sheets, include_hidden=False):
+    def export(self, name, sheets, include_hidden=False, skip=None):
         path = self.root / name
         path.write_bytes(b"x")
         book = Book(sheets)
         with patch.object(pdf_bundle, "open_workbook_checked", return_value=book) as opened:
-            result = pdf_bundle.export_workbook(object(), path, include_hidden)
+            result = pdf_bundle.export_workbook(object(), path, include_hidden, skip_sheets=skip)
         self.assertEqual(opened.call_args.kwargs["ReadOnly"], True)
         self.assertIs(book.closed_with, False)
         return path, result
@@ -124,8 +124,21 @@ class BundleTest(unittest.TestCase):
         left = sorted(p.name for p in self.root.iterdir() if p.suffix == ".pdf")
         self.assertEqual(left, ["aaa.pdf", "aaa_b.pdf"])  # 只删以前按表混放的旧 PDF
 
+    def test_skip_list_by_name(self):
+        rireki = Sheet("変更履歴 ", 2)
+        _, result = self.export("f.xlsx", [Sheet("表紙", 1), rireki, Sheet("ＭＥＭＯ", 1), Sheet("一覧", 3)],
+                                skip=["変更履歴", "memo"])
+        self.assertEqual(result["sheets"], ["表紙", "一覧"])
+        self.assertEqual(result["pages"], 4)
+        self.assertEqual([s["reason"] for s in result["skipped"]], ["在跳过名单里"] * 2)
+        self.assertEqual(rireki.exported, [])
+
     def test_options_validated(self):
-        self.assertEqual(pdf_bundle.options_for(None), {"include_hidden": False})
+        self.assertEqual(pdf_bundle.options_for(None), {"include_hidden": False, "skip_sheets": ["変更履歴"]})
+        self.assertEqual(pdf_bundle.options_for({"skip_sheets": [" A ", "", "A", "B"]})["skip_sheets"], ["A", "B"])
+        self.assertEqual(pdf_bundle.options_for({"skip_sheets": []})["skip_sheets"], [])
+        with self.assertRaises(ValueError):
+            pdf_bundle.options_for({"skip_sheets": "変更履歴"})
         with self.assertRaises(ValueError):
             pdf_bundle.options_for({"include_hidden": "yes"})
         with self.assertRaises(ValueError):
