@@ -237,7 +237,7 @@ class WorkTaskTests(unittest.TestCase):
         hashed = set()
 
         def record_hash(path):
-            if path.is_relative_to(self.shared):
+            if path.is_relative_to(self.shared) and not path.name.endswith(distribute.TEMP_SUFFIX):
                 hashed.add(path.relative_to(self.shared).as_posix())
             return digest(path)
 
@@ -248,11 +248,12 @@ class WorkTaskTests(unittest.TestCase):
             distribute.start_task_upload(task_id, batch, {})
             first = self.wait_applied()
             self.assertEqual(hashed, set(batch))
-        self.assertEqual(first["summary"], {"已复制": 0, "待重新处理": 1, "没复制成功": 0})
+        # 用户 2026-11-10：a 要重新处理不挡 b，b 照常传上去
+        self.assertEqual(first["summary"], {"已复制": 1, "待重新处理": 1, "没复制成功": 0})
         self.assertEqual((work / "a.xlsx").read_text(encoding="utf-8"), "shared v2")
         self.assertEqual((ref / "a.xlsx").read_text(encoding="utf-8"), "shared v2")
         self.assertEqual(work_task.finish_check(task_id)["issues"]["待重新处理"], ["a.xlsx"])
-        self.assertEqual((self.shared / batch[1]).read_text(encoding="utf-8"), "b1")
+        self.assertEqual((self.shared / batch[1]).read_text(encoding="utf-8"), "b2")
         self.assertEqual((work / "unselected.xlsx").read_text(encoding="utf-8"), "original")
         self.assertEqual(Path(first["files"][0]["backup_path"]).read_text(encoding="utf-8"), "my first changes")
         base = distribute.load_baseline()[distribute._base_key(self.shared / "a.xlsx")]
@@ -260,11 +261,11 @@ class WorkTaskTests(unittest.TestCase):
         first_token = distribute.task_files(task_id)["files"][0]["review"]["token"]
 
         distribute.start_task_upload(task_id, batch, {})
-        self.assertEqual(self.wait_applied()["summary"]["已复制"], 0)
+        self.assertEqual(self.wait_applied()["summary"]["已复制"], 1)  # 只有 b
         write(work / "a.xlsx", "my second changes")
         write(self.shared / "a.xlsx", "shared v3")
         distribute.start_task_upload(task_id, batch, {"a.xlsx": first_token})
-        self.assertEqual(self.wait_applied()["summary"]["已复制"], 0)
+        self.assertEqual(self.wait_applied()["summary"]["已复制"], 1)  # 只有 b
         second_token = distribute.task_files(task_id)["files"][0]["review"]["token"]
         self.assertNotEqual(first_token, second_token)
         self.assertEqual((ref / "a.xlsx").read_text(encoding="utf-8"), "shared v3")
@@ -272,7 +273,7 @@ class WorkTaskTests(unittest.TestCase):
 
         write(work / "a.xlsx", "final")
         distribute.start_task_upload(task_id, batch, {"a.xlsx": first_token})
-        self.assertEqual(self.wait_applied()["summary"]["已复制"], 0)
+        self.assertEqual(self.wait_applied()["summary"]["已复制"], 1)  # 只有 b
         distribute.start_task_upload(task_id, batch, {"a.xlsx": second_token})
         result = self.wait_applied()
         self.assertEqual(result["summary"]["已复制"], 2)

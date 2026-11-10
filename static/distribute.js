@@ -106,12 +106,14 @@
   // 上传什么（用户 2026-11-10）：excel 只传表格 / both 表格和 PDF 一起 / pdf 只传 PDF
   const pdfMode = () => document.querySelector('input[name="distPdfMode"]:checked')?.value || 'excel';
   const pdfOn = () => pdfMode() !== 'excel';
+  const isoTime = text => String(text || '').replace(' ', 'T');
+  const pdfStale = file => !!(file.pdf_uploaded_at && file.uploaded_at && isoTime(file.pdf_uploaded_at) < isoTime(file.uploaded_at));
   function showPdfNote() {
     const o = pdfOptions();
     $('distPdfBox').classList.toggle('is-on', pdfOn());
     if (!pdfOn()) { $('distPdfNote').textContent = '只传 Excel，和以前一样。'; return; }
     $('distPdfNote').innerHTML = (pdfMode() === 'pdf'
-      ? `<strong>Excel 不传</strong>（终点那份不动）。照样先核对共享版本、做上传前处理，再导出同名 PDF（所有表合一份、宽一页），放在终点 Excel 旁边。`
+      ? `<strong>Excel 不传</strong>（终点那份不动），处理文件夹里的 Excel 也不改：照样先核对共享版本，在本机临时副本上做上传前处理，再导出同名 PDF（所有表合一份、宽一页），放在终点 Excel 旁边。`
       : `每份 Excel 上传前处理做完后导出同名 PDF（所有表合一份、宽一页），Excel 传好后放在终点 Excel 旁边。`)
       + `按「批量导出同名 PDF」的设置：不打印的表 ${esc(o.skip_sheets.length ? o.skip_sheets.join('、') : '无')}，页眉页脚${o.no_header_footer ? '去掉' : '保留'}，隐藏表${o.include_hidden ? '也放进去' : '跳过'}`
       + `（<a href="/pdf-bundle" target="_blank" rel="noopener">改设置 ↗</a>）。<br>终点已有同名 PDF 时<strong>默认不覆盖</strong>：上传前先列出来，由你逐个选覆盖还是跳过。`;
@@ -125,6 +127,7 @@
     save(PDF_ON, pdfMode());
     console.info('📕 上传什么', { excel: '只传表格', both: '表格和 PDF 一起', pdf: '只传 PDF' }[pdfMode()], pdfOptions());
     showPdfNote();
+    if (!loading) controls();  // 「选取前 N 个」按钮的说法跟着变
   });
   window.addEventListener('focus', showPdfNote);  // 在另一个标签页改了导出设置，回来就更新
   showPdfNote();
@@ -205,7 +208,7 @@
     const only = pdfMode() === 'pdf';
     return { options: pdfOptions(), overwrite, only,
       line: `📕 ${only ? '只传 PDF（Excel 不传）' : '同名 PDF 一起上传'}：新建 ${check.files.length - existing - clash} 个`
-        + (over ? `，覆盖 ${over} 个` : '') + (existing - over ? `，终点已有、不覆盖 ${existing - over} 个` : '') + '。导出 PDF 没做成时这一批都不传。' };
+        + (over ? `，覆盖 ${over} 个` : '') + (existing - over ? `，终点已有、不覆盖 ${existing - over} 个` : '') + '。哪份导出 PDF 没做成，那份就不传，其余照传。' };
   }
 
   const size = n => n == null ? '-' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
@@ -254,6 +257,7 @@
       box.checked = selected.has(box.value);
     }
     $('distTaskSelection').textContent = `已选 ${files.length} / ${taskFiles.length} 个`;
+    $('distTaskPickCount').textContent = pdfMode() === 'pdf' ? '选取前 N 个还没传 PDF 的文件' : '选取前 N 个待上传文件';
     $('distTaskUpload').disabled = !!busy || !files.length;
     $('distTaskUpload').textContent = reviewCount ? '确认重新处理完毕，再检查并上传' : '检查并批量上传';
   }
@@ -270,7 +274,8 @@
       const found = new Set(taskFiles.map(file => file.rel));
       for (const rel of selected) if (!found.has(rel)) selected.delete(rel);
       const rows = taskFiles.map(file => {
-        const upload = file.uploaded ? `<span class="link-ok">已上传${file.uploaded_at ? ' · ' + esc(file.uploaded_at.replace('T', ' ')) : ''}</span>` : '';
+        const upload = (file.uploaded ? `<span class="link-ok">已上传${file.uploaded_at ? ' · ' + esc(file.uploaded_at.replace('T', ' ')) : ''}</span>` : '')
+          + (file.pdf_uploaded_at ? `${file.uploaded ? '<br>' : ''}<small class="dist-pdf-line">📕 PDF ${pdfStale(file) ? '是旧的（之后又传过 Excel）' : '已传'} · ${esc(file.pdf_uploaded_at.replace('T', ' '))}</small>` : '');
         const status = file.review
           ? (file.review.ready ? '待重新处理' : '同步未完成，请重新检查')
           : file.uploaded_current === true ? '当前版本已上传'
@@ -515,9 +520,11 @@
 
   function renderUpload(data) {
     const s = data.summary || {};
-    const text = data.stopped || (s['待重新处理']
-      ? '上传已暂停。请在最新版上重新处理并复检，完成后再次检查所选文件。'
-      : s['没复制成功'] ? '上传已暂停。请检查下方的文件提示后重试。' : '本批文件已上传。');
+    // 用户 2026-11-10：整批顺着跑完，没传上去的最后一起列出来
+    const text = data.stopped || ((s['待重新处理'] || s['没复制成功'])
+      ? `这一批跑完了。${s['待重新处理'] ? `${s['待重新处理']} 个共享里有更新，已把最新版同步到处理和参考文件夹（你改的那版先备份了），请在新版上重新处理、复检后再传。` : ''}`
+        + (s['没复制成功'] ? `${s['没复制成功']} 个没传成，原因见下面。` : '')
+      : '本批文件已上传。');
     const rows = (data.files || []).map(file => {
       const status = file.status === 'ok' ? (file.pdf_only ? '✓ 只传 PDF，Excel 没传' : '✓ 已上传') : file.error || '未上传';
       const base = file.status === 'ok' ? data.dest_root : data.source_root;
@@ -536,7 +543,8 @@
     if (!p) return '';
     let text;
     if (p.status === 'ok') text = `同名 PDF ${p.name} 已${p.action === 'overwrite' ? '覆盖' : '新建'}（${p.sheets} 张表、${p.pages} 页）`;
-    else if (p.status === 'exported') text = `同名 PDF ${p.name} 已导出，Excel 没传所以没传`;
+    else if (p.status === 'exported') text = `同名 PDF ${p.name} 已导出，但这份没传上去，PDF 也没传`;
+    else if (p.status === 'stale') text = `同名 PDF ${p.name} 是按同步前那一版导的，没传，处理文件夹里那份也删掉了`;
     else text = p.error || '同名 PDF 没传';
     return `<br><small class="dist-pdf-line${['failed', 'skipped', 'kept'].includes(p.status) ? ' is-bad' : ''}">📕 ${esc(text)}</small>`;
   }
@@ -554,7 +562,7 @@
     const skipped = p.color_skipped ? `<details class="dist-prep-skip"><summary>颜色改不了 ${p.color_skipped} 处（点开看是哪些，请人工看一下）</summary><ul>`
       + (p.color_problems || []).map(cell => `<li>${fileLink(`${cell.sheet}!${cell.cell}`, data.source_root, file.rel, cell.sheet, cell.cell)} · ${esc(cell.reason)}</li>`).join('')
       + (p.color_skipped > (p.color_problems || []).length ? `<li>还有 ${p.color_skipped - p.color_problems.length} 处没列出</li>` : '') + '</ul></details>' : '';
-    return `<br><small>🧽 上传前：${esc(parts.join('，'))}</small>${skipped}`;
+    return `<br><small>🧽 ${file.prep_stale ? '同步前那一版做过的上传前处理（已作废）' : '上传前'}：${esc(parts.join('，'))}</small>${skipped}`;
   }
 
   const renderAny = (data, applied) => isFetch(data) ? renderFetch(data, applied)
@@ -682,7 +690,7 @@
       const paused = data.stopped || s['待重新处理'] || s['没复制成功'];
       $('distResultTitle').textContent = '批量上传结果';
       const pdfOnly = data.files.length && data.files.every(file => file.pdf_only);
-      showProgress('done', paused ? '上传已暂停。' : '上传完成。', pdfOnly ? ` 只传 PDF，Excel 没传。${pdfSummary(s)}`
+      showProgress('done', data.stopped ? '上传停下了。' : paused ? '这一批跑完了，有没传上去的：' : '上传完成。', pdfOnly ? ` 只传 PDF，Excel 没传。${pdfSummary(s)}`
         : ` 已上传 ${s['已复制'] || 0} / ${data.files.length} 个。${pdfSummary(s)}`, !!(paused || s['PDF 没传成']));
       $('distResults').innerHTML = renderUpload(data);
       return;
@@ -717,6 +725,19 @@
           + (warn ? '。请看下面标红、标黄的文件夹，或下载复制记录。' : '，每个文件夹三个数都一致。'), warn);
     }
     $('distResults').innerHTML = renderData(data, !latest.preview);
+  }
+
+  // 上传跑完：有没传上去的（共享有更新已同步、出错）一起列出来（用户 2026-11-10：不要一个一个卡住）
+  function uploadDone(data) {
+    const s = data.summary || {};
+    const review = data.files.filter(file => file.status === 'review'), failed = data.files.filter(file => file.status === 'failed');
+    console.info('📦 批量上传跑完', { 已上传: s['已复制'] || 0, 要重新处理: review.map(f => f.rel), 没传成: failed.map(f => `${f.rel}：${f.error}`) });
+    if (!review.length && !failed.length) return;
+    const list = files => files.slice(0, 10).map(file => '　' + file.rel).join('\n') + (files.length > 10 ? `\n　…还有 ${files.length - 10} 个` : '');
+    const lines = [`已上传 ${s['已复制'] || 0} 个。`];
+    if (review.length) lines.push(`\n🔄 ${review.length} 个共享里有更新，已把最新版同步到处理和参考文件夹（你改的那版先备份了）。请在新版上重新处理、复检后再传：\n${list(review)}`);
+    if (failed.length) lines.push(`\n⚠️ ${failed.length} 个没传成（原因见页面上的结果）：\n${list(failed)}`);
+    window.appAlert(lines.join('\n'), { title: '这一批跑完了，有几个要再处理', tone: 'warn' });
   }
 
   // 拿完文件：成功撒花（game_fx.js），再弹提示说拿了多少、下一步做什么；有没拿成的只弹黄色提示
@@ -770,6 +791,7 @@
           for (const file of latest.applied.files) if (file.status === 'ok') selected.delete(file.rel);
         }
         await reloadTaskFiles();
+        if (isUpload(latest.applied) && !latest.applied.stopped) uploadDone(latest.applied);
       }
       if (wasRunning && !latest.running && isFetch(latest.applied)) fetchDone(latest.applied);
       if (wasRunning && !latest.running && isFree(latest.applied)) {
@@ -867,7 +889,7 @@
     const reviews = files.filter(file => file.review?.ready);
     const message = reviews.length
       ? `请确认这 ${reviews.length} 个待重新处理的文件已经保存并完成复检。系统将再次核对本批 ${files.length} 个文件的共享版本，检查通过后上传。\n\n${reviews.slice(0, 8).map(file => file.rel).join('\n')}${reviews.length > 8 ? '\n…' : ''}`
-      : `检查选中的 ${files.length} 个 Excel。发现共享端有更新时，先同步到参考和处理文件夹（两边的旧版都先备份），并暂停上传。检查通过后，每个文件先自动清掉标记色、对照参考改回残留的颜色、视图标准化（A1、100%），都做成了再`
+      : `检查选中的 ${files.length} 个 Excel。共享里有更新的那几份，先把最新版同步到参考和处理文件夹（两边的旧版都先备份）、记下来，其余照常上传，跑完再一起告诉你。检查通过的，每个文件先自动清掉标记色、对照参考改回残留的颜色、视图标准化（A1、100%），都做成了再`
         + (task.upload_to ? `传到中转文件夹「${task.upload_to}」（公司共享不动），并在那里记下拿取版本。` : '传回当前任务的共享文件夹。');
     submitting = 'upload';
     controls();
@@ -964,7 +986,7 @@
     if (!isFree(p) || loading || submitting || latest.running || needsFreePreview) return;
     const s = p.summary;
     const lines = [`从「${p.source_root}」传 ${s['要上传']} 个 Excel 到「${p.dest_root}」：新建 ${s['新建']} 个，覆盖 ${s['覆盖'] + s['要确认']} 个。`,
-      '每个文件先在本机临时副本上清掉标记色、视图标准化（A1、100%）再传，起点的文件不动。有一个没做成，这一批都不传。'];
+      '每个文件先在本机临时副本上清掉标记色、视图标准化（A1、100%）再传，起点的文件不动。哪份没做成那份就不传，其余照传，跑完一起告诉你。'];
     if (s['别人改过']) lines.push(`🛑 ${s['别人改过']} 个在拿走之后被别人改过，不会覆盖。`);
     const confirmList = p.files.filter(file => file.action === 'confirm');
     if (confirmList.length) {
@@ -1008,7 +1030,10 @@
     const input = $('distTaskCount');
     if (!input.reportValidity() || !input.value) return;
     selected.clear();
-    const waiting = taskFiles.filter(file => file.review || !file.uploaded_current);
+    // 只传 PDF：按 PDF 挑（没传过 PDF，或传过之后 Excel 又传了新版）；其他按 Excel 挑
+    const waiting = taskFiles.filter(pdfMode() === 'pdf' ? file => file.review || !file.pdf_uploaded_at || pdfStale(file)
+      : file => file.review || !file.uploaded_current);
+    console.info('📋 按数量选取', { 按: pdfMode() === 'pdf' ? 'PDF 有没有传过' : 'Excel 有没有传过当前版本', 待上传: waiting.length });
     for (const file of waiting.slice(0, input.valueAsNumber)) selected.add(file.rel);
     controls();
   });
