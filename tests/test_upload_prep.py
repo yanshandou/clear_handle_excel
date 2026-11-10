@@ -123,7 +123,7 @@ class TaskUploadPrepTests(unittest.TestCase):
         self.assertEqual(result["files"][0]["prep"]["colors"], 2)
         self.assertIn("上传前：清掉标记 1 条", distribute.markdown(result))
 
-    def test_one_failed_preparation_uploads_nothing(self):
+    def test_one_failed_preparation_skips_only_that_file(self):
         def prepare(get_excel, local, reference, where):
             if local.name == "b.xlsx":
                 where["step"] = "视图标准化"
@@ -132,10 +132,11 @@ class TaskUploadPrepTests(unittest.TestCase):
                     "reference": True, "normalized": True}
 
         result = self.run_upload(prepare)
-        self.assertEqual(result["summary"]["已复制"], 0)
+        # 用户 2026-11-10：没做成的那份不传，其余照传
+        self.assertEqual(result["summary"]["已复制"], 1)
         self.assertEqual(result["summary"]["没复制成功"], 1)
         self.assertIn("上传前视图标准化没做成", result["files"][1]["error"])
-        self.assertEqual((self.shared / "a.xlsx").read_text(encoding="utf-8"), "A")
+        self.assertNotEqual((self.shared / "a.xlsx").read_text(encoding="utf-8"), "A")
         self.assertEqual((self.shared / "b.xlsx").read_text(encoding="utf-8"), "B")
 
 

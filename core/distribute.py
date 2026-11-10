@@ -763,7 +763,7 @@ def _prepare_task_files(task: dict[str, Any], checked: list[tuple], total: int,
     try:
         for index, (item, local, _dest, _expected) in enumerate(checked):
             reference = _task_file(Path(task["reference"]), item["rel"]) if task.get("reference") else None
-            while True:  # 出错时问用户：「重试」重开 Excel 再做这份，「跳过」就不传（这一批都不传）
+            while True:  # 出错时问用户：「重试」重开 Excel 再做这份，「跳过」这份就不传（其余照传，用户 2026-11-10）
                 _progress(index, total, f"上传前处理 {item['rel']}")
                 guard.progress()
                 where: dict[str, str] = {}
@@ -994,17 +994,21 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
             checked.append((item, local, dest, current))
         except (OSError, ValueError) as err:
             item.update(status="failed", error=_explain(err))
-    if not any(item.get("status") for item in items):
-        # 上传前每个文件都先清标记色、对照参考恢复残留颜色、视图标准化（core/upload_prep.py）；
-        # 有一个没做成就和检查没通过一样，这一批一个都不传
+    # 用户 2026-11-10：整批顺着跑完，不因为一份卡住整批。检查没通过的（共享有更新已同步、出错）先记着，
+    # 其余的照常处理、上传，最后一起告诉用户哪些要重新处理
+    ready = [entry for entry in checked if not entry[0].get("status")]
+    if ready:
+        # 上传前每个文件都先清标记色、对照参考恢复残留颜色、视图标准化（core/upload_prep.py）；没做成的这份不传
         temp_root = None
         if (data.get("pdf") or {}).get("only"):
             import tempfile
             temp_root = Path(tempfile.mkdtemp(prefix="只传PDF_"))
             data["_temp_root"] = str(temp_root)  # 跑完（出错也一样）由 start() 删掉
-        _prepare_task_files(task, checked, len(items), data.get("pdf"), temp_root)
-    if not any(item.get("status") for item in items):
-        for index, (item, local, dest, expected) in enumerate(checked):
+        _prepare_task_files(task, ready, len(items), data.get("pdf"), temp_root)
+    for index, (item, local, dest, expected) in enumerate(ready):
+        if item.get("status"):  # 上传前处理没做成
+            continue
+        if True:
             _progress(index, len(items), f"上传 {item['rel']}")
 
             def verify_shared() -> None:
@@ -1029,10 +1033,10 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
                         item.update(status="failed", error="上传期间共享版本发生变化，请重新检查")
                 except (OSError, ValueError) as err:
                     item.update(status="failed", error=_explain(err))
-                break
+                continue  # 这份记着最后告诉用户，接着传下一份
             except (OSError, ValueError) as err:
                 item.update(status="failed", error=_explain(err))
-                break
+                continue
             entry = _base_entry(target, digest, "复制", task["id"])
             item.update(status="ok", uploaded_at=entry["upload"]["at"])
             entry["tasks"][task["id"]]["review"] = None
@@ -1065,10 +1069,6 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
                     debug_log.event("⚠️ 过期的同名 PDF 删不掉", 文件=str(old), 原因=str(err))
                 pdf["status"] = "stale"
                 item.pop("_pdf_local", None)
-    stopped_at = next((item["rel"] for item in items if item.get("status") in ("review", "failed") and item.get("prep")), "")
-    for item in items:  # 复制阶段前面有一份被拦下，后面的这一批都停下了
-        if not item.get("status") and stopped_at:
-            item["error"] = f"前面的 {stopped_at} 没传成，这一批后面的停下了，没有上传，请重新选上传"
     done = [item["rel"] for item in items if item.get("status") == "ok" and not item.get("pdf_only")]
     if done:  # 本轮清单里的文件传上去了就划掉，全划掉自动回到整个文件夹
         from core import work_task
@@ -1511,7 +1511,7 @@ def start_free(preview_id: Any, confirm_overwrite: bool, pdf: Any = None) -> Non
 
 def _prepare_free(items: list[dict[str, Any]], temp_root: Path, src: Path,
                   pdf_settings: dict[str, Any] | None = None) -> None:
-    """在本机临时副本上清标记 + 视图标准化（没有参考，不恢复颜色）；有一份没做成，这一批都不传"""
+    """在本机临时副本上清标记 + 视图标准化（没有参考，不恢复颜色）；没做成的那份不传，其余照传"""
     from core import upload_prep
     from core.excel_ops import quit_background_excel, start_background_excel
 
@@ -1554,8 +1554,6 @@ def _prepare_free(items: list[dict[str, Any]], temp_root: Path, src: Path,
                         continue
                     item.update(status="failed", error=f"上传前{where.get('step') or '处理'}没做成：{message}")
                     break
-            if item.get("status"):
-                break
     finally:
         try:
             if excel is not None:
@@ -1577,11 +1575,13 @@ def _run_free(data: dict[str, Any]) -> dict[str, Any]:
         if not dst.is_dir():
             raise ValueError(f"终点文件夹不可用：{dst}")
         _prepare_free(items, temp_root, src, data.get("pdf"))
-        if not any(item.get("status") for item in items):
+        if True:  # 上传前处理没做成的那份不传，其余照传（用户 2026-11-10）
             changes: dict[str, dict[str, Any]] = {}
             pdf_claimed: set[str] = set()
             try:
                 for index, item in enumerate(items):
+                    if item.get("status"):  # 上传前处理没做成
+                        continue
                     _progress(index, len(items), f"上传 {item['rel']}")
                     dest = dst / item["rel"]
 
@@ -1610,10 +1610,6 @@ def _run_free(data: dict[str, Any]) -> dict[str, Any]:
                         changes.update(_upload_pdf(item, dest, data["pdf"], pdf_claimed))
             finally:
                 _save_baseline(changes)
-        else:
-            for item in items:
-                if not item.get("status"):
-                    item.update(status="failed", error="同一批里有文件上传前处理没做成，这一批都没有上传")
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
     for item in data["files"]:

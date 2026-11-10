@@ -135,7 +135,7 @@ class RelayUploadTests(unittest.TestCase):
         again = distribute.preview_free(str(other), str(dest))
         self.assertEqual({f["rel"]: f["action"] for f in again["files"]}["a.xlsx"], "overwrite")
 
-    def test_failed_preparation_uploads_nothing(self):
+    def test_failed_preparation_skips_only_that_file(self):
         other = Path(self.tmp.name) / "别处"
         write(other / "a.xlsx", "A")
         write(other / "b.xlsx", "B")
@@ -152,8 +152,10 @@ class RelayUploadTests(unittest.TestCase):
         self.patches(prepare)
         distribute.start_free(preview["id"], False)
         result = self.wait()
-        self.assertEqual(result["summary"]["已复制"], 0)
-        self.assertFalse((dest / "a.xlsx").exists())
+        # 用户 2026-11-10：没做成的那份不传，其余照传
+        self.assertEqual(result["summary"]["已复制"], 1)
+        self.assertTrue((dest / "a.xlsx").exists())
+        self.assertFalse((dest / "b.xlsx").exists())
         self.assertIn("上传前视图标准化没做成", result["files"][1]["error"])
 
     def test_dest_changed_after_preview_is_not_overwritten(self):
