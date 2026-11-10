@@ -287,7 +287,9 @@ def _render_sheet(sheet: Any, pdf_path: Path, png_path: Path) -> dict[str, Any]:
             return result
     try:
         _export_sheet_pdf(sheet, pdf_path)
-    except Exception:
+    except Exception as err:
+        # Excel 对空白表会报错；程序自己的错（如漏了 import）也会走到这里，要记下来，别都当空白表
+        debug_log.event("⚠️ 预览导出 PDF 失败", 表=str(getattr(sheet, "Name", "?")), 错误=f"{type(err).__name__}: {err}")
         result["note"] = "没有可打印的内容（可能是空白表）"
         return result
     try:

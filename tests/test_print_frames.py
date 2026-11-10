@@ -60,6 +60,25 @@ class PrintFramesTest(unittest.TestCase):
         with print_frames.hidden_frames(sheet) as n:
             self.assertEqual(n, 0)
 
+    def test_real_export_function_runs(self):
+        """workflow 真正的导出函数要能跑到 ExportAsFixedFormat（#217 漏了 import，所有导出都报 NameError）"""
+        from pathlib import Path
+        from unittest.mock import patch
+        from core import workflow
+        frame = shape("枠", 500, 800)
+        calls = []
+
+        class ExportSheet(Sheet):
+            def ExportAsFixedFormat(self, **kw):
+                calls.append((kw["Filename"], frame.Visible))
+
+        sheet = ExportSheet([frame])
+        with patch.object(workflow.page_fill, "force_one_page_wide"):
+            workflow._export_sheet_pdf_raw(sheet, Path("out.pdf"))
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(calls[0][1])
+        self.assertTrue(frame.Visible)
+
 
 if __name__ == "__main__":
     unittest.main()
