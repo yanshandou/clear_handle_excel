@@ -16,8 +16,21 @@ class BackupMarkerTests(unittest.TestCase):
     def test_change_note_sheets_are_clean_targets(self):
         names = ["変更履歴", "レイアウト", "レイアウト変更点", "仕様変更（#7547）",
                  "仕様変更", "❓仕様変更 (#1)", "レイアウト変更", "仕様書", "変更点一覧"]
-        self.assertEqual(find_clean_targets(names), names[2:7])
+        self.assertEqual(find_clean_targets(names), [names[0], *names[2:7]])
         self.assertEqual(find_contained_sheets(names), [])
+
+    def test_change_history_sheet_is_clean_target(self):
+        # 用户 2026-11-10：表名是「変更履歴」的也删；前后空格、全角半角、❓ 前缀都算，不需要原表
+        for name in ["変更履歴", " 変更履歴 ", "　変更履歴", "❓変更履歴"]:
+            self.assertEqual(find_clean_targets(["概要", name]), [name], name)
+        # 带日期等备份标记的没有原表也删（用户 2026-11-10 定）
+        for name in ["変更履歴_20220101", "20220101変更履歴", "変更履歴(2022-01-01)", "変更履歴_170120", "変更履歴_bak"]:
+            self.assertEqual(find_clean_targets(["概要", name]), [name], name)
+        self.assertEqual(find_clean_targets(["概要", "変更履歴", "変更履歴_20220101"]), ["変更履歴", "変更履歴_20220101"])
+        # 多出别的字的不算
+        self.assertEqual(find_clean_targets(["概要", "変更履歴一覧", "変更履歴書", "画面変更履歴"]), [])
+        # 导出 PDF 的备份规则不受影响（変更履歴 在导出时另有跳过名单）
+        self.assertEqual(find_backup_sheets(["概要", "変更履歴"]), [])
 
     def test_names_with_backup_markers(self):
         for name in (
@@ -123,7 +136,7 @@ class FindBackupSheetsTests(unittest.TestCase):
     def test_bk_suffix_means_backup(self):
         # TBOKG2000_写真管理.xlsx：bk 是备份的意思（用户 2026-10-26），有原表时默认删除；全角、前缀、带分隔符都算
         for backup in ["写真管理bk", "写真管理_BK", "写真管理-bk", "写真管理ｂｋ", "BK写真管理", "写真管理(bk)"]:
-            self.assertEqual(find_clean_targets(["変更履歴", "写真管理", backup]), [backup])
+            self.assertEqual(find_clean_targets(["表紙", "写真管理", backup]), [backup])
         # 没有原表、bk 是单词的一部分（Bkup、SBK、Bookmark）都不算
         self.assertEqual(find_backup_sheets(["写真管理bk"]), [])
         self.assertEqual(find_backup_sheets(["一覧", "Bkup一覧", "設定", "SBK設定"]), [])
@@ -206,7 +219,7 @@ class FindBackupSheetsTests(unittest.TestCase):
             "AIプロンプト", "居宅サービス計画書（2・1）", "居宅サービス計画書（2・2）", "別紙_削除処理",
         ]
         self.assertEqual(find_backup_sheets(names), [names[2]])
-        self.assertEqual(find_clean_targets(names), [names[2]])
+        self.assertEqual(find_clean_targets(names), [names[0], names[2]])
         self.assertEqual(find_contained_sheets(names), [])
         for backup in ("帳票(1)_20261019", "帳票（１）（2026-10-19）", "171013_帳票(1)"):
             with self.subTest(backup=backup):
@@ -230,7 +243,7 @@ class CleanTargetTests(unittest.TestCase):
             "変更履歴", "概要", "帳票_出力内容", "レイアウト(1ページ)",
             "レイアウト(複数ページ)", "旧レイアウト", "JSONサンプル",
         ]
-        self.assertEqual(find_clean_targets(names), ["旧レイアウト"])
+        self.assertEqual(find_clean_targets(names), ["変更履歴", "旧レイアウト"])
         self.assertEqual(find_contained_sheets(names), [])
         # 无需配对的旧表清理只用于精简 Sheet。
         self.assertEqual(find_backup_sheets(names), [])
@@ -248,7 +261,7 @@ class CleanTargetTests(unittest.TestCase):
             "❓自動生成_JSON", "自动生成_引数", "帳票_自動生成ルール",
         ]
         self.assertEqual(find_clean_targets(names), [
-            "概要20220816", "自動生成_定数", "自動生成_OUTPUT_V_LIST_HEADER", "❓自動生成_JSON", "自动生成_引数",
+            "変更履歴", "概要20220816", "自動生成_定数", "自動生成_OUTPUT_V_LIST_HEADER", "❓自動生成_JSON", "自动生成_引数",
         ])
         # 只影响精简 Sheet，不算备份表（导出 PDF 时照常导出）
         self.assertEqual(find_backup_sheets(names), ["概要20220816"])
