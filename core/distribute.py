@@ -627,8 +627,11 @@ def task_files(task_id: Any) -> dict[str, Any]:
                 same = _digest(_task_file(work, rel)) == upload["sha256"]
             except (OSError, ValueError):
                 pass
+        # 同名 PDF 上次什么时候传的（只看记录，不读共享）：只传 PDF 时按它挑「待上传」
+        pdf_upload = baseline.get(_base_key(_pdf_target(dest_root / rel)), {}).get("upload") or {}
         files.append({"rel": rel, "review": review, "uploaded": bool(upload) or key in old_upload_dates,
-                      "uploaded_at": (upload or {}).get("at") or old_upload_dates.get(key, ""), "uploaded_current": same})
+                      "uploaded_at": (upload or {}).get("at") or old_upload_dates.get(key, ""), "uploaded_current": same,
+                      "pdf_uploaded_at": pdf_upload.get("at", "")})
     return {"files": files, "errors": found["errors"], "dest": str(dest_root), "relay": work_task.is_relay(task)}
 
 
@@ -741,7 +744,9 @@ def _sheet_progress(index: int, total: int, rel: str, guard: Any) -> Callable[[i
 
 
 def _prepare_task_files(task: dict[str, Any], checked: list[tuple], total: int,
-                        pdf_settings: dict[str, Any] | None = None) -> None:
+                        pdf_settings: dict[str, Any] | None = None, temp_root: Path | None = None) -> None:
+    """上传前处理。只传 PDF（temp_root 给了）时在本机临时副本上做，处理文件夹里的 Excel 一点不动
+    （用户 2026-11-10：不然保存后哈希变了，「当前版本已上传」会变成「本地有新版本待上传」）"""
     from core import upload_prep
     from core.excel_ops import quit_background_excel, start_background_excel
 
@@ -763,11 +768,18 @@ def _prepare_task_files(task: dict[str, Any], checked: list[tuple], total: int,
                 guard.progress()
                 where: dict[str, str] = {}
                 try:
-                    item["prep"] = upload_prep.prepare(get_excel, local, reference, where)
+                    target = local
+                    if temp_root is not None:
+                        target = temp_root / str(index) / local.name
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        copy_one(local, target)  # 处理文件夹里那份在 Excel 里开着（有没保存的修改）时这里会报错
+                    item["prep"] = upload_prep.prepare(get_excel, target, reference, where)
                     wf.log_msg(f"🧽 {item['rel']}：{upload_prep.text(item['prep'])}")
                     if pdf_settings:  # 清完标记、视图标准化之后再导，PDF 里不会有标记色
                         where["step"] = "导出同名 PDF"
-                        _export_pdf(get_excel, item, local, pdf_settings, _sheet_progress(index, total, item["rel"], guard))
+                        _export_pdf(get_excel, item, target, pdf_settings, _sheet_progress(index, total, item["rel"], guard))
+                        if temp_root is not None:  # 处理文件夹里也留一份 PDF，和「一起传」时一样
+                            shutil.copyfile(item["_pdf_local"], _pdf_target(local))
                     break
                 except Exception as err:
                     debug_log.exception(err, f"上传前处理 {item['rel']}")
@@ -956,7 +968,9 @@ def _pdf_text(pdf: dict[str, Any] | None) -> str:
     if pdf["status"] == "ok":
         return f"同名 PDF {pdf['name']} 已{'覆盖' if pdf.get('action') == 'overwrite' else '新建'}（{pdf['sheets']} 张表、{pdf['pages']} 页）"
     if pdf["status"] == "exported":
-        return f"同名 PDF {pdf['name']} 已导出，Excel 没传所以没传"
+        return f"同名 PDF {pdf['name']} 已导出，但这份没传上去，PDF 也没传"
+    if pdf["status"] == "stale":
+        return f"同名 PDF {pdf['name']} 是按同步前那一版导的，没传，处理文件夹里那份也删掉了"
     return pdf.get("error") or "同名 PDF 没传"
 
 
@@ -983,7 +997,12 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
     if not any(item.get("status") for item in items):
         # 上传前每个文件都先清标记色、对照参考恢复残留颜色、视图标准化（core/upload_prep.py）；
         # 有一个没做成就和检查没通过一样，这一批一个都不传
-        _prepare_task_files(task, checked, len(items), data.get("pdf"))
+        temp_root = None
+        if (data.get("pdf") or {}).get("only"):
+            import tempfile
+            temp_root = Path(tempfile.mkdtemp(prefix="只传PDF_"))
+            data["_temp_root"] = str(temp_root)  # 跑完（出错也一样）由 start() 删掉
+        _prepare_task_files(task, checked, len(items), data.get("pdf"), temp_root)
     if not any(item.get("status") for item in items):
         for index, (item, local, dest, expected) in enumerate(checked):
             _progress(index, len(items), f"上传 {item['rel']}")
@@ -1032,6 +1051,24 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
         except (OSError, ValueError) as err:
             debug_log.exception(err, "写拿取版本清单")
             data["manifest_error"] = _explain(err)
+    for item in items:  # 复制前一刻发现共享被人改过、已同步回来的：前面的处理和 PDF 都是按旧版做的
+        if item.get("status") == "review" and item.get("prep"):
+            item["prep_stale"] = True
+            item["error"] = ("复制前一刻发现共享里的这份被人改过，没有覆盖。已把共享最新版同步到处理和参考文件夹"
+                             "（你处理好的那一版先备份了，见下面的路径），请在新版上重新处理并复检")
+            pdf = item.get("pdf") or {}
+            if pdf.get("status") == "exported":
+                old = _pdf_target(_task_file(work, item["rel"]))
+                try:
+                    old.unlink(missing_ok=True)
+                except OSError as err:
+                    debug_log.event("⚠️ 过期的同名 PDF 删不掉", 文件=str(old), 原因=str(err))
+                pdf["status"] = "stale"
+                item.pop("_pdf_local", None)
+    stopped_at = next((item["rel"] for item in items if item.get("status") in ("review", "failed") and item.get("prep")), "")
+    for item in items:  # 复制阶段前面有一份被拦下，后面的这一批都停下了
+        if not item.get("status") and stopped_at:
+            item["error"] = f"前面的 {stopped_at} 没传成，这一批后面的停下了，没有上传，请重新选上传"
     done = [item["rel"] for item in items if item.get("status") == "ok" and not item.get("pdf_only")]
     if done:  # 本轮清单里的文件传上去了就划掉，全划掉自动回到整个文件夹
         from core import work_task
@@ -1243,6 +1280,11 @@ def start(preview_id: str | None = None, *, upload: dict[str, Any] | None = None
                                 "summary": {"已复制": sum(f.get("status") == "ok" for f in preview_data["files"])}
                                 if task_upload or free_upload else {}}
         finally:
+            temp = preview_data.pop("_temp_root", "")
+            if result is not None:
+                result.pop("_temp_root", None)
+            if temp:
+                shutil.rmtree(temp, ignore_errors=True)
             with wf.STATE_LOCK, _LOCK:
                 _STATUS.update(running=False, current="")
                 _STATUS["log"] = _live_log()  # 做完也留着，刷新页面还能看到这次每个文件的结果
@@ -1688,7 +1730,7 @@ def markdown(result: dict[str, Any]) -> str:
                 status += f"（旧参考备份在 `{item['ref_backup_path']}`）"
             if item.get("prep"):
                 from core import upload_prep
-                status += f"（上传前：{upload_prep.text(item['prep'])}）"
+                status += f"（{'同步前那一版做过的' if item.get('prep_stale') else ''}上传前：{upload_prep.text(item['prep'])}）"
             if item.get("pdf"):
                 status += f"；{_pdf_text(item['pdf'])}"
             lines.append(f"| {_md(item['rel'])} | {_md(status)} |")

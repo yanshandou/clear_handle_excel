@@ -163,5 +163,39 @@ class UploadPdfTests(unittest.TestCase):
         self.assertEqual(result["summary"]["PDF 已传"], 1)
 
 
+    def test_pdf_only_prepares_temp_copy_and_keeps_local_excel(self):
+        def prepare(get_excel, local, reference, where):
+            local.write_text(read(local) + " +处理", encoding="utf-8")
+            return dict(PREP)
+        upload_prep.prepare.side_effect = prepare
+        result = self.upload({**PDF_ON, "only": True}, ["a.xlsx"])
+        self.assertEqual(read(self.work / "a.xlsx"), "A fixed")  # 处理文件夹里的 Excel 没动
+        self.assertEqual(read(self.company / "a.pdf"), "PDF of A fixed +处理")  # PDF 是处理过的临时副本导的
+        self.assertEqual(read(self.work / "a.pdf"), "PDF of A fixed +处理")  # 处理文件夹也留一份
+        self.assertEqual(result["files"][0]["status"], "ok")
+        self.assertNotIn("_temp_root", result)
+        files = {f["rel"]: f for f in distribute.task_files(self.task["id"])["files"]}
+        self.assertTrue(files["a.xlsx"]["pdf_uploaded_at"])
+        self.assertFalse(files["sub/b.xlsx"]["pdf_uploaded_at"])
+
+    def test_shared_changed_at_copy_time_marks_prep_and_pdf_stale(self):
+        def export(excel, wb_path, *args, **kwargs):
+            info = fake_export(excel, wb_path, *args, **kwargs)
+            if wb_path.name == "a.xlsx":
+                write(self.company / "a.xlsx", "A 别人刚改")  # 处理期间共享被人改了
+            return info
+        self.export.side_effect = export
+        result = self.upload(PDF_ON)
+        a, b = result["files"]
+        self.assertEqual(a["status"], "review")
+        self.assertTrue(a["prep_stale"])
+        self.assertEqual(a["pdf"]["status"], "stale")
+        self.assertIn("复制前一刻发现共享里的这份被人改过", a["error"])
+        self.assertFalse((self.work / "a.pdf").exists())  # 过期 PDF 删掉了
+        self.assertEqual(read(self.work / "a.xlsx"), "A 别人刚改")  # 同步了共享最新版
+        self.assertIn("这一批后面的停下了", b["error"])
+        self.assertIn("同步前那一版", distribute.markdown(result))
+
+
 if __name__ == "__main__":
     unittest.main()

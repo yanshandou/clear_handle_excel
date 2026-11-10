@@ -106,12 +106,14 @@
   // 上传什么（用户 2026-11-10）：excel 只传表格 / both 表格和 PDF 一起 / pdf 只传 PDF
   const pdfMode = () => document.querySelector('input[name="distPdfMode"]:checked')?.value || 'excel';
   const pdfOn = () => pdfMode() !== 'excel';
+  const isoTime = text => String(text || '').replace(' ', 'T');
+  const pdfStale = file => !!(file.pdf_uploaded_at && file.uploaded_at && isoTime(file.pdf_uploaded_at) < isoTime(file.uploaded_at));
   function showPdfNote() {
     const o = pdfOptions();
     $('distPdfBox').classList.toggle('is-on', pdfOn());
     if (!pdfOn()) { $('distPdfNote').textContent = '只传 Excel，和以前一样。'; return; }
     $('distPdfNote').innerHTML = (pdfMode() === 'pdf'
-      ? `<strong>Excel 不传</strong>（终点那份不动）。照样先核对共享版本、做上传前处理，再导出同名 PDF（所有表合一份、宽一页），放在终点 Excel 旁边。`
+      ? `<strong>Excel 不传</strong>（终点那份不动），处理文件夹里的 Excel 也不改：照样先核对共享版本，在本机临时副本上做上传前处理，再导出同名 PDF（所有表合一份、宽一页），放在终点 Excel 旁边。`
       : `每份 Excel 上传前处理做完后导出同名 PDF（所有表合一份、宽一页），Excel 传好后放在终点 Excel 旁边。`)
       + `按「批量导出同名 PDF」的设置：不打印的表 ${esc(o.skip_sheets.length ? o.skip_sheets.join('、') : '无')}，页眉页脚${o.no_header_footer ? '去掉' : '保留'}，隐藏表${o.include_hidden ? '也放进去' : '跳过'}`
       + `（<a href="/pdf-bundle" target="_blank" rel="noopener">改设置 ↗</a>）。<br>终点已有同名 PDF 时<strong>默认不覆盖</strong>：上传前先列出来，由你逐个选覆盖还是跳过。`;
@@ -125,6 +127,7 @@
     save(PDF_ON, pdfMode());
     console.info('📕 上传什么', { excel: '只传表格', both: '表格和 PDF 一起', pdf: '只传 PDF' }[pdfMode()], pdfOptions());
     showPdfNote();
+    if (!loading) controls();  // 「选取前 N 个」按钮的说法跟着变
   });
   window.addEventListener('focus', showPdfNote);  // 在另一个标签页改了导出设置，回来就更新
   showPdfNote();
@@ -254,6 +257,7 @@
       box.checked = selected.has(box.value);
     }
     $('distTaskSelection').textContent = `已选 ${files.length} / ${taskFiles.length} 个`;
+    $('distTaskPickCount').textContent = pdfMode() === 'pdf' ? '选取前 N 个还没传 PDF 的文件' : '选取前 N 个待上传文件';
     $('distTaskUpload').disabled = !!busy || !files.length;
     $('distTaskUpload').textContent = reviewCount ? '确认重新处理完毕，再检查并上传' : '检查并批量上传';
   }
@@ -270,7 +274,8 @@
       const found = new Set(taskFiles.map(file => file.rel));
       for (const rel of selected) if (!found.has(rel)) selected.delete(rel);
       const rows = taskFiles.map(file => {
-        const upload = file.uploaded ? `<span class="link-ok">已上传${file.uploaded_at ? ' · ' + esc(file.uploaded_at.replace('T', ' ')) : ''}</span>` : '';
+        const upload = (file.uploaded ? `<span class="link-ok">已上传${file.uploaded_at ? ' · ' + esc(file.uploaded_at.replace('T', ' ')) : ''}</span>` : '')
+          + (file.pdf_uploaded_at ? `${file.uploaded ? '<br>' : ''}<small class="dist-pdf-line">📕 PDF ${pdfStale(file) ? '是旧的（之后又传过 Excel）' : '已传'} · ${esc(file.pdf_uploaded_at.replace('T', ' '))}</small>` : '');
         const status = file.review
           ? (file.review.ready ? '待重新处理' : '同步未完成，请重新检查')
           : file.uploaded_current === true ? '当前版本已上传'
@@ -536,7 +541,8 @@
     if (!p) return '';
     let text;
     if (p.status === 'ok') text = `同名 PDF ${p.name} 已${p.action === 'overwrite' ? '覆盖' : '新建'}（${p.sheets} 张表、${p.pages} 页）`;
-    else if (p.status === 'exported') text = `同名 PDF ${p.name} 已导出，Excel 没传所以没传`;
+    else if (p.status === 'exported') text = `同名 PDF ${p.name} 已导出，但这份没传上去，PDF 也没传`;
+    else if (p.status === 'stale') text = `同名 PDF ${p.name} 是按同步前那一版导的，没传，处理文件夹里那份也删掉了`;
     else text = p.error || '同名 PDF 没传';
     return `<br><small class="dist-pdf-line${['failed', 'skipped', 'kept'].includes(p.status) ? ' is-bad' : ''}">📕 ${esc(text)}</small>`;
   }
@@ -554,7 +560,7 @@
     const skipped = p.color_skipped ? `<details class="dist-prep-skip"><summary>颜色改不了 ${p.color_skipped} 处（点开看是哪些，请人工看一下）</summary><ul>`
       + (p.color_problems || []).map(cell => `<li>${fileLink(`${cell.sheet}!${cell.cell}`, data.source_root, file.rel, cell.sheet, cell.cell)} · ${esc(cell.reason)}</li>`).join('')
       + (p.color_skipped > (p.color_problems || []).length ? `<li>还有 ${p.color_skipped - p.color_problems.length} 处没列出</li>` : '') + '</ul></details>' : '';
-    return `<br><small>🧽 上传前：${esc(parts.join('，'))}</small>${skipped}`;
+    return `<br><small>🧽 ${file.prep_stale ? '同步前那一版做过的上传前处理（已作废）' : '上传前'}：${esc(parts.join('，'))}</small>${skipped}`;
   }
 
   const renderAny = (data, applied) => isFetch(data) ? renderFetch(data, applied)
@@ -1008,7 +1014,10 @@
     const input = $('distTaskCount');
     if (!input.reportValidity() || !input.value) return;
     selected.clear();
-    const waiting = taskFiles.filter(file => file.review || !file.uploaded_current);
+    // 只传 PDF：按 PDF 挑（没传过 PDF，或传过之后 Excel 又传了新版）；其他按 Excel 挑
+    const waiting = taskFiles.filter(pdfMode() === 'pdf' ? file => file.review || !file.pdf_uploaded_at || pdfStale(file)
+      : file => file.review || !file.uploaded_current);
+    console.info('📋 按数量选取', { 按: pdfMode() === 'pdf' ? 'PDF 有没有传过' : 'Excel 有没有传过当前版本', 待上传: waiting.length });
     for (const file of waiting.slice(0, input.valueAsNumber)) selected.add(file.rel);
     controls();
   });
