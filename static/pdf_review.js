@@ -1022,9 +1022,9 @@ function paintRegen() {
 async function regenerate(d) {
   const doc = pdfs[d];
   if (!doc || !doc.wb_path || regenWb || processing) return;
-  // 这张表上自己点了还没改的（改方向、取整、页高改回自动、清分页）：先改进 Excel，改完一定再导一次（用户 2026-11-08 提）。
-  // 程序自动标的「取整」不算：点重新生成就是要原样重新导出，不替你取整
-  if (toolItems().some(i => i.doc.pdf === doc.pdf && !(i.tool === 'floor' && tools[doc.pdf]?.byAuto))) {
+  // 这张表上标着还没改的（改方向、取整、页高改回自动、清分页）：先改进 Excel，改完一定再导一次（用户 2026-11-08 提）。
+  // 程序自动标的「取整」也一样：标着什么就按什么生成最终的 PDF（用户 2026-11-10 定）
+  if (toolItems().some(i => i.doc.pdf === doc.pdf)) {
     regenAfterProcess = doc;
     runProcess('tools', doc.pdf);
     return;
