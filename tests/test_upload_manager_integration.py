@@ -67,7 +67,7 @@ class UploadManagerIntegrationTests(unittest.TestCase):
         status, home = self.request('GET', '/')
         self.assertEqual(status, 200)
         self.assertIn(b'href="/distribute" id="workTaskUploadLink"', home)
-        self.assertEqual(home.count(b'class="feature-title"'), 3)  # 2026-11-09 起主页只有 3 站（查看切字并进调整页面）
+        self.assertEqual(home.count(b'class="feature-title"'), 4)  # 2026-11-10 起主页又是 4 站（查看切字从调整页面拆回来）
         for filename in ('app.js', 'planner.js', 'icons.js', 'integration.css'):
             self.assertEqual(self.request('GET', '/static/upload_manager/' + filename)[0], 200)
         self.assertEqual(self.request('GET', '/api/upload-manager/items'), (200, []))

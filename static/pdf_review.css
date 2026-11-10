@@ -1096,3 +1096,72 @@
 .pr-cat-gap { flex: 1; }
 
 .pr-bulk[hidden] { display: none; }
+
+/* ---------- 大图（单击小图，只看）---------- */
+.pr-layer { cursor: zoom-in; }
+.pr-big {
+  width: 100vw;
+  max-width: none;
+  height: 100vh;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: rgba(30, 10, 70, 0.86);
+  color: var(--ink);
+}
+
+.pr-big::backdrop { background: rgba(20, 6, 50, 0.6); }
+
+.pr-big[open] { display: flex; flex-direction: column; }
+
+.pr-big-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px;
+  color: #fff;
+  background: #4a1db0;
+}
+
+.pr-big-title { font-size: 16px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
+.pr-big-hint { flex: 1; font-size: 12px; opacity: 0.92; min-width: 0; }
+
+.pr-big-nav,
+.pr-big-close {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  font: inherit;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+  color: #4a1db0;
+  background: #fff;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.pr-big-nav:disabled { opacity: 0.4; cursor: default; }
+
+.pr-big-body {
+  flex: 1;
+  overflow: auto;
+  padding: 16px 0 40px;
+  outline: none;
+}
+
+.pr-big-page {
+  position: relative;
+  width: calc(100vw - 48px);
+  margin: 0 auto;
+  background: #fff;
+  border-radius: 6px;
+  user-select: none;
+  touch-action: none;
+}
+
+.pr-big-img { display: block; width: 100%; height: 100%; pointer-events: none; }

@@ -6,7 +6,7 @@
    ========================================== */
 
 .home-container {
-  max-width: 1200px;       /* 3 张 4:3 上下结构的卡片 */
+  max-width: 1440px;       /* 4 张 4:3 上下结构的卡片要宽一点才放得下字 */
 }
 
 .route-map {
@@ -26,7 +26,7 @@
 .route-steps {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   grid-auto-rows: 1fr;
   column-gap: var(--col-gap);
   row-gap: var(--row-gap);
@@ -35,10 +35,11 @@
   list-style: none;
 }
 
-/* 一行三站，从左到右 */
+/* 一行四站，从左到右 */
 .route-stop:nth-child(1) { grid-area: 1 / 1; }
 .route-stop:nth-child(2) { grid-area: 1 / 2; }
 .route-stop:nth-child(3) { grid-area: 1 / 3; }
+.route-stop:nth-child(4) { grid-area: 1 / 4; }
 
 .route-stop {
   position: relative;

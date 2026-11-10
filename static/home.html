@@ -21,7 +21,7 @@
     <div class="header-nav">
       <a href="/" class="nav-link active">🏠 主页</a>
       <a href="/clean" class="nav-link">🧹 精简 Sheet</a>
-      <a href="/workbench" class="nav-link">📐 切字检查（老页面）</a>
+      <a href="/workbench" class="nav-link">📐 切字检查工作台</a>
       <a href="/analysis" class="nav-link">📈 扫描分析</a>
       <a href="/history" class="nav-link">🗂️ 文件夹历史</a>
       <a href="/records" class="nav-link">
@@ -36,7 +36,7 @@
     <section class="home-hero">
       <div>
         <h2>处理流程</h2>
-        <p>按顺序从 START 走到 FINISH，一共 3 站，每站做完页面上都有「下一步」。每一步都递归扫描所选文件夹及其子文件夹，进度可在「执行记录与进度看板」查看。</p>
+        <p>按顺序从 START 走到 FINISH，一共 4 站，每站做完页面上都有「下一步」。每一步都递归扫描所选文件夹及其子文件夹，进度可在「执行记录与进度看板」查看。</p>
         <p id="routeDoneNote" class="route-done-note hidden"></p>
       </div>
       <div class="home-hero-actions">
@@ -123,17 +123,29 @@
           <button type="button" class="feature-card feature-sky tone-teal" onclick="openTask('export_pdf')" style="--tile-cat: 'STEP 2'">
             <span class="feature-text">
               <span class="feature-title">调整页面</span>
-              <span class="feature-sub">页面取整 · 横竖 · 切字格子</span>
-              <span class="feature-meta" id="meta_export_pdf">导出 PDF 顺便查切字，选好修法一次改</span>
+              <span class="feature-sub">宽一页 · 横竖 · 向下取整</span>
+              <span class="feature-meta" id="meta_export_pdf">导出 PDF，点按钮让程序改</span>
             </span>
             <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-pdf">📄</span></span>
           </button>
+        </li>
+        <li data-ops="scan autofix" class="route-stop">
+          <i class="route-road" aria-hidden="true"></i>
+          <span class="route-done hidden" role="img"></span>
+          <a href="/workbench" class="feature-card feature-rose tone-yellow" style="--tile-cat: 'STEP 3'">
+            <span class="feature-text">
+              <span class="feature-title">查看切字</span>
+              <span class="feature-sub">扫描标色 · 工具箱修格子 · 复检</span>
+              <span class="feature-meta" id="meta_clips">尚未扫描</span>
+            </span>
+            <span class="feature-orb" aria-hidden="true"><span class="feature-icon feature-icon-inspect">🔍</span></span>
+          </a>
         </li>
         <li data-ops="distribute" class="route-stop">
           <i class="route-road" aria-hidden="true"></i>
           <span class="route-done hidden" role="img"></span>
           <span class="route-flag route-flag-finish" aria-hidden="true">FINISH</span>
-          <a href="/distribute" id="workTaskUploadLink" class="feature-card feature-sky feature-distribute tone-purple" style="--tile-cat: 'STEP 3'">
+          <a href="/distribute" id="workTaskUploadLink" class="feature-card feature-sky feature-distribute tone-purple" style="--tile-cat: 'STEP 4'">
             <span class="feature-text"><span class="feature-title">上传 Excel</span>
               <span class="feature-sub">自动清标记 · 恢复颜色 · 标准化</span>
               <span class="feature-meta">选择文件 · 核对共享版本 · 上传</span></span>
@@ -149,16 +161,15 @@
       </div>
     </section>
 
-    <!-- 更多工具：合并进 3 站里的原来那几步，单独用某一步（自选路径、只处理几个文件）时从这里打开 -->
+    <!-- 更多工具：合并进 4 站里的原来那几步，单独用某一步（自选路径、只处理几个文件）时从这里打开 -->
     <details class="panel home-more-tools" id="homeMoreTools">
-      <summary>🧰 更多工具 <small>原来单独的几步，现在已经合并进上面 3 站自动做；只想单独做某一步时从这里打开</small></summary>
+      <summary>🧰 更多工具 <small>原来单独的几步，现在已经合并进上面 4 站自动做；只想单独做某一步时从这里打开</small></summary>
       <div class="home-more-grid">
-        <a class="home-more-tool" href="/workbench"><b>🔍 查看切字（老页面）</b><span id="meta_clips">已合并进第 2 步「调整页面」</span></a>
         <a class="home-more-tool" href="/repair-bl-links"><b>🔎 排查 BL 超链接</b><span>已合并进第 1 步，精简后自动做</span></a>
         <a class="home-more-tool" href="/repair-links"><b>🔗 修复引用错误</b><span>已合并进第 1 步，精简后自动做</span></a>
         <a class="home-more-tool" href="/repair-hidden"><b>🙈 修复隐藏页</b><span>第 1 步勾选时自动做</span></a>
-        <a class="home-more-tool" href="/repair-colors"><b>🎨 修复颜色</b><span>已合并进第 3 步，上传前自动做</span></a>
-        <button type="button" class="home-more-tool" onclick="openTask('normalize_view')"><b>🎯 视图标准化</b><span>已合并进第 3 步，上传前自动做</span></button>
+        <a class="home-more-tool" href="/repair-colors"><b>🎨 修复颜色</b><span>已合并进第 4 步，上传前自动做</span></a>
+        <button type="button" class="home-more-tool" onclick="openTask('normalize_view')"><b>🎯 视图标准化</b><span>已合并进第 4 步，上传前自动做</span></button>
         <a class="home-more-tool" href="/fix-fonts"><b>🔤 统一字体</b><span>已合并进第 1 步，精简后自动做</span></a>
         <a class="home-more-tool" href="/pdf-bundle"><b>📕 批量导出同名 PDF</b><span>aaa.xlsx 旁边生成 aaa.pdf，所有表合成一份</span></a>
         <a class="home-more-tool" href="/distribute?mode=json"><b>📋 按 JSON 复制 Excel</b><span>按上传记录 JSON 复制、建目录</span></a>
