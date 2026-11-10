@@ -7,6 +7,8 @@
 - 跳过名单里的表（默认 変更履歴，网页上可改，比较时不管全角半角、大小写、前后空格）不放进 PDF。
 - 默认去掉页眉页脚（公司名、页码等每页重复的字，用户 2026-11-10 要），网页上可以不去。
 - 完全空白的表（没内容、没图形）Excel 没东西可印，跳过并在结果里写明。
+- 本工具加的标记色（条件格式里带 CHE_MARK 标识的规则）导出前在内存里去掉（用户 2026-11-10 要），不保存，
+  还没清色的文件导出来的 PDF 也是干净的；删不掉的（比如表有保护）在结果里写明。
 
 和「调整页面」的 PDF（根目录/PDFS、按表一份、哈希沿用）完全分开，互不影响。
 """
@@ -127,6 +129,22 @@ def _clear_header_footer(sheet: Any) -> int:
     return cleared
 
 
+def _drop_marks(wb: Any, wb_path: Path) -> tuple[int, list[str]]:
+    """只读打开的工作簿里，把本工具加的标记（CHE_MARK 条件格式规则）在内存里删掉，不保存。
+    返回 (删掉几条, 删不掉的原因)。上传前已经清过色的文件这里删 0 条"""
+    from core import batch
+    try:
+        _present, dropped, failed = batch._drop_rules(wb, set())
+    except Exception as err:  # 读不到条件格式（极少见）：照常导出，结果里写明
+        debug_log.exception(err, f"导出同名 PDF 前去标记 {wb_path.name}")
+        return 0, [f"读不到条件格式，没能去掉标记：{err}"]
+    cleared = sum(dropped.values())
+    problems = list(failed.values())[:5]
+    if cleared or problems:
+        debug_log.event("🧽 导出 PDF 前在内存里去掉标记", 文件=wb_path.name, 条=cleared, 删不掉=problems or "无")
+    return cleared, problems
+
+
 def _export_sheet(sheet: Any, target: Path) -> None:
     from core import page_fill  # 交给用户看的 PDF 一律宽一页（用户 2026-11-10 定）；只读打开，不保存
     from core import print_frames
@@ -149,6 +167,7 @@ def export_workbook(excel: Any, wb_path: Path, include_hidden: bool, on_sheet=No
     parts: list[tuple[str, Path]] = []
     wb = open_workbook_checked(excel, str(wb_path.resolve()), ReadOnly=True, UpdateLinks=0)
     try:
+        marks_cleared, marks_failed = _drop_marks(wb, wb_path)
         sheets = list(wb.Sheets)
         for index, sheet in enumerate(sheets, 1):
             name = str(sheet.Name)
@@ -211,7 +230,7 @@ def export_workbook(excel: Any, wb_path: Path, include_hidden: bool, on_sheet=No
     if headers_cleared:
         debug_log.event("🧹 导出时去掉页眉页脚", 文件=wb_path.name, 处=headers_cleared)
     return {"pdf": str(target), "sheets": [n for n, _ in parts], "pages": pages, "skipped": skipped,
-            "headers_cleared": headers_cleared}
+            "headers_cleared": headers_cleared, "marks_cleared": marks_cleared, "marks_failed": marks_failed}
 
 
 def _run(root: Path, paths: list[Path], options: dict) -> None:
@@ -266,6 +285,10 @@ def _run(root: Path, paths: list[Path], options: dict) -> None:
                 reason = entry["error"]
             else:
                 reason = f"{Path(entry['pdf']).name}：{len(entry['sheets'])} 张表、{entry['pages']} 页"
+                if entry.get("marks_cleared"):
+                    reason += f"；导出时去掉标记 {entry['marks_cleared']} 条（Excel 没改）"
+                if entry.get("marks_failed"):
+                    reason += "；⚠️ 有标记去不掉，PDF 上可能还有标记色：" + "；".join(entry["marks_failed"][:2])
                 if skipped:
                     reason += "；跳过 " + "、".join(f"{s['sheet']}（{s['reason'].split('，')[0].split('：')[0]}）" for s in skipped)
             wf.log_msg(f"📕 {name}：{reason}")

@@ -144,7 +144,7 @@
     if (!folder) { $('bundleError').textContent = '请填写 Excel 文件夹'; return; }
     const okGo = await window.appConfirm(
       `要把这个文件夹（含子文件夹）里的每份 Excel 都导出成同名 PDF，放在 Excel 旁边吗？\n\n${folder}\n\n`
-      + `· 已有的同名 PDF 会被覆盖\n· 不打印的表：${skip.length ? skip.join('、') : '无（所有表都打印）'}\n· 页眉页脚：${noHeader ? '去掉' : '保留'}\n· 隐藏的工作表：${includeHidden ? '也放进 PDF' : '跳过'}\n· Excel 只读打开，不会被改动`,
+      + `· 已有的同名 PDF 会被覆盖\n· 不打印的表：${skip.length ? skip.join('、') : '无（所有表都打印）'}\n· 页眉页脚：${noHeader ? '去掉' : '保留'}\n· 隐藏的工作表：${includeHidden ? '也放进 PDF' : '跳过'}\n· 本工具加的标记色导出时临时去掉（用户自己的颜色不动）\n· Excel 只读打开，不会被改动`,
       { title: '批量导出同名 PDF', okText: '开始导出' });
     if (!okGo) return;
     submitting = true; controls();
