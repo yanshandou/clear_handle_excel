@@ -1385,7 +1385,11 @@ def _follow_renamed_sheets(
 
 
 def _export_sheet_pdf_raw(sheet: Any, pdf_path: Path, pages: tuple[int, int] | None = None) -> None:
-    """pages=(第一页, 最后一页)（从 1 起）：只导出这几页，分页和导出整张表时完全一样"""
+    """pages=(第一页, 最后一页)（从 1 起）：只导出这几页，分页和导出整张表时完全一样
+    所有导出 PDF 的地方都先强制宽一页、高自动（用户 2026-11-10 定：交给用户看的 PDF 一律宽一页，
+    查切字、调格子也按宽一页的样子来）。已经是宽一页的不动（取整定死的页高保留）；
+    只读打开的只改内存不保存，可写打开的随调用方保存进 Excel"""
+    page_fill.force_one_page_wide(sheet)
     span = {"From": pages[0], "To": pages[1]} if pages else {}
     scan_analysis.count("pdf_exports")
     sheet.ExportAsFixedFormat(
@@ -3485,7 +3489,7 @@ def _export_workbook_pdfs(
     # 要把「宽一页」存进 Excel：文件没被人打开就可写打开；打开着的只读导出，下次再设
     fit = not workbook_locked(wb_path)
     if not fit:
-        log_msg(f"  ⚠️ {wb_label} 正在 Excel 里打开，没能设成宽一页，PDF 按原来的打印设置导出；关掉文件后点「🔄 重新生成」")
+        log_msg(f"  ⚠️ {wb_label} 正在 Excel 里打开，PDF 照样按宽一页导出，但没能存进 Excel；关掉文件后点「🔄 重新生成」")
     wb = open_workbook_checked(get_excel(), str(wb_path.resolve()), ReadOnly=not fit, UpdateLinks=0)
     fitted: list[str] = []
     layouts: dict[str, dict] = {}

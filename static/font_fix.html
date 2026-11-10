@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>统一字体 - Excel 整理工具箱</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/repair.css"><script src="/static/game_fx.js"></script>
+  <style>
+    .font-rules { margin: 0; padding-left: 22px; line-height: 1.9; }
+    .font-fields { grid-template-columns: minmax(0, 1fr); max-width: 760px; }
+    .font-summary { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 6px 0 4px; font-weight: 600; }
+    .font-summary .is-ok { color: #14633c; } .font-summary .is-bad { color: #89580b; }
+    .font-list { list-style: none; margin: 12px 0 0; padding: 0; }
+    .font-item { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 4px 8px; padding: 12px 6px; border-bottom: 1px solid #dce5ef; }
+    .font-item:last-child { border-bottom: 0; }
+    .font-mark { font-weight: 800; text-align: center; }
+    .font-item.is-ok .font-mark { color: #14633c; } .font-item.is-bad .font-mark { color: #89580b; } .font-item.is-same .font-mark { color: #64748b; }
+    .font-name { overflow-wrap: anywhere; font-weight: 600; }
+    .font-detail { grid-column: 2; font-size: 14px; color: #475569; overflow-wrap: anywhere; }
+    .font-error { grid-column: 2; font-size: 14px; color: #b42318; overflow-wrap: anywhere; }
+  </style>
+  <link rel="stylesheet" href="/static/theme-casual.css">
+</head>
+<body>
+  <header class="app-header">
+    <a href="/" class="header-brand"><div class="header-logo-badge">🔤</div><div class="header-title"><h1>统一字体</h1><span class="subtitle">游ゴシック 换成标准字体ＭＳ Ｐゴシック · 减少切字误报</span></div></a>
+    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/clean" class="nav-link">🧹 精简 Sheet</a><a href="/pdf-review" class="nav-link">📄 调整页面</a></nav>
+  </header>
+  <main class="container clean-container">
+    <section class="panel">
+      <h2>把游ゴシック换回标准字体ＭＳ Ｐゴシック</h2>
+      <ul class="font-rules toolbar-hint">
+        <li>游ゴシック比ＭＳ Ｐゴシック宽、行距大，原来放得下的字会被挤出去，查切字时报成误报，多半出在<b>图形</b>（对话框、文本框）里。</li>
+        <li>查<b>图形</b>里的每一段文字和<b>有内容的格子</b>：只换游ゴシック一家（游ゴシック、游ゴシック 本文、Yu Gothic 等），别的字体、字号、颜色都不动。</li>
+        <li>不改 Excel 的「標準」样式（改了整张表的列宽、行高都会变）。.xls / .xlsb 只查图形。</li>
+        <li>精简 Sheet 之后会自动做这一步；这里是单独跑用的。改完直接保存。</li>
+      </ul>
+      <div class="link-fields font-fields">
+        <label for="fontFolder">Excel 文件夹（含子文件夹）<input id="fontFolder" type="text" placeholder="例如 D:\处理后\001"></label>
+      </div>
+      <div class="link-actions"><button id="fontRun" class="btn btn-primary" type="button" disabled>🔤 统一字体</button></div>
+      <p class="toolbar-hint">请先保存并关闭要处理的 Excel。关闭网页后任务继续；刷新页面可查看进度与结果。</p>
+      <p id="fontProgress" role="status" aria-live="polite">填写文件夹后点按钮开始。</p>
+      <div id="fontTrack" class="progress-track progress-track-sm"><div id="fontFill" class="progress-fill" style="width:0%"></div></div>
+      <p id="fontError" class="batch-error" role="alert"></p>
+    </section>
+    <section class="panel"><h2>结果</h2><p id="fontResultFolder" class="toolbar-hint"></p><div id="fontResults"><p>尚未开始。</p></div></section>
+    <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
+  </main>
+  <script src="/static/dialog.js"></script><script src="/static/eta.js"></script><script src="/static/job_panel.js"></script><script src="/static/open_excel.js"></script>
+  <script src="/static/font_fix.js"></script><script src="/static/debug_log.js"></script>
+  <script src="/static/task_folder.js"></script><script src="/static/focus_banner.js"></script><script src="/static/file_problem.js"></script>
+</body>
+</html>

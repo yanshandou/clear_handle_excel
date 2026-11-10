@@ -1,4 +1,4 @@
-"""精简 Sheet 之后自动接着做的例行检查：排查 BL 超链接 → 修复引用错误 →（可选）修复隐藏页。
+"""精简 Sheet 之后自动接着做的例行检查：排查 BL 超链接 → 修复引用错误 →（可选）修复隐藏页 → 统一字体。
 
 用户 2026-11-07 定：主页只留「精简 Sheet」一站，原来第 4、5、6 步不用再单独点。
 - 每一步都照用原来页面的后台（bl_links / link_repair / hidden_repair），规则一点不改，只是不再等人确认；
@@ -24,6 +24,7 @@ STEPS = (
     ("bl", "排查 BL 超链接"),
     ("links", "修复引用错误"),
     ("hidden", "修复隐藏页"),
+    ("font", "统一字体"),  # 游ゴシック 换成ＭＳ Ｐゴシック（用户 2026-11-10 要），切字误报多半是它
 )
 
 _LOCK = threading.Lock()
@@ -248,6 +249,23 @@ def _run_hidden(folder: str, old_folder: str) -> None:
                  f"恢复了 {fixed} 处隐藏表 / 列" if fixed else "没有要恢复的隐藏表 / 列")
 
 
+def _run_font(folder: str) -> None:
+    from core import font_fix
+    _update("font", state="running", text="正在把游ゴシック换成ＭＳ Ｐゴシック…")
+    if not _launch(lambda: font_fix.start(folder), "font"):
+        return
+    result = _wait(font_fix.status, "font", "统一字体").get("result") or {"files": []}
+    problems = _file_errors(result["files"])
+    good = [file for file in result["files"] if not file.get("error")]
+    shapes = sum(file.get("shapes", 0) for file in good)
+    cells = sum(file.get("cells", 0) for file in good)
+    changed = sum(1 for file in good if file.get("shapes") or file.get("cells"))
+    parts = [f"{shapes} 个图形" if shapes else "", f"{cells} 个格子" if cells else ""]
+    text = (f"{changed} 份 Excel 换成标准字体：{'、'.join(p for p in parts if p)}" if changed
+            else "字体都是标准字体，没有要改的")
+    _finish_step("font", shapes + cells, problems, text)
+
+
 def run(folder: str, chain: dict) -> None:
     """精简 Sheet 后台任务结束后，在同一个线程里接着做（workflow.run_pending_workflow 调用）"""
     current = status()
@@ -260,7 +278,8 @@ def run(folder: str, chain: dict) -> None:
     with debug_log.side_task("clean_chain", {"folder": folder, "old_folder": old_folder, "hidden": chain.get("hidden")}):
         for key, work in (("bl", lambda: _run_bl(folder)),
                           ("links", lambda: _run_links(folder, old_folder)),
-                          ("hidden", lambda: _run_hidden(folder, old_folder) if chain.get("hidden") else None)):
+                          ("hidden", lambda: _run_hidden(folder, old_folder) if chain.get("hidden") else None),
+                          ("font", lambda: _run_font(folder))):
             try:
                 work()
             except Exception as err:  # 一步出错不影响后面几步

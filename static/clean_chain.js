@@ -1,8 +1,8 @@
-// 精简 Sheet 做完后自动接着做的检查（排查 BL 超链接 → 修复引用错误 →（勾选时）修复隐藏页）：
+// 精简 Sheet 做完后自动接着做的检查（排查 BL 超链接 → 修复引用错误 →（勾选时）修复隐藏页 → 统一字体）：
 // 显示每一步的进度和结果，改不了 / 出错的逐处列出来（点了用 Excel 打开跳到格子），最后给「下一步」按钮。
 // 后台见 core/clean_chain.py；结果存在数据库里，重开程序也还在。
 (function () {
-  const DETAIL_PAGES = { bl: '/repair-bl-links', links: '/repair-links', hidden: '/repair-hidden' };
+  const DETAIL_PAGES = { bl: '/repair-bl-links', links: '/repair-links', hidden: '/repair-hidden', font: '/fix-fonts' };
   const ICONS = { waiting: '·', running: '⏳', done: '✓', warn: '!', failed: '✕', skipped: '–', off: '–' };
   const STATE_TEXT = {
     waiting: '等待中', running: '进行中', done: '完成', warn: '有改不了的', failed: '有出错的',
