@@ -2,7 +2,7 @@
 
 - aaa.xlsx → 同一文件夹的 aaa.pdf（文件名前的临时标记「★」去掉）；已有同名 PDF 直接覆盖。
 - 一份 PDF 里按工作表顺序放所有可见表的全部页；勾了「包含隐藏表」时隐藏表也临时显示出来导出（不保存）。
-- 打印设置一律按 Excel 现有的（打印区域、缩放、横竖、分页），只读打开、不改不存 Excel。
+- 宽度一律压成一页、高自动（已经是宽一页的不动）；打印区域、横竖照 Excel 现有的。只读打开、不改不存 Excel。
 - 每张表先单独导出成临时 PDF 再用 PyMuPDF 拼起来：整本一次导出时，各表打印质量不同 Excel 会拆成几份 PDF。
 - 跳过名单里的表（默认 変更履歴，网页上可改，比较时不管全角半角、大小写、前后空格）不放进 PDF。
 - 默认去掉页眉页脚（公司名、页码等每页重复的字，用户 2026-11-10 要），网页上可以不去。
@@ -128,6 +128,8 @@ def _clear_header_footer(sheet: Any) -> int:
 
 
 def _export_sheet(sheet: Any, target: Path) -> None:
+    from core import page_fill  # 交给用户看的 PDF 一律宽一页（用户 2026-11-10 定）；只读打开，不保存
+    page_fill.force_one_page_wide(sheet)
     sheet.ExportAsFixedFormat(
         Type=XL_TYPE_PDF, Filename=str(target), Quality=0, IncludeDocProperties=True,
         IgnorePrintAreas=False, OpenAfterPublish=False,

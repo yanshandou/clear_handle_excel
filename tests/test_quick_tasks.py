@@ -495,11 +495,12 @@ class QuickTaskTests(unittest.TestCase):
         self.patch_value(self.workflow, "workbook_locked", lambda path: True)
         self.run_task("export_pdf")
         self.assertEqual(self.excel.opened, [("a.xlsx", True)])
-        self.assertEqual(sheet.PageSetup.Zoom, 100)
+        # 用户 2026-11-10 定：导出的 PDF 一律宽一页——只读打开的只改内存照样宽一页导出，但不保存、不记 fit
+        self.assertEqual((sheet.PageSetup.Zoom, sheet.PageSetup.FitToPagesWide), (False, 1))
         self.assertEqual(self.books["a.xlsx"].saved, [])
         manifest = json.loads((self.folder / "PDFS" / "PDF导出记录.json").read_text(encoding="utf-8"))
         self.assertNotIn("fit", manifest["files"]["a.xlsx"])
-        self.assertTrue(any("没能设成宽一页" in line for line in self.workflow.STATE["logs"]))
+        self.assertTrue(any("没能存进 Excel" in line for line in self.workflow.STATE["logs"]))
 
     def test_force_exports_again_even_if_unchanged(self):
         a = self.add_book("a.xlsx", ["Sheet1"])

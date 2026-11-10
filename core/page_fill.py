@@ -721,6 +721,15 @@ def one_page_wide(sheet: Any) -> dict | None:
     return {"before": before}
 
 
+def force_one_page_wide(sheet: Any) -> dict | None:
+    """导出 PDF 前调用：one_page_wide 出错（图表页等没有缩放设置、保护的表）也不拦着导出，只记日志"""
+    try:
+        return one_page_wide(sheet)
+    except Exception as err:
+        debug_log.event("📐 宽一页没设上，按原设置导出", 表=getattr(sheet, "Name", ""), 原因=str(err))
+        return None
+
+
 def sheet_layout(sheet: Any) -> dict:
     """调整页面网页要显示的打印设置：方向（1 竖 / 2 横）、页高（取整定死的 N 页，自动是 None）、上下边距"""
     info: dict[str, Any] = {"orient": None, "tall": None}
