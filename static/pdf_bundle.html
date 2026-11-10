@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>批量导出同名 PDF - Excel 整理工具箱</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/repair.css"><script src="/static/game_fx.js"></script>
+  <style>
+    .bundle-rules { margin: 0; padding-left: 22px; line-height: 1.9; }
+    .bundle-fields { grid-template-columns: minmax(0, 1fr); max-width: 760px; }
+    .bundle-summary { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 6px 0 4px; font-weight: 600; }
+    .bundle-summary .is-ok { color: #14633c; } .bundle-summary .is-bad { color: #89580b; }
+    .bundle-list { list-style: none; margin: 12px 0 0; padding: 0; }
+    .bundle-item { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 4px 8px; padding: 12px 6px; border-bottom: 1px solid #dce5ef; }
+    .bundle-item:last-child { border-bottom: 0; }
+    .bundle-mark { font-weight: 800; text-align: center; }
+    .bundle-item.is-ok .bundle-mark { color: #14633c; } .bundle-item.is-bad .bundle-mark { color: #89580b; }
+    .bundle-name { overflow-wrap: anywhere; font-weight: 600; }
+    .bundle-detail { grid-column: 2; font-size: 14px; color: #475569; overflow-wrap: anywhere; }
+    .bundle-detail .bundle-pdf { color: #0f172a; font-weight: 600; }
+    .bundle-skip { grid-column: 2; font-size: 13px; color: #89580b; }
+    .bundle-error { grid-column: 2; font-size: 14px; color: #b42318; overflow-wrap: anywhere; }
+  </style>
+  <link rel="stylesheet" href="/static/theme-casual.css">
+</head>
+<body>
+  <header class="app-header">
+    <a href="/" class="header-brand"><div class="header-logo-badge">📕</div><div class="header-title"><h1>批量导出同名 PDF</h1><span class="subtitle">每份 Excel 旁边生成一份同名 PDF · 所有工作表合成一份</span></div></a>
+    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/pdf-review" class="nav-link">📄 调整页面</a></nav>
+  </header>
+  <main class="container clean-container">
+    <section class="panel">
+      <h2>把做好的 Excel 批量转成 PDF，和 Excel 放在一起</h2>
+      <ul class="bundle-rules toolbar-hint">
+        <li><b>文件名一致</b>：<code>aaa.xlsx</code> 旁边生成 <code>aaa.pdf</code>，同一个文件夹（含子文件夹）；已有同名 PDF 会被覆盖。</li>
+        <li><b>内容完整</b>：一份 PDF 里按工作表顺序放这份 Excel 所有工作表的全部页，每张表在 PDF 里有一个书签。</li>
+        <li><b>按 Excel 现在的打印设置</b>：打印区域、缩放、横竖、分页都照 Excel 里设的导出；只读打开，不改也不保存 Excel。</li>
+        <li>完全空白的表没有东西可印，会跳过并在结果里写明。</li>
+      </ul>
+      <div class="link-fields bundle-fields">
+        <label for="bundleFolder">Excel 文件夹（含子文件夹）<input id="bundleFolder" type="text" placeholder="例如 D:\处理后\001"></label>
+      </div>
+      <fieldset class="repair-options"><legend>隐藏的工作表</legend>
+        <label><input id="bundleHidden" type="checkbox"> 隐藏的工作表也放进 PDF（不勾就跳过；勾了会临时显示出来导出，Excel 本身不改）</label>
+      </fieldset>
+      <div class="link-actions"><button id="bundleRun" class="btn btn-primary" type="button" disabled>📕 批量导出同名 PDF</button></div>
+      <p class="toolbar-hint">请先保存并关闭要导出的 Excel，以及正在看的同名 PDF。关闭网页后任务继续；刷新页面可查看进度与结果。</p>
+      <p id="bundleProgress" role="status" aria-live="polite">填写文件夹后点按钮开始。</p>
+      <div id="bundleTrack" class="progress-track progress-track-sm"><div id="bundleFill" class="progress-fill" style="width:0%"></div></div>
+      <p id="bundleError" class="batch-error" role="alert"></p>
+    </section>
+    <section class="panel"><h2>导出结果</h2><p id="bundleResultFolder" class="toolbar-hint"></p><div id="bundleResults"><p>尚未开始。</p></div></section>
+    <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
+  </main>
+  <script src="/static/dialog.js"></script><script src="/static/eta.js"></script><script src="/static/job_panel.js"></script><script src="/static/open_excel.js"></script>
+  <script src="/static/pdf_bundle.js"></script><script src="/static/debug_log.js"></script>
+  <script src="/static/task_folder.js"></script><script src="/static/focus_banner.js"></script><script src="/static/file_problem.js"></script>
+</body>
+</html>

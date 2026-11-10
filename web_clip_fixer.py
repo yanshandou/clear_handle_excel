@@ -13,7 +13,7 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from core import autofix, batch, bl_links, clean_chain, debug_log, distribute, file_problem, work_task, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review
+from core import autofix, batch, bl_links, clean_chain, debug_log, distribute, file_problem, work_task, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review, pdf_bundle
 from core import upload_manager
 from core.common import (
     STATIC_DIR,
@@ -186,6 +186,10 @@ class WebHandler(upload_manager.Handler):
             self._serve_static_file("color_repair.html")
         elif parsed.path == "/repair-hidden":
             self._serve_static_file("hidden_repair.html")
+        elif parsed.path == "/pdf-bundle":
+            self._serve_static_file("pdf_bundle.html")
+        elif parsed.path == "/api/pdf_bundle":
+            self._send_json(pdf_bundle.status())
         elif parsed.path == "/pdf-review":
             self._serve_static_file("pdf_review.html")
         elif parsed.path == "/api/pdf_review":
@@ -453,6 +457,8 @@ class WebHandler(upload_manager.Handler):
             self._send_json({"ok": True, "note": open_workbook_in_excel(Path(problem["path"]), "", "")})
             return
         with STATE_LOCK:
+            if STATE.get("maintenance") == "pdf_bundle":
+                raise ValueError("正在批量导出同名 PDF，请等当前任务结束")
             if STATE.get("maintenance"):
                 name = ("颜色" if STATE["maintenance"].startswith("color_") else
                         "隐藏状态" if STATE["maintenance"].startswith("hidden_") else
@@ -513,6 +519,9 @@ class WebHandler(upload_manager.Handler):
             except ValueError:
                 raise ValueError("后台正在保存 Excel，请几秒后再刷新") from None
             self._send_json({"ok": True, **pdf_review.refresh_stale(payload.get("pdfs"))})
+        elif self.path == "/api/pdf_bundle/run":
+            pdf_bundle.start(_require_folder(payload), payload.get("options"))
+            self._send_json({"ok": True})
         elif self.path == "/api/hidden_repair/run":
             hidden_repair.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}, "reference"), payload.get("options"))
             self._send_json({"ok": True})

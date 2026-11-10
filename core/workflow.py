@@ -3688,6 +3688,8 @@ def _clear_old_pdfs(workbooks: list[Path]) -> None:
         for pdf in sorted(folder.iterdir()):
             if not pdf.is_file() or pdf.suffix.lower() != ".pdf" or not any(pdf.stem.startswith(n + "_") for n in names):
                 continue
+            if pdf.stem in names:  # 「批量导出同名 PDF」生成的 aaa_b.pdf（属于 aaa_b.xlsx）不是旧 PDF，不删
+                continue
             try:
                 pdf.unlink()
                 removed.append(pdf)
