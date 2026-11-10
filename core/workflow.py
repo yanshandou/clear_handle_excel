@@ -43,7 +43,7 @@ from core.common import (
     workbook_locked,
     workbook_rel_name,
 )
-from core import debug_log, file_problem, fix_images, folder_progress, page_breaks, page_fill, pdf_detector, pdf_store, print_layout, progress_log, scan_analysis, sheet_history
+from core import debug_log, file_problem, fix_images, folder_progress, page_breaks, page_fill, pdf_detector, pdf_store, print_frames, print_layout, progress_log, scan_analysis, sheet_history
 from core.excel_watchdog import ExcelWatchdog
 from core.formula_links import delete_sheets_preserving_values
 from core.excel_ops import (
