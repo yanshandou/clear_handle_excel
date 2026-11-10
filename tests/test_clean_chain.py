@@ -181,3 +181,24 @@ class CleanChainTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChainBlocksOtherJobsTests(unittest.TestCase):
+    """精简后自动检查在跑时（主页任务已放开后台标志）不能开始别的任务：两边一起改 Excel，
+    导出 PDF 刚记好的哈希又被自动检查存掉，打开调整页面就全部重导（用户 2026-11-10）"""
+
+    def test_queue_job_refuses_while_chain_runs(self):
+        from core import workflow as wf
+        running = {"running": True, "stage": "chain",
+                   "steps": [{"key": "font", "label": "统一字体", "state": "running"}]}
+        with patch.object(clean_chain, "status", return_value=running), \
+                patch.dict(wf.STATE, {"busy": False}):
+            with self.assertRaises(ValueError) as caught:
+                wf.queue_job("export_pdf", {"folder": "/x"})
+        self.assertIn("统一字体", str(caught.exception))
+
+    def test_clean_stage_does_not_block(self):
+        from core import workflow as wf
+        with patch.object(clean_chain, "status", return_value={"running": True, "stage": "clean"}), \
+                patch.dict(wf.STATE, {"busy": True}):
+            self.assertFalse(wf.queue_job("export_pdf", {"folder": "/x"}))

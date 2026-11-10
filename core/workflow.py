@@ -342,6 +342,17 @@ BATCH_REVIEW_KINDS = {"batch_commit", "batch_recheck", "batch_open", "batch_unhi
 
 
 def queue_job(kind: str, options: dict[str, Any] | None = None) -> bool:
+    if kind != "manual_open":
+        # 精简后的自动检查（排查 BL、修复引用错误、隐藏页、统一字体）是在主页任务结束、放开后台标志以后才接着做的，
+        # 这时候能点开始别的任务：两边一起开 Excel 改同一批文件，导出 PDF 刚记好的 Excel 又被自动检查存掉，
+        # 打开调整页面就当成「Excel 改过」全部重导（用户 2026-11-10 遇到）。等它做完再开始
+        from core import clean_chain
+        current = clean_chain.status()
+        if current.get("running") and current.get("stage") == "chain":
+            step = next((s.get("label") for s in current.get("steps", []) if s.get("state") == "running"), "")
+            debug_log.event("⏸ 精简后自动检查还没做完，不开始新任务", 任务=kind, 正在做=step or "-")
+            raise ValueError(f"精简后的自动检查还没做完{f'（正在{step}）' if step else ''}，"
+                             "它会改 Excel，请等它结束再开始（主页卡片上能看到进度）")
     with STATE_LOCK:
         if STATE["busy"]:
             return False
@@ -3554,10 +3565,12 @@ def _export_workbook_pdfs(
         if fitted:
             update_file_progress(wb_label, current_action="正在把「宽一页、高自动」保存进 Excel...")
             wb.Save()
+            debug_log.saved_excel("导出 PDF：宽一页", wb_path)
             log_msg(f"  📐 设成宽一页、高自动并保存：{'、'.join(fitted)}")
         elif view_changed:
             update_file_progress(wb_label, current_action="正在保存分页预览...")
             wb.Save()
+            debug_log.saved_excel("导出 PDF：分页预览", wb_path)
         if view_changed:
             log_msg("  🗂 视图存成分页预览")
     finally:
@@ -3623,6 +3636,7 @@ def _fix_sparse_pages(get_excel: Callable[[], Any], wb_path: Path,
                 changed = changed or sheet_changed
             if changed:
                 wb.Save()
+                debug_log.saved_excel("导出 PDF：修内容很少的页", wb_path)
         finally:
             wb.Close(SaveChanges=False)
     for pdf, sheet_notes in notes.items():
@@ -3670,6 +3684,7 @@ def _save_print_orientations(get_excel: Callable[[], Any], wb_path: Path, to_sav
             return
         before = _file_version(wb_path)
         wb.Save()
+        debug_log.saved_excel("导出 PDF：打印方向", wb_path)
         with STATE_LOCK:
             print_layout.saved_to_excel(STATE.setdefault("print_layouts", {}), str(wb_path), before, changed)
             _persist_state(force=True)  # Excel 已经改了：马上记下

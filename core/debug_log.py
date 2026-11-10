@@ -165,6 +165,27 @@ def _wave(arrow: str, title: str, *, force: bool = True) -> None:
 
 
 @_never_raise
+def saved_excel(source: str, path: Any) -> None:
+    """哪一步把 Excel 存了一下：查「调整页面刚导完又说 Excel 改过」时，按时间对得上是谁改的（用户 2026-11-10）。
+    同时记下这时候还有没有别的后台任务在跑（主页任务、精简后自动检查）"""
+    try:
+        from pathlib import Path as _P
+        st = _P(str(path)).stat()
+        size, when = st.st_size, time.strftime("%H:%M:%S", time.localtime(st.st_mtime))
+    except OSError:
+        size, when = "-", "-"
+    busy = chain = "-"
+    try:
+        from core import clean_chain, workflow
+        job = workflow.STATE.get("job") or {}
+        busy = f"{job.get('kind')}" if workflow.STATE.get("busy") else "没有"
+        cur = clean_chain.status()
+        chain = f"{cur.get('stage')}" if cur.get("running") else "没有"
+    except Exception:
+        pass
+    event("💾 保存了 Excel", 来源=source, 文件=str(path), 大小=size, 修改时间=when, 主页任务=busy, 精简后自动检查=chain)
+
+
 def write(message: str, emoji: str = "ℹ️") -> None:
     _line(emoji, message)
 

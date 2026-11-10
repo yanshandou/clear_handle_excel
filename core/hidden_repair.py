@@ -316,6 +316,7 @@ def apply_file(excel: Any, file: dict) -> list[dict]:
             raise ValueError("至少需要保留一张可见工作表，本文件没有保存")
         check_versions(opened_stamp)
         book.Save()
+        debug_log.saved_excel("修复隐藏页", path)
     finally:
         book.Close(SaveChanges=False)
     return [{**item, "status": "ok", "reason": "已恢复备份列宽（仍为可见列）" if item["kind"] == "narrow" else "已恢复备份隐藏状态"}

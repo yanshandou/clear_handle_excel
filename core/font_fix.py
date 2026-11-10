@@ -149,6 +149,7 @@ def fix_workbook(excel: Any, path: Path, on_sheet=None) -> dict:
                 sheets.append({"sheet": name, "cells": cell_count, "shapes": len(shape_names), "names": shape_names[:20]})
         if sheets:
             book.Save()
+            debug_log.saved_excel("统一字体", path)
     finally:
         book.Close(SaveChanges=False)
     return {"cells": sum(s["cells"] for s in sheets), "shapes": sum(s["shapes"] for s in sheets), "sheets": sheets}

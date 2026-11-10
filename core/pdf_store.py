@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +91,14 @@ def _stat(pdf: Path) -> tuple[int, int] | None:
     return st.st_size, st.st_mtime_ns
 
 
+def _when(ns: Any) -> str:
+    """修改时间（纳秒）→ 本地时间，调试日志用"""
+    try:
+        return time.strftime("%m-%d %H:%M:%S", time.localtime(int(ns) / 1e9))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return "-"
+
+
 def _entry_pdfs(root: Path | str, entry: dict) -> list[tuple[Path, str, dict]]:
     base = pdf_root(root)
     return [(base / item["pdf"], str(item.get("sheet", "")), item)
@@ -139,10 +148,41 @@ def stale_pdfs(root: Path | str, fingerprint: Any) -> dict[str, dict]:
             digest = fingerprint(wb)
         except OSError:
             continue
+        hits = []
         for pdf, sheet, item in _entry_pdfs(root, entry):
             if _item_hash(entry, item) != digest and pdf.is_file():
                 found[str(pdf)] = {"wb_path": str(wb), "sheet": sheet}
+                hits.append((sheet, _item_hash(entry, item)))
+        if hits:
+            _log_stale(root, key, entry, wb, digest, hits)
     return found
+
+
+def _quick_digest(wb_path: Path) -> str:
+    from core import sheet_history
+    try:
+        return sheet_history.fingerprint(wb_path)
+    except OSError:
+        return ""
+
+
+def _log_stale(root: Path | str, key: str, entry: dict, wb: Path, digest: str, hits: list[tuple[str, str]]) -> None:
+    """被当成「导出以后 Excel 又改过」的：把能看出原因的都写进调试日志（用户 2026-11-10 查刚导完又重导）"""
+    now = _stat(wb)
+    fresh = _quick_digest(wb)  # 不走缓存重新算一遍：看是不是缓存算错了
+    lock = wb.with_name("~$" + wb.name)
+    recorded = entry.get("recorded_ns")
+    debug_log.event(
+        "🔍 Excel 改过判断", 文件=key, 实际找到的Excel=str(wb), 记录里的路径=entry.get("excel", ""),
+        记录哈希=str(entry.get("hash", ""))[:12], 现在哈希=digest[:12], 重新算哈希=fresh[:12],
+        缓存算错=bool(fresh and fresh != digest),
+        旧表=[f"{sheet}({h[:12]})" for sheet, h in hits][:20], 旧表数=len(hits),
+        共几张表=len(entry.get("pdfs", [])),
+        记录时Excel大小=entry.get("wb_size", "没记"), 现在大小=now[0] if now else "-",
+        记录时Excel修改时间=_when(entry.get("wb_mtime_ns")) if entry.get("wb_mtime_ns") else "没记",
+        现在Excel修改时间=_when(now[1]) if now else "-",
+        记录写入时间=_when(recorded) if recorded else "没记（旧版本导出的记录）",
+        有锁文件=lock.exists(), 根目录=str(root))
 
 
 def sheet_pdfs(root: Path | str, wb_path: Path) -> dict[str, Path]:
@@ -196,9 +236,18 @@ def record(root: Path | str, wb_path: Path, digest: str, exported: list[tuple[Pa
             if _inside(wb_path, root) else wb_path.name,
             "hash": digest, "pdfs": pdfs,
         }
+        wb_stat = _stat(wb_path)
+        if wb_stat is not None:
+            # 记下这时候 Excel 的大小、修改时间：之后被当成「Excel 改过」时，调试日志能看出是什么时候改的
+            data["files"][key].update(wb_size=wb_stat[0], wb_mtime_ns=wb_stat[1],
+                                      recorded_ns=time.time_ns())
         if fit:
             data["files"][file_key(wb_path, root)]["fit"] = True
         _save(root, data)
+    debug_log.event("🧾 PDF 导出记录", 文件=key, 哈希=digest[:12], 只换几张=merge,
+                    表=[sheet for _, sheet in exported], 大小=wb_stat[0] if wb_stat else "-",
+                    Excel修改时间=_when(wb_stat[1]) if wb_stat else "-",
+                    哈希和文件对得上=(wb_stat is not None and _quick_digest(wb_path) == digest))
 
 
 def has_record(root: Path | str, wb_path: Path) -> bool:
