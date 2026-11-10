@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-import fitz
+from core.pdf_detector import fitz
 
 from core import debug_log, file_problem, progress_log, workflow as wf
 from core.common import XL_SHEET_VISIBLE, XL_TYPE_PDF, strip_review_prefix, workbook_rel_name
