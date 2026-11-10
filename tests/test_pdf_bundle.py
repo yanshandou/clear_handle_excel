@@ -27,10 +27,25 @@ class Used:
         self.Count, self.Formula = count, formula
 
 
+class Part:
+    def __init__(self, text=""):
+        self.Text = text
+
+
+class Setup:
+    def __init__(self):
+        self.LeftHeader, self.CenterHeader, self.RightHeader = "介舟ファミリークラウド", "", "&A"
+        self.LeftFooter, self.CenterFooter, self.RightFooter = "", "&P / &N", ""
+        self.FirstPage = type("H", (), {k: Part() for k in
+                                        ["LeftHeader", "CenterHeader", "RightHeader", "LeftFooter", "CenterFooter", "RightFooter"]})()
+        self.FirstPage.LeftHeader = Part("表紙だけ")
+
+
 class Sheet:
     def __init__(self, name, pages=1, visible=-1, blank=False, protect_unhide=False):
         self.Name, self.pages, self._visible, self.protect_unhide = name, pages, visible, protect_unhide
         self.Shapes = Shapes(0)
+        self.PageSetup = Setup()
         self.UsedRange = Used(1, "") if blank else Used(20, None)
         self.exported = []
 
@@ -64,12 +79,12 @@ class BundleTest(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)
 
-    def export(self, name, sheets, include_hidden=False, skip=None):
+    def export(self, name, sheets, include_hidden=False, skip=None, no_header=False):
         path = self.root / name
         path.write_bytes(b"x")
         book = Book(sheets)
         with patch.object(pdf_bundle, "open_workbook_checked", return_value=book) as opened:
-            result = pdf_bundle.export_workbook(object(), path, include_hidden, skip_sheets=skip)
+            result = pdf_bundle.export_workbook(object(), path, include_hidden, skip_sheets=skip, no_header_footer=no_header)
         self.assertEqual(opened.call_args.kwargs["ReadOnly"], True)
         self.assertIs(book.closed_with, False)
         return path, result
@@ -133,8 +148,18 @@ class BundleTest(unittest.TestCase):
         self.assertEqual([s["reason"] for s in result["skipped"]], ["在跳过名单里"] * 2)
         self.assertEqual(rireki.exported, [])
 
+    def test_header_footer_cleared_only_when_asked(self):
+        kept = Sheet("A", 1)
+        self.export("g.xlsx", [kept])
+        self.assertEqual(kept.PageSetup.LeftHeader, "介舟ファミリークラウド")
+        cleared = Sheet("B", 1)
+        _, result = self.export("h.xlsx", [cleared], no_header=True)
+        setup = cleared.PageSetup
+        self.assertEqual([setup.LeftHeader, setup.RightHeader, setup.CenterFooter, setup.FirstPage.LeftHeader.Text], [""] * 4)
+        self.assertEqual(result["headers_cleared"], 4)
+
     def test_options_validated(self):
-        self.assertEqual(pdf_bundle.options_for(None), {"include_hidden": False, "skip_sheets": ["変更履歴"]})
+        self.assertEqual(pdf_bundle.options_for(None), {"include_hidden": False, "skip_sheets": ["変更履歴"], "no_header_footer": True})
         self.assertEqual(pdf_bundle.options_for({"skip_sheets": [" A ", "", "A", "B"]})["skip_sheets"], ["A", "B"])
         self.assertEqual(pdf_bundle.options_for({"skip_sheets": []})["skip_sheets"], [])
         with self.assertRaises(ValueError):
