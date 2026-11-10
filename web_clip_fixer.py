@@ -13,7 +13,7 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from core import autofix, batch, bl_links, clean_chain, debug_log, distribute, file_problem, work_task, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review, pdf_bundle
+from core import autofix, batch, bl_links, clean_chain, debug_log, distribute, file_problem, work_task, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review, pdf_bundle, font_fix
 from core import upload_manager
 from core.common import (
     STATIC_DIR,
@@ -186,6 +186,10 @@ class WebHandler(upload_manager.Handler):
             self._serve_static_file("color_repair.html")
         elif parsed.path == "/repair-hidden":
             self._serve_static_file("hidden_repair.html")
+        elif parsed.path == "/fix-fonts":
+            self._serve_static_file("font_fix.html")
+        elif parsed.path == "/api/font_fix":
+            self._send_json(font_fix.status())
         elif parsed.path == "/pdf-bundle":
             self._serve_static_file("pdf_bundle.html")
         elif parsed.path == "/api/pdf_bundle":
@@ -459,6 +463,8 @@ class WebHandler(upload_manager.Handler):
         with STATE_LOCK:
             if STATE.get("maintenance") == "pdf_bundle":
                 raise ValueError("正在批量导出同名 PDF，请等当前任务结束")
+            if STATE.get("maintenance") == "font_fix":
+                raise ValueError("正在统一字体，请等当前任务结束")
             if STATE.get("maintenance"):
                 name = ("颜色" if STATE["maintenance"].startswith("color_") else
                         "隐藏状态" if STATE["maintenance"].startswith("hidden_") else
@@ -519,6 +525,9 @@ class WebHandler(upload_manager.Handler):
             except ValueError:
                 raise ValueError("后台正在保存 Excel，请几秒后再刷新") from None
             self._send_json({"ok": True, **pdf_review.refresh_stale(payload.get("pdfs"))})
+        elif self.path == "/api/font_fix/run":
+            font_fix.start(_require_folder(payload))
+            self._send_json({"ok": True})
         elif self.path == "/api/pdf_bundle/run":
             pdf_bundle.start(_require_folder(payload), payload.get("options"))
             self._send_json({"ok": True})

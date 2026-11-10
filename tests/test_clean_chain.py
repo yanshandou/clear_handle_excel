@@ -1,10 +1,10 @@
-"""精简 Sheet 之后自动接着做的检查：BL 超链接 → 引用错误 →（勾选时）隐藏页（core/clean_chain.py）。"""
+"""精简 Sheet 之后自动接着做的检查：BL 超链接 → 引用错误 →（勾选时）隐藏页 → 统一字体（core/clean_chain.py）。"""
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core import bl_links, clean_chain, hidden_repair, link_repair, storage
+from core import bl_links, clean_chain, font_fix, hidden_repair, link_repair, storage
 
 
 class FakeJob:
@@ -33,8 +33,9 @@ class CleanChainTests(unittest.TestCase):
             patcher = patch.object(obj, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
-        self.bl_status, self.link_status, self.hidden_status = {}, {}, {}
-        for module, status in ((bl_links, self.bl_status), (link_repair, self.link_status), (hidden_repair, self.hidden_status)):
+        self.bl_status, self.link_status, self.hidden_status, self.font_status = {}, {}, {}, {}
+        for module, status in ((bl_links, self.bl_status), (link_repair, self.link_status), (hidden_repair, self.hidden_status),
+                               (font_fix, self.font_status)):
             patcher = patch.object(module, "status", lambda status=status: dict(status))
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -50,6 +51,10 @@ class CleanChainTests(unittest.TestCase):
         self.hidden = self.job(hidden_repair, "repair", self.hidden_status, "applied", {"folder": "/x", "files": [
             {"name": "a.xlsx", "path": "/x/a.xlsx", "error": None, "cells": [
                 {"sheet": "S", "addr": "E:E", "anchor": "E1", "kind": "columns", "status": "ok"}]}]})
+
+        self.font = self.job(font_fix, "start", self.font_status, "result", {"folder": "/x", "files": [
+            {"name": "a.xlsx", "path": "/x/a.xlsx", "error": None, "shapes": 3, "cells": 0, "sheets": []},
+            {"name": "c.xlsx", "path": "/x/c.xlsx", "error": None, "shapes": 0, "cells": 0, "sheets": []}]})
 
     def job(self, module, name, status, key, result):
         fake = FakeJob(module, key, result)
@@ -113,7 +118,14 @@ class CleanChainTests(unittest.TestCase):
         with patch.object(clean_chain, "_STATUS", {}), patch.object(clean_chain, "_LOADED", False):
             saved = clean_chain.status()
             self.assertEqual(saved["folder"], "/x")
-            self.assertEqual({s["key"]: s["fixed"] for s in saved["steps"]}, {"bl": 1, "links": 1, "hidden": 1})
+            self.assertEqual({s["key"]: s["fixed"] for s in saved["steps"]}, {"bl": 1, "links": 1, "hidden": 1, "font": 3})
+
+    def test_font_runs_without_reference_folder(self):
+        clean_chain.run("/x", {"hidden": False, "old_folder": ""})
+        self.assertEqual(self.font.calls, [("/x",)])
+        font = self.steps()["font"]
+        self.assertEqual((font["state"], font["fixed"]), ("done", 3))
+        self.assertIn("1 份 Excel 换成标准字体：3 个图形", font["text"])
 
     def test_without_reference_links_and_hidden_are_skipped(self):
         clean_chain.run("/x", {"hidden": True, "old_folder": ""})
@@ -164,7 +176,7 @@ class CleanChainTests(unittest.TestCase):
             saved = clean_chain.status()
             self.assertFalse(saved["running"])
             self.assertTrue(saved["interrupted"])
-            self.assertEqual({s["key"]: s["state"] for s in saved["steps"]}, {"bl": "failed", "links": "failed", "hidden": "off"})
+            self.assertEqual({s["key"]: s["state"] for s in saved["steps"]}, {"bl": "failed", "links": "failed", "hidden": "off", "font": "failed"})
 
 
 if __name__ == "__main__":
