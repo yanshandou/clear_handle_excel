@@ -113,7 +113,7 @@ class ClusterTest(unittest.TestCase):
     def test_touching_shapes_cluster_and_far_ones_stay(self):
         frame = Shape("枠 1", 1, 0, 0, 600, 300)
         button = Shape("ボタン 2", 6, 20, 280, 120, 40)        # 已有的组合，伸出框外
-        callout = Shape("吹き出し 3", 2, 100, 322, 400, 30)     # 只和按钮挨着（隔 2 磅）
+        callout = Shape("吹き出し 3", 2, 100, 322, 400, 30)     # 只和按钮挨着
         alone = Shape("メモ 4", 17, 900, 900, 50, 20)
         chart = Shape("グラフ 5", 3, 10, 10, 50, 50)            # 图表不碰
         sheet = Sheet([frame, button, callout, alone, chart])
@@ -122,6 +122,15 @@ class ClusterTest(unittest.TestCase):
             self.assertEqual(n, 1)
             self.assertEqual(sheet.Shapes.groups, [[frame, button, callout]])
         self.assertEqual({s.Placement for s in (frame, button, callout)}, {1})
+
+    def test_nearby_picture_below_with_small_gap_joins_the_cluster(self):
+        """用户 2026-11-11：上面的画面和下面隔一小段空隙的表格截图要进同一组，不然下面那张单独跑"""
+        screen = Shape("図 1", 13, 0, 0, 600, 400)
+        table = Shape("図 2", 13, 0, 420, 600, 80)              # 隔 20 磅
+        next_screen = Shape("図 3", 13, 0, 560, 600, 300)        # 再往下隔 60 磅：另一堆
+        note = Shape("吹き出し 4", 2, 500, 600, 150, 30)
+        sheet = Sheet([screen, table, next_screen, note])
+        self.assertEqual(print_overlays.find_clusters(sheet), [[screen, table], [next_screen, note]])
 
     def test_duplicate_names_grouped_by_index_and_placement_restored_by_id(self):
         a = Shape("正方形 2", 1, 0, 0, 50, 50, placement=3)
