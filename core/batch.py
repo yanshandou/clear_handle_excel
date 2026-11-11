@@ -715,6 +715,7 @@ def snapshot(detail_paths: set[str] | None = None) -> dict:
                 "open_blocked": _open_blocked([c["wb_path"] for c in cards]),
                 "followups": copy.deepcopy(_data().get("followups") or []),
                 "opened_files": sorted(_opened_paths()),
+                "recheck_ready": _recheck_ready([c["wb_path"] for c in cards]),
                 "scan_eta": _scan_eta(wf.STATE["job"]) if wf.STATE["job"] else None,
                 "slow_files": [{"path": p, "name": Path(p).name, **info} for p, info in _data().get("slow_files", {}).items()
                                if in_folder(p)],
@@ -3830,6 +3831,21 @@ def _opening_files():
 
 def _open_folder_key() -> str:
     return str(Path(wf.STATE.get("folder") or ".").resolve()).casefold()
+
+
+def _recheck_ready(card_paths: list[str]) -> list[str]:
+    """打开过、在 Excel 里改过并保存、已经关掉的文件：网页上可以自动复检（用户 2026-11-10 要改起来顺手）。
+    只看打开记录里的、还有卡片的文件；Excel 还开着（有锁文件）的不算，免得复检把你正在改的文件关掉。调用方持有 STATE_LOCK"""
+    ready = []
+    for path in sorted(_opened_paths() & set(card_paths)):
+        checked = wf.STATE["checked_files"].get(path)
+        try:
+            if not checked or wf._file_version(Path(path)) == checked or workbook_locked(Path(path)):
+                continue
+        except OSError:
+            continue
+        ready.append(path)
+    return ready
 
 
 def _opened_paths() -> set[str]:

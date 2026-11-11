@@ -151,6 +151,8 @@ function categoryActionsHtml(cat, cards) {
   return '<div class="tb-actions">'
     + (opened ? '' : `<button type="button" class="btn btn-outline btn-sm" id="categoryOpenBtn"${disabled(openBusy || (!yellow && '没有可打开的文件'))}>${openText}</button>`)
     + `<button type="button" class="btn btn-outline btn-sm" id="categoryRecheckBtn"${disabled(recheckBusy || (!yellow && '没有要复检的格子'))}>${recheckText}</button>`
+    + `<button type="button" class="btn btn-outline btn-sm tb-next-btn" id="categoryNextBtn"${disabled(!cat.cards.length && '没有格子')} title="在 Excel 里跳到清单里的下一个问题格（文件没开会先打开），不用自己找标色">➡ 下一处</button>`
+    + `<label class="tb-auto-recheck" title="打开过的文件在 Excel 里改完、保存、关掉后，自动复检这一份（Excel 还开着的不动）"><input type="checkbox" id="autoRecheckToggle"${autoRecheck ? ' checked' : ''}> 改完关掉文件后自动复检</label>`
     + `<span class="tb-actions-hint">${opened ? '这些文件打开过：在 Excel 里改完保存，再复检；复检后还有问题的回到各分类。' : '工具解决不了的，打开 Excel 自己改，保存后复检（复检只检测、不改格子）。单击清单里的格子名直接跳过去。'}</span></div>`;
 }
 
@@ -177,6 +179,7 @@ function renderCategories() {
     categoryBusyReason(), openChoosing, batchState.job?.kind, batchState.job?.closing,
     batchState.folder, excelLinkHtml.revision, batchState.open_blocked]);
   renderOpenNext();
+  maybeAutoRecheck();
   if (key === categoryRenderKey) { toolboxAfterRender(); return; }
   categoryRenderKey = key;
   // 重画时保留清单框的滚动位置
@@ -222,6 +225,38 @@ $('lowRiskToggle')?.addEventListener('change', async event => {
     renderLowRisk();
   }
 });
+
+// 「➡ 下一处」：按清单顺序点下一个格子链接（open_excel.js 打开并跳过去、给链接加框），从上次点过的那个往下数，到底再从头。
+// 不滚动页面（用户讨厌页面自己动），清单里加框的就是现在跳到的那格
+function jumpNextCell() {
+  const links = [...$('learnDetail').querySelectorAll('.tb-grid .excel-link:not(.is-blocked)')];
+  if (!links.length) return appAlert('这一组没有能跳过去的格子（文件可能还在后台处理）');
+  const last = links.findIndex(a => a.classList.contains('is-last'));
+  links[(last + 1) % links.length].click();
+}
+
+// 改完关掉文件后自动复检（用户 2026-11-10：人工改的过程要丝滑）：后台发现打开过的文件保存过、Excel 已经关掉，
+// 就自动排一次复检，不用回网页点。每份文件这次触发一次；后台在忙、任务待续跑时先不动，空了再看
+const AUTO_RECHECK_KEY = 'clear_handle_excel.autoRecheck';
+let autoRecheck = true;
+try { if (localStorage.getItem(AUTO_RECHECK_KEY) === '0') autoRecheck = false; } catch (_) {}
+const autoRechecked = new Set();
+let autoRecheckBusy = false;
+async function maybeAutoRecheck() {
+  const ready = new Set(batchState.recheck_ready || []);
+  for (const path of [...autoRechecked]) if (!ready.has(path)) autoRechecked.delete(path);  // 复检完或又打开了：下次保存关掉再触发
+  if (!autoRecheck || autoRecheckBusy || requestBusy || openChoosing || batchState.busy
+      || batchState.job?.status === 'interrupted') return;
+  const paths = [...ready].filter(p => !autoRechecked.has(p));
+  if (!paths.length) return;
+  const want = new Set(paths);
+  const cards = recheckAllCards(manualCards().filter(c => want.has(c.wb_path)));
+  if (!cards.length) return;
+  paths.forEach(p => autoRechecked.add(p));
+  autoRecheckBusy = true;
+  try { await startJob('/api/batch/recheck', { card_ids: cards.map(c => c.id) }); }
+  finally { autoRecheckBusy = false; }
+}
 
 // 顶上的「打开下一批」：按左边列表的顺序（按文件时问题多的在前），打开还没打开过的文件，每次最多 10 个
 function nextBatchCards() {
@@ -283,5 +318,12 @@ $('learnDetail').addEventListener('click', event => {
   const id = event.target.closest('button')?.id;
   if (id === 'categoryOpenBtn') categoryOpen();
   else if (id === 'categoryRecheckBtn') categoryRecheck();
+  else if (id === 'categoryNextBtn') jumpNextCell();
+});
+$('learnDetail').addEventListener('change', event => {
+  if (event.target.id !== 'autoRecheckToggle') return;
+  autoRecheck = event.target.checked;
+  try { localStorage.setItem(AUTO_RECHECK_KEY, autoRecheck ? '1' : '0'); } catch (_) {}
+  maybeAutoRecheck();
 });
 renderCategories();

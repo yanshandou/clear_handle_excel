@@ -1501,6 +1501,20 @@ class BatchTests(unittest.TestCase):
         clipped["error_types"] = ["text_truncated", "box_overflow"]
         self.assertEqual(batch._card_severity(clipped), "yellow")
 
+    def test_recheck_ready_only_for_saved_and_closed_opened_files(self):
+        # 打开过的文件改完保存、关掉 Excel 后才自动复检；没改过、还开着的不动
+        card, item = self.add_card("A5")
+        item.update(status="pending")
+        card.update(color="yellow", manual=True, finalized=True, verified=False)
+        self.wf.STATE.setdefault("checked_files", {})[self.path] = self.wf._file_version(Path(self.path))
+        batch._remember_opened([self.path])
+        self.assertEqual(batch.snapshot()["recheck_ready"], [])
+        Path(self.path).write_bytes(b"workbook changed")
+        with patch.object(batch, "workbook_locked", return_value=True):
+            self.assertEqual(batch.snapshot()["recheck_ready"], [])
+        with patch.object(batch, "workbook_locked", return_value=False):
+            self.assertEqual(batch.snapshot()["recheck_ready"], [self.path])
+
     def test_snapshot_image_urls_change_with_content(self):
         card, _ = self.add_card()
         batch._save_shot(card, "before", "data:image/png;base64,YQ==")

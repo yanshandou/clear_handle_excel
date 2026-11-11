@@ -281,3 +281,5 @@ tr[data-state="marked"] .learn-state { background: var(--purple-ink, #1f5fc4); c
 .learn-lowrisk { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 700; color: var(--ink, #1c2858); cursor: pointer; white-space: nowrap; }
 .learn-lowrisk #lowRiskCount { display: inline-block; min-width: 4.5em; color: #3a3f5c; font-weight: 600; }
 .learn-file-red { color: #a01818; font-weight: 800; }
+.tb-next-btn { min-width: 6.5em; }
+.tb-auto-recheck { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 700; color: var(--ink, #1c2858); cursor: pointer; white-space: nowrap; }

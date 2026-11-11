@@ -764,7 +764,10 @@ def _detect_sheet_results(
         def page_entry(page_index: int) -> str:
             page_id = f"page_{generation}_{page_index}"
             if page_id not in pages:
-                image, width, height = render_page_overview(doc[page_index])
+                # 整页大图现在没有页面用（查看切字只用格子特写），扫描时不再渲染，只记页面大小：
+                # 每个有问题的页省一次整页 PNG 渲染和存记录（用户 2026-11-10 嫌扫描慢）
+                rect = doc[page_index].rect
+                image, width, height = "", round(float(rect.width), 2), round(float(rect.height), 2)
                 pages[page_id] = {
                     "id": page_id, "wb_path": str(wb_path), "wb_name": wb_label,
                     "sheet_name": sheet_name, "pdf_path": str(pdf_path),
