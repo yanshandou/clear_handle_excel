@@ -132,7 +132,28 @@
     const mode = saved === '1' ? 'both' : ['excel', 'both', 'pdf'].includes(saved) ? saved : 'excel';
     document.querySelector(`input[name="distPdfMode"][value="${mode}"]`).checked = true;
   }
-  $('distPdfBox').addEventListener('change', () => {
+  // 怎么判断远程被改过（用户 2026-11-11）：auto 先比 hash、对不上再比内容 / content 只比内容
+  const GUARD_KEY = 'clear_handle_excel.uploadGuard';
+  const guardMode = () => document.querySelector('input[name="distGuardMode"]:checked')?.value || 'auto';
+  function showGuardNote() {
+    $('distGuardNote').innerHTML = guardMode() === 'content'
+      ? '<strong>只比内容</strong>：不看 hash 和拿取记录，每份都比你这份和远程现在这份的<strong>全部文字</strong>和<strong>每张表打印区域的格子数</strong>。都一样才覆盖，有一处不一样就不传，提醒先拉取。你自己改了文字或打印区域（删表、收打印区域）也会被拦。.xls / .xlsb 读不了内容，照旧按 hash。'
+      : '远程这份和上次拉取 / 上传时记下的 hash 一样就直接覆盖；对不上或没有记录（比如拿很久以前的版本修的），再比全部文字和打印区域格子数，一样才覆盖。';
+  }
+  {
+    const saved = load(GUARD_KEY);
+    document.querySelector(`input[name="distGuardMode"][value="${saved === 'content' ? 'content' : 'auto'}"]`).checked = true;
+    showGuardNote();
+  }
+  $('distPdfBox').addEventListener('change', event => {
+    if (event.target.name === 'distGuardMode') {
+      save(GUARD_KEY, guardMode());
+      console.info('🔎 判断远程被改过', guardMode() === 'content' ? '只比内容' : '先比 hash，对不上再比内容');
+      showGuardNote();
+      if (freeMode && isFree(latest.preview)) needsFreePreview = true;  // 清单是按原来的方式核对的，要重新生成
+      if (!loading) controls();
+      return;
+    }
     save(PDF_ON, pdfMode());
     console.info('📕 上传什么', { excel: '只传表格', both: '表格和 PDF 一起', pdf: '只传 PDF' }[pdfMode()], pdfOptions());
     showPdfNote();
@@ -232,7 +253,7 @@
   function controls() {
     const busy = loading || submitting || latest.running;
     for (const id of ['distSource', 'distDest', 'distPlan', 'distPick']) $(id).disabled = !!busy;
-    for (const input of document.querySelectorAll('input[name="distPdfMode"]')) input.disabled = !!busy;
+    for (const input of document.querySelectorAll('input[name="distPdfMode"], input[name="distGuardMode"]')) input.disabled = !!busy;
     $('distPreview').disabled = !!busy;
     $('distFetch').disabled = !!busy;
     const fetchMode = isFetch(latest.preview) || (latest.running && latest.kind === 'fetch');
@@ -912,11 +933,12 @@
       const pdf = await pdfPlan({ task_id: task.id, files: files.map(file => file.rel) });
       if (pdf === null) return;
       const text = pdf?.only ? `这次只传 PDF，Excel 不传（终点那份不动）。\n\n${message.replace(/，都做成了再.*$/, '，再导出同名 PDF 传过去。')}` : message;
-      if (!await window.appConfirm(text + (pdf ? '\n\n' + pdf.line : ''), { title: pdf?.only ? '只传 PDF' : task.upload_to ? '批量上传到中转' : '批量上传到共享', okText: '开始检查', tone: 'danger' })) return;
+      const guardLine = guardMode() === 'content' ? '\n\n🔎 只比内容：每份都比你这份和共享现在这份的全部文字、打印区域格子数，不一样的不传。' : '';
+      if (!await window.appConfirm(text + guardLine + (pdf ? '\n\n' + pdf.line : ''), { title: pdf?.only ? '只传 PDF' : task.upload_to ? '批量上传到中转' : '批量上传到共享', okText: '开始检查', tone: 'danger' })) return;
       viewing = null;
       $('distError').textContent = '';
       const reviewed = Object.fromEntries(reviews.map(file => [file.rel, file.review.token]));
-      await post(api + '/task_upload', { task_id: task.id, files: files.map(file => file.rel), reviewed,
+      await post(api + '/task_upload', { task_id: task.id, files: files.map(file => file.rel), reviewed, guard: guardMode(),
         pdf: pdf ? { options: pdf.options, overwrite: pdf.overwrite, only: pdf.only } : null });
       wasRunning = true;
     } catch (error) {
@@ -991,7 +1013,7 @@
     submitting = 'free'; viewing = null; controls();
     showProgress('running', '', '正在列出起点和终点的文件，检查终点那份期间有没有被人改过…');
     try {
-      await post(api + '/free_preview', { source, dest });
+      await post(api + '/free_preview', { source, dest, guard: guardMode() });
       needsFreePreview = false;
     } catch (error) { $('distError').textContent = error.message; }
     finally { submitting = false; await refresh(); }

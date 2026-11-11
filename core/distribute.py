@@ -666,7 +666,12 @@ def _task_file(root: Path, rel: str) -> Path:
     return path
 
 
-def start_task_upload(task_id: Any, files: Any, reviewed: Any, pdf: Any = None) -> None:
+def _guard_mode(value: Any) -> str:
+    """判断远程有没有被改（用户 2026-11-11）：auto 先比 hash、对不上再比内容（默认）/ content 只比内容"""
+    return "content" if value == "content" else "auto"
+
+
+def start_task_upload(task_id: Any, files: Any, reviewed: Any, pdf: Any = None, guard: Any = None) -> None:
     task = _upload_task(task_id)
     pdf_settings = _pdf_settings(pdf)
     if not isinstance(files, list) or not files:
@@ -685,7 +690,8 @@ def start_task_upload(task_id: Any, files: Any, reviewed: Any, pdf: Any = None) 
     from core import work_task
     start(upload={"kind": "task_upload", "task": task, "label": f"任务：{task['name']}",
                   "source_root": task["work"], "dest_root": str(work_task.upload_dest(task)),
-                  "shared": task["shared"], "relay": work_task.is_relay(task), "files": items, "pdf": pdf_settings})
+                  "shared": task["shared"], "relay": work_task.is_relay(task), "files": items, "pdf": pdf_settings,
+                  "guard": _guard_mode(guard)})
 
 
 def _shared_digest(path: Path) -> str | None:
@@ -724,7 +730,7 @@ def _sync_task_file(task: dict[str, Any], item: dict[str, Any], local: Path, sha
 
 
 def _check_task_file(task: dict[str, Any], item: dict[str, Any], local: Path, shared: Path,
-                     backup_root: Path, baseline: dict[str, Any]) -> str | None:
+                     backup_root: Path, baseline: dict[str, Any], content_only: bool = False) -> str | None:
     if not Path(task["shared"]).is_dir():
         raise ValueError("共享文件夹不可用，请确认网络连接或同步状态")
     base = baseline.get(_base_key(shared), {})
@@ -738,13 +744,26 @@ def _check_task_file(task: dict[str, Any], item: dict[str, Any], local: Path, sh
     if current is None and (known or review):
         raise ValueError("共享中的文件已移走或删除，请核对路径")
     pending = review and (not review["ready"] or current != review["sha256"])
+    if content_only and current is not None and current == known and not pending:
+        # 用户 2026-11-11：选了「只比内容」——hash 一样也照样比全部文字 + 打印区域格子数
+        check = content_check.compare(local, shared, "你这份", "共享")
+        if check["checked"] and not check["same"]:
+            item.update(status="failed", content_diffs=check["diffs"],
+                        error=f"只比内容：你这份和共享现在这份不一样（{content_check.describe(check)}），没有上传。"
+                              "请先拉取共享最新版、在上面改好再传；如果这些不一样是你自己改的，换回「先比 hash」再传")
+            debug_log.event("🔎 只比内容：不一致，不上传", 文件=item["rel"], 第一处=check["diffs"][0][:80])
+            return current
+        if check["checked"]:
+            item["content_check"] = "只比内容：文字和打印区域都和共享一致，照常覆盖"
+        else:
+            item["content_check"] = f"只比内容：这份读不了内容（{check['reason']}），按 hash 核对"
     if current is not None and current != known and not pending:
         # 用户 2026-11-11：没有 hash 记录、或者手上这份本来就是拿很久以前的版本修的（hash 一定对不上），
         # 改成直接比要上传的这份和共享现在这份的全部文字 + 打印区域格子数：一样就照常覆盖，不一样才同步、要求重新处理
         check = content_check.compare(local, shared, "你这份", "共享")
         if check["same"]:
-            item["content_check"] = ("没有共享端版本记录" if not known else "共享这份和记下的版本不一样") + \
-                "，按文字和打印区域核对一致，照常覆盖"
+            item["content_check"] = ("只比内容：" if content_only else "") + \
+                ("没有共享端版本记录" if not known else "共享这份和记下的版本不一样") + "，按文字和打印区域核对一致，照常覆盖"
             debug_log.event("🔎 版本对不上但内容一致，照常上传", 文件=item["rel"], 有记录=bool(known))
             return current
         if not known and not review and not check["checked"]:
@@ -1047,7 +1066,7 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
         _progress(index, len(items), f"检查 {item['rel']}")
         try:
             local, dest = _task_file(work, item["rel"]), _task_file(shared, item["rel"])
-            current = _check_task_file(task, item, local, dest, backup_root, baseline)
+            current = _check_task_file(task, item, local, dest, backup_root, baseline, data.get("guard") == "content")
             checked.append((item, local, dest, current))
         except (OSError, ValueError) as err:
             item.update(status="failed", error=_explain(err))
@@ -1085,7 +1104,8 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
                 digest = copy_one(local, target, before_replace=verify_shared)
             except _SharedVersionChanged:
                 try:
-                    _check_task_file(task, item, local, dest, backup_root, load_baseline(strict=True))
+                    _check_task_file(task, item, local, dest, backup_root, load_baseline(strict=True),
+                                     data.get("guard") == "content")
                     if not item.get("status"):
                         item.update(status="failed", error="上传期间共享版本发生变化，请重新检查")
                 except (OSError, ValueError) as err:
@@ -1468,7 +1488,7 @@ def _manifest_for(src_file: Path, manifests: list[tuple[Path, dict[str, Any]]]) 
     return None
 
 
-def preview_free(source_text: Any, dest_text: Any) -> dict[str, Any]:
+def preview_free(source_text: Any, dest_text: Any, guard: Any = None) -> dict[str, Any]:
     """自由上传的清单（只读不改）：起点里的每个 Excel 传到终点同样的位置，先看终点那份能不能覆盖"""
     src, dst = _clean_root(source_text, "起点文件夹"), _clean_root(dest_text, "终点文件夹")
     if src == dst or _inside(src, dst) or _inside(dst, src):
@@ -1486,6 +1506,10 @@ def preview_free(source_text: Any, dest_text: Any) -> dict[str, Any]:
         info = found["excel"][rel]
         item = {"rel": rel, "size": info["size"], "mtime": info["mtime"], "src_sha256": _digest(src_file),
                 "dest_sha256": _shared_digest(dest_file)}
+        if (_guard_mode(guard) == "content" and item["dest_sha256"] is not None
+                and _free_content_check(item, src_file, dest_file, "选了只比内容")):
+            files.append(item)  # 用户 2026-11-11：选了「只比内容」——不看拿取清单和记录，直接按内容决定
+            continue
         hit = _manifest_for(src_file, manifests)
         record = None
         if hit:
@@ -1540,7 +1564,7 @@ def preview_free(source_text: Any, dest_text: Any) -> dict[str, Any]:
                "覆盖": sum(f["action"] == "overwrite" for f in files), "要确认": sum(f["action"] == "confirm" for f in files),
                "别人改过": sum(f["action"] == "conflict" for f in files), "期间新加": len(added), "终点多出": len(extra),
                "有清单": sum(f["guard"] == "manifest" for f in files)}
-    result = {"id": uuid.uuid4().hex[:12], "kind": "free_upload", "label": f"{src.name} → {dst.name}",
+    result = {"id": uuid.uuid4().hex[:12], "kind": "free_upload", "label": f"{src.name} → {dst.name}", "guard": _guard_mode(guard),
               "source_root": str(src), "dest_root": str(dst), "files": files, "added": added, "extra": extra,
               "notes": notes, "errors": found["errors"] + after["errors"], "summary": summary,
               "manifests": [str(folder / MANIFEST_NAME) for folder, _ in manifests]}
@@ -1556,7 +1580,7 @@ def _free_content_check(item: dict[str, Any], src_file: Path, dest_file: Path, w
     """用户 2026-11-11：hash 对不上（没有记录 / 记录太旧）时按全部文字 + 打印区域格子数核对。
     一样 → 照常覆盖，返回 True；不一样 → 标成不覆盖，返回 True；读不了 → 返回 False，按原来的规则"""
     if item["src_sha256"] == item["dest_sha256"]:
-        item["action"] = "overwrite"
+        item.update(action="overwrite", guard="content", note="终点已经和起点这份一模一样")
         return True
     check = content_check.compare(src_file, dest_file, "起点", "终点")
     if not check["checked"]:
@@ -1568,7 +1592,7 @@ def _free_content_check(item: dict[str, Any], src_file: Path, dest_file: Path, w
     else:
         item["action"] = "conflict"
         item["content_diffs"] = check["diffs"]
-        item["error"] = (f"{why}，按内容核对也不一样（{content_check.describe(check)}），没有覆盖。"
+        item["error"] = (f"{why}，按内容核对不一样（{content_check.describe(check)}），没有覆盖。"
                          "请先拿取终点最新版，在上面改好再传")
     return True
 
