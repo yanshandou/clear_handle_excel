@@ -1,4 +1,4 @@
-// 修复图片（用户 2026-11-11 要）：先找出被行高列宽拉坏的截图、跑偏的红框（只读，列出原版 / 新版局部截图、
+// 修复图片（用户 2026-11-11 要）：先找出被行高列宽拉坏的截图、跑偏的红框（只读，有图片的页列出原版 / 新版 / PDF 三列整页图、
 // 新版 Excel、对照打开原版、新版 PDF），看完再「修复这份」或「全部修复」。后端 core/image_restore.py
 (() => {
   const $ = id => document.getElementById(id);
@@ -9,7 +9,7 @@
   const PDF = 'clear_handle_excel.imgPdfFolder';
   const GROUP = 'clear_handle_excel.imgGroupOnFix';
   const shown = new Map();  // 文件名 → 已显示的那一块
-  let listKey = '', onlyBad = false;
+  let listKey = '', onlyBad = false, hideDone = false;
   let latest = {}, lastSig = '', loading = true, submitting = false, timer = 0, initial = true, wasRunning = false;
   try {
     $('imgFolder').value = localStorage.getItem(FOLDER) || '';
@@ -74,28 +74,31 @@
     }
   }
 
-  function shot(label, name, why = '截图没做出来（看调试日志「⚠️ 局部截图」），请对照打开看') {
-    return `<figure class="img-shot"><figcaption>${label}</figcaption>`
-      + (name ? `<img src="/api/batch/image/${encodeURIComponent(name)}?v=${result()?.stamp || 0}" alt="${esc(label)}" loading="lazy">`
-        : `<div class="img-none">${esc(why)}</div>`) + '</figure>';
+  function shot(label, name, why, ratio) {
+    return `<figure class="img-shot"><figcaption>${esc(label)}</figcaption>`
+      + (name ? `<img src="/api/batch/image/${encodeURIComponent(name)}?v=${result()?.stamp || 0}" alt="${esc(label)}" loading="lazy"${ratio ? ` style="aspect-ratio:${ratio}"` : ''}>`
+        : `<div class="img-none"${ratio ? ` style="aspect-ratio:${ratio}"` : ''}>${esc(why || '没有')}</div>`) + '</figure>';
   }
 
-  // 屏幕原样拍不了、退回打印效果时标出来（打印效果可能本身就有错位，不能当 Excel 原样看）
-  const how = h => h === 'pdf' ? '（打印效果，非屏幕原样）' : '';
-
-  // 第三列：新版 PDF 里同一张截图（PDF 没找到 / 认不出时写原因）
-  function pdfShot(f, g) {
-    if (!f.pdf) return shot('新版 PDF', '', '没找到同名 PDF（Excel 旁边和 PDF 文件夹里都没有）');
-    const label = `新版 PDF${g.pdf_page ? `（第 ${g.pdf_page} 页）` : ''}`;
-    return shot(label, g.pdf_img, (g.pdf_why || '没在 PDF 里找到这一处') + '，请点上面「新版 PDF」自己看');
-  }
-
-  // 按图比的结果：红框偏了多少（按截图边长 %）、整体差多少（0～1）
-  const cmpText = (label, c) => !c ? `${label}：没法比` : `${label}：${c.red_shift == null ? '没有红框' : `红框偏 ${c.red_shift}%`}，整体差 ${c.diff}${c.suspect ? ' ⚠' : ''}`;
-  const scoreHtml = g => (g.cmp_excel || g.cmp_pdf)
-    ? `<div class="img-score${g.suspect ? ' is-suspect' : ''}">${g.suspect ? '⚠ 按图比疑似有问题 · ' : '按图比 · '}${esc(cmpText('原版↔新版 Excel', g.cmp_excel))}｜${esc(cmpText('原版↔新版 PDF', g.cmp_pdf))}</div>` : '';
   const groupTitle = f => (f.group_sheets || []).map(g => `【${g.sheet}】${g.groups.join('；')}`).join('\n');
 
+  // 「无需处理」记在浏览器里（按 新版文件夹 + 文件 + 表 + 页），只改这一页的样子，不重画别的
+  const MARKS = 'clear_handle_excel.imgNoNeed';
+  let marks = {};
+  try { marks = JSON.parse(localStorage.getItem(MARKS) || '{}') || {}; } catch (_) {}
+  const markKey = (folder, file, sheet, page) => [folder, file, sheet, page].join('|');
+  function applyMarks(root = $('imgResults')) {
+    root.querySelectorAll('[data-mark]').forEach(el => {
+      const on = !!marks[el.dataset.mark];
+      el.classList.toggle('is-noneed', on);
+      const button = el.querySelector('[data-mark-btn]');
+      if (button) button.textContent = on ? '↩ 取消「无需处理」' : '✓ 无需处理';
+    });
+    const all = root.querySelectorAll('[data-mark]').length, done = root.querySelectorAll('[data-mark].is-noneed').length;
+    if ($('imgMarkCount')) $('imgMarkCount').textContent = all ? `已标无需处理 ${done} / ${all} 页` : '';
+  }
+
+  // 一页一行三列整页图（用户 2026-11-11 要：看整页，能比对也能定位）。三列都是导出 PDF 的样子
   function renderFile(f, data) {
     const folder = data.folder;
     const openNew = (label, sheet = '', cell = '') => window.excelLinkHtml(label, { file: f.name, folder, sheet, cell });
@@ -107,14 +110,22 @@
     ].filter(Boolean).join('');
     const badge = f.fixed ? `<span class="img-badge">✓ 已修复 ${f.fixed_count || 0} 个图形</span>`
       : f.fix_error ? `<span class="img-badge is-bad">! 没修好：${esc(f.fix_error)}</span>`
-      : f.count ? `<button class="btn btn-outline btn-sm" type="button" data-fix-file="${esc(f.name)}">🖼️ 修复这份</button>`
-      : f.suspect ? `<span class="img-badge is-bad" title="图形数字没变，但按图比红框偏了或差别大：多半只在 PDF 里错开，或 Excel 里看着不一样">⚠ 按图比 ${f.suspect} 张疑似有问题</span>`
-      : '<span class="img-badge is-bad" title="程序量出来大小、位置都没变；请看三列，有问题就点「新版 Excel」手动调">程序没量出变化 · 请目测</span>';
+      : f.count ? `<button class="btn btn-outline btn-sm" type="button" data-fix-file="${esc(f.name)}">🖼️ 修复这份</button>` : '';
     const groupBadge = f.grouped ? `<span class="img-badge is-group" title="${esc(groupTitle(f))}">📌 已组合 ${f.grouped} 组</span>` : '';
-    const sheets = (f.sheets || []).map(s => `<div class="img-sheet">【${esc(s.sheet)}】${s.count ? `${s.count} 个图形变了` : ''}${s.count && s.review ? '，' : ''}${s.review ? `${s.review} 张图片请目测` : ''}</div>`
-      + (s.groups || []).map(g => `<div class="img-group">${shot('原版 Excel' + how(g.old_how), g.old_img)}${shot((f.fixed ? '新版 Excel（修复前）' : '新版 Excel') + how(g.new_how), g.new_img)}${pdfShot(f, g)}`
-        + `<div class="img-detail">${scoreHtml(g)}${(g.details || []).map(d => '· ' + esc(d)).join('\n')}\n`
-        + `${compare(`🆚 对照打开这里${g.cell ? `（${esc(g.cell)}）` : ''}`, s.sheet, g.cell || '')}</div></div>`).join('')).join('');
+    const sheets = (f.sheets || []).map(s => {
+      const details = (s.groups || []).flatMap(g => g.details || []);
+      const cell = (s.groups || [])[0]?.cell || '';
+      const head = `<div class="img-sheet">【${esc(s.sheet)}】${s.count ? `程序量出 ${s.count} 个图形变了` : '程序没量出变化，请看整页目测'}`
+        + ` <span class="img-sheet-open">${compare('🆚 对照打开这张表', s.sheet, cell)}</span></div>`
+        + (details.length ? `<div class="img-detail">${details.map(d => '· ' + esc(d)).join('\n')}</div>` : '');
+      const pages = (s.pages || []).map(p => `<div class="img-page" data-mark="${esc(markKey(folder, f.name, s.sheet, p.page))}">`
+        + `<div class="img-page-head"><span>这张表第 ${p.page} / ${p.pages} 页${p.note ? `（${esc(p.note)}）` : ''}</span>`
+        + '<button class="btn btn-outline btn-sm" type="button" data-mark-btn>✓ 无需处理</button></div>'
+        + `<div class="img-group">${shot(`原版 Excel${p.old_page ? `（导出后第 ${p.old_page} 页）` : ''}`, p.old_img, p.old_why, p.ratio)}`
+        + shot(`新版 Excel${f.fixed ? '（修复前）' : ''}（导出后第 ${p.page} 页）`, p.new_img, '', p.ratio)
+        + `${shot(`新版 PDF${p.pdf_page ? `（第 ${p.pdf_page} 页）` : ''}`, p.pdf_img, p.pdf_why, p.ratio)}</div></div>`).join('');
+      return head + (pages || `<div class="img-none">${esc(s.pages_why || '这张表没有导出页')}</div>`);
+    }).join('');
     return `<div class="img-file${f.fixed ? ' is-fixed' : ''}"><div class="img-file-head"><span class="img-file-name">${esc(f.name)}</span>`
       + `<span class="img-links">${links}</span>${badge}${groupBadge}</div>${sheets}</div>`;
   }
@@ -145,14 +156,14 @@
       listKey = key;
       shown.clear();
       $('imgResults').innerHTML = '<p id="imgSummary" class="font-summary"></p><p id="imgHint" class="toolbar-hint"></p>'
-        + `<label class="img-group-opt"><input type="checkbox" id="imgOnlyBad"${onlyBad ? ' checked' : ''}>只看程序量出变化、⚠ 疑似有问题、没查的（其余先藏起来）</label>`
-        + `<div id="imgList"${onlyBad ? ' class="only-bad"' : ''}></div><p id="imgEmpty" hidden>没有图片。</p>`;
+        + `<label class="img-group-opt"><input type="checkbox" id="imgOnlyBad"${onlyBad ? ' checked' : ''}>只看程序量出变化、没查的文件（其余先藏起来）</label>`
+        + `<label class="img-group-opt"><input type="checkbox" id="imgHideDone"${hideDone ? ' checked' : ''}>藏起已标「无需处理」的页 <span id="imgMarkCount"></span></label>`
+        + `<div id="imgList" class="${onlyBad ? 'only-bad ' : ''}${hideDone ? 'hide-done' : ''}"></div><p id="imgEmpty" hidden>没有图片。</p>`;
     }
     const bad = files.filter(f => f.error), hit = files.filter(f => !f.error && f.count);
     const review = files.filter(f => !f.error && !f.count && f.review);
     const same = files.filter(f => !f.error && !f.count && !f.review);
     $('imgSummary').innerHTML = `<span class="is-bad">${hit.length} 份程序量出变化</span>`
-      + `<span class="is-bad">${files.filter(f => f.suspect).length} 份按图比疑似有问题</span>`
       + `<span class="is-bad">${review.length} 份有图片、请目测</span>`
       + `<span class="is-ok">${same.length} 份没有图片</span>` + (bad.length ? `<span class="is-bad">! ${bad.length} 份没查</span>` : '');
     $('imgHint').textContent = data.partial ? `还在查（已查 ${files.length} 份）：按查找顺序排，新查完的接在最下面，正在看的位置不会动。`
@@ -163,7 +174,7 @@
       if (!f.error && !f.count && !f.review) continue;
       const html = f.error
         ? `<div class="img-file is-flag"><ul class="font-list"><li class="font-item is-bad"><span class="font-mark">!</span><span class="font-name">${link(f)}</span><span class="font-error">没查：${esc(f.error)}</span></li></ul></div>`
-        : renderFile(f, data).replace('<div class="img-file', `<div class="img-file${f.count || f.suspect ? ' is-flag' : ''}`);
+        : renderFile(f, data).replace('<div class="img-file', `<div class="img-file${f.count ? ' is-flag' : ''}`);
       const old = shown.get(f.name);
       if (old && old.html === html) continue;
       const box = document.createElement('div');
@@ -172,6 +183,7 @@
       if (old) old.el.replaceWith(el); else list.append(el);
       shown.set(f.name, { html, el });
     }
+    applyMarks();
     $('imgEmpty').hidden = !!shown.size || !!data.partial;
   }
 
@@ -194,7 +206,7 @@
       if ((latest.running || initial) && latest.old_folder) $('imgOldFolder').value = latest.old_folder;
       if (wasRunning && !latest.running) {
         const files = result()?.files || [];
-        console.info('🖼️ 图片任务做完', { 动作: latest.mode, 份数: files.length, 有问题: files.filter(f => f.count).length, 已修复: files.filter(f => f.fixed).length });
+        console.info('🖼️ 图片任务做完', { 动作: latest.mode, 份数: files.length, 量出变化: files.filter(f => f.count).length, 已修复: files.filter(f => f.fixed).length });
         if (latest.mode === 'group') window.gameFx?.celebrate?.('截图和标注组合好了！', `${files.filter(f => f.grouped).length} 份`);
         if (latest.mode === 'fix') window.gameFx?.celebrate?.('图片放回原样了！', `已修复 ${files.filter(f => f.fixed).length} 份`);
       }
@@ -258,11 +270,19 @@
   $('imgGroup').addEventListener('click', () => start('group'));
   $('imgGroupOnFix').addEventListener('change', () => { try { localStorage.setItem(GROUP, $('imgGroupOnFix').checked ? '1' : '0'); } catch (_) {} });
   $('imgResults').addEventListener('change', event => {
-    if (event.target.id !== 'imgOnlyBad') return;
-    onlyBad = event.target.checked;
-    $('imgList')?.classList.toggle('only-bad', onlyBad);
+    if (event.target.id === 'imgOnlyBad') { onlyBad = event.target.checked; $('imgList')?.classList.toggle('only-bad', onlyBad); }
+    if (event.target.id === 'imgHideDone') { hideDone = event.target.checked; $('imgList')?.classList.toggle('hide-done', hideDone); }
   });
   $('imgResults').addEventListener('click', async event => {
+    const mark = event.target.closest('[data-mark-btn]');
+    if (mark) {
+      const key = mark.closest('[data-mark]').dataset.mark;
+      if (marks[key]) delete marks[key]; else marks[key] = 1;
+      try { localStorage.setItem(MARKS, JSON.stringify(marks)); } catch (_) {}
+      console.info('🖼️ 标记无需处理', { 页: key, 标上: !!marks[key] });
+      applyMarks();
+      return;
+    }
     const fix = event.target.closest('[data-fix-file]');
     if (fix) { start('fix', [fix.dataset.fixFile]); return; }
     const pdf = event.target.closest('[data-open-pdf]');

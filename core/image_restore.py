@@ -11,9 +11,9 @@
 - 只改真的变了的（大小差 > 1 磅，或标注相对截图偏了 > 1 磅）；行高、列宽、格子内容一律不动。
 - 改完回读核对，有一个没对上整份不保存。
 
-页面分两步（用户 2026-11-11 要）：先「找出受影响的图片」——两份都只读打开，不改任何文件，每处列出
-原版 / 新版的局部截图（Excel 屏幕原样：复制为图片贴进临时图表导出；不行再退回打印效果）、
-新版 PDF 里同一处的截图、新版 Excel、对照打开、PDF；
+页面分两步（用户 2026-11-11 要）：先「找出受影响的图片」——两份都只读打开，不改任何文件，
+有图片的表把原版、新版各按本工具同一套做法导出 PDF，有图片的每一页一行三列整页图（原版 Excel｜新版 Excel｜新版 PDF，
+按文字行配页），能比对也能定位；用户可以把看过没问题的页标「无需处理」（存在浏览器里）；
 用户看完再点「修复这份」或「全部修复」，也可以自己打开三个文件处理。
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core import debug_log, file_problem, fix_images, image_compare, print_overlays, progress_log, workflow as wf
+from core import debug_log, file_problem, fix_images, print_overlays, progress_log, workflow as wf
 from core.backup_compare import pair_files, require_manual_file_check
 from core.common import workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, quit_background_excel, start_background_excel
@@ -73,7 +73,6 @@ def pair_book_sheets(current: list[dict], old: list[dict]) -> list[tuple[dict, d
 
 # ---------- 找出受影响的地方（不改文件） ----------
 
-RENDER_WIDTH = 760  # 打印效果截图的像素宽
 
 
 def pdf_for(path: Path, root: Path, pdf_root: Path | None) -> Path | None:
@@ -93,129 +92,8 @@ def _image_name(path: Path, sheet: str, key: str, side: str) -> str:
     return f"imgfix_{digest}_{side}.png"
 
 
-XL_SCREEN, XL_BITMAP = 1, 2
-SCREEN_SCALE = 2.0  # 屏幕截图放大倍数（Excel 按 96dpi 出图，原大太糊）
-
-
-def _area_of(sheet: Any, names: list[str]) -> Any:
-    shapes = [sheet.Shapes.Item(n) for n in names]
-    r1 = min(int(s.TopLeftCell.Row) for s in shapes)
-    c1 = min(int(s.TopLeftCell.Column) for s in shapes)
-    r2 = max(int(s.BottomRightCell.Row) for s in shapes)
-    c2 = max(int(s.BottomRightCell.Column) for s in shapes)
-    return sheet.Range(sheet.Cells(max(1, r1 - 1), max(1, c1 - 1)), sheet.Cells(r2 + 1, c2 + 1))
-
-
-def render_screen(sheet: Any, names: list[str], out_name: str) -> str:
-    """Excel 屏幕上的样子（用户 2026-11-11 要「100% 真实的 Excel 排版」）：那块区域「复制为图片（如屏幕所示）」，
-    贴进临时图表存成 PNG。要借用剪贴板（Ditto 之类会记下这些截图）；剪贴板被别的程序占着时重试几次。
-    只用在只读打开、不保存的工作簿上，临时图表用完删掉"""
-    area = _area_of(sheet, names)
-    width, height = float(area.Width), float(area.Height)
-    try:
-        sheet.Activate()
-    except Exception:
-        pass
-    holder = None
-    try:
-        last: Exception | None = None
-        for attempt in range(6):
-            try:
-                area.CopyPicture(Appearance=XL_SCREEN, Format=XL_BITMAP)
-                break
-            except Exception as err:  # 剪贴板正被 Ditto 等占用
-                last = err
-                time.sleep(0.3 * (attempt + 1))
-        else:
-            raise RuntimeError(f"复制成图片失败（剪贴板被占用？）：{last}")
-        holder = sheet.ChartObjects().Add(0, 0, width * SCREEN_SCALE, height * SCREEN_SCALE)
-        chart = holder.Chart
-        try:
-            chart.ChartArea.Format.Line.Visible = 0
-            chart.ChartArea.Format.Fill.Visible = 0
-        except Exception:
-            pass
-        try:
-            holder.Activate()  # 不激活有时贴进去是空白
-        except Exception:
-            pass
-        chart.Paste()
-        pasted = chart.Shapes.Item(chart.Shapes.Count)
-        pasted.LockAspectRatio = 0
-        pasted.Left, pasted.Top = 0, 0
-        pasted.Width, pasted.Height = width * SCREEN_SCALE, height * SCREEN_SCALE
-        fix_images.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-        target = fix_images.IMAGES_DIR / out_name
-        if not chart.Export(str(target), "PNG") or not target.is_file() or target.stat().st_size < 200:
-            raise RuntimeError("图表导出的图片是空的")
-        return out_name
-    finally:
-        if holder is not None:
-            try:
-                holder.Delete()
-            except Exception:
-                pass
-
-
-def render_pdf(sheet: Any, names: list[str], out_name: str) -> str:
-    """打印效果：那块区域临时设成打印区域、缩成一页导出 PDF，转成 PNG。只用在只读打开、不保存的工作簿上"""
-    from core.pdf_detector import fitz
-    area = _area_of(sheet, names)
-    setup = sheet.PageSetup
-    setup.PrintArea = area.Address
-    setup.Zoom = False
-    setup.FitToPagesWide = 1
-    setup.FitToPagesTall = 1
-    with tempfile.TemporaryDirectory(prefix="imgfix_") as tmp:
-        pdf = Path(tmp) / "area.pdf"
-        sheet.ExportAsFixedFormat(Type=0, Filename=str(pdf), Quality=0, IncludeDocProperties=False,
-                                  IgnorePrintAreas=False, OpenAfterPublish=False)
-        doc = fitz.open(str(pdf))
-        try:
-            page = doc[0]
-            zoom = min(3.0, RENDER_WIDTH / max(1.0, float(page.rect.width)))
-            fix_images.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-            page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), annots=False).save(str(fix_images.IMAGES_DIR / out_name))
-        finally:
-            doc.close()
-    return out_name
-
-
-def render_area(sheet: Any, names: list[str], out_name: str) -> tuple[str, str]:
-    """先拍 Excel 屏幕原样；不行再退回打印效果。返回 (文件名, "screen" | "pdf" | "")"""
-    where = {"表": str(getattr(sheet, "Name", "?")), "图形": "、".join(names)}
-    try:
-        return render_screen(sheet, names, out_name), "screen"
-    except Exception as err:
-        debug_log.event("⚠️ 局部截图（屏幕原样）没做出来，改用打印效果", **where, 错误=str(err))
-    try:
-        return render_pdf(sheet, names, out_name), "pdf"
-    except Exception as err:
-        debug_log.event("⚠️ 局部截图没做出来", **where, 错误=str(err))
-        return "", ""
-
-
-def _screen_thumb(sheet: Any, group: dict, img_key: str, how_key: str, box: dict | None) -> Any:
-    """屏幕原样截图里，只取截图本身那块（按区域和截图在表上的位置换算）；打印效果的或没截出来的不比"""
-    if group.get(how_key) != "screen" or not group.get(img_key) or not box:
-        return None
-    try:
-        area = _area_of(sheet, group["names"])
-        rect = (float(area.Left), float(area.Top), float(area.Width), float(area.Height))
-        return image_compare.thumb_from_png(str(fix_images.IMAGES_DIR / group[img_key]), rect,
-                                            (box["left"], box["top"], box["width"], box["height"]))
-    except Exception as err:
-        debug_log.event("⚠️ 截图取样失败", 表=str(getattr(sheet, "Name", "?")), 截图=group["key"], 错误=str(err))
-        return None
-
-
-def _score(groups: list[dict]) -> None:
-    """按图比：原版↔新版 Excel、原版↔新版 PDF；疑似有问题的标 suspect，取样数据用完丢掉"""
-    for group in groups:
-        old = group.pop("_old_thumb", None)
-        group["cmp_excel"] = image_compare.compare(old, group.pop("_new_thumb", None))
-        group["cmp_pdf"] = image_compare.compare(old, group.pop("_pdf_thumb", None))
-        group["suspect"] = any(c and c["suspect"] for c in (group["cmp_excel"], group["cmp_pdf"]))
+PAGE_WIDTH = 1100  # 整页图的像素宽（三列各占约 1/3 屏，点开看大图也够清楚）
+PAGE_MATCH_MIN = 0.2  # 两页文字行重合度低于这个，算没找到对应页
 
 
 def _anchor(sheet: Any, name: str) -> str:
@@ -225,89 +103,114 @@ def _anchor(sheet: Any, name: str) -> str:
         return ""
 
 
-def _nearby_texts(sheet: Any, names: list[str]) -> list[str]:
-    """图形上面几行、下面几行格子里的字（去掉空白），按离图形由近到远；在 PDF 里找这一处时当路标"""
-    import re
-    try:
-        shapes = [sheet.Shapes.Item(n) for n in names]
-        r1 = min(int(s.TopLeftCell.Row) for s in shapes)
-        r2 = max(int(s.BottomRightCell.Row) for s in shapes)
-        c1 = max(1, min(int(s.TopLeftCell.Column) for s in shapes) - 2)
-        c2 = max(int(s.BottomRightCell.Column) for s in shapes) + 2
-        rows = [r for r in [*range(r1 - 1, max(0, r1 - 7), -1), *range(r2 + 1, r2 + 4)] if r >= 1]
-        texts = []
-        for row in rows:
-            values = sheet.Range(sheet.Cells(row, c1), sheet.Cells(row, c2)).Value
-            for value in (values[0] if isinstance(values, tuple) else [values]):
-                text = re.sub(r"\s+", "", str(value or ""))
-                if len(text) >= 4 and text not in texts:
-                    texts.append(text[:40])
-        return texts[:8]
-    except Exception:
-        return []
-
-
 def _norm(text: str) -> str:
     import re
     return re.sub(r"\s+", "", text or "")
 
 
-def pdf_crops(pdf: Path, path: Path, groups: list[dict]) -> None:
-    """在新版 PDF 里找每处截图：PDF 里纵横比和新版截图差不多（±12%）的图片里，挑附近有同样文字的那张，
-    把那块（四周多留一点）转成 PNG，写进 group["pdf_img"] / group["pdf_page"]；找不到写 group["pdf_why"]"""
+def export_sheet(sheet: Any, target: Path) -> Path:
+    """这张表按本工具导出 PDF 的同一套做法（宽一页、空心大框不印、截图和标注临时组合）导出；
+    只用在只读打开、不保存的工作簿上"""
+    wf._export_sheet_pdf_raw(sheet, target)
+    return target
+
+
+def _page_infos(doc: Any) -> list[dict]:
+    """每页：文字行（去空白，至少 2 个字）、有没有图片"""
+    infos = []
+    for page in doc:
+        lines = {_norm(line) for line in page.get_text().splitlines()}
+        try:
+            pictures = sum(1 for info in page.get_image_info() if info["bbox"][2] - info["bbox"][0] > 30
+                           and info["bbox"][3] - info["bbox"][1] > 30)
+        except Exception:
+            pictures = 0
+        infos.append({"lines": {line for line in lines if len(line) >= 2}, "pictures": pictures})
+    return infos
+
+
+def _best_page(lines: set[str], infos: list[dict]) -> tuple[int, float]:
+    """文字行重合度（交集 / 并集）最高的那页；(页号从 0 起, 重合度)，一页都没有返回 (-1, 0)"""
+    best, score = -1, 0.0
+    for number, info in enumerate(infos):
+        union = len(lines | info["lines"])
+        value = len(lines & info["lines"]) / union if union else 0.0
+        if value > score:
+            best, score = number, value
+    return best, score
+
+
+def _save_page(doc: Any, number: int, name: str) -> str:
     from core.pdf_detector import fitz
-    wanted = [g for g in groups if g.get("aspect")]
-    for group in groups:
-        if not group.get("aspect"):
-            group["pdf_why"] = "不是截图，没在 PDF 里定位"
-    if not wanted:
-        return
-    doc = fitz.open(str(pdf))
+    page = doc[number]
+    zoom = min(3.0, PAGE_WIDTH / max(1.0, float(page.rect.width)))
+    fix_images.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), annots=False, alpha=False).save(str(fix_images.IMAGES_DIR / name))
+    return name
+
+
+SHOW_ALL_MAX = 6  # 认不出哪页有图片时，最多列前几页
+
+
+def page_rows(path: Path, sheet: str, new_pdf: Path, old_pdf: Path | None, book_pdf: Path | None) -> list[dict]:
+    """有图片的页一页一行（用户 2026-11-11 要：看整页，能比对也能定位）：
+    新版 Excel 这张表导出的 PDF 里有图片的页为准，按文字行重合度在原版导出的 PDF、新版 PDF 文件里找对应的那页，整页转 PNG。
+    [{"page", "new_img", "old_page", "old_img", "old_why", "pdf_page", "pdf_img", "pdf_why"}]"""
+    from core.pdf_detector import fitz
+    rows: list[dict] = []
+    new_doc = fitz.open(str(new_pdf))
+    old_doc = fitz.open(str(old_pdf)) if old_pdf else None
+    book_doc = None
     try:
-        pages = []
-        for page in doc:
-            try:
-                images = [fitz.Rect(info["bbox"]) for info in page.get_image_info()]
-            except Exception:
-                images = []
-            pages.append({"text": _norm(page.get_text()), "images": [r for r in images if r.width > 30 and r.height > 30]})
-        for group in wanted:
-            aspect = group["aspect"]
-            found = []
-            for number, info in enumerate(pages):
-                hits = [t for t in group.get("texts", []) if t in info["text"]]
-                for rect in info["images"]:
-                    ratio = rect.width / rect.height
-                    if abs(ratio - aspect) / aspect <= 0.12:
-                        found.append((len(hits), -abs(ratio - aspect), number, rect))
-            if not found:
-                group["pdf_why"] = "PDF 里没找到大小比例对得上的截图"
-                continue
-            found.sort(key=lambda f: (f[0], f[1]), reverse=True)
-            best = found[0]
-            if best[0] == 0 and len(found) > 1:
-                group["pdf_why"] = f"PDF 里有 {len(found)} 张比例差不多的截图，认不出是哪张"
-                continue
-            number, rect = best[2], best[3]
-            page = doc[number]
-            clip = fitz.Rect(rect.x0 - 30, rect.y0 - 40, rect.x1 + 30, rect.y1 + 30) & page.rect
-            zoom = min(3.0, RENDER_WIDTH / max(1.0, clip.width))
-            name = _image_name(path, group["sheet"], group["key"], "pdf")
-            fix_images.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-            page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip, annots=False).save(str(fix_images.IMAGES_DIR / name))
-            group["pdf_img"], group["pdf_page"] = name, number + 1
-            try:  # 只取截图本身那块（不留边）给按图比用
-                group["_pdf_thumb"] = image_compare.thumb_from_page(page, rect)
-            except Exception as err:
-                debug_log.event("⚠️ PDF 截图取样失败", 截图=group["key"], 错误=str(err))
-        debug_log.event("📄 在新版 PDF 里找截图", PDF=pdf.name,
-                        结果=[f"{g['key']}：{('第 ' + str(g['pdf_page']) + ' 页') if g.get('pdf_img') else g.get('pdf_why')}" for g in groups])
+        book_doc = fitz.open(str(book_pdf)) if book_pdf else None
+    except Exception as err:
+        debug_log.event("⚠️ 新版 PDF 读不了", PDF=str(book_pdf), 错误=str(err))
+    try:
+        new_infos = _page_infos(new_doc)
+        old_infos = _page_infos(old_doc) if old_doc else []
+        book_infos = _page_infos(book_doc) if book_doc else []
+        numbers = [n for n, info in enumerate(new_infos) if info["pictures"]]
+        note = ""
+        if not numbers:  # 截图在 PDF 里不是位图（比如矢量图）认不出来：列前几页让人看
+            numbers = list(range(min(SHOW_ALL_MAX, len(new_infos))))
+            note = "PDF 里认不出哪页有图片，列出前几页" if numbers else ""
+        for number in numbers:
+            lines = new_infos[number]["lines"]
+            rect = new_doc[number].rect
+            row = {"page": number + 1, "pages": len(new_infos), "note": note,
+                   "ratio": round(float(rect.width) / max(1.0, float(rect.height)), 3),  # 页面先按这个比例占位，图片加载时不跳
+                   "new_img": _save_page(new_doc, number, _image_name(path, sheet, f"p{number}", "new"))}
+            if old_doc is None:
+                row["old_why"] = "原版这张表没导出来"
+            else:
+                found, score = _best_page(lines, old_infos)
+                if found < 0 or score < PAGE_MATCH_MIN:
+                    row["old_why"] = "原版里没找到文字对得上的页"
+                else:
+                    row["old_page"] = found + 1
+                    row["old_img"] = _save_page(old_doc, found, _image_name(path, sheet, f"p{number}", "old"))
+            if book_doc is None:
+                row["pdf_why"] = "没找到同名 PDF（Excel 旁边和 PDF 文件夹里都没有）" if not book_pdf else "新版 PDF 读不了"
+            else:
+                found, score = _best_page(lines, book_infos)
+                if found < 0 or score < PAGE_MATCH_MIN:
+                    row["pdf_why"] = "新版 PDF 里没找到文字对得上的页"
+                else:
+                    row["pdf_page"] = found + 1
+                    row["pdf_img"] = _save_page(book_doc, found, _image_name(path, sheet, f"p{number}", "pdf"))
+            rows.append(row)
+        debug_log.event("📄 有图片的页", 文件=path.name, 表=sheet,
+                        结果=[f"新版第 {r['page']} 页 ↔ 原版 {r.get('old_page') or r.get('old_why')} ↔ PDF {r.get('pdf_page') or r.get('pdf_why')}"
+                            for r in rows])
     finally:
-        doc.close()
+        for doc in (new_doc, old_doc, book_doc):
+            if doc is not None:
+                doc.close()
+    return rows
 
 
 def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf: Path | None = None) -> dict:
-    """两份都只读打开，返回受影响的地方：{count, sheets:[{sheet, old_sheet, count, groups:[…]}]}"""
+    """两份都只读打开，返回受影响的地方：{count, sheets:[{sheet, old_sheet, count, groups:[…], pages:[…]}]}"""
     if path.resolve() == old_path.resolve():
         raise ValueError("处理后的文件和参考文件是同一个，请分别选两个文件夹")
     old_book = open_workbook_checked(excel, str(old_path.resolve()), ReadOnly=True, UpdateLinks=0)
@@ -316,94 +219,82 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf:
     finally:
         old_book.Close(SaveChanges=False)
     sheets: list[dict] = []
-    book = open_workbook_checked(excel, str(path.resolve()), ReadOnly=True, UpdateLinks=0)
-    try:
-        pairs = pair_book_sheets(read_book(book), old)
-        for index, (cur, ref) in enumerate(pairs, 1):
-            if on_sheet:
-                on_sheet(index, len(pairs), cur["name"])
-            changes = plan_sheet(cur["shapes"], ref["shapes"])
-            hosts = overlay_hosts(cur["shapes"], ref["shapes"], every=True)  # 所有图片都列（用户 2026-11-11 要）
-            if cur["shapes"] or ref["shapes"]:
-                debug_log.event("🔎 对照一张表", 文件=path.name, 表=cur["name"], 变了=len(changes),
-                                **diagnose(cur["shapes"], ref["shapes"]))
-            if not changes and not hosts:
-                continue
-            sheet = book.Worksheets(cur["name"])
-            ref_names = set(_unique(ref["shapes"]))
-            groups: dict[str, dict] = {}
-            for item in changes:
-                key = item["host"] or item["name"]
-                group = groups.setdefault(key, {"key": key, "names": [key] if key in ref_names else [], "details": [],
-                                                "picture": bool(item["host"]) or item["kind"] == "picture", "changed": True})
-                if item["name"] not in group["names"]:
-                    group["names"].append(item["name"])
-                group["details"].append(describe_change(item))
-            # 程序没量出变化的图片也全部列出来让人目测（用户 2026-11-11：人工看出不少问题，程序一个没找出；有图片的都要列）
-            for host, overlays in hosts.items():
-                group = groups.get(host)
-                if group is None:
-                    groups[host] = {"key": host, "names": [host, *overlays], "picture": True, "changed": False,
-                                    "details": ["程序没量出大小或位置变化，请看三列目测"]}
-                else:
-                    group["names"] += [n for n in overlays if n not in group["names"]]
-            cur_by = _unique(cur["shapes"])
-            for group in groups.values():
-                group["cell"] = _anchor(sheet, group["key"])
-                group["sheet"] = cur["name"]
-                host = cur_by.get(group["key"])
-                if host and host["type"] in PICTURES and host["height"] > 0:
-                    group["aspect"] = host["width"] / host["height"]  # PDF 是新版导出的，按新版截图的比例找
-                    group["texts"] = _nearby_texts(sheet, group["names"])
-                group["new_img"], group["new_how"] = render_area(sheet, group["names"], _image_name(path, cur["name"], group["key"], "new"))
-                if group.get("picture"):
-                    group["_new_thumb"] = _screen_thumb(sheet, group, "new_img", "new_how", cur_by.get(group["key"]))
-                    group["_old_box"] = _unique(ref["shapes"]).get(group["key"])
-            debug_log.event("🔍 找到受影响的图片", 文件=path.name, 表=cur["name"],
-                            图形=[d for g in groups.values() for d in g["details"]])
-            ordered = sorted(groups.values(), key=lambda g: not g["changed"])
-            sheets.append({"sheet": cur["name"], "old_sheet": ref["name"], "count": len(changes), "groups": ordered,
-                           "review": sum(not g["changed"] for g in ordered)})
-    finally:
-        book.Close(SaveChanges=False)
-    if sheets:
-        old_book = open_workbook_checked(excel, str(old_path.resolve()), ReadOnly=True, UpdateLinks=0)
+    with tempfile.TemporaryDirectory(prefix="imgfix_") as tmp:
+        tmp_dir = Path(tmp)
+        book = open_workbook_checked(excel, str(path.resolve()), ReadOnly=True, UpdateLinks=0)
         try:
-            for entry in sheets:
-                old_sheet = old_book.Worksheets(entry["old_sheet"])
-                for group in entry["groups"]:
-                    group["old_img"], group["old_how"] = render_area(old_sheet, group["names"], _image_name(path, entry["sheet"], group["key"], "old"))
-                    if group.get("picture"):
-                        group["_old_thumb"] = _screen_thumb(old_sheet, group, "old_img", "old_how", group.get("_old_box"))
+            pairs = pair_book_sheets(read_book(book), old)
+            for index, (cur, ref) in enumerate(pairs, 1):
+                if on_sheet:
+                    on_sheet(index, len(pairs), cur["name"])
+                changes = plan_sheet(cur["shapes"], ref["shapes"])
+                hosts = overlay_hosts(cur["shapes"], ref["shapes"], every=True)  # 所有图片都列（用户 2026-11-11 要）
+                if cur["shapes"] or ref["shapes"]:
+                    debug_log.event("🔎 对照一张表", 文件=path.name, 表=cur["name"], 变了=len(changes),
+                                    **diagnose(cur["shapes"], ref["shapes"]))
+                if not changes and not hosts:
+                    continue
+                sheet = book.Worksheets(cur["name"])
+                ref_names = set(_unique(ref["shapes"]))
+                groups: dict[str, dict] = {}
+                for item in changes:
+                    key = item["host"] or item["name"]
+                    group = groups.setdefault(key, {"key": key, "names": [key] if key in ref_names else [], "details": [],
+                                                    "picture": bool(item["host"]) or item["kind"] == "picture", "changed": True})
+                    if item["name"] not in group["names"]:
+                        group["names"].append(item["name"])
+                    group["details"].append(describe_change(item))
+                for host, overlays in hosts.items():
+                    if host not in groups:
+                        groups[host] = {"key": host, "names": [host, *overlays], "picture": True, "changed": False, "details": []}
+                for group in groups.values():
+                    group["cell"] = _anchor(sheet, group["key"])
+                    group["sheet"] = cur["name"]
+                ordered = sorted(groups.values(), key=lambda g: not g["changed"])
+                entry = {"sheet": cur["name"], "old_sheet": ref["name"], "count": len(changes), "groups": ordered,
+                         "review": sum(not g["changed"] for g in ordered), "pages": []}
+                new_pdf = tmp_dir / f"new_{index}.pdf"
+                if on_sheet:
+                    on_sheet(index, len(pairs), f"{cur['name']}（导出整页）")
+                try:
+                    entry["_new_pdf"] = export_sheet(sheet, new_pdf)
+                except Exception as err:
+                    debug_log.event("⚠️ 新版这张表导不出 PDF", 文件=path.name, 表=cur["name"], 错误=str(err))
+                    entry["pages_why"] = f"新版这张表导不出 PDF：{err}"
+                debug_log.event("🔍 找到图片", 文件=path.name, 表=cur["name"], 图形=[d for g in ordered for d in g["details"]])
+                sheets.append(entry)
         finally:
-            old_book.Close(SaveChanges=False)
-    if sheets and pdf:
-        try:
-            pdf_crops(pdf, path, [g for entry in sheets for g in entry["groups"]])
-        except Exception as err:
-            debug_log.event("⚠️ 新版 PDF 读不了", PDF=str(pdf), 错误=str(err))
-            for entry in sheets:
-                for group in entry["groups"]:
-                    group.setdefault("pdf_why", f"PDF 读不了：{err}")
-    for entry in sheets:
-        for group in entry["groups"]:
-            group.pop("texts", None)
-            group.pop("_old_box", None)
-        _score(entry["groups"])
-        entry["suspect"] = sum(1 for g in entry["groups"] if g.get("suspect"))
-        entry["groups"].sort(key=lambda g: (not g.get("suspect") and not g["changed"], not g["changed"]))
-        debug_log.event("🔬 按图比", 文件=path.name, 表=entry["sheet"],
-                        结果=[f"{g['key']}：Excel {g.get('cmp_excel')} / PDF {g.get('cmp_pdf')}" for g in entry["groups"]])
-    return {"count": sum(s["count"] for s in sheets), "sheets": sheets, "review": sum(s["review"] for s in sheets),
-            "suspect": sum(s["suspect"] for s in sheets)}
+            book.Close(SaveChanges=False)
+        if sheets:
+            old_book = open_workbook_checked(excel, str(old_path.resolve()), ReadOnly=True, UpdateLinks=0)
+            try:
+                for index, entry in enumerate(sheets, 1):
+                    if "_new_pdf" not in entry:
+                        continue
+                    try:
+                        entry["_old_pdf"] = export_sheet(old_book.Worksheets(entry["old_sheet"]), tmp_dir / f"old_{index}.pdf")
+                    except Exception as err:
+                        debug_log.event("⚠️ 原版这张表导不出 PDF", 文件=path.name, 表=entry["old_sheet"], 错误=str(err))
+            finally:
+                old_book.Close(SaveChanges=False)
+        for entry in sheets:
+            new_pdf, old_pdf = entry.pop("_new_pdf", None), entry.pop("_old_pdf", None)
+            if new_pdf is None:
+                continue
+            try:
+                entry["pages"] = page_rows(path, entry["sheet"], new_pdf, old_pdf, pdf)
+            except Exception as err:
+                debug_log.exception(err, f"整页图 {path.name} {entry['sheet']}")
+                entry["pages_why"] = f"整页图没做出来：{err}"
+    return {"count": sum(s["count"] for s in sheets), "sheets": sheets, "review": sum(s["review"] for s in sheets)}
 
 
 def _image_refs() -> list[str]:
     """换文件夹清理截图时，这里列着的局部截图要留着"""
     with _LOCK:
         files = ((_STATUS.get("result") or {}).get("files")) or []
-        return [g.get(k) for f in files for s in f.get("sheets", []) for g in s.get("groups", [])
-                for k in ("old_img", "new_img", "pdf_img") if g.get(k)]
+        return [p.get(k) for f in files for s in f.get("sheets", []) for p in s.get("pages", [])
+                for k in ("old_img", "new_img", "pdf_img") if p.get(k)]
 
 
 fix_images.register_references(_image_refs)
@@ -490,9 +381,9 @@ def describe(entry: dict, mode: str = "fix") -> str:
     if entry.get("error"):
         return entry["error"]
     if mode == "scan":
-        review = f"，{entry['review']} 张图片请看三列目测" if entry.get("review") else ""
-        suspect = f"，按图比 {entry['suspect']} 张疑似有问题" if entry.get("suspect") else ""
-        return (f"{entry['count']} 个图形变了" if entry.get("count") else "程序没量出变化") + suspect + review
+        pages = sum(len(s.get("pages", [])) for s in entry.get("sheets", []))
+        page_text = f"，{pages} 页有图片请看三列" if pages else ""
+        return (f"{entry['count']} 个图形变了" if entry.get("count") else "程序没量出变化") + page_text
     parts = [f"放回 {entry['count']} 个图形" if entry.get("count") else "",
              f"组合 {entry['grouped']} 组截图和标注" if entry.get("grouped") else ""]
     parts = [p for p in parts if p]
