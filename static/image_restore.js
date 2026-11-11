@@ -74,6 +74,18 @@
     }
   }
 
+  // 「复制路径」不经过后台：程序再忙、打开被拦，也能把路径贴到资源管理器 / Excel 里自己开（用户 2026-11-11 要「确保一定能打开」）
+  const copyBtn = path => path ? ` <button class="img-copy" type="button" data-copy="${esc(path)}" title="复制这个路径，贴到资源管理器地址栏或 Excel 的打开框里">📋 复制路径</button>` : '';
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return true; } catch (_) {}
+    const box = document.createElement('textarea');
+    box.value = text; box.style.position = 'fixed'; box.style.opacity = '0';
+    document.body.append(box); box.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) {}
+    box.remove();
+    return ok;
+  }
   // pathHtml：这一列是哪个文件（完整路径，点了打开），用户 2026-11-11 要每页都能看到路径
   function shot(label, name, why, ratio, pathHtml = '') {
     return `<figure class="img-shot"><figcaption>${esc(label)}</figcaption><div class="img-path">${pathHtml}</div>`
@@ -125,10 +137,10 @@
         + `<div class="img-page-head"><span>这张表第 ${p.page} / ${p.pages} 页${p.note ? `（${esc(p.note)}）` : ''}</span>`
         + '<button class="btn btn-outline btn-sm" type="button" data-mark-btn>✓ 无需处理</button></div>'
         + `<div class="img-group">${shot(`原版 Excel${p.old_page ? `（第 ${p.old_page} 页 · ${how(p.old_how)}）` : ''}`, p.old_img, p.old_why, p.old_ratio || p.ratio,
-          f.old ? compare(esc(f.old), s.sheet, cell) : '没有对应的原版文件')}`
-        + shot(`新版 Excel${f.fixed ? '（修复前）' : ''}（第 ${p.page} 页 · ${how(p.new_how)}）`, p.new_img, '', p.new_ratio || p.ratio, openNew(esc(f.path || f.name), s.sheet, cell))
+          f.old ? compare(esc(f.old), s.sheet, cell) + copyBtn(f.old) : '没有对应的原版文件')}`
+        + shot(`新版 Excel${f.fixed ? '（修复前）' : ''}（第 ${p.page} 页 · ${how(p.new_how)}）`, p.new_img, '', p.new_ratio || p.ratio, openNew(esc(f.path || f.name), s.sheet, cell) + copyBtn(f.path))
         + `${shot(`新版 PDF${p.pdf_page ? `（第 ${p.pdf_page} 页）` : ''}`, p.pdf_img, p.pdf_why, p.pdf_ratio || p.ratio,
-          f.pdf ? `<a href="#" data-open-pdf="${esc(f.name)}" title="点击打开这份 PDF">${esc(f.pdf)}</a>` : '没找到同名 PDF')}</div></div>`).join('');
+          f.pdf ? `<a href="#" data-open-pdf="${esc(f.name)}" title="点击打开这份 PDF">${esc(f.pdf)}</a>` + copyBtn(f.pdf) : '没找到同名 PDF')}</div></div>`).join('');
       return head + (pages || `<div class="img-none">${esc(s.pages_why || '这张表没有导出页')}</div>`);
     }).join('');
     return `<div class="img-file${f.fixed ? ' is-fixed' : ''}"><div class="img-file-head"><span class="img-file-name">${esc(f.name)}</span>`
@@ -290,6 +302,14 @@
     }
     const fix = event.target.closest('[data-fix-file]');
     if (fix) { start('fix', [fix.dataset.fixFile]); return; }
+    const copy = event.target.closest('[data-copy]');
+    if (copy) {
+      const ok = await copyText(copy.dataset.copy);
+      console.info('🖼️ 复制路径', { 路径: copy.dataset.copy, 成功: ok });
+      copy.textContent = ok ? '✓ 已复制' : '复制不了，请手动选中路径';
+      setTimeout(() => { copy.textContent = '📋 复制路径'; }, 1600);
+      return;
+    }
     const pdf = event.target.closest('[data-open-pdf]');
     if (pdf) {
       event.preventDefault();
