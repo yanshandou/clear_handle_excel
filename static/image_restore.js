@@ -30,6 +30,7 @@
     $('imgFixAll').textContent = `🖼️ 全部修复（${left} 份）`;
     $('imgScan').textContent = latest.running && latest.mode === 'scan' ? '正在找…' : '🔍 找出受影响的图片';
     document.querySelectorAll('[data-fix-file]').forEach(b => { b.disabled = !!busy; });
+    renderRest();
   }
 
   function renderProgress() {
@@ -111,6 +112,59 @@
     });
     const all = root.querySelectorAll('[data-mark]').length, done = root.querySelectorAll('[data-mark].is-noneed').length;
     if ($('imgMarkCount')) $('imgMarkCount').textContent = all ? `已标无需处理 ${done} / ${all} 张表` : '';
+    renderRest();
+  }
+
+  // 剩下的 = 结果里还有表没标「无需处理」的文件（用户 2026-11-11：标完之后剩下的要能一起处理）
+  const opened = new Set();  // 这次打开页面后，用「打开剩下的」开过的文件
+  function restFiles() {
+    const data = result();
+    if (!data?.scanned) return [];
+    return (data.files || []).filter(f => !f.error).map(f => ({
+      file: f, sheets: (f.sheets || []).filter(s => s.cols && !marks[markKey(data.folder, f.name, s.sheet, 'all')]),
+    })).filter(r => r.sheets.length);
+  }
+  function renderRest() {
+    const box = $('imgRest');
+    if (!box) return;
+    const rest = restFiles(), busy = loading || submitting || latest.running;
+    const sheets = rest.reduce((n, r) => n + r.sheets.length, 0);
+    const waiting = rest.filter(r => !opened.has(r.file.name)).length;
+    const html = !result()?.scanned ? '' : !rest.length ? result().partial ? '' : '<span class="img-rest-text">✓ 有图片的表都标了「无需处理」，没有剩下的。</span>'
+      : `<span class="img-rest-text">还剩 ${rest.length} 份文件、${sheets} 张表没标「无需处理」${result().partial ? '（还在找，先算已经找到的）' : ''}：</span>`
+        + '<button class="btn btn-outline btn-sm" type="button" data-rest="copy" title="把剩下这些文件的完整路径复制出来，一行一份">📋 复制剩下文件的路径</button>'
+        + `<button class="btn btn-outline btn-sm" type="button" data-rest="open"${waiting ? '' : ' disabled'} title="在 Excel 里打开剩下的文件，一次最多 10 份，跳到没标的那张表">📂 打开剩下的（${waiting ? `下一批 ${Math.min(10, waiting)} 份，共 ${waiting} 份没开过` : '都开过了'}）</button>`
+        + `<button class="btn btn-outline btn-sm" type="button" data-rest="group"${busy ? ' disabled' : ''} title="只对剩下的这些文件做永久组合并保存；所有表都标了「无需处理」的文件不动">📌 只组合剩下的（${rest.length} 份）</button>`;
+    if (box.dataset.html !== html) { box.innerHTML = html; box.dataset.html = html; }
+  }
+  async function restAction(kind, button) {
+    const rest = restFiles(), data = result();
+    if (kind === 'copy') {
+      const ok = await copyText(rest.map(r => r.file.path || r.file.name).join('\r\n'));
+      console.info('🖼️ 复制剩下文件的路径', { 份数: rest.length, 成功: ok });
+      button.textContent = ok ? `✓ 已复制 ${rest.length} 个路径` : '复制不了';
+      setTimeout(() => { $('imgRest').dataset.html = ''; renderRest(); }, 1600);
+    } else if (kind === 'group') {
+      start('group', rest.map(r => r.file.name));
+    } else if (kind === 'open') {
+      const batch = rest.filter(r => !opened.has(r.file.name)).slice(0, 10);
+      button.disabled = true;
+      const failed = [];
+      for (const r of batch) {
+        const sheet = r.sheets[0], cell = (sheet.groups || [])[0]?.cell || '';
+        try {
+          const response = await fetch('/api/excel/open', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file: r.file.name, folder: data.folder, sheet: sheet.sheet, cell }) });
+          const answer = await response.json();
+          if (!response.ok || !answer.ok) throw Error(answer.error || '打不开');
+          opened.add(r.file.name);
+        } catch (error) { failed.push(`${r.file.name}：${error.message}`); }
+      }
+      console.info('🖼️ 打开剩下的', { 这批: batch.length, 没打开: failed.length });
+      if (failed.length) window.appAlert?.(failed.join('\n'), { title: `${failed.length} 份没打开` });
+      $('imgRest').dataset.html = '';
+      renderRest();
+    }
   }
 
   // 每张表三列，每列把这张表的所有页列全（用户 2026-11-11 定：不按页配对）。前两列是 Excel 屏幕原样（拍不了才退回导出效果）
@@ -176,6 +230,7 @@
       $('imgResults').innerHTML = '<p id="imgSummary" class="font-summary"></p><p id="imgHint" class="toolbar-hint"></p>'
         + `<label class="img-group-opt"><input type="checkbox" id="imgOnlyBad"${onlyBad ? ' checked' : ''}>只看程序量出变化、没查的文件（其余先藏起来）</label>`
         + `<label class="img-group-opt"><input type="checkbox" id="imgHideDone"${hideDone ? ' checked' : ''}>藏起已标「无需处理」的表 <span id="imgMarkCount"></span></label>`
+        + '<div id="imgRest" class="img-rest"></div>'
         + `<div id="imgList" class="${onlyBad ? 'only-bad ' : ''}${hideDone ? 'hide-done' : ''}"></div><p id="imgEmpty" hidden>没有图片。</p>`;
     }
     const bad = files.filter(f => f.error), hit = files.filter(f => !f.error && f.count);
@@ -251,7 +306,7 @@
     const group = $('imgGroupOnFix').checked;
     if (mode === 'group') {
       const okGo = await window.appConfirm(
-        `要把这个文件夹（含子文件夹）里互相重叠、挨着的图形（截图和上面的红框、箭头、文字框，用图形拼出来的画面）都永久组合，并保存 Excel 吗？\n\n${folder}\n\n`
+        `要把${names ? `剩下的这 ${names.length} 份 Excel ` : '这个文件夹（含子文件夹）'}里互相重叠、挨着的图形（截图和上面的红框、箭头、文字框，用图形拼出来的画面）都永久组合，并保存 Excel 吗？\n\n${folder}\n\n`
         + '· 组合设成「随单元格移动、不改变大小」：以后调行高列宽、导出 PDF 都不会错开\n'
         + '· 不对照原版：已经被拉坏的截图会按坏的样子组合，请先「找出受影响的图片」修好\n\n请先保存并关闭这些 Excel。',
         { title: '组合截图和标注', okText: '开始组合' });
@@ -292,6 +347,8 @@
     if (event.target.id === 'imgHideDone') { hideDone = event.target.checked; $('imgList')?.classList.toggle('hide-done', hideDone); }
   });
   $('imgResults').addEventListener('click', async event => {
+    const rest = event.target.closest('[data-rest]');
+    if (rest) { await restAction(rest.dataset.rest, rest); return; }
     const mark = event.target.closest('[data-mark-btn]');
     if (mark) {
       const key = mark.closest('[data-mark]').dataset.mark;
