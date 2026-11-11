@@ -158,5 +158,21 @@ class RenderFallbackTest(unittest.TestCase):
             self.assertEqual(ir.render_area(object(), ["図 1"], "a.png"), ("", ""))
 
 
+class MergeTest(unittest.TestCase):
+    def test_group_result_merged_into_scan(self):
+        from pathlib import Path
+        root = Path("D:/x")
+        scan = ir._merge(None, "scan", root, Path("D:/y"), None,
+                         [{"name": "a.xlsx", "error": None, "count": 2, "sheets": []}])
+        merged = ir._merge(scan, "group", root, None, None,
+                           [{"name": "a.xlsx", "error": None, "count": 0, "grouped": 3, "group_sheets": []}])
+        self.assertEqual(merged["files"][0]["count"], 2)
+        self.assertEqual(merged["files"][0]["grouped"], 3)
+        self.assertTrue(merged["scanned"])
+        only = ir._merge(None, "group", root, None, None, [{"name": "b.xlsx", "error": None, "count": 0, "grouped": 1}])
+        self.assertFalse(only["scanned"])
+        self.assertEqual(only["old_folder"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

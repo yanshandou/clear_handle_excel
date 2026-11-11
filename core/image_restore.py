@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core import debug_log, file_problem, fix_images, progress_log, workflow as wf
+from core import debug_log, file_problem, fix_images, print_overlays, progress_log, workflow as wf
 from core.backup_compare import pair_files, require_manual_file_check
 from core.common import workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, quit_background_excel, start_background_excel
@@ -358,7 +358,8 @@ fix_images.register_references(_image_refs)
 
 # ---------- 一份 Excel ----------
 
-def fix_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None) -> dict:
+def fix_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, group: bool = True) -> dict:
+    """放回原样；group=True 时放回后顺便把每张表的截图和标注永久组合（用户 2026-11-11 要）"""
     if path.resolve() == old_path.resolve():
         raise ValueError("处理后的文件和参考文件是同一个，请分别选两个文件夹")
     if workbook_locked(path):
@@ -390,14 +391,46 @@ def fix_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None) -> dict:
             sheets.append({"sheet": cur["name"], "count": len(changes), "details": details[:30],
                            "pictures": sum(c["kind"] == "picture" for c in changes),
                            "overlays": sum(c["kind"] == "overlay" for c in changes)})
-        if sheets:
+        grouped = _group_book(book) if group else []
+        if sheets or grouped:
             if fingerprint(path) != stamp:
                 raise ValueError("修复期间文件被别人改过，没有保存")
             book.Save()
             debug_log.saved_excel("修复图片", path)
     finally:
         book.Close(SaveChanges=False)
-    return {"count": sum(s["count"] for s in sheets), "sheets": sheets}
+    return {"count": sum(s["count"] for s in sheets), "sheets": sheets,
+            "grouped": sum(len(g["groups"]) for g in grouped), "group_sheets": grouped}
+
+
+def _group_book(book: Any) -> list[dict]:
+    """每张表的截图和标注永久组合，返回 [{sheet, groups:[说明]}]"""
+    out = []
+    for sheet in book.Worksheets:
+        done = print_overlays.group_permanently(sheet)
+        if done:
+            out.append({"sheet": str(sheet.Name), "groups": done})
+    return out
+
+
+def group_workbook(excel: Any, path: Path, on_sheet=None) -> dict:
+    """只组合、不对照原版（「📌 只组合」按钮）。已经被拉坏的图会按坏的样子组合，所以请先修复"""
+    if workbook_locked(path):
+        raise ValueError("文件正在 Excel 中打开，请保存并关闭后再组合")
+    stamp = fingerprint(path)
+    book = open_workbook_checked(excel, str(path.resolve()), UpdateLinks=0)
+    try:
+        if book.ReadOnly:
+            raise ValueError("文件以只读方式打开，没有修改")
+        grouped = _group_book(book)
+        if grouped:
+            if fingerprint(path) != stamp:
+                raise ValueError("组合期间文件被别人改过，没有保存")
+            book.Save()
+            debug_log.saved_excel("截图和标注永久组合", path)
+    finally:
+        book.Close(SaveChanges=False)
+    return {"count": 0, "sheets": [], "grouped": sum(len(g["groups"]) for g in grouped), "group_sheets": grouped}
 
 
 def describe(entry: dict, mode: str = "fix") -> str:
@@ -405,21 +438,27 @@ def describe(entry: dict, mode: str = "fix") -> str:
         return entry["error"]
     if mode == "scan":
         return f"{entry['count']} 个图形变了（{len(entry['sheets'])} 张表）" if entry.get("count") else "图片都没变"
-    return f"放回 {entry['count']} 个图形（{len(entry['sheets'])} 张表）" if entry.get("count") else "图片都没变"
+    parts = [f"放回 {entry['count']} 个图形" if entry.get("count") else "",
+             f"组合 {entry['grouped']} 组截图和标注" if entry.get("grouped") else ""]
+    parts = [p for p in parts if p]
+    return "，".join(parts) if parts else ("没有要组合的截图" if mode == "group" else "图片都没变")
 
 
 # ---------- 后台任务 ----------
 
-def _run(mode: str, root: Path, paths: list[Path], old_root: Path, old_paths: list[Path], pdf_root: Path | None) -> None:
-    """mode=scan：只找不改；mode=fix：改这几份（结果并进上次找出来的清单，标成已修复）"""
+def _run(mode: str, root: Path, paths: list[Path], old_root: Path | None, old_paths: list[Path], pdf_root: Path | None,
+         group: bool = True) -> None:
+    """mode=scan：只找不改；mode=fix：改这几份（结果并进上次找出来的清单，标成已修复）；
+    mode=group：只把截图和标注永久组合，不对照原版（old_root 可以是 None）"""
     files: list[dict] = []
     excel, initialized = None, False
-    guard = file_problem.Guard("找出受影响的图片" if mode == "scan" else "修复图片")
+    guard = file_problem.Guard({"scan": "找出受影响的图片", "fix": "修复图片", "group": "组合截图和标注"}[mode])
     try:
         wf.pythoncom.CoInitialize()
         initialized = True
         inferred: set[str] = set()
-        pairs = pair_files(old_root, old_paths, [workbook_rel_name(p, root) for p in paths], root, inferred=inferred)
+        pairs = (pair_files(old_root, old_paths, [workbook_rel_name(p, root) for p in paths], root, inferred=inferred)
+                 if old_root else {})
         for index, path in enumerate(paths):
             name = workbook_rel_name(path, root)
             while True:
@@ -434,12 +473,13 @@ def _run(mode: str, root: Path, paths: list[Path], old_root: Path, old_paths: li
                     if guard.file(name):  # 进度框能「跳过这一份」
                         excel = None
                     old_path = pairs.get(name)
-                    if old_path is None:
-                        raise ValueError("参考文件夹里找不到唯一对应的原文件")
-                    entry["old"] = str(old_path)
-                    if name in inferred:
-                        require_manual_file_check(entry)
-                        break
+                    if mode != "group":
+                        if old_path is None:
+                            raise ValueError("参考文件夹里找不到唯一对应的原文件")
+                        entry["old"] = str(old_path)
+                        if name in inferred:
+                            require_manual_file_check(entry)
+                            break
                     if excel is None:
                         excel = guard.watch(start_background_excel())
 
@@ -450,8 +490,10 @@ def _run(mode: str, root: Path, paths: list[Path], old_root: Path, old_paths: li
 
                     if mode == "scan":
                         entry.update(inspect_workbook(excel, path, old_path, on_sheet, pdf))
+                    elif mode == "group":
+                        entry.update(group_workbook(excel, path, on_sheet))
                     else:
-                        entry.update(fix_workbook(excel, path, old_path, on_sheet))
+                        entry.update(fix_workbook(excel, path, old_path, on_sheet, group))
                 except Exception as error:
                     debug_log.exception(error, f"{'找受影响的图片' if mode == 'scan' else '修复图片'} {name}")
                     retry, entry["error"] = guard.problem(error, path, name, root,
@@ -463,7 +505,8 @@ def _run(mode: str, root: Path, paths: list[Path], old_root: Path, old_paths: li
                         continue
                 break
             files.append(entry)
-            debug_log.event("🖼️ 图片一份", 动作=mode, 文件=name, 图形=entry.get("count", 0), 错误=entry["error"] or "",
+            debug_log.event("🖼️ 图片一份", 动作=mode, 文件=name, 图形=entry.get("count", 0), 组合=entry.get("grouped", 0),
+                            错误=entry["error"] or "",
                             PDF=entry["pdf"] or "-", 秒=round(time.perf_counter() - started, 2))
             wf.log_msg(f"🖼️ {name}：{describe(entry, mode)}")
             with _LOCK:
@@ -490,31 +533,45 @@ def _run(mode: str, root: Path, paths: list[Path], old_root: Path, old_paths: li
                     wf.STATE.pop("maintenance", None)
 
 
-def _merge(previous: dict | None, mode: str, root: Path, old_root: Path, pdf_root: Path | None, files: list[dict]) -> dict:
-    """找的结果直接替换；修的结果按文件名并进上次找到的清单（fixed / fix_error / fixed_count）"""
-    base = {"folder": str(root), "old_folder": str(old_root), "pdf_folder": str(pdf_root or ""), "files": files, "mode": mode}
+def _merge(previous: dict | None, mode: str, root: Path, old_root: Path | None, pdf_root: Path | None, files: list[dict]) -> dict:
+    """找的结果直接替换；修 / 组合的结果按文件名并进上次找到的清单（fixed / fix_error / fixed_count / grouped）"""
+    base = {"folder": str(root), "old_folder": str(old_root or ""), "pdf_folder": str(pdf_root or ""), "files": files, "mode": mode}
     if mode == "scan" or not previous or previous.get("folder") != str(root) or not previous.get("scanned"):
         return {**base, "scanned": mode == "scan", "stamp": int(time.time())}  # stamp：局部截图地址带上，重新找过浏览器才换图
+    def outcome(done: dict) -> dict:
+        info = {"grouped": done.get("grouped", 0), "group_sheets": done.get("group_sheets", [])}
+        if mode == "fix":
+            info.update(fixed=not done["error"], fix_error=done["error"] or "", fixed_count=done.get("count", 0))
+        else:
+            info.update(group_error=done["error"] or "")
+        return info
+
     by_name = {f["name"]: f for f in files}
     merged = []
     for old in previous.get("files", []):
         done = by_name.pop(old["name"], None)
-        if done is not None:
-            old = {**old, "fixed": not done["error"], "fix_error": done["error"] or "", "fixed_count": done.get("count", 0)}
-        merged.append(old)
+        merged.append({**old, **outcome(done)} if done is not None else old)
     for extra in by_name.values():
-        merged.append({**extra, "fixed": not extra["error"], "fix_error": extra["error"] or "", "fixed_count": extra.get("count", 0)})
-    return {**previous, "files": merged, "scanned": True, "mode": "fix"}
+        merged.append({**extra, **outcome(extra)})
+    return {**previous, "files": merged, "scanned": True, "mode": mode}
 
 
-def start(folder: str, old_folder: str, mode: str = "scan", names: Any = None, pdf_folder: Any = "") -> None:
-    """mode=scan 找出受影响的图片（不改文件）；mode=fix 修复。names：只修这几份（文件名列表），不给就是全部"""
-    if mode not in {"scan", "fix"}:
+def start(folder: str, old_folder: str, mode: str = "scan", names: Any = None, pdf_folder: Any = "",
+          group: Any = True) -> None:
+    """mode=scan 找出受影响的图片（不改文件）；mode=fix 修复（group=True 顺便永久组合）；mode=group 只组合（不用原版）。
+    names：只做这几份（文件名列表），不给就是全部"""
+    if mode not in {"scan", "fix", "group"}:
         raise ValueError("不认识的操作")
+    if not isinstance(group, bool):
+        raise ValueError("组合选项不对")
     root, paths = list_workbooks(folder)
-    old_root, old_paths = list_workbooks(old_folder)
-    if root == old_root or root in old_root.parents or old_root in root.parents:
-        raise ValueError("处理后的文件夹和参考文件夹不能相同或互相包含")
+    old_root, old_paths = None, []
+    if mode != "group" or (old_folder or "").strip():
+        if not (old_folder or "").strip():
+            raise ValueError("请输入原版文件夹")
+        old_root, old_paths = list_workbooks(old_folder)
+        if root == old_root or root in old_root.parents or old_root in root.parents:
+            raise ValueError("处理后的文件夹和参考文件夹不能相同或互相包含")
     pdf_root = None
     if isinstance(pdf_folder, str) and pdf_folder.strip():
         pdf_root = Path(pdf_folder.strip().strip('"').strip("'")).expanduser().resolve()
@@ -522,7 +579,7 @@ def start(folder: str, old_folder: str, mode: str = "scan", names: Any = None, p
             raise ValueError(f"PDF 文件夹不存在：{pdf_root}")
     if names is not None:
         if not isinstance(names, list) or not all(isinstance(n, str) for n in names) or not names:
-            raise ValueError("请选择要修复的文件")
+            raise ValueError("请选择要处理的文件")
         wanted = set(names)
         paths = [p for p in paths if workbook_rel_name(p, root) in wanted]
         if not paths:
@@ -539,12 +596,13 @@ def start(folder: str, old_folder: str, mode: str = "scan", names: Any = None, p
         wf.STATE.update(busy=True, maintenance="image_restore")
         result = _STATUS.get("result")
         _STATUS.clear()
-        _STATUS.update(running=True, mode=mode, folder=str(root), old_folder=str(old_root), pdf_folder=str(pdf_root or ""),
+        _STATUS.update(running=True, mode=mode, folder=str(root), old_folder=str(old_root or ""), pdf_folder=str(pdf_root or ""),
                        total=len(paths), done=0, current="", result=result)
 
     def run() -> None:
-        with debug_log.side_task("image_restore", {"mode": mode, "folder": str(root), "old_folder": str(old_root), "files": len(paths)}):
-            _run(mode, root, paths, old_root, old_paths, pdf_root)
+        with debug_log.side_task("image_restore", {"mode": mode, "folder": str(root), "old_folder": str(old_root or ""),
+                                                   "files": len(paths), "group": group}):
+            _run(mode, root, paths, old_root, old_paths, pdf_root, group)
 
     try:
         threading.Thread(target=run, name="修复图片", daemon=True).start()
