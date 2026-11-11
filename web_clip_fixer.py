@@ -586,7 +586,7 @@ class WebHandler(upload_manager.Handler):
                                                                payload.get("preview_id"))})
         elif self.path == "/api/distribute/task_upload":
             distribute.start_task_upload(payload.get("task_id"), payload.get("files"), payload.get("reviewed", {}),
-                                         payload.get("pdf"))
+                                         payload.get("pdf"), payload.get("guard"))
             self._send_json({"ok": True})
         elif self.path == "/api/distribute/fetch_preview":
             self._send_json({"ok": True, "preview": distribute.preview_fetch(
@@ -609,9 +609,10 @@ class WebHandler(upload_manager.Handler):
         elif self.path == "/api/tasks/upload_to":
             self._send_json({"ok": True, "task": work_task.set_upload_to(str(payload.get("id") or ""), payload.get("path"))})
         elif self.path == "/api/distribute/free_preview":
-            self._send_json({"ok": True, "preview": distribute.preview_free(payload.get("source"), payload.get("dest"))})
+            self._send_json({"ok": True, "preview": distribute.preview_free(payload.get("source"), payload.get("dest"), payload.get("guard"))})
         elif self.path == "/api/distribute/free_start":
-            distribute.start_free(payload.get("preview_id"), payload.get("confirm_overwrite") is True, payload.get("pdf"))
+            distribute.start_free(payload.get("preview_id"), payload.get("confirm_overwrite") is True, payload.get("pdf"),
+                                  payload.get("force"))
             self._send_json({"ok": True})
         elif self.path == "/api/tasks/switch":
             self._send_json({"ok": True, "task": work_task.switch(str(payload.get("id") or ""))})

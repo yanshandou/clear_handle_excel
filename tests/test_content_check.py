@@ -179,6 +179,40 @@ class FreeUploadTests(JsonCopyTests):
         self.assertIn("打印区域格子数", files["b.xlsx"]["error"])
         self.assertEqual(prev["summary"]["要确认"], 0)
 
+    def test_free_content_only_ignores_manifest_and_baseline(self):
+        make(self.dst / "a.xlsx", {"A1": "画面"})
+        make(self.src / "a.xlsx", {"A1": "画面", "B2": "我改的"})
+        auto = distribute.preview_free(str(self.src), str(self.dst))
+        self.assertEqual(auto["files"][0]["action"], "conflict")  # 没记录、内容不一样
+        make(self.src / "a.xlsx", {"A1": "画面"}, image_note="修了图片")
+        strict = distribute.preview_free(str(self.src), str(self.dst), "content")
+        self.assertEqual(strict["guard"], "content")
+        self.assertEqual((strict["files"][0]["action"], strict["files"][0]["guard"]), ("overwrite", "content"))
+        self.assertIn("选了只比内容", strict["files"][0]["note"])
+
+    def test_free_force_overwrite(self):
+        make(self.src / "a.xlsx", {"A1": "画面"})
+        make(self.dst / "a.xlsx", {"A1": "画面"}, sheets=("仕様", "変更履歴"))
+        prev = distribute.preview_free(str(self.src), str(self.dst))
+        self.assertEqual(prev["files"][0]["action"], "conflict")
+        self.assertEqual(distribute.pdf_check(files=["a.xlsx"], preview_id=prev["id"])["files"][0]["rel"], "a.xlsx")
+        with patch.object(upload_prep, "prepare", side_effect=lambda *a: dict(PREP)), \
+                patch("core.excel_ops.start_background_excel", Mock()), patch("core.excel_ops.quit_background_excel", Mock()), \
+                patch("core.file_problem.ask", Mock(return_value="skip")):
+            distribute.start_free(prev["id"], False, None, ["a.xlsx"])
+            result = self.wait_free()
+        item = result["files"][0]
+        self.assertEqual((item["action"], item["status"]), ("force", "ok"), item.get("error"))
+        self.assertIn("只有终点有", item["forced_reason"])
+        self.assertEqual((self.dst / "a.xlsx").read_bytes(), (self.src / "a.xlsx").read_bytes())
+
+    def wait_free(self):
+        for _ in range(200):
+            if not distribute.status().get("running"):
+                break
+            time.sleep(0.05)
+        return distribute.status()["applied"]
+
     test_no_record_same_content_overwrites = test_no_record_different_content_blocks = None
     test_destination_changed_after_preview_blocks = test_old_record_but_same_content_overwrites = None
 
@@ -218,9 +252,25 @@ class TaskUploadTests(unittest.TestCase):
             time.sleep(0.05)
         return distribute.status()["applied"]
 
-    def upload(self):
-        distribute.start_task_upload(self.task["id"], ["a.xlsx"], {})
+    def upload(self, guard=None):
+        distribute.start_task_upload(self.task["id"], ["a.xlsx"], {}, None, guard)
         return self.wait()
+
+    def test_content_only_blocks_even_when_hash_matches(self):
+        make(self.work / "a.xlsx", {"A1": "画面", "B2": "説明（改）"})
+        result = self.upload("content")
+        item = result["files"][0]
+        self.assertEqual(item["status"], "failed")
+        self.assertIn("只比内容", item["error"])
+        self.assertIn("B2", item["error"])
+        # 默认（先比 hash）：共享没人动过，照常上传
+        self.assertEqual(self.upload()["files"][0]["status"], "ok")
+
+    def test_content_only_same_content_uploads(self):
+        make(self.work / "a.xlsx", {"A1": "画面", "B2": "説明"}, image_note="我修了图片")
+        item = self.upload("content")["files"][0]
+        self.assertEqual(item["status"], "ok", item.get("error"))
+        self.assertIn("只比内容", item["content_check"])
 
     def test_shared_reformatted_but_same_text_uploads(self):
         make(self.work / "a.xlsx", {"A1": "画面", "B2": "説明"}, image_note="我修了图片")

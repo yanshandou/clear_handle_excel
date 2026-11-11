@@ -18,6 +18,9 @@
   // 起点 → 终点 上传（用户 2026-11-07：几个账号分着做，汇总的人从团队 OneDrive 传到公司 OneDrive）
   const freeMode = !jsonMode && params.get('mode') === 'free';
   let needsFreePreview = true;
+  // 起点 → 终点：「不覆盖」的文件用户自己勾「强制覆盖」（用户 2026-11-11），按清单 id 记，换了清单就清空
+  const freeForce = { id: '', rels: new Set() };
+  const forcedRels = p => (p && freeForce.id === p.id ? [...freeForce.rels] : []);
   // 本次流程（static/flow.js）：拿完文件去第 1 步，上传完去流程里的下一步（上传是最后一步就去收尾检查）
   const firstFlowStep = () => window.Flow?.firstStep() || { id: 'clean', title: '精简 Sheet', url: '/clean' };
   const nextAfterUploadHtml = () => {
@@ -132,7 +135,28 @@
     const mode = saved === '1' ? 'both' : ['excel', 'both', 'pdf'].includes(saved) ? saved : 'excel';
     document.querySelector(`input[name="distPdfMode"][value="${mode}"]`).checked = true;
   }
-  $('distPdfBox').addEventListener('change', () => {
+  // 怎么判断远程被改过（用户 2026-11-11）：auto 先比 hash、对不上再比内容 / content 只比内容
+  const GUARD_KEY = 'clear_handle_excel.uploadGuard';
+  const guardMode = () => document.querySelector('input[name="distGuardMode"]:checked')?.value || 'auto';
+  function showGuardNote() {
+    $('distGuardNote').innerHTML = guardMode() === 'content'
+      ? '<strong>只比内容</strong>：不看 hash 和拿取记录，每份都比你这份和远程现在这份的<strong>全部文字</strong>和<strong>每张表打印区域的格子数</strong>。都一样才覆盖，有一处不一样就不传，提醒先拉取。你自己改了文字或打印区域（删表、收打印区域）也会被拦。.xls / .xlsb 读不了内容，照旧按 hash。'
+      : '远程这份和上次拉取 / 上传时记下的 hash 一样就直接覆盖；对不上或没有记录（比如拿很久以前的版本修的），再比全部文字和打印区域格子数，一样才覆盖。';
+  }
+  {
+    const saved = load(GUARD_KEY);
+    document.querySelector(`input[name="distGuardMode"][value="${saved === 'content' ? 'content' : 'auto'}"]`).checked = true;
+    showGuardNote();
+  }
+  $('distPdfBox').addEventListener('change', event => {
+    if (event.target.name === 'distGuardMode') {
+      save(GUARD_KEY, guardMode());
+      console.info('🔎 判断远程被改过', guardMode() === 'content' ? '只比内容' : '先比 hash，对不上再比内容');
+      showGuardNote();
+      if (freeMode && isFree(latest.preview)) needsFreePreview = true;  // 清单是按原来的方式核对的，要重新生成
+      if (!loading) controls();
+      return;
+    }
     save(PDF_ON, pdfMode());
     console.info('📕 上传什么', { excel: '只传表格', both: '表格和 PDF 一起', pdf: '只传 PDF' }[pdfMode()], pdfOptions());
     showPdfNote();
@@ -232,7 +256,7 @@
   function controls() {
     const busy = loading || submitting || latest.running;
     for (const id of ['distSource', 'distDest', 'distPlan', 'distPick']) $(id).disabled = !!busy;
-    for (const input of document.querySelectorAll('input[name="distPdfMode"]')) input.disabled = !!busy;
+    for (const input of document.querySelectorAll('input[name="distPdfMode"], input[name="distGuardMode"]')) input.disabled = !!busy;
     $('distPreview').disabled = !!busy;
     $('distFetch').disabled = !!busy;
     const fetchMode = isFetch(latest.preview) || (latest.running && latest.kind === 'fetch');
@@ -252,7 +276,7 @@
       $('distFreePreview').disabled = !!busy;
       $('distFreePreview').textContent = submitting === 'free' ? '正在生成清单（要读每个文件算哈希）…' : '📋 生成上传清单';
       const p = isFree(latest.preview) ? latest.preview : null;
-      $('distFreeStart').disabled = !!busy || needsFreePreview || !p || !p.summary['要上传'];
+      $('distFreeStart').disabled = !!busy || needsFreePreview || !p || !(p.summary['要上传'] || forcedRels(p).length);
       $('distFreeStart').textContent = latest.running ? '正在上传…' : '🚚 按清单上传';
     }
   }
@@ -583,7 +607,7 @@
     : isFree(data) ? renderFree(data, applied) : isUpload(data) ? renderUpload(data) : renderData(data, applied);
 
   // 起点 → 终点：清单（applied=false）和结果（applied=true）共用
-  const FREE_ACTION = { new: ['tag-new', '新建'], overwrite: ['tag-overwrite', '覆盖'], confirm: ['tag-confirm', '覆盖（要确认）'], conflict: ['dist-conflict', '🛑 不覆盖'] };
+  const FREE_ACTION = { new: ['tag-new', '新建'], overwrite: ['tag-overwrite', '覆盖'], confirm: ['tag-confirm', '覆盖（要确认）'], conflict: ['dist-conflict', '🛑 不覆盖'], force: ['dist-conflict', '⚠️ 强制覆盖'] };
   const FREE_GUARD = { manifest: '按拿取版本清单核对', baseline: '按你上次的拿取 / 上传记录核对', none: '没有记录', content: '按全部文字和打印区域格子数核对' };
   function renderFree(data, applied) {
     const s = data.summary || {};
@@ -599,10 +623,13 @@
     const rows = (data.files || []).map(file => {
       const [cls, label] = FREE_ACTION[file.action] || ['', file.action];
       const state = !applied ? '' : file.status === 'ok' ? (file.pdf_only ? '✓ 只传 PDF，Excel 没传' : '✓ 已上传') : file.status === 'conflict' ? '' : esc(file.error || '未上传');
-      const why = file.action === 'conflict' || file.status === 'conflict' ? esc(file.error || '') : esc(file.note || '');
+      const why = file.action === 'conflict' || file.status === 'conflict' ? esc(file.error || '')
+        : file.action === 'force' ? esc('你选了强制覆盖。原来不覆盖的原因：' + (file.forced_reason || '')) : esc(file.note || '');
+      const force = !applied && file.action === 'conflict'
+        ? `<br><label class="dist-force"><input type="checkbox" data-force-rel="${esc(file.rel)}"${freeForce.id === data.id && freeForce.rels.has(file.rel) ? ' checked' : ''}> ⚠️ 强制覆盖（不管核对结果，终点这份会被盖掉）</label>` : '';
       const link = applied && file.status === 'ok' ? fileLink(file.rel, data.dest_root, file.rel) : fileLink(file.rel, data.source_root, file.rel);
       return `<tr class="${file.action === 'conflict' || file.status === 'conflict' ? 'is-conflict' : ''}"><td>${link}</td><td><span class="${cls}">${label}</span></td>`
-        + `<td>${state}${state && why ? '<br>' : ''}${why ? `<small>${why}</small>` : ''}${prepHtml(file, data)}${pdfHtml(file)}</td><td><small>${FREE_GUARD[file.guard] || ''}</small></td></tr>`;
+        + `<td>${state}${state && why ? '<br>' : ''}${why ? `<small>${why}</small>` : ''}${force}${prepHtml(file, data)}${pdfHtml(file)}</td><td><small>${FREE_GUARD[file.guard] || ''}</small></td></tr>`;
     });
     const list = (title, items) => items && items.length ? `<h4 class="dist-sub">${title}（${items.length}）</h4><ul class="dist-list">${items.map(rel => `<li>${fileLink(rel, data.dest_root, rel)}</li>`).join('')}</ul>` : '';
     return `<p class="dist-meta">起点：${esc(data.source_root)}<br>终点：${esc(data.dest_root)}</p><div class="dist-summary">${chipsHtml}</div>`
@@ -912,11 +939,12 @@
       const pdf = await pdfPlan({ task_id: task.id, files: files.map(file => file.rel) });
       if (pdf === null) return;
       const text = pdf?.only ? `这次只传 PDF，Excel 不传（终点那份不动）。\n\n${message.replace(/，都做成了再.*$/, '，再导出同名 PDF 传过去。')}` : message;
-      if (!await window.appConfirm(text + (pdf ? '\n\n' + pdf.line : ''), { title: pdf?.only ? '只传 PDF' : task.upload_to ? '批量上传到中转' : '批量上传到共享', okText: '开始检查', tone: 'danger' })) return;
+      const guardLine = guardMode() === 'content' ? '\n\n🔎 只比内容：每份都比你这份和共享现在这份的全部文字、打印区域格子数，不一样的不传。' : '';
+      if (!await window.appConfirm(text + guardLine + (pdf ? '\n\n' + pdf.line : ''), { title: pdf?.only ? '只传 PDF' : task.upload_to ? '批量上传到中转' : '批量上传到共享', okText: '开始检查', tone: 'danger' })) return;
       viewing = null;
       $('distError').textContent = '';
       const reviewed = Object.fromEntries(reviews.map(file => [file.rel, file.review.token]));
-      await post(api + '/task_upload', { task_id: task.id, files: files.map(file => file.rel), reviewed,
+      await post(api + '/task_upload', { task_id: task.id, files: files.map(file => file.rel), reviewed, guard: guardMode(),
         pdf: pdf ? { options: pdf.options, overwrite: pdf.overwrite, only: pdf.only } : null });
       wasRunning = true;
     } catch (error) {
@@ -991,7 +1019,7 @@
     submitting = 'free'; viewing = null; controls();
     showProgress('running', '', '正在列出起点和终点的文件，检查终点那份期间有没有被人改过…');
     try {
-      await post(api + '/free_preview', { source, dest });
+      await post(api + '/free_preview', { source, dest, guard: guardMode() });
       needsFreePreview = false;
     } catch (error) { $('distError').textContent = error.message; }
     finally { submitting = false; await refresh(); }
@@ -1001,9 +1029,14 @@
     const p = latest.preview;
     if (!isFree(p) || loading || submitting || latest.running || needsFreePreview) return;
     const s = p.summary;
-    const lines = [`从「${p.source_root}」传 ${s['要上传']} 个 Excel 到「${p.dest_root}」：新建 ${s['新建']} 个，覆盖 ${s['覆盖'] + s['要确认']} 个。`,
+    const forced = forcedRels(p);
+    const lines = [`从「${p.source_root}」传 ${s['要上传'] + forced.length} 个 Excel 到「${p.dest_root}」：新建 ${s['新建']} 个，覆盖 ${s['覆盖'] + s['要确认']} 个。`,
       '每个文件先在本机临时副本上清掉标记色、视图标准化（A1、100%）再传，起点的文件不动。哪份没做成那份就不传，其余照传，跑完一起告诉你。'];
-    if (s['别人改过']) lines.push(`🛑 ${s['别人改过']} 个在拿走之后被别人改过，不会覆盖。`);
+    if (s['别人改过'] - forced.length > 0) lines.push(`🛑 ${s['别人改过'] - forced.length} 个核对没通过，不会覆盖。`);
+    if (forced.length) {
+      lines.push(`⚠️ 下面 ${forced.length} 个核对没通过，你选了强制覆盖，终点那份会被盖掉（别人的修改会丢）：`);
+      lines.push(forced.slice(0, 8).map(rel => '　' + rel).join('\n') + (forced.length > 8 ? '\n　…' : ''));
+    }
     const confirmList = p.files.filter(file => file.action === 'confirm');
     if (confirmList.length) {
       lines.push(`⚠️ 下面 ${confirmList.length} 个终点已有同名文件，又没有拿取记录，没法知道期间有没有人改过。确定要覆盖吗？`);
@@ -1011,14 +1044,14 @@
     }
     submitting = 'start'; controls();
     try {
-      const pdf = await pdfPlan({ preview_id: p.id });
+      const pdf = await pdfPlan({ preview_id: p.id, files: forced });
       if (pdf === null) return;
       if (pdf?.only) lines.splice(0, lines.length, `从「${p.source_root}」的 ${s['要上传']} 个 Excel 导出同名 PDF，传到「${p.dest_root}」对应的位置。终点的 Excel 不动。`,
         '每个文件先在本机临时副本上清掉标记色、视图标准化，再导出 PDF，起点的文件不动。');
       if (pdf) lines.push(pdf.line);
-      if (!await window.appConfirm(lines.join('\n'), { title: '按清单上传', okText: confirmList.length && !pdf?.only ? '覆盖并上传' : '开始上传', tone: s['覆盖'] + s['要确认'] ? 'danger' : undefined })) return;
+      if (!await window.appConfirm(lines.join('\n'), { title: '按清单上传', okText: (confirmList.length || forced.length) && !pdf?.only ? '覆盖并上传' : '开始上传', tone: s['覆盖'] + s['要确认'] + forced.length ? 'danger' : undefined })) return;
       viewing = null;
-      await post(api + '/free_start', { preview_id: p.id, confirm_overwrite: confirmList.length > 0,
+      await post(api + '/free_start', { preview_id: p.id, confirm_overwrite: confirmList.length > 0, force: forced,
         pdf: pdf ? { options: pdf.options, overwrite: pdf.overwrite, only: pdf.only } : null });
       wasRunning = true;
     }
@@ -1027,6 +1060,15 @@
   }
   $('distFreePreview').addEventListener('click', makeFreePreview);
   $('distFreeStart').addEventListener('click', startFree);
+  $('distResults').addEventListener('change', event => {
+    const rel = event.target.dataset?.forceRel;
+    const p = latest.preview;
+    if (rel === undefined || !isFree(p)) return;
+    if (freeForce.id !== p.id) { freeForce.id = p.id; freeForce.rels.clear(); }
+    if (event.target.checked) freeForce.rels.add(rel); else freeForce.rels.delete(rel);
+    console.info('⚠️ 强制覆盖', { 文件: rel, 勾选: event.target.checked, 共: freeForce.rels.size });
+    controls();  // 只改按钮，不重画清单，页面不动
+  });
   for (const id of ['distFreeSource', 'distFreeDest']) {
     $(id).addEventListener('input', () => { needsFreePreview = true; controls(); });
     $(id).addEventListener('keydown', event => { if (event.key === 'Enter') makeFreePreview(); });
