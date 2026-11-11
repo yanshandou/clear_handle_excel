@@ -33,7 +33,7 @@ from datetime import datetime
 from pathlib import Path, PurePath
 from typing import Any, Callable
 
-from core import debug_log, file_problem, pdf_cache, storage, workflow as wf
+from core import content_check, debug_log, file_problem, pdf_cache, storage, workflow as wf
 from core.common import _held_open, workbook_locked
 
 # Microsoft Excel 的表格文件（加载项 .xla/.xlam、CSV 不算）
@@ -274,19 +274,31 @@ def _guard(src_file: Path, dest_file: Path, exists: bool, base: dict[str, Any] |
         if not base:
             return {"guard": "none", "conflict": ""}
         return {"guard": "gone", "conflict": "拿的时候目的地有这个文件，现在没有了（可能被别人删了或改了名），没有放进去"}
-    if not base:
-        return {"guard": "unknown", "conflict": ""}
     try:
         now = _digest(dest_file)
     except OSError as err:
+        if not base:
+            return {"guard": "unknown", "conflict": ""}
         return {"guard": "changed", "conflict": f"读不到目的地现在的文件，没法确认别人改过没有：{_explain(err)}"}
-    if now == base.get("sha256"):
+    if base and now == base.get("sha256"):
         return {"guard": "same", "conflict": ""}
     try:
         if _digest(src_file) == now:
             return {"guard": "identical", "conflict": ""}
     except OSError:
         pass
+    # 用户 2026-11-11：没有记录、或记录太旧（拿很久以前的版本修的）时，按全部文字 + 打印区域格子数核对
+    check = content_check.compare(src_file, dest_file, "来源", "目的地")
+    if check["same"]:
+        return {"guard": "content_same", "dest_sha": now, "conflict": "",
+                "content_check": ("没有拿取记录" if not base else "目的地和拿的时候不一样") + "，按文字和打印区域核对一致，照常覆盖"}
+    if check["checked"]:
+        return {"guard": "content_diff", "dest_sha": now, "content_diffs": check["diffs"],
+                "conflict": ("没有拿取记录，" if not base else "目的地和你拿的时候不一样，")
+                + f"按内容核对也不一样（{content_check.describe(check)}），没有覆盖。"
+                "请先「⬇ 拿最新版」，在新版上改好再复制"}
+    if not base:  # 这种格式按内容核对不了：照旧覆盖但标出
+        return {"guard": "unknown", "conflict": ""}
     return {"guard": "changed", "dest_sha": now,
             "conflict": "别人改过了：目的地现在的文件和你拿的时候不一样，没有覆盖。请先「⬇ 拿最新版」，在新版上改好再复制"}
 
@@ -578,6 +590,10 @@ def _stale_sources(preview_data: dict[str, Any]) -> list[str]:
 def _guard_again(src_file: Path, dest_file: Path, item: dict[str, Any], base: dict[str, Any] | None) -> str:
     """复制这一个文件之前再查一次（生成清单之后别人可能刚改过）。返回不能覆盖的原因，能覆盖返回空"""
     exists = dest_file.exists()
+    if item.get("guard") == "content_same":  # 清单时按内容核对过：目的地这之后不能再变
+        if not exists or _shared_digest(dest_file) != item.get("dest_sha"):
+            return "生成清单之后目的地又被改过，没有覆盖。请重新生成清单查看"
+        return ""
     if not base:
         if exists and item.get("guard") == "none":
             return "生成清单之后目的地出现了同名文件（可能是别人刚放进去的），没有覆盖。请重新生成清单查看"
@@ -721,12 +737,26 @@ def _check_task_file(task: dict[str, Any], item: dict[str, Any], local: Path, sh
         known = _digest(reference)
     if current is None and (known or review):
         raise ValueError("共享中的文件已移走或删除，请核对路径")
-    if current is not None and not known and not review:
-        raise ValueError("缺少共享端版本记录，请先用「从共享拿最新版」建立快照")
-    if current is not None and (current != known or
-                                review and (not review["ready"] or current != review["sha256"])):
+    pending = review and (not review["ready"] or current != review["sha256"])
+    if current is not None and current != known and not pending:
+        # 用户 2026-11-11：没有 hash 记录、或者手上这份本来就是拿很久以前的版本修的（hash 一定对不上），
+        # 改成直接比要上传的这份和共享现在这份的全部文字 + 打印区域格子数：一样就照常覆盖，不一样才同步、要求重新处理
+        check = content_check.compare(local, shared, "你这份", "共享")
+        if check["same"]:
+            item["content_check"] = ("没有共享端版本记录" if not known else "共享这份和记下的版本不一样") + \
+                "，按文字和打印区域核对一致，照常覆盖"
+            debug_log.event("🔎 版本对不上但内容一致，照常上传", 文件=item["rel"], 有记录=bool(known))
+            return current
+        if not known and not review and not check["checked"]:
+            raise ValueError(f"缺少共享端版本记录，也没法按内容核对（{check['reason']}），"
+                             "请先用「从共享拿最新版」建立快照")
+        if check["checked"]:
+            item["content_diffs"] = check["diffs"]
+    if current is not None and (current != known or pending):
         _sync_task_file(task, item, local, shared, reference, current, backup_root)
-        item.update(status="review", error="已同步共享最新版，请重新处理并复检")
+        diffs = item.get("content_diffs")
+        item.update(status="review", error="已同步共享最新版，请重新处理并复检"
+                    + (f"（按内容核对和共享不一样：{content_check.describe({'diffs': diffs})}）" if diffs else ""))
     elif review and review["token"] != item["reviewed"]:
         item.update(status="review", error="请确认已在共享最新版上重新处理并复检")
     return current
@@ -1476,7 +1506,7 @@ def preview_free(source_text: Any, dest_text: Any) -> dict[str, Any]:
                     item["note"] = "清单里记着共享原来有这个文件，现在没有了（可能被别人移走或删掉），会新建"
             elif item["dest_sha256"] == record.get("shared_sha256"):
                 item["action"] = "overwrite"
-            else:
+            elif not _free_content_check(item, src_file, dest_file, "终点这份和拿的时候不一样"):
                 item["action"] = "conflict"
                 item["error"] = ("拿走之后共享里的这份被别人改过，没有覆盖" if record.get("shared_sha256")
                                  else "拿的时候共享里还没有这份，后来别人新放了一份同名的，没有覆盖")
@@ -1488,8 +1518,9 @@ def preview_free(source_text: Any, dest_text: Any) -> dict[str, Any]:
                 item["action"] = "new"
             elif item["dest_sha256"] in known:
                 item["action"] = "overwrite"
-            else:
-                item["action"] = "confirm"
+            elif not _free_content_check(item, src_file, dest_file,
+                                         "终点这份和上次的记录不一样" if known else "没有拿取记录"):
+                item["action"] = "confirm"  # 这种格式按内容核对不了：照旧要你确认
                 item["note"] = "终点已有同名文件，没有拿取记录，没法知道期间有没有人改过"
         files.append(item)
     # 终点里有、起点没有的 Excel：不动，只列出来；有清单的话分出「期间别人新加的」
@@ -1519,6 +1550,27 @@ def preview_free(source_text: Any, dest_text: Any) -> dict[str, Any]:
             _STATUS["preview"] = result
             _STATUS.pop("applied", None)
     return result
+
+
+def _free_content_check(item: dict[str, Any], src_file: Path, dest_file: Path, why: str) -> bool:
+    """用户 2026-11-11：hash 对不上（没有记录 / 记录太旧）时按全部文字 + 打印区域格子数核对。
+    一样 → 照常覆盖，返回 True；不一样 → 标成不覆盖，返回 True；读不了 → 返回 False，按原来的规则"""
+    if item["src_sha256"] == item["dest_sha256"]:
+        item["action"] = "overwrite"
+        return True
+    check = content_check.compare(src_file, dest_file, "起点", "终点")
+    if not check["checked"]:
+        return False
+    item["guard"] = "content"
+    if check["same"]:
+        item["action"] = "overwrite"
+        item["note"] = f"{why}，按文字和打印区域核对一致，照常覆盖"
+    else:
+        item["action"] = "conflict"
+        item["content_diffs"] = check["diffs"]
+        item["error"] = (f"{why}，按内容核对也不一样（{content_check.describe(check)}），没有覆盖。"
+                         "请先拿取终点最新版，在上面改好再传")
+    return True
 
 
 def start_free(preview_id: Any, confirm_overwrite: bool, pdf: Any = None) -> None:

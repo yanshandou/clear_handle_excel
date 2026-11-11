@@ -392,12 +392,14 @@
         const sizeText = f.action === 'overwrite' ? `${size(f.old_size)} → ${size(f.size)}` : size(f.size);
         let state = '';
         if (applied) state = f.status === 'ok' ? '<span class="link-ok">✅ 已复制</span>'
-          : f.status === 'conflict' ? '<span class="dist-conflict">🛑 别人改过，没有覆盖</span>'
+          : f.status === 'conflict' ? `<span class="dist-conflict">🛑 ${f.guard === 'content_diff' ? '内容和目的地不一样' : '别人改过'}，没有覆盖</span>${f.guard === 'content_diff' ? `<br><small>${esc(f.error || f.conflict || '')}</small>` : ''}`
           : f.status === 'failed' ? `<span class="link-error">❌ ${esc(f.error)}</span>` : '<span class="link-skip">没有复制</span>';
+        else if (f.conflict && f.guard === 'content_diff') state = `<span class="dist-conflict">🛑 内容和目的地不一样，不覆盖</span><br><small>${esc(f.conflict)}</small>`;
         else if (f.conflict) state = '<span class="dist-conflict">🛑 别人改过，不覆盖</span>';
         else if (f.source_open) state = '<span class="link-skip">⚠️ 来源正在 Excel 中打开，复制时会请你先关掉</span>';
         else if (f.guard === 'same') state = '<span class="dist-guard-ok">✓ 拿走后没人改过</span>';
         else if (f.guard === 'identical') state = '<span class="dist-guard-ok">✓ 目的地已经和你的一样</span>';
+        else if (f.guard === 'content_same') state = `<span class="dist-guard-ok">✓ ${esc(f.content_check || '按文字和打印区域核对一致')}</span>`;
         else if (f.guard === 'unknown') state = '<span class="dist-guard-unknown">没有拿取记录，没法检查别人改过没有</span>';
         const base = applied && f.status === 'ok' ? folder.dest_path : folder.source_path;
         return `<tr${f.conflict || f.status === 'conflict' ? ' class="is-conflict"' : ''}><td>${fileLink(f.rel, base, applied && f.status === 'ok' ? f.dest_rel : f.rel)}</td><td>${action}</td><td>${sizeText}</td><td>${state}</td></tr>`;
@@ -540,7 +542,7 @@
     const rows = (data.files || []).map(file => {
       const status = file.status === 'ok' ? (file.pdf_only ? '✓ 只传 PDF，Excel 没传' : '✓ 已上传') : file.error || '未上传';
       const base = file.status === 'ok' ? data.dest_root : data.source_root;
-      return `<li>${fileLink(file.rel, base, file.rel)} · ${esc(status)}${prepHtml(file, data)}${pdfHtml(file)}${file.backup_path ? `<br><small>旧处理副本：${esc(file.backup_path)}</small>` : ''}${file.ref_backup_path ? `<br><small>旧参考副本：${esc(file.ref_backup_path)}</small>` : ''}</li>`;
+      return `<li>${fileLink(file.rel, base, file.rel)} · ${esc(status)}${file.content_check ? `<br><small>🔎 ${esc(file.content_check)}</small>` : ''}${prepHtml(file, data)}${pdfHtml(file)}${file.backup_path ? `<br><small>旧处理副本：${esc(file.backup_path)}</small>` : ''}${file.ref_backup_path ? `<br><small>旧参考副本：${esc(file.ref_backup_path)}</small>` : ''}</li>`;
     });
     const allDone = rows.length && (s['已复制'] || 0) === rows.length && !data.stopped;
     const pdfOnly = rows.length && data.files.every(file => file.pdf_only);
@@ -581,8 +583,8 @@
     : isFree(data) ? renderFree(data, applied) : isUpload(data) ? renderUpload(data) : renderData(data, applied);
 
   // 起点 → 终点：清单（applied=false）和结果（applied=true）共用
-  const FREE_ACTION = { new: ['tag-new', '新建'], overwrite: ['tag-overwrite', '覆盖'], confirm: ['tag-confirm', '覆盖（要确认）'], conflict: ['dist-conflict', '🛑 别人改过，不覆盖'] };
-  const FREE_GUARD = { manifest: '按拿取版本清单核对', baseline: '按你上次的拿取 / 上传记录核对', none: '没有记录' };
+  const FREE_ACTION = { new: ['tag-new', '新建'], overwrite: ['tag-overwrite', '覆盖'], confirm: ['tag-confirm', '覆盖（要确认）'], conflict: ['dist-conflict', '🛑 不覆盖'] };
+  const FREE_GUARD = { manifest: '按拿取版本清单核对', baseline: '按你上次的拿取 / 上传记录核对', none: '没有记录', content: '按全部文字和打印区域格子数核对' };
   function renderFree(data, applied) {
     const s = data.summary || {};
     const chipsHtml = applied
@@ -591,7 +593,7 @@
         + (s['没复制成功'] ? `<span class="dist-chip dist-chip-warn">没上传成功 ${s['没复制成功']}</span>` : '')
       : `<span class="dist-chip dist-chip-info">要上传 ${s['要上传']}（新建 ${s['新建']}、覆盖 ${s['覆盖'] + s['要确认']}）</span>`
         + (s['要确认'] ? `<span class="dist-chip dist-chip-warn">要确认覆盖 ${s['要确认']}</span>` : '')
-        + (s['别人改过'] ? `<span class="dist-chip dist-chip-err">🛑 别人改过 ${s['别人改过']}</span>` : '')
+        + (s['别人改过'] ? `<span class="dist-chip dist-chip-err">🛑 不覆盖 ${s['别人改过']}</span>` : '')
         + `<span class="dist-chip ${s['有清单'] ? 'dist-chip-ok' : 'dist-chip-info'}">${s['有清单'] ? `${s['有清单']} 个按拿取版本清单核对` : '起点里没有拿取版本清单'}</span>`;
     const notes = (data.notes || []).map(note => `<li>${esc(note)}</li>`).join('');
     const rows = (data.files || []).map(file => {
