@@ -899,7 +899,8 @@ def pdf_check(task_id: Any = None, files: Any = None, preview_id: Any = None) ->
         if not data or data.get("kind") != "free_upload" or data.get("id") != preview_id:
             raise ValueError("清单已变化，请重新生成")
         dest_root = Path(data["dest_root"])
-        rels = [f["rel"] for f in data["files"] if f["action"] != "conflict"]
+        forced = {_key(rel) for rel in files} if isinstance(files, list) else set()  # 起点→终点：勾了强制覆盖的
+        rels = [f["rel"] for f in data["files"] if f["action"] != "conflict" or _key(f["rel"]) in forced]
     else:
         from core import work_task
         task = _upload_task(task_id)
@@ -1597,12 +1598,28 @@ def _free_content_check(item: dict[str, Any], src_file: Path, dest_file: Path, w
     return True
 
 
-def start_free(preview_id: Any, confirm_overwrite: bool, pdf: Any = None) -> None:
+def _apply_force(preview_data: dict[str, Any], force: Any) -> None:
+    """用户 2026-11-11：清单里标了「不覆盖」的，用户自己勾了「强制覆盖」的照样传。
+    只认清单里确实是 conflict 的文件；复制前一刻终点又变了照样拦（_run_free 按清单时的哈希核对）"""
+    wanted = {_key(rel) for rel in force} if isinstance(force, list) else set()
+    for item in preview_data["files"]:
+        if item["action"] == "conflict" and _key(item["rel"]) in wanted:
+            item.update(action="force", forced_reason=item.pop("error", ""))
+            debug_log.event("⚠️ 用户选了强制覆盖", 文件=item["rel"], 原来不覆盖的原因=item["forced_reason"][:80])
+    files = preview_data["files"]
+    preview_data["summary"].update({"要上传": sum(f["action"] != "conflict" for f in files),
+                                    "别人改过": sum(f["action"] == "conflict" for f in files),
+                                    "强制覆盖": sum(f["action"] == "force" for f in files)})
+
+
+def start_free(preview_id: Any, confirm_overwrite: bool, pdf: Any = None, force: Any = None) -> None:
     pdf_settings = _pdf_settings(pdf)
     with _LOCK:
         preview_data = _STATUS.get("preview")
         if preview_data and preview_data.get("kind") == "free_upload" and preview_data.get("id") == preview_id:
             preview_data["pdf"] = pdf_settings
+            if force:
+                _apply_force(preview_data, force)
         preview_data = copy.deepcopy(preview_data)
     if not preview_data or preview_data.get("kind") != "free_upload" or preview_data.get("id") != preview_id:
         raise ValueError("清单已变化，请重新生成")
@@ -1751,7 +1768,8 @@ def markdown_free(result: dict[str, Any]) -> str:
         if item.get("pdf_only"):
             status = "只传 PDF，Excel 没传" if item.get("status") == "ok" else status
         elif item.get("status") == "ok":
-            status += "（覆盖）" if item["action"] in ("overwrite", "confirm") else "（新建）"
+            status += ("（强制覆盖）" if item["action"] == "force" else
+                       "（覆盖）" if item["action"] in ("overwrite", "confirm") else "（新建）")
         if item.get("prep"):
             status += f"（上传前：{upload_prep.text(item['prep'])}）"
         if item.get("pdf"):

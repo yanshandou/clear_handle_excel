@@ -611,7 +611,8 @@ class WebHandler(upload_manager.Handler):
         elif self.path == "/api/distribute/free_preview":
             self._send_json({"ok": True, "preview": distribute.preview_free(payload.get("source"), payload.get("dest"), payload.get("guard"))})
         elif self.path == "/api/distribute/free_start":
-            distribute.start_free(payload.get("preview_id"), payload.get("confirm_overwrite") is True, payload.get("pdf"))
+            distribute.start_free(payload.get("preview_id"), payload.get("confirm_overwrite") is True, payload.get("pdf"),
+                                  payload.get("force"))
             self._send_json({"ok": True})
         elif self.path == "/api/tasks/switch":
             self._send_json({"ok": True, "task": work_task.switch(str(payload.get("id") or ""))})

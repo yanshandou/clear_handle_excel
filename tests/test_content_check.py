@@ -190,6 +190,29 @@ class FreeUploadTests(JsonCopyTests):
         self.assertEqual((strict["files"][0]["action"], strict["files"][0]["guard"]), ("overwrite", "content"))
         self.assertIn("选了只比内容", strict["files"][0]["note"])
 
+    def test_free_force_overwrite(self):
+        make(self.src / "a.xlsx", {"A1": "画面"})
+        make(self.dst / "a.xlsx", {"A1": "画面"}, sheets=("仕様", "変更履歴"))
+        prev = distribute.preview_free(str(self.src), str(self.dst))
+        self.assertEqual(prev["files"][0]["action"], "conflict")
+        self.assertEqual(distribute.pdf_check(files=["a.xlsx"], preview_id=prev["id"])["files"][0]["rel"], "a.xlsx")
+        with patch.object(upload_prep, "prepare", side_effect=lambda *a: dict(PREP)), \
+                patch("core.excel_ops.start_background_excel", Mock()), patch("core.excel_ops.quit_background_excel", Mock()), \
+                patch("core.file_problem.ask", Mock(return_value="skip")):
+            distribute.start_free(prev["id"], False, None, ["a.xlsx"])
+            result = self.wait_free()
+        item = result["files"][0]
+        self.assertEqual((item["action"], item["status"]), ("force", "ok"), item.get("error"))
+        self.assertIn("只有终点有", item["forced_reason"])
+        self.assertEqual((self.dst / "a.xlsx").read_bytes(), (self.src / "a.xlsx").read_bytes())
+
+    def wait_free(self):
+        for _ in range(200):
+            if not distribute.status().get("running"):
+                break
+            time.sleep(0.05)
+        return distribute.status()["applied"]
+
     test_no_record_same_content_overwrites = test_no_record_different_content_blocks = None
     test_destination_changed_after_preview_blocks = test_old_record_but_same_content_overwrites = None
 
