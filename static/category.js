@@ -15,6 +15,16 @@ try {
 
 const shortLabel = label => label.split(' · ')[0];
 
+// 按「字丢没丢」分级（用户 2026-11-10）：红 = 字丢了必须改；灰 = PDF 里没对上文字，扫一眼；黄 = 压线 / 被裁，字都在，可以不管
+const SEVERITY_RANK = { red: 0, gray: 1, yellow: 2 };
+const SEVERITY_HEADS = {
+  red: ['🔴 必须改：字丢了', '只印出前半段、显示成 ###、被分页切开'],
+  gray: ['⚪ 扫一眼：PDF 里没对上文字', '多半是符号、格式造成的误报'],
+  yellow: ['🟡 可以不管：压线 / 被裁', '字都还在 PDF 的文字里，AI 读得到'],
+};
+const sevRank = card => SEVERITY_RANK[card.severity] ?? 0;
+const groupSeverity = cards => cards.reduce((best, c) => (sevRank(c) < SEVERITY_RANK[best] ? c.severity : best), 'yellow');
+
 function fileList() {
   const groups = new Map();
   for (const card of pendingCards()) {
@@ -24,9 +34,10 @@ function fileList() {
   return [...groups.values()].map(g => {
     const kinds = new Map();
     for (const c of g.cards) { const k = shortLabel((c.category || ['', '其他'])[1]); kinds.set(k, (kinds.get(k) || 0) + 1); }
-    return { ...g, count: g.cards.length, files: 1,
+    const red = g.cards.filter(c => (c.severity || 'red') === 'red').length;
+    return { ...g, count: g.cards.length, files: 1, red,
       summary: [...kinds].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(' · ') };
-  }).sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+  }).sort((a, b) => b.red - a.red || b.count - a.count || a.label.localeCompare(b.label));
 }
 
 function groupList() {
@@ -60,8 +71,8 @@ function categoryList() {
     groups.get(key).cards.push(card);
   }
   const rank = type => (order.indexOf(type) < 0 ? order.length : order.indexOf(type));
-  return [...groups.values()].map(g => ({ ...g, count: g.cards.length, files: new Set(g.cards.map(c => c.wb_path)).size }))
-    .sort((a, b) => rank(a.type) - rank(b.type) || b.count - a.count || a.label.localeCompare(b.label));
+  return [...groups.values()].map(g => ({ ...g, count: g.cards.length, files: new Set(g.cards.map(c => c.wb_path)).size, severity: groupSeverity(g.cards) }))
+    .sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || rank(a.type) - rank(b.type) || b.count - a.count || a.label.localeCompare(b.label));
 }
 
 function categoryCurrent(cats) {
@@ -90,7 +101,7 @@ const yellowCards = cat => cat.cards.filter(c => c.color === 'yellow' && c.final
 
 function fileListHtml(files, current) {
   return files.map(f => `<li><button type="button" class="learn-cat learn-file" data-learn-cat="${esc(f.key)}" aria-pressed="${f === current}" title="${esc(f.key)}">`
-    + `<span class="learn-cat-name">${esc(f.label)}<small class="learn-file-kinds">${esc(f.summary)}</small></span>`
+    + `<span class="learn-cat-name">${esc(f.label)}<small class="learn-file-kinds">${f.red ? `<b class="learn-file-red">必须改 ${f.red}</b> · ` : ''}${esc(f.summary)}</small></span>`
     + `<span class="learn-count">${f.count}</span></button></li>`).join('');
 }
 
@@ -109,11 +120,18 @@ function categoryListHtml(all, current) {
 }
 
 function categoryListOnlyHtml(cats, current) {
-  let lastType = '';
+  let lastType = '', lastSeverity = '';
   return cats.map(cat => {
     const typeLabel = cat.label.split(' · ')[0];
     const color = typeColorOf(cat.type);
-    const head = cat.type !== lastType ? `<li class="learn-type" aria-hidden="true"><span class="learn-type-chip" style="background:${color.fill};color:${color.font}" title="Excel 里这种问题的标记颜色">${esc(typeLabel)}</span></li>` : '';
+    let sev = '';
+    if (cat.severity !== lastSeverity) {
+      const [title, note] = SEVERITY_HEADS[cat.severity] || SEVERITY_HEADS.red;
+      sev = `<li class="learn-sev learn-sev-${esc(cat.severity)}" aria-hidden="true">${esc(title)}<small>${esc(note)}</small></li>`;
+      lastSeverity = cat.severity;
+      lastType = '';
+    }
+    const head = sev + (cat.type !== lastType ? `<li class="learn-type" aria-hidden="true"><span class="learn-type-chip" style="background:${color.fill};color:${color.font}" title="Excel 里这种问题的标记颜色">${esc(typeLabel)}</span></li>` : '');
     lastType = cat.type;
     const rest = cat.label.split(' · ').slice(1).join(' · ') || typeLabel;
     return `${head}<li><button type="button" class="learn-cat" data-learn-cat="${esc(cat.key)}" aria-pressed="${cat === current}">`
@@ -154,7 +172,8 @@ function renderCategories() {
   if (!panel) return;
   const cats = groupList();
   const current = groupCurrent(cats);
-  const key = JSON.stringify([categoryMode, batchState.opened_files, cats.map(c => [c.key, c.cards.map(x => [x.id, x.color, x.finalized, x.cell_fix?.label, x.default_tool, (x.tools || []).join()])]), current?.key,
+  renderLowRisk();
+  const key = JSON.stringify([categoryMode, batchState.opened_files, cats.map(c => [c.key, c.cards.map(x => [x.id, x.color, x.severity, x.finalized, x.cell_fix?.label, x.default_tool, (x.tools || []).join()])]), current?.key,
     categoryBusyReason(), openChoosing, batchState.job?.kind, batchState.job?.closing,
     batchState.folder, excelLinkHtml.revision, batchState.open_blocked]);
   renderOpenNext();
@@ -174,6 +193,35 @@ function renderCategories() {
   renderCategories.lastKey = `${categoryMode}:${current?.key}`;
   toolboxAfterRender();
 }
+
+// 「也列出压线 / 被裁」：黄色默认不列、不标色、不算待处理；打开后马上列出来，Excel 标色下次打开 / 复检时跟上
+function renderLowRisk() {
+  const box = $('lowRiskToggle');
+  if (!box) return;
+  const show = !!batchState.show_low_risk;
+  if (document.activeElement !== box || !box.dataset.saving) box.checked = show;
+  const hidden = batchState.low_risk_hidden || 0;
+  $('lowRiskCount').textContent = show ? '（已列出）' : hidden ? `（藏了 ${hidden} 格）` : '';
+}
+
+$('lowRiskToggle')?.addEventListener('change', async event => {
+  const box = event.target;
+  box.dataset.saving = '1';
+  try {
+    const res = await fetch('/api/batch/show_low_risk', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ show: box.checked }) });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || '没改成');
+    batchState.show_low_risk = data.show;
+    lastEtag = ''; await poll();
+  } catch (err) {
+    box.checked = !box.checked;
+    appAlert(`没改成：${err.message || err}`);
+  } finally {
+    delete box.dataset.saving;
+    renderLowRisk();
+  }
+});
 
 // 顶上的「打开下一批」：按左边列表的顺序（按文件时问题多的在前），打开还没打开过的文件，每次最多 10 个
 function nextBatchCards() {

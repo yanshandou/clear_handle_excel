@@ -124,6 +124,41 @@ def _card_error_types(card: dict) -> list[str]:
     return sorted(dict.fromkeys(types), key=lambda t: order.index(t) if t in order else len(order))
 
 
+def _card_severity(card: dict, items: list[dict] | None = None) -> str:
+    """这一格按「字丢没丢」算哪一级（red / gray / yellow）。按这格现在还没解决的检测结果算，
+    卡片上记的问题类型会累积历史（以前截断、改好后只剩压线），只在没有检测结果时才用它。调用方持有 STATE_LOCK"""
+    items = _items_at(card) if items is None else items
+    live = [autofix.item_error_type(it) for it in items if it.get("status") not in wf.RESOLVED_STATUSES]
+    return autofix.error_severity(live or _card_error_types(card))
+
+
+def _items_by_cell(paths: set[str] | None = None) -> dict[tuple[str, str, str], list[dict]]:
+    """检测结果按单元格分好（只取这些文件的），一次整理、多张卡共用，免得每张卡都把全部结果过一遍"""
+    by_cell: dict[tuple[str, str, str], list[dict]] = {}
+    for item in wf.STATE["items"].values():
+        if paths is None or item["wb_path"] in paths:
+            by_cell.setdefault(_cell(item), []).append(item)
+    return by_cell
+
+
+def _hidden_low_risk(card: dict, items: list[dict] | None = None) -> bool:
+    """黄色（只是压线 / 被裁，字都在）且没打开「也列出来」：不列卡片、不标色、不算待处理。调用方持有 STATE_LOCK"""
+    return autofix.low_risk_hidden(wf.STATE) and _card_severity(card, items) == autofix.SEVERITY_YELLOW
+
+
+def set_show_low_risk(show: Any) -> bool:
+    """查看切字页的开关：黄色（压线 / 被裁）也列出来。Excel 里的标色在下次复检 / 打开时跟着更新"""
+    if not isinstance(show, bool):
+        raise ValueError("请给出开或关")
+    with wf.STATE_LOCK:
+        _data()["show_low_risk"] = show
+        for path in {it["wb_path"] for it in wf.STATE["items"].values()}:
+            wf._sync_problem_counts(path, "按新的分级重新统计")
+        wf._persist_state(force=True)
+    debug_log.event("🟡 黄色也列出来", 开=show)
+    return show
+
+
 def _mark_type(card: dict) -> str:
     """这一格按哪种问题上色：只有一种问题就是那种，几种问题是 multi"""
     types = _card_error_types(card)
@@ -615,10 +650,15 @@ def snapshot(detail_paths: set[str] | None = None) -> dict:
                 image_urls[name] = _image_url(name) if fix_images.image_path(name) else ""
             return image_urls[name]
 
+        hide_low_risk, low_risk_hidden = autofix.low_risk_hidden(wf.STATE), 0
         for card in sorted(_data()["cards"].values(), key=lambda c: c["seq"]):
             if card.get("dismissed") or not in_folder(card["wb_path"]):
                 continue
             items = by_cell.get(_cell(card), [])
+            severity = _card_severity(card, items)
+            if severity == autofix.SEVERITY_YELLOW and hide_low_risk:
+                low_risk_hidden += 1
+                continue
             # 释放 STATE_LOCK 后才序列化 JSON，返回值仍需与后台线程的状态隔离。
             detailed = detail_paths is None or card["wb_path"] in detail_paths
             omitted = {"signatures", "item_ids"} | (set() if detailed else CARD_DETAIL_FIELDS)
@@ -640,6 +680,7 @@ def snapshot(detail_paths: set[str] | None = None) -> dict:
             elif row is not None:
                 result["row_height"] = {"base": row["base"], "applied": row["applied"], "saved": row["saved"],
                                         "wrap": card.get("cell_addr") in row.get("wrap", [])}
+            result["severity"] = severity
             result["category"] = list(_card_category(result, items))
             result["cell_text"] = str(card.get("text") or "")[:60]  # 分类清单用，文件框收起时 text 不发
             result["adoptable"] = _adoptable(card)
@@ -670,6 +711,7 @@ def snapshot(detail_paths: set[str] | None = None) -> dict:
                 "scan_analysis": copy.deepcopy(wf.STATE.get("latest_scan_analysis")),
                 "tab_marks": tabs,
                 "error_types": list(autofix.CELL_ERROR_SPECS.values()),
+                "show_low_risk": not hide_low_risk, "low_risk_hidden": low_risk_hidden,
                 "open_blocked": _open_blocked([c["wb_path"] for c in cards]),
                 "followups": copy.deepcopy(_data().get("followups") or []),
                 "opened_files": sorted(_opened_paths()),
@@ -703,16 +745,18 @@ def _cards_left(paths: list[str], light: bool) -> dict[str, int]:
     cards = _data().get("cards") or {}
     if not light:
         left: dict[str, int] = {}
+        by_cell = _items_by_cell()
         for card in cards.values():
-            if not card.get("dismissed"):
+            if not card.get("dismissed") and not _hidden_low_risk(card, by_cell.get(_cell(card), [])):
                 left[card["wb_path"]] = left.get(card["wb_path"], 0) + 1
         return left
     new = {p for p in paths if p not in _FEED_COUNTS}
     if new:
         for p in new:
             _FEED_COUNTS[p] = 0
+        by_cell = _items_by_cell(new)
         for card in cards.values():
-            if card.get("wb_path") in new and not card.get("dismissed"):
+            if card.get("wb_path") in new and not card.get("dismissed") and not _hidden_low_risk(card, by_cell.get(_cell(card), [])):
                 _FEED_COUNTS[card["wb_path"]] += 1
     return _FEED_COUNTS
 
@@ -1629,6 +1673,8 @@ def _recheck_file(excel: Any, path: str, cards: list[dict], *, passed_message: s
                         dismissed=False, message=message)
             for item in group:
                 item.update(status="manual_review", batch_managed=True, triage_keep=False, review_reason=message)
+            if _hidden_low_risk(card, group):
+                found -= 1  # 只是压线 / 被裁（字都在）：默认不列，不算查出的问题
         wf._persist_state()
         wf._sync_problem_counts(path, "人工复检完成" + (f"，还有 {found} 处问题" if found else "，没有查出问题"))
     wf.log_msg(f"🔁 {Path(path).name}：原来 {len(cards)} 处翻篇（{passed} 处已不再有问题），"
@@ -3525,9 +3571,10 @@ def _wanted_marks(path: str) -> set[str]:
     data = _data()
     if not data.get("highlight_files", {}).get(path):
         return set()
+    by_cell = _items_by_cell({path})
     return {c["id"] for c in data["cards"].values()
             if c["wb_path"] == path and not c.get("dismissed") and c["color"] == "yellow"
-            and c.get("manual") and _can_highlight(c)}
+            and c.get("manual") and _can_highlight(c) and not _hidden_low_risk(c, by_cell.get(_cell(c), []))}
 
 
 def _leftover_mark_paths(skip: list[str]) -> list[str]:

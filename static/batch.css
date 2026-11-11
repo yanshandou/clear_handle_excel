@@ -270,3 +270,14 @@ tr[data-state="marked"] .learn-state { background: var(--purple-ink, #1f5fc4); c
 .tb-large-body { max-height: 75vh; overflow: auto; margin: 0 22px; text-align: center; }
 .tb-large-body img { max-width: 100%; }
 .tb-group-apply { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+
+/* 按「字丢没丢」分级（2026-11-10）：左边分类分三段，黄色默认不列 */
+.learn-sev { margin: 12px 0 4px; padding: 3px 8px; border-radius: 6px; font-size: 13.5px; font-weight: 800; color: #1c2858; }
+.learn-sev:first-child { margin-top: 0; }
+.learn-sev-red { background: #ffd9d9; }
+.learn-sev-gray { background: #e6e6ee; }
+.learn-sev-yellow { background: #fff1b8; }
+.learn-sev small { display: block; font-weight: 600; font-size: 12px; color: #3a3f5c; }
+.learn-lowrisk { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 700; color: var(--ink, #1c2858); cursor: pointer; white-space: nowrap; }
+.learn-lowrisk #lowRiskCount { display: inline-block; min-width: 4.5em; color: #3a3f5c; font-weight: 600; }
+.learn-file-red { color: #a01818; font-weight: 800; }

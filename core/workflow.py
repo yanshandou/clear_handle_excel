@@ -986,13 +986,17 @@ def _fix_record(item: dict[str, Any]) -> dict[str, Any]:
 def _problem_counts(path: str) -> dict[str, Any]:
     """这个文件的切字统计和已修复位置，交给 update_file_progress"""
     # 同一个文件可能有新旧两个路径（改名加了 ★ / 去掉 ★），按执行记录里的名字算在一起
+    from core import autofix
     name = _report_name(path)
     items = [item for item in STATE["items"].values() if _report_name(item["wb_path"]) == name]
     fixed = sum(item["status"] == "fixed" for item in items)
     accepted = sum(item["status"] == "accepted" for item in items)
+    # 黄色（只是压线 / 被裁，字都在 PDF 里）默认不算待处理（用户 2026-11-10）
+    low_risk = sum(item["status"] not in RESOLVED_STATUSES and autofix.is_low_risk_item(item)
+                   for item in items) if autofix.low_risk_hidden(STATE) else 0
     return {
         "clip_detected": len(items), "clip_fixed": fixed, "clip_accepted": accepted,
-        "clip_unfixed": len(items) - fixed - accepted,
+        "clip_unfixed": len(items) - fixed - accepted - low_risk,
         "fixes": {item["id"]: _fix_record(item) if item["status"] == "fixed" else None for item in items},
     }
 
@@ -1910,7 +1914,10 @@ def _scan_one_workbook(
         # job=None 是工作台对单个文件的重新检测（每保存一行、提交、复检都会调用），
         # 不是一次扫描里多完成了一个文件，不能累加扫描进度，否则会出现「43 / 26 个文件」
         _persist_state()
-        wb_items = [item for item in STATE["items"].values() if item["wb_path"] == path]
+        from core import autofix
+        hide_low = autofix.low_risk_hidden(STATE)
+        wb_items = [item for item in STATE["items"].values() if item["wb_path"] == path
+                    and not (hide_low and autofix.is_low_risk_item(item))]  # 黄色（字都在）默认不算
         unresolved = sum(item["status"] not in RESOLVED_STATUSES for item in wb_items)
         new_count = sum(bool(item.get("is_new")) for item in wb_items if item["status"] not in RESOLVED_STATUSES)
         parts = [f"检查 {len(sheets)} 个工作表"]

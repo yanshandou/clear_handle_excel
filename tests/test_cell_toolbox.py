@@ -65,6 +65,10 @@ class FakeSheet:
 
 class CellToolboxTests(unittest.TestCase):
     def setUp(self):
+        # 这里的卡片多是「边框压线」：照常列出、标色（黄色默认藏起来的分级另有测试）
+        low_risk = patch("core.autofix.low_risk_hidden", return_value=False)
+        low_risk.start()
+        self.addCleanup(low_risk.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

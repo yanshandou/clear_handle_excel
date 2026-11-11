@@ -148,6 +148,34 @@ FIXABLE_ERROR_TYPES: tuple[str, ...] = tuple(
 CUT_ERROR_TYPES: tuple[str, ...] = (ERROR_TYPE_BORDER_CLIP, ERROR_TYPE_TEXT_TRUNCATED, ERROR_TYPE_BOX_OVERFLOW)
 
 
+# 按「字丢没丢」分级（用户 2026-11-10：PDF 给 AI 读，字小无所谓，Excel 里有的字 PDF 里不能丢）：
+# 黄 = 压线、超出格子被裁：文字层里字都在，AI 读得到，默认不用管（被裁多半是作者故意隐藏列造成的）
+# 灰 = PDF 里没对上文字：多是符号、格式造成的误报，扫一眼就行
+# 红 = 其余（只印出前半段、###、分页切开合并格）：真丢字，必须改
+LOW_RISK_ERROR_TYPES: tuple[str, ...] = (ERROR_TYPE_BORDER_CLIP, ERROR_TYPE_BOX_OVERFLOW)
+NOTE_ERROR_TYPES: tuple[str, ...] = (ERROR_TYPE_TEXT_MISSING,)
+SEVERITY_RED, SEVERITY_GRAY, SEVERITY_YELLOW = "red", "gray", "yellow"
+
+
+def error_severity(types: Any) -> str:
+    """一格的几种问题合起来算哪一级：有一种是红就红；没有红、有灰就灰；只剩压线 / 被裁才是黄"""
+    types = [t for t in types or [] if t]
+    if not types:
+        return SEVERITY_RED
+    if any(t not in LOW_RISK_ERROR_TYPES and t not in NOTE_ERROR_TYPES for t in types):
+        return SEVERITY_RED
+    return SEVERITY_GRAY if any(t in NOTE_ERROR_TYPES for t in types) else SEVERITY_YELLOW
+
+
+def low_risk_hidden(state: dict[str, Any]) -> bool:
+    """黄色（压线 / 被裁）默认不列、不标色、不算待处理；查看切字页可以打开「也列出来」"""
+    return not (state.get("batch_review") or {}).get("show_low_risk")
+
+
+def is_low_risk_item(item: dict[str, Any]) -> bool:
+    return item_error_type(item) in LOW_RISK_ERROR_TYPES
+
+
 def item_error_type(item: dict[str, Any]) -> str:
     """获取或推导检测项的单元格错误类型（兼容未存 error_type 的旧快照）"""
     explicit = item.get("error_type")

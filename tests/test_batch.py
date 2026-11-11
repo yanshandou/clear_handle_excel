@@ -1468,6 +1468,39 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(batch._problem(clip)["label"], "压线")
         self.assertEqual(batch._problem(clip)["missing"], "")
 
+    def test_low_risk_cards_hidden_until_shown(self):
+        # 用户 2026-11-10：压线 / 被裁（字都在 PDF 里）默认不列、不标色；真丢字（截断）照常列
+        from core import autofix
+        from core.hidden_text import REASON_CLIPPED, REASON_MISSING, REASON_TRUNCATED
+        self.assertEqual(autofix.error_severity(["border_clip", "box_overflow"]), "yellow")
+        self.assertEqual(autofix.error_severity(["border_clip", "text_missing"]), "gray")
+        self.assertEqual(autofix.error_severity(["border_clip", "text_truncated"]), "red")
+        self.assertEqual(autofix.error_severity(["page_break_cut"]), "red")
+        cut, cut_item = self.add_card("A5")
+        cut_item.update(status="pending", hidden_reason=REASON_TRUNCATED)
+        clipped, clipped_item = self.add_card("B5")
+        clipped_item.update(status="pending", hidden_reason=REASON_CLIPPED)
+        missing, missing_item = self.add_card("C5")
+        missing_item.update(status="pending", hidden_reason=REASON_MISSING)
+        for card in (cut, clipped, missing):
+            card.update(color="yellow", manual=True, verified=False)
+        snap = batch.snapshot()
+        self.assertEqual({c["cell_addr"]: c["severity"] for c in snap["cards"]}, {"A5": "red", "C5": "gray"})
+        self.assertEqual((snap["low_risk_hidden"], snap["show_low_risk"]), (1, False))
+        batch._data()["highlight_files"] = {self.path: {"fill": "#ffff00"}}
+        with patch.object(batch, "_can_highlight", return_value=True):
+            self.assertEqual(batch._wanted_marks(self.path), {cut["id"], missing["id"]})
+            self.assertEqual(self.wf._problem_counts(self.path)["clip_unfixed"], 2)
+            batch.set_show_low_risk(True)
+            self.assertEqual(batch._wanted_marks(self.path), {cut["id"], clipped["id"], missing["id"]})
+            self.assertEqual(self.wf._problem_counts(self.path)["clip_unfixed"], 3)
+        snap = batch.snapshot()
+        self.assertEqual(len(snap["cards"]), 3)
+        self.assertEqual((snap["low_risk_hidden"], snap["show_low_risk"]), (0, True))
+        # 卡片记的问题类型会累积：以前截断、现在只剩压线的，按现在的检测结果算黄色
+        clipped["error_types"] = ["text_truncated", "box_overflow"]
+        self.assertEqual(batch._card_severity(clipped), "yellow")
+
     def test_snapshot_image_urls_change_with_content(self):
         card, _ = self.add_card()
         batch._save_shot(card, "before", "data:image/png;base64,YQ==")

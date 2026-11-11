@@ -49,6 +49,10 @@ class IncrementalScanTests(unittest.TestCase):
 
         self.reporter = importlib.reload(reporter)
         self.workflow = importlib.reload(workflow)
+        # 这里的切字项都是普通「边框压线」：按旧口径算待处理（黄色默认不算的分级另有测试）
+        low_risk = patch("core.autofix.low_risk_hidden", return_value=False)
+        low_risk.start()
+        self.addCleanup(low_risk.stop)
         self.patch_value(reporter, "RECORD_PATH", self.root / "record.md")
         self.patch_value(fix_images, "IMAGES_DIR", self.root / "_report_images")
         self.patch_value(reporter, "REPORT_STATE_PATH", self.root / "legacy.json")
