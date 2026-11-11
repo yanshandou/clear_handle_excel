@@ -10,11 +10,8 @@
 互相重叠或隔 2 磅以内的连成一堆，每堆临时组合成一个图形——没有底图、全靠图形拼出来的画面也一起管。
 重名的图形按图形 ID 找序号来组合。
 
-永久组合的做法（group_permanently，会保存进文件，所以保守；全部满足才组合）：
-- 截图：图片（嵌入或链接），可见，不在组合里；
-- 叠加物：自选图形 / 线条 / 文本框 / 任意多边形 / 标注，可见，不在组合里，整个落在截图范围里（容差 2 磅）；
-  落在好几张截图里的，归最小那张；
-- 名字重复的不碰（按名字组合，重名会组错）。
+永久组合（group_permanently，保存进文件；用户 2026-11-11：「不用再拆开了吧，能合都合了」）按同样的一堆一堆来组，
+设成「随单元格移动、不改变大小」。导出时的临时组合留着：扫描等只读打开的地方存不了，还没永久组合过的文件也要靠它。
 
 导出前 Group()，导完 finally 里 Ungroup()，再把每个图形原来的「对象の位置関係」（Placement）放回去。
 只读打开的只改内存；可写打开的随调用方保存，拆开后位置、大小、名字不变。认不准、改不了的一律不动，只写调试日志。
@@ -120,7 +117,7 @@ def _touch(a: tuple, b: tuple) -> bool:
     return a[0] <= b[2] + GAP and b[0] <= a[2] + GAP and a[1] <= b[3] + GAP and b[1] <= a[3] + GAP
 
 
-def find_clusters(sheet: Any) -> list[list[Any]]:
+def find_clusters(sheet: Any, skip_ids: frozenset = frozenset()) -> list[list[Any]]:
     """互相重叠或紧挨着的图形分成一堆一堆（至少两个图形才算一堆），每堆按原来的叠放顺序。
     用户 2026-11-11：用很多图形拼出来的画面（按钮、标注、虚线框，没有底图），导出 PDF 后蓝色按钮掉到绿色标注下面，
     手动组合后就好了——各图形挂各的格子、有的随格子动有的不动，打印时网格一伸缩就互相错开。
@@ -137,6 +134,8 @@ def find_clusters(sheet: Any) -> list[list[Any]]:
         except Exception:
             continue
         if kind not in CLUSTER_TYPES or not _visible(shape):
+            continue
+        if skip_ids and _shape_id(shape) in skip_ids:
             continue
         box = _box(shape)
         if box is not None:
@@ -257,23 +256,28 @@ XL_MOVE = 2  # 「セルに合わせて移動するがサイズ変更はしな�
 
 
 def group_permanently(sheet: Any) -> list[str]:
-    """把截图和上面的红框、箭头、文字框永久组合（用户 2026-11-11 要，领导演示过），组合设成「随单元格移动、不改变大小」：
-    以后再改行高列宽，整组只跟着挪位置，截图不变形、红框不跑偏；打印 / PDF 也不再错开。
-    返回组合了哪些（每组一句）；组合不了的只写日志。调用方负责保存"""
+    """把互相重叠 / 挨着的图形永久组合（截图 + 上面的红框、箭头、文字框；没有底图、全靠图形拼出来的画面也算），
+    组合设成「随单元格移动、不改变大小」：以后再改行高列宽，整组只跟着挪位置，不变形、不互相跑偏；打印 / PDF 也不再错开。
+    用户 2026-11-11：「不用再拆开了吧，能合都合了」。返回组合了哪些（每组一句）；组合不了的只写日志。调用方负责保存"""
     sheet_name = str(getattr(sheet, "Name", "?"))
     done = []
-    for picture, members in find_overlay_sets(sheet):
-        names = [str(s.Name) for s in [picture, *members]]
+    # 框住整段的空心大框不进组合：导出 PDF 时要单独把它藏起来（print_frames），进了组合就藏不了、又会印出「凵」形黑框
+    from core import print_frames
+    frames = frozenset(i for i in (_shape_id(f) for f in print_frames.find_frames(sheet)) if i is not None)
+    clusters = find_clusters(sheet, frames)
+    counts = _name_counts(sheet) if clusters else {}
+    for members in clusters:
+        names = [str(getattr(s, "Name", "?")) for s in members]
         try:
-            group = sheet.Shapes.Range(names).Group()
+            group = _range_of(sheet, members, counts).Group()
         except Exception as err:
-            debug_log.event("⚠️ 截图和标注没能永久组合", 表=sheet_name, 图形="、".join(names), 错误=str(err))
+            debug_log.event("⚠️ 挨着的图形没能永久组合", 表=sheet_name, 图形="、".join(names[:12]), 个数=len(names), 错误=str(err))
             continue
         try:
             group.Placement = XL_MOVE
         except Exception as err:
-            debug_log.event("⚠️ 组合设不了「随单元格移动、不改变大小」", 表=sheet_name, 图形="、".join(names), 错误=str(err))
-        done.append(f"截图「{names[0]}」+ {len(members)} 个标注（{'、'.join(names[1:6])}{'…' if len(names) > 6 else ''}）")
+            debug_log.event("⚠️ 组合设不了「随单元格移动、不改变大小」", 表=sheet_name, 图形="、".join(names[:12]), 错误=str(err))
+        done.append(f"{len(names)} 个图形（{'、'.join(names[:6])}{'…' if len(names) > 6 else ''}）")
     if done:
-        debug_log.event("📌 截图和标注永久组合", 表=sheet_name, 组=done)
+        debug_log.event("📌 挨着的图形永久组合", 表=sheet_name, 组=done)
     return done

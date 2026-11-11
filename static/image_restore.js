@@ -251,7 +251,7 @@
     const group = $('imgGroupOnFix').checked;
     if (mode === 'group') {
       const okGo = await window.appConfirm(
-        `要把这个文件夹（含子文件夹）里每张截图和上面的红框、箭头、文字框永久组合，并保存 Excel 吗？\n\n${folder}\n\n`
+        `要把这个文件夹（含子文件夹）里互相重叠、挨着的图形（截图和上面的红框、箭头、文字框，用图形拼出来的画面）都永久组合，并保存 Excel 吗？\n\n${folder}\n\n`
         + '· 组合设成「随单元格移动、不改变大小」：以后调行高列宽、导出 PDF 都不会错开\n'
         + '· 不对照原版：已经被拉坏的截图会按坏的样子组合，请先「找出受影响的图片」修好\n\n请先保存并关闭这些 Excel。',
         { title: '组合截图和标注', okText: '开始组合' });
@@ -261,7 +261,7 @@
       const okGo = await window.appConfirm(
         `要把 ${names ? names.length : pending().length} 份 Excel 里的截图和红框放回原样，并保存吗？\n\n`
         + '· 截图左上角不动，大小改回原版的\n· 截图上的红框、箭头按原版里相对截图的位置放回\n· 行高、列宽、格子内容都不动\n'
-        + (group ? '· 放回后把截图和标注永久组合（随单元格移动、不改变大小）\n' : '') + '\n请先保存并关闭这些 Excel。',
+        + (group ? '· 放回后把互相重叠、挨着的图形永久组合（随单元格移动、不改变大小）\n' : '') + '\n请先保存并关闭这些 Excel。',
         { title: '修复图片', okText: '开始修复' });
       if (!okGo) return;
     }

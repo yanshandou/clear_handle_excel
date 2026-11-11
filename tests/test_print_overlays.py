@@ -146,6 +146,18 @@ class GroupPermanentlyTest(unittest.TestCase):
         group = next(s for s in sheet.Shapes.items if isinstance(s, Group))
         self.assertEqual(group.Placement, print_overlays.XL_MOVE)
 
+    def test_all_touching_shapes_grouped_but_print_frame_left_out(self):
+        from unittest.mock import patch
+        frame = Shape("枠 1", 1, 0, 0, 900, 900)                # 框住整段的空心大框：导出时要单独藏
+        button = Shape("ボタン 2", 1, 20, 280, 120, 40)
+        callout = Shape("吹き出し 3", 2, 100, 310, 400, 30)
+        sheet = Sheet([frame, button, callout])
+        with patch("core.print_frames.find_frames", return_value=[frame]):
+            done = print_overlays.group_permanently(sheet)
+        self.assertEqual(sheet.Shapes.groups, [[button, callout]])
+        self.assertIn("2 个图形", done[0])
+        self.assertIn(frame, sheet.Shapes.items)
+
     def test_nothing_to_group(self):
         self.assertEqual(print_overlays.group_permanently(Sheet([Shape("図 1", 13, 0, 0, 100, 100)])), [])
 
