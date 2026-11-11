@@ -1042,7 +1042,7 @@ window.CleanChain?.onFinished(chain => {
 });
 
 const cleanOldFolder = document.getElementById('cleanOldFolder');
-// 做完后顺便做的几项（BL / 引用 / 隐藏页 / 字体）：勾选存在 localStorage，和主页精简卡上的勾共用（static/flow.js Flow.CHAIN）
+// 做完后顺便做的几项（BL / 引用 / 隐藏页 / 字体）：勾选存在 localStorage，和主页精简卡上的勾共用（static/tools.js Tools.CHAIN）
 const chainBoxes = [...document.querySelectorAll('input[data-chain]')];
 function chainChecks() {
   return Object.fromEntries(chainBoxes.map(box => [box.dataset.chain, box.checked]));
@@ -1050,7 +1050,7 @@ function chainChecks() {
 try {
   cleanOldFolder.value = localStorage.getItem(OLD_FOLDER_STORAGE_KEY) || '';
 } catch (_) {}
-const savedChain = window.Flow ? window.Flow.chainOptions() : { bl: true, links: true, hidden: false, font: true };
+const savedChain = window.Tools ? window.Tools.chainOptions() : { bl: true, links: true, hidden: false, font: true };
 chainBoxes.forEach(box => {
   box.checked = Boolean(savedChain[box.dataset.chain]);
   box.addEventListener('change', () => window.Flow?.setChainOption(box.dataset.chain, box.checked));

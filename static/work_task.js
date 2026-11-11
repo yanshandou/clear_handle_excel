@@ -36,7 +36,7 @@
       : current ? tailText(current) + (current.done ? '（✓ 已完成）' : '') : '还没有任务';
     $('workTaskPaths').innerHTML = current ? pathsHtml(current) : '';
     $('workTaskHint').textContent = current
-      ? '任务提供默认的处理、参考路径，各功能都可以自由修改。每个文件夹独立保存进度和处理记录，切回后可继续。第 4 步按任务设置传回共享。'
+      ? '任务提供默认的处理、参考路径，各功能都可以自由修改。每个文件夹独立保存进度和处理记录，切回后可继续。「上传 Excel」按任务设置传回共享。'
       : '可以直接在各功能填写本地文件夹。需要从共享拿取、上传文件时，再点「🆕 新任务」建立共享、参考和处理路径。';
     $('workTaskName').title = current ? `共享：${current.shared}\n参考：${current.reference}\n处理：${current.work}` : '';
     const others = data.tasks.filter(t => t.id !== data.current);

@@ -193,18 +193,6 @@
   filter: none;
 }
 
-.flow-page-bar {
-  color: var(--garden-ink);
-  background: var(--garden-panel);
-  border: 1px solid var(--garden-panel-border);
-  box-shadow: var(--garden-panel-shadow);
-}
-.fpb-step { color: #486237; border: 1px solid #cedabc; background: #f3f7eb; }
-.fpb-step:hover { border-color: #8aae62; }
-.fpb-step.cur { color: #4c671e; background: #e8f5ce; border-color: #accb7b; box-shadow: 0 0 0 2px #d5e8b3; }
-.fpb-sep { color: #809367; }
-.fpb-edit { color: #47712c; }
-
 .task-dialog, .app-dialog {
   color: var(--garden-ink);
   background: var(--garden-panel);
@@ -225,8 +213,7 @@
 .app-dialog-icon { border-color: var(--garden-panel-border); box-shadow: inset 0 1px 0 #fff, 0 2px 0 #d9c793; }
 .app-dialog .btn:focus-visible { outline-color: var(--garden-focus); }
 
-.app-header :focus-visible,
-.flow-page-bar :focus-visible {
+.app-header :focus-visible {
   outline: 3px solid var(--garden-focus);
   outline-offset: 3px;
 }
@@ -242,7 +229,6 @@
   .app-header .header-logo-badge { width: 40px; height: 40px; }
   .app-header .header-title-text { font-size: 16px; }
   .app-header .nav-link { padding-inline: 8px; font-size: 12px; }
-  .flow-page-bar { width: calc(100% - 28px); }
 }
 @media (prefers-reduced-motion: reduce) {
   .app-header .nav-link { transition: none; }

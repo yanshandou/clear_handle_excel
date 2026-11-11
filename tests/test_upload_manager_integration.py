@@ -66,8 +66,11 @@ class UploadManagerIntegrationTests(unittest.TestCase):
         self.assertIn(b'id="manager-task-upload" class="button primary" href="/distribute"', page)
         status, home = self.request('GET', '/')
         self.assertEqual(status, 200)
-        self.assertIn(b'href="/distribute" id="workTaskUploadLink"', home)
-        self.assertEqual(home.count(b'class="feature-title"'), 4)  # 2026-11-10 起主页又是 4 站（查看切字从调整页面拆回来）
+        # 2026-11-11 起主页是一张卡片页，卡片由 static/home_tiles.js 按 static/tools.js 的清单画
+        self.assertIn(b'id="tileGrid"', home)
+        tools = self.request('GET', '/static/tools.js')[1]
+        self.assertIn(b"url: '/distribute'", tools)
+        self.assertIn(b"linkId: 'workTaskUploadLink'", tools)
         for filename in ('app.js', 'planner.js', 'icons.js', 'integration.css'):
             self.assertEqual(self.request('GET', '/static/upload_manager/' + filename)[0], 200)
         self.assertEqual(self.request('GET', '/api/upload-manager/items'), (200, []))

@@ -18,13 +18,9 @@
   // 起点 → 终点 上传（用户 2026-11-07：几个账号分着做，汇总的人从团队 OneDrive 传到公司 OneDrive）
   const freeMode = !jsonMode && params.get('mode') === 'free';
   let needsFreePreview = true;
-  // 本次流程（static/flow.js）：拿完文件去第 1 步，上传完去流程里的下一步（上传是最后一步就去收尾检查）
-  const firstFlowStep = () => window.Flow?.firstStep() || { id: 'clean', title: '精简 Sheet', url: '/clean' };
-  const nextAfterUploadHtml = () => {
-    const next = window.Flow?.nextAfter('upload') || { id: 'finish', title: '收尾检查', url: '/finish?start=1' };
-    const title = next.id === 'finish' ? '收尾检查' : next.title;
-    return `<a class="btn btn-primary next-step-btn" href="${esc(next.url)}">下一步：${esc(title)} ➜</a>`;
-  };
+  // 做完只有「返回首页」（static/tools.js）：首页上这一页对应的卡片会闪几下
+  const homeUrl = () => window.Tools?.homeUrl() || '/';
+  const backHomeHtml = () => `<a class="btn btn-primary next-step-btn" href="${esc(homeUrl())}">🏠 返回首页</a>`;
   // 新任务 / 拿文件单独一页，上传页只管上传（以前都挤在 /distribute）
   const startMode = !jsonMode && /^\/distribute\/start\/?$/.test(location.pathname);
   if (!jsonMode && !startMode && params.get('fetch') === '1') { location.replace('/distribute/start?fetch=1'); return; }
@@ -65,7 +61,7 @@
     $('distNavOverview').textContent = '新任务 · 拿文件';
     $('distBreadcrumb').textContent = '新任务 · 拿文件';
     $('distHeading').textContent = '新任务 · 从共享拿文件';
-    $('distSubtitle').textContent = '填共享文件夹路径，建好任务，从共享拿文件。拿完点「下一步」去精简 Sheet，按主页顺序往下做。';
+    $('distSubtitle').textContent = '填共享文件夹路径，建好任务，从共享拿文件。拿完点「返回首页」，在首页挑要用的卡片。';
     $('distControlsKicker').innerHTML = 'FETCH FILES <span>03 / 拿文件</span>';
     $('distControlsTitle').textContent = '从共享拿文件';
     $('distResultTitle').textContent = '拿取清单';
@@ -579,7 +575,7 @@
     const pdfOnly = rows.length && data.files.every(file => file.pdf_only);
     return `<p>${pdfOnly ? `这批只传 PDF，处理了 ${s['已复制'] || 0} / ${rows.length} 个，Excel 都没传。` : `${esc(text)} 已上传 ${s['已复制'] || 0} / ${rows.length} 个。`}</p><ul class="dist-list">${rows.join('')}</ul>`
       + `<p class="next-step-row">${data.id ? `<a class="btn btn-outline btn-sm" href="${api}/markdown?id=${encodeURIComponent(data.id)}">⬇ 下载上传记录</a>` : ''}`
-      + (allDone ? nextAfterUploadHtml() : '') + '</p>';
+      + (allDone ? backHomeHtml() : '') + '</p>';
   }
 
   // 同名 PDF 这一份的结果（和后端 distribute._pdf_text 一样的说法）
@@ -840,13 +836,11 @@
          task ? '参考文件夹里也放了一份原件，修复颜色 / 引用 / 隐藏页时用来对照。' : '']
       : ['共享和本地已经一样，这次没有要拿的文件。'];
     if (s['保留你改的']) lines.push(`${s['保留你改的']} 个你改过、共享没人动的文件保留了你改的。`);
-    const first = firstFlowStep();
-    lines.push(`下一步：第 1 步「${first.title}」${first.id === 'clean' ? '（做完会顺便排查 BL 超链接、修复引用错误）' : ''}。`);
     if (got) window.gameFx?.celebrate('拿完了！', `${got} 个文件已拿到处理文件夹`, 3);
     // 先让横幅和撒花播一会儿，再弹提示
     setTimeout(async () => {
-      const go = await window.appConfirm(lines.filter(Boolean).join('\n'), { title: '文件拿完了', tone: 'info', icon: '✓', okText: `下一步：${first.title} ➜`, cancelText: '留在这页' });
-      if (go) location.href = first.url;
+      const go = await window.appConfirm(lines.filter(Boolean).join('\n'), { title: '文件拿完了', tone: 'info', icon: '✓', okText: '🏠 返回首页', cancelText: '留在这页' });
+      if (go) location.href = homeUrl();
     }, got ? 2600 : 0);
   }
 
@@ -1023,9 +1017,8 @@
     } catch (error) { $('distError').textContent = error.message; return; }
     focusControls();
     if (window.refreshFocusBanner) await window.refreshFocusBanner();
-    const first = firstFlowStep();
-    if (await window.appConfirm(`已开启。去主页按本次流程处理这 ${ready.length} 个文件，处理、复检完回这页上传。`,
-      { title: '开启了', okText: `下一步：${first.title} ➜`, cancelText: '留在这页' })) location.href = first.url;
+    if (await window.appConfirm(`已开启。回首页处理这 ${ready.length} 个文件，处理、复检完回这页上传。`,
+      { title: '开启了', okText: '🏠 返回首页', cancelText: '留在这页' })) location.href = homeUrl();
   }
   $('distTaskFocus').addEventListener('click', startFocus);
   document.addEventListener('focus-changed', () => { if (task) { task.focus = null; focusControls(); } });

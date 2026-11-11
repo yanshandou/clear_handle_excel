@@ -414,7 +414,10 @@ async function postAction(path, payload) {
 }
 
 const taskDialog = document.getElementById('taskDialog');
+// 关掉对话框（调整页面 / 视图标准化）也算「回到首页」：那张卡片边框闪几下
+const TASK_TILES = { export_pdf: 'adjust', normalize_view: 'view' };
 taskDialog.addEventListener('close', () => {
+  if (TASK_TILES[activeKind]) window.HomeTiles?.flash(TASK_TILES[activeKind]);
   activeKind = null;
 });
 // 点击遮罩关闭；对话框内部由子元素铺满，不会误触
@@ -448,7 +451,6 @@ function lastFolder() {
 }
 
 async function refreshDoneMarks() {
-  window.HomeToolbox?.reload(); // 切换了任务（处理文件夹变了）就换成那个任务自己的流程
   const folder = lastFolder();
   let done = {};
   if (folder) {
@@ -459,9 +461,9 @@ async function refreshDoneMarks() {
       return; // 读不到就保持原样，不影响使用
     }
   }
-  document.querySelectorAll('.route-stop[data-ops]').forEach(stop => {
+  document.querySelectorAll('.tile[data-ops]').forEach(stop => {
     const entries = stop.dataset.ops.split(' ').map(k => done[k]).filter(Boolean);
-    const mark = stop.querySelector('.route-done');
+    const mark = stop.querySelector('.tile-done');
     if (!mark) return;
     if (!entries.length) {
       mark.classList.add('hidden');
@@ -482,11 +484,8 @@ async function refreshDoneMarks() {
     stop.classList.add('is-done');
   });
   const note = document.getElementById('routeDoneNote');
-  const flowStops = [...document.querySelectorAll('.route-stop.in-flow')];
-  const flowDone = flowStops.filter(stop => stop.classList.contains('is-done') && !stop.querySelector('.route-done.is-warn')).length;
   note.classList.toggle('hidden', !folder);
-  note.textContent = folder ? `✓ 表示在「${folder}」里已经做过（本次流程 ${flowDone} / ${flowStops.length} 步）` : '';
-  window.HomeToolbox?.renderRoad();
+  note.textContent = folder ? `✓ 表示在「${folder}」里已经做过` : '';
   note.title = folder;
 }
 
@@ -497,4 +496,4 @@ document.addEventListener('visibilitychange', () => {
 });
 pollState();
 const startTaskKind = new URLSearchParams(location.search).get('task');
-if (TASKS[startTaskKind]) openTask(startTaskKind); // 流程「下一步」到调整页面 / 视图标准化：打开对应对话框
+if (TASKS[startTaskKind]) openTask(startTaskKind); // 带 ?task= 打开主页：直接打开对应对话框

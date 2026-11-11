@@ -1,0 +1,229 @@
+/* ==========================================
+   主页卡片页（static/home_tiles.js，用户 2026-11-11 要）
+   布局参考开始菜单的大小磁贴：6 列网格，大卡 2×2、横卡 2×1、小卡 1×1；画风还是花园风。
+   只做电脑版。卡片位置写死，悬停 / 选中 / 闪边框都只换颜色和阴影，不改尺寸、不挪位置。
+   文字对比度都 ≥ 4.5:1。
+   ========================================== */
+.tile-board { margin: 0; }
+
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-auto-rows: 150px;
+  grid-auto-flow: row dense;
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* 位置：上两行 精简(大) | 调整页面 + 查看切字(横) | 上传(大)；第三行是被大卡顺便做的 6 步；第四行是新任务、其他工具、完成任务 */
+.tile[data-tool='clean'] { grid-area: 1 / 1 / 3 / 3; }
+.tile[data-tool='adjust'] { grid-area: 1 / 3 / 2 / 5; }
+.tile[data-tool='cells'] { grid-area: 2 / 3 / 3 / 5; }
+.tile[data-tool='upload'] { grid-area: 1 / 5 / 3 / 7; }
+.tile[data-tool='bl'] { grid-area: 3 / 1; }
+.tile[data-tool='links'] { grid-area: 3 / 2; }
+.tile[data-tool='hidden'] { grid-area: 3 / 3; }
+.tile[data-tool='font'] { grid-area: 3 / 4; }
+.tile[data-tool='colors'] { grid-area: 3 / 5; }
+.tile[data-tool='view'] { grid-area: 3 / 6; }
+.tile[data-tool='new'] { grid-area: 4 / 1; }
+.tile[data-tool='images'] { grid-area: 4 / 2; }
+.tile[data-tool='widths'] { grid-area: 4 / 3; }
+.tile[data-tool='bundle'] { grid-area: 4 / 4; }
+.tile[data-tool='json'] { grid-area: 4 / 5; }
+.tile[data-tool='finish'] { grid-area: 4 / 6; }
+
+/* 每种颜色：底色、边框、底边、标题字 */
+.tile { --t-bg: #eef6df; --t-bg2: #dcecc2; --t-line: #b9d195; --t-edge: #a9c283; --t-ink: #2f4a1f; }
+.tile.tone-lime { --t-bg: #e3f5bf; --t-bg2: #c5e68a; --t-line: #9cc75a; --t-edge: #86b146; --t-ink: #2b4710; }
+.tile.tone-teal { --t-bg: #e4f6f6; --t-bg2: #c4e8ea; --t-line: #9fd0d4; --t-edge: #8abcc1; --t-ink: #134a54; }
+.tile.tone-blue { --t-bg: #e6f0fb; --t-bg2: #cbdff5; --t-line: #a6c4e6; --t-edge: #92b1d4; --t-ink: #1d3f66; }
+.tile.tone-yellow { --t-bg: #fff6d9; --t-bg2: #fbe6a6; --t-line: #e3c877; --t-edge: #cfb362; --t-ink: #5a4108; }
+.tile.tone-orange { --t-bg: #ffeede; --t-bg2: #fbd9b8; --t-line: #e6b98d; --t-edge: #d2a376; --t-ink: #643812; }
+.tile.tone-purple { --t-bg: #f1eafa; --t-bg2: #dfd0f2; --t-line: #c2aee0; --t-edge: #ad98cd; --t-ink: #43296b; }
+.tile.tone-pink { --t-bg: #fdebf3; --t-bg2: #f6cfe0; --t-line: #e3aac4; --t-edge: #cf94af; --t-ink: #6a2447; }
+
+.tile {
+  position: relative;
+  min-width: 0;
+  border: 2px solid var(--t-line);
+  border-radius: 20px;
+  background: linear-gradient(160deg, var(--t-bg), var(--t-bg2));
+  box-shadow: inset 0 2px 0 #ffffffb0, 0 4px 0 var(--t-edge), 0 8px 16px #52632c14;
+  transition: border-color .15s, box-shadow .15s;
+}
+
+.tile:hover {
+  border-color: var(--t-ink);
+  box-shadow: inset 0 2px 0 #ffffffb0, 0 4px 0 var(--t-ink), 0 8px 18px #52632c26;
+}
+
+.tile-link {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 14px;
+  border: 0;
+  border-radius: 18px;
+  color: var(--t-ink);
+  background: none;
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.tile-link:focus-visible { outline: 3px solid var(--garden-focus, #1d6f86); outline-offset: 3px; }
+
+.tile-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.tile-title { color: var(--t-ink); font-size: 16px; font-weight: 800; line-height: 1.3; }
+.tile-sub { color: #3d4a36; font-size: 12px; font-weight: 500; line-height: 1.5; overflow-wrap: anywhere; }
+.tile-meta {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 4px 9px;
+  border: 1px solid var(--t-line);
+  border-radius: 9px;
+  color: var(--t-ink);
+  background: #ffffffc7;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+/* 图标 */
+.tile .tile-icon { flex: none; }
+.tile .tile-icon.garden-sprite { display: block; }
+.tile .tool-vector { width: 44px; height: 44px; border-radius: 14px; }
+.tile .tool-vector .ui-icon { width: 24px; height: 24px; }
+
+/* 小卡：图标在上，字在下 */
+.tile-small .tile-link { flex-direction: column; justify-content: flex-end; gap: 8px; }
+.tile-small .tile-icon.garden-sprite { width: 52px; height: 52px; margin: -4px 0 -4px -4px; }
+
+/* 横卡：图标在左，字在右 */
+.tile-wide .tile-link { align-items: center; gap: 16px; padding: 14px 20px; }
+.tile-wide .tile-icon.garden-sprite { width: 104px; height: 104px; }
+.tile-wide .tile-title { font-size: 21px; }
+.tile-wide .tile-sub { font-size: 13px; }
+
+/* 大卡：图标在右上，字在左，下面留一条「顺便做」 */
+.tile-big .tile-link { flex-direction: column; justify-content: flex-start; padding: 22px 22px 84px; }
+.tile-big .tile-icon.garden-sprite { position: absolute; top: 14px; right: 16px; width: 150px; height: 150px; }
+.tile-big .tile-text { gap: 8px; max-width: calc(100% - 150px); }
+.tile-big .tile-title { font-size: 27px; }
+.tile-big .tile-sub { font-size: 14px; }
+
+.tile-extras {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  min-height: 62px;
+  box-sizing: border-box;
+  padding: 8px 12px;
+  border: 1px solid var(--t-line);
+  border-radius: 13px;
+  color: var(--t-ink);
+  background: #fffffde0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.tile-extras b { flex-basis: 100%; font-size: 12px; font-weight: 800; }
+.tile-extras label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
+.tile-extras.is-fixed span { white-space: nowrap; }
+
+/* 小卡右上角：已含在哪张大卡里 */
+.tile-inc {
+  position: absolute;
+  top: 10px;
+  right: 26px;   /* 让开右上角的对勾 */
+  white-space: nowrap;
+  padding: 2px 7px;
+  border: 1px solid var(--t-line);
+  border-radius: 8px;
+  color: var(--t-ink);
+  background: #ffffffd9;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.45;
+  text-align: right;
+  pointer-events: none;
+}
+.tile-inc.is-off { color: #4a4a4a; border-color: #c9c9c0; background: #f4f4ee; }
+
+/* 做过的卡：右上角圆圈对勾；有出错的文件是黄底 ! */
+.tile-done {
+  position: absolute;
+  z-index: 4;
+  top: -11px;
+  right: -11px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 3px solid #fffdf6;
+  border-radius: 50%;
+  color: #ffffff;
+  background: #1f7a2e;      /* 白字对比度 > 5:1 */
+  box-shadow: 0 2px 0 #14531f, 0 4px 8px #1f3d1433;
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1;
+  cursor: help;
+}
+.tile-done.hidden { display: none; }
+.tile-done.is-warn { color: #3b2a00; background: #ffc21f; box-shadow: 0 2px 0 #a87400, 0 4px 8px #1f3d1433; }
+
+/* 从这张卡的页面回到首页：边框闪 4 下后消失。画在 ::after 上，不占位置，卡片不动 */
+.tile.is-back::after {
+  content: '';
+  position: absolute;
+  z-index: 3;
+  inset: -7px;
+  border: 5px solid #ffb300;
+  border-radius: 25px;
+  box-shadow: 0 0 0 3px #fff8d6, 0 0 22px 6px #ffc93c, inset 0 0 14px #ffd95e;
+  pointer-events: none;
+  opacity: 0;
+  animation: tile-back-flash .7s ease-in-out 4;
+}
+@keyframes tile-back-flash {
+  0%, 100% { opacity: 0; }
+  45%, 60% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tile.is-back::after { animation: tile-back-fade 2.8s linear 1; }
+  @keyframes tile-back-fade { 0%, 80% { opacity: 1; } 100% { opacity: 0; } }
+}
+
+/* 窗口很窄时不出横向滚动条：改成 4 列 / 2 列，按顺序自动排 */
+@media (max-width: 1099px) {
+  .tile-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .tile-grid .tile { grid-area: auto; }
+  .tile-grid .tile-big { grid-column: span 2; grid-row: span 2; }
+  .tile-grid .tile-wide { grid-column: span 2; }
+}
+@media (max-width: 699px) {
+  .tile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .tile-big .tile-icon.garden-sprite { width: 96px; height: 96px; }
+  .tile-big .tile-text { max-width: calc(100% - 96px); }
+  .tile-big .tile-title { font-size: 21px; }
+  .tile-wide .tile-icon.garden-sprite { width: 72px; height: 72px; }
+  .tile-wide .tile-title { font-size: 17px; }
+  .tile-extras { font-size: 12px; gap: 4px 8px; padding: 6px 8px; }
+  .tile-inc { display: none; }
+}
+
+/* 标题下面那一行：✓ 是按哪个文件夹的执行记录打的（路径长就换行） */
+.home-tools-heading .route-done-note { margin: 5px 0 0; color: #3f5a2c; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }

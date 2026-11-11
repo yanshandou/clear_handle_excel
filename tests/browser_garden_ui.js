@@ -89,13 +89,15 @@ async function main() {
     await cdp('Network.enable');
     await resize(1440);
     await navigate('/');
-    await until("document.querySelectorAll('#toolGridMore .feature-card').length === 9");
+    await until("document.querySelectorAll('#tileGrid .tile').length === 16");
     await evaluate(`Promise.all(['/static/icons/garden-tools-v1.webp','/static/images/garden-workshop-v1.webp'].map(src => new Promise((resolve,reject) => { const image = new Image(); image.onload = resolve; image.onerror = reject; image.src = src; }))).then(() => true)`);
-    assert.equal(await evaluate("document.querySelectorAll('#toolGrid .garden-sprite').length"), 4);
-    assert.equal(await evaluate("document.querySelectorAll('#toolGridMore svg use').length"), 9);
+    assert.equal(await evaluate("document.querySelectorAll('#tileGrid .tile-big').length"), 2);
+    assert.equal(await evaluate("document.querySelectorAll('#tileGrid .garden-sprite').length"), 6);
+    assert.equal(await evaluate("document.querySelectorAll('#tileGrid svg use').length"), 10);
+    assert.equal(await evaluate("document.querySelectorAll('.flow-bar, .flow-page-bar').length"), 0, 'workflow rail is gone');
     await capture('home-desktop');
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'desktop has no horizontal overflow');
-    await click('[data-tool="adjust"].feature-card');
+    await click('[data-tool="adjust"] .tile-link');
     await until("document.querySelector('#taskDialog').open");
     await capture('task-dialog');
     assert.ok(await evaluate("document.querySelector('#taskDialogTitle').textContent.includes('调整页面')"));
@@ -107,42 +109,28 @@ async function main() {
     await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await until("!document.querySelector('#taskDialog').open");
+    await until("document.querySelector('[data-tool=adjust]').classList.contains('is-back')");
     const chainBefore = await evaluate("document.querySelector('[data-chain=hidden]').checked");
     await click('[data-chain=hidden]');
-    assert.equal(await evaluate("Flow.chainOptions().hidden"), !chainBefore);
+    assert.equal(await evaluate("Tools.chainOptions().hidden"), !chainBefore);
     await click('[data-chain=hidden]');
-    await click('.flow-del');
-    assert.equal(await evaluate('HomeToolbox.flow().length'), 3);
-    await click('#flowResetBtn');
-    assert.deepEqual(await evaluate('HomeToolbox.flow()'), ['clean', 'adjust', 'cells', 'upload']);
-    await evaluate(`(() => {
-      const card = document.querySelector('.feature-card[data-tool="bundle"]');
-      const bar = document.querySelector('.flow-bar');
-      const r = document.querySelector('.flow-step').getBoundingClientRect();
-      const dataTransfer = new DataTransfer();
-      card.dispatchEvent(new DragEvent('dragstart', {bubbles:true, dataTransfer}));
-      bar.dispatchEvent(new DragEvent('dragover', {bubbles:true, cancelable:true, dataTransfer, clientX:r.left, clientY:r.top+5}));
-      bar.dispatchEvent(new DragEvent('drop', {bubbles:true, cancelable:true, dataTransfer, clientX:r.left, clientY:r.top+5}));
-      card.dispatchEvent(new DragEvent('dragend', {bubbles:true, dataTransfer}));
-    })()`);
-    assert.equal(await evaluate('HomeToolbox.flow()[0]'), 'bundle', 'drag adds tool to the requested position');
-    await click('#flowResetBtn');
-    await click('#flowClearBtn');
-    await until("document.querySelector('.app-dialog')?.open");
-    await click('.app-dialog-cancel');
-    assert.equal(await evaluate('HomeToolbox.flow().length'), 4, 'cancel preserves workflow');
-    await click('#flowClearBtn');
-    await until("document.querySelector('.app-dialog')?.open");
-    await click('.app-dialog-ok');
-    assert.ok(await evaluate("document.querySelector('.flow-empty').textContent.includes('拖到这里')"));
-    await click('#flowResetBtn');
+    // 从某一页回首页：那张卡片边框闪几下后消失，网址里的 from 去掉，卡片不挪位置
+    await navigate('/clean');
+    assert.equal(await evaluate("document.querySelector('.header-nav a.nav-link').getAttribute('href')"), '/?from=clean');
+    await navigate('/workbench');
+    assert.equal(await evaluate("document.querySelector('.nav-next').textContent.trim()"), '🏠 返回首页');
+    assert.equal(await evaluate("document.querySelector('.nav-next').getAttribute('href')"), '/?from=cells');
+    await cdp('Page.navigate', { url: base + '/?from=clean' });
+    await until("location.pathname + location.search === '/' && document.querySelector('[data-tool=clean]')?.classList.contains('is-back')");
+    const before = await evaluate("JSON.stringify(document.querySelector('[data-tool=clean]').getBoundingClientRect())");
+    await until("!document.querySelector('[data-tool=clean]').classList.contains('is-back')");
+    assert.equal(await evaluate("JSON.stringify(document.querySelector('[data-tool=clean]').getBoundingClientRect())"), before, 'flash does not move the tile');
     for (const width of [390, 768, 1024]) {
       await resize(width, 900);
       await evaluate('scrollTo({top:0, behavior:"instant"})');
       await capture(`home-${width}`);
       assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `no overflow at ${width}`);
-      assert.equal(await evaluate("getComputedStyle(document.querySelector('#toolGrid')).display"), 'grid');
-      assert.equal(await evaluate("getComputedStyle(document.querySelector('#toolGrid')).gridTemplateColumns.split(' ').length"), 2);
+      assert.equal(await evaluate("getComputedStyle(document.querySelector('#tileGrid')).display"), 'grid');
     }
     const routes = ['/clean', '/workbench', '/records', '/history', '/pdf-review', '/analysis', '/repair-colors',
       '/excel-diff', '/distribute', '/distribute/start', '/distribute?mode=json', '/distribute/manage'];

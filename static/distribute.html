@@ -9,7 +9,7 @@
   <link rel="stylesheet" href="/static/upload_manager/style.css">
   <link rel="stylesheet" href="/static/upload_manager/game-style.css">
   <link rel="stylesheet" href="/static/upload_manager/planner.css">
-  <link rel="stylesheet" href="/static/flow.css?v=1"><script src="/static/flow.js?v=1"></script>
+  <script src="/static/tools.js?v=1"></script>
   <link rel="stylesheet" href="/static/upload_manager/cartoon-style.css">
   <link rel="stylesheet" href="/static/upload_manager/integration.css">
   <style>
@@ -77,7 +77,7 @@
     .dist-focus-row .toolbar-hint { margin: 0; color: #5b3a06; }
     .dist-debug { margin-top: 24px; }
     .dist-start .dist-upload-metric { display: none; }
-    /* 入口页只做三件事：填路径、建任务、拿文件；第 4 步的导航、上传记录都不显示（用户 2026-11-06 定） */
+    /* 入口页只做三件事：填路径、建任务、拿文件；上传的导航、上传记录都不显示（用户 2026-11-06 定） */
     .dist-start .distribution-nav a:not(:first-child), .dist-start #distNavHistory, .dist-start #distHistoryPanel { display: none; }
     .dist-start .dist-overview-grid .overview-intro { grid-column: 1 / -1; }
     .dist-new-preview { margin: 0 0 14px; padding: 12px 14px; border: 2px dashed #b7c7e6; border-radius: 12px; background: #fff; }
@@ -265,7 +265,7 @@
             </div>
             <div id="distTaskFiles" class="link-table-wrap dist-task-list"><p>正在读取本地文件…</p></div>
             <p class="toolbar-hint">要从共享拿最新版、或开新任务，请到 <a href="/distribute/start">新任务 · 拿文件</a> 页。</p>
-            <p id="distTaskReview" class="toolbar-hint" hidden>待重新处理的文件可点名称在 Excel 中打开。处理并保存后，可前往<a href="/?task=export_pdf" target="_blank" rel="noopener">第 2 步调整页面（导出 PDF）↗</a>，然后回到此页再次检查。</p>
+            <p id="distTaskReview" class="toolbar-hint" hidden>待重新处理的文件可点名称在 Excel 中打开。处理并保存后，可前往<a href="/?task=export_pdf" target="_blank" rel="noopener">调整页面（导出 PDF）↗</a>，然后回到此页再次检查。</p>
             <div id="distTaskFocusRow" class="dist-focus-row" hidden>
               <button id="distTaskFocus" class="button secondary" type="button">🎯 让 前 3 步只处理这几个待重新处理文件</button>
               <span id="distTaskFocusNote" class="toolbar-hint"></span>
@@ -339,7 +339,7 @@
           <div id="distHistory" class="table-card"><p>还没有记录。</p></div>
         </section>
         <details class="dist-surface dist-debug"><summary>调试日志</summary><div data-debug-log-tools></div></details>
-        <footer class="page-footer"><span id="distFooter">EXCEL 整理工具箱 / 第 4 步</span></footer>
+        <footer class="page-footer"><span id="distFooter">EXCEL 整理工具箱 / 上传</span></footer>
       </div>
     </main>
   </div>
