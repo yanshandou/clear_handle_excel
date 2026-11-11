@@ -494,7 +494,7 @@ class WebHandler(upload_manager.Handler):
                     reason = image_restore.open_block_reason(payload["file"])
                 if reason:
                     raise ValueError(reason)
-            if STATE.get("maintenance"):
+            elif STATE.get("maintenance"):
                 name = ("颜色" if STATE["maintenance"].startswith("color_") else
                         "隐藏状态" if STATE["maintenance"].startswith("hidden_") else
                         "BL 超链接" if STATE["maintenance"].startswith("bl_link_") else "引用错误")
