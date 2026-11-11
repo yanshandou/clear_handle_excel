@@ -487,7 +487,13 @@ class WebHandler(upload_manager.Handler):
             if STATE.get("maintenance") == "font_fix":
                 raise ValueError("正在统一字体，请等当前任务结束")
             if STATE.get("maintenance") == "image_restore":
-                raise ValueError("正在修复图片，请等当前任务结束")
+                # 边查边看：查完的那份可以打开 / 对照打开 / 开 PDF（查找只读、不会再碰它）
+                reason = "正在修复图片，请等当前任务结束"
+                if self.path in {"/api/excel/open", "/api/excel/compare", "/api/image_restore/open_pdf"} \
+                        and isinstance(payload.get("file"), str):
+                    reason = image_restore.open_block_reason(payload["file"])
+                if reason:
+                    raise ValueError(reason)
             if STATE.get("maintenance"):
                 name = ("颜色" if STATE["maintenance"].startswith("color_") else
                         "隐藏状态" if STATE["maintenance"].startswith("hidden_") else
@@ -806,7 +812,7 @@ class WebHandler(upload_manager.Handler):
             target = repair_compare.comparison_target(*values)
             with STATE_LOCK:
                 job = STATE.get("job") or {}
-                if STATE["busy"]:
+                if STATE["busy"] and STATE.get("maintenance") != "image_restore":  # 修复图片查找中：上面已按「查完的才放行」拦过
                     for path in (target["current"], target["backup"]):
                         reason = batch.open_block_reason(job, path)
                         if reason:
@@ -832,7 +838,8 @@ class WebHandler(upload_manager.Handler):
                 job = STATE["job"] or {}
                 kind = job.get("kind", "")
                 # 扫描 / 复检中：已经做完、后面不再碰的文件可以打开，只拦还没轮到和正在处理的
-                if STATE["busy"] and (kind in QUICK_TASK_NAMES or kind.startswith("batch_")):
+                if STATE["busy"] and STATE.get("maintenance") != "image_restore" \
+                        and (kind in QUICK_TASK_NAMES or kind.startswith("batch_")):
                     reason = batch.open_block_reason(job, wb_path)
                     if reason:
                         raise ValueError(reason)

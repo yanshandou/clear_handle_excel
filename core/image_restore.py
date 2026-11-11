@@ -335,12 +335,15 @@ def screen_pages(sheet: Any, rows: list[dict], side: str, total: int, path: Path
         return
     for row in wanted:
         number = row["page"] if side == "new" else row["old_page"]
-        try:
-            name = _image_name(path, sheet_name, f"p{row['page'] - 1}", f"{side}s")
-            row[f"{side}_ratio"] = render_screen(sheet, ranges[number - 1], name)
-            row[f"{side}_img"], row[f"{side}_how"] = name, "screen"
-        except Exception as err:
-            debug_log.event("⚠️ 屏幕原样拍不了，这一页用导出效果", **where, 页=number, 错误=str(err))
+        name = _image_name(path, sheet_name, f"p{row['page'] - 1}", f"{side}s")
+        for attempt in range(3):  # 偶尔贴进图表是空的（实测报「インデックスが境界を超えています」），再拍一次多半就好
+            try:
+                row[f"{side}_ratio"] = render_screen(sheet, ranges[number - 1], name)
+                row[f"{side}_img"], row[f"{side}_how"] = name, "screen"
+                break
+            except Exception as err:
+                debug_log.event("⚠️ 屏幕原样拍不了" + ("，再试一次" if attempt < 2 else "，这一页用导出效果"), **where, 页=number, 错误=str(err))
+                time.sleep(0.4)
 
 
 def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf: Path | None = None) -> dict:
@@ -724,11 +727,25 @@ def open_pdf(name: str) -> dict:
     return {"pdf": str(pdf)}
 
 
+def open_block_reason(name: str) -> str:
+    """任务进行中这份能不能打开（空 = 能）。查找只读、查完的不再碰，所以边查边看时查完的可以打开（用户 2026-11-11 要）；
+    修复 / 组合要写文件，进行中一律不让开"""
+    with _LOCK:
+        if not _STATUS.get("running"):
+            return ""
+        if _STATUS.get("mode") != "scan":
+            return "正在修复图片，请等当前任务结束"
+        files = ((_STATUS.get("result") or {}).get("files")) or []
+        done = any(f.get("name") == name for f in files)
+    return "" if done else "这份还没查完，等它出现在结果里再打开"
+
+
 def compare_target(name: str, sheet: str = "", cell: str = "") -> dict:
     """「对照打开」：左边新版（跳到图形左上角那格），右边原版只读同一格"""
+    reason = open_block_reason(name)
+    if reason:
+        raise ValueError(reason)
     with _LOCK:
-        if _STATUS.get("running"):
-            raise ValueError("正在处理，请等任务结束后再打开对比")
         files = ((_STATUS.get("result") or {}).get("files")) or []
         file = next((f for f in files if f.get("name") == name), None)
     if not file or not file.get("old"):
