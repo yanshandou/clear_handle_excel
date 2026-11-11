@@ -24,7 +24,7 @@
   }
   function row(kind, whereHtml, oldText, newText) {
     const oldEmpty = oldText === '' || oldText == null, newEmpty = newText === '' || newText == null;
-    return `<tr data-kind="${esc(kind)}"${off.has(kind) ? ' class="xd-hidden"' : ''}><td>${whereHtml}</td><td class="xd-kind">${esc(kind)}</td>`
+    return `<tr data-kind="${esc(kind)}"${off.has(kind) ? ' class="xd-off"' : ''}><td>${whereHtml}</td><td class="xd-kind">${esc(kind)}</td>`
       + `<td class="${oldEmpty ? 'xd-none' : 'xd-old'}">${value(oldText, kind)}</td><td class="${newEmpty ? 'xd-none' : 'xd-new'}">${value(newText, kind)}</td></tr>`;
   }
 
@@ -47,6 +47,7 @@
     if (sheet.text_more) rows.push(`<tr data-kind="文字"><td colspan="4" class="xd-more">文字还有 ${sheet.text_more} 格不一样，没有全列出来</td></tr>`);
     for (const item of sheet.formulas) rows.push(row('公式', where(item.cell, item.cell), item.old, item.new));
     if (sheet.formulas_more) rows.push(`<tr data-kind="公式"><td colspan="4" class="xd-more">公式还有 ${sheet.formulas_more} 格不一样，没有全列出来</td></tr>`);
+    for (const item of sheet.notes || []) rows.push(row(item.kind, where(item.cell, item.cell), item.old, item.new));
     for (const group of sheet.styles) {
       if (group.more) { rows.push(`<tr data-kind="${esc(group.kind)}"><td colspan="4" class="xd-more">${esc(group.kind)}还有 ${group.more} 种改法（共 ${group.count} 格），没有全列出来</td></tr>`); continue; }
       const cells = group.cells.map(cell => where(cell, cell)).join('、') + (group.count > group.cells.length ? ` 等 ${group.count} 格` : '');
@@ -82,7 +83,9 @@
       + `<div class="xd-file is-old"><strong>− 远程现在这份（旧）</strong>${link(split(data.theirs).file, data.theirs)}<br><small>${esc(data.theirs)}</small></div>`
       + `<div class="xd-file is-new"><strong>+ 你要上传的这份（新）</strong>${link(split(data.mine).file, data.mine)}<br><small>${esc(data.mine)}</small></div></div>`
       + verdict + (kinds.length ? `<p class="toolbar-hint">下面的数字是不一样的格子 / 处数。点类型可以先不看这一类（比如只想看文字）。</p>` : '')
-      + `<div class="xd-chips">${chips}</div>${sheets}`;
+      + `<div class="xd-chips">${chips}</div>`
+      + (kinds.length ? `<p class="xd-search"><input id="xdSearch" type="search" spellcheck="false" autocomplete="off" placeholder="🔍 在差异里搜：格子（B5）、文字、字体名、颜色…" aria-label="在差异里搜索"><span id="xdSearchCount"></span></p>` : '')
+      + sheets;
   }
 
   $('xdResult').addEventListener('click', event => {
@@ -92,9 +95,22 @@
     if (off.has(kind)) off.delete(kind); else off.add(kind);
     chip.classList.toggle('is-off', off.has(kind));
     for (const tr of $('xdResult').querySelectorAll('tr[data-kind]')) {
-      if (tr.dataset.kind === kind) tr.classList.toggle('xd-hidden', off.has(kind));
+      if (tr.dataset.kind === kind) tr.classList.toggle('xd-off', off.has(kind));
     }
     console.info('🔍 Excel 对比：不看的类型', [...off]);
+  });
+
+  // 搜索：只藏不匹配的行，不重画（页面不动）
+  $('xdResult').addEventListener('input', event => {
+    if (event.target.id !== 'xdSearch') return;
+    const word = event.target.value.trim().toLowerCase();
+    let shown = 0, total = 0;
+    for (const tr of $('xdResult').querySelectorAll('tbody tr')) {
+      const hit = !word || tr.textContent.toLowerCase().includes(word);
+      tr.classList.toggle('xd-miss', !hit);
+      total += 1; shown += hit ? 1 : 0;
+    }
+    $('xdSearchCount').textContent = word ? `匹配 ${shown} / ${total} 行` : '';
   });
 
   async function run() {

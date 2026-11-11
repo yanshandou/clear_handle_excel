@@ -25,6 +25,10 @@ def book(path: Path, new: bool) -> Path:
         ws.column_dimensions["B"].width = 40
         ws.print_area = "A1:C10"
         ws["A7"] = "備考"
+        from openpyxl.comments import Comment
+        ws["A1"].comment = Comment("確認済み", "XU")
+        ws["B1"].hyperlink = "https://example.com/spec"
+        ws.freeze_panes = "A2"
         wb.create_sheet("補足")["A1"] = "x"
     else:
         ws.print_area = "A1:C12"
@@ -63,6 +67,9 @@ class ExcelDiffTests(unittest.TestCase):
         self.assertIn(("列宽", "B 列", "默认", "40"), whole)
         self.assertIn(("打印设置", "打印区域", "A1:C12", "A1:C10"), whole)
         self.assertIn(("合并单元格", "合并的范围", "A10:C10", ""), whole)
+        self.assertIn(("冻结窗格", "冻结到", "", "A2"), whole)
+        notes = {(n["kind"], n["cell"], n["old"], n["new"]) for n in main["notes"]}
+        self.assertEqual(notes, {("批注", "A1", "", "確認済み"), ("超链接", "B1", "", "https://example.com/spec")})
         self.assertEqual(sheets["項目一覧"]["status"], "same")
         self.assertEqual((sheets["帳票定義"]["status"], sheets["帳票定義"]["doomed"]), ("only_old", ""))
         self.assertEqual(sheets["補足"]["status"], "only_new")
