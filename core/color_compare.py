@@ -118,7 +118,24 @@ def _dimension_differences(sheet, source, now_context, old_context):
             yield entry("row_color", f"{row}:{row}", f"A{row}", signature, previous)
 
 
-def _plan_xml(path: Path, old_path: Path, limit: int | None, *, history_path=None, old_hash="") -> dict:
+def _tab_difference(sheet, source, before: str, old_context) -> dict | None:
+    item = {"kind": "tab", "sheet": sheet.title, "addr": "A1", "anchor": "A1",
+            "mode": "all", "fill": before, "font": ""}
+    if source is None:
+        if before != "none":
+            return {**item, "action": "skip", "code": "sheet_unmatched",
+                    "reason": "备份工作表无法唯一配对，保留当前标签颜色"}
+    else:
+        color = source.sheet_properties.tabColor
+        after = "none" if color is None else f"#{_color(color, old_context)}"
+        if before != after:
+            return {**item, "old_sheet": source.title, "old_fill": after, "old_font": "",
+                    "action": "restore", "code": "pending", "reason": "标签颜色与备份不同，恢复备份原色"}
+    return None
+
+
+def plan_xml(path: Path, old_path: Path, limit: int | None = None, *, history_path=None, old_hash="",
+             clear_tab_color: str | None = None) -> dict:
     from core import mark_finder as marks
 
     current = openpyxl.load_workbook(path, data_only=False)
@@ -143,18 +160,17 @@ def _plan_xml(path: Path, old_path: Path, limit: int | None, *, history_path=Non
             source, how = matches.get(sheet.title, (None, ""))
             color = sheet.sheet_properties.tabColor
             before = "none" if color is None else f"#{_color(color, now_context)}"
-            if source is None:
-                if color is not None and not append({"kind":"tab", "sheet":sheet.title, "addr":"A1", "anchor":"A1",
-                        "mode":"all", "fill":before, "font":"", "action":"skip", "code":"sheet_unmatched",
-                        "reason":"备份工作表无法唯一配对，保留当前标签颜色"}):
+            tab = _tab_difference(sheet, source, before, old_context)
+            # 主题色和带色调的颜色由 Excel 判断是否实际清掉。先准备两种结果，参考可以在打开当前文件前关闭。
+            if (clear_tab_color is not None and color is not None
+                    and (before == clear_tab_color or color.type != "rgb" or color.tint)):
+                if tab is not None:
+                    tab["tab_cleared"] = False
+                cleared = _tab_difference(sheet, source, "none", old_context)
+                if cleared is not None and not append({**cleared, "tab_cleared": True}):
                     return {"cells":result, "truncated":True}
-            else:
-                base = source.sheet_properties.tabColor
-                after = "none" if base is None else f"#{_color(base, old_context)}"
-                if before != after and not append({"kind":"tab", "sheet":sheet.title, "old_sheet":source.title,
-                        "addr":"A1", "anchor":"A1", "mode":"all", "fill":before, "font":"", "old_fill":after,
-                        "old_font":"", "action":"restore", "code":"pending", "reason":"标签颜色与备份不同，恢复备份原色"}):
-                    return {"cells":result, "truncated":True}
+            if tab is not None and not append(tab):
+                return {"cells":result, "truncated":True}
             for item in _dimension_differences(sheet, source, now_context, old_context):
                 if not append(item):
                     return {"cells":result, "truncated":True}
@@ -204,7 +220,7 @@ def plan_file(excel, path: Path, old_path: Path, limit: int | None = None) -> di
     from core import mark_finder as marks
 
     if path.suffix.lower() in marks.READABLE and old_path.suffix.lower() in marks.READABLE:
-        return _plan_xml(path, old_path, limit)
+        return plan_xml(path, old_path, limit)
     # 二进制工作簿只读另存临时副本解析颜色；原文件、备份都不保存。
     with tempfile.TemporaryDirectory(prefix="compare_colors_") as directory:
         converted = []
@@ -217,4 +233,4 @@ def plan_file(excel, path: Path, old_path: Path, limit: int | None = None) -> di
                 converted.append(target)
             finally:
                 book.Close(SaveChanges=False)
-        return _plan_xml(*converted, limit, history_path=path, old_hash=sheet_history.fingerprint(old_path))
+        return plan_xml(*converted, limit, history_path=path, old_hash=sheet_history.fingerprint(old_path))

@@ -698,79 +698,83 @@ def _apply_colors(excel: Any, path: str, old_path: str, cells: list[dict], check
 
     old = _read_old(excel, old_path, cells)
     check_versions()
-    done: list[dict] = []
     book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
     try:
         if book.ReadOnly:
             raise ValueError("文件以只读方式打开（可能在别处开着），没有改")
         check_versions()
-        changed = cells_changed = False
-        for item in cells:
-            result = {**item, "status": "failed", "reason": ""}
-            done.append(result)
-            source = old[_item_key(item)]
-            if item.get("kind") != "tab" and not isinstance(source, str):
-                debug_log.event("📄 旧版这一格", 位置=f"{item['sheet']}!{item['addr']}", 内容=debug_log.clip(source["formula"]),
-                                图案=source["pattern"], 底色=source["color"], 深浅=source["tint"], 字色=source["font"])
-            if isinstance(source, str):
-                result.update(code="backup_cell_read_failed", reason=source)
-                continue
-            try:
-                if item.get("kind") == "tab":
-                    sheet = book.Worksheets(item["sheet"])
-                    if item.get("mode") != "all" and not batch._tab_is_ours(sheet):
-                        result.update(code="other", reason="Sheet 标签已不是程序标记的橙黄色，保留当前颜色")
-                        continue
-                    if item.get("mode") != "all" and source.get("color") == _excel_color(batch.TAB_HIGHLIGHT):
-                        result.update(code="other", reason="备份的 Sheet 标签本来就是橙黄色，保留")
-                        continue
-                    batch._restore_tab(sheet, source)
-                    if item.get("mode") == "all" and source["index"] != batch.XL_COLOR_INDEX_NONE:
-                        if int(sheet.Tab.Color) != source["color"]:
-                            sheet.Tab.Color = source["color"]
-                            sheet.Tab.TintAndShade = 0
-                        verified = int(sheet.Tab.Color) == source["color"]
-                    else:
-                        verified = _tab_matches(sheet, source)
-                    if not verified:
-                        raise ValueError("Sheet 标签颜色未能恢复为备份颜色，本文件没有保存")
-                    changed = True
-                    result.update(status="ok", code="restored_tab" if source["index"] != batch.XL_COLOR_INDEX_NONE else "cleared_tab",
-                                  reason="已恢复备份的 Sheet 标签颜色" if source["index"] != batch.XL_COLOR_INDEX_NONE else "已清除 Sheet 标签标记色（备份无颜色）")
-                    continue
-                target = book.Worksheets(item["sheet"]).Range(item["addr"])
-                top = target.Cells(1, 1)
-                if _text(top.Formula) != source["formula"]:
-                    if (_text(top.Formula) != item.get("current_content") or source["formula"] != item.get("source_content")):
-                        result.update(code="content_mismatch", reason="内容和旧版不一样了，没有改")
-                        continue
-                color = top.Interior.Color
-                if item.get("mode") != "all" and (color is None or int(color) != _excel_color(item["fill"])):
-                    result.update(code="other", reason="底色已经不是标记色（被人改过），没有改")
-                    continue
-                interior = target.Interior
-                if source["pattern"] == XL_PATTERN_NONE:
-                    interior.Pattern = XL_PATTERN_NONE
-                else:
-                    interior.Pattern = source["pattern"]
-                    _write_format_color(interior, source["fill_state"])
-                    if source["pattern"] != XL_PATTERN_SOLID:
-                        _write_format_color(interior, source["pattern_state"], "Pattern")
-                if source["font"] is not None:
-                    _write_format_color(target.Font, source["font_state"])
-                changed = cells_changed = True
-                result.update(status="ok", code="restored_cell", reason="已改回旧版的颜色")
-            except Exception as err:
-                if item.get("kind") == "tab" or item.get("mode") == "all":
-                    raise
-                result.update(code=_error_code(str(err)), reason=f"改的时候出错：{err}")
-        if changed:
-            if cells_changed and not any(item.get("mode") == "all" for item in cells):
+        done = restore_workbook_colors(book, cells, old)
+        fixed = [item for item in done if item["status"] == "ok"]
+        if fixed:
+            if any(item.get("kind") != "tab" for item in fixed) and not any(item.get("mode") == "all" for item in cells):
                 normalize_workbook_view(excel, book)
             check_versions()
             book.Save()
     finally:
         book.Close(SaveChanges=False)
+    return done
+
+
+def restore_workbook_colors(book: Any, cells: list[dict], old: dict[tuple, dict | str]) -> list[dict]:
+    """使用已读取的参考颜色修改打开的工作簿，由调用方决定是否保存。"""
+    done: list[dict] = []
+    for item in cells:
+        result = {**item, "status": "failed", "reason": ""}
+        done.append(result)
+        source = old[_item_key(item)]
+        if item.get("kind") != "tab" and not isinstance(source, str):
+            debug_log.event("📄 旧版这一格", 位置=f"{item['sheet']}!{item['addr']}", 内容=debug_log.clip(source["formula"]),
+                            图案=source["pattern"], 底色=source["color"], 深浅=source["tint"], 字色=source["font"])
+        if isinstance(source, str):
+            result.update(code="backup_cell_read_failed", reason=source)
+            continue
+        try:
+            if item.get("kind") == "tab":
+                sheet = book.Worksheets(item["sheet"])
+                if item.get("mode") != "all" and not batch._tab_is_ours(sheet):
+                    result.update(code="other", reason="Sheet 标签已不是程序标记的橙黄色，保留当前颜色")
+                    continue
+                if item.get("mode") != "all" and source.get("color") == _excel_color(batch.TAB_HIGHLIGHT):
+                    result.update(code="other", reason="备份的 Sheet 标签本来就是橙黄色，保留")
+                    continue
+                batch._restore_tab(sheet, source)
+                if item.get("mode") == "all" and source["index"] != batch.XL_COLOR_INDEX_NONE:
+                    if int(sheet.Tab.Color) != source["color"]:
+                        sheet.Tab.Color = source["color"]
+                        sheet.Tab.TintAndShade = 0
+                    verified = int(sheet.Tab.Color) == source["color"]
+                else:
+                    verified = _tab_matches(sheet, source)
+                if not verified:
+                    raise ValueError("Sheet 标签颜色未能恢复为备份颜色，本文件没有保存")
+                result.update(status="ok", code="restored_tab" if source["index"] != batch.XL_COLOR_INDEX_NONE else "cleared_tab",
+                              reason="已恢复备份的 Sheet 标签颜色" if source["index"] != batch.XL_COLOR_INDEX_NONE else "已清除 Sheet 标签标记色（备份无颜色）")
+                continue
+            target = book.Worksheets(item["sheet"]).Range(item["addr"])
+            top = target.Cells(1, 1)
+            if _text(top.Formula) != source["formula"]:
+                if (_text(top.Formula) != item.get("current_content") or source["formula"] != item.get("source_content")):
+                    result.update(code="content_mismatch", reason="内容和旧版不一样了，没有改")
+                    continue
+            color = top.Interior.Color
+            if item.get("mode") != "all" and (color is None or int(color) != _excel_color(item["fill"])):
+                result.update(code="other", reason="底色已经不是标记色（被人改过），没有改")
+                continue
+            interior = target.Interior
+            if source["pattern"] == XL_PATTERN_NONE:
+                interior.Pattern = XL_PATTERN_NONE
+            else:
+                interior.Pattern = source["pattern"]
+                _write_format_color(interior, source["fill_state"])
+                if source["pattern"] != XL_PATTERN_SOLID:
+                    _write_format_color(interior, source["pattern_state"], "Pattern")
+            if source["font"] is not None:
+                _write_format_color(target.Font, source["font_state"])
+            result.update(status="ok", code="restored_cell", reason="已改回旧版的颜色")
+        except Exception as err:
+            if item.get("kind") == "tab" or item.get("mode") == "all":
+                raise
+            result.update(code=_error_code(str(err)), reason=f"改的时候出错：{err}")
     return done
 
 

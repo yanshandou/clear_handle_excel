@@ -3722,22 +3722,15 @@ def highlighted_paths() -> list[str]:
         return paths
 
 
-def clear_marks_in_file(excel: Any, path: str, report: dict | None = None) -> None:
-    """不依赖 STATE 记录，全局清除一份文件里程序加的条件格式标记（CHE_MARK 规则），
-    并还原被标成橙黄色的工作表标签；单元格直接设置的底色 / 字色不动。
-    report：传入时填 leftovers（删掉的规则条数）、leftover_failed（删不掉的规则原因）、tabs（标签还原明细）。"""
-    _check_file(path)
-    book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
+def clear_workbook_marks(excel: Any, book: Any) -> dict:
+    """清理已打开工作簿中的工具标记，由调用方决定是否保存。"""
     try:
         try:
             excel.ScreenUpdating = False
         except Exception:
             pass
-        if book.ReadOnly:
-            raise ValueError(f"{Path(path).name} 以只读方式打开，未能清除标记")
-        # keep 传空集：删掉文件里所有带 CHE_MARK 标识的条件格式规则（包括崩溃残留、复制粘贴带出去的）。
         _present, dropped, failed = _drop_rules(book, set())
-        tabs: list[dict] = []
+        tabs = []
         for sheet in book.Worksheets:
             name = str(sheet.Name)
             try:
@@ -3746,18 +3739,29 @@ def clear_marks_in_file(excel: Any, path: str, report: dict | None = None) -> No
                     tabs.append({"sheet": name, "status": "ok", "reason": "已还原为无颜色"})
             except Exception as err:
                 tabs.append({"sheet": name, "status": "failed", "reason": f"还原标签失败：{err}"})
-        leftovers = sum(dropped.values())
-        if report is not None:
-            report["leftovers"] = leftovers
-            report["leftover_failed"] = [reason for reason in failed.values()][:20]
-            report["tabs"] = tabs
-        if leftovers or any(t["status"] == "ok" for t in tabs):
-            book.Save()
+        return {"leftovers": sum(dropped.values()), "leftover_failed": list(failed.values())[:20], "tabs": tabs}
     finally:
         try:
             excel.ScreenUpdating = True
         except Exception:
             pass
+
+
+def clear_marks_in_file(excel: Any, path: str, report: dict | None = None) -> None:
+    """不依赖 STATE 记录，全局清除一份文件里程序加的条件格式标记（CHE_MARK 规则），
+    并还原被标成橙黄色的工作表标签；单元格直接设置的底色 / 字色不动。
+    report：传入时填 leftovers（删掉的规则条数）、leftover_failed（删不掉的规则原因）、tabs（标签还原明细）。"""
+    _check_file(path)
+    book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
+    try:
+        if book.ReadOnly:
+            raise ValueError(f"{Path(path).name} 以只读方式打开，未能清除标记")
+        cleared = clear_workbook_marks(excel, book)
+        if report is not None:
+            report.update(cleared)
+        if cleared["leftovers"] or any(t["status"] == "ok" for t in cleared["tabs"]):
+            book.Save()
+    finally:
         book.Close(SaveChanges=False)
 
 

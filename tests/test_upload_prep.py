@@ -5,7 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from core import batch, distribute, mark_finder, storage, upload_prep, work_task, workflow as wf
+from openpyxl import Workbook
+
+from core import batch, color_compare, distribute, excel_ops, mark_finder, storage, upload_prep, work_task, workflow as wf
 
 
 def write(path: Path, text: str = "x") -> None:
@@ -21,28 +23,30 @@ class PrepareTests(unittest.TestCase):
         write(self.local, "local")
         write(self.ref, "ref")
         self.excel = Mock()
+        self.book = Mock(ReadOnly=False)
+        self.open_book = Mock(return_value=self.book)
         self.order = []
 
-        def clear(excel, path, report):
+        def clear(excel, book):
             self.order.append("clear")
-            report.update(leftovers=3, leftover_failed=[], tabs=[{"sheet": "S", "status": "ok", "reason": ""}])
+            return {"leftovers": 3, "leftover_failed": [], "tabs": [{"sheet": "S", "status": "ok", "reason": ""}]}
 
         cells = [{"sheet": "S", "addr": "A1", "anchor": "A1", "action": "restore"},
                  {"sheet": "S", "addr": "B2", "anchor": "B2", "action": "skip", "reason": "和备份同一位置的内容或公式不同，请人工检查"}]
-        for obj, name, value in (
-            (batch, "clear_marks_in_file", Mock(side_effect=clear)),
-            (mark_finder, "compare_file_colors", Mock(side_effect=lambda *a: self.order.append("compare") or {"cells": cells})),
-            (mark_finder, "apply_file", Mock(side_effect=lambda excel, path, old, ready, versions: self.order.append("apply")
-                                             or [{**ready[0], "status": "ok", "reason": "已改回旧版的颜色"}])),
-            (upload_prep, "_normalize", Mock(side_effect=lambda *a: self.order.append("normalize"))),
-        ):
-            patcher = patch.object(obj, name, value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        self.enterContext(patch.object(excel_ops, "open_workbook_checked", self.open_book))
+        self.enterContext(patch.object(batch, "clear_workbook_marks", side_effect=clear))
+        self.enterContext(patch.object(color_compare, "plan_xml", side_effect=lambda *a, **kw: self.order.append("compare") or {"cells": cells}))
+        self.enterContext(patch.object(mark_finder, "_read_old", side_effect=lambda *a: self.order.append("read_reference") or {}))
+        self.enterContext(patch.object(mark_finder, "restore_workbook_colors", side_effect=lambda book, ready, old: self.order.append("apply")
+                                       or [{**ready[0], "status": "ok", "reason": "已改回旧版的颜色"}]))
+        self.enterContext(patch.object(upload_prep, "_normalize_view", side_effect=lambda *a: self.order.append("normalize")))
 
     def test_clears_restores_and_normalizes_in_order(self):
         result = upload_prep.prepare(lambda: self.excel, self.local, self.ref)
-        self.assertEqual(self.order, ["clear", "compare", "apply", "normalize"])
+        self.assertEqual(self.order, ["compare", "read_reference", "clear", "apply", "normalize"])
+        self.open_book.assert_called_once_with(self.excel, str(self.local.resolve()), UpdateLinks=0)
+        self.book.Save.assert_called_once_with()
+        self.book.Close.assert_called_once_with(SaveChanges=False)
         self.assertEqual((result["marks"], result["tabs"], result["colors"], result["color_skipped"]), (3, 1, 1, 1))
         self.assertEqual(result["color_problems"][0]["cell"], "B2")
         self.assertTrue(result["normalized"])
@@ -55,20 +59,51 @@ class PrepareTests(unittest.TestCase):
         self.ref.unlink()
         result = upload_prep.prepare(lambda: self.excel, self.local, self.ref)
         self.assertEqual(self.order, ["clear", "normalize"])
+        self.open_book.assert_called_once()
+        self.book.Save.assert_called_once_with()
+        self.book.Close.assert_called_once_with(SaveChanges=False)
         self.assertIn("参考里没有这份文件", upload_prep.text(result))
 
     def test_failure_tells_which_step(self):
-        upload_prep._normalize.side_effect = ValueError("文件以只读方式打开")
+        upload_prep._normalize_view.side_effect = ValueError("不能标准化视图")
         where = {}
         with self.assertRaises(ValueError):
             upload_prep.prepare(lambda: self.excel, self.local, self.ref, where)
         self.assertEqual(where["step"], "视图标准化")
+        self.book.Save.assert_not_called()
+        self.book.Close.assert_called_once_with(SaveChanges=False)
 
     def test_marks_that_cannot_be_removed_stop_the_upload(self):
-        batch.clear_marks_in_file.side_effect = lambda e, p, report: report.update(
-            leftovers=0, leftover_failed=["工作表受保护"], tabs=[])
+        batch.clear_workbook_marks.side_effect = None
+        batch.clear_workbook_marks.return_value = {"leftovers": 1, "leftover_failed": ["工作表受保护"], "tabs": []}
         with self.assertRaises(ValueError):
             upload_prep.prepare(lambda: self.excel, self.local, self.ref)
+        self.book.Save.assert_not_called()
+        self.book.Close.assert_called_once_with(SaveChanges=False)
+
+    def test_reference_changes_during_preparation_prevent_save(self):
+        upload_prep._normalize_view.side_effect = lambda *a: write(self.ref, "new reference")
+        with self.assertRaisesRegex(ValueError, "当前文件或备份在检查颜色期间发生变化"):
+            upload_prep.prepare(lambda: self.excel, self.local, self.ref)
+        self.book.Save.assert_not_called()
+        self.book.Close.assert_called_once_with(SaveChanges=False)
+
+
+class ClearedTabPlanTests(unittest.TestCase):
+    def test_same_orange_reference_is_planned_for_restoration_only_after_clear(self):
+        with tempfile.TemporaryDirectory() as directory:
+            local, reference = Path(directory) / "local.xlsx", Path(directory) / "reference.xlsx"
+            book = Workbook()
+            book.active.sheet_properties.tabColor = batch.TAB_HIGHLIGHT[1:]
+            book.save(local)
+            book.save(reference)
+            book.close()
+
+            self.assertEqual(color_compare.plan_xml(local, reference)["cells"], [])
+            plan = color_compare.plan_xml(local, reference, clear_tab_color=batch.TAB_HIGHLIGHT)["cells"]
+            self.assertEqual(len(plan), 1)
+            self.assertEqual((plan[0]["tab_cleared"], plan[0]["action"], plan[0]["old_fill"]),
+                             (True, "restore", batch.TAB_HIGHLIGHT))
 
 
 class TaskUploadPrepTests(unittest.TestCase):

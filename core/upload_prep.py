@@ -15,12 +15,17 @@ from typing import Any, Callable
 from core import debug_log
 
 MAX_LISTED = 50  # 每个文件最多记这么多处「颜色改不了」，太多时只写总数
+XML_WORKBOOKS = {".xlsx", ".xlsm"}
 
 
 def _clear_marks(excel: Any, local: Path) -> dict:
     from core import batch
     report: dict[str, Any] = {}
     batch.clear_marks_in_file(excel, str(local), report)
+    return _mark_counts(report)
+
+
+def _mark_counts(report: dict) -> dict:
     if report.get("leftover_failed"):
         raise ValueError("有标记删不掉：" + "；".join(report["leftover_failed"][:3]))
     failed_tabs = [t for t in report.get("tabs", []) if t["status"] != "ok"]
@@ -42,6 +47,12 @@ def _restore_colors(excel: Any, local: Path, reference: Path) -> dict:
     done: list[dict] = []
     if ready:
         done = mark_finder.apply_file(excel, str(local), str(reference), ready, versions=(stamp, old_stamp))
+    return _color_counts(cells, done)
+
+
+def _color_counts(cells: list[dict], done: list[dict]) -> dict:
+    from core import mark_finder
+
     outcomes = {mark_finder._item_key(cell): cell for cell in done}
     results = [outcomes.get(mark_finder._item_key(cell), cell) for cell in cells]
     fixed = [cell for cell in results if cell.get("status") == "ok"]
@@ -53,18 +64,24 @@ def _restore_colors(excel: Any, local: Path, reference: Path) -> dict:
                                 "reason": cell.get("reason", "")} for cell in skipped[:MAX_LISTED]]}
 
 
+def _normalize_view(excel: Any, book: Any) -> None:
+    from core.excel_ops import normalize_workbook_view
+
+    problems: list[str] = []
+    normalize_workbook_view(excel, book, on_error=problems.append)
+    for line in problems:
+        debug_log.event("⚠️ 视图标准化跳过", 说明=line)
+
+
 def _normalize(excel: Any, local: Path) -> None:
     from core import print_layout, workflow as wf
-    from core.excel_ops import normalize_workbook_view, open_workbook_checked
+    from core.excel_ops import open_workbook_checked
 
     book = open_workbook_checked(excel, str(local.resolve()), UpdateLinks=0)
     try:
         if book.ReadOnly:
             raise ValueError("文件以只读方式打开（可能在 Excel 里开着），没能标准化视图")
-        problems: list[str] = []
-        normalize_workbook_view(excel, book, on_error=problems.append)
-        for line in problems:
-            debug_log.event("⚠️ 视图标准化跳过", 说明=line)
+        _normalize_view(excel, book)
         before = wf._file_version(local)
         book.Save()
         print_layout.followed_save(wf.STATE.setdefault("print_layouts", {}), str(local), before)
@@ -72,19 +89,75 @@ def _normalize(excel: Any, local: Path) -> None:
         book.Close(SaveChanges=False)
 
 
+def _prepare_xml(excel: Any, local: Path, reference: Path | None, where: dict, result: dict) -> None:
+    from core import batch, color_compare, mark_finder, print_layout, workflow as wf
+    from core.excel_ops import open_workbook_checked
+    from core.link_repair import fingerprint
+
+    batch._check_file(str(local))
+    cells: list[dict] = []
+    old_colors: dict[tuple, dict | str] = {}
+    if reference is not None:
+        where["step"] = "对照参考恢复颜色"
+        stamp, old_stamp = fingerprint(local), fingerprint(reference)
+        cells = color_compare.plan_xml(local, reference, clear_tab_color=batch.TAB_HIGHLIGHT)["cells"]
+        ready = {mark_finder._item_key(cell): cell for cell in cells if cell["action"] == "restore"}
+        if ready:
+            old_colors = mark_finder._read_old(excel, str(reference), list(ready.values()))
+
+    def check_versions() -> None:
+        if reference is not None and (fingerprint(local) != stamp or fingerprint(reference) != old_stamp):
+            raise ValueError("当前文件或备份在检查颜色期间发生变化，请重新检查")
+
+    check_versions()
+    where["step"] = "清除标记色"
+    book = open_workbook_checked(excel, str(local.resolve()), UpdateLinks=0)
+    done: list[dict] = []
+    try:
+        if book.ReadOnly:
+            raise ValueError(f"{local.name} 以只读方式打开，未能清除标记")
+        report = batch.clear_workbook_marks(excel, book)
+        result.update(_mark_counts(report))
+        if reference is not None:
+            where["step"] = "对照参考恢复颜色"
+            cleared = {tab["sheet"] for tab in report["tabs"]}
+            cells = [cell for cell in cells
+                     if "tab_cleared" not in cell or cell["tab_cleared"] == (cell["sheet"] in cleared)]
+            ready_cells = [cell for cell in cells if cell["action"] == "restore"]
+            done = mark_finder.restore_workbook_colors(book, ready_cells, old_colors)
+        where["step"] = "视图标准化"
+        _normalize_view(excel, book)
+        # 旧流程只有最后的纯视图保存会延续打印方向记录的版本。
+        view_only = not (result["marks"] or result["tabs"] or any(item["status"] == "ok" for item in done))
+        before = wf._file_version(local) if view_only else None
+        check_versions()
+        book.Save()
+        print_layout.followed_save(wf.STATE.setdefault("print_layouts", {}), str(local), before)
+    finally:
+        book.Close(SaveChanges=False)
+    if reference is not None:
+        result.update(_color_counts(cells, done))
+
+
 def prepare(get_excel: Callable[[], Any], local: Path, reference: Path | None, where: dict | None = None) -> dict:
     """对一个要上传的文件做完三步。出错时原样抛出异常（调用方按 file_problem 的规则决定重试 / 跳过），
     where["step"] 写着是哪一步出的错"""
     where = where if where is not None else {}
+    reference = reference if reference is not None and reference.is_file() else None
     result: dict[str, Any] = {"marks": 0, "tabs": 0, "colors": 0, "color_skipped": 0, "color_problems": [],
-                              "reference": bool(reference and reference.is_file()), "normalized": False}
+                              "reference": reference is not None, "normalized": False}
     where["step"] = "清除标记色"
-    result.update(_clear_marks(get_excel(), local))
-    if result["reference"]:
-        where["step"] = "对照参考恢复颜色"
-        result.update(_restore_colors(get_excel(), local, reference))
-    where["step"] = "视图标准化"
-    _normalize(get_excel(), local)
+    excel = get_excel()
+    if local.suffix.lower() in XML_WORKBOOKS and (reference is None or (
+            reference.suffix.lower() in XML_WORKBOOKS and reference.resolve() != local.resolve())):
+        _prepare_xml(excel, local, reference, where, result)
+    else:
+        result.update(_clear_marks(excel, local))
+        if reference is not None:
+            where["step"] = "对照参考恢复颜色"
+            result.update(_restore_colors(excel, local, reference))
+        where["step"] = "视图标准化"
+        _normalize(excel, local)
     result["normalized"] = True
     where["step"] = ""
     debug_log.event("🧽 上传前处理完成", 文件=local.name, 清标记=result["marks"], 还原标签=result["tabs"],
