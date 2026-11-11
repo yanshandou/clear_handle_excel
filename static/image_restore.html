@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>修复图片 - Excel 整理工具箱</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/repair.css"><script src="/static/game_fx.js"></script>
+  <style>
+    .font-rules { margin: 0; padding-left: 22px; line-height: 1.9; }
+        .font-summary { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 6px 0 4px; font-weight: 600; }
+    .font-summary .is-ok { color: #14633c; } .font-summary .is-bad { color: #89580b; }
+    .font-list { list-style: none; margin: 12px 0 0; padding: 0; }
+    .font-item { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 4px 8px; padding: 12px 6px; border-bottom: 1px solid #dce5ef; }
+    .font-item:last-child { border-bottom: 0; }
+    .font-mark { font-weight: 800; text-align: center; }
+    .font-item.is-ok .font-mark { color: #14633c; } .font-item.is-bad .font-mark { color: #89580b; } .font-item.is-same .font-mark { color: #64748b; }
+    .font-name { overflow-wrap: anywhere; font-weight: 600; }
+    .font-detail { white-space: pre-line;  grid-column: 2; font-size: 14px; color: #475569; overflow-wrap: anywhere; }
+    .font-error { grid-column: 2; font-size: 14px; color: #b42318; overflow-wrap: anywhere; }
+  </style>
+  <link rel="stylesheet" href="/static/theme-casual.css">
+  <link rel="stylesheet" href="/static/flow.css?v=1"><script src="/static/flow.js?v=1"></script>
+</head>
+<body>
+  <header class="app-header">
+    <a href="/" class="header-brand"><div class="header-logo-badge">🖼️</div><div class="header-title"><h1>修复图片</h1><span class="subtitle">对照参考文件 · 截图放回原来大小 · 红框跟回截图</span></div></a>
+    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/clean" class="nav-link">🧹 精简 Sheet</a><a href="/pdf-review" class="nav-link">📄 调整页面</a></nav>
+  </header>
+  <main class="container clean-container">
+    <section class="panel">
+      <h2>把被行高列宽拉变形的截图、跑偏的红框放回原样</h2>
+      <ul class="font-rules toolbar-hint">
+        <li>以前修切字时加高行、加宽列，Excel 的图形默认跟着格子一起变：截图被拉长变形，截图上的红框、箭头挂在别的格子上，就框不住原来的地方了。</li>
+        <li>拿<b>参考文件夹里的原文件</b>对照：截图和其他图形<b>左上角不动</b>，大小改回原文件的；截图上的红框、箭头、文字框按原文件里<b>相对截图的位置</b>放回去。</li>
+        <li>只改真的变了的图形；行高、列宽、格子内容都不动。改完回读核对，有一个没对上整份不保存。</li>
+        <li>图形按名字配对，有重名的不碰；参考文件只读打开，不会改。</li>
+      </ul>
+      <div class="link-fields">
+        <label for="imgFolder">处理后的 Excel 文件夹（含子文件夹）<input id="imgFolder" type="text" placeholder="例如 D:\处理\001"></label>
+        <label for="imgOldFolder">参考文件夹（原文件）<input id="imgOldFolder" type="text" placeholder="例如 D:\参考\001，或包含 001 的总目录"></label>
+      </div>
+      <div class="link-actions"><button id="imgRun" class="btn btn-primary" type="button" disabled>🖼️ 修复图片</button></div>
+      <p class="toolbar-hint">请先保存并关闭要处理的 Excel。关闭网页后任务继续；刷新页面可查看进度与结果。</p>
+      <p id="imgProgress" role="status" aria-live="polite">填写两个文件夹后点按钮开始。</p>
+      <div id="imgTrack" class="progress-track progress-track-sm"><div id="imgFill" class="progress-fill" style="width:0%"></div></div>
+      <p id="imgError" class="batch-error" role="alert"></p>
+    </section>
+    <section class="panel"><h2>结果</h2><p id="imgResultFolder" class="toolbar-hint"></p><div id="imgResults"><p>尚未开始。</p></div></section>
+    <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
+  </main>
+  <script src="/static/dialog.js"></script><script src="/static/eta.js"></script><script src="/static/job_panel.js"></script><script src="/static/open_excel.js"></script>
+  <script src="/static/image_restore.js"></script><script src="/static/debug_log.js"></script>
+  <script src="/static/task_folder.js"></script><script src="/static/focus_banner.js"></script><script src="/static/file_problem.js"></script>
+</body>
+</html>

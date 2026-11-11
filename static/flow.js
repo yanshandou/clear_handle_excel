@@ -21,6 +21,7 @@
     { id: 'bundle', title: '批量导出同名 PDF', sub: 'aaa.xlsx 旁边生成 aaa.pdf', meta: '所有表合成一份', url: '/pdf-bundle', emoji: '📕', tone: 'blue' },
     { id: 'json', title: '按 JSON 复制 Excel', sub: '按上传记录复制、建目录', meta: '只复制，上传仍人工', url: '/distribute?mode=json', emoji: '📋', tone: 'pink' },
     { id: 'colors', title: '修复颜色', sub: '对照参考恢复残留底色', meta: '上传时会顺便做', url: '/repair-colors', ops: 'colors', icon: 'colors', tone: 'orange', inc: 'upload' },
+    { id: 'images', title: '修复图片', sub: '截图变形 · 红框错位', meta: '对照参考放回原样', url: '/fix-images', emoji: '🖼️', tone: 'teal' },
     { id: 'font', title: '统一字体', sub: '游ゴシック → ＭＳ Ｐゴシック', meta: '精简时可以顺便做', url: '/fix-fonts', emoji: '🔤', tone: 'green', inc: 'clean', incKey: 'font' },
     { id: 'links', title: '修复引用错误', sub: '#REF! · 指向被删的表', meta: '精简时可以顺便做', url: '/repair-links', ops: 'links', icon: 'references', tone: 'yellow', inc: 'clean', incKey: 'links' },
     { id: 'bl', title: '排查 BL 超链接', sub: '找出断掉的超链接', meta: '精简时可以顺便做', url: '/repair-bl-links', ops: 'bl_scan bl_clear', icon: 'bl-links', tone: 'purple', inc: 'clean', incKey: 'bl' },
