@@ -12,9 +12,9 @@
 - 改完回读核对，有一个没对上整份不保存。
 
 页面分两步（用户 2026-11-11 要）：先「找出受影响的图片」——两份都只读打开，不改任何文件，
-有图片的表把原版、新版各按本工具同一套做法导出 PDF 用来认页（哪页有图片、按文字行配页），有图片的每一页一行三列整页图：
-原版 Excel｜新版 Excel 是屏幕原样（按分页取那一页的格子区域「复制为图片」，借剪贴板；拍不了退回导出效果并标出来）｜新版 PDF，
-能比对也能定位；用户可以把看过没问题的页标「无需处理」（存在浏览器里）；
+有图片的表三列整页图，每列把这张表的所有页从上到下列全，不按页配对（原版和新版分页位置可能不一样，用户 2026-11-11 定）：
+原版 Excel｜新版 Excel 是屏幕原样（按本工具同一套做法导出 PDF 得到页数，再按分页取每页的格子区域「复制为图片」，借剪贴板；
+拍不了退回导出效果并标出来）｜新版 PDF（整份 PDF 里按文字找出属于这张表的那一段页），能比对也能定位；用户可以把看过没问题的页标「无需处理」（存在浏览器里）；
 用户看完再点「修复这份」或「全部修复」，也可以自己打开三个文件处理。
 """
 from __future__ import annotations
@@ -150,81 +150,53 @@ def _save_page(doc: Any, number: int, name: str) -> str:
     return name
 
 
-SHOW_ALL_MAX = 6  # 认不出哪页有图片时，最多列前几页
-
-
-def new_rows(path: Path, sheet: str, new_pdf: Path) -> list[dict]:
-    """新版这张表导出的 PDF 里有图片的页，一页一行（先放导出效果的整页图；能拍屏幕原样的后面换掉）"""
+def sheet_pages(pdf: Path, path: Path, sheet: str, side: str) -> list[dict]:
+    """这张表导出的 PDF 的每一页（先放导出效果的整页图；能拍屏幕原样的后面换掉）。
+    用户 2026-11-11 定：不按页配对、不挑有图片的页，一张表的所有页都列出来。
+    [{"page", "img", "how": "pdf", "ratio", "_lines"}]"""
     from core.pdf_detector import fitz
-    rows: list[dict] = []
-    doc = fitz.open(str(new_pdf))
+    doc = fitz.open(str(pdf))
     try:
-        infos = _page_infos(doc)
-        numbers = [n for n, info in enumerate(infos) if info["pictures"]]
-        note = ""
-        if not numbers:  # 截图在 PDF 里不是位图（比如矢量图）认不出来：列前几页让人看
-            numbers = list(range(min(SHOW_ALL_MAX, len(infos))))
-            note = "PDF 里认不出哪页有图片，列出前几页" if numbers else ""
-        for number in numbers:
+        pages = []
+        for number, info in enumerate(_page_infos(doc)):
             rect = doc[number].rect
-            ratio = round(float(rect.width) / max(1.0, float(rect.height)), 3)  # 图片先按这个比例占位，加载时页面不跳
-            rows.append({"page": number + 1, "pages": len(infos), "note": note, "ratio": ratio, "new_ratio": ratio,
-                         "new_how": "pdf", "_lines": infos[number]["lines"],
-                         "new_img": _save_page(doc, number, _image_name(path, sheet, f"p{number}", "new"))})
+            pages.append({"page": number + 1, "how": "pdf", "_lines": info["lines"],
+                          "ratio": round(float(rect.width) / max(1.0, float(rect.height)), 3),  # 图片先按比例占位，加载时页面不跳
+                          "img": _save_page(doc, number, _image_name(path, sheet, f"p{number}", side))})
+        return pages
     finally:
         doc.close()
-    return rows
 
 
-def match_rows(rows: list[dict], path: Path, sheet: str, pdf: Path | None, side: str, missing: str) -> int:
-    """side="old"（原版这张表导出的 PDF）或 "pdf"（用户已有的新版 PDF）：按文字行重合度给每行找对应的页，整页转 PNG。
-    写 row[side + "_page" / "_img" / "_ratio"]，找不到写 row[side + "_why"]。返回那份 PDF 一共几页"""
+def pdf_pages(pdf: Path | None, path: Path, sheet: str, new_pages: list[dict]) -> tuple[list[dict], str]:
+    """用户已有的新版 PDF（整份工作簿）里属于这张表的那几页：新版这张表每页按文字行找最像的页，取最前到最后这一段。
+    返回 (页列表, 没有时的原因)"""
     from core.pdf_detector import fitz
     if pdf is None:
-        for row in rows:
-            row[f"{side}_why"] = missing
-        return 0
+        return [], "没找到同名 PDF（Excel 旁边和 PDF 文件夹里都没有）"
     try:
         doc = fitz.open(str(pdf))
     except Exception as err:
-        debug_log.event("⚠️ PDF 读不了", PDF=str(pdf), 错误=str(err))
-        for row in rows:
-            row[f"{side}_why"] = f"PDF 读不了：{err}"
-        return 0
+        debug_log.event("⚠️ 新版 PDF 读不了", PDF=str(pdf), 错误=str(err))
+        return [], f"新版 PDF 读不了：{err}"
     try:
         infos = _page_infos(doc)
-        label = "原版" if side == "old" else "新版 PDF "
-        for row in rows:
-            found, score = _best_page(row["_lines"], infos)
-            if found < 0 or score < PAGE_MATCH_MIN:
-                row[f"{side}_why"] = f"{label}里没找到文字对得上的页"
-                continue
-            rect = doc[found].rect
-            row[f"{side}_page"] = found + 1
-            row[f"{side}_ratio"] = round(float(rect.width) / max(1.0, float(rect.height)), 3)
-            row[f"{side}_how"] = "pdf"
-            row[f"{side}_img"] = _save_page(doc, found, _image_name(path, sheet, f"p{row['page'] - 1}", side))
-        return len(infos)
+        found = []
+        for page in new_pages:
+            number, score = _best_page(page.get("_lines") or set(), infos)
+            if number >= 0 and score >= PAGE_MATCH_MIN:
+                found.append(number)
+        if not found:
+            return [], "新版 PDF 里没找到这张表的页（文字对不上）"
+        pages = []
+        for number in range(min(found), max(found) + 1):
+            rect = doc[number].rect
+            pages.append({"page": number + 1, "how": "pdf",
+                          "ratio": round(float(rect.width) / max(1.0, float(rect.height)), 3),
+                          "img": _save_page(doc, number, _image_name(path, sheet, f"p{number}", "pdf"))})
+        return pages, ""
     finally:
         doc.close()
-
-
-def page_rows(path: Path, sheet: str, new_pdf: Path, old_pdf: Path | None, book_pdf: Path | None) -> list[dict]:
-    """有图片的页一页一行（用户 2026-11-11 要：看整页，能比对也能定位）：新版 Excel 这张表导出的 PDF 里有图片的页为准，
-    按文字行重合度在原版导出的 PDF、新版 PDF 文件里找对应的那页。不拍屏幕原样的简化版（三列都是 PDF 的样子）"""
-    rows = new_rows(path, sheet, new_pdf)
-    match_rows(rows, path, sheet, old_pdf, "old", "原版这张表没导出来")
-    match_rows(rows, path, sheet, book_pdf, "pdf", "没找到同名 PDF（Excel 旁边和 PDF 文件夹里都没有）")
-    _finish_rows(rows, path, sheet)
-    return rows
-
-
-def _finish_rows(rows: list[dict], path: Path, sheet: str) -> None:
-    for row in rows:
-        row.pop("_lines", None)
-    debug_log.event("📄 有图片的页", 文件=path.name, 表=sheet,
-                    结果=[f"新版第 {r['page']} 页（{r.get('new_how')}）↔ 原版 {r.get('old_page') or r.get('old_why')}（{r.get('old_how', '-')}）"
-                        f" ↔ PDF {r.get('pdf_page') or r.get('pdf_why')}" for r in rows])
 
 
 # ---------- Excel 屏幕原样的整页图（用户 2026-11-11：「我需要 excel 屏幕原样」） ----------
@@ -322,27 +294,26 @@ def render_screen(sheet: Any, area: Any, out_name: str) -> float:
                 pass
 
 
-def screen_pages(sheet: Any, rows: list[dict], side: str, total: int, path: Path, sheet_name: str) -> None:
-    """把 rows 里 side（"new" / "old"）那一列换成 Excel 屏幕原样；哪一页拍不了就留着导出效果的图（页面上会标出来）"""
-    wanted = [row for row in rows if row.get(f"{side}_page" if side == "old" else "page") and row.get(f"{side}_img")]
-    if not wanted:
+def screen_pages(sheet: Any, pages: list[dict], side: str, path: Path, sheet_name: str) -> None:
+    """把这张表的每一页换成 Excel 屏幕原样；哪一页拍不了就留着导出效果的图（页面上会标出来）"""
+    if not pages:
         return
     where = {"文件": path.name, "表": sheet_name, "哪边": "新版" if side == "new" else "原版"}
     try:
-        ranges = page_ranges(sheet, total)
+        ranges = page_ranges(sheet, len(pages))
     except Exception as err:
         debug_log.event("⚠️ 屏幕原样拍不了，这张表用导出效果", **where, 错误=str(err))
         return
-    for row in wanted:
-        number = row["page"] if side == "new" else row["old_page"]
-        name = _image_name(path, sheet_name, f"p{row['page'] - 1}", f"{side}s")
+    for page, area in zip(pages, ranges):
+        name = _image_name(path, sheet_name, f"p{page['page'] - 1}", f"{side}s")
         for attempt in range(3):  # 偶尔贴进图表是空的（实测报「インデックスが境界を超えています」），再拍一次多半就好
             try:
-                row[f"{side}_ratio"] = render_screen(sheet, ranges[number - 1], name)
-                row[f"{side}_img"], row[f"{side}_how"] = name, "screen"
+                page["ratio"] = render_screen(sheet, area, name)
+                page["img"], page["how"] = name, "screen"
                 break
             except Exception as err:
-                debug_log.event("⚠️ 屏幕原样拍不了" + ("，再试一次" if attempt < 2 else "，这一页用导出效果"), **where, 页=number, 错误=str(err))
+                debug_log.event("⚠️ 屏幕原样拍不了" + ("，再试一次" if attempt < 2 else "，这一页用导出效果"), **where,
+                                页=page["page"], 错误=str(err))
                 time.sleep(0.4)
 
 
@@ -389,15 +360,14 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf:
                     group["sheet"] = cur["name"]
                 ordered = sorted(groups.values(), key=lambda g: not g["changed"])
                 entry = {"sheet": cur["name"], "old_sheet": ref["name"], "count": len(changes), "groups": ordered,
-                         "review": sum(not g["changed"] for g in ordered), "pages": []}
+                         "review": sum(not g["changed"] for g in ordered)}
                 new_pdf = tmp_dir / f"new_{index}.pdf"
                 if on_sheet:
                     on_sheet(index, len(pairs), f"{cur['name']}（导出整页）")
                 try:
                     export_sheet(sheet, new_pdf)
-                    entry["_rows"] = new_rows(path, cur["name"], new_pdf)
-                    if entry["_rows"]:
-                        screen_pages(sheet, entry["_rows"], "new", entry["_rows"][0]["pages"], path, cur["name"])
+                    entry["_new"] = sheet_pages(new_pdf, path, cur["name"], "new")
+                    screen_pages(sheet, entry["_new"], "new", path, cur["name"])
                 except Exception as err:
                     debug_log.exception(err, f"整页图 {path.name} {cur['name']}")
                     entry["pages_why"] = f"新版这张表的整页图没做出来：{err}"
@@ -405,31 +375,38 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf:
                 sheets.append(entry)
         finally:
             book.Close(SaveChanges=False)
-        if any(entry.get("_rows") for entry in sheets):
+        if any(entry.get("_new") for entry in sheets):
             old_book = open_workbook_checked(excel, str(old_path.resolve()), ReadOnly=True, UpdateLinks=0)
             try:
                 for index, entry in enumerate(sheets, 1):
-                    rows = entry.get("_rows")
-                    if not rows:
+                    if not entry.get("_new"):
                         continue
                     try:
                         old_sheet = old_book.Worksheets(entry["old_sheet"])
                         old_pdf = export_sheet(old_sheet, tmp_dir / f"old_{index}.pdf")
+                        entry["_old"] = sheet_pages(old_pdf, path, entry["sheet"], "old")
                     except Exception as err:
-                        debug_log.event("⚠️ 原版这张表导不出 PDF", 文件=path.name, 表=entry["old_sheet"], 错误=str(err))
-                        match_rows(rows, path, entry["sheet"], None, "old", "原版这张表没导出来")
+                        debug_log.event("⚠️ 原版这张表的整页图没做出来", 文件=path.name, 表=entry["old_sheet"], 错误=str(err))
+                        entry["_old_why"] = f"原版这张表的整页图没做出来：{err}"
                         continue
-                    total = match_rows(rows, path, entry["sheet"], old_pdf, "old", "")
-                    screen_pages(old_sheet, rows, "old", total, path, entry["sheet"])
+                    screen_pages(old_sheet, entry["_old"], "old", path, entry["sheet"])
             finally:
                 old_book.Close(SaveChanges=False)
         for entry in sheets:
-            rows = entry.pop("_rows", None)
-            if not rows:
+            new_pages, old_pages = entry.pop("_new", None), entry.pop("_old", [])
+            old_why = entry.pop("_old_why", "")
+            if not new_pages:
                 continue
-            match_rows(rows, path, entry["sheet"], pdf, "pdf", "没找到同名 PDF（Excel 旁边和 PDF 文件夹里都没有）")
-            _finish_rows(rows, path, entry["sheet"])
-            entry["pages"] = rows
+            book_pages, pdf_why = pdf_pages(pdf, path, entry["sheet"], new_pages)
+            for page in [*new_pages, *old_pages]:
+                page.pop("_lines", None)
+            # 三列各自从第一页列到最后一页，不按页配对（原版和新版分页位置可能不一样）
+            entry["cols"] = {"old": old_pages, "new": new_pages, "pdf": book_pages}
+            entry["old_why"], entry["pdf_why"] = old_why, pdf_why
+            debug_log.event("📄 整页图", 文件=path.name, 表=entry["sheet"],
+                            原版=[f"{p['page']}:{p['how']}" for p in old_pages] or old_why,
+                            新版=[f"{p['page']}:{p['how']}" for p in new_pages],
+                            PDF=[p["page"] for p in book_pages] or pdf_why)
     return {"count": sum(s["count"] for s in sheets), "sheets": sheets, "review": sum(s["review"] for s in sheets)}
 
 
@@ -437,8 +414,8 @@ def _image_refs() -> list[str]:
     """换文件夹清理截图时，这里列着的局部截图要留着"""
     with _LOCK:
         files = ((_STATUS.get("result") or {}).get("files")) or []
-        return [p.get(k) for f in files for s in f.get("sheets", []) for p in s.get("pages", [])
-                for k in ("old_img", "new_img", "pdf_img") if p.get(k)]
+        return [p["img"] for f in files for s in f.get("sheets", []) for pages in (s.get("cols") or {}).values()
+                for p in pages if p.get("img")]
 
 
 fix_images.register_references(_image_refs)
@@ -525,8 +502,8 @@ def describe(entry: dict, mode: str = "fix") -> str:
     if entry.get("error"):
         return entry["error"]
     if mode == "scan":
-        pages = sum(len(s.get("pages", [])) for s in entry.get("sheets", []))
-        page_text = f"，{pages} 页有图片请看三列" if pages else ""
+        pages = sum(len((s.get("cols") or {}).get("new", [])) for s in entry.get("sheets", []))
+        page_text = f"，有图片的表共 {pages} 页请看三列" if pages else ""
         return (f"{entry['count']} 个图形变了" if entry.get("count") else "程序没量出变化") + page_text
     parts = [f"放回 {entry['count']} 个图形" if entry.get("count") else "",
              f"组合 {entry['grouped']} 组截图和标注" if entry.get("grouped") else ""]
