@@ -1,5 +1,5 @@
 // 精简 Sheet 做完后自动接着做的检查（排查 BL 超链接 → 修复引用错误 →（勾选时）修复隐藏页 → 统一字体）：
-// 显示每一步的进度和结果，改不了 / 出错的逐处列出来（点了用 Excel 打开跳到格子），最后给「下一步」按钮。
+// 显示每一步的进度和结果，改不了 / 出错的逐处列出来（点了用 Excel 打开跳到格子），最后只给一个「返回首页」按钮。
 // 后台见 core/clean_chain.py；结果存在数据库里，重开程序也还在。
 (function () {
   const DETAIL_PAGES = { bl: '/repair-bl-links', links: '/repair-links', hidden: '/repair-hidden', font: '/fix-fonts' };
@@ -102,9 +102,9 @@
     const note = running ? '这几步不用再点，做完会在这里写结果。关掉网页也会继续。'
       : bad || warn ? '改不了、出错的都列在下面，点文件名可以用 Excel 打开跳到那一格。没问题的已经直接改好保存了。'
       : '没有要人工处理的地方。';
-    const flowNext = window.Flow?.nextAfter('clean') || { title: '调整页面', url: '/?task=export_pdf' }; // 本次流程里精简后面那一步
+    // 做完只有「返回首页」（首页上精简 Sheet 那张卡片会闪几下）
     const next = running ? '' : `<div class="chain-next">
-        <a class="btn btn-primary next-step-btn" href="${esc(flowNext.url)}">下一步：${esc(flowNext.title)} ➜</a></div>`;
+        <a class="btn btn-primary next-step-btn" href="/?from=clean">🏠 返回首页</a></div>`;
     const html = `<div class="chain-head"><h3>🤖 ${esc(title)}</h3><p>${esc(note)}</p></div>
       <ol class="chain-steps">${data.steps.map(stepHtml).join('')}</ol>${next}`;
     // 轮询时内容不变就不重建，免得打断点开的列表和选中复制

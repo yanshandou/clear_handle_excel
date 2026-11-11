@@ -610,7 +610,7 @@ def _upload_task(task_id: Any) -> dict[str, Any]:
 
     task = work_task.get(str(task_id))
     if work_task.overview()["current"] != task["id"]:
-        raise ValueError("当前任务已切换，请重新打开第 4 步「上传」")
+        raise ValueError("当前任务已切换，请重新打开「上传 Excel」")
     return task
 
 

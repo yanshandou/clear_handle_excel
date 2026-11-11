@@ -61,7 +61,7 @@
         </div>
         <p class="job-panel-tally"><span class="is-ok">✓ 0</span><span class="is-bad is-zero">! 0</span><span class="job-panel-hint">点文件名在 Excel 打开</span></p>
         <ul class="job-panel-log"></ul>
-        <div class="job-panel-foot" hidden><button type="button" class="btn btn-primary" data-job-close>知道了</button></div>
+        <div class="job-panel-foot" hidden><button type="button" class="btn btn-outline" data-job-close>知道了</button><a class="btn btn-primary" data-job-home href="/">🏠 返回首页</a></div>
       </div>`;
     document.body.appendChild(box);
     for (const name of ['icon', 'title', 'count', 'now', 'step', 'tally', 'log', 'foot', 'hint']) {
@@ -81,6 +81,10 @@
     el.limit.addEventListener('change', saveLimit);
     el.fold.addEventListener('click', () => setFold(!box.classList.contains('is-folded'), true));
     box.querySelector('[data-job-close]').addEventListener('click', close);
+    // 做完以后「返回首页」：首页上这一页对应的卡片会闪几下（static/tools.js）；主页自己的任务不用回
+    const home = box.querySelector('[data-job-home]');
+    home.hidden = location.pathname === '/' || location.pathname === '/home.html';
+    home.href = window.Tools?.homeUrl() || '/';
     setFold(store.get('localStorage', FOLD_KEY) === '1', false);
   }
 

@@ -7,13 +7,13 @@
   <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
   <link rel="stylesheet" href="/static/pdf_review.css">
   <link rel="stylesheet" href="/static/theme-casual.css">
-  <link rel="stylesheet" href="/static/flow.css?v=1"><script src="/static/flow.js?v=1"></script>
+  <script src="/static/tools.js?v=1"></script>
   <link rel="stylesheet" href="/static/theme-cartoon.css">
 </head>
 <body>
   <header class="app-header">
     <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">调整页面</h1><span class="subtitle">点按钮告诉程序怎么改 · 单击页面看大图 · 统一修改后看新的 PDF · Ctrl + 单击用 Excel 打开那一页</span></div></a>
-    <nav class="header-nav" aria-label="功能导航"><a href="/" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#home"></use></svg>主页</a><a href="/records" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#layers"></use></svg>执行记录</a><a href="/workbench" class="nav-link nav-next" data-flow-next="adjust" title="页面都调好了：去下一步查看切字（扫描标色、调整单元格）">下一步：查看切字 ➜</a></nav>
+    <nav class="header-nav" aria-label="功能导航"><a href="/records" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#layers"></use></svg>执行记录</a><a href="/?from=adjust" class="nav-link nav-next" title="这一步做完了：回首页（首页上这张卡片会闪几下）">🏠 返回首页</a></nav>
   </header>
   <main class="container pr-container">
     <section class="panel pr-setup">
@@ -28,7 +28,7 @@
         <li>导出 PDF 时每张表已经设成<b>宽一页、高自动</b>：横向不会拆成几页，纵向几页由 Excel 自己定。</li>
         <li>每张表标题右边三组按钮：<b>方向</b>（竖向 / 横向）、<b>页高</b>（高自动 / ⤓ 取整 N→N-1）、<b>删除这张表</b>；有手动分页的表还多一个<b>✂ 清手动分页</b>（全部清掉、改成 Excel 自动分页，看了新的 PDF 再决定要不要取整）。点了只是做标记，再点一次取消。</li>
         <li><b>末页只多一点</b>（最后一页印了不到 20%）的表自动标<b>黄</b>，建议向下取整；不想取整就点一下「⤓ 取整」取消。</li>
-        <li>看完点底部<b>「🛠 统一修改」</b>：后台改 Excel、保存，再重新生成改过的那几张表的 PDF。改了方向后要不要取整就不一定了，看新的 PDF 再决定。可以来回改好几轮，都没问题了再去下一步。</li>
+        <li>看完点底部<b>「🛠 统一修改」</b>：后台改 Excel、保存，再重新生成改过的那几张表的 PDF。改了方向后要不要取整就不一定了，看新的 PDF 再决定。可以来回改好几轮，都没问题了点「🏠 返回首页」。</li>
         <li>上面的<b>分类</b>只看某一类的表，还能一次改这一类（比如末页只多一点的全部取整）。</li>
         <li>要自己在 Excel 里改：点标题上的 Excel 路径，或按住 <b>Ctrl 单击</b>页面（或右键菜单），Excel 打开并跳到那一页；改完保存后点<b>「🔄 重新生成」</b>。「🔄 重新生成」只导这一张表，同一份 Excel 别的表不动。只想改一张表的话，点完方向、取整后直接点这张表的「🔄 重新生成」也行：先改进 Excel、再重新生成。</li>
         <li>填了原始备份文件夹时，打开时老版本也一起打开（只读）、跳到同一块，左右并排对照。顶栏和底部条不碰 3 秒自动隐藏，鼠标移到窗口最上面或最下面就会出来。</li>

@@ -211,3 +211,4 @@
 }
 
 .job-panel-foot[hidden] { display: none; }
+.job-panel-foot { gap: 10px; }

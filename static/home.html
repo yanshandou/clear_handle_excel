@@ -7,8 +7,9 @@
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/theme.css">
-  <link rel="stylesheet" href="/static/home_route.css?v=3"><link rel="stylesheet" href="/static/flow.css?v=1"><link rel="stylesheet" href="/static/work_task.css?v=6"><link rel="stylesheet" href="/static/theme-casual.css"><script src="/static/game_fx.js"></script>
+  <link rel="stylesheet" href="/static/home_route.css?v=3"><link rel="stylesheet" href="/static/work_task.css?v=6"><link rel="stylesheet" href="/static/theme-casual.css"><script src="/static/game_fx.js"></script>
   <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/home_tiles.css?v=1">
 </head>
 <body>
   <header class="app-header">
@@ -48,7 +49,7 @@
     </section>
 
     <section class="home-tools-heading" aria-label="工具与进度备份">
-      <div><h2>我的工具箱</h2><p>单击打开工具，或拖进流程，按顺序完成。</p></div>
+      <div><h2>我的工具箱</h2><p>大卡片一次做完相关的几步，小卡片每一步单独用。做完回到这里，刚用过的卡片会闪几下。</p></div>
       <div class="home-hero-actions">
         <button type="button" class="btn btn-outline btn-sm" id="exportProgressBtn" onclick="exportProgress()"
           title="把扫描结果、人工判断、续跑点和执行记录保存为备份文件">
@@ -104,24 +105,10 @@
     </section>
 
 
-    <!-- 工具箱（用户 2026-11-10 要）：上面「本次流程」轨道，下面所有工具卡；按住卡片拖进轨道排成第 1 步、第 2 步……
-         卡片、轨道由 static/home_toolbox.js 画（工具清单在 static/flow.js），状态文字 id、上传卡 id、新任务 / 完成任务的 id 都和以前一样 -->
-    <section class="flow-bar" aria-label="本次流程">
-      <div class="flow-bar-head">
-        <h3><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#route"></use></svg>本次流程</h3>
-        <span class="flow-bar-tip">拖入工具，自由排序。每一步完成后，都有下一步指引。</span>
-        <span class="flow-bar-btns">
-          <button type="button" class="btn btn-outline btn-sm" id="flowResetBtn" title="改回 精简 Sheet → 调整页面 → 查看切字 → 上传">↺ 恢复默认 4 步</button>
-          <button type="button" class="btn btn-outline btn-sm" id="flowClearBtn">清空</button>
-        </span>
-      </div>
-      <div class="flow-road" id="flowRoad"></div>
-    </section>
-
-    <section class="route-map toolbox-map" aria-label="工具箱">
-      <ol class="route-steps toolbox-grid" id="toolGrid"></ol>
-      <h3 class="toolbox-more-title">更多好帮手 <small>按需使用，也能加入流程。标「单独用」的功能，精简或上传时已可顺便完成。</small></h3>
-      <ol class="route-steps toolbox-grid" id="toolGridMore"></ol>
+    <!-- 卡片页（用户 2026-11-11 要）：流程、主要卡片、更多工具并成一张大小卡片拼起来的卡片页。
+         卡片由 static/home_tiles.js 画（工具清单在 static/tools.js），状态文字 id、上传卡 id、新任务 / 完成任务的 id 都和以前一样 -->
+    <section class="tile-board" aria-label="工具箱">
+      <ol class="tile-grid" id="tileGrid"></ol>
     </section>
     <footer class="home-footer"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#check"></use></svg>每一步都有记录，让整理更安心。</footer>
   </main>
@@ -176,7 +163,7 @@
   </dialog>
 
   <script src="/static/eta.js"></script><script src="/static/job_panel.js"></script><script src="/static/dialog.js"></script>
-  <script src="/static/flow.js?v=1"></script><script src="/static/home_toolbox.js?v=1"></script>
+  <script src="/static/tools.js?v=1"></script><script src="/static/home_tiles.js?v=1"></script>
   <script src="/static/home.js"></script>
   <script src="/static/work_task.js?v=8"></script>
   <script src="/static/debug_log.js"></script>
