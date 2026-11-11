@@ -97,8 +97,25 @@ def _update(key: str, **fields: Any) -> None:
         _save()
 
 
+_chain_stop_seq = -1  # 这一串开始时「结束整个任务」点过几次：之后又点了就不再接着做后面几步
+
+
+def _stopped() -> bool:
+    from core import excel_watchdog
+    return _chain_stop_seq >= 0 and excel_watchdog.stop_seq() != _chain_stop_seq
+
+
+def _mark_stopped(key: str) -> None:
+    with _LOCK:
+        _step(key).pop("progress", None)
+    _update(key, state="skipped", text="你点了「结束整个任务」，这一步没做")
+
+
 def prepare(folder: str, chain: dict) -> None:
     """点了「确认执行」：精简还在跑，先把后面几步排上（页面马上能显示「等精简完成」）"""
+    global _chain_stop_seq
+    from core import excel_watchdog
+    _chain_stop_seq = excel_watchdog.stop_seq()
     with _LOCK:
         _load()
         if _STATUS.get("running") and _STATUS.get("stage") == "chain":
@@ -146,6 +163,9 @@ def _finish_step(key: str, fixed: int, problems: list[dict], text: str) -> None:
 
 def _launch(start: Callable[[], None], key: str) -> bool:
     """开始一步；上一步刚结束、后台标志还没放开时等一会儿再试"""
+    if _stopped():
+        _mark_stopped(key)
+        return False
     deadline = time.monotonic() + BUSY_WAIT_SECONDS
     while True:
         try:
@@ -291,6 +311,10 @@ def run(folder: str, chain: dict) -> None:
                           ("hidden", lambda: _run_hidden(folder, old_folder)),
                           ("font", lambda: _run_font(folder))):
             if not _enabled(chain, key):
+                continue
+            if _stopped():
+                debug_log.event("⏹ 结束整个任务：精简后自动检查这一步不做", 步=key)
+                _mark_stopped(key)
                 continue
             try:
                 work()

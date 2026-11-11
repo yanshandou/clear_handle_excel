@@ -124,7 +124,9 @@ class QuickTaskTests(unittest.TestCase):
         self.patch_value(workflow, "win32", Mock(DispatchEx=self.dispatch))
         self.patch_value(excel_ops, "win32", workflow.win32)  # 后台 Excel 由 excel_ops 启动
         self.patch_value(workflow, "normalize_workbook_view", self.normalize)
-        self.patch_value(workflow, "ExcelWatchdog", Mock())
+        # 看门狗：没人点「跳过这一份」（take_skip 空），上一份也没被跳过（file 假）
+        self.patch_value(workflow, "ExcelWatchdog", Mock(return_value=Mock(take_skip=Mock(return_value=""),
+                                                                           file=Mock(return_value=False))))
         self.patch_value(workflow, "scan_workbook_sheets", self.read_sheet_names)
 
     def patch_value(self, target, name, value):

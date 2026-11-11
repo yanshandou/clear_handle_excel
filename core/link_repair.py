@@ -253,8 +253,9 @@ def _run(phase: str, folder: Path, paths: list, old_root: Path | None = None, ol
                 old_path = pairs.get(name) if phase in {"repair", "preview"} else source.get("old") if isinstance(source, dict) else None
                 if old_path:
                     entry["old"] = str(old_path)
-                guard.progress()
                 try:
+                    if guard.file(name):  # 进度框能「跳过这一份」
+                        excel = None
                     if excel is None:
                         excel = guard.watch(start_background_excel())
                     if phase == "repair":

@@ -269,6 +269,9 @@ def exception(err: BaseException, context: str = "") -> None:
     同一个异常被几层 except 记录时只写一次"""
     if _key(err) in _dumped:
         return
+    if type(err).__name__ == "TaskStopped":  # 用户点了「结束整个任务」，后面每份都会来一次，不用调用栈
+        event(f"⏹ 没做（{context}）", 原因=str(err))
+        return
     _dumped.append(_key(err))
     parts = [f"异常{('（' + context + '）') if context else ''} {type(err).__name__}: {err}"]
     details = com_details(err)

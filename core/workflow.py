@@ -3836,6 +3836,7 @@ def quick_task_workflow(kind: str) -> None:
     watchdog = ExcelWatchdog(lambda: log_msg(
         "⚠️ 后台 Excel 弹出了没人能点的提示框，已结束本任务专用 Excel" if watchdog.dialog else
         "⚠️ 后台 Excel 长时间无进展，已结束本任务专用 Excel"))
+    watchdog.file_limit = file_problem.file_limit_seconds  # 进度框里设的「每份最多几分钟」
 
     def get_excel() -> Any:
         # 按需启动 Excel：精简 Sheet 时没有备份表的文件无需打开
@@ -3858,7 +3859,11 @@ def quick_task_workflow(kind: str) -> None:
                 if str(wb_path) in job["completed"]:
                     continue
                 wb_label = workbook_rel_name(wb_path, folder)
-                watchdog.progress()
+                if watchdog.stop_requested is True:  # 进度框点了「结束整个任务」：剩下的不做，任务停成「可继续」
+                    log_msg(f"⏹ 你点了结束整个任务：从 {wb_label} 起后面的没做，可以点「继续上次任务」接着做")
+                    break
+                if watchdog.file(wb_label) and excel is not None:  # 进度框能「跳过这一份」；上一份跳过时 Excel 已结束
+                    excel = None
                 debug_log.begin(f"{task_name} {workbooks.index(wb_path) + 1} / {len(workbooks)}：{wb_label}")
                 log_msg(f"正在处理: {wb_label} ...")
                 update_file_progress(
@@ -3875,7 +3880,8 @@ def quick_task_workflow(kind: str) -> None:
                             break
                         except Exception as err:
                             used_pdf_paths.intersection_update(used_before)
-                            message = file_problem.message_for(err, watchdog)
+                            skipped = watchdog.take_skip()  # 用户点了「跳过这一份」/ 超过每份时间上限：不问
+                            message = skipped or file_problem.message_for(err, watchdog)
                             # Excel 崩溃或被看门狗结束后不把失效实例带给后续文件，也别让它占着文件（用户要打开修）
                             if excel is not None:
                                 try:
@@ -3883,7 +3889,7 @@ def quick_task_workflow(kind: str) -> None:
                                 except Exception:
                                     pass
                                 excel = None
-                            if not file_problem.should_ask(err, message):
+                            if skipped or not file_problem.should_ask(err, message):
                                 raise RuntimeError(message) from err
                             flush_deferred(0)  # 等人选的时候可能很久，先把记录存好
                             log_msg(f"⏸ {wb_label} 出错，等你选择重试还是跳过：{message}")

@@ -8,6 +8,10 @@
 //   JobPanel.finish(id, { title, now, step, log, warn })  —— 跑完了（只有这一页看到它在跑、还没点「知道了」才显示）
 // id 是这一类任务的名字（如 'batch'、'repair:links'）；log 每条 { ok, name, reason, path, sheet, folder }。
 // 页面底部有悬浮条时，在 body 上设 --job-panel-bottom 让框浮在悬浮条上面。
+// 跑着的时候有「⏭ 跳过这一份」（用户 2026-11-11 要：耗时太长的文件可以跳过）：结束正在做这份的后台 Excel，
+// 任务记下「手动跳过」接着做下一份；旁边可以设「每份超过几分钟自动跳过」（0 = 不自动，存在后台）。
+// 「⏹ 结束整个任务」：正在做的这份马上停，后面的都不做（记成「没做」），主页一类任务停成「可继续上次任务」。
+// 页面传 skip: false 可以不显示（这个任务没有用 Excel 一份份处理的步骤）。
 (function () {
   const OPEN_KEY = 'clear_handle_excel.jobPanel.open';   // sessionStorage：正在显示哪个任务（刷新页面还接着显示）
   const FOLD_KEY = 'clear_handle_excel.jobPanel.folded'; // localStorage：收起成一行的偏好
@@ -48,6 +52,13 @@
         <p class="job-panel-now"></p>
         <p class="job-panel-step"></p>
         <div class="progress-track"><div class="progress-fill" style="width: 0%;"></div></div>
+        <div class="job-panel-skip" hidden>
+          <button type="button" class="job-panel-btn" data-job-skip title="这一份太慢不想等：结束后台 Excel，这份这次不做，接着做下一份">⏭ 跳过这一份</button>
+          <button type="button" class="job-panel-btn job-panel-stop" data-job-stop title="整个任务不做了：正在做的这份马上停，后面的都不做，做好的保留">⏹ 结束整个任务</button>
+          <label class="job-panel-limit" title="批量处理时一份文件做了这么久还没做完，就自动跳过（扫描查看切字有自己的时间上限，不看这个）">每份超过
+            <input type="number" min="0" max="1440" step="1" inputmode="numeric" data-job-limit> 分钟自动跳过
+            <span class="job-panel-limit-note">（0 = 不自动）</span></label>
+        </div>
         <p class="job-panel-tally"><span class="is-ok">✓ 0</span><span class="is-bad is-zero">! 0</span><span class="job-panel-hint">点文件名在 Excel 打开</span></p>
         <ul class="job-panel-log"></ul>
         <div class="job-panel-foot" hidden><button type="button" class="btn btn-primary" data-job-close>知道了</button></div>
@@ -61,6 +72,13 @@
     el.ok = box.querySelector('.job-panel-tally .is-ok');
     el.bad = box.querySelector('.job-panel-tally .is-bad');
     el.fold = box.querySelector('[data-job-fold]');
+    el.skipRow = box.querySelector('.job-panel-skip');
+    el.skip = box.querySelector('[data-job-skip]');
+    el.limit = box.querySelector('[data-job-limit]');
+    el.skip.addEventListener('click', skipCurrent);
+    el.stop = box.querySelector('[data-job-stop]');
+    el.stop.addEventListener('click', stopTask);
+    el.limit.addEventListener('change', saveLimit);
     el.fold.addEventListener('click', () => setFold(!box.classList.contains('is-folded'), true));
     box.querySelector('[data-job-close]').addEventListener('click', close);
     setFold(store.get('localStorage', FOLD_KEY) === '1', false);
@@ -119,6 +137,96 @@
     current = ''; state = '';
   }
 
+  // ---- 跳过这一份 / 每份超过几分钟自动跳过 ----
+  const say = (msg, tone = 'info') => (window.appAlert ? window.appAlert(msg, { tone }) : Promise.resolve(alert(msg)));
+  async function api(url, body) {
+    const res = await fetch(url, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false && data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  }
+  let limitLoaded = false;
+  async function loadLimit() {
+    if (limitLoaded) return;
+    limitLoaded = true;
+    try {
+      const data = await api('/api/job/skip');
+      if (document.activeElement !== el.limit) el.limit.value = data.settings?.file_limit_minutes ?? 0;
+    } catch (err) {
+      limitLoaded = false;
+      console.warn('📋 读不到每份自动跳过的设置', err);
+    }
+  }
+  async function saveLimit() {
+    const minutes = Number(el.limit.value);
+    if (!Number.isInteger(minutes) || minutes < 0 || minutes > 1440) {
+      await say('每份最多几分钟要填 0–1440 之间的整数（0 = 不自动跳过）', 'warn');
+      limitLoaded = false; loadLimit();
+      return;
+    }
+    try {
+      const data = await api('/api/job/skip/settings', { file_limit_minutes: minutes });
+      el.limit.value = data.settings.file_limit_minutes;
+      console.info('📋 每份超过几分钟自动跳过', { 分钟: minutes || '不自动' });
+    } catch (err) {
+      say(`没能保存：${err.message}`, 'error');
+    }
+  }
+  async function skipCurrent() {
+    if (el.skip.disabled) return;
+    el.skip.disabled = true;
+    try {
+      const now = await api('/api/job/skip');
+      if (!now.skippable) {
+        console.info('📋 点了跳过这一份，但现在不能跳过', now);
+        await say(now.running
+          ? '现在这一步不能跳过（正在保存文件或做收尾，跳过会弄坏文件），等这一步做完再点。'
+          : '这一步没有在用 Excel 一份份处理文件，不能跳过，等它做完就好。');
+        return;
+      }
+      const mins = Math.floor((now.seconds || 0) / 60);
+      const ok = await (window.appConfirm || (m => Promise.resolve(confirm(m))))(
+        `跳过「${now.label}」？\n\n这份已经做了 ${mins ? `${mins} 分钟` : `${now.seconds || 0} 秒`}。`
+        + '会结束后台 Excel，这份这次不做（没做完的不会保存进文件），结果里写「手动跳过」，之后可以单独再做。\n后面的文件接着做。',
+        { title: '跳过这一份', okText: '跳过', cancelText: '接着等', tone: 'warn' });
+      if (!ok) return;
+      const res = await api('/api/job/skip', { label: now.label });
+      console.info('📋 跳过这一份', res);
+      if (!res.ok) await say(res.reason || '没能跳过', 'warn');
+      else el.skip.textContent = '⏭ 正在跳过…';
+    } catch (err) {
+      say(`没能跳过：${err.message}`, 'error');
+    } finally {
+      setTimeout(() => { el.skip.disabled = stopping; el.skip.textContent = '⏭ 跳过这一份'; }, 2500);
+    }
+  }
+
+  let stopping = false;
+  async function stopTask() {
+    if (stopping) return;
+    const ok = await (window.appConfirm || (m => Promise.resolve(confirm(m))))(
+      `结束「${el.title.textContent}」？\n\n${el.count.textContent ? `现在做到${el.count.textContent}。` : ''}`
+      + '正在做的这份马上停（会结束后台 Excel，没做完的不保存），后面的都不做；已经做好的保留。\n'
+      + '没做的在结果里写「没做」。主页上的任务（导出 PDF、精简等）之后可以点「继续上次任务」接着做。',
+      { title: '结束整个任务', okText: '结束', cancelText: '接着做', tone: 'danger' });
+    if (!ok) return;
+    try {
+      const res = await api('/api/job/stop', {});
+      console.info('📋 结束整个任务', res);
+      stopping = true;
+      el.stop.disabled = el.skip.disabled = true;
+      el.stop.textContent = '⏹ 正在结束…';
+    } catch (err) {
+      say(`没能结束：${err.message}`, 'error');
+    }
+  }
+  function resetStop() {
+    if (!el.stop) return;
+    stopping = false;
+    el.stop.disabled = el.skip.disabled = false;
+    el.stop.textContent = '⏹ 结束整个任务';
+  }
+
   function line(item) {
     const label = esc(item.name || '');
     const target = item.path || item.file ? { file: item.path || item.file, folder: item.folder || folder, sheet: item.sheet || '' } : null;
@@ -154,6 +262,7 @@
     if (current !== id || state !== 'running') {
       // 新的一次（或上一次已经结束）：清空重来
       logSig = '';
+      resetStop();
       el.track.classList.remove('is-done');
       el.foot.hidden = true;
       box.classList.remove('is-waiting');
@@ -176,6 +285,8 @@
     el.now.textContent = s.now || '准备中…';
     el.step.textContent = s.step ? `▸ ${s.step}` : '';
     box.classList.toggle('is-waiting', !!s.waiting);
+    el.skipRow.hidden = s.skip === false;
+    if (s.skip !== false) loadLimit();
     const fraction = Math.max(0, Math.min(1, Number(s.fraction) || 0));
     el.fill.style.width = `${(fraction * 100).toFixed(1)}%`;
     // etaKey：和页面上同一条进度共用一份预估记录，两处显示的时间就一样；etaLabel 写明算的是什么
@@ -201,6 +312,8 @@
     box.hidden = false;
     window.ProgressEta?.update(el.fill, `job_panel:${id}`, 1, false);
     el.track.classList.add('is-done'); // 进度条收起，只留结果
+    el.skipRow.hidden = true;
+    resetStop();
     el.icon.textContent = warn ? '!' : '✓';
     el.title.textContent = s.title || (warn ? '做完了，有要看一下的' : '做完了');
     el.count.textContent = '';

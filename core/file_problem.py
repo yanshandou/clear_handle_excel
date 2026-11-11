@@ -76,6 +76,43 @@ def set_settings(timeout_minutes: Any) -> dict[str, Any]:
     return dict(settings)
 
 
+SLOW_SETTINGS_NAME = "slow_file_settings"
+_slow_cache: dict[str, Any] | None = None
+
+
+def get_slow_settings() -> dict[str, Any]:
+    """file_limit_minutes：批量任务里一份文件最多做几分钟，超过自动跳过；0 = 不限（默认）。进度框里改"""
+    global _slow_cache
+    if _slow_cache is None:
+        saved: dict[str, Any] = {}
+        try:
+            from core import storage
+            saved = storage.load_snapshot(SLOW_SETTINGS_NAME) or {}
+        except Exception as err:
+            debug_log.event("⚠️ 没能读出慢文件自动跳过设置，按不限处理", 原因=str(err))
+        minutes = saved.get("file_limit_minutes", 0)
+        _slow_cache = {"file_limit_minutes": minutes if isinstance(minutes, int) and not isinstance(minutes, bool)
+                       and 0 <= minutes <= MAX_TIMEOUT_MINUTES else 0}
+    return dict(_slow_cache)
+
+
+def set_slow_settings(file_limit_minutes: Any) -> dict[str, Any]:
+    global _slow_cache
+    if (isinstance(file_limit_minutes, bool) or not isinstance(file_limit_minutes, int)
+            or not 0 <= file_limit_minutes <= MAX_TIMEOUT_MINUTES):
+        raise ValueError(f"每份最多几分钟要填 0–{MAX_TIMEOUT_MINUTES} 之间的整数（0 = 不限）")
+    from core import storage
+    settings = {"file_limit_minutes": file_limit_minutes}
+    storage.save_snapshot(SLOW_SETTINGS_NAME, settings)
+    _slow_cache = dict(settings)
+    debug_log.event("⚙️ 慢文件自动跳过设置", 每份最多分钟=file_limit_minutes or "不限")
+    return dict(settings)
+
+
+def file_limit_seconds() -> float:
+    return get_slow_settings()["file_limit_minutes"] * 60.0
+
+
 def begin(name: str) -> None:
     """一个批量任务开始：任务名显示在弹框上，「后面都跳过」只在这次任务里有效"""
     with _COND:
@@ -217,6 +254,7 @@ class Guard:
         self.watchdog = ExcelWatchdog(
             lambda: debug_log.event(f"⚠️ {title}：后台 Excel 弹出了没人能点的提示框，已结束它", 内容=self.watchdog.dialog),
             timeout=86400)
+        self.watchdog.file_limit = file_limit_seconds
         self.watchdog.start()
 
     def watch(self, excel: Any) -> Any:
@@ -230,11 +268,32 @@ class Guard:
     def progress(self) -> None:
         self.watchdog.progress()
 
+    def file(self, label: str | None) -> bool:
+        """每份文件开始时调（要放在 try 里面：点了「结束整个任务」时抛 TaskStopped，problem() 记成「没做」）（label = 显示给用户的名字），进度框的「跳过这一份」就能跳过它。
+        返回真：上一份点了跳过、后台 Excel 已经结束（那份没报错就做完了），调用方要把 Excel 置空重开"""
+        stale = self.watchdog.file(label)
+        if stale:
+            self.closed = True
+        return stale
+
     def problem(self, err: BaseException, path: str | Path, label: str, folder: str | Path,
                 close: Callable[[], None] | None = None) -> tuple[bool, str]:
         """返回 (要不要重试, 出错原因)。close 关掉后台 Excel：要问用户时先关（别占着文件），
         Excel 报的错也关（可能已经坏了，下一份换新的）；程序自己的检查结论（ValueError）不关。
         关了的话 self.closed 为真，调用方把手里的 Excel 置空、下次重开"""
+        from core.excel_watchdog import NOT_DONE_REASON, TaskStopped
+        skipped = self.watchdog.take_skip()
+        if not skipped and (isinstance(err, TaskStopped) or self.watchdog.stop_requested):
+            skipped = NOT_DONE_REASON
+        if skipped:  # 用户在进度框点了「跳过这一份」/「结束整个任务」：不问，直接跳过
+            self.closed = True
+            if close is not None:
+                try:
+                    close()
+                except Exception:
+                    pass
+            debug_log.event("⏭ 按用户要求跳过这份", 任务=self.title, 文件=label, 原因=skipped)
+            return False, skipped
         message = message_for(err, self.watchdog)
         asking = should_ask(err, message)
         self.closed = asking or not isinstance(err, ValueError)

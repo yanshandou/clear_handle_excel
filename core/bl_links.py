@@ -219,8 +219,9 @@ def _run(phase: str, folder: str, targets: list) -> None:
                     entry = {**target, "cells": []}
                     name = entry["name"]
                 _progress(index, name, len(targets))
-                guard.progress()
                 try:
+                    if guard.file(name):  # 进度框能「跳过这一份」
+                        excel = None
                     if excel is None:
                         excel = guard.watch(start_background_excel())
                     if phase == "scan":

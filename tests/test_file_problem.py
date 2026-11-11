@@ -145,5 +145,60 @@ class DialogWatchTests(unittest.TestCase):
         killed.assert_not_called()
 
 
+class GuardSkipTests(unittest.TestCase):
+    def test_user_skip_does_not_ask_and_drops_excel(self):
+        from core import excel_watchdog
+        guard = file_problem.Guard("批量导出同名 PDF")
+        try:
+            with patch("core.excel_watchdog._owned_process", return_value=(Mock(), Mock())):
+                guard.watch(object())
+            self.assertFalse(guard.file("a.xlsx"))
+            self.assertTrue(excel_watchdog.request_skip("a.xlsx")["ok"])
+            close = Mock()
+            with patch.object(file_problem, "ask") as ask:
+                retry, message = guard.problem(RuntimeError("RPC サーバーを利用できません"), "/d/a.xlsx", "a.xlsx", "/d",
+                                               close=close)
+            ask.assert_not_called()
+            close.assert_called_once()
+            self.assertFalse(retry)
+            self.assertTrue(guard.closed)
+            self.assertIn("跳过这一份", message)
+        finally:
+            guard.stop()
+        self.assertFalse(excel_watchdog.current()["running"])
+
+    def test_stopped_task_records_rest_as_not_done_without_asking(self):
+        from core import excel_watchdog
+        guard = file_problem.Guard("统一字体")
+        try:
+            excel_watchdog.request_stop()
+            with self.assertRaises(excel_watchdog.TaskStopped) as caught:
+                guard.file("b.xlsx")
+            with patch.object(file_problem, "ask") as ask:
+                retry, message = guard.problem(caught.exception, "/d/b.xlsx", "b.xlsx", "/d")
+            ask.assert_not_called()
+            self.assertFalse(retry)
+            self.assertEqual(message, excel_watchdog.NOT_DONE_REASON)
+        finally:
+            guard.stop()
+
+    def test_clean_chain_skips_later_steps_after_stop(self):
+        from core import clean_chain, excel_watchdog
+        with patch.object(clean_chain, "_chain_stop_seq", excel_watchdog.stop_seq()):
+            self.assertFalse(clean_chain._stopped())
+            excel_watchdog.request_stop()
+            self.assertTrue(clean_chain._stopped())
+
+    def test_slow_settings_validated(self):
+        for bad in (-1, 1441, "5", True, 1.5):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                file_problem.set_slow_settings(bad)
+        with patch("core.storage.save_snapshot") as save:
+            self.assertEqual(file_problem.set_slow_settings(30), {"file_limit_minutes": 30})
+        save.assert_called_once()
+        self.assertEqual(file_problem.file_limit_seconds(), 1800)
+        file_problem._slow_cache = None
+
+
 if __name__ == "__main__":
     unittest.main()
