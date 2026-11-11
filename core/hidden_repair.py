@@ -25,6 +25,7 @@ MAX_CONTENT_CELLS = 1_000_000
 _LOCK = threading.RLock()
 _STATUS: dict[str, Any] = {"running": False}
 DEFAULT_OPTIONS = {"sheets": True, "columns": True, "narrow": True}
+WIDTH_OPTIONS = {"sheets": False, "columns": False, "narrow": False, "widths": True}
 
 
 def list_workbooks(folder: str) -> tuple[Path, list[Path]]:
@@ -148,7 +149,7 @@ def snapshot(excel: Any, path: Path, options: dict, *, history_path: Path | None
             except Exception as error:
                 item["content_error"] = str(error)
             sheets.append(item)
-        if options["columns"] or options["narrow"]:
+        if options["columns"] or options["narrow"] or options.get("widths"):
             try:
                 source_path = path
                 if path.suffix.lower() not in {".xlsx", ".xlsm"}:
@@ -192,7 +193,8 @@ def plan_changes(current: dict, old: dict, options: dict, history: sheet_history
         if options["sheets"] and source["visible"] in (HIDDEN, VERY_HIDDEN) and sheet["visible"] == VISIBLE:
             candidates.append({**base, "before": VISIBLE, "value": source["visible"], "current_state": "工作表可见",
                                "old_state": "工作表深度隐藏" if source["visible"] == VERY_HIDDEN else "工作表隐藏"})
-        if options["columns"] or options["narrow"]:
+        widths = options.get("widths", False)
+        if options["columns"] or options["narrow"] or widths:
             if sheet["columns_error"] or source["columns_error"]:
                 result.append({**base, "kind": "columns", "action": "skip", "current_state": "列状态待核对", "old_state": "读取失败",
                                "reason": sheet["columns_error"] or source["columns_error"]})
@@ -200,21 +202,32 @@ def plan_changes(current: dict, old: dict, options: dict, history: sheet_history
                 index = 0
                 for original in source["columns"]:
                     hidden = original["hidden"]
-                    if not ((hidden and options["columns"]) or (not hidden and options["narrow"] and 0 < original["width"] <= NARROW_WIDTH)):
+                    if hidden:
+                        kind = "columns" if options["columns"] else None
+                    elif widths:
+                        kind = "width"
+                    else:
+                        kind = "narrow" if options["narrow"] and 0 < original["width"] <= NARROW_WIDTH else None
+                    if kind is None:
                         continue
                     while index < len(sheet["columns"]) and sheet["columns"][index]["last"] < original["first"]:
                         index += 1
                     for present in sheet["columns"][index:]:
                         if present["first"] > original["last"]:
                             break
-                        if present["hidden"] or (not hidden and present["width"] <= original["width"] + 0.05):
+                        if present["hidden"]:
+                            continue
+                        if kind == "width" and abs(present["width"] - original["width"]) < 0.001:
+                            continue
+                        if kind == "narrow" and present["width"] <= original["width"] + 0.05:
                             continue
                         first, last = max(original["first"], present["first"]), min(original["last"], present["last"])
-                        candidates.append({**base, "kind": "columns" if hidden else "narrow", "first": first, "last": last,
+                        candidates.append({**base, "kind": kind, "first": first, "last": last,
                                            "addr": column_address(first, last), "anchor": f"{col_index_to_letters(first)}1",
                                            "before": present["width"], "value": None if hidden else original["width"],
                                            "current_state": f"可见，列宽 {present['width']:g}",
-                                           "old_state": "隐藏列" if hidden else f"超窄列，列宽 {original['width']:g}"})
+                                           "old_state": ("隐藏列" if hidden else f"超窄列，列宽 {original['width']:g}"
+                                                         if kind == "narrow" else f"列宽 {original['width']:g}")})
         for item in candidates:
             reason = sheet["content_error"] or source["content_error"]
             if not reason and sheet["signature"] != source["signature"]:
@@ -308,10 +321,10 @@ def apply_file(excel: Any, file: dict) -> list[dict]:
             raise ValueError("至少需要保留一张可见工作表，本文件没有保存")
         check_versions(opened_stamp)
         book.Save()
-        debug_log.saved_excel("修复隐藏页", path)
+        debug_log.saved_excel("修复列宽" if any(item["kind"] == "width" for item in ready) else "修复隐藏页", path)
     finally:
         book.Close(SaveChanges=False)
-    return [{**item, "status": "ok", "reason": "已恢复备份列宽（仍为可见列）" if item["kind"] == "narrow" else "已恢复备份隐藏状态"}
+    return [{**item, "status": "ok", "reason": "已恢复备份列宽（仍为可见列）" if item["kind"] in {"narrow", "width"} else "已恢复备份隐藏状态"}
             for item in ready]
 
 

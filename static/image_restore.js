@@ -23,7 +23,7 @@
 
   function controls() {
     const busy = loading || submitting || latest.running;
-    for (const id of ['imgFolder', 'imgOldFolder', 'imgPdfFolder', 'imgScan', 'imgGroup', 'imgGroupOnFix']) $(id).disabled = !!busy;
+    for (const id of ['imgFolder', 'imgOldFolder', 'imgPdfFolder', 'imgScan', 'imgWidths', 'imgGroup', 'imgGroupOnFix']) $(id).disabled = !!busy;
     const left = pending().length;
     $('imgFixAll').hidden = !result()?.scanned || !left;
     $('imgFixAll').disabled = !!busy;
@@ -39,13 +39,20 @@
     $('imgFill').style.width = `${Math.round((running ? fraction : 1) * 100)}%`;
     $('imgTrack').hidden = !running;
     window.ProgressEta?.update($('imgFill'), 'image_restore_' + (latest.mode || 'scan'), fraction, running);
-    const verb = { fix: '修复', group: '组合' }[latest.mode] || '查找';
+    const verb = { fix: '修复', group: '组合', widths: '修复列宽' }[latest.mode] || '查找';
     if (running) {
       $('imgProgress').textContent = `正在${verb} ${Math.min(done + 1, total)} / ${total} 份：${latest.current || '正在启动后台 Excel…'}` + (latest.step ? ` · ${latest.step}` : '');
       return;
     }
     const files = result()?.files || [];
     const bad = files.filter(f => f.error).length;
+    if (result()?.mode === 'widths') {
+      const restored = files.reduce((sum, f) => sum + (f.width_count || 0), 0);
+      const review = files.filter(f => f.widths_skipped?.length).length;
+      $('imgProgress').textContent = `列宽修复完成，已恢复 ${restored} 列`
+        + (review ? `，${review} 份有工作表待核对` : '') + (bad ? `，${bad} 份没处理` : '');
+      return;
+    }
     const hit = files.filter(f => !f.error && f.count).length;
     const fixed = files.filter(f => f.fixed).length;
     const grouped = files.filter(f => f.grouped).length;
@@ -59,7 +66,7 @@
   function renderPanel() {
     if (!window.JobPanel || (!latest.running && !latest.result)) return;
     const log = latest.log || [];
-    const verb = { fix: '修复图片', group: '组合截图和标注' }[latest.mode] || '找受影响的图片';
+    const verb = { fix: '修复图片', group: '组合截图和标注', widths: '修复列宽' }[latest.mode] || '找受影响的图片';
     if (latest.running) {
       window.JobPanel.run('image_restore', {
         title: `正在${verb}`, count: window.JobPanel.count(latest.done, latest.total, '份 Excel'),
@@ -69,8 +76,9 @@
     } else if (log.length) {
       const bad = log.filter(i => !i.ok).length;
       window.JobPanel.finish('image_restore', {
-        title: `${verb}做完了${bad ? `，${bad} 份没处理` : ''}`, log, folder: latest.folder || '', warn: bad > 0,
-        step: bad ? '黄色的是没处理的，原因写在后面；点文件名在 Excel 打开。' : '',
+        title: `${verb}做完了${bad ? `，${bad} 份${latest.mode === 'widths' ? '有待核对项' : '没处理'}` : ''}`,
+        log, folder: latest.folder || '', warn: bad > 0,
+        step: bad ? '黄色条目有待核对项。点文件名在 Excel 打开。' : '',
       });
     }
   }
@@ -213,6 +221,23 @@
     if (!data) { $('imgResults').innerHTML = '<p>尚未开始。</p>'; $('imgResultFolder').textContent = ''; return; }
     $('imgResultFolder').textContent = `新版：${data.folder}` + (data.old_folder ? ` · 原版：${data.old_folder}` : '') + (data.pdf_folder ? ` · PDF：${data.pdf_folder}` : '');
     const files = data.files || [];
+    if (data.mode === 'widths') {
+      $('imgResults').innerHTML = '<ul class="font-list">' + files.map(f => {
+        const link = f.path ? window.excelLinkHtml(esc(f.name), { file: f.name, folder: data.folder }) : esc(f.name);
+        const needsReview = f.error || f.widths_skipped?.length;
+        const details = (f.widths || []).map(item =>
+          `<li>${esc(item.sheet)} · ${esc(item.addr)} · ${esc(item.before)} → ${esc(item.value)}</li>`);
+        for (const item of f.widths_skipped || []) {
+          details.push(`<li>${esc(item.sheet)}${item.kind === 'width' ? ` · ${esc(item.addr)}` : ''} · ${esc(item.reason)}</li>`);
+        }
+        const summary = f.width_count ? `已恢复 ${f.width_count} 列` : (needsReview ? '未恢复列宽' : '可比较的列宽一致');
+        return `<li class="font-item ${needsReview ? 'is-bad' : 'is-ok'}"><span class="font-mark">${needsReview ? '!' : '✓'}</span><span class="font-name">${link}</span>`
+          + (f.error ? `<span class="font-error">${esc(f.error)}</span>` : details.length
+            ? `<details class="font-detail"><summary>${summary}${needsReview ? '，有待核对项' : ''}</summary><ul>${details.join('')}</ul></details>`
+            : `<span class="font-detail">${summary}</span>`) + '</li>';
+      }).join('') + '</ul>';
+      return;
+    }
     if (!data.scanned) {  // 只组合（没先找）：列出每份组合了几组
       const link = f => f.path ? window.excelLinkHtml(esc(f.name), { file: f.name, folder: data.folder }) : esc(f.name);
       const rows = files.filter(f => f.error || f.grouped).map(f => f.error
@@ -320,6 +345,14 @@
         { title: '修复图片', okText: '开始修复' });
       if (!okGo) return;
     }
+    if (mode === 'widths') {
+      const okGo = await window.appConfirm(
+        '要按参考文件恢复所选 Excel 的列宽并保存吗？\n\n'
+        + '会恢复两份文件里都可见、宽度不同的对应列。工作表无法配对、内容或位置有差异时会列为待核对。\n\n'
+        + 'Excel 会按图形原有的锚定方式重新布局，自动行高也可能随之重算。修复后可以重新查找受影响的图片。\n\n请先保存并关闭要处理的 Excel。',
+        { title: '修复列宽', okText: '恢复列宽并保存' });
+      if (!okGo) return;
+    }
     submitting = true; controls();
     console.info('🖼️ 图片任务开始', { 动作: mode, 新版: folder, 原版: oldFolder, PDF: pdfFolder || '(Excel 旁边)', 份数: names?.length || '全部' });
     try {
@@ -341,6 +374,7 @@
   }
 
   $('imgScan').addEventListener('click', () => start('scan'));
+  $('imgWidths').addEventListener('click', () => start('widths'));
   $('imgFixAll').addEventListener('click', () => start('fix', pending().map(f => f.name)));
   $('imgGroup').addEventListener('click', () => start('group'));
   $('imgGroupOnFix').addEventListener('change', () => { try { localStorage.setItem(GROUP, $('imgGroupOnFix').checked ? '1' : '0'); } catch (_) {} });

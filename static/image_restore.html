@@ -79,9 +79,11 @@
       </div>
       <div class="link-actions">
         <button id="imgScan" class="btn btn-primary" type="button" disabled>🔍 找出受影响的图片</button>
+        <button id="imgWidths" class="btn btn-outline" type="button" disabled>修复列宽</button>
         <button id="imgFixAll" class="btn btn-secondary" type="button" disabled hidden>🖼️ 全部修复</button>
         <button id="imgGroup" class="btn btn-outline" type="button" disabled title="不对照原版，直接把新版文件夹里互相重叠、挨着的图形（截图和上面的标注、用图形拼出来的画面）都组合起来。已经被拉坏的请先修复，否则会按坏的样子组合">📌 只组合（挨着的图形都合）</button>
       </div>
+      <p class="toolbar-hint">如果调整列宽后截图和红框跑偏，可以先按原版修复列宽，再查找受影响的图片。</p>
       <label class="img-group-opt"><input id="imgGroupOnFix" type="checkbox" checked> 修复时顺便把互相重叠、挨着的图形（截图和上面的红框、箭头，用图形拼出来的画面）<b>永久组合</b>（推荐：组合设成「随单元格移动、不改变大小」，以后再调行高列宽、导出 PDF 都不会错开）</label>
       <p class="toolbar-hint">修复前请先保存并关闭要处理的 Excel。关闭网页后任务继续；刷新页面可查看进度与结果。</p>
       <p id="imgProgress" role="status" aria-live="polite">填写文件夹后点「找出受影响的图片」。</p>

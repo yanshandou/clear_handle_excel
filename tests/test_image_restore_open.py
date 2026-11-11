@@ -62,6 +62,21 @@ class OpenDuringScanRequestTest(unittest.TestCase):
                 self.post("/api/excel/open", {"file": "a.xlsx", "folder": self.folder})
         opener.assert_not_called()
 
+    def test_width_repair_starts_with_reference_and_without_pdf(self):
+        web.STATE.update(busy=False, job=None)
+        web.STATE.pop("maintenance", None)
+        ir._STATUS["running"] = False
+        with patch.object(ir.threading, "Thread") as worker:
+            response = self.post("/api/image_restore/run", {
+                "folder": self.folder, "old_folder": str(self.old.parent), "mode": "widths",
+                "pdf_folder": str(self.new.parent / "missing-pdf-directory"),
+            })
+            worker.return_value.start.assert_called_once()
+        self.assertTrue(response["ok"])
+        self.assertEqual(ir.status()["mode"], "widths")
+        self.assertEqual(ir.status()["old_folder"], str(self.old.parent))
+        self.assertEqual(ir.status()["pdf_folder"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

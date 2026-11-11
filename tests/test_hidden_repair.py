@@ -98,6 +98,19 @@ class HiddenPlanTests(unittest.TestCase):
         old = book(sheet(columns=[run(1, 1, width=0.25), run(2, 2, True), run(3, 3, width=0.5), run(4, 10, width=2)]))
         self.assertEqual(self.plan(current, old), [])
 
+    def test_width_repair_restores_wider_and_narrower_visible_columns(self):
+        current = book(sheet(columns=[run(1, 3, width=5), run(4, 4, True), run(5, 8, width=16), run(9, 10)]))
+        old = book(sheet(columns=[run(1, 2, width=12), run(3, 3, True), run(4, 4), run(5, 6),
+                                  run(7, 7, width=0.25), run(8, 10, width=16)]))
+        plan = repair.plan_changes(current, old, repair.WIDTH_OPTIONS)
+        self.assertEqual([(item["addr"], item["before"], item["value"]) for item in plan],
+                         [("A:B", 5, 12), ("E:F", 16, 8.43), ("G:G", 16, 0.25), ("I:J", 8.43, 16)])
+        self.assertTrue(all(item["action"] == "restore" and item["kind"] == "width" for item in plan))
+
+        current["sheets"][0]["signature"] = "moved"
+        plan = repair.plan_changes(current, old, repair.WIDTH_OPTIONS)
+        self.assertTrue(plan and all(item["action"] == "skip" for item in plan))
+
     def test_content_formula_position_changes_or_failed_reads_are_never_hidden(self):
         for changes in ({"signature": "shifted"}, {"content_error": "使用区域超过 100 万格"}):
             with self.subTest(changes=changes):
@@ -194,6 +207,16 @@ class HiddenWriteTests(unittest.TestCase):
         self.assertEqual(self.backup.read_bytes(), b"backup")
         self.workbook.Save.assert_called_once()
         self.workbook.Close.assert_called_once_with(SaveChanges=False)
+
+    def test_widths_only_apply_preserves_hidden_columns(self):
+        self.sheet.hidden[2] = True
+        self.file["cells"] = [{"sheet": "Main", "kind": "width", "addr": "C:D", "first": 3, "last": 4,
+                               "before": 8.43, "value": 18, "action": "restore"}]
+        result = repair.apply_file(Mock(), self.file)
+        self.assertEqual(result[0]["status"], "ok")
+        self.assertEqual(self.sheet.widths, {3: 18, 4: 18})
+        self.assertEqual(self.sheet.hidden, {2: True})
+        self.workbook.Save.assert_called_once()
 
     def test_changed_backup_open_target_readonly_content_or_column_drift_are_not_saved(self):
         for failure in ("backup", "locked", "readonly", "content", "width"):

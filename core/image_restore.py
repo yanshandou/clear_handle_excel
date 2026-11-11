@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core import debug_log, file_problem, fix_images, print_overlays, progress_log, workflow as wf
+from core import debug_log, file_problem, fix_images, hidden_repair, print_overlays, progress_log, workflow as wf
 from core import workbook_scope
 from core.backup_compare import pair_files, require_manual_file_check
 from core.reference_folders import ReferenceFolders, ReferenceIndex, prepare as prepare_references, unmatched
@@ -39,10 +39,10 @@ from core.shape_geometry import PICTURES, _unique, apply_sheet, diagnose, overla
 
 _LOCK = threading.RLock()
 _STATUS: dict[str, Any] = {"running": False}
+_TASK_NAMES = {"scan": "找出受影响的图片", "fix": "修复图片", "group": "组合截图和标注", "widths": "修复列宽"}
 
 
 def list_workbooks(folder: str) -> tuple[Path, list[Path]]:
-    from core import hidden_repair
     return hidden_repair.list_workbooks(folder)
 
 
@@ -501,9 +501,28 @@ def group_workbook(excel: Any, path: Path, on_sheet=None) -> dict:
     return {"count": 0, "sheets": [], "grouped": sum(len(g["groups"]) for g in grouped), "group_sheets": grouped}
 
 
+def repair_widths(excel: Any, path: Path, old_path: Path, on_apply) -> dict:
+    plan = hidden_repair.plan_file(excel, path, old_path, hidden_repair.WIDTH_OPTIONS)
+    skipped = [item for item in plan["cells"] if item["action"] == "skip"]
+    changes = []
+    if any(item["action"] == "restore" for item in plan["cells"]):
+        on_apply()
+        changes = hidden_repair.apply_file(excel, plan)
+        for item in changes:
+            debug_log.event("修复列宽", 文件=path.name, 表=item["sheet"], 列=item["addr"],
+                            修复前=item["before"], 修复后=item["value"])
+    return {"widths": changes, "widths_skipped": skipped,
+            "width_count": sum(item["last"] - item["first"] + 1 for item in changes)}
+
+
 def describe(entry: dict, mode: str = "fix") -> str:
     if entry.get("error"):
         return entry["error"]
+    if mode == "widths":
+        count = entry.get("width_count", 0)
+        skipped = entry.get("widths_skipped", [])
+        summary = f"已恢复 {count} 列" if count else "没有恢复列宽" if skipped else "可比较的列宽一致"
+        return summary + ("，有工作表待核对" if skipped else "")
     if mode == "scan":
         pages = sum(len((s.get("cols") or {}).get("new", [])) for s in entry.get("sheets", []))
         page_text = f"，有图片的表共 {pages} 页请看三列" if pages else ""
@@ -519,11 +538,11 @@ def describe(entry: dict, mode: str = "fix") -> str:
 def _run(mode: str, root: Path, paths: list[Path], old_root: Path | ReferenceIndex | None, old_paths: list[Path], pdf_root: Path | None,
          group: bool = True) -> None:
     """mode=scan：只找不改；mode=fix：改这几份（结果并进上次找出来的清单，标成已修复）；
-    mode=group：只把截图和标注永久组合，不对照原版（old_root 可以是 None）"""
+    mode=group：只把截图和标注永久组合；mode=widths：按参考文件恢复列宽"""
     files: list[dict] = []
     stamp = int(time.time())  # 局部截图地址带上它：查的过程中不变，页面重画不重新下载图
     excel, initialized = None, False
-    guard = file_problem.Guard({"scan": "找出受影响的图片", "fix": "修复图片", "group": "组合截图和标注"}[mode])
+    guard = file_problem.Guard(_TASK_NAMES[mode])
     try:
         wf.pythoncom.CoInitialize()
         initialized = True
@@ -534,7 +553,7 @@ def _run(mode: str, root: Path, paths: list[Path], old_root: Path | ReferenceInd
             name = workbook_rel_name(path, root)
             while True:
                 entry: dict[str, Any] = {"name": name, "path": str(path), "error": None, "count": 0, "sheets": []}
-                pdf = pdf_for(path, root, pdf_root)
+                pdf = pdf_for(path, root, pdf_root) if mode != "widths" else None
                 entry["pdf"] = str(pdf) if pdf else ""
                 with _LOCK:
                     _STATUS.update(done=index, current=name)
@@ -563,10 +582,19 @@ def _run(mode: str, root: Path, paths: list[Path], old_root: Path | ReferenceInd
                         entry.update(inspect_workbook(excel, path, old_path, on_sheet, pdf))
                     elif mode == "group":
                         entry.update(group_workbook(excel, path, on_sheet))
+                    elif mode == "widths":
+                        def on_apply() -> None:
+                            guard.progress()
+                            with _LOCK:
+                                progress_log.step(_STATUS, "正在恢复并核对列宽")
+
+                        with _LOCK:
+                            progress_log.step(_STATUS, "正在对照原版列宽与工作表内容")
+                        entry.update(repair_widths(excel, path, old_path, on_apply))
                     else:
                         entry.update(fix_workbook(excel, path, old_path, on_sheet, group))
                 except Exception as error:
-                    debug_log.exception(error, f"{'找受影响的图片' if mode == 'scan' else '修复图片'} {name}")
+                    debug_log.exception(error, f"{_TASK_NAMES[mode]} {name}")
                     retry, entry["error"] = guard.problem(error, path, name, root,
                                                           close=lambda: file_problem.quit_quietly(excel))
                     if guard.closed:
@@ -576,12 +604,14 @@ def _run(mode: str, root: Path, paths: list[Path], old_root: Path | ReferenceInd
                         continue
                 break
             files.append(entry)
-            debug_log.event("🖼️ 图片一份", 动作=mode, 文件=name, 图形=entry.get("count", 0), 组合=entry.get("grouped", 0),
+            debug_log.event(_TASK_NAMES[mode], 文件=name, 图形=entry.get("count", 0), 组合=entry.get("grouped", 0),
+                            恢复列数=entry.get("width_count", 0),
                             错误=entry["error"] or "",
                             PDF=entry["pdf"] or "-", 秒=round(time.perf_counter() - started, 2))
             wf.log_msg(f"🖼️ {name}：{describe(entry, mode)}")
             with _LOCK:
-                progress_log.add(_STATUS, name, not entry["error"], describe(entry, mode), path=str(path))
+                progress_log.add(_STATUS, name, not entry["error"] and not entry.get("widths_skipped"),
+                                 describe(entry, mode), path=str(path))
                 if mode == "scan":  # 边查边显示：查完一份就能在页面上看三列（用户 2026-11-11 要）
                     _STATUS["result"] = {"folder": str(root), "old_folder": str(old_root or ""), "pdf_folder": str(pdf_root or ""),
                                          "files": list(files), "mode": "scan", "scanned": True, "partial": True, "stamp": stamp}
@@ -611,7 +641,7 @@ def _merge(previous: dict | None, mode: str, root: Path, old_root: Path | Refere
            stamp: int | None = None) -> dict:
     """找的结果直接替换；修 / 组合的结果按文件名并进上次找到的清单（fixed / fix_error / fixed_count / grouped）"""
     base = {"folder": str(root), "old_folder": str(old_root or ""), "pdf_folder": str(pdf_root or ""), "files": files, "mode": mode}
-    if mode == "scan" or not previous or previous.get("folder") != str(root) or not previous.get("scanned"):
+    if mode in {"scan", "widths"} or not previous or previous.get("folder") != str(root) or not previous.get("scanned"):
         # stamp：局部截图地址带上，重新找过浏览器才换图；沿用查的过程中那个，查完不重新下载图（页面不跳）
         return {**base, "scanned": mode == "scan", "stamp": stamp or int(time.time())}
     def outcome(done: dict) -> dict:
@@ -634,9 +664,9 @@ def _merge(previous: dict | None, mode: str, root: Path, old_root: Path | Refere
 
 def start(folder: str, old_folder: str | ReferenceFolders, mode: str = "scan", names: Any = None, pdf_folder: Any = "",
           group: Any = True) -> None:
-    """mode=scan 找出受影响的图片（不改文件）；mode=fix 修复（group=True 顺便永久组合）；mode=group 只组合（不用原版）。
+    """找出受影响的图片、修复图形、只组合图形，或对照原版恢复列宽。
     names：只做这几份（文件名列表），不给就是全部"""
-    if mode not in {"scan", "fix", "group"}:
+    if mode not in _TASK_NAMES:
         raise ValueError("不认识的操作")
     if not isinstance(group, bool):
         raise ValueError("组合选项不对")
@@ -647,7 +677,7 @@ def start(folder: str, old_folder: str | ReferenceFolders, mode: str = "scan", n
             raise ValueError("请输入原版文件夹")
         old_root, old_paths = prepare_references(root, old_folder, list_workbooks, wf.EXCEL_EXTENSIONS | {".xlsb"}, disjoint=True)
     pdf_root = None
-    if isinstance(pdf_folder, str) and pdf_folder.strip():
+    if mode != "widths" and isinstance(pdf_folder, str) and pdf_folder.strip():
         pdf_root = Path(pdf_folder.strip().strip('"').strip("'")).expanduser().resolve()
         if not pdf_root.is_dir():
             raise ValueError(f"PDF 文件夹不存在：{pdf_root}")
@@ -659,7 +689,7 @@ def start(folder: str, old_folder: str | ReferenceFolders, mode: str = "scan", n
         if not paths:
             raise ValueError("要修复的文件不在这个文件夹里，请重新找一遍")
     with wf.STATE_LOCK, _LOCK:
-        from core import bl_links, font_fix, hidden_repair, link_repair, mark_finder
+        from core import bl_links, font_fix, link_repair, mark_finder
         if (wf.STATE.get("busy") or _STATUS.get("running") or link_repair.status().get("running")
                 or mark_finder.status().get("running") or hidden_repair.status().get("running")
                 or bl_links.status().get("running") or font_fix.status().get("running")):
@@ -668,7 +698,7 @@ def start(folder: str, old_folder: str | ReferenceFolders, mode: str = "scan", n
         if job.get("pending_adjustment") or job.get("deferred_adjustments"):
             raise ValueError("还有未完成的文件写入，请先继续或放弃上次写入")
         wf.STATE.update(busy=True, maintenance="image_restore")
-        result = None if mode == "scan" else _STATUS.get("result")  # 重新找：清掉上次的清单，查完一份列一份
+        result = None if mode in {"scan", "widths"} else _STATUS.get("result")
         _STATUS.clear()
         _STATUS.update(running=True, mode=mode, folder=str(root), old_folder=str(old_root or ""), pdf_folder=str(pdf_root or ""),
                        total=len(paths), done=0, current="", result=result)
@@ -679,7 +709,7 @@ def start(folder: str, old_folder: str | ReferenceFolders, mode: str = "scan", n
             _run(mode, root, paths, old_root, old_paths, pdf_root, group)
 
     try:
-        threading.Thread(target=run, name="修复图片", daemon=True).start()
+        threading.Thread(target=run, name=_TASK_NAMES[mode], daemon=True).start()
     except Exception:
         with wf.STATE_LOCK, _LOCK:
             wf.STATE["busy"] = False
@@ -711,8 +741,9 @@ def open_block_reason(name: str) -> str:
     with _LOCK:
         if not _STATUS.get("running"):
             return ""
-        if _STATUS.get("mode") != "scan":
-            return "正在修复图片，请等当前任务结束"
+        mode = _STATUS.get("mode")
+        if mode != "scan":
+            return f"正在{_TASK_NAMES.get(mode, '修复图片')}，请等当前任务结束"
         files = ((_STATUS.get("result") or {}).get("files")) or []
         done = any(f.get("name") == name for f in files)
     return "" if done else "这份还没查完，等它出现在结果里再打开"
