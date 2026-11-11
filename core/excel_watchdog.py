@@ -102,6 +102,35 @@ def find_dialogs(pids: set[int], skip: set[int]) -> list[tuple[int, str]]:
 _ACTIVE_LOCK = threading.Lock()
 _ACTIVE: list["ExcelWatchdog"] = []  # 正在跑的看门狗（一次只有一个后台任务，偶尔嵌套）
 SKIP_REASON = "你点了「跳过这一份」：已结束后台 Excel，这份没做完，之后可以单独再做"
+STOP_REASON = "你点了「结束整个任务」：已结束后台 Excel，这份没做完"
+NOT_DONE_REASON = "你点了「结束整个任务」：这份没做"
+_stop_seq = 0  # 每点一次「结束整个任务」加一：精简后自动检查这种一连串的任务看它决定后面几步还做不做
+
+
+class TaskStopped(RuntimeError):
+    """用户点了「结束整个任务」：后面的文件不做了（file() 抛出，调用方记成「没做」接着很快走完）"""
+
+
+def stop_seq() -> int:
+    return _stop_seq
+
+
+def request_stop() -> dict[str, Any]:
+    """进度框点了「结束整个任务」：正在做的这份马上结束（同跳过），后面的都不做"""
+    global _stop_seq
+    with _ACTIVE_LOCK:
+        _stop_seq += 1
+        dogs = list(_ACTIVE)
+    label = ""
+    for dog in dogs:
+        with dog._lock:
+            dog._stop_task = True
+        result = dog.skip("", STOP_REASON)
+        if result and result.get("ok"):
+            label = result["label"]
+    from core import debug_log
+    debug_log.event("⏹ 用户点了结束整个任务", 正在做=label or "（没有正在用 Excel 的文件）", 任务数=len(dogs))
+    return {"ok": True, "label": label, "running": bool(dogs)}
 
 
 def current() -> dict[str, Any]:
@@ -158,6 +187,7 @@ class ExcelWatchdog:
         self._skip = ""  # 这份是用户点「跳过这一份」结束的：原因（file() / take_skip() 清掉）
         # 每份最多做几秒，超过自动跳过（进度框里用户自己设，0 = 不限）；None = 这个任务不用（扫描有自己的上限）
         self.file_limit: Callable[[], float] | None = None
+        self._stop_task = False  # 用户点了「结束整个任务」
         self._thread = threading.Thread(target=self._run, name="excel-watchdog", daemon=True)
 
     def start(self) -> None:
@@ -170,6 +200,8 @@ class ExcelWatchdog:
         返回真：上一份点了跳过、Excel 已经被结束了，那份却没报错就做完了（比如正在拼 PDF，没用到 Excel），
         调用方要把手里的 Excel 扔掉、下次重开"""
         with self._lock:
+            if self._stop_task and label is not None:
+                raise TaskStopped(NOT_DONE_REASON)
             self.label = label
             if label is None:  # 进入不能跳过的一步：点过的跳过留着给调用方的异常处理看
                 return False
@@ -219,6 +251,11 @@ class ExcelWatchdog:
             return
         self.skip(label, f"这份做了 {spent / 60:.0f} 分钟还没做完，超过你设的「每份最多 {limit / 60:.0f} 分钟」，"
                          f"已自动跳过（结束了后台 Excel），之后可以单独再做")
+
+    @property
+    def stop_requested(self) -> bool:
+        with self._lock:
+            return self._stop_task
 
     @property
     def skip_requested(self) -> bool:

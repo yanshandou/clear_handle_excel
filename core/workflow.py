@@ -3859,6 +3859,9 @@ def quick_task_workflow(kind: str) -> None:
                 if str(wb_path) in job["completed"]:
                     continue
                 wb_label = workbook_rel_name(wb_path, folder)
+                if watchdog.stop_requested is True:  # 进度框点了「结束整个任务」：剩下的不做，任务停成「可继续」
+                    log_msg(f"⏹ 你点了结束整个任务：从 {wb_label} 起后面的没做，可以点「继续上次任务」接着做")
+                    break
                 if watchdog.file(wb_label) and excel is not None:  # 进度框能「跳过这一份」；上一份跳过时 Excel 已结束
                     excel = None
                 debug_log.begin(f"{task_name} {workbooks.index(wb_path) + 1} / {len(workbooks)}：{wb_label}")

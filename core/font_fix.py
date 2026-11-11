@@ -179,10 +179,10 @@ def _run(root: Path, paths: list[Path]) -> None:
                 with _LOCK:
                     _STATUS.update(done=index, current=name)
                     progress_log.step(_STATUS, "正在打开 Excel")
-                if guard.file(name):  # 进度框能「跳过这一份」
-                    excel = None
                 started = time.perf_counter()
                 try:
+                    if guard.file(name):  # 进度框能「跳过这一份」
+                        excel = None
                     if excel is None:
                         excel = guard.watch(start_background_excel())
 

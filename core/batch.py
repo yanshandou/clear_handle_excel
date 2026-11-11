@@ -4079,6 +4079,9 @@ def run() -> list[str]:
                             session.close()
                             return False
                         manual = watchdog.take_skip()
+                        if manual and _stopping(job):  # 点的是「结束整个任务」：不算扫描超时，下次继续时重扫
+                            err = RuntimeError(manual)
+                            manual = ""
                         if watchdog.deadline_hit or manual:
                             # 扫描超过时间上限 / 用户点了「跳过这一份」：不重试，这份文件跳过、转人工，下一份用新的 Excel
                             _skip_slow_file(job, path, (job.get("scan_limit") or {}).get("seconds") or 0, manual=bool(manual))
@@ -4203,7 +4206,8 @@ def run() -> list[str]:
             for path in list(expected):
                 if path in scanned:
                     continue
-                if job.get("pause_requested"):
+                if job.get("pause_requested") or watchdog.stop_requested is True:
+                    job["pause_requested"] = True  # 进度框「结束整个任务」= 暂停，之后可以继续
                     break
                 # 一个文件做完才存一次记录（以前每步都存，整份几 MB，一个文件要多花四五秒；用户 2026-11-03 同意）。
                 # 出错、跳过时离开这里也会存

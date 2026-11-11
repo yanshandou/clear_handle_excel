@@ -267,10 +267,10 @@ def _run(root: Path, paths: list[Path], options: dict) -> None:
                 with _LOCK:
                     _STATUS.update(done=index, current=name)
                     progress_log.step(_STATUS, "正在打开 Excel")
-                if guard.file(name):  # 进度框能「跳过这一份」（用户 2026-11-11 要）
-                    excel = None
                 started = time.perf_counter()
                 try:
+                    if guard.file(name):  # 进度框能「跳过这一份」（用户 2026-11-11 要）
+                        excel = None
                     target = str(pdf_path_for(path)).lower()
                     if target in claimed:
                         raise ValueError(f"和 {claimed[target]} 会生成同名 PDF，这份没导出，请改名后再导")

@@ -457,6 +457,17 @@ class WebHandler(upload_manager.Handler):
                 raise ValueError("文件名格式不正确")
             self._send_json(excel_watchdog.request_skip(label or ""))
             return
+        # 进度框「结束整个任务」：正在做的这份马上结束，后面的不做（主页一类任务停成「可继续上次任务」）
+        if self.path == "/api/job/stop":
+            from core import excel_watchdog
+            with STATE_LOCK:
+                job = STATE.get("job") or {}
+                if STATE.get("busy") and job.get("kind") == "batch_scan" and job.get("status") == "running":
+                    job["pause_requested"] = True  # 扫描本来就有「暂停」：同样做法，之后能继续
+                    from core.workflow import _persist_state
+                    _persist_state()
+            self._send_json(excel_watchdog.request_stop())
+            return
         if self.path == "/api/job/skip/settings":
             self._send_json({"ok": True, "settings": file_problem.set_slow_settings(payload.get("file_limit_minutes"))})
             return

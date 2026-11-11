@@ -10,6 +10,7 @@
 // 页面底部有悬浮条时，在 body 上设 --job-panel-bottom 让框浮在悬浮条上面。
 // 跑着的时候有「⏭ 跳过这一份」（用户 2026-11-11 要：耗时太长的文件可以跳过）：结束正在做这份的后台 Excel，
 // 任务记下「手动跳过」接着做下一份；旁边可以设「每份超过几分钟自动跳过」（0 = 不自动，存在后台）。
+// 「⏹ 结束整个任务」：正在做的这份马上停，后面的都不做（记成「没做」），主页一类任务停成「可继续上次任务」。
 // 页面传 skip: false 可以不显示（这个任务没有用 Excel 一份份处理的步骤）。
 (function () {
   const OPEN_KEY = 'clear_handle_excel.jobPanel.open';   // sessionStorage：正在显示哪个任务（刷新页面还接着显示）
@@ -53,9 +54,10 @@
         <div class="progress-track"><div class="progress-fill" style="width: 0%;"></div></div>
         <div class="job-panel-skip" hidden>
           <button type="button" class="job-panel-btn" data-job-skip title="这一份太慢不想等：结束后台 Excel，这份这次不做，接着做下一份">⏭ 跳过这一份</button>
+          <button type="button" class="job-panel-btn job-panel-stop" data-job-stop title="整个任务不做了：正在做的这份马上停，后面的都不做，做好的保留">⏹ 结束整个任务</button>
           <label class="job-panel-limit" title="批量处理时一份文件做了这么久还没做完，就自动跳过（扫描查看切字有自己的时间上限，不看这个）">每份超过
-            <input type="number" min="0" max="1440" step="1" inputmode="numeric" data-job-limit> 分钟自动跳过</label>
-          <span class="job-panel-limit-note">0 = 不自动</span>
+            <input type="number" min="0" max="1440" step="1" inputmode="numeric" data-job-limit> 分钟自动跳过
+            <span class="job-panel-limit-note">（0 = 不自动）</span></label>
         </div>
         <p class="job-panel-tally"><span class="is-ok">✓ 0</span><span class="is-bad is-zero">! 0</span><span class="job-panel-hint">点文件名在 Excel 打开</span></p>
         <ul class="job-panel-log"></ul>
@@ -74,6 +76,8 @@
     el.skip = box.querySelector('[data-job-skip]');
     el.limit = box.querySelector('[data-job-limit]');
     el.skip.addEventListener('click', skipCurrent);
+    el.stop = box.querySelector('[data-job-stop]');
+    el.stop.addEventListener('click', stopTask);
     el.limit.addEventListener('change', saveLimit);
     el.fold.addEventListener('click', () => setFold(!box.classList.contains('is-folded'), true));
     box.querySelector('[data-job-close]').addEventListener('click', close);
@@ -193,8 +197,34 @@
     } catch (err) {
       say(`没能跳过：${err.message}`, 'error');
     } finally {
-      setTimeout(() => { el.skip.disabled = false; el.skip.textContent = '⏭ 跳过这一份'; }, 2500);
+      setTimeout(() => { el.skip.disabled = stopping; el.skip.textContent = '⏭ 跳过这一份'; }, 2500);
     }
+  }
+
+  let stopping = false;
+  async function stopTask() {
+    if (stopping) return;
+    const ok = await (window.appConfirm || (m => Promise.resolve(confirm(m))))(
+      `结束「${el.title.textContent}」？\n\n${el.count.textContent ? `现在做到${el.count.textContent}。` : ''}`
+      + '正在做的这份马上停（会结束后台 Excel，没做完的不保存），后面的都不做；已经做好的保留。\n'
+      + '没做的在结果里写「没做」。主页上的任务（导出 PDF、精简等）之后可以点「继续上次任务」接着做。',
+      { title: '结束整个任务', okText: '结束', cancelText: '接着做', tone: 'danger' });
+    if (!ok) return;
+    try {
+      const res = await api('/api/job/stop', {});
+      console.info('📋 结束整个任务', res);
+      stopping = true;
+      el.stop.disabled = el.skip.disabled = true;
+      el.stop.textContent = '⏹ 正在结束…';
+    } catch (err) {
+      say(`没能结束：${err.message}`, 'error');
+    }
+  }
+  function resetStop() {
+    if (!el.stop) return;
+    stopping = false;
+    el.stop.disabled = el.skip.disabled = false;
+    el.stop.textContent = '⏹ 结束整个任务';
   }
 
   function line(item) {
@@ -232,6 +262,7 @@
     if (current !== id || state !== 'running') {
       // 新的一次（或上一次已经结束）：清空重来
       logSig = '';
+      resetStop();
       el.track.classList.remove('is-done');
       el.foot.hidden = true;
       box.classList.remove('is-waiting');
@@ -282,6 +313,7 @@
     window.ProgressEta?.update(el.fill, `job_panel:${id}`, 1, false);
     el.track.classList.add('is-done'); // 进度条收起，只留结果
     el.skipRow.hidden = true;
+    resetStop();
     el.icon.textContent = warn ? '!' : '✓';
     el.title.textContent = s.title || (warn ? '做完了，有要看一下的' : '做完了');
     el.count.textContent = '';

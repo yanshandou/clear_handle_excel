@@ -796,9 +796,9 @@ def _run_apply(files: list[dict], folder: str = "") -> None:
                 entry["error"] = f"{unsaved[Path(file['path'])]}，请保存并关闭后再试"
                 continue
             while True:  # 出错时问用户：「重试」重开 Excel 再做这份，「跳过」记下错误
-                if guard.file(file["name"]):  # 进度框能「跳过这一份」
-                    excel = None
                 try:
+                    if guard.file(file["name"]):  # 进度框能「跳过这一份」
+                        excel = None
                     if excel is None:
                         excel = guard.watch(start_background_excel())
                     entry["cells"] = apply_file(excel, file["path"], file["old"], file["cells"])
@@ -893,9 +893,9 @@ def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[P
                     entry["old"] = str(pairs[name])
                 with _LOCK:
                     _STATUS.update(done=index, current=name, stage="scan")
-                if guard.file(name):  # 进度框能「跳过这一份」
-                    excel = None
                 try:
+                    if guard.file(name):  # 进度框能「跳过这一份」
+                        excel = None
                     if path.resolve() in protected:
                         raise ValueError("文件同时位于备份文件夹中，未修复以保护备份")
                     stamp = fingerprint(path)
@@ -1019,9 +1019,9 @@ def _clear_mark_files(root: Path, paths: list[Path], protected: set[Path] | None
                 entry.update(name=name, path=str(path), cells=[], leftovers=0, leftover_failed=[], tabs=[], error=None)
                 with _LOCK:
                     _STATUS.update(done=index, current=name, stage="clear")
-                if guard.file(name):  # 进度框能「跳过这一份」
-                    excel = None
                 try:
+                    if guard.file(name):  # 进度框能「跳过这一份」
+                        excel = None
                     if protected and path.resolve() in protected:
                         raise ValueError("文件同时位于备份文件夹中，未清除标记以保护备份")
                     if _is_template(path):

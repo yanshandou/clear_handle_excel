@@ -337,9 +337,9 @@ def _run(root: Path, paths: list[Path], old_root: Path, old_paths: list[Path], o
                 entry = {"name": name, "path": str(path), "cells": [], "error": None}
                 with _LOCK:
                     _STATUS.update(done=index, current=name, stage="preview")
-                if guard.file(name):  # 进度框能「跳过这一份」
-                    excel = None
                 try:
+                    if guard.file(name):  # 进度框能「跳过这一份」
+                        excel = None
                     old_path = pairs[name]
                     if old_path is None:
                         raise ValueError("找不到唯一对应的备份文件，请选到对应子文件夹")

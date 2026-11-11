@@ -269,7 +269,7 @@ class Guard:
         self.watchdog.progress()
 
     def file(self, label: str | None) -> bool:
-        """每份文件开始时调（label = 显示给用户的名字），进度框的「跳过这一份」就能跳过它。
+        """每份文件开始时调（要放在 try 里面：点了「结束整个任务」时抛 TaskStopped，problem() 记成「没做」）（label = 显示给用户的名字），进度框的「跳过这一份」就能跳过它。
         返回真：上一份点了跳过、后台 Excel 已经结束（那份没报错就做完了），调用方要把 Excel 置空重开"""
         stale = self.watchdog.file(label)
         if stale:
@@ -281,15 +281,18 @@ class Guard:
         """返回 (要不要重试, 出错原因)。close 关掉后台 Excel：要问用户时先关（别占着文件），
         Excel 报的错也关（可能已经坏了，下一份换新的）；程序自己的检查结论（ValueError）不关。
         关了的话 self.closed 为真，调用方把手里的 Excel 置空、下次重开"""
+        from core.excel_watchdog import NOT_DONE_REASON, TaskStopped
         skipped = self.watchdog.take_skip()
-        if skipped:  # 用户在进度框点了「跳过这一份」：不问，直接跳过
+        if not skipped and (isinstance(err, TaskStopped) or self.watchdog.stop_requested):
+            skipped = NOT_DONE_REASON
+        if skipped:  # 用户在进度框点了「跳过这一份」/「结束整个任务」：不问，直接跳过
             self.closed = True
             if close is not None:
                 try:
                     close()
                 except Exception:
                     pass
-            debug_log.event("⏭ 按用户要求跳过这份", 任务=self.title, 文件=label)
+            debug_log.event("⏭ 按用户要求跳过这份", 任务=self.title, 文件=label, 原因=skipped)
             return False, skipped
         message = message_for(err, self.watchdog)
         asking = should_ask(err, message)

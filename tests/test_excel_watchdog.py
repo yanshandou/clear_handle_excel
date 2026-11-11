@@ -161,3 +161,18 @@ class SkipThisFileTests(unittest.TestCase):
         with patch("core.excel_watchdog.time.monotonic", return_value=99999):
             watchdog._check_file_limit()
         killed.assert_not_called()
+
+    def test_stop_ends_current_file_and_refuses_next(self):
+        from core.excel_watchdog import TaskStopped
+        mod, watchdog, killed = self.make()
+        watchdog.file("a.xlsx")
+        before = mod.stop_seq()
+        result = mod.request_stop()
+        self.assertEqual(result["label"], "a.xlsx")
+        killed.assert_called_once()
+        self.assertEqual(mod.stop_seq(), before + 1)
+        self.assertTrue(watchdog.stop_requested)
+        self.assertIn("结束整个任务", watchdog.take_skip())
+        with self.assertRaises(TaskStopped):
+            watchdog.file("b.xlsx")
+        self.assertFalse(watchdog.file(None))  # 不能跳过的一步照常
