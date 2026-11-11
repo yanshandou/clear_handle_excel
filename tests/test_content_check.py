@@ -79,6 +79,17 @@ class CompareTests(unittest.TestCase):
         result = content_check.compare(a, b, "本地", "共享")
         self.assertEqual(result["diffs"], ["表「表2」只有共享有"])
 
+    def test_sheets_clean_will_delete_are_ignored(self):
+        a = make(self.root / "a.xlsx", {"A1": "x"}, sheets=("仕様",))
+        b = make(self.root / "b.xlsx", {"A1": "x"}, sheets=("仕様", "変更履歴", "仕様_20220101"))
+        result = content_check.compare(a, b, "本地", "共享")
+        self.assertTrue(result["same"], result["diffs"])
+        self.assertEqual(set(result["skipped"]), {"変更履歴", "仕様_20220101"})
+        self.assertIn("変更履歴", content_check.skipped_note(result))
+        # 正式的表多了一张照样拦
+        c = make(self.root / "c.xlsx", {"A1": "x"}, sheets=("仕様", "変更履歴", "画面一覧"))
+        self.assertEqual(content_check.compare(a, c, "本地", "共享")["diffs"], ["表「画面一覧」只有共享有"])
+
     def test_multi_range_print_area(self):
         self.assertEqual(content_check._area_cells("'仕様 書'!$A$1:$B$2,'仕様 書'!$D$1:$D$3"), 7)
         self.assertEqual(content_check._area_cells("Sheet1!$1:$2"), 2 * content_check.MAX_COL)
@@ -192,7 +203,7 @@ class FreeUploadTests(JsonCopyTests):
 
     def test_free_force_overwrite(self):
         make(self.src / "a.xlsx", {"A1": "画面"})
-        make(self.dst / "a.xlsx", {"A1": "画面"}, sheets=("仕様", "変更履歴"))
+        make(self.dst / "a.xlsx", {"A1": "画面"}, sheets=("仕様", "画面一覧"))
         prev = distribute.preview_free(str(self.src), str(self.dst))
         self.assertEqual(prev["files"][0]["action"], "conflict")
         self.assertEqual(distribute.pdf_check(files=["a.xlsx"], preview_id=prev["id"])["files"][0]["rel"], "a.xlsx")
@@ -203,7 +214,7 @@ class FreeUploadTests(JsonCopyTests):
             result = self.wait_free()
         item = result["files"][0]
         self.assertEqual((item["action"], item["status"]), ("force", "ok"), item.get("error"))
-        self.assertIn("只有终点有", item["forced_reason"])
+        self.assertIn("只有终点有", item["forced_reason"])  # 画面一覧 不是精简会删的表
         self.assertEqual((self.dst / "a.xlsx").read_bytes(), (self.src / "a.xlsx").read_bytes())
 
     def wait_free(self):
