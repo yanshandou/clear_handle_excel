@@ -8,6 +8,8 @@ class Shape:
         self.Name, self.Type = name, kind
         self.Left, self.Top, self.Width, self.Height = left, top, w, h
         self.Visible, self.Placement = visible, placement
+        Shape.count = getattr(Shape, "count", 0) + 1
+        self.ID = Shape.count
 
 
 class Group:
@@ -20,6 +22,8 @@ class Group:
             s.Placement = 2  # Excel 拆开后 Placement 可能被改掉
         self.shapes.items.remove(self)
         self.shapes.items.extend(self.members)
+        members = self.members
+        return type("Parts", (), {"Count": len(members), "Item": staticmethod(lambda i: members[i - 1])})
 
 
 class Range:
@@ -30,6 +34,7 @@ class Range:
         if self.shapes.fail:
             raise RuntimeError("保護されたシート")
         members = [self.shapes.Item(n) for n in self.names]
+        self.shapes.keys.append(list(self.names))
         for m in members:
             self.shapes.items.remove(m)
         group = Group(self.shapes, members)
@@ -40,7 +45,7 @@ class Range:
 
 class Shapes:
     def __init__(self, items, fail=False):
-        self.items, self.fail, self.groups = list(items), fail, []
+        self.items, self.fail, self.groups, self.keys = list(items), fail, [], []
 
     @property
     def Count(self):
@@ -103,6 +108,49 @@ class PrintOverlaysTest(unittest.TestCase):
             self.assertEqual(n, 0)
 
 
+class ClusterTest(unittest.TestCase):
+    """没有底图、全靠图形拼出来的画面（用户 2026-11-11：PDF 里蓝色按钮掉到绿色标注下面）"""
+    def test_touching_shapes_cluster_and_far_ones_stay(self):
+        frame = Shape("枠 1", 1, 0, 0, 600, 300)
+        button = Shape("ボタン 2", 6, 20, 280, 120, 40)        # 已有的组合，伸出框外
+        callout = Shape("吹き出し 3", 2, 100, 322, 400, 30)     # 只和按钮挨着（隔 2 磅）
+        alone = Shape("メモ 4", 17, 900, 900, 50, 20)
+        chart = Shape("グラフ 5", 3, 10, 10, 50, 50)            # 图表不碰
+        sheet = Sheet([frame, button, callout, alone, chart])
+        self.assertEqual(print_overlays.find_clusters(sheet), [[frame, button, callout]])
+        with print_overlays.grouped_overlays(sheet) as n:
+            self.assertEqual(n, 1)
+            self.assertEqual(sheet.Shapes.groups, [[frame, button, callout]])
+        self.assertEqual({s.Placement for s in (frame, button, callout)}, {1})
+
+    def test_duplicate_names_grouped_by_index_and_placement_restored_by_id(self):
+        a = Shape("正方形 2", 1, 0, 0, 50, 50, placement=3)
+        other = Shape("線 9", 9, 500, 500, 0, 40)
+        b = Shape("正方形 2", 1, 40, 40, 50, 50, placement=1)   # 复制出来的同名图形
+        sheet = Sheet([a, other, b])
+        with print_overlays.grouped_overlays(sheet) as n:
+            self.assertEqual(n, 1)
+            self.assertEqual(sheet.Shapes.keys, [[1, 3]])
+            self.assertEqual(sheet.Shapes.groups, [[a, b]])
+        self.assertEqual((a.Placement, b.Placement), (3, 1))
+
+
+class FollowCellsTest(unittest.TestCase):
+    """导出时临时「随单元格移动和改变大小」，导完放回（用户 2026-11-11：图片在 PDF 里盖住格子里的字）"""
+    def test_singles_and_temp_groups_follow_cells_then_restored(self):
+        alone = Shape("図 9", 13, 900, 900, 100, 100, placement=2)
+        floating = Shape("メモ 8", 17, 2000, 10, 50, 20, placement=3)
+        chart = Shape("グラフ 5", 3, 3000, 10, 50, 50, placement=2)   # 图表不碰
+        a = Shape("ボタン 1", 1, 0, 0, 50, 50, placement=2)
+        b = Shape("吹き出し 2", 2, 40, 40, 50, 50, placement=3)
+        sheet = Sheet([alone, floating, chart, a, b])
+        with print_overlays.grouped_overlays(sheet) as n:
+            self.assertEqual(n, 1)
+            group = next(s for s in sheet.Shapes.items if isinstance(s, Group))
+            self.assertEqual((alone.Placement, floating.Placement, group.Placement, chart.Placement), (1, 1, 1, 2))
+        self.assertEqual((alone.Placement, floating.Placement, chart.Placement, a.Placement, b.Placement), (2, 3, 2, 2, 3))
+
+
 class GroupPermanentlyTest(unittest.TestCase):
     def test_grouped_and_set_move_dont_size(self):
         pic = Shape("図 1", 13, 30, 40, 330, 310)
@@ -113,6 +161,18 @@ class GroupPermanentlyTest(unittest.TestCase):
         self.assertEqual(sheet.Shapes.groups, [[pic, box]])
         group = next(s for s in sheet.Shapes.items if isinstance(s, Group))
         self.assertEqual(group.Placement, print_overlays.XL_MOVE)
+
+    def test_all_touching_shapes_grouped_but_print_frame_left_out(self):
+        from unittest.mock import patch
+        frame = Shape("枠 1", 1, 0, 0, 900, 900)                # 框住整段的空心大框：导出时要单独藏
+        button = Shape("ボタン 2", 1, 20, 280, 120, 40)
+        callout = Shape("吹き出し 3", 2, 100, 310, 400, 30)
+        sheet = Sheet([frame, button, callout])
+        with patch("core.print_frames.find_frames", return_value=[frame]):
+            done = print_overlays.group_permanently(sheet)
+        self.assertEqual(sheet.Shapes.groups, [[button, callout]])
+        self.assertIn("2 个图形", done[0])
+        self.assertIn(frame, sheet.Shapes.items)
 
     def test_nothing_to_group(self):
         self.assertEqual(print_overlays.group_permanently(Sheet([Shape("図 1", 13, 0, 0, 100, 100)])), [])
