@@ -114,6 +114,31 @@
 .job-panel .progress-track { margin: 0; }
 .job-panel .progress-eta { margin: 4px 0 0; }
 
+/* 跳过这一份 + 每份超过几分钟自动跳过：跑着的时候固定占一行 */
+.job-panel-skip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--ink-2, #26326a);
+}
+
+.job-panel-skip[hidden] { display: none; }
+.job-panel-skip .job-panel-btn { min-width: 0; }
+.job-panel-skip .job-panel-btn:disabled { cursor: default; color: var(--ink-3, #56628f); background: #eef1f8; }
+.job-panel-limit { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font-weight: 700; }
+.job-panel-limit input {
+  width: 4.2em;
+  padding: 2px 6px;
+  font: inherit;
+  text-align: right;
+  color: var(--ink, #1c2858);
+  border: 2px solid var(--ink, #1c2858);
+  border-radius: 8px;
+}
+.job-panel-limit-note { color: var(--ink-3, #56628f); }
+
 .job-panel-tally {
   display: flex;
   align-items: center;

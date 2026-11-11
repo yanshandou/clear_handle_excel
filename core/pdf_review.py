@@ -430,7 +430,8 @@ def _delete_red(reds: list[dict], root: str, result: dict) -> None:
             with _PROCESS_LOCK:
                 _PROCESS.update(done=index, current=label, step=f"打开 Excel，删掉 {len(items)} 张表")
             while True:
-                guard.progress()
+                if guard.file(label):  # 进度框能「跳过这一份」
+                    excel = None
                 try:
                     if excel is None:
                         excel = guard.watch(start_background_excel())
@@ -554,7 +555,8 @@ def _floor_marked(floors: list[dict], root: str, result: dict) -> None:
             with _PROCESS_LOCK:
                 _PROCESS.update(done=index, current=label, step=f"打开 Excel，改 {len(items)} 处打印设置")
             while True:
-                guard.progress()
+                if guard.file(label):  # 进度框能「跳过这一份」
+                    excel = None
                 try:
                     outcome = _floor_in_workbook(get_excel, Path(wb_path), items, export_root, label)
                     break

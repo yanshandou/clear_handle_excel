@@ -337,7 +337,8 @@ def _run(root: Path, paths: list[Path], old_root: Path, old_paths: list[Path], o
                 entry = {"name": name, "path": str(path), "cells": [], "error": None}
                 with _LOCK:
                     _STATUS.update(done=index, current=name, stage="preview")
-                guard.progress()
+                if guard.file(name):  # 进度框能「跳过这一份」
+                    excel = None
                 try:
                     old_path = pairs[name]
                     if old_path is None:

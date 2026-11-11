@@ -2,7 +2,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import fitz
 
@@ -112,6 +112,28 @@ class BundleTest(unittest.TestCase):
         self.assertEqual(opened.call_args.kwargs["ReadOnly"], True)
         self.assertIs(book.closed_with, False)
         return path, result
+
+    def test_nothing_to_print_sheet_is_skipped_not_error(self):
+        empty = Sheet("DATA", 1)
+        empty.ExportAsFixedFormat = Mock(side_effect=RuntimeError(
+            "(-2147352567, '例外が発生しました。', (0, 'Microsoft Excel', '印刷する対象がありません。', 'xlmain11.chm', 0, -2146827284), None)"))
+        _path, result = self.export("fxir13.xlsx", [Sheet("表紙", 2), empty])
+        self.assertEqual(result["sheets"], ["表紙"])
+        self.assertEqual(result["pages"], 2)
+        self.assertEqual([s["sheet"] for s in result["skipped"]], ["DATA"])
+        self.assertIn("没有可打印的内容", result["skipped"][0]["reason"])
+
+    def test_only_nothing_to_print_sheets_explains_why(self):
+        empty = Sheet("DATA", 1)
+        empty.ExportAsFixedFormat = Mock(side_effect=RuntimeError("印刷する対象がありません。"))
+        with self.assertRaisesRegex(ValueError, "DATA（没有可打印的内容"):
+            self.export("fxir13.xlsx", [empty])
+
+    def test_other_export_errors_still_raise(self):
+        bad = Sheet("DATA", 1)
+        bad.ExportAsFixedFormat = Mock(side_effect=RuntimeError("RPC サーバーを利用できません"))
+        with self.assertRaisesRegex(RuntimeError, "RPC"):
+            self.export("a.xlsx", [bad])
 
     def test_same_name_pdf_next_to_excel_with_all_sheets(self):
         path, result = self.export("aaa.xlsx", [Sheet("表紙", 1), Sheet("一覧", 3), Sheet("詳細", 2)])

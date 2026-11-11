@@ -796,7 +796,8 @@ def _run_apply(files: list[dict], folder: str = "") -> None:
                 entry["error"] = f"{unsaved[Path(file['path'])]}，请保存并关闭后再试"
                 continue
             while True:  # 出错时问用户：「重试」重开 Excel 再做这份，「跳过」记下错误
-                guard.progress()
+                if guard.file(file["name"]):  # 进度框能「跳过这一份」
+                    excel = None
                 try:
                     if excel is None:
                         excel = guard.watch(start_background_excel())
@@ -892,7 +893,8 @@ def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[P
                     entry["old"] = str(pairs[name])
                 with _LOCK:
                     _STATUS.update(done=index, current=name, stage="scan")
-                guard.progress()
+                if guard.file(name):  # 进度框能「跳过这一份」
+                    excel = None
                 try:
                     if path.resolve() in protected:
                         raise ValueError("文件同时位于备份文件夹中，未修复以保护备份")
@@ -1017,7 +1019,8 @@ def _clear_mark_files(root: Path, paths: list[Path], protected: set[Path] | None
                 entry.update(name=name, path=str(path), cells=[], leftovers=0, leftover_failed=[], tabs=[], error=None)
                 with _LOCK:
                     _STATUS.update(done=index, current=name, stage="clear")
-                guard.progress()
+                if guard.file(name):  # 进度框能「跳过这一份」
+                    excel = None
                 try:
                     if protected and path.resolve() in protected:
                         raise ValueError("文件同时位于备份文件夹中，未清除标记以保护备份")

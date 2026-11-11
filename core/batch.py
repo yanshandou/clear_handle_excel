@@ -2743,7 +2743,7 @@ def _minutes(seconds: float) -> str:
     return f"{round(seconds / 60, 1):g} 分钟"
 
 
-def _skip_slow_file(job: dict, path: str, limit: float) -> None:
+def _skip_slow_file(job: dict, path: str, limit: float, manual: bool = False) -> None:
     """扫描超过时间上限：这份文件跳过、这次任务里不再处理（继续上次任务也不重试），
     记下卡在哪张表，页面上提示人工检查；之后这份文件扫描通过就不再提示"""
     with wf.STATE_LOCK:
@@ -2759,12 +2759,13 @@ def _skip_slow_file(job: dict, path: str, limit: float) -> None:
         wf.STATE["scan_progress"] = {"total": len(job["workbooks"]), "completed": len(job["completed"]),
                                      "status": "running"}
         wf._persist_state()
-    message = f"扫描超过 {_minutes(limit)}" + (f"，卡在表「{sheet}」" if sheet else "") + "，已跳过，请人工检查"
+    message = (("你点了「跳过这一份」" if manual else f"扫描超过 {_minutes(limit)}")
+               + (f"，卡在表「{sheet}」" if sheet else "") + "，已跳过，请人工检查")
     scan_analysis.timeout(job, path, sheet, limit)
     wf.log_msg(f"⏱ {Path(path).name}：{message}")
-    debug_log.event("⏱ 扫描超时跳过", 文件=Path(path).name, 表=sheet, 上限秒=round(limit))
+    debug_log.event("⏭ 扫描手动跳过" if manual else "⏱ 扫描超时跳过", 文件=Path(path).name, 表=sheet, 上限秒=round(limit))
     update_file_progress(workbook_rel_name(Path(path), wf.STATE["folder"]), status="error", error=message,
-                         current_action="扫描超时，已跳过")
+                         current_action="手动跳过" if manual else "扫描超时，已跳过")
 
 
 def clear_slow_files() -> None:
@@ -4077,9 +4078,10 @@ def run() -> list[str]:
                                                  status="error", error=str(err), current_action="写入待核对，已跳过，可续跑")
                             session.close()
                             return False
-                        if watchdog.deadline_hit:
-                            # 扫描超过时间上限：不重试，这份文件跳过、转人工，下一份用新的 Excel
-                            _skip_slow_file(job, path, (job.get("scan_limit") or {}).get("seconds") or 0)
+                        manual = watchdog.take_skip()
+                        if watchdog.deadline_hit or manual:
+                            # 扫描超过时间上限 / 用户点了「跳过这一份」：不重试，这份文件跳过、转人工，下一份用新的 Excel
+                            _skip_slow_file(job, path, (job.get("scan_limit") or {}).get("seconds") or 0, manual=bool(manual))
                             session.close()
                             return False
                         # 检测类原因（ValueError）不重试
@@ -4135,6 +4137,9 @@ def run() -> list[str]:
                     mark = now
 
                 _check_file(path)
+                # 检测这一步进度框能「跳过这一份」（用户 2026-11-11 要）；上一份跳过时 Excel 已结束，换新的
+                if watchdog.file(workbook_rel_name(Path(path), wf.STATE["folder"])):
+                    session.close()
                 excel = session.app()
                 step("查文件和Excel")
                 # 只给检测（只读打开原文件）设上限：超时结束 Excel 不会弄坏文件；之后标色要写文件，不在上限内
@@ -4147,9 +4152,10 @@ def run() -> list[str]:
                 try:
                     # 末页要不要取整在「调整页面」由用户定（2026-11-07），扫描不再自动缩
                     _refresh(excel, path, session=session, timing=checking, compact_print_tail=False, view=view,
-                             before_print_save=lambda: watchdog.deadline(None))
+                             before_print_save=lambda: (watchdog.deadline(None), watchdog.file(None)))
                 finally:
                     watchdog.deadline(None)
+                    watchdog.file(None)  # 后面标色要写文件，不能中途结束 Excel
                 step("检测")
                 with wf.STATE_LOCK:
                     job.setdefault("scan_seconds", {})[path] = round(time.perf_counter() - started, 1)

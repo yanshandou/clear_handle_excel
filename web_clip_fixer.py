@@ -243,6 +243,9 @@ class WebHandler(upload_manager.Handler):
                                 filename="fetch_record.md" if run.get("kind") == "fetch" else "copy_record.md")
         elif parsed.path == "/api/file-problem":
             self._send_json({"ok": True, "problem": file_problem.pending(), "settings": file_problem.get_settings()})
+        elif parsed.path == "/api/job/skip":
+            from core import excel_watchdog
+            self._send_json({"ok": True, **excel_watchdog.current(), "settings": file_problem.get_slow_settings()})
         elif parsed.path == "/api/clean/preview/progress":
             self._send_json({"ok": True, **clean_preview_progress()})
         elif parsed.path == "/api/clean/chain":
@@ -445,6 +448,17 @@ class WebHandler(upload_manager.Handler):
             return
         if self.path == "/api/file-problem/settings":
             self._send_json({"ok": True, "settings": file_problem.set_settings(payload.get("timeout_minutes"))})
+            return
+        # 进度框「跳过这一份」：结束正在做这份的后台 Excel，任务接着做下一份（任务进行中也要能点）
+        if self.path == "/api/job/skip":
+            from core import excel_watchdog
+            label = payload.get("label")
+            if label is not None and not isinstance(label, str):
+                raise ValueError("文件名格式不正确")
+            self._send_json(excel_watchdog.request_skip(label or ""))
+            return
+        if self.path == "/api/job/skip/settings":
+            self._send_json({"ok": True, "settings": file_problem.set_slow_settings(payload.get("file_limit_minutes"))})
             return
         if self.path == "/api/excel/open" and isinstance(payload.get("problem"), str):
             problem = file_problem.pending()

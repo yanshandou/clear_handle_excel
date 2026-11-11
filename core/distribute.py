@@ -765,7 +765,8 @@ def _prepare_task_files(task: dict[str, Any], checked: list[tuple], total: int,
             reference = _task_file(Path(task["reference"]), item["rel"]) if task.get("reference") else None
             while True:  # 出错时问用户：「重试」重开 Excel 再做这份，「跳过」这份就不传（其余照传，用户 2026-11-10）
                 _progress(index, total, f"上传前处理 {item['rel']}")
-                guard.progress()
+                if guard.file(item["rel"]):  # 进度框能「跳过这一份」
+                    excel = None
                 where: dict[str, str] = {}
                 try:
                     pre = _digest(local) if pdf_settings else ""
@@ -1558,7 +1559,8 @@ def _prepare_free(items: list[dict[str, Any]], temp_root: Path, src: Path,
             item["_temp"] = str(local)
             while True:
                 _progress(index, len(items), f"上传前处理 {item['rel']}")
-                guard.progress()
+                if guard.file(item["rel"]):  # 进度框能「跳过这一份」
+                    excel = None
                 where: dict[str, str] = {}
                 try:
                     cached = pdf_settings and _use_cached_pdf(item, src / item["rel"], _pdf_target(src / item["rel"]),

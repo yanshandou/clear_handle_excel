@@ -77,6 +77,15 @@ def list_workbooks(folder: str) -> tuple[Path, list[Path]]:
     return hidden_repair.list_workbooks(folder)
 
 
+_NOTHING_TO_PRINT = ("印刷する対象がありません", "nothing to print", "没有要打印", "沒有要列印", "没有可打印")
+
+
+def nothing_to_print(err: BaseException) -> bool:
+    """Excel 导出时报「印刷する対象がありません」（没有可打印的内容）"""
+    text = str(err).lower()
+    return any(word.lower() in text for word in _NOTHING_TO_PRINT)
+
+
 def _sheet_blank(sheet: Any) -> bool:
     """工作表完全空白（没有值、没有图形）：Excel 导出时会报「没有可打印的内容」"""
     try:
@@ -194,7 +203,15 @@ def export_workbook(excel: Any, wb_path: Path, include_hidden: bool, on_sheet=No
                 if cleared:
                     headers_cleared += cleared
             part = tmp_dir / f"{index:04d}.pdf"
-            _export_sheet(sheet, part)
+            try:
+                _export_sheet(sheet, part)
+            except Exception as err:
+                if not nothing_to_print(err):
+                    raise
+                # 有内容但印不出东西（打印区域是空格子、内容都在隐藏行列里等）：和空白表一样跳过，不算出错
+                debug_log.event("⏭ Excel 说这张表没有可打印的内容，跳过", 文件=wb_path.name, 表=name, 错误=str(err))
+                skipped.append({"sheet": name, "reason": "没有可打印的内容（Excel 说「印刷する対象がありません」）"})
+                continue
             if not part.is_file():
                 raise RuntimeError(f"工作表「{name}」导出后没有生成 PDF")
             parts.append((name, part))
@@ -202,7 +219,8 @@ def export_workbook(excel: Any, wb_path: Path, include_hidden: bool, on_sheet=No
         wb.Close(SaveChanges=False)
     try:
         if not parts:
-            raise ValueError("没有可以导出的工作表（都是隐藏表、空白表或在跳过名单里）")
+            raise ValueError("没有可以导出的工作表（都是隐藏表、空白表、没有可打印内容的表或在跳过名单里）："
+                             + "、".join(f"{s['sheet']}（{s['reason']}）" for s in skipped[:5]))
         merged = fitz.open()
         try:
             toc = []  # PDF 书签：每张表一个，点一下跳到这张表
@@ -249,7 +267,8 @@ def _run(root: Path, paths: list[Path], options: dict) -> None:
                 with _LOCK:
                     _STATUS.update(done=index, current=name)
                     progress_log.step(_STATUS, "正在打开 Excel")
-                guard.progress()
+                if guard.file(name):  # 进度框能「跳过这一份」（用户 2026-11-11 要）
+                    excel = None
                 started = time.perf_counter()
                 try:
                     target = str(pdf_path_for(path)).lower()
