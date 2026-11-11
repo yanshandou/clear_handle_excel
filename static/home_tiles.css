@@ -223,3 +223,6 @@
   .tile-extras { font-size: 12px; gap: 4px 8px; padding: 6px 8px; }
   .tile-inc { display: none; }
 }
+
+/* 标题下面那一行：✓ 是按哪个文件夹的执行记录打的（路径长就换行） */
+.home-tools-heading .route-done-note { margin: 5px 0 0; color: #3f5a2c; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }

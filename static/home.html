@@ -17,7 +17,6 @@
       <div class="header-logo-badge" aria-hidden="true"></div>
       <div class="header-title">
         <h1 class="header-title-text">Excel 整理工坊</h1>
-        <span class="subtitle">整理表格，也整理好每一步</span>
       </div>
     </a>
     <nav class="header-nav" aria-label="功能导航">
@@ -35,21 +34,8 @@
   </header>
 
   <main class="container home-container">
-    <section class="home-hero">
-      <div class="hero-copy">
-        <span class="hero-eyebrow">EXCEL WORKSHOP</span>
-        <h2>把繁琐整理，<br>变成<em>轻松几步。</em></h2>
-        <p>精简表格、调整页面、检查切字，一站式轻松完成。<br>挑选你的工具，让每一份文件井井有条。</p>
-        <div class="hero-start">
-          <a class="btn btn-primary" href="/distribute/start">开始新任务 <svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#arrow"></use></svg></a>
-          <span class="hero-start-note">支持子文件夹 · 自动记录处理进度</span>
-        </div>
-        <p id="routeDoneNote" class="route-done-note hidden"></p>
-      </div>
-    </section>
-
     <section class="home-tools-heading" aria-label="工具与进度备份">
-      <div><h2>我的工具箱</h2><p>大卡片一次做完相关的几步，小卡片每一步单独用。做完回到这里，刚用过的卡片会闪几下。</p></div>
+      <div><h2>我的工具箱</h2><p id="routeDoneNote" class="route-done-note hidden"></p></div>
       <div class="home-hero-actions">
         <button type="button" class="btn btn-outline btn-sm" id="exportProgressBtn" onclick="exportProgress()"
           title="把扫描结果、人工判断、续跑点和执行记录保存为备份文件">
@@ -110,7 +96,6 @@
     <section class="tile-board" aria-label="工具箱">
       <ol class="tile-grid" id="tileGrid"></ol>
     </section>
-    <footer class="home-footer"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#check"></use></svg>每一步都有记录，让整理更安心。</footer>
   </main>
 
   <!-- 单项功能对话框：填写文件夹 → 执行 → 查看结果（精简 Sheet 在独立页面 /clean） -->
