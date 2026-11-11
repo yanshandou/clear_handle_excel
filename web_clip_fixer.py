@@ -528,6 +528,8 @@ class WebHandler(upload_manager.Handler):
                 raise ValueError("正在批量导出同名 PDF，请等当前任务结束")
             if STATE.get("maintenance") == "font_fix":
                 raise ValueError("正在统一字体，请等当前任务结束")
+            if STATE.get("maintenance") == "clean_chain":
+                raise ValueError("正在执行精简 Sheet 后的自动检查，请等当前任务结束")
             if STATE.get("maintenance") == "image_restore":
                 # 边查边看：查完的那份可以打开 / 对照打开 / 开 PDF（查找只读、不会再碰它）
                 reason = "正在修复图片，请等当前任务结束"

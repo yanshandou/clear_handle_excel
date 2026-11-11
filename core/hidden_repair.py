@@ -129,45 +129,61 @@ def content_info(sheet: Any, history: sheet_history.Projection | None = None) ->
     return {"signature": digest.hexdigest(), "populated": populated, "words": sorted(words)}
 
 
+def _snapshot_workbook(book: Any, history: sheet_history.Projection | None = None) -> dict:
+    sheet_names = [s.Name for s in book.Sheets]
+    sheets = []
+    for sheet in book.Worksheets:
+        item = {"name": sheet.Name, "code": sheet.CodeName, "visible": int(sheet.Visible),
+                "column_count": int(sheet.Columns.Count),
+                "columns": [], "words": [], "signature": None, "content_error": "", "columns_error": "",
+                "protected": bool(sheet.ProtectContents)}
+        try:
+            item.update(content_info(sheet, history) if history else content_info(sheet))
+        except Exception as error:
+            item["content_error"] = str(error)
+        sheets.append(item)
+    return {"sheets": sheets, "sheet_names": sheet_names, "structure_protected": bool(book.ProtectStructure),
+            "visible_count": sum(int(sheet.Visible) == VISIBLE for sheet in book.Sheets)}
+
+
+def _snapshot_columns(book: Any, current: dict, path: Path) -> None:
+    try:
+        specs = column_specs(path)
+    except Exception as error:
+        for item in current["sheets"]:
+            item["columns_error"] = str(error)
+        return
+    for item in current["sheets"]:
+        try:
+            item["columns"] = column_runs(book.Worksheets(item["name"]), specs[item["name"]], item["column_count"])
+        except Exception as error:
+            item["columns_error"] = str(error)
+
+
 def snapshot(excel: Any, path: Path, options: dict, *, history_path: Path | None = None,
              current_names: list[str] | None = None, old_hash: str = "",
              projection: sheet_history.Projection | None = None) -> dict:
     book = open_workbook_checked(excel, str(path.resolve()), UpdateLinks=0, ReadOnly=True)
     temporary = None
     try:
-        sheet_names = [s.Name for s in book.Sheets]
         history = projection if projection is not None else (sheet_history.for_paths(
-            history_path, path, current_names, sheet_names, old_hash=old_hash) if history_path is not None else None)
-        sheets = []
-        for sheet in book.Worksheets:
-            item = {"name": sheet.Name, "code": sheet.CodeName, "visible": int(sheet.Visible),
-                    "column_count": int(sheet.Columns.Count),
-                    "columns": [], "words": [], "signature": None, "content_error": "", "columns_error": "",
-                    "protected": bool(sheet.ProtectContents)}
-            try:
-                item.update(content_info(sheet, history) if history else content_info(sheet))
-            except Exception as error:
-                item["content_error"] = str(error)
-            sheets.append(item)
+            history_path, path, current_names, [s.Name for s in book.Sheets], old_hash=old_hash)
+            if history_path is not None else None)
+        current = _snapshot_workbook(book, history)
         if options["columns"] or options["narrow"] or options.get("widths"):
-            try:
-                source_path = path
-                if path.suffix.lower() not in {".xlsx", ".xlsm"}:
-                    # 二进制格式仅另存一份临时 xlsx 读取列定义；原件只读打开，从不保存回原路径。
+            if path.suffix.lower() in {".xlsx", ".xlsm"}:
+                _snapshot_columns(book, current, path)
+            else:
+                # 参考和独立工具的二进制只读工作簿可另存为临时 xlsx 来读列定义。
+                try:
                     temporary = tempfile.TemporaryDirectory(prefix="hidden_columns_")
-                    source_path = Path(temporary.name) / "columns.xlsx"
-                    book.SaveAs(str(source_path), FileFormat=51)
-                specs = column_specs(source_path)
-                for item in sheets:
-                    try:
-                        item["columns"] = column_runs(book.Worksheets(item["name"]), specs[item["name"]], item["column_count"])
-                    except Exception as error:
+                    converted = Path(temporary.name) / "columns.xlsx"
+                    book.SaveAs(str(converted), FileFormat=51)
+                    _snapshot_columns(book, current, converted)
+                except Exception as error:
+                    for item in current["sheets"]:
                         item["columns_error"] = str(error)
-            except Exception as error:
-                for item in sheets:
-                    item["columns_error"] = str(error)
-        return {"sheets": sheets, "sheet_names": sheet_names, "structure_protected": bool(book.ProtectStructure),
-                "visible_count": sum(int(sheet.Visible) == VISIBLE for sheet in book.Sheets)}
+        return current
     finally:
         try:
             book.Close(SaveChanges=False)
@@ -247,12 +263,40 @@ def plan_changes(current: dict, old: dict, options: dict, history: sheet_history
     return result
 
 
-def plan_file(excel: Any, path: Path, old_path: Path, options: dict) -> dict:
+def _snapshot_binary_columns(book: Any, current: dict, old: dict, options: dict, history: sheet_history.Projection) -> None:
+    """在已打开的二进制工作簿里只检查参考要求恢复的列。"""
+    matches = pair_sheets(current["sheets"], old["sheets"], title=lambda sheet: sheet["name"],
+                          code=lambda sheet: sheet["code"], words=lambda sheet: set(sheet["words"]), history=history)
+    for item in current["sheets"]:
+        match = matches.get(item["name"])
+        if match is None:
+            continue
+        sheet = book.Worksheets(item["name"])
+        runs = item["columns"]
+        try:
+            for source in match[0]["columns"]:
+                eligible = options["columns"] if source["hidden"] else (
+                    options.get("widths") or (options["narrow"] and 0 < source["width"] <= NARROW_WIDTH))
+                if not eligible:
+                    continue
+                for index in range(source["first"], min(source["last"], item["column_count"]) + 1):
+                    column = sheet.Columns(index)
+                    hidden = bool(column.Hidden)
+                    width = None if hidden else float(column.ColumnWidth)
+                    if runs and runs[-1]["last"] == index - 1 and (runs[-1]["hidden"], runs[-1]["width"]) == (hidden, width):
+                        runs[-1]["last"] = index
+                    else:
+                        runs.append({"first": index, "last": index, "hidden": hidden, "width": width})
+        except Exception as error:
+            item["columns_error"] = str(error)
+
+
+def plan_file(excel: Any, path: Path, old_path: Path, options: dict, *, book: Any = None) -> dict:
     if path.resolve() == old_path.resolve():
         raise ValueError("当前文件不能作为自己的备份，请选择原始备份")
     stamp, old_stamp = fingerprint(path), fingerprint(old_path)
-    # 同名工作簿依次打开并关闭，兼容 Excel 不能同时打开同名文件的限制。
-    current = snapshot(excel, path, options)
+    # 独立工具依次打开同名文件，自动检查通过单独的 Excel 实例读取参考。
+    current = snapshot(excel, path, options) if book is None else _snapshot_workbook(book)
     names = current.get("sheet_names", [s["name"] for s in current["sheets"]])
     old = snapshot(excel, old_path, options, history_path=path, current_names=names, old_hash=old_stamp)
     history = sheet_history.for_paths(path, old_path, names, old.get("sheet_names", [s["name"] for s in old["sheets"]]), old_hash=old_stamp)
@@ -262,11 +306,49 @@ def plan_file(excel: Any, path: Path, old_path: Path, options: dict) -> dict:
     if renames:
         comparison = sheet_history.with_inferred_renames(history, renames)
         old = snapshot(excel, old_path, options, projection=comparison)
+    if book is not None and (options["columns"] or options["narrow"] or options.get("widths")):
+        if path.suffix.lower() in {".xlsx", ".xlsm"}:
+            _snapshot_columns(book, current, path)
+        else:
+            _snapshot_binary_columns(book, current, old, options, history)
     if stamp != fingerprint(path) or old_stamp != fingerprint(old_path):
         raise ValueError("当前文件或备份在对比期间发生变化，请重新扫描")
     return {"path": str(path), "old": str(old_path), "fingerprint": stamp, "old_fingerprint": old_stamp,
             "checks": {sheet["name"]: sheet["signature"] for sheet in current["sheets"]},
             "cells": plan_changes(current, old, options, history)}
+
+
+def apply_workbook(book: Any, ready: list[dict], checks: dict) -> list[dict]:
+    for name in {item["sheet"] for item in ready}:
+        if content_info(book.Worksheets(name))["signature"] != checks[name]:
+            raise ValueError(f"{name} 的内容已变，本文件没有保存，请重新扫描")
+    for item in ready:
+        sheet = book.Worksheets(item["sheet"])
+        if item["kind"] == "sheet":
+            unchanged = int(sheet.Visible) == item["before"]
+        else:
+            unchanged = all(sheet.Columns(index).Hidden is False and abs(float(sheet.Columns(index).ColumnWidth) - item["before"]) < 0.001
+                            for index in range(item["first"], item["last"] + 1))
+        if not unchanged:
+            raise ValueError(f"{item['sheet']}!{item['addr']} 的隐藏状态或列宽已变，请重新扫描")
+    for item in ready:
+        sheet = book.Worksheets(item["sheet"])
+        if item["kind"] == "sheet":
+            sheet.Visible = item["value"]
+            verified = int(sheet.Visible) == item["value"]
+        elif item["kind"] == "columns":
+            sheet.Range(item["addr"]).EntireColumn.Hidden = True
+            verified = all(sheet.Columns(index).Hidden is True for index in range(item["first"], item["last"] + 1))
+        else:
+            sheet.Range(item["addr"]).EntireColumn.ColumnWidth = item["value"]
+            verified = all(sheet.Columns(index).Hidden is False and abs(float(sheet.Columns(index).ColumnWidth) - item["value"]) < 0.05
+                           for index in range(item["first"], item["last"] + 1))
+        if not verified:
+            raise ValueError(f"{item['sheet']}!{item['addr']} 未能恢复，本文件没有保存")
+    if not any(int(sheet.Visible) == VISIBLE for sheet in book.Sheets):
+        raise ValueError("至少需要保留一张可见工作表，本文件没有保存")
+    return [{**item, "status": "ok", "reason": "已恢复备份列宽（仍为可见列）" if item["kind"] in {"narrow", "width"} else "已恢复备份隐藏状态"}
+            for item in ready]
 
 
 def apply_file(excel: Any, file: dict) -> list[dict]:
@@ -291,41 +373,13 @@ def apply_file(excel: Any, file: dict) -> list[dict]:
         # 老版 xls 在取得写锁时就会更新 OLE 容器字节；打开前已校验扫描版本，
         # 保存前再与取得写锁后的版本比较，避免把 Excel 自己的更新当作外部编辑。
         opened_stamp = fingerprint(path)
-        for name in {item["sheet"] for item in ready}:
-            if content_info(book.Worksheets(name))["signature"] != file["checks"][name]:
-                raise ValueError(f"{name} 的内容已变，本文件没有保存，请重新扫描")
-        for item in ready:
-            sheet = book.Worksheets(item["sheet"])
-            if item["kind"] == "sheet":
-                unchanged = int(sheet.Visible) == item["before"]
-            else:
-                unchanged = all(sheet.Columns(index).Hidden is False and abs(float(sheet.Columns(index).ColumnWidth) - item["before"]) < 0.001
-                                for index in range(item["first"], item["last"] + 1))
-            if not unchanged:
-                raise ValueError(f"{item['sheet']}!{item['addr']} 的隐藏状态或列宽已变，请重新扫描")
-        for item in ready:
-            sheet = book.Worksheets(item["sheet"])
-            if item["kind"] == "sheet":
-                sheet.Visible = item["value"]
-                verified = int(sheet.Visible) == item["value"]
-            elif item["kind"] == "columns":
-                sheet.Range(item["addr"]).EntireColumn.Hidden = True
-                verified = all(sheet.Columns(index).Hidden is True for index in range(item["first"], item["last"] + 1))
-            else:
-                sheet.Range(item["addr"]).EntireColumn.ColumnWidth = item["value"]
-                verified = all(sheet.Columns(index).Hidden is False and abs(float(sheet.Columns(index).ColumnWidth) - item["value"]) < 0.05
-                               for index in range(item["first"], item["last"] + 1))
-            if not verified:
-                raise ValueError(f"{item['sheet']}!{item['addr']} 未能恢复，本文件没有保存")
-        if not any(int(sheet.Visible) == VISIBLE for sheet in book.Sheets):
-            raise ValueError("至少需要保留一张可见工作表，本文件没有保存")
+        results = apply_workbook(book, ready, file["checks"])
         check_versions(opened_stamp)
         book.Save()
         debug_log.saved_excel("修复列宽" if any(item["kind"] == "width" for item in ready) else "修复隐藏页", path)
     finally:
         book.Close(SaveChanges=False)
-    return [{**item, "status": "ok", "reason": "已恢复备份列宽（仍为可见列）" if item["kind"] in {"narrow", "width"} else "已恢复备份隐藏状态"}
-            for item in ready]
+    return results
 
 
 def _run(root: Path, paths: list[Path], old_root: Path | ReferenceIndex, old_paths: list[Path], options: dict) -> None:

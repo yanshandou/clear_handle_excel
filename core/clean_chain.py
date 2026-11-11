@@ -1,8 +1,8 @@
 """精简 Sheet 之后自动接着做的例行检查：排查 BL 超链接 → 修复引用错误 →（可选）修复隐藏页 → 统一字体。
 
 用户 2026-11-07 定：主页只留「精简 Sheet」一站，原来第 4、5、6 步不用再单独点。
-- 每一步都照用原来页面的后台（bl_links / link_repair / hidden_repair），规则一点不改，只是不再等人确认；
-- 一步出错不影响后面几步，最后汇总成「改好了 / 改不了 / 出错」，改不了、出错的都列出来；
+- 按文件执行，当前工作簿打开一次；各项共用独立工具的检查和写入规则。
+- 能安全跳过的检查错误记录后继续；写入失败关闭工作簿并放弃这份尚未保存的修改。
 - 结果存进数据库，重开程序也能在精简 Sheet 页看到；原来的页面（主页「更多工具」）还能看每一步的详细结果。
 引用错误和隐藏页要对照参考（原始备份）文件夹，没填就跳过这两步并写明原因。
 """
@@ -10,15 +10,18 @@ from __future__ import annotations
 
 import copy
 import threading
-import time
+from pathlib import Path
 from typing import Any, Callable
 
-from core import debug_log, storage
-from core.reference_folders import ReferenceFolders
+from core import bl_links, debug_log, file_problem, font_fix, hidden_repair, link_repair, operation_history
+from core import sheet_history, storage, workflow as wf
+from core.backup_compare import pair_files, require_manual_file_check
+from core.common import workbook_locked, workbook_rel_name
+from core.excel_ops import open_workbook_checked, start_background_excel
+from core.excel_watchdog import NOT_DONE_REASON, TaskStopped
+from core.reference_folders import ReferenceFolders, prepare as prepare_references, unmatched
 
 SNAPSHOT = "clean_chain"
-POLL_SECONDS = 0.4
-BUSY_WAIT_SECONDS = 15.0  # 上一步刚结束，后台标志还没放开时最多等这么久
 MAX_PROBLEMS = 300  # 每一步最多列这么多处「改不了 / 出错」，太多时只写总数
 
 STEPS = (
@@ -167,171 +170,319 @@ def _finish_step(key: str, fixed: int, problems: list[dict], text: str) -> None:
             error_total=errors, text=text)
 
 
-def _launch(start: Callable[[], None], key: str) -> bool:
-    """开始一步；上一步刚结束、后台标志还没放开时等一会儿再试"""
-    if _stopped():
-        _mark_stopped(key)
-        return False
-    deadline = time.monotonic() + BUSY_WAIT_SECONDS
-    while True:
-        try:
-            start()
-            return True
-        except ValueError as err:
-            if "后台任务正在执行" in str(err) and time.monotonic() < deadline:
-                time.sleep(POLL_SECONDS)
-                continue
-            _finish_step(key, 0, [{"file": "", "path": "", "reason": str(err), "error": True}], f"没能开始：{err}")
-            return False
-
-
-def _set_progress(key: str, phase: str, current: dict) -> None:
-    """把这一步后台的「第几份 / 共几份」抄到自动检查的状态里，页面画进度条用（只在内存里，不存数据库）"""
-    total = int(current.get("total") or 0)
-    done = min(int(current.get("done") or 0), total)
-    progress = {"phase": phase, "done": done, "total": total, "current": str(current.get("current") or "")}
-    with _LOCK:
-        _step(key)["progress"] = progress
-
-
-def _wait(read_status: Callable[[], dict], key: str = "", phase: str = "") -> dict:
-    time.sleep(POLL_SECONDS)
-    while True:
-        current = read_status()
-        if key and current.get("total"):
-            _set_progress(key, phase, current)
-        if not current.get("running"):
-            break
-        time.sleep(POLL_SECONDS)
-    if key:
-        with _LOCK:
-            _step(key).pop("progress", None)
-    return read_status()
-
-
-def _file_errors(files: list[dict]) -> list[dict]:
-    return [_problem(file, None, file["error"], error=True) for file in files if file.get("error")]
-
-
-def _run_bl(folder: str) -> None:
-    from core import bl_links
-    _update("bl", state="running", text="正在扫描…")
-    if not _launch(lambda: bl_links.start(folder), "bl"):
-        return
-    scanned = _wait(bl_links.status, "bl", "扫描").get("result") or {"files": []}
-    problems = _file_errors(scanned["files"])
-    hits = sum(len(file.get("hits", [])) for file in scanned["files"] if not file.get("error"))
-    if not hits:
-        _finish_step("bl", 0, problems, "没有要清除的 BL 超链接")
-        return
-    _update("bl", text=f"找到 {hits} 处，正在清除…")
-    if not _launch(bl_links.clear, "bl"):
-        return
-    applied = _wait(bl_links.status, "bl", "清除").get("applied") or {"files": []}
-    fixed = sum(1 for file in applied["files"] for cell in file.get("cells", []) if cell.get("status") == "ok")
-    problems += _file_errors(applied["files"])
-    _finish_step("bl", fixed, problems, f"清除了 {fixed} 处 BL 超链接" if fixed else "没能清除 BL 超链接")
-
-
-def _need_old_folder(key: str, old_folder: str | ReferenceFolders) -> bool:
-    if old_folder:
-        return True
-    _update(key, state="skipped", text="没填参考（原始备份）文件夹，跳过这一步")
-    return False
-
-
-def _run_links(folder: str, old_folder: str | ReferenceFolders) -> None:
-    from core import link_repair
-    if not _need_old_folder("links", old_folder):
-        return
-    _update("links", state="running", text="正在扫描、对照参考、修复…")
-    if not _launch(lambda: link_repair.repair(folder, old_folder), "links"):
-        return
-    applied = _wait(link_repair.status, "links", "扫描并修复").get("applied") or {"files": []}
-    fixed, problems = 0, _file_errors(applied["files"])
-    for file in applied["files"]:
-        if file.get("error"):
+def _prepare_steps(folder: str, chain: dict) -> tuple[dict, dict, dict]:
+    paths_by_step, targets, references = {}, {}, {}
+    for key, _ in STEPS:
+        if not _enabled(chain, key):
             continue
+        if _stopped():
+            _mark_stopped(key)
+            continue
+        try:
+            reference_step = key in {"links", "hidden"}
+            if reference_step:
+                options = (ReferenceFolders.from_payload(chain) if "reference_folders" in chain
+                           else chain.get("old_folder", ""))
+                if not options:
+                    _update(key, state="skipped", text="没填参考（原始备份）文件夹，跳过这一步")
+                    continue
+            list_books = hidden_repair.list_workbooks if key in {"hidden", "font"} else wf.list_workbooks
+            root, paths = list_books(folder)
+            if reference_step:
+                old_root, old_paths = prepare_references(
+                    root, options, list_books, wf.EXCEL_EXTENSIONS | {".xlsb"}, disjoint=key == "hidden")
+                inferred: set[str] = set()
+                names = [workbook_rel_name(path, root) for path in paths]
+                references[key] = old_root, pair_files(old_root, old_paths, names, root, inferred=inferred), inferred
+            paths_by_step[key] = paths
+            for path in paths:
+                targets.setdefault(path, []).append(key)
+        except Exception as error:
+            debug_log.exception(error, f"精简后自动检查 {key}")
+            _finish_step(key, 0, [_problem({}, None, str(error), error=True)], f"没能开始：{error}")
+    return paths_by_step, targets, references
+
+
+def _plan_step(key: str, entry: dict, book: Any, path: Path, entries: dict,
+               references: dict, get_reference_excel: Callable[[], Any]) -> list[dict] | dict | None:
+    if key == "bl":
+        entry["hits"] = bl_links.scan_workbook(book)
+        return entry["hits"] or None
+    if key == "font":
+        cells = font_fix.yu_cells(path)
+        if path.suffix.lower() in {".xlsx", ".xlsm"}:
+            cells = font_fix.refresh_changed_cells(
+                book, cells, entries.get("bl", {}).get("cells", []), entries.get("links", {}).get("cells", []))
+        return cells  # 即使没有格子也需要检查图形
+
+    if key == "links":
+        entry.update(link_repair.scan_workbook(book))
+        if not entry["hits"]:
+            return None
+        entry["cells"] = [{**hit, "status": "skip", "reason": "未修复"} for hit in entry["hits"]]
+    old_root, pairs, inferred = references[key]
+    old_path = pairs[entry["name"]]
+    if old_path is None:
+        raise ValueError(unmatched(old_root, entry["name"], "找不到唯一对应的备份文件，请选到对应子文件夹"))
+    entry["old"] = str(old_path)
+    if key == "links":
+        entry.update(link_repair.preview_file(get_reference_excel(), entry, old_path))
+    else:
+        entry.update(hidden_repair.plan_file(get_reference_excel(), path, old_path, hidden_repair.DEFAULT_OPTIONS, book=book))
+    if entry["name"] in inferred:
+        require_manual_file_check(entry)
+        return None
+    return [cell for cell in entry["cells"] if cell["action"] == "restore"] or None
+
+
+def _apply_step(key: str, entry: dict, book: Any, ready: list[dict] | dict, guard: file_problem.Guard) -> bool:
+    if key == "font":
+        entry.update(font_fix.fix_open_workbook(book, ready, lambda *_: guard.progress()))
+        return bool(entry["sheets"])
+    if key == "bl":
+        entry["cells"] = bl_links.clear_workbook(book, ready)
+        return bool(entry["cells"])
+
+    if key == "links":
+        cells = link_repair.apply_workbook(book, ready)
+    else:
+        cells = hidden_repair.apply_workbook(book, ready, entry["checks"])
+    outcomes = {(cell["sheet"], cell.get("kind"), cell["addr"]): cell for cell in cells}
+    entry["cells"] = [outcomes.get((cell["sheet"], cell.get("kind"), cell["addr"]), cell) for cell in entry["cells"]]
+    return any(cell["status"] == "ok" for cell in cells)
+
+
+def _check_stop(guard: file_problem.Guard) -> None:
+    if _stopped() or guard.watchdog.skip_requested or guard.watchdog.stop_requested:
+        raise TaskStopped(NOT_DONE_REASON)
+
+
+def _run_workbook(excel: Any, path: Path, entries: dict, references: dict,
+                  get_reference_excel: Callable[[], Any], guard: file_problem.Guard,
+                  progress: Callable[[str], None], close_excel: Callable[[], None]) -> None:
+    stamp = sheet_history.fingerprint(path)
+    locked = workbook_locked(path)
+    book = open_workbook_checked(excel, str(path.resolve()), UpdateLinks=0, ReadOnly=locked)
+    try:
+        if path.suffix.lower() == ".xls":
+            # 旧版 xls 取得写锁时 Excel 会更新文件的 OLE 容器。
+            stamp = sheet_history.fingerprint(path)
+        modified = []
+        for key, entry in entries.items():
+            _check_stop(guard)
+            progress(key)
+            guard.progress()
+            try:
+                ready = _plan_step(key, entry, book, path, entries, references, get_reference_excel)
+                if ready is not None and book.ReadOnly:
+                    raise ValueError("文件正在 Excel 中打开或为只读，请关闭后再修复")
+            except (OSError, ValueError) as error:
+                entry["error"] = str(error)
+                continue
+            if ready is not None and _apply_step(key, entry, book, ready, guard):
+                modified.append(entry)
+        _check_stop(guard)
+        if stamp != sheet_history.fingerprint(path):
+            raise ValueError("当前文件发生变化，请重新检查")
+        if modified:
+            for entry in modified:
+                if entry.get("old_fingerprint") and sheet_history.fingerprint(entry["old"]) != entry["old_fingerprint"]:
+                    raise ValueError("备份在自动检查期间发生变化，请重新检查")
+            book.Save()
+            debug_log.saved_excel("精简后自动检查", path)
+    finally:
+        try:
+            book.Close(SaveChanges=False)
+        except Exception as error:
+            debug_log.exception(error, f"关闭自动检查工作簿 {path.name}")
+            close_excel()
+
+
+def _process_files(folder: str, paths_by_step: dict, targets: dict, references: dict, results: dict) -> None:
+    root = Path(folder)
+    guard = file_problem.Guard("精简 Sheet 后自动检查")
+    excel = reference_excel = None
+    counts = dict.fromkeys(paths_by_step, 0)
+
+    def get_reference_excel() -> Any:
+        nonlocal reference_excel
+        if reference_excel is None:
+            # 当前和参考通常同名，需要两个 Excel 实例。参考模拟可以按候选重开。
+            reference_excel = guard.watch(start_background_excel())
+        return reference_excel
+
+    def close_excel() -> None:
+        nonlocal excel, reference_excel
+        file_problem.quit_quietly(reference_excel)
+        file_problem.quit_quietly(excel)
+        excel = reference_excel = None
+
+    initialized = False
+    try:
+        wf.pythoncom.CoInitialize()
+        initialized = True
+        for path, keys in targets.items():
+            if _stopped() or guard.watchdog.stop_requested:
+                break
+            name = workbook_rel_name(path, root)
+
+            def progress(key: str) -> None:
+                with _LOCK:
+                    for step in _STATUS["steps"]:
+                        if step["state"] == "running":
+                            step.update(state="waiting", text="等待检查下一份文件")
+                    _step(key).update(state="running", text="正在自动检查…",
+                                      progress={"phase": "检查", "done": counts[key],
+                                                "total": len(paths_by_step[key]), "current": name})
+
+            progress(keys[0])
+            while True:
+                entries = {key: {"name": name, "path": str(path), "cells": 0 if key == "font" else [], "error": None}
+                           for key in keys}
+                try:
+                    if guard.file(name):
+                        close_excel()
+                    if excel is None:
+                        excel = guard.watch(start_background_excel())
+                    _run_workbook(excel, path, entries, references, get_reference_excel, guard, progress, close_excel)
+                except Exception as error:
+                    debug_log.exception(error, f"精简后自动检查 {name}")
+                    retry, reason = guard.problem(error, path, name, root, close=close_excel)
+                    if retry:
+                        wf.log_msg(f"🔁 重试 {name}")
+                        continue
+                    for key, entry in entries.items():
+                        if not entry["error"]:
+                            entry["error"] = reason
+                            if key == "font":
+                                entry.update(shapes=0, cells=0, sheets=[])
+                            else:
+                                for cell in entry["cells"]:
+                                    if cell.get("status") in {"ok", "resolved"}:
+                                        cell.update(status="failed", reason=reason)
+                break
+            for key, entry in entries.items():
+                results[key].append(entry)
+                counts[key] += 1
+            errors = [entry["error"] for entry in entries.values() if entry["error"]]
+            wf.log_msg(f"自动检查 {name}：" + (errors[0] if errors else "已完成"))
+    finally:
+        close_excel()
+        try:
+            guard.stop()
+        finally:
+            if initialized:
+                wf.pythoncom.CoUninitialize()
+
+
+def _finish_results(key: str, files: list[dict]) -> None:
+    problems = [_problem(file, None, file["error"], error=True) for file in files if file.get("error")]
+    good = [file for file in files if not file.get("error")]
+    if key == "font":
+        shapes = sum(file.get("shapes", 0) for file in good)
+        cells = sum(file.get("cells", 0) for file in good)
+        changed = sum(1 for file in good if file.get("shapes") or file.get("cells"))
+        parts = [f"{shapes} 个图形" if shapes else "", f"{cells} 个格子" if cells else ""]
+        text = (f"{changed} 份 Excel 换成标准字体：{'、'.join(p for p in parts if p)}" if changed
+                else "字体都是标准字体，没有要改的")
+        _finish_step(key, shapes + cells, problems, text)
+        return
+
+    fixed = 0
+    for file in good:
         for cell in file.get("cells", []):
             if cell.get("status") in {"ok", "resolved"}:
                 fixed += 1
             else:
                 problems.append(_problem(file, cell, cell.get("reason") or "未修复"))
-    total = fixed + sum(1 for p in problems if not p["error"])
-    _finish_step("links", fixed, problems,
-                 f"引用错误 {total} 处：修好 {fixed} 处" + (f"，改不了 {total - fixed} 处" if total > fixed else "")
-                 if total else "没有引用错误")
+    if key == "bl":
+        text = f"清除了 {fixed} 处 BL 超链接" if fixed else "没有清除 BL 超链接"
+    elif key == "links":
+        skipped = sum(1 for problem in problems if not problem["error"])
+        text = f"引用错误 {fixed + skipped} 处：修好 {fixed} 处，改不了 {skipped} 处" if fixed or skipped else "没有引用错误"
+    else:
+        text = f"恢复了 {fixed} 处隐藏表 / 列" if fixed else "没有要恢复的隐藏表 / 列"
+    _finish_step(key, fixed, problems, text)
 
 
-def _run_hidden(folder: str, old_folder: str | ReferenceFolders) -> None:
-    from core import hidden_repair
-    if not _need_old_folder("hidden", old_folder):
-        return
-    _update("hidden", state="running", text="正在对照参考恢复…")
-    if not _launch(lambda: hidden_repair.repair(folder, old_folder), "hidden"):
-        return
-    applied = _wait(hidden_repair.status, "hidden", "对照恢复").get("applied") or {"files": []}
-    fixed, problems = 0, _file_errors(applied["files"])
-    for file in applied["files"]:
-        if file.get("error"):
-            continue
-        for cell in file.get("cells", []):
-            if cell.get("status") == "ok":
-                fixed += 1
-            elif cell.get("action") == "skip" or cell.get("status"):
-                problems.append(_problem(file, cell, cell.get("reason") or "未恢复"))
-    _finish_step("hidden", fixed, problems,
-                 f"恢复了 {fixed} 处隐藏表 / 列" if fixed else "没有要恢复的隐藏表 / 列")
-
-
-def _run_font(folder: str) -> None:
-    from core import font_fix
-    _update("font", state="running", text="正在把游ゴシック换成ＭＳ Ｐゴシック…")
-    if not _launch(lambda: font_fix.start(folder), "font"):
-        return
-    result = _wait(font_fix.status, "font", "统一字体").get("result") or {"files": []}
-    problems = _file_errors(result["files"])
-    good = [file for file in result["files"] if not file.get("error")]
-    shapes = sum(file.get("shapes", 0) for file in good)
-    cells = sum(file.get("cells", 0) for file in good)
-    changed = sum(1 for file in good if file.get("shapes") or file.get("cells"))
-    parts = [f"{shapes} 个图形" if shapes else "", f"{cells} 个格子" if cells else ""]
-    text = (f"{changed} 份 Excel 换成标准字体：{'、'.join(p for p in parts if p)}" if changed
-            else "字体都是标准字体，没有要改的")
-    _finish_step("font", shapes + cells, problems, text)
+def _publish_details(folder: str, key: str, files: list[dict], references: dict) -> None:
+    module = {"bl": bl_links, "links": link_repair, "hidden": hidden_repair, "font": font_fix}[key]
+    data = {"folder": folder, "files": files}
+    if key in references:
+        data["old_folder"] = str(references[key][0])
+    if key == "hidden":
+        data["options"] = hidden_repair.DEFAULT_OPTIONS
+    with module._LOCK:
+        module._STATUS.clear()
+        module._STATUS.update(running=False, total=len(files), done=len(files), folder=folder, current="")
+        if key == "bl":
+            module._STATUS.update(phase="scan", result=data)
+            hits = [file for file in files if file.get("hits")]
+            if hits:
+                module._STATUS.update(phase="clear", applied={**data, "files": hits})
+        elif key == "font":
+            module._STATUS["result"] = data
+        else:
+            module._STATUS.update(phase="repair", applied=data)
 
 
 def run(folder: str, chain: dict) -> None:
-    """精简 Sheet 后台任务结束后，在同一个线程里接着做（workflow.run_pending_workflow 调用）"""
+    """精简完成后逐份检查，同一个当前工作簿处理完所有已选操作才关闭。"""
     current = status()
     if not current.get("running") or current.get("folder") != str(folder):
-        prepare(folder, chain)  # 「继续上次任务」续跑精简时重新排上
+        prepare(folder, chain)
     with _LOCK:
         _STATUS["stage"] = "chain"
         _save()
-    old_folder = chain.get("old_folder", "")
 
-    def references() -> str | ReferenceFolders:
-        return ReferenceFolders.from_payload(chain) if "reference_folders" in chain else old_folder
-
-    with debug_log.side_task("clean_chain", {"folder": folder, "old_folder": old_folder,
-                                              **{key: _enabled(chain, key) for key in OPTIONAL_STEPS}}):
-        for key, work in (("bl", lambda: _run_bl(folder)),
-                          ("links", lambda: _run_links(folder, references())),
-                          ("hidden", lambda: _run_hidden(folder, references())),
-                          ("font", lambda: _run_font(folder))):
-            if not _enabled(chain, key):
-                continue
-            if _stopped():
-                debug_log.event("⏹ 结束整个任务：精简后自动检查这一步不做", 步=key)
-                _mark_stopped(key)
-                continue
+    reserved = False
+    try:
+        with wf.STATE_LOCK:
+            if wf.STATE.get("busy"):
+                raise ValueError("后台任务正在执行，请等它结束")
+            job = wf.STATE.get("job") or {}
+            if job.get("pending_adjustment") or job.get("deferred_adjustments"):
+                raise ValueError("还有未完成的文件写入，请先继续或放弃上次写入")
+            wf.STATE.update(busy=True, maintenance="clean_chain")
+            reserved = True
+        with debug_log.side_task("clean_chain", {"folder": folder, "old_folder": chain.get("old_folder", ""),
+                                                **{key: _enabled(chain, key) for key in OPTIONAL_STEPS}}):
+            paths_by_step, targets, references = _prepare_steps(folder, chain)
+            results: dict[str, list[dict]] = {key: [] for key in paths_by_step}
+            history = {key: operation_history.begin(folder, ["bl_scan" if key == "bl" else key])
+                       for key in ("bl", "links", "hidden") if key in paths_by_step}
             try:
-                work()
-            except Exception as err:  # 一步出错不影响后面几步
-                debug_log.exception(err, f"精简后自动检查 {key}")
-                _finish_step(key, 0, [{"file": "", "path": "", "reason": str(err), "error": True}], f"出错了：{err}")
-    with _LOCK:
-        _STATUS.update(running=False, stage="done")
-        _save()
-
+                if targets:
+                    _process_files(folder, paths_by_step, targets, references, results)
+            except Exception as error:
+                debug_log.exception(error, "精简后自动检查")
+                for files in results.values():
+                    files.append({"name": "任务", "path": "", "error": str(error)})
+            for key, files in results.items():
+                if not files and _stopped():
+                    _mark_stopped(key)
+                else:
+                    _publish_details(folder, key, files, references)
+                    _finish_results(key, files)
+                    if _stopped() and len(files) < len(paths_by_step[key]):
+                        with _LOCK:
+                            step = _step(key)
+                            step["text"] += f"，已停止，剩余 {len(paths_by_step[key]) - len(files)} 份未检查"
+                ids = history.get(key, [])
+                if key == "bl" and any(file.get("hits") for file in files):
+                    ids += operation_history.begin(folder, ["bl_clear"])
+                operation_history.finish(ids, "interrupted" if _stopped() else
+                                         "failed" if any(file.get("error") for file in files) else "completed")
+    except Exception as error:
+        debug_log.exception(error, "精简后自动检查")
+        for key, _ in STEPS:
+            if _step(key)["state"] in {"waiting", "running"}:
+                _finish_step(key, 0, [_problem({}, None, str(error), error=True)], f"没能完成：{error}")
+    finally:
+        if reserved:
+            with wf.STATE_LOCK:
+                wf.STATE["busy"] = False
+                wf.STATE.pop("maintenance", None)
+        with _LOCK:
+            _STATUS.update(running=False, stage="done")
+            _save()

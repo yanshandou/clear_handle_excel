@@ -64,29 +64,34 @@ def _anchors(cell: Any) -> list[dict]:
     return result
 
 
+def scan_workbook(book: Any) -> dict:
+    book.Application.CalculateFull()
+    sheets = [_sheet_info(sheet) for sheet in book.Worksheets]
+    sheet_names = [sheet.Name for sheet in book.Sheets]
+    hits, seen = [], set()
+    for hit in links.link_errors(book):
+        cell = book.Worksheets(hit["sheet"]).Range(hit["addr"])
+        area, kind = links.region(cell)
+        addr = links.address(area)
+        key = (hit["sheet"], addr)
+        if key in seen:
+            continue
+        seen.add(key)
+        hits.append({**hit, "addr": addr, "anchor": links.address(cell), "kind": kind,
+                     "formulas": area.Formula, "anchors": _anchors(cell)})
+    return {"sheets": sheets, "sheet_names": sheet_names, "hits": hits}
+
+
 def scan_file(excel: Any, path: Path) -> dict:
     stamp = fingerprint(path)
     book = open_workbook_checked(excel, str(path.resolve()), UpdateLinks=0, ReadOnly=True)
     try:
-        book.Application.CalculateFull()
-        sheets = [_sheet_info(sheet) for sheet in book.Worksheets]
-        sheet_names = [sheet.Name for sheet in book.Sheets]
-        hits, seen = [], set()
-        for hit in links.link_errors(book):
-            cell = book.Worksheets(hit["sheet"]).Range(hit["addr"])
-            area, kind = links.region(cell)
-            addr = links.address(area)
-            key = (hit["sheet"], addr)
-            if key in seen:
-                continue
-            seen.add(key)
-            hits.append({**hit, "addr": addr, "anchor": links.address(cell), "kind": kind,
-                         "formulas": area.Formula, "anchors": _anchors(cell)})
+        result = scan_workbook(book)
     finally:
         book.Close(SaveChanges=False)
     if stamp != fingerprint(path):
         raise ValueError("文件在扫描期间发生变化，请重新扫描")
-    return {"path": str(path), "fingerprint": stamp, "sheets": sheets, "sheet_names": sheet_names, "hits": hits}
+    return {"path": str(path), "fingerprint": stamp, **result}
 
 
 def _same(first: Any, second: Any) -> bool:
@@ -327,6 +332,35 @@ def preview_file(excel: Any, file: dict, old_path: Path) -> dict:
     return {**file, "old": str(old_path), "old_fingerprint": stamp, "cells": results}
 
 
+def apply_workbook(book: Any, cells: list[dict]) -> list[dict]:
+    results = []
+    book.Application.CalculateFull()
+    before = links.error_positions(book)
+    # 写入前检查全部目标；任何一处变动都不保存本文件。
+    for item in cells:
+        sheet = book.Worksheets(item["sheet"])
+        if not _same(sheet.Range(item["addr"]).Formula, item["formulas"]):
+            raise ValueError(f"{item['sheet']}!{item['addr']} 的公式已变，请重新扫描")
+    direct_first = sorted(cells, key=lambda item: not links.broken_formula(item["formula"]))
+    for item in direct_first:
+        sheet = book.Worksheets(item["sheet"])
+        cell = sheet.Range(item["anchor"])
+        if not (links.broken_formula(links.formula(cell)) or links.is_ref_error(cell)):
+            results.append({**item, "status": "resolved", "reason": "上游引用修复后已正常，保留现有公式"})
+            continue
+        links.write_values(sheet, item)
+        reason = item["reason"] if item.get("match") == "candidate" else "已恢复备份计算结果为固定值"
+        results.append({**item, "status": "ok", "reason": reason})
+    book.Application.CalculateFull()
+    after = links.error_positions(book)
+    if after - before:
+        raise ValueError("修复后出现新的引用错误，本文件没有保存")
+    for item in results:
+        if (item["sheet"], item["anchor"]) in after:
+            raise ValueError(f"{item['sheet']}!{item['addr']} 修复后仍然报错，本文件没有保存")
+    return results
+
+
 def apply_file(excel: Any, file: dict) -> list[dict]:
     path, old_path = Path(file["path"]), Path(file["old"])
     if fingerprint(path) != file["fingerprint"] or fingerprint(old_path) != file["old_fingerprint"]:
@@ -334,37 +368,11 @@ def apply_file(excel: Any, file: dict) -> list[dict]:
     if workbook_locked(path):
         raise ValueError("文件正在 Excel 中打开，请保存并关闭后再修复")
     book = open_workbook_checked(excel, str(path.resolve()), UpdateLinks=0)
-    results = []
     try:
         if book.ReadOnly:
             raise ValueError("文件以只读方式打开，没有修改")
-        book.Application.CalculateFull()
-        before = links.error_positions(book)
-        # 写入前检查全部目标；任何一处变动都不保存本文件。
-        for item in file["cells"]:
-            sheet = book.Worksheets(item["sheet"])
-            if not _same(sheet.Range(item["addr"]).Formula, item["formulas"]):
-                raise ValueError(f"{item['sheet']}!{item['addr']} 的公式已变，请重新扫描")
-        direct_first = sorted(file["cells"], key=lambda item: not links.broken_formula(item["formula"]))
-        changed = False
-        for item in direct_first:
-            sheet = book.Worksheets(item["sheet"])
-            cell = sheet.Range(item["anchor"])
-            if not (links.broken_formula(links.formula(cell)) or links.is_ref_error(cell)):
-                results.append({**item, "status": "resolved", "reason": "上游引用修复后已正常，保留现有公式"})
-                continue
-            links.write_values(sheet, item)
-            changed = True
-            reason = item["reason"] if item.get("match") == "candidate" else "已恢复备份计算结果为固定值"
-            results.append({**item, "status": "ok", "reason": reason})
-        book.Application.CalculateFull()
-        after = links.error_positions(book)
-        if after - before:
-            raise ValueError("修复后出现新的引用错误，本文件没有保存")
-        for item in results:
-            if (item["sheet"], item["anchor"]) in after:
-                raise ValueError(f"{item['sheet']}!{item['addr']} 修复后仍然报错，本文件没有保存")
-        if changed:
+        results = apply_workbook(book, file["cells"])
+        if any(item["status"] == "ok" for item in results):
             book.Save()
             debug_log.saved_excel("修复引用错误", path)
     finally:

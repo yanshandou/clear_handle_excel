@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any
+from typing import Any, Iterator
 
 from openpyxl.formula.tokenizer import Tokenizer
 
@@ -13,7 +13,7 @@ XL_FORMULAS, XL_CONSTANTS, XL_ERRORS = -4123, 2, 16
 REF_ERROR = -2146826265
 ERROR_VALUES = {code - 2146828288 for code in range(2000, 2051)}
 XL_BY_ROWS, XL_BY_COLUMNS, XL_PREVIOUS, XL_PART = 1, 2, 2, 2
-FALLBACK_BLOCK_CELLS = 500_000  # 读不了 SpecialCells 时，每次最多读这么多格
+FALLBACK_BLOCK_CELLS = 500_000  # 批量读取区域时，每次最多读这么多格
 
 
 def address(area: Any) -> str:
@@ -109,11 +109,54 @@ def is_ref_error(cell: Any) -> bool:
     return cell.Value2 == REF_ERROR and is_error(cell)
 
 
+def _formula_blocks(area: Any) -> Iterator[tuple[Any, int]]:
+    count = int(area.CountLarge)
+    if count <= FALLBACK_BLOCK_CELLS:
+        yield area, count
+        return
+    rows, cols = int(area.Rows.Count), int(area.Columns.Count)
+    step = max(1, FALLBACK_BLOCK_CELLS // cols)
+    for first in range(1, rows + 1, step):
+        height = min(step, rows - first + 1)
+        yield area.Cells(first, 1).Resize(height, cols), height * cols
+
+
+def _reference_candidates(sheet: Any) -> list[Any]:
+    """批量读取公式区域，只把可能含引用错误的单元格交给逐格核对。"""
+    try:
+        formulas = sheet.UsedRange.SpecialCells(XL_FORMULAS)
+    except Exception:
+        return _fallback_cells(sheet, XL_FORMULAS)
+
+    candidates = []
+    try:
+        for area in formulas.Areas:
+            for block, count in _formula_blocks(area):
+                if count == 1:
+                    candidates.append(block)
+                    continue
+                expressions, values = block.Formula, block.Value2
+                if not isinstance(expressions, tuple) or not isinstance(values, tuple):
+                    raise ValueError("读取的公式区域不是单元格矩阵")
+                scanned = 0
+                for row, (formula_row, value_row) in enumerate(zip(expressions, values, strict=True), 1):
+                    scanned += len(formula_row)
+                    for col, (expression, value) in enumerate(zip(formula_row, value_row, strict=True), 1):
+                        if value == REF_ERROR or (isinstance(expression, str) and "#REF!" in expression.upper()):
+                            candidates.append(block.Cells(row, col))
+                if scanned != count:
+                    raise ValueError("读取的公式区域大小不符")
+    except Exception:
+        # 批量读取失败时沿用逐格路径，保留 SpecialCells 失败后的有内容范围扫描。
+        return special_cells(sheet, XL_FORMULAS)
+    return candidates
+
+
 def link_errors(book: Any) -> list[dict]:
     result = []
     for sheet in book.Worksheets:
         seen = set()
-        for cell in special_cells(sheet, XL_FORMULAS) + special_cells(sheet, XL_CONSTANTS, True):
+        for cell in _reference_candidates(sheet) + special_cells(sheet, XL_CONSTANTS, True):
             expr = formula(cell)
             broken = broken_formula(expr)
             if not (broken or is_ref_error(cell)):

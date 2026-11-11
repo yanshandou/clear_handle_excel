@@ -75,6 +75,23 @@ def fix_cells(sheet: Any, cells: list[str]) -> int:
     return len(cells)
 
 
+def refresh_changed_cells(book: Any, cells_by_sheet: dict[str, list[str]],
+                          cleared: list[dict], restored: list[dict]) -> dict[str, list[str]]:
+    """用内存中的修改更新从磁盘读出的字体清单。"""
+    updated = {name: dict.fromkeys(cells) for name, cells in cells_by_sheet.items()}
+    for edits, has_value in ((cleared, False), (restored, True)):
+        for item in edits:
+            if item["status"] != "ok":
+                continue
+            cells = updated.setdefault(item["sheet"], {})
+            for cell in book.Worksheets(item["sheet"]).Range(item["addr"]).Cells:
+                addr = str(cell.Address).replace("$", "")
+                cells.pop(addr, None)
+                if has_value and cell.Value2 not in (None, "") and is_yu_gothic(cell.Font.Name):
+                    cells[addr] = None
+    return {name: list(cells) for name, cells in updated.items() if cells}
+
+
 # ---------- 图形 ----------
 
 def _shape_items(shapes: Any) -> list[Any]:
@@ -119,40 +136,45 @@ def fix_shape(shape: Any) -> int:
 
 # ---------- 一份 Excel ----------
 
+def fix_open_workbook(book: Any, cells_by_sheet: dict[str, list[str]], on_sheet=None) -> dict:
+    sheets: list[dict] = []
+    worksheets = list(book.Worksheets)
+    for index, sheet in enumerate(worksheets, 1):
+        name = str(sheet.Name)
+        if on_sheet:
+            on_sheet(index, len(worksheets), name)
+        cell_count = fix_cells(sheet, cells_by_sheet.get(name, [])) if cells_by_sheet.get(name) else 0
+        shape_names, shape_runs = [], 0
+        try:
+            items = _shape_items(sheet.Shapes)
+        except Exception:
+            items = []
+        for shape in items:
+            runs = fix_shape(shape)
+            if runs:
+                shape_runs += runs
+                shape_names.append(str(getattr(shape, "Name", "")))
+        if cell_count or shape_names:
+            sheets.append({"sheet": name, "cells": cell_count, "shapes": len(shape_names), "names": shape_names[:20]})
+    return {"cells": sum(s["cells"] for s in sheets), "shapes": sum(s["shapes"] for s in sheets), "sheets": sheets}
+
+
 def fix_workbook(excel: Any, path: Path, on_sheet=None) -> dict:
     """返回 {cells, shapes, sheets:[{sheet, cells, shapes, names:[图形名]}]}；没东西要改就不保存"""
     if workbook_locked(path):
         raise ValueError("文件正在 Excel 中打开，请保存并关闭后再统一字体")
     cells_by_sheet = yu_cells(path)
     book = open_workbook_checked(excel, str(path.resolve()), UpdateLinks=0)
-    sheets: list[dict] = []
     try:
         if book.ReadOnly:
             raise ValueError("文件以只读方式打开，没有修改")
-        worksheets = list(book.Worksheets)
-        for index, sheet in enumerate(worksheets, 1):
-            name = str(sheet.Name)
-            if on_sheet:
-                on_sheet(index, len(worksheets), name)
-            cell_count = fix_cells(sheet, cells_by_sheet.get(name, [])) if cells_by_sheet.get(name) else 0
-            shape_names, shape_runs = [], 0
-            try:
-                items = _shape_items(sheet.Shapes)
-            except Exception:
-                items = []
-            for shape in items:
-                runs = fix_shape(shape)
-                if runs:
-                    shape_runs += runs
-                    shape_names.append(str(getattr(shape, "Name", "")))
-            if cell_count or shape_names:
-                sheets.append({"sheet": name, "cells": cell_count, "shapes": len(shape_names), "names": shape_names[:20]})
-        if sheets:
+        result = fix_open_workbook(book, cells_by_sheet, on_sheet)
+        if result["sheets"]:
             book.Save()
             debug_log.saved_excel("统一字体", path)
     finally:
         book.Close(SaveChanges=False)
-    return {"cells": sum(s["cells"] for s in sheets), "shapes": sum(s["shapes"] for s in sheets), "sheets": sheets}
+    return result
 
 
 def describe(entry: dict) -> str:

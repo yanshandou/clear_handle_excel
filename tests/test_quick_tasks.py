@@ -990,6 +990,25 @@ class QuickTaskTests(unittest.TestCase):
         self.assertEqual(self.books["❓other.xlsx"].saved, [])
         self.assertEqual(sorted(self.report_files()), ["spec.xlsx"])
 
+    def test_clean_selection_does_not_narrow_automatic_checks(self):
+        from core import clean_chain
+
+        selected = self.add_book("selected.xlsx", ["Main"])
+        other = self.add_book("other.xlsx", ["Main"])
+        chain = {"bl": True, "links": False, "hidden": False, "font": False}
+        with patch.object(clean_chain, "_STATUS", {}), patch.object(clean_chain, "_LOADED", True), \
+                patch.object(clean_chain, "start_background_excel", return_value=Mock()), \
+                patch.object(clean_chain.file_problem, "quit_quietly"), \
+                patch.object(clean_chain, "_run_workbook") as check_workbook:
+            self.assertTrue(self.workflow.queue_job("clean_sheets", {
+                "folder": str(self.folder), "files": [selected.name], "chain": chain,
+            }))
+            self.workflow.run_pending_workflow()
+
+        self.assertEqual(self.workflow.STATE["job"]["workbooks"], [str(selected)])
+        self.assertEqual(sorted(self.report_files()), [selected.name])
+        self.assertEqual({call.args[1] for call in check_workbook.call_args_list}, {selected, other})
+
     def test_validate_clean_files_rejects_invalid_lists(self):
         self.assertEqual(self.workflow.validate_clean_files(["a.xlsx", "a.xlsx", "b.xlsx"]), ["a.xlsx", "b.xlsx"])
         for bad in ([], "a.xlsx", [""], [1]):

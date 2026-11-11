@@ -100,45 +100,50 @@ def _is_at_hyperlink(cell: Any, link: Any) -> bool:
     return is_at_content(_link_display(link)) or is_at_content(getattr(cell, "Value2", None))
 
 
+def scan_workbook(book: Any) -> list[dict]:
+    hits: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for sheet in book.Worksheets:
+        for index in range(1, int(sheet.Hyperlinks.Count) + 1):
+            link = sheet.Hyperlinks(index)
+            try:
+                area = _area(link.Range)
+                top = _top_cell(area)
+                row, col = int(top.Row), int(top.Column)
+            except Exception:
+                continue  # 个别失效的链接对象读不到范围，跳过
+            if col <= 1:
+                continue  # 第一列没有左边邻居
+            cell = sheet.Cells(row, col)
+            if not _is_at_hyperlink(cell, link):
+                continue
+            addr = _address(area)
+            if (sheet.Name, addr) in seen:
+                continue
+            raw_left = sheet.Cells(row, col - 1)
+            left_area = _area(raw_left)
+            left_top = _top_cell(left_area)
+            left_value = _text(left_top.Value2)
+            if not is_bl_left(left_value):
+                continue
+            seen.add((sheet.Name, addr))
+            hits.append({
+                "sheet": sheet.Name,
+                "addr": addr,
+                "anchor": _address(cell),
+                "left_addr": _address(left_area),
+                "left_value": left_value,
+                "value": _link_display(link).strip() or _text(cell.Value2).strip(),
+                "link_address": _link_target(link),
+            })
+    return hits
+
+
 def scan_file(excel: Any, path: Path) -> dict:
     stamp = fingerprint(path)
     book = open_workbook_checked(excel, str(path.resolve()), UpdateLinks=0, ReadOnly=True)
     try:
-        hits: list[dict] = []
-        seen: set[tuple[str, str]] = set()
-        for sheet in book.Worksheets:
-            for index in range(1, int(sheet.Hyperlinks.Count) + 1):
-                link = sheet.Hyperlinks(index)
-                try:
-                    area = _area(link.Range)
-                    top = _top_cell(area)
-                    row, col = int(top.Row), int(top.Column)
-                except Exception:
-                    continue  # 个别失效的链接对象读不到范围，跳过
-                if col <= 1:
-                    continue  # 第一列没有左边邻居
-                cell = sheet.Cells(row, col)
-                if not _is_at_hyperlink(cell, link):
-                    continue
-                addr = _address(area)
-                if (sheet.Name, addr) in seen:
-                    continue
-                raw_left = sheet.Cells(row, col - 1)
-                left_area = _area(raw_left)
-                left_top = _top_cell(left_area)
-                left_value = _text(left_top.Value2)
-                if not is_bl_left(left_value):
-                    continue
-                seen.add((sheet.Name, addr))
-                hits.append({
-                    "sheet": sheet.Name,
-                    "addr": addr,
-                    "anchor": _address(cell),
-                    "left_addr": _address(left_area),
-                    "left_value": left_value,
-                    "value": _link_display(link).strip() or _text(cell.Value2).strip(),
-                    "link_address": _link_target(link),
-                })
+        hits = scan_workbook(book)
     finally:
         book.Close(SaveChanges=False)
     if stamp != fingerprint(path):
@@ -164,6 +169,25 @@ def _still_matches(sheet: Any, cell: Any) -> bool:
     return False
 
 
+def clear_workbook(book: Any, hits: list[dict]) -> list[dict]:
+    results: list[dict] = []
+    # 写入前整体核对，任何一处不再符合规则都不保存本文件。
+    for hit in hits:
+        sheet = book.Worksheets(hit["sheet"])
+        if not _still_matches(sheet, sheet.Range(hit["addr"])):
+            raise ValueError(f"{hit['sheet']}!{hit['anchor']} 已变化，请重新扫描")
+    for hit in hits:
+        sheet = book.Worksheets(hit["sheet"])
+        area = _area(sheet.Range(hit["addr"]))
+        top = _top_cell(area)
+        area.Hyperlinks.Delete()
+        area.ClearContents()
+        if int(area.Hyperlinks.Count) != 0 or _text(top.Value2) not in ("", None):
+            raise ValueError(f"{hit['sheet']}!{hit['anchor']} 清除校验失败，本文件没有保存")
+        results.append({**hit, "status": "ok", "reason": "已删除超链接并清空内容"})
+    return results
+
+
 def clear_file(excel: Any, file: dict) -> list[dict]:
     path = Path(file["path"])
     if fingerprint(path) != file["fingerprint"]:
@@ -171,24 +195,10 @@ def clear_file(excel: Any, file: dict) -> list[dict]:
     if workbook_locked(path):
         raise ValueError("文件正在 Excel 中打开，请保存并关闭后再清除")
     book = open_workbook_checked(excel, str(path.resolve()), UpdateLinks=0)
-    results: list[dict] = []
     try:
         if book.ReadOnly:
             raise ValueError("文件以只读方式打开，没有修改")
-        # 写入前整体核对，任何一处不再符合规则都不保存本文件。
-        for hit in file["hits"]:
-            sheet = book.Worksheets(hit["sheet"])
-            if not _still_matches(sheet, sheet.Range(hit["addr"])):
-                raise ValueError(f"{hit['sheet']}!{hit['anchor']} 已变化，请重新扫描")
-        for hit in file["hits"]:
-            sheet = book.Worksheets(hit["sheet"])
-            area = _area(sheet.Range(hit["addr"]))
-            top = _top_cell(area)
-            area.Hyperlinks.Delete()
-            area.ClearContents()
-            if int(area.Hyperlinks.Count) != 0 or _text(top.Value2) not in ("", None):
-                raise ValueError(f"{hit['sheet']}!{hit['anchor']} 清除校验失败，本文件没有保存")
-            results.append({**hit, "status": "ok", "reason": "已删除超链接并清空内容"})
+        results = clear_workbook(book, file["hits"])
         book.Save()
         debug_log.saved_excel("排查 BL", path)
     finally:

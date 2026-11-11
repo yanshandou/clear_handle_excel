@@ -230,8 +230,29 @@ class RepairTaskTests(unittest.TestCase):
         book.Close.assert_called_once_with(SaveChanges=False)
 
 
-if __name__ == "__main__":
-    unittest.main()
+class ReferenceScanTests(unittest.TestCase):
+    def test_bulk_scan_only_checks_cells_that_could_have_a_reference_error(self):
+        expressions = (("=1+1", "=IFERROR(#REF!,0)", '="#REF!"'),
+                       ('=INDIRECT("Missing!A1")', "=-2146826265", "=4+2"))
+        values = ((2, 0, "#REF!"), (links.REF_ERROR, links.REF_ERROR, 6))
+        sheet = NS(Name="Main", Evaluate=Mock(side_effect=lambda expr: expr == "ISERROR($A$2)"))
+
+        def cell(row, col):
+            return NS(Formula=expressions[row - 1][col - 1], Value2=values[row - 1][col - 1],
+                      Address=f"${'ABC'[col - 1]}${row}", Worksheet=sheet)
+
+        area = NS(CountLarge=6, Formula=expressions, Value2=values, Cells=Mock(side_effect=cell))
+        sheet.UsedRange = NS(SpecialCells=Mock(side_effect=lambda *args: NS(Areas=[area] if len(args) == 1 else [])))
+        self.assertEqual([hit["addr"] for hit in links.link_errors(NS(Worksheets=[sheet]))], ["B1", "A2"])
+        self.assertEqual([call.args for call in area.Cells.call_args_list], [(1, 2), (1, 3), (2, 1), (2, 2)])
+
+    def test_incomplete_bulk_read_falls_back_to_cell_checks(self):
+        hit = NS(Formula="=IFERROR(#REF!,0)", Value2=0, Address="$B$1")
+        area = NS(CountLarge=2, Formula=(("=1+1",),), Value2=((2,),), Cells=[hit])
+        sheet = NS(Name="Main", UsedRange=NS(SpecialCells=Mock(
+            side_effect=lambda *args: NS(Areas=[area] if len(args) == 1 else []))))
+
+        self.assertEqual([item["addr"] for item in links.link_errors(NS(Worksheets=[sheet]))], ["B1"])
 
 
 class FallbackCellsTests(unittest.TestCase):
@@ -280,3 +301,7 @@ class FallbackCellsTests(unittest.TestCase):
         self.assertEqual([(c.Row, c.Column) for c in cells], [(25_000, 50)])
         self.assertEqual(reads[0], (1, 10_000))
         self.assertEqual(len(reads), 3)
+
+
+if __name__ == "__main__":
+    unittest.main()
