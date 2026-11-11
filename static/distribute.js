@@ -317,7 +317,7 @@
           : file.uploaded_current === true ? '当前版本已上传'
           : file.uploaded_current === false ? '本地有新版本待上传'
           : file.uploaded ? '当前版本待核对' : '待上传';
-        return `<tr><td><input type="checkbox" aria-label="选择 ${esc(file.rel)}" value="${esc(file.rel)}"></td><td>${fileLink(file.rel, task.work, file.rel)}</td><td>${status}</td><td>${upload || '—'}</td></tr>`;
+        return `<tr><td><input type="checkbox" aria-label="选择 ${esc(file.rel)}" value="${esc(file.rel)}"></td><td>${fileLink(file.rel, task.work, file.rel)}${file.uploaded_current === true && !file.review ? '' : diffLink(task.work, task.shared, file.rel)}</td><td>${status}</td><td>${upload || '—'}</td></tr>`;
       });
       $('distTaskFiles').innerHTML = (rows.length
         ? '<table class="link-table"><thead><tr><th>选择</th><th>处理文件</th><th>状态</th><th>上次上传</th></tr></thead><tbody>' + rows.join('') + '</tbody></table>'
@@ -363,6 +363,16 @@
 
   function fileLink(label, folder, rel, sheet = '', cell = '') {
     return window.excelLinkHtml(esc(label), { folder, file: rel, sheet, cell });
+  }
+
+  // 仿 Git 对比（用户 2026-11-11）：新标签页左右两栏看「你这份」和「远程那份」哪里不一样
+  function joinPath(root, rel) {
+    const sep = root.includes('\\') || /^[A-Za-z]:/.test(root) ? '\\' : '/';
+    return root.replace(/[\\/]+$/, '') + sep + rel.split('/').join(sep);
+  }
+  function diffLink(mineRoot, theirsRoot, rel, theirsRel = rel) {
+    return ` <a class="dist-diff" target="_blank" rel="noopener" title="左右两栏看你这份和远程那份哪里不一样（文字、公式、字体、颜色、行高列宽、打印设置…）"`
+      + ` href="/excel-diff?theirs=${encodeURIComponent(joinPath(theirsRoot, theirsRel))}&mine=${encodeURIComponent(joinPath(mineRoot, rel))}">🔍 对比</a>`;
   }
 
   function folderCard(folder, data, applied) {
@@ -426,7 +436,8 @@
         else if (f.guard === 'content_same') state = `<span class="dist-guard-ok">✓ ${esc(f.content_check || '按文字和打印区域核对一致')}</span>`;
         else if (f.guard === 'unknown') state = '<span class="dist-guard-unknown">没有拿取记录，没法检查别人改过没有</span>';
         const base = applied && f.status === 'ok' ? folder.dest_path : folder.source_path;
-        return `<tr${f.conflict || f.status === 'conflict' ? ' class="is-conflict"' : ''}><td>${fileLink(f.rel, base, applied && f.status === 'ok' ? f.dest_rel : f.rel)}</td><td>${action}</td><td>${sizeText}</td><td>${state}</td></tr>`;
+        const diff = f.action === 'overwrite' && !(applied && f.status === 'ok') ? diffLink(folder.source_path, folder.dest_path, f.rel, f.dest_rel) : '';
+        return `<tr${f.conflict || f.status === 'conflict' ? ' class="is-conflict"' : ''}><td>${fileLink(f.rel, base, applied && f.status === 'ok' ? f.dest_rel : f.rel)}${diff}</td><td>${action}</td><td>${sizeText}</td><td>${state}</td></tr>`;
       });
       parts.push(`<details${failed.length || notDone.length || clash.length ? ' open' : ''}><summary class="dist-sub">文件清单 · ${folder.files.length} 个</summary><div class="link-table-wrap"><table class="link-table"><thead><tr><th>文件</th><th>操作</th><th>大小</th><th>${applied ? '结果' : '提示'}</th></tr></thead><tbody>${rows.join('')}</tbody></table></div></details>`);
     }
@@ -566,7 +577,8 @@
     const rows = (data.files || []).map(file => {
       const status = file.status === 'ok' ? (file.pdf_only ? '✓ 只传 PDF，Excel 没传' : '✓ 已上传') : file.error || '未上传';
       const base = file.status === 'ok' ? data.dest_root : data.source_root;
-      return `<li>${fileLink(file.rel, base, file.rel)} · ${esc(status)}${file.content_check ? `<br><small>🔎 ${esc(file.content_check)}</small>` : ''}${prepHtml(file, data)}${pdfHtml(file)}${file.backup_path ? `<br><small>旧处理副本：${esc(file.backup_path)}</small>` : ''}${file.ref_backup_path ? `<br><small>旧参考副本：${esc(file.ref_backup_path)}</small>` : ''}</li>`;
+      const diff = file.status !== 'ok' && data.shared ? diffLink(data.source_root, data.shared, file.rel) : '';
+      return `<li>${fileLink(file.rel, base, file.rel)}${diff} · ${esc(status)}${file.content_check ? `<br><small>🔎 ${esc(file.content_check)}</small>` : ''}${prepHtml(file, data)}${pdfHtml(file)}${file.backup_path ? `<br><small>旧处理副本：${esc(file.backup_path)}</small>` : ''}${file.ref_backup_path ? `<br><small>旧参考副本：${esc(file.ref_backup_path)}</small>` : ''}</li>`;
     });
     const allDone = rows.length && (s['已复制'] || 0) === rows.length && !data.stopped;
     const pdfOnly = rows.length && data.files.every(file => file.pdf_only);
@@ -628,7 +640,8 @@
       const force = !applied && file.action === 'conflict'
         ? `<br><label class="dist-force"><input type="checkbox" data-force-rel="${esc(file.rel)}"${freeForce.id === data.id && freeForce.rels.has(file.rel) ? ' checked' : ''}> ⚠️ 强制覆盖（不管核对结果，终点这份会被盖掉）</label>` : '';
       const link = applied && file.status === 'ok' ? fileLink(file.rel, data.dest_root, file.rel) : fileLink(file.rel, data.source_root, file.rel);
-      return `<tr class="${file.action === 'conflict' || file.status === 'conflict' ? 'is-conflict' : ''}"><td>${link}</td><td><span class="${cls}">${label}</span></td>`
+      const diff = file.dest_sha256 && file.status !== 'ok' ? diffLink(data.source_root, data.dest_root, file.rel) : '';
+      return `<tr class="${file.action === 'conflict' || file.status === 'conflict' ? 'is-conflict' : ''}"><td>${link}${diff}</td><td><span class="${cls}">${label}</span></td>`
         + `<td>${state}${state && why ? '<br>' : ''}${why ? `<small>${why}</small>` : ''}${force}${prepHtml(file, data)}${pdfHtml(file)}</td><td><small>${FREE_GUARD[file.guard] || ''}</small></td></tr>`;
     });
     const list = (title, items) => items && items.length ? `<h4 class="dist-sub">${title}（${items.length}）</h4><ul class="dist-list">${items.map(rel => `<li>${fileLink(rel, data.dest_root, rel)}</li>`).join('')}</ul>` : '';

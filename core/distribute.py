@@ -291,7 +291,8 @@ def _guard(src_file: Path, dest_file: Path, exists: bool, base: dict[str, Any] |
     check = content_check.compare(src_file, dest_file, "来源", "目的地")
     if check["same"]:
         return {"guard": "content_same", "dest_sha": now, "conflict": "",
-                "content_check": ("没有拿取记录" if not base else "目的地和拿的时候不一样") + "，按文字和打印区域核对一致，照常覆盖"}
+                "content_check": ("没有拿取记录" if not base else "目的地和拿的时候不一样") + "，按文字和打印区域核对一致，照常覆盖"
+                + content_check.skipped_note(check)}
     if check["checked"]:
         return {"guard": "content_diff", "dest_sha": now, "content_diffs": check["diffs"],
                 "conflict": ("没有拿取记录，" if not base else "目的地和你拿的时候不一样，")
@@ -754,7 +755,7 @@ def _check_task_file(task: dict[str, Any], item: dict[str, Any], local: Path, sh
             debug_log.event("🔎 只比内容：不一致，不上传", 文件=item["rel"], 第一处=check["diffs"][0][:80])
             return current
         if check["checked"]:
-            item["content_check"] = "只比内容：文字和打印区域都和共享一致，照常覆盖"
+            item["content_check"] = "只比内容：文字和打印区域都和共享一致，照常覆盖" + content_check.skipped_note(check)
         else:
             item["content_check"] = f"只比内容：这份读不了内容（{check['reason']}），按 hash 核对"
     if current is not None and current != known and not pending:
@@ -763,7 +764,7 @@ def _check_task_file(task: dict[str, Any], item: dict[str, Any], local: Path, sh
         check = content_check.compare(local, shared, "你这份", "共享")
         if check["same"]:
             item["content_check"] = ("只比内容：" if content_only else "") + \
-                ("没有共享端版本记录" if not known else "共享这份和记下的版本不一样") + "，按文字和打印区域核对一致，照常覆盖"
+                ("没有共享端版本记录" if not known else "共享这份和记下的版本不一样") + "，按文字和打印区域核对一致，照常覆盖" + content_check.skipped_note(check)
             debug_log.event("🔎 版本对不上但内容一致，照常上传", 文件=item["rel"], 有记录=bool(known))
             return current
         if not known and not review and not check["checked"]:
@@ -1589,7 +1590,7 @@ def _free_content_check(item: dict[str, Any], src_file: Path, dest_file: Path, w
     item["guard"] = "content"
     if check["same"]:
         item["action"] = "overwrite"
-        item["note"] = f"{why}，按文字和打印区域核对一致，照常覆盖"
+        item["note"] = f"{why}，按文字和打印区域核对一致，照常覆盖" + content_check.skipped_note(check)
     else:
         item["action"] = "conflict"
         item["content_diffs"] = check["diffs"]

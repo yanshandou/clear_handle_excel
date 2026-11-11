@@ -8,6 +8,7 @@ hash 一定对不上、没法用。这时改成直接比「要上传的这份」
 - 每张表打印区域的格子数（没设打印区域的表按有内容的范围算）
 
 两样都一样才算能覆盖；有一处不一样就不覆盖，提醒先拉取远程最新版、在上面改好再传。
+精简 Sheet 注定会删的表（変更履歴、备份表、灰色标签、空白表…）两边都不比（用户 2026-11-11）。
 只读文件，不用 Excel（openpyxl）。.xls / .xlsb 这类 openpyxl 读不了的格式返回「没法核对」，由调用方按原来的规则处理。
 """
 from __future__ import annotations
@@ -129,6 +130,24 @@ def snapshot(path: Path | str) -> dict[str, dict[str, Any]]:
     return out
 
 
+def doomed_sheets(path: Path | str, names: list[str]) -> dict[str, str]:
+    """精简 Sheet 默认会删的表 {表名: 原因}（用户 2026-11-11：这些注定要删的表比内容时不算）。
+    按名字的规则（変更履歴、备份表、旧X、自動生成…，core.common.find_clean_targets）+ 灰色标签 + 空白表"""
+    from core.common import find_clean_targets, is_gray_tab_color
+    out = {name: "精简默认删除" for name in find_clean_targets(names)}
+    try:
+        from core import excel_ops
+        for name, color in excel_ops._read_xlsx_tab_colors(Path(path)).items():
+            if name in names and is_gray_tab_color(color):
+                out.setdefault(name, "灰色标签")
+        for name in excel_ops._read_xlsx_blank_sheets(Path(path)):
+            if name in names:
+                out.setdefault(name, "空白表")
+    except Exception as err:  # 读不了标签颜色 / 空白：只按名字规则
+        debug_log.event("⚠️ 按内容核对：读不了标签颜色或空白表，只按表名规则排除", 文件=str(path), 原因=str(err)[:80])
+    return out
+
+
 def _short(text: str, limit: int = 20) -> str:
     text = text.replace("\n", " ")
     return text if len(text) <= limit else text[:limit] + "…"
@@ -142,6 +161,10 @@ def compare(mine: Path | str, theirs: Path | str, mine_name: str = "本地", the
     except Unreadable as err:
         debug_log.event("🔎 按内容核对：读不了", 文件=str(mine), 远程=str(theirs), 原因=str(err))
         return {"checked": False, "same": False, "diffs": [], "reason": str(err)}
+    skipped = {**doomed_sheets(theirs, list(b)), **doomed_sheets(mine, list(a))}
+    for name in skipped:
+        a.pop(name, None)
+        b.pop(name, None)
     diffs = []
     for name in [n for n in b if n not in a]:
         diffs.append(f"表「{name}」只有{theirs_name}有")
@@ -159,11 +182,20 @@ def compare(mine: Path | str, theirs: Path | str, mine_name: str = "本地", the
             diffs.append(f"表「{name}」打印区域格子数不一样：{mine_name} {a[name]['area_cells']}（{a[name]['area']}），"
                          f"{theirs_name} {b[name]['area_cells']}（{b[name]['area']}）")
     debug_log.event("🔎 按内容核对", 文件=str(mine), 远程=str(theirs), 一致=not diffs, 表数=len(a),
-                    不一样=len(diffs), 第一处=diffs[0][:80] if diffs else "")
-    return {"checked": True, "same": not diffs, "diffs": diffs, "reason": ""}
+                    不一样=len(diffs), 第一处=diffs[0][:80] if diffs else "",
+                    不比的表="、".join(f"{k}（{v}）" for k, v in skipped.items()) or "-")
+    return {"checked": True, "same": not diffs, "diffs": diffs, "reason": "", "skipped": skipped}
 
 
 def describe(result: dict[str, Any], limit: int = 3) -> str:
     diffs = result.get("diffs") or []
     text = "；".join(diffs[:limit])
     return text + (f"；还有 {len(diffs) - limit} 处" if len(diffs) > limit else "")
+
+
+def skipped_note(result: dict[str, Any]) -> str:
+    skipped = result.get("skipped") or {}
+    if not skipped:
+        return ""
+    names = list(skipped)
+    return f"（精简会删的表不比：{'、'.join(names[:5])}{' 等' if len(names) > 5 else ''}）"
