@@ -1,24 +1,25 @@
+@import url("/static/garden-shell.css");
+
 /* Soft garden-game surfaces. Keep the existing geometry and responsive layouts. */
 :root {
-  color: #294735;
-  background: #f6f8ed;
+  color: var(--garden-ink);
+  background: var(--garden-page) fixed;
   color-scheme: light;
-  --ink: #294735;
-  --muted: #64705b;
-  --line: #e3d9bf;
-  --outline: #e3d9bf;
+  --ink: var(--garden-ink);
+  --ink-2: #3e5140;
+  --ink-3: var(--garden-muted);
+  --muted: var(--garden-muted);
+  --line: var(--garden-panel-border);
+  --outline: var(--line);
   --shadow: #52674416;
   --gold-edge: #d7bd78;
-  --garden-panel: #fffef8;
   --garden-cyan: #236477;
-  --garden-focus: #356d48;
 }
 
 body {
-  background-color: #f6f8ed;
-  background-image: radial-gradient(ellipse at 12% 0%, #eaf3df 0, transparent 55%), radial-gradient(ellipse at 95% 90%, #f9f1dc 0, transparent 55%);
-  background-size: auto;
-  background-attachment: fixed;
+  background: transparent;
+  color: var(--ink-2);
+  font-family: var(--garden-font);
 }
 
 /* Cream navigation with a lime active tab. */
@@ -92,48 +93,16 @@ body {
   height: 22px;
   font-size: 12px;
 }
-.heading-spark, .footer-star { color: #b48b34 !important; }
+.footer-star { color: #b48b34 !important; }
 
-/* Rounded, shallow bevels; hover and press never move a control. */
-.button {
-  height: 42px;
-  border-radius: 12px;
-  font-size: 13px;
-  font-weight: 700;
-}
-.button, .owner-tag, .status, .folder-status {
+.button { min-height: 40px; font-size: 13px; }
+.tree-actions .button { min-height: 36px; }
+.owner-tag, .status, .folder-status {
   transition: background-color .15s, border-color .15s, box-shadow .15s;
   text-shadow: none;
 }
-.primary, .primary:hover {
-  color: #294b23;
-  background: linear-gradient(#dff4a4, #c3e77f 55%, #b3db6c);
-  border: 3px solid #accb7e;
-  box-shadow: inset 0 2px 0 #ffffffb3, inset 0 -3px 0 #8db55133, 0 4px 10px #718f3e1f;
-  text-shadow: none;
-}
-.primary:hover { background: linear-gradient(#e8f8bc, #cdea91 55%, #bfdf7d); }
-.secondary, .secondary:hover {
-  color: var(--garden-cyan);
-  background: linear-gradient(#f7ffff, #dff3f3);
-  border: 3px solid #c0dcdb;
-  box-shadow: inset 0 2px 0 #fff, inset 0 -3px 0 #9cced126, 0 4px 10px var(--shadow);
-}
-.secondary:hover { background: linear-gradient(#fff, #d3eef0); }
-.primary:active { box-shadow: inset 0 2px 4px #688d3826, 0 2px 6px var(--shadow); }
-.secondary:active { box-shadow: inset 0 2px 4px #649ca326, 0 2px 6px var(--shadow); }
-.confirm-dialog .button.danger {
-  color: #fff;
-  background: linear-gradient(#c34b43, #b43d36);
-  border: 3px solid #ad4c42;
-  box-shadow: inset 0 2px 0 #ffffff40, inset 0 -3px 0 #942a2526, 0 4px 10px #a03e3020;
-  text-shadow: none;
-}
-.confirm-dialog .button.danger:hover { background: linear-gradient(#bf453e, #a93630); }
-.confirm-dialog .button.danger:active { box-shadow: inset 0 2px 4px #74272033; }
-.tree-actions .button { height: 36px; }
-.button:hover, .button:active, .owner-tag:hover, .owner-tag:active,
-.status:hover, .status:active, .folder-status:hover:not(:disabled), .folder-status:active:not(:disabled) {
+.owner-tag:hover, .owner-tag:active, .status:hover, .status:active,
+.folder-status:hover:not(:disabled), .folder-status:active:not(:disabled) {
   transform: none;
   filter: none;
 }
@@ -141,9 +110,9 @@ body {
 /* Mint-white overview. */
 .overview {
   background: linear-gradient(120deg, #fcfff7, #eef7e9);
-  border: 3px solid var(--line);
-  border-radius: 16px;
-  box-shadow: inset 0 2px 0 #fff, 0 6px 20px var(--shadow);
+  border: 2px solid var(--line);
+  border-radius: var(--garden-panel-radius);
+  box-shadow: inset 0 2px 0 #fff, var(--garden-panel-shadow);
 }
 .overview .section-kicker { color: #577047; }
 .overview .section-kicker span, .overview-title p, .metric-value span, .metric-foot { color: var(--muted); }
@@ -175,9 +144,9 @@ body {
 /* Cream-yellow planner and nested surfaces. */
 .planner {
   background: linear-gradient(135deg, #fffdf0, #faf3dc);
-  border: 3px solid var(--line);
-  border-radius: 16px;
-  box-shadow: inset 0 2px 0 #fff, 0 6px 20px var(--shadow);
+  border: 2px solid var(--line);
+  border-radius: var(--garden-panel-radius);
+  box-shadow: inset 0 2px 0 #fff, var(--garden-panel-shadow);
 }
 .planner .section-kicker { color: #7c6535; text-shadow: none; }
 .planner .section-kicker span { color: var(--muted); }
@@ -185,9 +154,9 @@ body {
 .planner-form label, .planner-field { color: var(--ink); font-size: 12px; }
 .planner-form input, .planner-form select, .form-grid input, .form-grid select, .upload-date-filter input {
   color: var(--ink);
-  background: var(--garden-panel);
-  border: 2px solid var(--line);
-  border-radius: 10px;
+  background: var(--garden-field);
+  border: 1px solid var(--garden-field-border);
+  border-radius: var(--garden-field-radius);
   box-shadow: inset 0 2px 3px #72694c0a;
   accent-color: #577f3c;
 }
@@ -241,9 +210,9 @@ body {
 /* Cream table card and honey selection details. These also cover dialog tables. */
 .table-card {
   background: var(--garden-panel);
-  border: 3px solid var(--line);
-  border-radius: 16px;
-  box-shadow: 0 6px 20px var(--shadow);
+  border: 2px solid var(--line);
+  border-radius: var(--garden-panel-radius);
+  box-shadow: var(--garden-panel-shadow);
 }
 .table-toolbar, .owner-filters, .tree-actions { background: #fafaf1; }
 .tree-actions { border-top: 2px dashed var(--line); }
@@ -313,14 +282,14 @@ tbody tr:hover { background: #f8f3df; }
 .page-footer, .page-footer span span { color: var(--muted); }
 
 /* Dialog surfaces share the same fields, buttons and table palette. */
-dialog {
+dialog:not(.app-dialog) {
   color: var(--ink);
   background: var(--garden-panel);
-  border: 3px solid var(--line);
-  border-radius: 18px;
-  box-shadow: inset 0 2px 0 #fff, 0 20px 60px #354b3433;
+  border: 2px solid var(--line);
+  border-radius: var(--garden-panel-radius);
+  box-shadow: var(--garden-dialog-shadow);
 }
-dialog::backdrop { background: #344a345c; }
+dialog::backdrop { background: var(--garden-backdrop); backdrop-filter: blur(4px); }
 .dialog-header h2 { color: var(--ink); font-weight: 700; text-shadow: none; }
 .dialog-header .section-kicker { color: #7c6535; }
 .form-grid label { color: var(--ink); }
@@ -389,7 +358,7 @@ span.flatpickr-weekday { color: var(--muted); }
 
 /* Disabled controls remain legible; status hues are not washed out. */
 button:disabled, [aria-disabled="true"] { cursor: not-allowed; }
-.button:disabled, .button[aria-disabled="true"], .icon-button:disabled,
+.icon-button:disabled,
 .person-picker-add button:disabled, .person-picker-clear:disabled, .plan-option:disabled, .owner-tag:disabled {
   color: var(--muted);
   background: #edf0e4;
@@ -411,7 +380,6 @@ button:disabled, [aria-disabled="true"] { cursor: not-allowed; }
 .person-picker-option input:disabled + .person-picker-chip { color: var(--muted); background: #edf0e4; border-color: #d3d9c4; box-shadow: none; }
 .person-picker-option input:disabled + .person-picker-chip .person-picker-chip-icon { color: var(--muted); border-color: #d3d9c4; }
 .folder-status:disabled { color: var(--status-text); opacity: 1; border-style: dashed; box-shadow: none; filter: none; }
-.confirm-dialog .button.danger:disabled { color: #9b3b33; background: #f7e4dd; border-color: #dfbdb0; box-shadow: none; }
 
 @media (max-width: 1050px) {
   .overview-intro, .metric:nth-child(2) { border-bottom: 2px dashed #d8e1c9; }

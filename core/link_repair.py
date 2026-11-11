@@ -9,7 +9,9 @@ from uuid import uuid4
 from typing import Any
 
 from core import debug_log, file_problem, formula_links as links, progress_log, workflow as wf, sheet_history
+from core import workbook_scope
 from core.backup_compare import pair_files, pair_sheets, require_manual_file_check
+from core.reference_folders import ReferenceFolders, ReferenceIndex, prepare as prepare_references, unmatched
 from core.common import workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, start_background_excel, quit_background_excel
 
@@ -232,7 +234,7 @@ def _progress(done: int, name: str) -> None:
         _STATUS.update(done=done, current=name)
 
 
-def _run(phase: str, folder: Path, paths: list, old_root: Path | None = None, old_paths: list | None = None) -> None:
+def _run(phase: str, folder: Path, paths: list, old_root: Path | ReferenceIndex | None = None, old_paths: list | None = None) -> None:
     excel = None
     files = []
     com = False
@@ -265,7 +267,7 @@ def _run(phase: str, folder: Path, paths: list, old_root: Path | None = None, ol
                         entry["cells"] = [{**hit, "status": "skip", "reason": "未修复"} for hit in entry["hits"]]
                         if entry["hits"]:
                             if not pairs[name]:
-                                raise ValueError("找不到唯一对应的备份文件，请选到对应子文件夹")
+                                raise ValueError(unmatched(old_root, name, "找不到唯一对应的备份文件，请选到对应子文件夹"))
                             with _LOCK:
                                 _STATUS["stage"] = "preview"
                             entry.update(preview_file(excel, entry, pairs[name]))
@@ -332,7 +334,7 @@ def _run(phase: str, folder: Path, paths: list, old_root: Path | None = None, ol
                 wf.STATE.pop("maintenance", None)
 
 
-def _launch(phase: str, folder: Path, paths: list, old_root: Path | None = None, old_paths: list | None = None) -> None:
+def _launch(phase: str, folder: Path, paths: list, old_root: Path | ReferenceIndex | None = None, old_paths: list | None = None) -> None:
     with wf.STATE_LOCK, _LOCK:
         from core import bl_links, hidden_repair, mark_finder
         if (wf.STATE.get("busy") or _STATUS.get("running") or mark_finder.status().get("running")
@@ -375,12 +377,10 @@ def start(folder: str) -> None:
     _launch("scan", root, paths)
 
 
-def repair(folder: str, old_folder: str) -> None:
+def repair(folder: str, old_folder: str | ReferenceFolders) -> None:
     """一次后台任务完成扫描、对比和修复，页面关闭后仍继续。"""
     root, paths = wf.list_workbooks(folder)
-    old_root, old_paths = wf.list_workbooks(old_folder)
-    if root == old_root:
-        raise ValueError("备份文件夹不能与当前文件夹相同")
+    old_root, old_paths = prepare_references(root, old_folder, wf.list_workbooks, wf.EXCEL_EXTENSIONS | {".xlsb"})
     _launch("repair", root, paths, old_root, old_paths)
 
 
@@ -390,8 +390,11 @@ def preview(old_folder: str) -> None:
     if not result:
         raise ValueError("请先扫描引用错误")
     old_root, old_paths = wf.list_workbooks(old_folder)
-    if old_root == Path(result["folder"]).resolve():
+    root = Path(result["folder"]).resolve()
+    if old_root == root:
         raise ValueError("备份文件夹不能与当前文件夹相同")
+    if workbook_scope.overlaps_reference(root, old_root):
+        raise ValueError("原始备份文件夹不能与批量处理路径重叠")
     files = [file for file in result["files"] if file.get("hits") and not file["error"]]
     if not files:
         raise ValueError("没有可对比的引用错误")

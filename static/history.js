@@ -13,8 +13,11 @@
   }
   function renderFolders() {
     const query = $('filter').value.trim().toLowerCase();
-    const rows = data.folders.filter(row => row.folder.toLowerCase().includes(query));
-    $('folders').innerHTML = rows.length ? rows.map(row => `<button class="history-folder" data-folder="${esc(row.folder)}" aria-pressed="${row.folder === selected}"><b>${esc(row.folder)}</b><small>${status(row.status)} · 已检查 ${row.files || 0} 个文件 · 问题卡片 ${row.issues || 0}${norm(row.folder) === norm(data.current) ? ' · 当前工作台' : ''}</small><small>最近保存：${esc(row.saved_at || '—')}</small></button>`).join('') : '<p>没有匹配的已保存进度。</p>';
+    const rows = data.folders.filter(row => (row.paths || [row.folder]).some(path => path.toLowerCase().includes(query)));
+    $('folders').innerHTML = rows.length ? rows.map(row => {
+      const title = row.paths ? `${row.paths[0]}${row.paths.length > 1 ? ` 等 ${row.paths.length} 条路径` : ''}` : row.folder;
+      return `<button class="history-folder" data-folder="${esc(row.folder)}" aria-pressed="${row.folder === selected}"><b>${esc(title)}</b><small>${status(row.status)} · 已检查 ${row.files || 0} 个文件 · 问题卡片 ${row.issues || 0}${norm(row.folder) === norm(data.current) ? ' · 当前工作台' : ''}</small><small>最近保存：${esc(row.saved_at || '—')}</small></button>`;
+    }).join('') : '<p>没有匹配的已保存进度。</p>';
   }
   function table(head, rows) {
     return `<div class="history-scroll"><table class="records-table"><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length ? rows.join('') : `<tr><td colspan="${head.length}">暂无记录</td></tr>`}</tbody></table></div>`;
@@ -48,7 +51,10 @@
       const operations = (value.operations || []).map(row => `<tr><td>${esc(row.started_at)}</td><td>${esc(row.name)}</td><td>${status(row.status)}</td></tr>`);
       const scans = (value.scans || []).map(row => `<tr><td>${esc(row.started_at)}</td><td>${esc(row.mode)}</td><td>${status(row.status)}</td><td><a href="/analysis?id=${encodeURIComponent(row.id)}&folder=${encodeURIComponent(folder)}">查看逐文件扫描分析</a></td></tr>`);
       const fileRows = files.map(file => `<tr><td>${esc(file.name)}</td><td>${status(file.status)}</td><td>${esc(file.current_action)}${fileDetails(file)}</td><td>${esc(file.error || '')}</td></tr>`);
-      $('detail').innerHTML = `<h2 class="history-path">${esc(folder)}</h2><p>${status(summary.status)} · ${esc(summary.task_name)}${summary.total ? ` · 进度 ${summary.completed} / ${summary.total} 个文件` : ''}</p><button id="restore" class="btn btn-primary" ${data.busy ? 'disabled' : ''}>恢复并继续处理</button><p>${data.busy ? '当前后台任务正在执行，完成或暂停后可恢复。' : '恢复仅切换工作台；继续暂停的任务时，请在工作台点「继续上次任务」。'}</p><h3>最近一次执行的文件明细</h3>${table(['文件','状态','执行信息','错误'], fileRows)}<h3>扫描 / 复检批次</h3>${table(['开始时间','类型','状态','明细'], scans)}<h3>操作时间线（最近 200 次）</h3>${table(['开始时间','操作','状态'], operations)}<details><summary>工作台日志（最近 100 条）</summary><pre class="history-log">${esc((value.logs || []).join('\n'))}</pre></details>`;
+      const title = summary.paths
+        ? `<details><summary>查看批次的 ${summary.paths.length} 条路径</summary><pre class="history-log">${esc(summary.paths.join('\n'))}</pre></details>`
+        : `<h2 class="history-path">${esc(folder)}</h2>`;
+      $('detail').innerHTML = `${title}<p>${status(summary.status)} · ${esc(summary.task_name)}${summary.total ? ` · 进度 ${summary.completed} / ${summary.total} 个文件` : ''}</p><button id="restore" class="btn btn-primary" ${data.busy ? 'disabled' : ''}>恢复并继续处理</button><p>${data.busy ? '当前后台任务正在执行，完成或暂停后可恢复。' : '恢复仅切换工作台；继续暂停的任务时，请在工作台点「继续上次任务」。'}</p><h3>最近一次执行的文件明细</h3>${table(['文件','状态','执行信息','错误'], fileRows)}<h3>扫描 / 复检批次</h3>${table(['开始时间','类型','状态','明细'], scans)}<h3>操作时间线（最近 200 次）</h3>${table(['开始时间','操作','状态'], operations)}<details><summary>工作台日志（最近 100 条）</summary><pre class="history-log">${esc((value.logs || []).join('\n'))}</pre></details>`;
       $('restore').addEventListener('click', async () => {
         if (restoring) return;
         restoring = true;

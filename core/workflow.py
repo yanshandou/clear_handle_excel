@@ -1306,22 +1306,19 @@ def _select_changed_problem_items() -> list[str]:
 
 
 def list_workbooks(folder_str: str) -> tuple[Path, list[Path]]:
-    """解析文件夹路径并递归列出其中及所有子文件夹下的 Excel 文件（跳过 ~$ 临时锁文件）"""
+    return list_supported_workbooks(folder_str, EXCEL_EXTENSIONS)
+
+
+def list_supported_workbooks(folder_str: str, extensions: set[str]) -> tuple[Path, list[Path]]:
+    from core import workbook_scope
     folder = Path(folder_str.strip().strip('"').strip("'")).expanduser().resolve()
-    if not folder.is_dir():
-        raise ValueError(f"文件夹不存在: {folder}")
-    workbooks = sorted(
-        (
-            p
-            for p in folder.rglob("*")
-            if p.is_file()
-            and p.suffix.lower() in EXCEL_EXTENSIONS
-            and not p.name.startswith("~$")
-        ),
-        key=lambda p: workbook_rel_name(p, folder),
-    )
+    workbooks = sorted(workbook_scope.list_files(folder, extensions), key=lambda p: workbook_rel_name(p, folder))
     if not workbooks:
         raise ValueError("未找到 Excel 文件")
+    if workbook_scope.get(folder):
+        if len({workbook_rel_name(path, folder).casefold() for path in workbooks}) != len(workbooks):
+            raise ValueError("批量路径中有工作簿去掉复检标记后同名，请先区分文件名")
+        return folder, workbooks
     return folder, focus_workbooks(folder, workbooks)
 
 
@@ -1461,11 +1458,12 @@ def prepare_print_layout(sheet: Any, path: str, output: Path | None = None) -> b
 
 
 def print_layout_snapshot(folder: str | None = None) -> list[dict]:
+    from core import workbook_scope
     with STATE_LOCK:
         rows = []
         root = Path(folder or STATE.get("folder") or ".").resolve()
         for path, entries in STATE.get("print_layouts", {}).items():
-            if not Path(path).resolve().is_relative_to(root):
+            if not workbook_scope.contains(root, Path(path).resolve()):
                 continue
             try:
                 current = print_layout.version(path)
@@ -2419,9 +2417,9 @@ def in_current_folder(path: str) -> bool:
     folder = STATE.get("folder")
     if not folder:
         return False
+    from core import workbook_scope
     try:
-        Path(path).resolve().relative_to(Path(folder).resolve())
-        return True
+        return workbook_scope.contains(Path(folder).resolve(), Path(path).resolve())
     except (ValueError, OSError):
         return False
 
@@ -3827,7 +3825,9 @@ def quick_task_workflow(kind: str) -> None:
         if kind == "export_pdf" and waiting_review:
             log_msg(f"⚠️ 还有 {waiting_review} 个文件在等稍后人工复检（单元格标着黄色），导出的 PDF 里会带黄色底色")
         if kind == "export_pdf":
-            _clear_old_pdfs(workbooks)  # 以前和 Excel 混放的旧 PDF
+            from core import workbook_scope
+            if not workbook_scope.get(folder):
+                _clear_old_pdfs(workbooks)  # 以前和 Excel 混放的旧 PDF
             _prune_pdf_folder(folder, workbooks)
     log_msg(f"{'继续' if initialized else '开始'}{task_name}：{folder}（共 {len(workbooks)} 个文件）")
     if kind == "export_pdf" and not print_layout.ENABLED:

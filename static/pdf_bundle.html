@@ -31,8 +31,8 @@
 </head>
 <body>
   <header class="app-header">
-    <a href="/" class="header-brand"><div class="header-logo-badge">📕</div><div class="header-title"><h1>批量导出同名 PDF</h1><span class="subtitle">每份 Excel 旁边生成一份同名 PDF · 所有工作表合成一份</span></div></a>
-    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/pdf-review" class="nav-link">📄 调整页面</a></nav>
+    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">批量导出同名 PDF</h1><span class="subtitle">每份 Excel 旁边生成一份同名 PDF · 所有工作表合成一份</span></div></a>
+    <nav class="header-nav" aria-label="功能导航"><a href="/" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#home"></use></svg>主页</a><a href="/pdf-review" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#document"></use></svg>调整页面</a></nav>
   </header>
   <main class="container clean-container">
     <section class="panel">
@@ -45,7 +45,7 @@
         <li>下面名单里的表跳过（默认 <code>変更履歴</code>）；完全空白的表没有东西可印，也跳过。跳过的都在结果里写明。</li>
       </ul>
       <div class="link-fields bundle-fields">
-        <label for="bundleFolder">Excel 文件夹（含子文件夹）<input id="bundleFolder" type="text" placeholder="例如 D:\处理后\001"></label>
+        <label for="bundleFolder">Excel 文件或文件夹路径<textarea id="bundleFolder" class="workbook-paths" rows="2" aria-label="Excel 文件或文件夹路径" placeholder="每行一个 Excel 文件或文件夹路径"></textarea></label>
       </div>
       <fieldset class="repair-options"><legend>打印内容</legend>
         <label class="bundle-skip-field" for="bundleSkip">表名是这些的不放进 PDF（一行一个，也可以用逗号、顿号隔开；不分全角半角、大小写）

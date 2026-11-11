@@ -6,6 +6,8 @@ import unicodedata
 from core.common import (
     _original_name_of, find_new_prefix_sheets, strip_new_prefix, strip_uncertain_prefix, workbook_rel_name,
 )
+from core import workbook_scope
+from core.reference_folders import ReferenceIndex
 from core.sheet_history import Projection
 
 
@@ -13,8 +15,14 @@ def norm(name: str) -> str:
     return unicodedata.normalize("NFKC", name).strip().casefold()
 
 
-def pair_files(old_root: Path, old_paths: list[Path], names: list[str],
+def pair_files(old_root: Path | ReferenceIndex, old_paths: list[Path], names: list[str],
                current_root: Path | None = None, *, inferred: set[str] | None = None) -> dict[str, Path | None]:
+    if isinstance(old_root, ReferenceIndex):
+        return {name: old_root.match(name)[0] for name in names}
+    scope = workbook_scope.get(current_root) if current_root else None
+    if scope:
+        current_root = scope.common_root
+    across_volumes = scope is not None and current_root is None
     by_rel: dict[str, list[Path]] = {}
     by_name: dict[str, list[Path]] = {}
     for path in old_paths:
@@ -32,7 +40,7 @@ def pair_files(old_root: Path, old_paths: list[Path], names: list[str],
         found = []
         if current_root and norm(current_root.name) != norm(old_root.name):
             found = by_rel.get(norm(f"{current_root.name}/{name}"), [])
-        if not found:
+        if not found and not across_volumes:
             found = by_rel.get(norm(name), [])
         if not found and counts[norm(Path(name).name)] == 1:
             found = by_name.get(norm(Path(name).name), [])
@@ -94,7 +102,7 @@ def pair_files(old_root: Path, old_paths: list[Path], names: list[str],
             rel_parent = norm(rel.parent.as_posix())
             nested_parent = norm((Path(current_root.name) / rel.parent).as_posix()) if current_root else ""
             directory_rank = (0 if current_root and norm(current_root.name) != norm(old_root.name)
-                              and old_parent == nested_parent else 1 if old_parent == rel_parent else 2)
+                              and old_parent == nested_parent else 1 if not across_volumes and old_parent == rel_parent else 2)
             ranked.append(((directory_rank, int(stem(name) != stem(old_rel))), path))
         if ranked:
             best = min(rank for rank, _ in ranked)

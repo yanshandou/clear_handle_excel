@@ -14,6 +14,7 @@ import time
 from typing import Any, Callable
 
 from core import debug_log, storage
+from core.reference_folders import ReferenceFolders
 
 SNAPSHOT = "clean_chain"
 POLL_SECONDS = 0.4
@@ -74,7 +75,10 @@ def options_from(payload: Any) -> dict | None:
     flags = {key: payload.get(key, key != "hidden") for key in OPTIONAL_STEPS}
     if not isinstance(old_folder, str) or any(type(value) is not bool for value in flags.values()):
         raise ValueError("自动检查选项格式不正确")
-    return {**flags, "old_folder": old_folder.strip().strip('"').strip("'")}
+    options = {**flags, "old_folder": old_folder.strip().strip('"').strip("'")}
+    if "reference_folders" in payload:
+        options["reference_folders"] = payload["reference_folders"]
+    return options
 
 
 def _enabled(chain: dict, key: str) -> bool:
@@ -227,14 +231,14 @@ def _run_bl(folder: str) -> None:
     _finish_step("bl", fixed, problems, f"清除了 {fixed} 处 BL 超链接" if fixed else "没能清除 BL 超链接")
 
 
-def _need_old_folder(key: str, old_folder: str) -> bool:
+def _need_old_folder(key: str, old_folder: str | ReferenceFolders) -> bool:
     if old_folder:
         return True
     _update(key, state="skipped", text="没填参考（原始备份）文件夹，跳过这一步")
     return False
 
 
-def _run_links(folder: str, old_folder: str) -> None:
+def _run_links(folder: str, old_folder: str | ReferenceFolders) -> None:
     from core import link_repair
     if not _need_old_folder("links", old_folder):
         return
@@ -257,7 +261,7 @@ def _run_links(folder: str, old_folder: str) -> None:
                  if total else "没有引用错误")
 
 
-def _run_hidden(folder: str, old_folder: str) -> None:
+def _run_hidden(folder: str, old_folder: str | ReferenceFolders) -> None:
     from core import hidden_repair
     if not _need_old_folder("hidden", old_folder):
         return
@@ -304,11 +308,15 @@ def run(folder: str, chain: dict) -> None:
         _STATUS["stage"] = "chain"
         _save()
     old_folder = chain.get("old_folder", "")
+
+    def references() -> str | ReferenceFolders:
+        return ReferenceFolders.from_payload(chain) if "reference_folders" in chain else old_folder
+
     with debug_log.side_task("clean_chain", {"folder": folder, "old_folder": old_folder,
                                               **{key: _enabled(chain, key) for key in OPTIONAL_STEPS}}):
         for key, work in (("bl", lambda: _run_bl(folder)),
-                          ("links", lambda: _run_links(folder, old_folder)),
-                          ("hidden", lambda: _run_hidden(folder, old_folder)),
+                          ("links", lambda: _run_links(folder, references())),
+                          ("hidden", lambda: _run_hidden(folder, references())),
                           ("font", lambda: _run_font(folder))):
             if not _enabled(chain, key):
                 continue

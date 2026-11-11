@@ -209,7 +209,7 @@ function applyCategory() {
 async function load() {
   const value = $('prFolder').value.trim();
   if (!value) {
-    appAlert('请先输入 Excel 文件夹路径！', { tone: 'warn' });
+    appAlert('请先输入 Excel 文件或文件夹路径', { tone: 'warn' });
     return;
   }
   $('prLoad').disabled = true;
@@ -217,7 +217,7 @@ async function load() {
   try {
     const data = await api(`/api/pdf_review?folder=${encodeURIComponent(value)}`);
     folder = data.folder;
-    try { localStorage.setItem(FOLDER_KEY, value); } catch (_) {}
+    try { localStorage.setItem(FOLDER_KEY, folder); } catch (_) {}
     allPdfs = data.pdfs;
     deleted = new Set();
     loadMarks();
@@ -335,10 +335,12 @@ async function openPage(d, page, pageEl = null) {
   if (pageEl) flashPage(pageEl);
   const oldFolder = $('prOldFolder').value.trim();
   opening = true;
-  toast(oldFolder ? '正在打开当前文件和备份…' : `正在用 Excel 打开第 ${page + 1} 页…`);
+  toast(`正在用 Excel 打开第 ${page + 1} 页…`);
   try {
-    const data = await api('/api/pdf_review/open', { pdf: doc.pdf, page, pages: doc.pages.length, old_folder: oldFolder });
-    try { if (oldFolder) localStorage.setItem(OLD_FOLDER_KEY, oldFolder); } catch (_) {}
+    const payload = { pdf: doc.pdf, page, pages: doc.pages.length, old_folder: oldFolder };
+    if (window.ReferenceFolders) payload.reference_folders = await window.ReferenceFolders.read(folder);
+    const data = await api('/api/pdf_review/open', payload);
+    try { localStorage.setItem(OLD_FOLDER_KEY, oldFolder); } catch (_) {}
     const where = `${data.sheet} 第 ${page + 1} 页${data.cell ? `（${data.cell}）` : ''}`;
     toast(data.note || (data.backup ? `已打开 ${where}：左边当前文件，右边原始备份（只读）` : `已在 Excel 中打开 ${where}`), !!data.note);
   } catch (e) {
@@ -1360,7 +1362,7 @@ $('prCats').addEventListener('click', e => {
 });
 $('prDeleteRed').addEventListener('click', () => runProcess('red'));
 $('prApply').addEventListener('click', () => runProcess('tools'));
-$('prFolder').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
+$('prFolder').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) load(); });
 $('prTrack').addEventListener('click', jumpTo);
 $('prView').addEventListener('click', e => {
   const button = e.target.closest('[data-view]');

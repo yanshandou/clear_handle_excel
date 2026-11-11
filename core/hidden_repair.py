@@ -14,6 +14,7 @@ from xml.etree import ElementTree as ET
 
 from core import debug_log, file_problem, progress_log, workflow as wf, sheet_history
 from core.backup_compare import inferred_renames, pair_files, pair_sheets, require_manual_file_check
+from core.reference_folders import ReferenceFolders, ReferenceIndex, prepare as prepare_references, unmatched
 from core.common import EXCEL_EXTENSIONS, col_index_to_letters, workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, quit_background_excel, start_background_excel
 from core.link_repair import fingerprint
@@ -27,16 +28,7 @@ DEFAULT_OPTIONS = {"sheets": True, "columns": True, "narrow": True}
 
 
 def list_workbooks(folder: str) -> tuple[Path, list[Path]]:
-    root = Path(folder.strip().strip('"').strip("'")).expanduser().resolve()
-    if not root.is_dir():
-        raise ValueError(f"文件夹不存在: {root}")
-    paths = sorted((path for path in root.rglob("*") if path.is_file()
-                    and path.suffix.lower() in EXCEL_EXTENSIONS | {".xlsb"} and not path.name.startswith("~$")),
-                   key=lambda path: workbook_rel_name(path, root))
-    if not paths:
-        raise ValueError("未找到 Excel 文件")
-    from core import workflow as wf  # 本轮只处理待重新处理文件时只列清单里的
-    return root, wf.focus_workbooks(root, paths)
+    return wf.list_supported_workbooks(folder, EXCEL_EXTENSIONS | {".xlsb"})
 
 
 def options_for(options: dict | None = None) -> dict:
@@ -323,7 +315,7 @@ def apply_file(excel: Any, file: dict) -> list[dict]:
             for item in ready]
 
 
-def _run(root: Path, paths: list[Path], old_root: Path, old_paths: list[Path], options: dict) -> None:
+def _run(root: Path, paths: list[Path], old_root: Path | ReferenceIndex, old_paths: list[Path], options: dict) -> None:
     files, excel, initialized = [], None, False
     guard = file_problem.Guard("扫描并修复隐藏页")
     try:
@@ -342,7 +334,7 @@ def _run(root: Path, paths: list[Path], old_root: Path, old_paths: list[Path], o
                         excel = None
                     old_path = pairs[name]
                     if old_path is None:
-                        raise ValueError("找不到唯一对应的备份文件，请选到对应子文件夹")
+                        raise ValueError(unmatched(old_root, name, "找不到唯一对应的备份文件，请选到对应子文件夹"))
                     entry["old"] = str(old_path)
                     if excel is None:
                         excel = guard.watch(start_background_excel())
@@ -395,12 +387,10 @@ def _run(root: Path, paths: list[Path], old_root: Path, old_paths: list[Path], o
                     wf.STATE.pop("maintenance", None)
 
 
-def repair(folder: str, old_folder: str, options: dict | None = None) -> None:
+def repair(folder: str, old_folder: str | ReferenceFolders, options: dict | None = None) -> None:
     options = options_for(options)
     root, paths = list_workbooks(folder)
-    old_root, old_paths = list_workbooks(old_folder)
-    if root == old_root or root in old_root.parents or old_root in root.parents:
-        raise ValueError("当前文件夹与备份文件夹不能相同或互相包含，请分别选择两份文件所在的目录")
+    old_root, old_paths = prepare_references(root, old_folder, list_workbooks, EXCEL_EXTENSIONS | {".xlsb"}, disjoint=True)
     with wf.STATE_LOCK, _LOCK:
         from core import bl_links, link_repair, mark_finder
         if (wf.STATE.get("busy") or _STATUS.get("running") or link_repair.status().get("running")

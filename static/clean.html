@@ -14,23 +14,22 @@
 <body>
   <header class="app-header">
     <a href="/" class="header-brand" title="返回主页">
-      <div class="header-logo-badge" aria-hidden="true">📐</div>
+      <div class="header-logo-badge" aria-hidden="true"></div>
       <div class="header-title">
-        <h1>Excel 整理与 PDF 切字工具箱</h1>
+        <h1 class="header-title-text">精简 Sheet</h1>
         <span class="subtitle">常用功能一键直达 · 支持递归扫描子文件夹 · 自动生成执行记录</span>
       </div>
     </a>
-    <div class="header-nav">
-      <a href="/" class="nav-link">🏠 主页</a>
-      <a href="/clean" class="nav-link active">🧹 精简 Sheet</a>
-      <a href="/workbench" class="nav-link">📐 切字检查工作台</a>
-      <a href="/analysis" class="nav-link">📈 扫描分析</a>
-      <a href="/records" class="nav-link">
-        📊 执行记录与进度看板
+    <nav class="header-nav" aria-label="功能导航">
+      <a href="/" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#home"></use></svg>主页</a>
+      <a href="/clean" class="nav-link active" aria-current="page"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#grid"></use></svg>精简 Sheet</a>
+      <a href="/workbench" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#search"></use></svg>切字检查</a>
+      <a href="/analysis" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#chart"></use></svg>扫描分析</a>
+      <a href="/records" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#layers"></use></svg>执行记录
         <span id="navProgressBadge" class="nav-badge">0%</span>
       </a>
       <span id="statusText" class="status-pill">✅ 就绪</span>
-    </div>
+    </nav>
   </header>
 
   <main class="container clean-container">
@@ -76,11 +75,11 @@
       <div class="clean-folder-row">
         <div class="input-groove-wrap">
           <span class="input-groove-icon" aria-hidden="true">📂</span>
-          <input type="text" id="cleanFolderInput" placeholder="例如 C:\Users\...\Desktop\excel_files">
+          <textarea id="cleanFolderInput" class="workbook-paths" rows="2" aria-label="Excel 文件或文件夹路径" placeholder="每行一个 Excel 文件或文件夹路径"></textarea>
         </div>
         <button type="button" class="btn btn-primary" id="scanBtn" onclick="runPreview()">🔎 扫描备份表</button>
       </div>
-      <label class="task-field-label clean-old-label" for="cleanOldFolder">参考（原始备份）文件夹
+      <label class="task-field-label clean-old-label" for="cleanOldFolder">默认参考文件夹
         <span class="field-optional">修复引用错误、隐藏页要对照它；不填就跳过这两步</span></label>
       <div class="input-groove-wrap clean-old-row">
         <span class="input-groove-icon" aria-hidden="true">📚</span>
@@ -170,6 +169,6 @@
   <script src="/static/open_excel.js"></script>
   <script src="/static/clean_chain.js"></script>
   <script src="/static/clean.js"></script>
-  <script src="/static/task_folder.js"></script><script src="/static/focus_banner.js"></script><script src="/static/file_problem.js"></script>
+  <script src="/static/task_folder.js"></script><script src="/static/reference_folders.js"></script><script src="/static/focus_banner.js"></script><script src="/static/file_problem.js"></script>
 </body>
 </html>

@@ -661,6 +661,22 @@ class QuickTaskTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def post_without_socket(self, path, payload):
+        import web_clip_fixer
+
+        web = importlib.reload(web_clip_fixer)
+        handler = web.WebHandler.__new__(web.WebHandler)
+        handler.path = path
+        body = json.dumps(payload).encode("utf-8")
+        handler.headers = {"Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        handler._send_json = Mock()
+        with patch.object(web, "run_pending_workflow"):
+            handler.do_POST()
+        response, kwargs = handler._send_json.call_args
+        self.assertEqual(kwargs.get("status", 200), 200, response)
+        return response[0]
+
     def test_home_page_and_workbench_routes(self):
         with self.serve_api() as port:
             status, body = self.request(port, "GET", "/")
@@ -1011,6 +1027,46 @@ class QuickTaskTests(unittest.TestCase):
         self.assertTrue((pdfs / "02_帳票" / "spec_Report.pdf").exists())
         self.assertTrue((pdfs / "02_帳票" / "spec_Draft.pdf").exists())
         self.assertEqual(list((self.folder / "01_画面").glob("*.pdf")), [])
+
+    def test_clean_preview_accepts_51_quoted_file_paths_from_different_folders(self):
+        from core import data_dir
+
+        self.patch_value(data_dir, "DATA_DIR", self.root / "data")
+        paths = [self.add_book(f"{i:02}/同名.xlsx", ["Main"]) for i in range(51)]
+        self.add_book("00/旁边的文件.xlsx", ["Other"])
+        pasted = "\r\n".join(f'"{path}"' for path in [*paths, paths[0]]) + "\r\n"
+        result = self.post_without_socket("/api/clean/preview", {"folder": pasted})
+        self.assertEqual([file["name"] for file in result["files"]], [f"{i:02}/同名.xlsx" for i in range(51)])
+
+    def test_mixed_paths_export_and_restore_the_same_batch(self):
+        from core import data_dir, pdf_store, workbook_scope
+
+        self.patch_value(data_dir, "DATA_DIR", self.root / "data")
+        left = self.add_book("left/child/spec.xlsx", ["Main"])
+        right = self.add_book("right/spec.xlsx", ["Main"])
+        selected = self.add_book("single/picked.xlsx", ["Main"])
+        other = self.add_book("single/untouched.xlsx", ["Main"])
+        old_pdf = other.with_name("picked_untouched.pdf")
+        old_pdf.touch()
+        lines = [left.parent.parent, right.parent, left, selected]
+        pasted = "\n".join(map(str, lines))
+        result = self.post_without_socket("/api/quick_task", {"kind": "export_pdf", "folder": pasted})
+        scope = Path(result["folder"])
+        self.workflow.run_pending_workflow()
+        self.assertEqual(self.workflow.STATE["job"]["completed"], list(map(str, (left, right, selected))))
+        self.assertTrue(old_pdf.is_file())
+        for name, source in (("left/child/spec", left), ("right/spec", right), ("single/picked", selected)):
+            pdf = scope / "PDFS" / f"{name}_Main.pdf"
+            self.assertEqual(pdf_store.owner(pdf), {"wb_path": str(source), "sheet": "Main"})
+            self.assertEqual(self.reporter.find_workbook(f"{name}.xlsx", [str(scope)]), source)
+        with self.assertRaisesRegex(ValueError, "找不到批量路径中的文件"):
+            self.reporter.find_workbook("single/untouched.xlsx", [str(scope), str(self.folder)])
+
+        self.workflow.activate_folder(str(self.folder))
+        workbook_scope._load.cache_clear()  # 下次启动仍可从磁盘读取同一组路径
+        result = self.post_without_socket("/api/folders/activate", {"folder": "\n".join(map(str, reversed(lines)))})
+        self.assertEqual(result["folder"], str(scope))
+        self.assertEqual(len(self.workflow.STATE["job"]["completed"]), 3)
 
     def test_numbered_suffix_is_kept_in_clean_preview(self):
         self.add_book("numbered.xlsx", ["Main", "Main (2)", "Main（３）", "Main (2)_20221005"])

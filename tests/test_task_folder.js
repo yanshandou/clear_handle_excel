@@ -6,7 +6,7 @@ const source = fs.readFileSync(require('node:path').join(__dirname, '../static/t
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const task = { id:'one', name:'任务一', work:'C:/task/work', reference:'C:/task/reference' };
 
-function page({work = '', reference = '', data = {ok:true, current:'one', tasks:[task]}, deferred = false, fail = false} = {}) {
+function page({work = '', reference = '', data = {ok:true, current:'one', tasks:[task]}, paths, deferred = false, fail = false} = {}) {
   const elements = new Map();
   function element(value = '') {
     return { value, readOnly:true, placeholder:'原提示', classList:{remove(){}}, parentElement:null,
@@ -20,8 +20,9 @@ function page({work = '', reference = '', data = {ok:true, current:'one', tasks:
   const context = vm.createContext({ window, document:{getElementById:id => elements.get(id),
     createElement:() => element(), head:{appendChild(){}}, body:{}},
     Event:class {constructor(type){this.type=type;}}, getComputedStyle:() => ({display:'block'}),
-    fetch:async () => {
+    fetch:async url => {
       if(fail) throw Error('offline');
+      if (url.startsWith('/api/workbook-paths?')) return {json:async () => ({ok:true, paths})};
       if(deferred) return new Promise(resolve => requests.push(value => resolve({json:async () => value})));
       return {json:async () => data};
     } });
@@ -44,6 +45,16 @@ test('loading a current task keeps independently chosen work and reference paths
   await settle();
   assert.equal(p.elements.get('taskFolderInput').value,'C:/chosen');
   assert.equal(p.elements.get('repairOldFolder').value,'D:/backup');
+});
+
+test('a saved batch displays editable source paths on separate lines', async () => {
+  const scope = `C:\\data\\批量路径\\${'a'.repeat(24)}`;
+  const paths = ['C:\\chosen\\book.xlsx', 'D:\\more'];
+  const p = page({work:scope, paths});
+  await settle();
+  const input = p.elements.get('taskFolderInput');
+  assert.equal(input.value, paths.join('\n'));
+  assert.equal(input.readOnly, false);
 });
 
 test('no task is required, and saved paths and placeholders are preserved', async () => {

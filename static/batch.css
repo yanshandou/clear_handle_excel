@@ -212,7 +212,7 @@ html:has(#largeView[open]) { overflow: hidden; }
 .learn-table td:nth-child(3) { white-space: nowrap; }
 .learn-text { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .learn-state { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; background: var(--paper, #e9f1fc); color: var(--ink, #1c2858); }
-.learn-head-right { display: flex; align-items: center; gap: 14px; }
+.learn-head-right { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
 .learn-mode { display: inline-flex; border: 2px solid var(--ink, #1c2858); border-radius: 10px; overflow: hidden; box-shadow: 2px 2px 0 var(--ink, #1c2858); }
 .learn-mode-btn { padding: 5px 14px; border: 0; background: #fff; color: var(--ink, #1c2858); font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
 .learn-mode-btn + .learn-mode-btn { border-left: 2px solid var(--ink, #1c2858); }

@@ -12,16 +12,16 @@
 </head>
 <body data-repair-kind="hidden">
   <header class="app-header">
-    <a href="/" class="header-brand"><div class="header-logo-badge">🙈</div><div class="header-title"><h1>修复隐藏页</h1><span class="subtitle">对照原始备份 · 恢复工作表与列的显示范围</span></div></a>
-    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/repair-colors" class="nav-link">🎨 修复颜色</a><a href="/repair-links" class="nav-link">🔗 修复引用错误</a><a href="/repair-bl-links" class="nav-link">🔎 排查 BL 超链接</a><a href="/workbench" class="nav-link">📐 切字检查工作台</a></nav>
+    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">修复隐藏页</h1><span class="subtitle">对照原始备份 · 恢复工作表与列的显示范围</span></div></a>
+    <nav class="header-nav" aria-label="功能导航"><a href="/" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#home"></use></svg>主页</a><a href="/repair-colors" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#palette"></use></svg>修复颜色</a><a href="/repair-links" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#link"></use></svg>修复引用错误</a><a href="/repair-bl-links" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#target"></use></svg>排查 BL 超链接</a><a href="/workbench" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#search"></use></svg>切字检查</a></nav>
   </header>
   <main class="container clean-container">
     <section class="panel">
       <h2>找回原来隐藏的工作表和列</h2>
       <p class="toolbar-hint">扫描原始备份，对照当前文件的内容、公式和位置，恢复被显示出来的隐藏工作表、隐藏列，以及被加宽的超窄列。</p>
       <div class="link-fields">
-        <label for="repairFolder">当前 Excel 文件夹（含子文件夹）<input id="repairFolder" type="text" placeholder="例如 D:\当前文件\001"></label>
-        <label for="repairOldFolder">原始备份文件夹<input id="repairOldFolder" type="text" placeholder="例如 D:\老版备份\001，或包含 001 的备份总目录"></label>
+        <label for="repairFolder">当前 Excel 文件夹（含子文件夹）<textarea id="repairFolder" class="workbook-paths" rows="2" aria-label="Excel 文件或文件夹路径" placeholder="每行一个 Excel 文件或文件夹路径"></textarea></label>
+        <label for="repairOldFolder">默认参考文件夹<input id="repairOldFolder" type="text" placeholder="按 Excel 文件名搜索此文件夹及子文件夹"></label>
       </div>
       <fieldset class="repair-options"><legend>本次恢复范围</legend>
         <label><input id="repairSheets" type="checkbox" checked> 隐藏工作表（含深度隐藏）</label>
@@ -40,6 +40,6 @@
     <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
   </main>
   <script src="/static/eta.js"></script><script src="/static/job_panel.js"></script><script src="/static/open_excel.js"></script><script src="/static/highlight_colors.js"></script><script src="/static/repair.js"></script><script src="/static/debug_log.js"></script>
-  <script src="/static/task_folder.js"></script><script src="/static/focus_banner.js"></script><script src="/static/file_problem.js"></script>
+  <script src="/static/task_folder.js"></script><script src="/static/reference_folders.js"></script><script src="/static/focus_banner.js"></script><script src="/static/file_problem.js"></script>
 </body>
 </html>

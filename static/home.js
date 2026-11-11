@@ -8,9 +8,9 @@ const TASKS = {
       '全部导出完后按钮变成「📐 调整页面」，点了进调整页面',
       '导出前每张表设成「宽一页、高自动」并保存进 Excel：横向不会拆成几页，纵向几页由 Excel 自己定（已经是宽一页的表不动）',
       '末页只多一点的表在调整页面上自动标黄，建议向下取整；改方向、取整都在网页上点，程序去改 Excel',
-      '自动递归扫描所选文件夹及其所有子文件夹；跳过隐藏表、変更履歴和备份表',
+      '处理所选 Excel 及所选文件夹中的 Excel（含子文件夹）；跳过隐藏表、変更履歴和备份表',
       '正在 Excel 里打开的文件不改设置，只按原样导出',
-      'PDF 统一放在所选文件夹下的「PDFS」文件夹里，子文件夹结构和 Excel 一样，不和 Excel 混在一起',
+      'PDF 统一放在「PDFS」文件夹，完成后可在「调整页面」查看',
       '导出时记下每个 Excel 的哈希值：Excel 没改过就沿用上次的 PDF，改过的才重新导出',
     ],
     runLabel: '📄 导出 PDF',
@@ -21,7 +21,7 @@ const TASKS = {
     theme: 'feature-mint',
     sub: '所有可见工作表开启分页预览、定位到 A1、缩放设为 100% 后保存',
     notes: [
-      '自动递归处理所选文件夹及其所有子文件夹下的 Excel 文件',
+      '处理所选 Excel 及所选文件夹中的 Excel（含子文件夹）',
       '保存时停留在第一个可见工作表',
     ],
     runLabel: '🎯 开始标准化',
@@ -70,7 +70,7 @@ function saveLastFolder(folder) {
 // 导出完点「调整页面」：调整页面读这个文件夹，先记下输入框里的路径再过去
 function openPdfReview() {
   const folder = document.getElementById('taskFolderInput').value.trim();
-  if (folder) saveLastFolder(folder);
+  if (folder) saveLastFolder(overview?.job?.folder || folder);
   window.location.href = '/pdf-review';
 }
 
@@ -160,7 +160,9 @@ function openTask(kind) {
     task.notes.map(note => `<li>${escapeHtml(note)}</li>`).join('');
 
   const input = document.getElementById('taskFolderInput');
-  input.value = (phase === 'running' && overview.job.folder) || readLastFolder() || (overview && overview.folder) || '';
+  const folder = (phase === 'running' && overview.job.folder) || readLastFolder() || (overview && overview.folder) || '';
+  if (window.WorkbookPaths) window.WorkbookPaths.show(input, folder);
+  else input.value = folder;
 
   renderDialog();
   document.getElementById('taskDialog').showModal();
@@ -265,7 +267,7 @@ function onPrimaryAction() {
 
 function readFolderInput() {
   const folder = document.getElementById('taskFolderInput').value.trim();
-  if (!folder) appAlert('请先输入 Excel 文件夹路径！', { tone: 'warn' });
+  if (!folder) appAlert('请先输入 Excel 文件或文件夹路径', { tone: 'warn' });
   return folder;
 }
 
@@ -278,8 +280,8 @@ async function startTask() {
   renderDialog();
   try {
     const payload = { kind: activeKind, folder };
-    await postAction('/api/quick_task', payload);
-    saveLastFolder(folder);
+    const result = await postAction('/api/quick_task', payload);
+    saveLastFolder(result.folder || folder);
     phase = 'running';
     minAcceptedSeq = pollSeq + 1;
   } catch (e) {
@@ -422,7 +424,7 @@ taskDialog.addEventListener('click', e => {
 
 const taskFolderInput = document.getElementById('taskFolderInput');
 taskFolderInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter') onPrimaryAction();
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) onPrimaryAction();
 });
 
 document.getElementById('progressFileInput').addEventListener('change', e => {

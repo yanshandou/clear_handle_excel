@@ -1,8 +1,12 @@
 """备份文件名只能作为明确标示、双向唯一的人工核对线索。"""
 import unittest
+import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from core.backup_compare import pair_files
+from core import data_dir, workbook_scope, work_task
+from core.reference_folders import ReferenceFolders, ReferenceIndex
 
 
 class BackupFileGuessTests(unittest.TestCase):
@@ -53,6 +57,33 @@ class BackupFileGuessTests(unittest.TestCase):
 
     def test_guesses_are_disabled_until_caller_explicitly_handles_them(self):
         self.assertIsNone(pair_files(self.root, [self.root / "book_backup.xlsx"], ["book.xlsx"])["book.xlsx"])
+
+    def test_many_explicit_files_share_a_recursive_reference_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            reference = root / "reference"
+            paths, names, expected = [], [], {}
+            for i in range(50):
+                name = f"workbook-{i}.xlsx"
+                current = root / "current" / f"work-{i}" / name
+                backup = reference / "originals" / str(i % 3) / name
+                current.parent.mkdir(parents=True)
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                current.touch()
+                backup.touch()
+                paths.append(current)
+                label = f"work-{i}/{name}"
+                names.append(label)
+                expected[label] = backup
+            (reference / "missing_backup.xlsx").touch()
+
+            with patch.object(data_dir, "DATA_DIR", root / "data"):
+                scope = Path(workbook_scope.resolve_input("\n".join(map(str, paths)), work_task.require_folder))
+                options = ReferenceFolders.from_payload({"old_folder": f'"{reference}"'})
+                index = ReferenceIndex(scope, options, {".xlsx"})
+                self.assertEqual(pair_files(index, [], names, scope, inferred=self.inferred), expected)
+                self.assertIsNone(index.match("work-0/missing.xlsx")[0])
+                self.assertIn("没有同名 Excel", index.match("work-0/missing.xlsx")[1])
 
 
 if __name__ == "__main__":

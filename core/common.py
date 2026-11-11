@@ -543,8 +543,11 @@ def workbook_rel_name(wb_path: Path, root_folder: Path | str | None = None) -> s
     「★」只是临时标记，显示名称和执行记录里都用原来的文件名。
     """
     if root_folder:
+        from core import workbook_scope
+        scope = workbook_scope.get(root_folder)
         try:
-            rel = wb_path.resolve().relative_to(Path(root_folder).resolve())
+            path = wb_path.resolve()
+            rel = scope.relative(path) if scope else path.relative_to(Path(root_folder).resolve())
             return rel.with_name(strip_review_prefix(rel.name)).as_posix()
         except ValueError:
             pass

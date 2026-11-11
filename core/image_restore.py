@@ -29,7 +29,9 @@ from pathlib import Path
 from typing import Any
 
 from core import debug_log, file_problem, fix_images, print_overlays, progress_log, workflow as wf
+from core import workbook_scope
 from core.backup_compare import pair_files, require_manual_file_check
+from core.reference_folders import ReferenceFolders, ReferenceIndex, prepare as prepare_references, unmatched
 from core.common import workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, quit_background_excel, start_background_excel
 from core.link_repair import fingerprint
@@ -81,7 +83,8 @@ def pdf_for(path: Path, root: Path, pdf_root: Path | None) -> Path | None:
     from core import pdf_bundle
     candidates = []
     if pdf_root:
-        rel = path.relative_to(root)
+        scope = workbook_scope.get(root)
+        rel = scope.relative(path) if scope else path.relative_to(root)
         candidates.append(pdf_root / rel.with_name(pdf_bundle.pdf_path_for(path).name))
         candidates.append(pdf_root / pdf_bundle.pdf_path_for(path).name)
     candidates.append(pdf_bundle.pdf_path_for(path))
@@ -513,7 +516,7 @@ def describe(entry: dict, mode: str = "fix") -> str:
 
 # ---------- 后台任务 ----------
 
-def _run(mode: str, root: Path, paths: list[Path], old_root: Path | None, old_paths: list[Path], pdf_root: Path | None,
+def _run(mode: str, root: Path, paths: list[Path], old_root: Path | ReferenceIndex | None, old_paths: list[Path], pdf_root: Path | None,
          group: bool = True) -> None:
     """mode=scan：只找不改；mode=fix：改这几份（结果并进上次找出来的清单，标成已修复）；
     mode=group：只把截图和标注永久组合，不对照原版（old_root 可以是 None）"""
@@ -543,7 +546,7 @@ def _run(mode: str, root: Path, paths: list[Path], old_root: Path | None, old_pa
                     old_path = pairs.get(name)
                     if mode != "group":
                         if old_path is None:
-                            raise ValueError("参考文件夹里找不到唯一对应的原文件")
+                            raise ValueError(unmatched(old_root, name, "参考文件夹里找不到唯一对应的原文件"))
                         entry["old"] = str(old_path)
                         if name in inferred:
                             require_manual_file_check(entry)
@@ -604,7 +607,7 @@ def _run(mode: str, root: Path, paths: list[Path], old_root: Path | None, old_pa
                     wf.STATE.pop("maintenance", None)
 
 
-def _merge(previous: dict | None, mode: str, root: Path, old_root: Path | None, pdf_root: Path | None, files: list[dict],
+def _merge(previous: dict | None, mode: str, root: Path, old_root: Path | ReferenceIndex | None, pdf_root: Path | None, files: list[dict],
            stamp: int | None = None) -> dict:
     """找的结果直接替换；修 / 组合的结果按文件名并进上次找到的清单（fixed / fix_error / fixed_count / grouped）"""
     base = {"folder": str(root), "old_folder": str(old_root or ""), "pdf_folder": str(pdf_root or ""), "files": files, "mode": mode}
@@ -629,7 +632,7 @@ def _merge(previous: dict | None, mode: str, root: Path, old_root: Path | None, 
     return {**previous, "files": merged, "scanned": True, "mode": mode}
 
 
-def start(folder: str, old_folder: str, mode: str = "scan", names: Any = None, pdf_folder: Any = "",
+def start(folder: str, old_folder: str | ReferenceFolders, mode: str = "scan", names: Any = None, pdf_folder: Any = "",
           group: Any = True) -> None:
     """mode=scan 找出受影响的图片（不改文件）；mode=fix 修复（group=True 顺便永久组合）；mode=group 只组合（不用原版）。
     names：只做这几份（文件名列表），不给就是全部"""
@@ -639,12 +642,10 @@ def start(folder: str, old_folder: str, mode: str = "scan", names: Any = None, p
         raise ValueError("组合选项不对")
     root, paths = list_workbooks(folder)
     old_root, old_paths = None, []
-    if mode != "group" or (old_folder or "").strip():
-        if not (old_folder or "").strip():
+    if mode != "group":
+        if not old_folder:
             raise ValueError("请输入原版文件夹")
-        old_root, old_paths = list_workbooks(old_folder)
-        if root == old_root or root in old_root.parents or old_root in root.parents:
-            raise ValueError("处理后的文件夹和参考文件夹不能相同或互相包含")
+        old_root, old_paths = prepare_references(root, old_folder, list_workbooks, wf.EXCEL_EXTENSIONS | {".xlsb"}, disjoint=True)
     pdf_root = None
     if isinstance(pdf_folder, str) and pdf_folder.strip():
         pdf_root = Path(pdf_folder.strip().strip('"').strip("'")).expanduser().resolve()

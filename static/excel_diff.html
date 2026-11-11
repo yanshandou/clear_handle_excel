@@ -13,9 +13,9 @@
     .xd-file small { color: #3b4658; }
     .xd-file.is-old { background: #ffebe9; border-color: #cf222e; }
     .xd-file.is-new { background: #e6ffec; border-color: #1a7f37; }
-    .xd-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 10px; }
+    .xd-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 10px; }
     .xd-fields label { display: flex; flex-direction: column; gap: 4px; font-weight: 700; }
-    .xd-fields input { font-weight: 400; }
+    .xd-fields input { width: 100%; min-width: 0; font-weight: 400; }
     .xd-verdict { margin: 14px 0 8px; padding: 12px 16px; border-radius: 12px; font-weight: 800; font-size: 17px; border: 2px solid; }
     .xd-verdict.is-same { background: #e4f5ea; border-color: #1a7f37; color: #14532d; }
     .xd-verdict.is-diff { background: #fff3d6; border-color: #b7791f; color: #5c3b00; }
@@ -73,16 +73,20 @@
     .xv-mark.is-old { background: rgba(207, 34, 46, .28); border-color: #cf222e; } .xv-mark.is-new { background: rgba(26, 127, 55, .28); border-color: #1a7f37; }
     .xv-note { margin-top: 6px; }
     .xd-search { display: flex; align-items: center; gap: 12px; margin: 10px 0 2px; }
-    .xd-search input { flex: 0 1 520px; }
+    .xd-search input { flex: 0 1 520px; min-width: 0; }
     .xd-search span { font-weight: 700; color: #1f2937; }
+    @media (max-width: 620px) {
+      .xd-fields, .xd-files { grid-template-columns: minmax(0, 1fr); }
+      .xd-table col.c-where, .xd-table col.c-kind { width: auto; }
+    }
   </style>
   <link rel="stylesheet" href="/static/theme-casual.css">
   <link rel="stylesheet" href="/static/theme-cartoon.css">
 </head>
 <body>
   <header class="app-header">
-    <a href="/" class="header-brand"><div class="header-logo-badge">🔍</div><div class="header-title"><h1>Excel 对比</h1><span class="subtitle">像 Git 一样左右两栏看两份 Excel 哪里不一样 · 上传前自己判断能不能覆盖</span></div></a>
-    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/distribute" class="nav-link">📤 上传</a></nav>
+    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">Excel 对比</h1><span class="subtitle">像 Git 一样左右两栏看两份 Excel 哪里不一样 · 上传前自己判断能不能覆盖</span></div></a>
+    <nav class="header-nav" aria-label="功能导航"><a href="/" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#home"></use></svg>主页</a><a href="/distribute" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#upload"></use></svg>上传</a></nav>
   </header>
   <main class="container clean-container">
     <section class="panel">

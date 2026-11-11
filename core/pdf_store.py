@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core import debug_log
+from core import debug_log, workbook_scope
 from core.common import EXCEL_EXTENSIONS, sanitize_filename, strip_review_prefix, workbook_rel_name
 
 DIR_NAME = "PDFS"
@@ -33,8 +33,10 @@ def pdf_root(root: Path | str) -> Path:
 def pdf_dir(wb_path: Path, root: Path | str | None) -> Path:
     """这份 Excel 的 PDF 放在哪：根目录/PDFS/<Excel 所在的子文件夹>。Excel 不在根目录里（不该发生）时放它旁边的 PDFS"""
     if root:
+        scope = workbook_scope.get(root)
         try:
-            rel = wb_path.resolve().parent.relative_to(Path(root).resolve())
+            path = wb_path.resolve()
+            rel = scope.relative(path).parent if scope else path.parent.relative_to(Path(root).resolve())
             return pdf_root(Path(root).resolve()) / rel
         except ValueError:
             pass
@@ -231,9 +233,11 @@ def record(root: Path | str, wb_path: Path, digest: str, exported: list[tuple[Pa
             order = [item.get("pdf") for item in old.get("pdfs", []) if isinstance(item, dict)]
             pdfs = sorted(kept + pdfs, key=lambda item: order.index(item["pdf"]) if item["pdf"] in order else len(order))
             fit = fit and bool(old.get("fit"))
+        scope = workbook_scope.get(root)
         data["files"][key] = {
-            "excel": wb_path.resolve().relative_to(Path(root).resolve()).as_posix()
-            if _inside(wb_path, root) else wb_path.name,
+            "excel": scope.relative(wb_path.resolve()).as_posix() if scope else (
+                wb_path.resolve().relative_to(Path(root).resolve()).as_posix()
+                if _inside(wb_path, root) else wb_path.name),
             "hash": digest, "pdfs": pdfs,
         }
         wb_stat = _stat(wb_path)
@@ -429,6 +433,9 @@ def owner(pdf: Path) -> dict | None:
 
 
 def _find_excel(root: Path, key: str, excel: str) -> Path | None:
+    scope = workbook_scope.get(root)
+    if scope:
+        return (scope.find(Path(excel)) if excel else None) or scope.find(Path(key))
     for candidate in (root / excel if excel else None, root / key):
         if candidate is not None and candidate.is_file():
             return candidate
@@ -449,7 +456,9 @@ def excel_folder_for(pdf: Path) -> Path:
     if root is None:
         return pdf.parent
     try:
-        return root / pdf.parent.resolve().relative_to(pdf_root(root).resolve())
+        relative = pdf.parent.resolve().relative_to(pdf_root(root).resolve())
+        scope = workbook_scope.get(root)
+        return (scope.source_path(relative) or pdf.parent) if scope else root / relative
     except ValueError:
         return pdf.parent
 

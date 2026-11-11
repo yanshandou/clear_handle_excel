@@ -12,15 +12,15 @@
 </head>
 <body>
   <header class="app-header">
-    <a href="/" class="header-brand"><div class="header-logo-badge">📋</div><div class="header-title"><h1>调整页面</h1><span class="subtitle">点按钮告诉程序怎么改 · 单击页面看大图 · 统一修改后看新的 PDF · Ctrl + 单击用 Excel 打开那一页</span></div></a>
-    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/records" class="nav-link">📋 执行记录</a><a href="/workbench" class="nav-link nav-next" data-flow-next="adjust" title="页面都调好了：去下一步查看切字（扫描标色、调整单元格）">下一步：查看切字 ➜</a></nav>
+    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">调整页面</h1><span class="subtitle">点按钮告诉程序怎么改 · 单击页面看大图 · 统一修改后看新的 PDF · Ctrl + 单击用 Excel 打开那一页</span></div></a>
+    <nav class="header-nav" aria-label="功能导航"><a href="/" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#home"></use></svg>主页</a><a href="/records" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#layers"></use></svg>执行记录</a><a href="/workbench" class="nav-link nav-next" data-flow-next="adjust" title="页面都调好了：去下一步查看切字（扫描标色、调整单元格）">下一步：查看切字 ➜</a></nav>
   </header>
   <main class="container pr-container">
     <section class="panel pr-setup">
       <div class="pr-folder-row">
-        <label class="pr-folder-label" for="prFolder">Excel 文件夹（导出的 PDF 在它下面的 PDFS 文件夹里）
-          <input id="prFolder" type="text" placeholder="例如 C:\Users\...\Desktop\excel_files"></label>
-        <label class="pr-folder-label" for="prOldFolder">原始备份文件夹（可选，填了就同时打开老版本对照）
+        <label class="pr-folder-label" for="prFolder">Excel 文件或文件夹路径
+          <textarea id="prFolder" class="workbook-paths" rows="2" aria-label="Excel 文件或文件夹路径" placeholder="每行一个 Excel 文件或文件夹路径"></textarea></label>
+        <label class="pr-folder-label" for="prOldFolder">默认参考文件夹（可选，用于打开原版对照）
           <input id="prOldFolder" type="text" placeholder="例如 C:\Users\...\Desktop\excel_files_备份"></label>
         <button id="prLoad" type="button" class="btn btn-primary">📂 加载 PDF</button>
       </div>
@@ -95,6 +95,6 @@
   </main>
   <script src="/static/dialog.js"></script><script src="/static/open_excel.js"></script><script src="/static/eta.js"></script><script src="/static/job_panel.js"></script>
   <script src="/static/pdf_review.js"></script><script src="/static/debug_log.js"></script>
-  <script src="/static/task_folder.js"></script><script src="/static/focus_banner.js"></script><script src="/static/file_problem.js"></script>
+  <script src="/static/task_folder.js"></script><script src="/static/reference_folders.js"></script><script src="/static/focus_banner.js"></script><script src="/static/file_problem.js"></script>
 </body>
 </html>

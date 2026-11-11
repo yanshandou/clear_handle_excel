@@ -14,7 +14,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 from core import autofix, batch, bl_links, clean_chain, debug_log, distribute, file_problem, work_task, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review, pdf_bundle, font_fix, image_restore
-from core import upload_manager
+from core import upload_manager, workbook_scope
+from core.reference_folders import ReferenceFolders
 from core.common import (
     STATIC_DIR,
     console_print,
@@ -103,11 +104,25 @@ MIME_TYPES = {
 
 
 def _require_folder(payload: dict, role: str = "work") -> str:
-    """校验各功能自己填写的本地文件夹；当前任务只提供默认路径。"""
+    """处理路径可以每行一个文件或文件夹，参考路径仍是一个文件夹。"""
     folder = payload.get("folder")
     if not isinstance(folder, str) or not folder.strip():
-        raise ValueError("请输入原始备份文件夹" if role == "reference" else "请输入 Excel 文件夹路径")
-    return work_task.require_folder(folder, role)
+        raise ValueError("请输入原始备份文件夹" if role == "reference" else "请输入 Excel 文件或文件夹路径")
+    if role == "reference":
+        if len(folder.strip().splitlines()) != 1 or workbook_scope.get(folder):
+            raise ValueError("请输入一个原始备份文件夹路径")
+        return work_task.require_folder(folder, role)
+    return workbook_scope.resolve_input(folder, work_task.require_folder)
+
+
+def _references(payload: dict, *, optional: bool = False) -> str | ReferenceFolders:
+    if "reference_folders" in payload:
+        options = ReferenceFolders.from_payload(payload)
+        if not options and not optional:
+            raise ValueError("请填写默认参考文件夹，或为处理文件夹单独指定参考目录")
+        return options
+    value = payload.get("old_folder")
+    return "" if optional and not value else _require_folder({"folder": value}, "reference")
 
 
 class WebHandler(upload_manager.Handler):
@@ -285,6 +300,11 @@ class WebHandler(upload_manager.Handler):
             self._serve_static_file("history.html")
         elif parsed.path == "/api/folders":
             self._send_json(folder_history())
+        elif parsed.path == "/api/workbook-paths":
+            folder = parse_qs(parsed.query).get("folder", [""])[0]
+            scope = workbook_scope.get(folder)
+            paths = [str(path) for path in (*scope.folders, *scope.files)] if scope else [folder]
+            self._send_json({"ok": True, "paths": paths})
         elif parsed.path == "/api/folders/detail":
             from core import operation_history
             folder = parse_qs(parsed.query).get("folder", [""])[0]
@@ -444,6 +464,12 @@ class WebHandler(upload_manager.Handler):
             console_print(f"ℹ️ 浏览器已断开，{path} 的结果未送达")
 
     def _handle_post(self, payload: dict) -> None:
+        if self.path == "/api/workbook-paths":
+            value = payload.get("folder", "")
+            if not isinstance(value, str):
+                raise ValueError("请输入 Excel 文件或文件夹路径")
+            self._send_json({"ok": True, "folders": workbook_scope.input_folders(value)})
+            return
         # 批量任务停在出错文件上等用户：选择重试 / 跳过、打开这份文件，任务进行中也要能做
         if self.path == "/api/file-problem":
             choice, problem_id = payload.get("choice"), payload.get("id")
@@ -510,6 +536,8 @@ class WebHandler(upload_manager.Handler):
                 raise ValueError(f"正在检查或修复{name}，请等当前任务结束")
         if self.path in {"/api/batch/start", "/api/records/rescan"}:
             options = {"folder": _require_folder(payload)}
+            if workbook_scope.get(options["folder"]) and self.path == "/api/batch/start":
+                list_workbooks(options["folder"])  # 校验选中的文件，再切换工作台
             if self.path == "/api/records/rescan":
                 file_name = payload.get("file")
                 if not isinstance(file_name, str) or not file_name.strip():
@@ -541,8 +569,7 @@ class WebHandler(upload_manager.Handler):
             except ValueError:
                 raise ValueError("后台正在保存 Excel，请几秒后再点") from None
             self._send_json({"ok": True, **pdf_review.open_at(payload.get("pdf") or "", payload.get("page"),
-                                                                payload.get("pages"), _require_folder({"folder": payload["old_folder"]}, "reference")
-                                                                if payload.get("old_folder") else "")})
+                                                                payload.get("pages"), _references(payload, optional=True))})
         elif self.path == "/api/pdf_review/process":
             pdf_review.process(payload.get("red"), payload.get("yellow"), payload.get("tools", payload.get("floor")))
             self._send_json({"ok": True})
@@ -559,30 +586,33 @@ class WebHandler(upload_manager.Handler):
                 raise ValueError("后台正在保存 Excel，请几秒后再刷新") from None
             self._send_json({"ok": True, **pdf_review.refresh_stale(payload.get("pdfs"))})
         elif self.path == "/api/font_fix/run":
-            font_fix.start(_require_folder(payload))
-            self._send_json({"ok": True})
+            folder = _require_folder(payload)
+            font_fix.start(folder)
+            self._send_json({"ok": True, "folder": folder})
         elif self.path == "/api/image_restore/run":
             mode = payload.get("mode") or "scan"
-            old_folder = payload.get("old_folder") or ""
-            # 只组合不需要原版；其他都要
-            old_folder = _require_folder({"folder": old_folder}, "reference") if mode != "group" or old_folder else ""
-            image_restore.start(_require_folder(payload), old_folder, mode, payload.get("names"),
+            old_folder = _references(payload) if mode != "group" else ""
+            folder = _require_folder(payload)
+            image_restore.start(folder, old_folder, mode, payload.get("names"),
                                 payload.get("pdf_folder") or "", payload.get("group", True))
-            self._send_json({"ok": True})
+            self._send_json({"ok": True, "folder": folder})
         elif self.path == "/api/image_restore/open_pdf":
             name = payload.get("file")
             if not isinstance(name, str) or not name:
                 raise ValueError("需要有效的文件名")
             self._send_json({"ok": True, **image_restore.open_pdf(name)})
         elif self.path == "/api/pdf_bundle/run":
-            pdf_bundle.start(_require_folder(payload), payload.get("options"))
-            self._send_json({"ok": True})
+            folder = _require_folder(payload)
+            pdf_bundle.start(folder, payload.get("options"))
+            self._send_json({"ok": True, "folder": folder})
         elif self.path == "/api/hidden_repair/run":
-            hidden_repair.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}, "reference"), payload.get("options"))
-            self._send_json({"ok": True})
+            folder = _require_folder(payload)
+            hidden_repair.repair(folder, _references(payload), payload.get("options"))
+            self._send_json({"ok": True, "folder": folder})
         elif self.path == "/api/bl_links/scan":
-            bl_links.start(_require_folder(payload))
-            self._send_json({"ok": True})
+            folder = _require_folder(payload)
+            bl_links.start(folder)
+            self._send_json({"ok": True, "folder": folder})
         elif self.path == "/api/distribute/preview":
             if payload.get("task_id"):
                 raise ValueError("当前任务请先选择要批量上传的文件")
@@ -626,8 +656,9 @@ class WebHandler(upload_manager.Handler):
         elif self.path == "/api/tasks/switch":
             self._send_json({"ok": True, "task": work_task.switch(str(payload.get("id") or ""))})
         elif self.path == "/api/folders/activate":
-            activate_folder(_require_folder(payload))
-            self._send_json({"ok": True})
+            folder = _require_folder(payload)
+            activate_folder(folder)
+            self._send_json({"ok": True, "folder": str(Path(folder).resolve())})
         elif self.path == "/api/distribute/start":
             distribute.start(payload.get("preview_id"))
             self._send_json({"ok": True})
@@ -635,16 +666,18 @@ class WebHandler(upload_manager.Handler):
             bl_links.clear()
             self._send_json({"ok": True})
         elif self.path == "/api/link_repair/run":
-            link_repair.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}, "reference"))
-            self._send_json({"ok": True})
+            folder = _require_folder(payload)
+            link_repair.repair(folder, _references(payload))
+            self._send_json({"ok": True, "folder": folder})
         elif self.path == "/api/batch/find_marks/run":
-            mark_finder.repair(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}, "reference"), payload.get("colors"))
-            self._send_json({"ok": True})
+            folder = _require_folder(payload)
+            mark_finder.repair(folder, _references(payload), payload.get("colors"))
+            self._send_json({"ok": True, "folder": folder})
         elif self.path == "/api/link_repair":
             link_repair.start(_require_folder(payload))
             self._send_json({"ok": True})
         elif self.path == "/api/link_repair/preview":
-            link_repair.preview(_require_folder(payload))
+            link_repair.preview(_require_folder(payload, "reference"))
             self._send_json({"ok": True})
         elif self.path == "/api/link_repair/apply":
             link_repair.apply()
@@ -653,7 +686,7 @@ class WebHandler(upload_manager.Handler):
             mark_finder.start(_require_folder(payload), payload.get("colors"))
             self._send_json({"ok": True})
         elif self.path == "/api/batch/find_marks/preview":
-            mark_finder.preview(_require_folder(payload))
+            mark_finder.preview(_require_folder(payload, "reference"))
             self._send_json({"ok": True})
         elif self.path == "/api/batch/find_marks/apply":
             mark_finder.apply()
@@ -785,8 +818,13 @@ class WebHandler(upload_manager.Handler):
                 # 用户可选：不比较横竖方向能省一半以上时间（2026-10-30）
                 options["choose_orientation"] = payload.get("choose_orientation", True) is not False
             chain = clean_chain.options_from(payload.get("chain")) if kind == "clean_sheets" else None
-            if chain and chain["old_folder"]:
-                chain["old_folder"] = _require_folder({"folder": chain["old_folder"]}, "reference")
+            if chain:
+                references = _references(chain, optional=True)
+                if isinstance(references, ReferenceFolders):
+                    references.directories(folder)
+                    chain.update(references.payload())
+                else:
+                    chain["old_folder"] = references
             if chain:
                 options["chain"] = chain  # 精简完接着自动排查 BL、修复引用错误（、隐藏页）
                 clean_chain.prepare(str(folder), chain)  # 先排上，任务一开始页面就能显示后面几步
@@ -1003,7 +1041,8 @@ class WebHandler(upload_manager.Handler):
             self._send_json({"ok": False, "error": "已有任务正在执行"}, status=409)
             return False
         threading.Thread(target=run_pending_workflow, name="任务", daemon=True).start()
-        self._send_json({"ok": True})
+        folder = (options or {}).get("folder")
+        self._send_json({"ok": True, **({"folder": folder} if folder else {})})
         return True
 
 

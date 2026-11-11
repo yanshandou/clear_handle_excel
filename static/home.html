@@ -15,11 +15,11 @@
     <a href="/" class="header-brand" title="返回主页">
       <div class="header-logo-badge" aria-hidden="true"></div>
       <div class="header-title">
-        <h1>Excel 整理工坊</h1>
+        <h1 class="header-title-text">Excel 整理工坊</h1>
         <span class="subtitle">整理表格，也整理好每一步</span>
       </div>
     </a>
-    <div class="header-nav">
+    <nav class="header-nav" aria-label="功能导航">
       <a href="/" class="nav-link active" aria-current="page"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#home"></use></svg>主页</a>
       <a href="/clean" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#grid"></use></svg>精简 Sheet</a>
       <a href="/workbench" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#search"></use></svg>切字检查</a>
@@ -30,7 +30,7 @@
         <span id="navProgressBadge" class="nav-badge">0%</span>
       </a>
       <span id="statusText" class="status-pill">✅ 就绪</span>
-    </div>
+    </nav>
   </header>
 
   <main class="container home-container">
@@ -140,10 +140,10 @@
     <div class="task-dialog-body">
       <ul id="taskNotes" class="task-notes"></ul>
 
-      <label class="task-field-label" for="taskFolderInput">Excel 文件夹路径</label>
+      <label class="task-field-label" for="taskFolderInput">Excel 文件或文件夹路径</label>
       <div class="input-groove-wrap">
         <span class="input-groove-icon" aria-hidden="true">📂</span>
-        <input type="text" id="taskFolderInput" placeholder="例如 C:\Users\...\Desktop\excel_files">
+        <textarea id="taskFolderInput" class="workbook-paths" rows="2" aria-label="Excel 文件或文件夹路径" placeholder="每行一个 Excel 文件或文件夹路径"></textarea>
       </div>
 
       <div id="taskRunBox" class="task-run-box hidden">

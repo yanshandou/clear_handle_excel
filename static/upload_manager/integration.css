@@ -1,15 +1,13 @@
-/* The manager and copy page share one toolbox header. */
-.app-shell { min-height:calc(100vh - 80px); }
+body { display:flex; flex-direction:column; min-height:100vh; }
+.app-shell { flex:1; min-height:0; }
 .content { padding-top:32px; }
-.page-heading .eyebrow { color:#d4e6ff; letter-spacing:.5px; }
+.page-heading .eyebrow { color:var(--garden-muted); letter-spacing:.5px; }
 /* 面包屑里只有第一个 span 是绿色小圆点；「Excel 上传」这段文字不能套圆点样式（否则被压成 10px 宽、竖着叠在一起） */
 .eyebrow #distCrumbRoot { width:auto; height:auto; background:none; border:0; border-radius:0; box-shadow:none; }
 .page-heading-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:10px; }
 .page-heading-actions .button { margin:0; text-decoration:none; }
-.page-heading-actions a:focus-visible { outline:3px solid #ffe26c; outline-offset:4px; }
 input[type=date] { font-family:inherit; min-width:0; }
 #manager-next-copy { display:inline-flex; margin:10px 0; padding:10px 16px; background:#dff4e5; color:#175935; border:2px solid #175935; border-radius:10px; font-weight:700; }
-@media(max-width:800px) { .app-shell { min-height:calc(100vh - 135px); } }
 @media(max-width:700px) {
   .page-heading { flex-wrap:wrap; }
   .page-heading-actions { justify-content:flex-start; }

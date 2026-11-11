@@ -90,6 +90,32 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(report["summary"]["completed"], 1)
         self.assertEqual(report["files"][0]["attempts"], 1)
 
+    def test_workbench_scans_only_the_selected_paths(self):
+        from core import data_dir, scan_analysis
+        from web_clip_fixer import WebHandler
+
+        selected = self.root / "other" / "book.xlsx"
+        selected.parent.mkdir()
+        selected.write_bytes(b"workbook")
+        ignored = self.root / "ignored.xlsx"
+        ignored.write_bytes(b"workbook")
+        handler = object.__new__(WebHandler)
+        handler.path = "/api/batch/start"
+        handler._start_job = self.wf.queue_job
+        session = Mock(app=Mock(return_value=self.excel))
+        with patch.object(data_dir, "DATA_DIR", self.root / "data"), \
+                patch.object(batch.autofix, "_ExcelSession", return_value=session), \
+                patch.object(batch, "ExcelWatchdog", return_value=Mock(timed_out=False, deadline_hit=False)), \
+                patch.object(batch, "_sync_highlights", return_value=True):
+            handler._handle_post({"folder": f'"{self.path}"\r\n{selected.parent}'})
+            self.wf.run_pending_workflow()
+            job = self.wf.STATE["job"]
+            self.assertEqual(job["completed"], [self.path, str(selected)])
+            self.assertTrue(self.wf.in_current_folder(str(selected)))
+            self.assertFalse(self.wf.in_current_folder(str(ignored)))
+            report = scan_analysis.report(job["analysis_id"])
+            self.assertEqual([file["name"] for file in report["files"]], ["book.xlsx", "other/book.xlsx"])
+
     def test_records_rescan_updates_only_the_selected_failure_and_keeps_the_original_batch(self):
         from web_clip_fixer import WebHandler
 

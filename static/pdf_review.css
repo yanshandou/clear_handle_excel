@@ -17,11 +17,14 @@
   flex-direction: column;
   gap: 6px;
   flex: 1 1 420px;
+  min-width: 0;
   font-weight: 700;
   color: var(--ink);
 }
 
 .pr-folder-label input {
+  width: 100%;
+  min-width: 0;
   font: inherit;
   font-weight: 400;
   padding: 9px 12px;

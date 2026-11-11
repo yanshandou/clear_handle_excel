@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from core import fix_images, operation_history
+from core import fix_images, operation_history, workbook_scope
 from core.common import (
     EXCEL_EXTENSIONS, PROJECT_ROOT, RECORD_PATH, has_review_prefix, md_wrap, review_name_variants, strip_review_prefix,
     workbook_rel_name,
@@ -732,13 +732,21 @@ def find_workbook(file_name: str, roots: list[str]) -> Path:
     if not folders:
         raise ValueError("还没有选择目标文件夹")
     raw = Path(file_name)
+    # 相对名称在批次内解析，避免同名文件落到工作台的其他文件夹。
+    scope = workbook_scope.get(folders[0])
+    if scope:
+        path = scope.find(raw)
+        if (path and path.suffix.lower() in EXCEL_EXTENSIONS | {".xlsb", ".xltx", ".xltm"}
+                and not path.name.startswith("~$")):
+            return path
+        raise ValueError(f"找不到批量路径中的文件「{raw.name}」，可能已被移动或改名")
     bases = [raw] if raw.is_absolute() else [folder / raw for folder in folders]
     for base in bases:
         names = dict.fromkeys([base.name, strip_review_prefix(base.name), *review_name_variants(base.name)])
         for name in names:
             wb_path = base.with_name(name).resolve()
             if (
-                any(wb_path.is_relative_to(folder) for folder in folders)
+                any(workbook_scope.contains(folder, wb_path) for folder in folders)
                 and wb_path.suffix.lower() in EXCEL_EXTENSIONS
                 and not wb_path.name.startswith("~$")
                 and wb_path.is_file()

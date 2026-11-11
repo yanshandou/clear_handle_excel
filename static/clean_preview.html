@@ -13,16 +13,16 @@
 <body>
   <header class="app-header">
     <a href="/" class="header-brand" title="返回主页">
-      <div class="header-logo-badge" aria-hidden="true">🖼️</div>
+      <div class="header-logo-badge" aria-hidden="true"></div>
       <div class="header-title">
-        <h1 id="pvFileName">Sheet 预览确认</h1>
+        <h1 class="header-title-text" id="pvFileName">Sheet 预览确认</h1>
         <span class="subtitle" id="pvFolder">单击预览图在「保留 / 删除 / 待定」之间切换，与精简 Sheet 页面同步</span>
       </div>
     </a>
-    <div class="header-nav">
-      <a href="/clean" class="nav-link" onclick="event.preventDefault(); returnToClean()" title="标记已自动同步到精简 Sheet 页面">← 返回精简 Sheet</a>
+    <nav class="header-nav" aria-label="功能导航">
+      <a href="/clean" class="nav-link" onclick="event.preventDefault(); returnToClean()" title="标记已自动同步到精简 Sheet 页面"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#grid"></use></svg>返回精简 Sheet</a>
       <span id="statusText" class="status-pill">✅ 就绪</span>
-    </div>
+    </nav>
   </header>
 
   <main class="container clean-container">

@@ -360,7 +360,8 @@ code {
 }
 
 .input-groove-wrap input[type="text"],
-.input-groove-wrap input[type="search"] {
+.input-groove-wrap input[type="search"],
+.input-groove-wrap .workbook-paths {
   border: none !important;
   background: transparent !important;
   box-shadow: none !important;
@@ -371,7 +372,8 @@ code {
 
 input[type="text"],
 input[type="search"],
-input[type="number"] {
+input[type="number"],
+.workbook-paths {
   padding: 9px 14px;
   border: 1px solid rgba(164, 186, 219, 0.75);
   border-radius: 10px;
@@ -384,15 +386,31 @@ input[type="number"] {
   transition: border-color 0.18s, box-shadow 0.18s;
 }
 
+.reference-folders {
+  margin: 8px 0 14px;
+  grid-column: 1 / -1;
+  flex-basis: 100%;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.reference-folders summary { cursor: pointer; font-weight: 700; }
+.reference-folders p { margin: 6px 0; }
+.reference-folders fieldset { padding: 0; margin: 0; border: 0; min-width: 0; }
+.reference-folders label { display: grid; gap: 4px; margin: 8px 0; overflow-wrap: anywhere; }
+.reference-folders input[type="text"] { box-sizing: border-box; width: 100%; min-width: 0; }
+
 input[type="text"]::placeholder,
-input[type="search"]::placeholder {
+input[type="search"]::placeholder,
+.workbook-paths::placeholder {
   color: var(--text-light);
   font-weight: 500;
 }
 
 input[type="text"]:focus,
 input[type="search"]:focus,
-input[type="number"]:focus {
+input[type="number"]:focus,
+.workbook-paths:focus {
   border-color: #2563eb;
   box-shadow:
     var(--shadow-groove-sm),
@@ -402,6 +420,15 @@ input[type="number"]:focus {
 input[type="text"] {
   flex: 1;
   min-width: 300px;
+}
+
+.workbook-paths {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  font-family: inherit;
+  line-height: 1.5;
+  resize: vertical;
 }
 
 /* 拟物胶囊复选开关 */

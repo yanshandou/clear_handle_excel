@@ -16,6 +16,7 @@ from typing import Any
 
 from core import batch, debug_log, file_problem, page_breaks, page_fill, pdf_store, progress_log, repair_compare, sheet_history, workflow as wf
 from core.backup_compare import pair_files
+from core.reference_folders import ReferenceFolders, ReferenceIndex
 from core.common import (EXCEL_EXTENSIONS, sanitize_filename, strip_review_prefix,
                          workbook_locked, workbook_rel_name)
 from core.excel_ops import open_workbook_at, open_workbook_checked, start_background_excel
@@ -77,8 +78,13 @@ def _guess_owner(pdf: Path) -> dict | None:
     folder = pdf_store.excel_folder_for(pdf)
     if not folder.is_dir():
         return None
+    from core import workbook_scope
+    root = pdf_store.export_root_of(pdf)
+    scope = workbook_scope.get(root) if root else None
     for wb in folder.iterdir():
         if not wb.is_file() or wb.suffix.lower() not in EXCEL_EXTENSIONS | {".xlsb"} or wb.name.startswith("~$"):
+            continue
+        if scope and not scope.contains(wb.resolve()):
             continue
         stem = sanitize_filename(strip_review_prefix(wb.stem))
         if pdf.stem.startswith(stem + "_") and len(pdf.stem) > len(stem) + 1:
@@ -207,15 +213,23 @@ def _old_files(old_root: Path) -> list[Path]:
     return files
 
 
-def backup_for(wb_path: Path, old_folder: str) -> tuple[Path | None, str]:
-    """在原始备份文件夹里找这份 Excel 的老版本：同样的相对路径，或者文件名在两边都只有一个。
-    找不到返回 (None, 原因)"""
-    old_root = Path(old_folder.strip().strip('"').strip("'")).expanduser().resolve()
-    if not old_root.is_dir():
-        return None, f"原始备份文件夹不存在：{old_root}"
+def backup_for(wb_path: Path, old_folder: str | ReferenceFolders) -> tuple[Path | None, str]:
+    """按参考设置查找这份 Excel 的原版，未找到时返回原因。"""
     with wf.STATE_LOCK:
         root = Path(wf.STATE.get("pdf_review", {}).get("folder") or wb_path.parent)
     name = workbook_rel_name(wb_path, root)
+    from core import workbook_scope
+    if isinstance(old_folder, ReferenceFolders) or workbook_scope.get(root):
+        try:
+            options = (old_folder if isinstance(old_folder, ReferenceFolders)
+                       else ReferenceFolders.from_payload({"old_folder": old_folder}))
+            index = ReferenceIndex(root, options, EXCEL_EXTENSIONS | {".xlsb"})
+            return index.match(name)
+        except ValueError as error:
+            return None, str(error)
+    old_root = Path(old_folder.strip().strip('"').strip("'")).expanduser().resolve()
+    if not old_root.is_dir():
+        return None, f"原始备份文件夹不存在：{old_root}"
     found = pair_files(old_root, _old_files(old_root), [name], root).get(name)
     if found is None:
         return None, "原始备份文件夹里找不到这份文件（或有几份同名的分不清）"
@@ -248,7 +262,7 @@ def open_page(wb_path: Path, sheet: str, page: int | None, pages: int) -> tuple[
     return name, address, note
 
 
-def open_at(pdf: str, page: Any, pages: Any = None, old_folder: Any = "") -> dict:
+def open_at(pdf: str, page: Any, pages: Any = None, old_folder: str | ReferenceFolders = "") -> dict:
     """在 Excel 打开 PDF 这一页对应的表和范围；有原始备份时备份也打开（只读）跳到同一块"""
     path = Path(pdf).resolve()
     if not _in_folder(path) or path.suffix.lower() != ".pdf":
@@ -265,7 +279,7 @@ def open_at(pdf: str, page: Any, pages: Any = None, old_folder: Any = "") -> dic
     _check_open_allowed(wb_path)
     sheet, address, note = open_page(wb_path, owner["sheet"], page, pages)
     notes = [note] if note else []
-    backup, why = backup_for(wb_path, old_folder) if isinstance(old_folder, str) and old_folder.strip() else (None, "")
+    backup, why = backup_for(wb_path, old_folder) if old_folder else (None, "")
     if why:
         notes.append(why)
     if backup:

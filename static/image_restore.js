@@ -275,7 +275,7 @@
       const response = await fetch(API, { cache: 'no-store' });
       if (!response.ok) throw Error('读取进度失败，正在重试');
       latest = await response.json();
-      if ((latest.running || initial) && latest.folder) $('imgFolder').value = latest.folder;
+      if ((latest.running || initial) && latest.folder) window.WorkbookPaths?.show($('imgFolder'), latest.folder);
       if ((latest.running || initial) && latest.old_folder) $('imgOldFolder').value = latest.old_folder;
       if (wasRunning && !latest.running) {
         const files = result()?.files || [];
@@ -302,11 +302,11 @@
     if (loading || submitting || latest.running) return;
     const folder = $('imgFolder').value.trim(), oldFolder = $('imgOldFolder').value.trim(), pdfFolder = $('imgPdfFolder').value.trim();
     $('imgError').textContent = '';
-    if (!folder || (!oldFolder && mode !== 'group')) { $('imgError').textContent = '请填写新版文件夹和原版文件夹'; return; }
+    if (!folder) { $('imgError').textContent = '请填写新版 Excel 路径'; return; }
     const group = $('imgGroupOnFix').checked;
     if (mode === 'group') {
       const okGo = await window.appConfirm(
-        `要把${names ? `剩下的这 ${names.length} 份 Excel ` : '这个文件夹（含子文件夹）'}里互相重叠、挨着的图形（截图和上面的红框、箭头、文字框，用图形拼出来的画面）都永久组合，并保存 Excel 吗？\n\n${folder}\n\n`
+        `要把${names ? `剩下的这 ${names.length} 份 Excel ` : '所选 Excel '}里互相重叠、挨着的图形（截图和上面的红框、箭头、文字框，用图形拼出来的画面）都永久组合，并保存 Excel 吗？\n\n${folder}\n\n`
         + '· 组合设成「随单元格移动、不改变大小」：以后调行高列宽、导出 PDF 都不会错开\n'
         + '· 不对照原版：已经被拉坏的截图会按坏的样子组合，请先「找出受影响的图片」修好\n\n请先保存并关闭这些 Excel。',
         { title: '组合截图和标注', okText: '开始组合' });
@@ -323,10 +323,12 @@
     submitting = true; controls();
     console.info('🖼️ 图片任务开始', { 动作: mode, 新版: folder, 原版: oldFolder, PDF: pdfFolder || '(Excel 旁边)', 份数: names?.length || '全部' });
     try {
-      await post('/run', { folder, old_folder: oldFolder, pdf_folder: pdfFolder, mode, group, ...(names ? { names } : {}) });
+      const payload = { folder, old_folder: oldFolder, pdf_folder: pdfFolder, mode, group, ...(names ? { names } : {}) };
+      if (mode !== 'group' && window.ReferenceFolders) payload.reference_folders = await window.ReferenceFolders.read(folder);
+      const result = await post('/run', payload);
       try {
-        localStorage.setItem(FOLDER, folder); localStorage.setItem(PDF, pdfFolder); localStorage.setItem(GROUP, group ? '1' : '0');
-        if (oldFolder) localStorage.setItem(OLD, oldFolder);
+        localStorage.setItem(FOLDER, result.folder || folder); localStorage.setItem(PDF, pdfFolder); localStorage.setItem(GROUP, group ? '1' : '0');
+        if (mode !== 'group') localStorage.setItem(OLD, oldFolder);
       } catch (_) {}
       wasRunning = true;
     } catch (error) {

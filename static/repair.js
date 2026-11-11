@@ -292,7 +292,8 @@
       pollError = '';
       const data = latest.applied || latest.plan || latest.result;
       if (latest.running || initial) {
-        $('repairFolder').value = latest.folder || data?.folder || $('repairFolder').value;
+        const paths = latest.folder || data?.folder;
+        if (paths) window.WorkbookPaths?.show($('repairFolder'), paths);
         $('repairOldFolder').value = latest.old_folder || data?.old_folder || $('repairOldFolder').value;
         if (hidden) {
           const options = latest.options || data?.options;
@@ -310,10 +311,14 @@
     if (loading || submitting || latest.running) return;
     const folder = $('repairFolder').value.trim(), old_folder = $('repairOldFolder').value.trim();
     $('repairError').textContent = '';
-    if (!folder || !old_folder) { $('repairError').textContent = '请填写当前 Excel 文件夹和原始备份文件夹'; return; }
+    if (!folder) { $('repairError').textContent = '请填写当前 Excel 路径'; return; }
     submitting = true; controls();
     try {
       const payload = {folder, old_folder};
+      if (window.ReferenceFolders) payload.reference_folders = await window.ReferenceFolders.read(folder);
+      if (!old_folder && !Object.keys(payload.reference_folders || {}).length) {
+        throw Error('请填写默认参考文件夹，或为处理文件夹单独指定参考目录');
+      }
       if (hidden) {
         payload.options = Object.fromEntries(Object.entries(optionIds).map(([key, id]) => [key, $(id).checked]));
         if (!Object.values(payload.options).some(Boolean)) throw Error('请至少选择一种要恢复的隐藏状态');
@@ -324,7 +329,7 @@
       displayLimits.clear();
       clearFilter = 'all';
       resultFilter = colors ? 'unresolved' : 'all';
-      try { localStorage.setItem(FOLDER, folder); localStorage.setItem(OLD, old_folder); } catch (_) {}
+      try { localStorage.setItem(FOLDER, result.folder || folder); localStorage.setItem(OLD, old_folder); } catch (_) {}
       await refresh();
     } catch (error) {
       $('repairError').textContent = error.message;

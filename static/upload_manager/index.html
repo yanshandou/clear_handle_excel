@@ -19,16 +19,15 @@
   <link rel="stylesheet" href="/static/upload_manager/game-style.css">
   <link rel="stylesheet" href="/static/upload_manager/planner.css">
   <link rel="stylesheet" href="/static/upload_manager/cartoon-style.css">
-  <link rel="stylesheet" href="/static/distribution_header.css">
   <link rel="stylesheet" href="/static/upload_manager/integration.css">
   <script src="/static/upload_manager/icons.js" defer></script>
   <script src="/static/upload_manager/app.js" defer></script>
   <script src="/static/upload_manager/planner.js" defer></script>
 </head>
 <body>
-  <header class="distribution-header">
-    <a href="/" class="distribution-brand"><span class="distribution-brand-mark" aria-hidden="true">📦</span><span><strong>Excel 上传</strong><small>Excel 整理工具箱 · 第 9 步</small></span></a>
-    <nav class="distribution-nav" aria-label="第 9 步功能导航"><a href="/">🏠 主页</a><a href="/distribute/manage" aria-current="page">文件管理与上传方案</a><a href="/distribute?mode=json">复制 Excel</a><a href="/distribute/start">新任务 · 拿文件</a><a href="/distribute">当前任务上传</a></nav>
+  <header class="app-header distribution-header">
+    <a href="/" class="header-brand"><span class="header-logo-badge" aria-hidden="true"></span><span class="header-title"><strong class="header-title-text">Excel 上传</strong><small class="subtitle">Excel 整理工坊</small></span></a>
+    <nav class="header-nav distribution-nav" aria-label="上传功能导航"><a href="/" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#home"></use></svg>主页</a><a href="/distribute/manage" class="nav-link" aria-current="page"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#folder"></use></svg>文件管理与上传方案</a><a href="/distribute?mode=json" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#grid"></use></svg>复制 Excel</a><a href="/distribute/start" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#download"></use></svg>新任务 · 拿文件</a><a href="/distribute" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#upload"></use></svg>当前任务上传</a></nav>
     <span class="today"><i data-lucide="calendar-days"></i><span id="today"></span></span>
   </header>
   <div class="app-shell">
@@ -45,7 +44,7 @@
     <main class="main-content">
       <div class="content">
         <section class="page-heading">
-          <div><div class="eyebrow"><span></span> 文件管理 / <strong id="breadcrumb-current">总览</strong></div><h1>文件上传管理 <span class="heading-spark">✳</span></h1><p>所有文件的上传进度，一目了然。</p></div>
+          <div><div class="eyebrow"><span></span> 文件管理 / <strong id="breadcrumb-current">总览</strong></div><h1>文件上传管理</h1></div>
           <div class="page-heading-actions">
             <a id="manager-task-upload" class="button primary" href="/distribute"><i data-lucide="upload"></i> 批量上传当前任务</a>
             <button id="add-item" type="button" class="button secondary"><i data-lucide="plus"></i> 添加文件夹</button>

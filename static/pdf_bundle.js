@@ -114,7 +114,7 @@
       if (!response.ok) throw Error('读取导出进度失败，正在重试');
       latest = await response.json();
       if (latest.running || initial) {
-        if (latest.folder) $('bundleFolder').value = latest.folder;
+        if (latest.folder) window.WorkbookPaths?.show($('bundleFolder'), latest.folder);
         if (latest.options) {
           $('bundleHidden').checked = !!latest.options.include_hidden;
           $('bundleNoHeader').checked = latest.options.no_header_footer !== false;
@@ -141,9 +141,9 @@
     const skip = skipNames();
     const noHeader = $('bundleNoHeader').checked;
     $('bundleError').textContent = '';
-    if (!folder) { $('bundleError').textContent = '请填写 Excel 文件夹'; return; }
+    if (!folder) { $('bundleError').textContent = '请填写 Excel 文件或文件夹路径'; return; }
     const okGo = await window.appConfirm(
-      `要把这个文件夹（含子文件夹）里的每份 Excel 都导出成同名 PDF，放在 Excel 旁边吗？\n\n${folder}\n\n`
+      `要把所选的每份 Excel 都导出成同名 PDF，放在 Excel 旁边吗？\n\n${folder}\n\n`
       + `· 已有的同名 PDF 会被覆盖\n· 不打印的表：${skip.length ? skip.join('、') : '无（所有表都打印）'}\n· 页眉页脚：${noHeader ? '去掉' : '保留'}\n· 隐藏的工作表：${includeHidden ? '也放进 PDF' : '跳过'}\n· 本工具加的标记色导出时临时去掉（用户自己的颜色不动）\n· Excel 只读打开，不会被改动`,
       { title: '批量导出同名 PDF', okText: '开始导出' });
     if (!okGo) return;
@@ -156,7 +156,7 @@
       });
       const result = await response.json();
       if (!response.ok || !result.ok) throw Error(result.error || '操作失败');
-      try { localStorage.setItem(FOLDER, folder); localStorage.setItem(HIDDEN, includeHidden ? '1' : ''); localStorage.setItem(NO_HEADER, noHeader ? '1' : '0'); } catch (_) {}
+      try { localStorage.setItem(FOLDER, result.folder || folder); localStorage.setItem(HIDDEN, includeHidden ? '1' : ''); localStorage.setItem(NO_HEADER, noHeader ? '1' : '0'); } catch (_) {}
       wasRunning = true;
     } catch (error) {
       console.warn('📕 批量导出同名 PDF 没能开始', error.message);

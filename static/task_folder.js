@@ -6,6 +6,35 @@
   const inputs = ids => ids.map(id => document.getElementById(id)).filter(Boolean);
   const work = inputs(WORK_IDS), refs = inputs(REF_IDS), all = [...work, ...refs];
   if (!all.length) return;
+  const selections = new Map(), shown = new WeakMap();
+  function show(input, folder) {
+    const previous = shown.get(input);
+    if (previous?.folder === folder && previous.value === input.value) return;
+    const changed = input.value !== folder;
+    input.value = folder;
+    shown.delete(input);
+    if (!/[\\/]批量路径[\\/][a-f0-9]{24}$/.test(folder)) {
+      if (changed) window.ReferenceFolders?.refresh();
+      return;
+    }
+    const state = { folder, value: folder };
+    shown.set(input, state);
+    if (!selections.has(folder)) {
+      selections.set(folder, fetch('/api/workbook-paths?folder=' + encodeURIComponent(folder), { cache:'no-store' })
+        .then(response => response.json())
+        .then(data => data.ok ? data.paths.join('\n') : folder)
+        .catch(() => { selections.delete(folder); return folder; }));
+    }
+    selections.get(folder).then(value => {
+      if (shown.get(input) === state && input.value === folder) {
+        input.value = value;
+        state.value = value;
+        window.ReferenceFolders?.refresh();
+      }
+    });
+  }
+  window.WorkbookPaths = { show };
+  for (const input of work) show(input, input.value);
   for (const input of all) {
     input.readOnly = false;
     input.classList.remove('task-locked');
@@ -68,9 +97,9 @@
           }
         }
       }
-      note(`当前任务「${esc(task.name)}」仅提供默认路径；可以直接修改文件夹，按实际选择执行。`);
+      note(`当前任务「${esc(task.name)}」提供默认路径。可以直接修改，每行一个文件或文件夹路径。`);
     } else {
-      note('可以直接填写本地文件夹；各文件夹的进度分别保存。');
+      note('每行一个 Excel 文件或文件夹路径。文件夹包含子文件夹。');
     }
   }
 

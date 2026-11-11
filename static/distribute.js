@@ -76,9 +76,8 @@
     $('distHistoryTitle').textContent = '历史拿取记录';
     $('distNewTask').hidden = false;
     $('distGoManage').hidden = true;
-    $('distBrandMark').textContent = '🆕';
     $('distBrandName').textContent = '新任务 · 入口';
-    $('distBrandSub').textContent = 'Excel 整理工具箱 · 起点';
+    $('distBrandSub').textContent = 'Excel 整理工坊 · 起点';
     $('distNavResults').textContent = '拿取清单';
     $('distCrumbRoot').textContent = '起点';
     $('distFooter').textContent = 'EXCEL 整理工具箱 / 起点 · 新任务';

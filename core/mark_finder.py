@@ -17,7 +17,9 @@ from pathlib import Path
 from typing import Any
 
 from core import batch, debug_log, file_problem, progress_log, workflow as wf
+from core import workbook_scope
 from core.backup_compare import inferred_renames, norm as _norm, pair_files as _pair_files, pair_sheets, require_manual_file_check
+from core.reference_folders import ReferenceFolders, ReferenceIndex, prepare as prepare_references, unmatched
 from core.common import workbook_locked, workbook_rel_name
 
 READABLE = {".xlsx", ".xlsm", ".xltx", ".xltm"}
@@ -30,6 +32,8 @@ _STATUS: dict[str, Any] = {"running": False}
 # 文件级报错的原因码：前端按码分类展示，新增报错时兜底为 other。
 _FILE_ERROR_CODES = (
     ("备份文件夹里找不到唯一对应的文件", "backup_not_unique"),
+    ("参考文件夹中", "backup_not_unique"),
+    ("这份 Excel 未指定参考文件夹", "backup_not_unique"),
     ("当前文件不能作为自己的备份", "self_backup"),
     ("当前文件或备份在检查期间发生变化", "file_changed"),
     ("当前文件在复制期间发生变化", "file_changed"),
@@ -47,16 +51,7 @@ def _error_code(message: str) -> str:
 
 
 def list_workbooks(folder: str) -> tuple[Path, list[Path]]:
-    root = Path(folder.strip().strip('"').strip("'")).expanduser().resolve()
-    if not root.is_dir():
-        raise ValueError(f"文件夹不存在: {root}")
-    paths = sorted((path for path in root.rglob("*") if path.is_file()
-                    and path.suffix.lower() in READABLE | EXCEL_READABLE and not path.name.startswith("~$")),
-                   key=lambda path: workbook_rel_name(path, root))
-    if not paths:
-        raise ValueError("未找到 Excel 文件")
-    from core import workflow as wf  # 本轮只处理待重新处理文件时只列清单里的
-    return root, wf.focus_workbooks(root, paths)
+    return wf.list_supported_workbooks(folder, READABLE | EXCEL_READABLE)
 
 
 def _is_template(path: str | Path) -> bool:
@@ -581,8 +576,11 @@ def preview(old_folder: str) -> None:
     if not result:
         raise ValueError("请先查找残留标记色")
     old_root, old_paths = list_workbooks(old_folder)
-    if old_root == Path(result["folder"]).resolve():
+    root = Path(result["folder"]).resolve()
+    if old_root == root:
         raise ValueError("旧版文件夹和当前文件夹是同一个，请选原始备份的文件夹")
+    if workbook_scope.overlaps_reference(root, old_root):
+        raise ValueError("原始备份文件夹不能与批量处理路径重叠")
     files = [f for f in result["files"] if f["hits"]]
     if not files:
         raise ValueError("没有找到要改回的格子")
@@ -867,7 +865,7 @@ def status() -> dict:
         return copy.deepcopy(_STATUS)
 
 
-def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[Path], styles: list[tuple[str, str]]) -> None:
+def _run_repair(root: Path, paths: list[Path], old_root: Path | ReferenceIndex, old_paths: list[Path], styles: list[tuple[str, str]]) -> None:
     from core.excel_ops import quit_background_excel, start_background_excel
     from core.link_repair import fingerprint
 
@@ -901,7 +899,7 @@ def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[P
                     stamp = fingerprint(path)
                     old_path = pairs[name]
                     if old_path is None:
-                        raise ValueError("备份文件夹里找不到唯一对应的文件")
+                        raise ValueError(unmatched(old_root, name, "备份文件夹里找不到唯一对应的文件"))
                     if path.resolve() == old_path.resolve():
                         raise ValueError("当前文件不能作为自己的备份，请选择原始备份")
                     entry["old"] = str(old_path)
@@ -966,13 +964,11 @@ def _run_repair(root: Path, paths: list[Path], old_root: Path, old_paths: list[P
                     wf.STATE.pop("maintenance", None)
 
 
-def repair(folder: str, old_folder: str, colors: Any = None) -> None:
+def repair(folder: str, old_folder: str | ReferenceFolders, colors: Any = None) -> None:
     """按备份比较所有配色；colors 仅保留旧 API 参数兼容，不再作为筛选条件。"""
     styles = []
     root, paths = list_workbooks(folder)
-    old_root, old_paths = list_workbooks(old_folder)
-    if root == old_root:
-        raise ValueError("备份文件夹不能与当前文件夹相同")
+    old_root, old_paths = prepare_references(root, old_folder, list_workbooks, READABLE | EXCEL_READABLE)
     with wf.STATE_LOCK, _LOCK:
         from core import bl_links, hidden_repair, link_repair
         if (wf.STATE.get("busy") or _STATUS.get("running") or link_repair.status().get("running")

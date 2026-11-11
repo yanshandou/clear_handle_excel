@@ -239,9 +239,10 @@ async function poll(background = false) {
     fileFolder = value.folder;
     batchState = value;
     lastEtag = response.headers.get('ETag') || '';
-    if (!document.activeElement || document.activeElement.id !== 'folderInput') {
-      if (value.folder && (folderChanged || !$('folderInput').value)) $('folderInput').value = value.folder;
-      if (value.busy && value.folder) $('folderInput').value = value.folder;
+    const input = $('folderInput');
+    if (document.activeElement !== input && value.folder && (folderChanged || !input.value || value.busy)) {
+      if (window.WorkbookPaths) window.WorkbookPaths.show(input, value.folder);
+      else input.value = value.folder;
     }
     render();
     if (cleared && unhighlightResult()) showUnhighlightResult();
@@ -1370,7 +1371,10 @@ async function startJob(url, body = {}) {
       && !(await appConfirm('这会替换上次任务的续跑点。已保存的修复和审核标记会保留，继续吗？', { okText: '继续' }))) return;
   const clearing = url === '/api/batch/unhighlight' || (url === '/api/resume' && batchState.job?.kind === 'batch_unhighlight');
   await action(async () => {
-    await post(url, body);
+    const data = await post(url, body);
+    if (url === '/api/batch/start') {
+      try { localStorage.setItem('clear_handle_excel.lastFolder', data.folder || body.folder); } catch (_) {}
+    }
     if (clearing) clearPending = true;
   });
 }
@@ -1411,22 +1415,20 @@ async function openReady(selectedOnly = false, only = null) {
 
 async function startBatch(extra = {}) {
   const folder = $('folderInput').value.trim();
-  if (!folder) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
+  if (!folder) { $('errorText').textContent = '请输入 Excel 文件或文件夹路径'; return; }
   const limit = Number($('scanLimit').value);  // 空 = 自动估算
-  await startJob('/api/batch/start', { folder, ...extra, ...(limit ? { scan_limit_minutes: limit } : {}) }).then(() => {
-    if (batchState.busy) { try { localStorage.setItem('clear_handle_excel.lastFolder', folder); } catch (_) {} }
-  });
+  await startJob('/api/batch/start', { folder, ...extra, ...(limit ? { scan_limit_minutes: limit } : {}) });
 }
 $('restoreFolderBtn').addEventListener('click', async () => {
   const folder = $('folderInput').value.trim();
-  if (!folder) { $('errorText').textContent = '请输入 Excel 文件夹路径'; return; }
+  if (!folder) { $('errorText').textContent = '请输入 Excel 文件或文件夹路径'; return; }
   if (requestBusy) return;
   requestBusy = true;
   ++pollVersion;
   renderControls();
   try {
-    await post('/api/folders/activate', { folder });
-    try { localStorage.setItem('clear_handle_excel.lastFolder', folder); } catch (_) {}
+    const data = await post('/api/folders/activate', { folder });
+    try { localStorage.setItem('clear_handle_excel.lastFolder', data.folder || folder); } catch (_) {}
     lastEtag = '';
   } catch (error) { $('errorText').textContent = error.message; }
   finally { requestBusy = false; }

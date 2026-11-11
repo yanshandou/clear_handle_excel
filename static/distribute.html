@@ -9,8 +9,8 @@
   <link rel="stylesheet" href="/static/upload_manager/style.css">
   <link rel="stylesheet" href="/static/upload_manager/game-style.css">
   <link rel="stylesheet" href="/static/upload_manager/planner.css">
+  <link rel="stylesheet" href="/static/flow.css?v=1"><script src="/static/flow.js?v=1"></script>
   <link rel="stylesheet" href="/static/upload_manager/cartoon-style.css">
-  <link rel="stylesheet" href="/static/distribution_header.css">
   <link rel="stylesheet" href="/static/upload_manager/integration.css">
   <style>
     .dist-plan { display: grid; gap: 10px; font-weight: 600; margin: 0 0 8px; }
@@ -45,17 +45,16 @@
     .tag-overwrite { color: #7a3b00; font-weight: 700; }
     .tag-new { color: #14633c; font-weight: 700; }
     .dist-workspace .nav-item { text-decoration: none; }
-    .dist-workspace .nav-item:focus-visible { outline: 2px solid #ffe45c; outline-offset: 2px; }
+    .dist-workspace .nav-item:focus-visible { outline: 3px solid var(--garden-focus); outline-offset: 2px; }
     .dist-workspace .button { max-width: 100%; height: auto; min-height: 42px; white-space: normal; text-decoration: none; }
-    .dist-workspace .button:disabled { opacity: .6; cursor: not-allowed; transform: none; }
     .dist-workspace [hidden] { display: none; }
-    .dist-overview { color: #fff; }
+    .dist-overview { color: var(--ink); }
     .dist-overview-grid:not([hidden]) { display: contents; }
     .dist-overview h2 { overflow-wrap: anywhere; }
     .dist-overview-copy { grid-column: 1 / -1; padding: 8px 26px; }
-    .dist-overview-copy p { margin: 8px 0 12px; color: #f5ebff; }
-    .dist-overview-copy a:not(.button) { color: #ffe45c; }
-    .dist-task-paths { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; margin: 12px 0 0; font-size: 13px; color: #f5ebff; }
+    .dist-overview-copy p { margin: 8px 0 12px; color: var(--ink-2); line-height: 1.7; }
+    .dist-overview-copy a:not(.button) { color: var(--garden-cyan); text-underline-offset: 3px; }
+    .dist-task-paths { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; margin: 12px 0 0; font-size: 13px; color: var(--ink-2); }
     .dist-task-paths dt { font-weight: 700; }
     .dist-task-paths dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; }
     .dist-task-list { max-height: 25rem; overflow: auto; }
@@ -151,12 +150,11 @@
     .dist-pdf-line { color: #4c1d95; }
     .dist-pdf-line.is-bad { color: #b42318; font-weight: 700; }
   </style>
-  <link rel="stylesheet" href="/static/flow.css?v=1"><script src="/static/flow.js?v=1"></script>
 </head>
 <body>
-  <header class="distribution-header">
-    <a href="/" class="distribution-brand"><span id="distBrandMark" class="distribution-brand-mark" aria-hidden="true">📦</span><span><strong id="distBrandName">Excel 上传</strong><small id="distBrandSub">Excel 整理工具箱 · 第 4 步</small></span></a>
-    <nav class="distribution-nav" aria-label="第 4 步功能导航"><a href="/">🏠 主页</a><a href="/distribute/manage">文件管理与上传方案</a><a href="/distribute?mode=json" data-dist-mode="json">复制 Excel</a><a href="/distribute" data-dist-mode="task">当前任务上传</a></nav>
+  <header class="app-header distribution-header">
+    <a href="/" class="header-brand"><span class="header-logo-badge" aria-hidden="true"></span><span class="header-title"><strong id="distBrandName" class="header-title-text">Excel 上传</strong><small id="distBrandSub" class="subtitle">Excel 整理工坊 · 第 4 步</small></span></a>
+    <nav class="header-nav distribution-nav" aria-label="上传功能导航"><a href="/" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#home"></use></svg>主页</a><a href="/distribute/manage" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#folder"></use></svg>文件管理与上传方案</a><a href="/distribute?mode=json" class="nav-link" data-dist-mode="json"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#grid"></use></svg>复制 Excel</a><a href="/distribute" class="nav-link" data-dist-mode="task"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#upload"></use></svg>当前任务上传</a></nav>
     <span class="today"><i data-lucide="calendar-days" aria-hidden="true"></i><time id="distToday"></time></span>
   </header>
   <div class="app-shell dist-workspace">
@@ -173,7 +171,7 @@
         <section id="distWorkspace" class="page-heading dist-section">
           <div>
             <div class="eyebrow"><span></span> <span id="distCrumbRoot">Excel 上传</span> / <strong id="distBreadcrumb">当前任务</strong></div>
-            <h1><span id="distHeading">当前任务批量上传</span> <span class="heading-spark" aria-hidden="true">✳</span></h1>
+            <h1 id="distHeading">当前任务批量上传</h1>
             <p id="distSubtitle">选择处理好的 Excel，核对共享版本后批量上传。</p>
           </div>
           <div class="page-heading-actions">

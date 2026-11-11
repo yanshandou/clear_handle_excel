@@ -63,7 +63,7 @@ async function main() {
     };
     const navigate = async route => {
       await cdp('Page.navigate', { url: base + route });
-      await until(`location.pathname === ${JSON.stringify(route.split('?')[0])} && document.readyState === 'complete'`);
+      await until(`location.pathname + location.search === ${JSON.stringify(route)} && document.readyState === 'complete'`);
       await evaluate('document.fonts.ready.then(() => true)');
     };
     const resize = (width, height = 1000) => cdp('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
@@ -144,15 +144,23 @@ async function main() {
       assert.equal(await evaluate("getComputedStyle(document.querySelector('#toolGrid')).display"), 'grid');
       assert.equal(await evaluate("getComputedStyle(document.querySelector('#toolGrid')).gridTemplateColumns.split(' ').length"), 2);
     }
+    const routes = ['/clean', '/workbench', '/records', '/history', '/pdf-review', '/analysis', '/repair-colors',
+      '/excel-diff', '/distribute', '/distribute/start', '/distribute?mode=json', '/distribute/manage'];
     await resize(1440);
-    for (const route of ['/clean', '/workbench', '/records', '/distribute/manage', '/analysis', '/repair-colors', '/excel-diff']) {
+    for (const route of routes) {
       await navigate(route);
-      await capture(route.slice(1).replaceAll('/', '-'));
+      await capture(route.slice(1).replace(/[^a-z]+/g, '-'));
       assert.ok(await evaluate('document.body.innerText.length > 50'), `${route} renders`);
+      assert.ok(await evaluate("document.querySelector('header.app-header .header-nav .ui-icon')"), `${route} uses the shared header`);
+    }
+    await resize(320, 900);
+    for (const route of routes) {
+      await navigate(route);
+      assert.ok(await evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), `${route} fits a 320px viewport`);
     }
     assert.deepEqual(errors, [], 'no runtime exceptions');
     assert.deepEqual(failedRequests, [], 'no failed resources or API responses');
-    console.log('Garden UI: sprites, SVGs, dialog, empty input, Escape, chain options, workflow removal/reset/drag/empty, 4 viewport sizes and 7 routes passed.');
+    console.log(`Garden UI: sprites, SVGs, dialog, workflow interactions, shared headers and responsive layouts across ${routes.length} tool routes passed.`);
     console.log('Screenshots:', screenshots);
   } finally {
     if (socket) socket.close();

@@ -162,7 +162,8 @@
       pollError = '';
       const data = latest.applied || latest.result;
       if (latest.running || initial) {
-        $('blFolder').value = latest.folder || data?.folder || $('blFolder').value;
+        const paths = latest.folder || data?.folder;
+        if (paths) window.WorkbookPaths?.show($('blFolder'), paths);
       }
       initial = false;
       loading = false;
@@ -182,12 +183,12 @@
     if (loading || submitting || latest.running) return;
     const folder = $('blFolder').value.trim();
     $('blError').textContent = '';
-    if (!folder) { $('blError').textContent = '请填写 Excel 文件夹路径'; return; }
+    if (!folder) { $('blError').textContent = '请填写 Excel 文件或文件夹路径'; return; }
     submitting = true; controls();
     try {
-      await post(api + '/scan', { folder });
+      const result = await post(api + '/scan', { folder });
       resultFilter = 'all';
-      try { localStorage.setItem(FOLDER, folder); } catch (_) {}
+      try { localStorage.setItem(FOLDER, result.folder || folder); } catch (_) {}
       await refresh();
     } catch (error) {
       $('blError').textContent = error.message;
@@ -225,7 +226,7 @@
     $('blResults').querySelector('[aria-pressed="true"]')?.focus();
   });
   $('blClear').addEventListener('click', clear);
-  $('blFolder').addEventListener('keydown', e => { if (e.key === 'Enter') scan(); });
+  $('blFolder').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) scan(); });
   controls();
   refresh();
 })();

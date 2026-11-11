@@ -26,8 +26,8 @@
 </head>
 <body>
   <header class="app-header">
-    <a href="/" class="header-brand"><div class="header-logo-badge">🔤</div><div class="header-title"><h1>统一字体</h1><span class="subtitle">游ゴシック 换成标准字体ＭＳ Ｐゴシック · 减少切字误报</span></div></a>
-    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/clean" class="nav-link">🧹 精简 Sheet</a><a href="/pdf-review" class="nav-link">📄 调整页面</a></nav>
+    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">统一字体</h1><span class="subtitle">游ゴシック 换成标准字体ＭＳ Ｐゴシック · 减少切字误报</span></div></a>
+    <nav class="header-nav" aria-label="功能导航"><a href="/" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#home"></use></svg>主页</a><a href="/clean" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#grid"></use></svg>精简 Sheet</a><a href="/pdf-review" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#document"></use></svg>调整页面</a></nav>
   </header>
   <main class="container clean-container">
     <section class="panel">
@@ -39,7 +39,7 @@
         <li>精简 Sheet 之后会自动做这一步；这里是单独跑用的。改完直接保存。</li>
       </ul>
       <div class="link-fields font-fields">
-        <label for="fontFolder">Excel 文件夹（含子文件夹）<input id="fontFolder" type="text" placeholder="例如 D:\处理后\001"></label>
+        <label for="fontFolder">Excel 文件或文件夹路径<textarea id="fontFolder" class="workbook-paths" rows="2" aria-label="Excel 文件或文件夹路径" placeholder="每行一个 Excel 文件或文件夹路径"></textarea></label>
       </div>
       <div class="link-actions"><button id="fontRun" class="btn btn-primary" type="button" disabled>🔤 统一字体</button></div>
       <p class="toolbar-hint">请先保存并关闭要处理的 Excel。关闭网页后任务继续；刷新页面可查看进度与结果。</p>

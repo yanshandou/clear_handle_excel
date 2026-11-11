@@ -60,8 +60,8 @@
 </head>
 <body>
   <header class="app-header">
-    <a href="/" class="header-brand"><div class="header-logo-badge">🖼️</div><div class="header-title"><h1>修复图片</h1><span class="subtitle">对照参考文件 · 截图放回原来大小 · 红框跟回截图</span></div></a>
-    <nav class="header-nav"><a href="/" class="nav-link">🏠 主页</a><a href="/clean" class="nav-link">🧹 精简 Sheet</a><a href="/pdf-review" class="nav-link">📄 调整页面</a></nav>
+    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">修复图片</h1><span class="subtitle">对照参考文件 · 截图放回原来大小 · 红框跟回截图</span></div></a>
+    <nav class="header-nav" aria-label="功能导航"><a href="/" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#home"></use></svg>主页</a><a href="/clean" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#grid"></use></svg>精简 Sheet</a><a href="/pdf-review" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#document"></use></svg>调整页面</a></nav>
   </header>
   <main class="container clean-container">
     <section class="panel">
@@ -73,8 +73,8 @@
         <li>图形按名字配对，有重名的不碰；原版只读打开，不会改。</li>
       </ul>
       <div class="link-fields img-fields">
-        <label for="imgFolder">新版 Excel 文件夹（含子文件夹）<input id="imgFolder" type="text" placeholder="例如 D:\\处理\\001"></label>
-        <label for="imgOldFolder">原版文件夹（参考）<input id="imgOldFolder" type="text" placeholder="例如 D:\\参考\\001，或包含 001 的总目录"></label>
+        <label for="imgFolder">新版 Excel 文件或文件夹路径<textarea id="imgFolder" class="workbook-paths" rows="2" aria-label="Excel 文件或文件夹路径" placeholder="每行一个 Excel 文件或文件夹路径"></textarea></label>
+        <label for="imgOldFolder">默认参考文件夹<input id="imgOldFolder" type="text" placeholder="例如 D:\\参考\\001，或包含 001 的总目录"></label>
         <label for="imgPdfFolder">新版 PDF 文件夹（可不填：默认找 Excel 旁边的同名 PDF）<input id="imgPdfFolder" type="text" placeholder="例如 D:\\处理\\PDF"></label>
       </div>
       <div class="link-actions">
@@ -93,6 +93,6 @@
   </main>
   <script src="/static/dialog.js"></script><script src="/static/eta.js"></script><script src="/static/job_panel.js"></script><script src="/static/open_excel.js"></script>
   <script src="/static/image_restore.js"></script><script src="/static/debug_log.js"></script>
-  <script src="/static/task_folder.js"></script><script src="/static/focus_banner.js"></script><script src="/static/file_problem.js"></script>
+  <script src="/static/task_folder.js"></script><script src="/static/reference_folders.js"></script><script src="/static/focus_banner.js"></script><script src="/static/file_problem.js"></script>
 </body>
 </html>

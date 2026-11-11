@@ -854,7 +854,7 @@ function renderRunBox() {
    ========================================== */
 function readFolderInput() {
   const folder = document.getElementById('cleanFolderInput').value.trim();
-  if (!folder) appAlert('请先输入 Excel 文件夹路径！', { tone: 'warn' });
+  if (!folder) appAlert('请先输入 Excel 文件或文件夹路径！', { tone: 'warn' });
   return folder;
 }
 
@@ -901,7 +901,7 @@ async function runPreview() {
     const oldRenames = sheetRenames;
     const oldOrders = sheetOrders;
     previewData = data;
-    saveLastFolder(folder);
+    saveLastFolder(data.folder);
     initSheetDecisions();
     if (oldData && oldData.folder === data.folder) {
       const oldFiles = new Map(oldData.files.map(file => [file.name, file]));
@@ -941,19 +941,18 @@ async function startTask() {
   if (!folder) return;
   if (overview && overview.can_resume && !(await appConfirm('开始新任务会替换上次中断任务的续跑进度，确定吗？', { okText: '开始新任务' }))) return;
   const oldFolder = document.getElementById('cleanOldFolder').value.trim();
-  const hidden = document.getElementById('cleanHiddenToggle').checked;
-  if (hidden && !oldFolder) {
-    appAlert('修复隐藏页要对照参考（原始备份）文件夹，请先填上，或者去掉「顺便做：隐藏页」的勾。', { tone: 'warn' });
-    return;
-  }
   setPending('start');
   try {
     const payload = { kind: CLEAN_KIND, folder, plan: buildCleanPlan(), chain: { ...chainChecks(), old_folder: oldFolder } };
+    if (window.ReferenceFolders) payload.chain.reference_folders = await window.ReferenceFolders.read(folder);
+    if (payload.chain.hidden && !oldFolder && !Object.keys(payload.chain.reference_folders || {}).length) {
+      throw Error('修复隐藏页需要参考文件夹，请填写默认参考文件夹或按处理文件夹指定');
+    }
     if (processedFiles.size) payload.files = Object.keys(payload.plan); // 跳过已在预览窗口处理过的文件
-    await postAction('/api/quick_task', payload);
-    saveLastFolder(folder);
+    const result = await postAction('/api/quick_task', payload);
+    saveLastFolder(result.folder || folder);
     try {
-      if (oldFolder) localStorage.setItem(OLD_FOLDER_STORAGE_KEY, oldFolder);
+      localStorage.setItem(OLD_FOLDER_STORAGE_KEY, oldFolder);
     } catch (_) {}
     phase = 'running';
     minAcceptedSeq = pollSeq + 1;
@@ -1000,7 +999,11 @@ async function pollState() {
       } else if ((phase === 'form' || phase === 'done') && isCleanRunning()) {
         // 打开页面时精简任务已在后台执行，直接显示进度
         phase = 'running';
-        if (overview.job.folder) document.getElementById('cleanFolderInput').value = overview.job.folder;
+        if (overview.job.folder) {
+          const input = document.getElementById('cleanFolderInput');
+          if (window.WorkbookPaths) window.WorkbookPaths.show(input, overview.job.folder);
+          else input.value = overview.job.folder;
+        }
       }
     }
     renderPage();
@@ -1060,7 +1063,7 @@ cleanFolderInput.addEventListener('input', () => {
   }
 });
 cleanFolderInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter') runPreview();
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) runPreview();
 });
 
 // 预览区宽度变化时重新排列：包括窗口缩放，以及首次渲染后出现滚动条导致的变窄

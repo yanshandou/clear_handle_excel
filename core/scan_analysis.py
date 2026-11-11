@@ -72,12 +72,14 @@ def begin(job, folder, paths, mode):
             found = db.execute("SELECT payload FROM scan_analysis_runs WHERE id=?", (run_id,)).fetchone()
         run = json.loads(found[0]) if found else None
     if run is None:
+        from core import workbook_scope
+        scope = workbook_scope.get(folder)
         run = {"id": uuid4().hex, "folder": str(folder), "mode": mode, "started_at": _now(), "total": len(paths)}
         with _connect() as db:
             for path in paths:
                 path = str(path)
                 try:
-                    rel = Path(path).relative_to(folder)
+                    rel = scope.relative(Path(path)) if scope else Path(path).relative_to(folder)
                     system = rel.parts[0] if len(rel.parts) > 1 else "根目录文件"
                     name = rel.as_posix()
                 except ValueError:

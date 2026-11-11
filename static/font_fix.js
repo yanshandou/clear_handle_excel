@@ -81,7 +81,7 @@
       const response = await fetch(API, { cache: 'no-store' });
       if (!response.ok) throw Error('读取进度失败，正在重试');
       latest = await response.json();
-      if ((latest.running || initial) && latest.folder) $('fontFolder').value = latest.folder;
+      if ((latest.running || initial) && latest.folder) window.WorkbookPaths?.show($('fontFolder'), latest.folder);
       if (wasRunning && !latest.running) {
         const files = latest.result?.files || [];
         console.info('🔤 统一字体做完', { 份数: files.length, 没处理: files.filter(f => f.error).length });
@@ -99,9 +99,9 @@
     if (loading || submitting || latest.running) return;
     const folder = $('fontFolder').value.trim();
     $('fontError').textContent = '';
-    if (!folder) { $('fontError').textContent = '请填写 Excel 文件夹'; return; }
+    if (!folder) { $('fontError').textContent = '请填写 Excel 文件或文件夹路径'; return; }
     const okGo = await window.appConfirm(
-      `要把这个文件夹（含子文件夹）里的游ゴシック都换成ＭＳ Ｐゴシック，并保存 Excel 吗？\n\n${folder}\n\n`
+      `要把所选 Excel 里的游ゴシック都换成ＭＳ Ｐゴシック，并保存 Excel 吗？\n\n${folder}\n\n`
       + '· 图形里的文字和有内容的格子都查\n· 只换游ゴシック一家，别的字体、字号不动\n· 不改「標準」样式',
       { title: '统一字体', okText: '开始' });
     if (!okGo) return;
@@ -111,7 +111,7 @@
       const response = await fetch(API + '/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder }) });
       const result = await response.json();
       if (!response.ok || !result.ok) throw Error(result.error || '操作失败');
-      try { localStorage.setItem(FOLDER, folder); } catch (_) {}
+      try { localStorage.setItem(FOLDER, result.folder || folder); } catch (_) {}
       wasRunning = true;
     } catch (error) {
       console.warn('🔤 统一字体没能开始', error.message);

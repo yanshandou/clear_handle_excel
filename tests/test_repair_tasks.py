@@ -78,6 +78,41 @@ class RepairTasksTests(unittest.TestCase):
                 self.assertFalse(any(cell.get("status") == "ok" for cell in file["cells"]))
                 self.assertEqual(apply.call_count, int(fail))
 
+    def test_batch_repairs_use_folder_override_and_report_ambiguous_filename(self):
+        from core import data_dir
+        from web_clip_fixer import WebHandler
+
+        right = self.current.parent / "002"
+        right.mkdir()
+        right_file = right / "book.xlsx"
+        right_file.write_bytes(b"current")
+        override = self.root / "other_reference"
+        other_backup = override / "different" / "layout" / "book.xlsx"
+        other_backup.parent.mkdir(parents=True)
+        other_backup.write_bytes(b"backup")
+        duplicate = self.old.parent / "another" / "book.xlsx"
+        duplicate.parent.mkdir()
+        duplicate.write_bytes(b"duplicate")
+
+        handler = object.__new__(WebHandler)
+        handler.path = "/api/link_repair/run"
+        handler._send_json = Mock()
+        payload = {"folder": f'"{self.current}"\r\n"{right}"', "old_folder": str(self.old.parent),
+                   "reference_folders": {str(right): str(override)}}
+        with patch.object(data_dir, "DATA_DIR", self.root / "data"), \
+                patch.object(link_repair, "_launch") as launch:
+            handler._handle_post(payload)
+            self.state.update(busy=True, maintenance="link_repair")
+            with patch.object(link_repair, "scan_file", side_effect=self.scanned), \
+                    patch.object(link_repair, "preview_file", return_value={"cells": []}) as compare:
+                link_repair._run(*launch.call_args.args)
+
+        files = link_repair.status()["applied"]["files"]
+        self.assertIn("2 份同名文件", files[0]["error"])
+        self.assertEqual(files[1]["old"], str(other_backup))
+        compare.assert_called_once()
+        self.assertEqual(compare.call_args.args[-1], other_backup)
+
     def run_color(self, **patches):
         self.state.update(busy=True, maintenance="color_repair")
         defaults = {"compare_file_colors": Mock(return_value={"cells":self.plan, "truncated":False}),

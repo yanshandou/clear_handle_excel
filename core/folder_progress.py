@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
+from core import workbook_scope
 from core.storage import load_snapshot, save_snapshot
 
 INDEX = "workflow_folders"
@@ -37,7 +38,10 @@ def archived_images() -> set[str]:
 def summary(state: dict, report: dict) -> dict:
     job = state.get("job") or {}
     cards = state.get("batch_review", {}).get("cards", {}).values()
-    return {"folder": state.get("folder", ""), "saved_at": state.get("progress_saved_at", ""),
+    folder = state.get("folder", "")
+    scope = workbook_scope.get(folder)
+    paths = {"paths": list(map(str, (*scope.folders, *scope.files)))} if scope else {}
+    return {"folder": folder, **paths, "saved_at": state.get("progress_saved_at", ""),
             "status": job.get("status", report.get("status", "idle")),
             "task_name": report.get("task_name", "尚未开始任务"),
             "files": len(state.get("checked_files", {})),
