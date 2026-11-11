@@ -105,3 +105,30 @@ class ExcelDiffTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_view_only_draws_changed_rows_with_context(tmp_path):
+    """效果图：100 多行里只有一行不一样，只画那一行和上下几行；一样的表不画"""
+    from openpyxl import Workbook
+    books = []
+    for text in ("旧", "新"):
+        book = Workbook()
+        sheet = book.active
+        sheet.title = "本体"
+        for r in range(1, 201):
+            sheet.cell(r, 1, f"行{r}")
+        sheet["B100"] = text
+        same = book.create_sheet("一样的表")
+        same["A1"] = "同じ"
+        path = tmp_path / f"{text}.xlsx"
+        book.save(path)
+        books.append(path)
+    result = excel_diff.diff(books[1], books[0])
+    sheets = {s["name"]: s for s in result["sheets"]}
+    view = sheets["本体"]["view"]
+    assert view["rows"] == list(range(100 - excel_diff.VIEW_CONTEXT, 100 + excel_diff.VIEW_CONTEXT + 1))
+    assert "文字" in view["marks"]["B100"]
+    old_texts = {c[2] for c in view["old"]["cells"]}
+    new_texts = {c[2] for c in view["new"]["cells"]}
+    assert "旧" in old_texts and "新" in new_texts and "行1" not in old_texts
+    assert not sheets["一样的表"].get("view")

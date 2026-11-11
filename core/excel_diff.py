@@ -188,7 +188,8 @@ def _load(path: Path) -> dict[str, Any]:
         raise ValueError(f"{path.name}：{err}") from err
     except Exception as err:
         raise ValueError(f"读不了 {path.name}（{type(err).__name__}: {err}）") from err
-    return {"book": book, "texts": texts, "drawings": _drawing_counts(path), "cache": {},
+    return {"book": book, "texts": texts, "drawings": _drawing_counts(path), "cache": {}, "css": {},
+            "theme": _theme_colors(path),
             "doomed": content_check.doomed_sheets(path, [s.title for s in book.worksheets])}
 
 
@@ -216,6 +217,207 @@ def _sheet_info(data: dict[str, Any], name: str) -> dict[str, Any]:
             "drawings": data["drawings"].get(name, 0), "tab": _color(tab),
             "state": {"visible": "显示", "hidden": "隐藏", "veryHidden": "深度隐藏"}.get(sheet.sheet_state, sheet.sheet_state),
             "cf": sum(len(rules.rules) for rules in sheet.conditional_formatting)}
+
+
+# ───────── 效果图（用户 2026-11-11）：左右各画一张表的样子，不一样的格子盖半透明色块；只画有不同的行和上下几行 ─────────
+VIEW_CONTEXT = 3       # 不一样的行上下各带几行
+VIEW_MAX_ROWS = 300    # 每张表最多画多少行
+VIEW_MAX_COLS = 60     # 每张表最多画多少列
+_THEME_SLOTS = ("lt1", "dk1", "lt2", "dk2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink")
+_DRAWING_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+_BORDER_CSS = {"thin": "1px solid", "medium": "2px solid", "thick": "3px solid", "double": "3px double", "hair": "1px dotted",
+               "dotted": "1px dotted", "dashed": "1px dashed", "dashDot": "1px dashed", "dashDotDot": "1px dashed",
+               "mediumDashed": "2px dashed", "mediumDashDot": "2px dashed", "mediumDashDotDot": "2px dashed",
+               "slantDashDot": "2px dashed"}
+
+
+def _theme_colors(path: Path) -> list[str]:
+    """主题色表（按 theme 编号排）：画效果图时把「主题色N」换成真的颜色"""
+    try:
+        with zipfile.ZipFile(path) as z:
+            root = ElementTree.fromstring(z.read("xl/theme/theme1.xml"))
+        scheme = root.find(f".//{_DRAWING_NS}clrScheme")
+        found = {}
+        for slot in (scheme if scheme is not None else []):
+            for child in slot:
+                value = child.get("lastClr") or child.get("val")
+                if value and re.fullmatch(r"[0-9A-Fa-f]{6}", value):
+                    found[slot.tag.replace(_DRAWING_NS, "")] = value.upper()
+        return [found.get(slot, "") for slot in _THEME_SLOTS]
+    except Exception:
+        return []
+
+
+def _css_color(color: Any, theme: list[str]) -> str:
+    """openpyxl 颜色 → 「#RRGGBB」（画图用，主题色按主题表换算、明暗按 HLS 近似）；认不出 → 空"""
+    if color is None:
+        return ""
+    kind = getattr(color, "type", None)
+    value = ""
+    if kind == "rgb" and isinstance(color.rgb, str) and len(color.rgb) >= 6:
+        value = color.rgb[-6:]
+    elif kind == "theme" and isinstance(color.theme, int) and 0 <= color.theme < len(theme):
+        value = theme[color.theme]
+    elif kind == "indexed":
+        from openpyxl.styles.colors import COLOR_INDEX
+        if isinstance(color.indexed, int) and 0 <= color.indexed < len(COLOR_INDEX):
+            value = COLOR_INDEX[color.indexed][-6:]
+    if not re.fullmatch(r"[0-9A-Fa-f]{6}", value or ""):
+        return ""
+    tint = float(getattr(color, "tint", 0) or 0)
+    if tint:
+        import colorsys
+        r, g, b = (int(value[i:i + 2], 16) / 255 for i in (0, 2, 4))
+        h, l, sat = colorsys.rgb_to_hls(r, g, b)
+        l = l * (1 + tint) if tint < 0 else l + (1 - l) * tint
+        value = "".join(f"{round(max(0, min(1, x)) * 255):02X}" for x in colorsys.hls_to_rgb(h, l, sat))
+    return f"#{value.upper()}"
+
+
+def _cell_css(cell: Any, data: dict[str, Any]) -> list[Any]:
+    """[css, 自动换行, 横向对齐, 纵向对齐]"""
+    key = tuple(cell._style) if cell.has_style else ()
+    found = data["css"].get(key)
+    if found is not None:
+        return found
+    theme, parts = data["theme"], []
+    font = cell.font
+    if font is not None:
+        if font.name:
+            parts.append(f"font-family:'{font.name}','MS PGothic','Yu Gothic','Meiryo',sans-serif")
+        if font.sz:
+            parts.append(f"font-size:{float(font.sz):g}pt")
+        if font.b:
+            parts.append("font-weight:700")
+        if font.i:
+            parts.append("font-style:italic")
+        deco = " ".join(word for on, word in ((font.u, "underline"), (font.strike, "line-through")) if on)
+        if deco:
+            parts.append(f"text-decoration:{deco}")
+        color = _css_color(font.color, theme)
+        if color:
+            parts.append(f"color:{color}")
+    fill = cell.fill
+    if fill is not None and fill.fill_type:
+        color = _css_color(fill.fgColor, theme)
+        if color:
+            parts.append(f"background:{color}")
+    border = cell.border
+    if border is not None:
+        for side in ("left", "right", "top", "bottom"):
+            edge = getattr(border, side, None)
+            style = getattr(edge, "style", None)
+            if style:
+                parts.append(f"border-{side}:{_BORDER_CSS.get(style, '1px solid')} {_css_color(edge.color, theme) or '#000'}")
+    align = cell.alignment
+    wrap = bool(align is not None and align.wrap_text)
+    horizontal = (align.horizontal if align is not None else None) or ""
+    vertical = (align.vertical if align is not None else None) or "bottom"
+    found = data["css"][key] = [";".join(parts), int(wrap), horizontal, vertical]
+    return found
+
+
+def _col_px(sheet: Any, last: int) -> list[int]:
+    default = sheet.sheet_format.defaultColWidth or 8.43
+    widths = [default] * (last + 1)
+    for dim in sheet.column_dimensions.values():
+        first, end = dim.min or 0, dim.max or 0
+        if not first:
+            continue
+        for index in range(first, min(end, last) + 1):
+            widths[index] = 0 if dim.hidden else (dim.width if dim.width is not None else default)
+    return [round(w * 7 + 5) if w else 0 for w in widths]
+
+
+def _row_px(sheet: Any, row: int) -> int:
+    if row in sheet.row_dimensions:
+        dim = sheet.row_dimensions[row]
+        if dim.hidden:
+            return 0
+        if dim.height is not None:
+            return round(dim.height * 96 / 72)
+    return round((sheet.sheet_format.defaultRowHeight or 15) * 96 / 72)
+
+
+def _show_text(text: str) -> str:
+    match = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})(?:T00:00:00)?", text)  # 日期：2022-01-05T00:00:00 → 2022/1/5
+    return f"{match[1]}/{int(match[2])}/{int(match[3])}" if match else text
+
+
+def _side_view(data: dict[str, Any], name: str, rows: list[int], last_col: int) -> dict[str, Any]:
+    from openpyxl.utils.cell import get_column_letter
+    sheet, texts = data["book"][name], data["texts"].get(name, {"cells": {}})["cells"]
+    spans, covered = {}, set()
+    for rng in sheet.merged_cells.ranges:
+        spans[(rng.min_row, rng.min_col)] = (rng.max_row - rng.min_row + 1, rng.max_col - rng.min_col + 1)
+        if rng.max_row - rng.min_row < 2000 and rng.max_col - rng.min_col < 200:
+            covered.update((r, c) for r in range(rng.min_row, rng.max_row + 1) for c in range(rng.min_col, rng.max_col + 1)
+                           if (r, c) != (rng.min_row, rng.min_col))
+    styles: list[list[Any]] = []
+    index: dict[int, int] = {}
+    cells = []
+    for row in rows:
+        for col in range(1, last_col + 1):
+            if (row, col) in covered:
+                continue
+            cell = sheet._cells.get((row, col))
+            text = texts.get(f"{get_column_letter(col)}{row}", "")
+            if not text and (cell is None or not cell.has_style):
+                continue
+            css = _cell_css(cell, data) if cell is not None else ["", 0, "", "bottom"]
+            if not text and not css[0]:
+                continue
+            at = index.get(id(css))
+            if at is None:
+                at = index[id(css)] = len(styles)
+                styles.append(css)
+            span = spans.get((row, col), (1, 1))
+            numeric = int(cell is not None and cell.data_type == "n" and bool(text))
+            cells.append([row, col, _show_text(text), at, span[0], span[1], numeric])
+    return {"cells": cells, "styles": styles, "col_px": _col_px(sheet, last_col)[1:], "row_px": [_row_px(sheet, r) for r in rows]}
+
+
+def _used_bounds(data: dict[str, Any], name: str) -> tuple[int, int]:
+    rows = cols = 0
+    for addr in data["texts"].get(name, {"cells": {}})["cells"]:
+        row, _, letters = _addr_key(addr)
+        rows = max(rows, row)
+        col = 0
+        for ch in letters:
+            col = col * 26 + ord(ch) - 64
+        cols = max(cols, col)
+    return rows, cols
+
+
+def _view(name: str, old: dict[str, Any] | None, new: dict[str, Any] | None, marks: dict[str, list[str]],
+          row_marks: list[int], col_marks: list[str], merge_marks: list[str]) -> dict[str, Any] | None:
+    """效果图要的数据：只取有不同的行和上下 VIEW_CONTEXT 行；一边没有这张表时画另一边的开头几十行"""
+    from openpyxl.utils.cell import column_index_from_string, get_column_letter, range_boundaries
+    bounds = [_used_bounds(side, name) for side in (old, new) if side is not None]
+    last_row, last_col = max(b[0] for b in bounds), max(b[1] for b in bounds)
+    hot: set[int] = set(row_marks)
+    for addr in marks:
+        row, _, letters = _addr_key(addr)
+        hot.add(row)
+        last_row, last_col = max(last_row, row), max(last_col, column_index_from_string(letters))
+    for rng in merge_marks:
+        left, top, right, bottom = range_boundaries(rng)
+        hot.update(range(top, min(bottom, top + 50) + 1))
+    if old is None or new is None:
+        hot = set(range(1, min(last_row, 40) + 1))
+    if not hot and col_marks:
+        hot = set(range(1, min(last_row, 10) + 1))  # 只有列宽不同：画开头几行看个大概
+    if not hot or not last_row or not last_col:
+        return None
+    context = 0 if old is None or new is None else VIEW_CONTEXT
+    wanted = sorted({r for h in hot for r in range(max(1, h - context), min(max(last_row, h), h + context) + 1)})
+    rows, cut = wanted[:VIEW_MAX_ROWS], max(0, len(wanted) - VIEW_MAX_ROWS)
+    cols_cut = max(0, last_col - VIEW_MAX_COLS)
+    last_col = min(last_col, VIEW_MAX_COLS)
+    sides = {key: (_side_view(side, name, rows, last_col) if side is not None else None) for key, side in (("old", old), ("new", new))}
+    return {"rows": rows, "cols": [get_column_letter(c) for c in range(1, last_col + 1)], **sides,
+            "marks": marks if len(marks) <= 5000 else dict(list(marks.items())[:5000]), "marks_cut": max(0, len(marks) - 5000),
+            "row_marks": row_marks, "col_marks": col_marks, "rows_cut": cut, "cols_cut": cols_cut, "last_row": last_row}
 
 
 def _addr_key(addr: str) -> tuple[int, int, str]:
@@ -254,6 +456,7 @@ def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any], caches: tup
                   "kind": "add" if k not in ta else "del" if k not in tb else "mod"} for k in changed[:MAX_TEXT_ROWS]]
     # ── 公式、样式 ──
     ca, cb = a["sheet"]._cells, b["sheet"]._cells
+    marks: dict[str, list[str]] = {k: ["文字"] for k in changed}  # 效果图上要盖色块的格子 → 哪几类不一样
     blank = {kind: None for kind in STYLE_KINDS}
     formulas, groups = [], {kind: {} for kind in STYLE_KINDS}
     notes: dict[str, list] = {"批注": [], "超链接": []}
@@ -264,10 +467,12 @@ def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any], caches: tup
         fa, fb = _formula(cell_a), _formula(cell_b)
         if fa != fb:
             formulas.append({"cell": addr, "old": fa, "new": fb, "kind": "add" if not fa else "del" if not fb else "mod"})
+            marks.setdefault(addr, []).append("公式")
         for kind, read in (("批注", _comment), ("超链接", _hyperlink)):
             na, nb = read(cell_a), read(cell_b)
             if na != nb:
                 notes[kind].append({"cell": addr, "old": na, "new": nb, "kind": kind})
+                marks.setdefault(addr, []).append(kind)
         if cell_a is None or cell_b is None:
             # 一边没有这个格子：只有带样式的才算样式不同（没字没样式的空格子不报）
             have = cell_a if cell_a is not None else cell_b
@@ -287,6 +492,7 @@ def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any], caches: tup
                     continue
             if va != vb:
                 groups[kind].setdefault((va, vb), []).append(addr)
+                marks.setdefault(addr, []).append(kind)
     counts["公式"] = len(formulas)
     counts["批注"], counts["超链接"] = len(notes["批注"]), len(notes["超链接"])
     styles = []
@@ -300,11 +506,13 @@ def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any], caches: tup
                            "cells": [], "more": len(ordered) - MAX_STYLE_GROUPS})
     # ── 整张表 ──
     whole = []
+    size_marks: dict[str, list] = {}
     for kind, field, label in (("行高", "rows", "第 {} 行"), ("列宽", "cols", "{} 列")):
         da, db = a[field], b[field]
         keys = [k for k in da.keys() | db.keys() if da.get(k, "默认") != db.get(k, "默认")]
         keys.sort(key=(lambda k: k) if field == "rows" else (lambda k: (len(k), k)))
         counts[kind] = len(keys)
+        size_marks[field] = list(keys)
         merged: dict[tuple[str, str], list] = {}
         for k in keys:
             merged.setdefault((da.get(k, "默认"), db.get(k, "默认")), []).append(k)
@@ -333,7 +541,8 @@ def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any], caches: tup
         if a[field] != b[field]:
             whole.append({"kind": kind, "what": what, "old": fmt(a[field]), "new": fmt(b[field])})
     counts = {k: v for k, v in counts.items() if v}
-    return {"name": name, "status": "changed" if counts else "same", "counts": counts,
+    view = _view(name, old, new, marks, size_marks.get("rows", []), size_marks.get("cols", []), only_a + only_b) if counts else None
+    return {"name": name, "status": "changed" if counts else "same", "counts": counts, "view": view,
             "text": text_rows, "text_more": max(0, len(changed) - MAX_TEXT_ROWS),
             "formulas": formulas[:MAX_TEXT_ROWS], "formulas_more": max(0, len(formulas) - MAX_TEXT_ROWS),
             "notes": (notes["批注"] + notes["超链接"])[:MAX_TEXT_ROWS],
@@ -353,9 +562,11 @@ def diff(mine: Path | str, theirs: Path | str) -> dict[str, Any]:
             for name in names_old + [n for n in names_new if n not in names_old]:
                 doomed = old["doomed"].get(name) or new["doomed"].get(name) or ""
                 if name not in names_new:
-                    sheets.append({"name": name, "status": "only_old", "doomed": doomed, "counts": {}})
+                    sheets.append({"name": name, "status": "only_old", "doomed": doomed, "counts": {},
+                                   "view": None if doomed else _view(name, old, None, {}, [], [], [])})
                 elif name not in names_old:
-                    sheets.append({"name": name, "status": "only_new", "doomed": doomed, "counts": {}})
+                    sheets.append({"name": name, "status": "only_new", "doomed": doomed, "counts": {},
+                                   "view": None if doomed else _view(name, None, new, {}, [], [], [])})
                 else:
                     entry = _diff_sheet(name, old, new, caches)
                     entry["doomed"] = doomed
