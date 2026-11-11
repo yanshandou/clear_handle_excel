@@ -20,6 +20,13 @@
     .font-error { grid-column: 2; font-size: 14px; color: #b42318; overflow-wrap: anywhere; }
     .img-fields { grid-template-columns: minmax(0, 1fr); max-width: 860px; }
     .img-file { border: 1px solid #dce5ef; border-radius: 12px; padding: 12px 14px; margin: 14px 0; background: #fff; }
+    .only-bad > .img-file:not(.is-flag) { display: none; }
+    .img-page { border-top: 1px dashed #cbd5e1; margin-top: 10px; padding-top: 8px; }
+    .img-page-head { display: flex; align-items: center; gap: 12px; font-size: 14px; font-weight: 700; color: #334155; }
+    .img-page.is-noneed { opacity: .45; }
+    .hide-done .img-page.is-noneed { display: none; }
+    .img-sheet-open { font-weight: 400; font-size: 14px; margin-left: 10px; }
+    .img-shot img { width: 100%; object-fit: contain; }
     .img-file.is-fixed { border-color: #86c9a3; background: #f3fbf6; }
     .img-file-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
     .img-file-name { font-weight: 700; overflow-wrap: anywhere; margin-right: auto; }
@@ -38,8 +45,6 @@
     .img-group-opt { display: block; margin: 10px 0 0; font-size: 14px; color: #334155; }
     .img-group-opt input { margin-right: 6px; vertical-align: -2px; }
     .img-badge.is-group { background: #ede9fe; color: #5b21b6; }
-    .img-score { font-size: 13px; color: #475569; margin-bottom: 4px; }
-    .img-score.is-suspect { color: #b42318; font-weight: 700; }
   </style>
   <link rel="stylesheet" href="/static/theme-casual.css">
   <link rel="stylesheet" href="/static/flow.css?v=1"><script src="/static/flow.js?v=1"></script>
@@ -54,7 +59,7 @@
       <h2>找出被行高列宽拉坏的截图、跑偏的红框</h2>
       <ul class="font-rules toolbar-hint">
         <li>以前修切字时加高行、加宽列，Excel 的图形默认跟着格子一起变：截图被拉长变形，截图上的红框、箭头挂在别的格子上，就框不住原来的地方了。</li>
-        <li>先点<b>「🔍 找出受影响的图片」</b>：原版、新版都只读打开，不改任何文件。每一处并排列出<b>原版 Excel / 新版 Excel / 新版 PDF</b> 三列局部截图（前两列是 Excel 屏幕原样，要借用剪贴板，Ditto 会记下这些截图），可以点开新版 Excel、左右对照打开原版、打开新版 PDF。</li>
+        <li>先点<b>「🔍 找出受影响的图片」</b>：原版、新版都只读打开，不改任何文件。有图片的每一页并排列出<b>原版 Excel / 新版 Excel / 新版 PDF</b> 三列整页图（前两列是 Excel 屏幕原样，要借用剪贴板，Ditto 会记下这些截图；个别页拍不了会退回导出效果并标出来；第三列是你已有的 PDF），既能比对也能看出在哪一页哪个位置。看过没问题的页点<b>「✓ 无需处理」</b>（记在这台电脑的浏览器里）。可以点开新版 Excel、左右对照打开原版、打开新版 PDF。</li>
         <li>看完再点<b>「修复这份」</b>或底部<b>「全部修复」</b>：截图左上角不动、大小改回原版的；红框、箭头按原版里<b>相对截图的位置</b>放回去。行高、列宽、格子内容都不动，改完回读核对，有一个没对上整份不保存。</li>
         <li>图形按名字配对，有重名的不碰；原版只读打开，不会改。</li>
       </ul>

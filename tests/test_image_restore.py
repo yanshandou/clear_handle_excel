@@ -105,57 +105,127 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(sg.restore_book(object(), {"手順": []}), 0)
 
 
-class PdfCropTest(unittest.TestCase):
-    def test_finds_picture_by_aspect_and_nearby_text(self):
+def _pdf(target, pages):
+    """pages：[(文字行列表, 有没有图片)]"""
+    from core.pdf_detector import fitz
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 40, 30), 0)
+    pix.clear_with(200)
+    doc = fitz.open()
+    for lines, picture in pages:
+        page = doc.new_page()
+        for i, line in enumerate(lines):
+            page.insert_text((50, 60 + 20 * i), line, fontname="japan")
+        if picture:
+            page.insert_image(fitz.Rect(50, 300, 450, 600), pixmap=pix)
+    doc.save(target)
+    return target
+
+
+class PageRowsTest(unittest.TestCase):
+    def test_picture_pages_matched_by_text(self):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from core.pdf_detector import fitz
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 40, 30), 0)
-            pix.clear_with(200)
-            doc = fitz.open()
-            for text in ("別のページ", "その場合は詳細ボタンを押下"):
-                page = doc.new_page()
-                page.insert_text((50, 60), text, fontname="japan")
-                page.insert_image(fitz.Rect(50, 80, 450, 380), pixmap=pix)   # 4:3
-            doc.save(tmp / "a.pdf")
-            groups = [{"key": "図 1", "sheet": "手順", "aspect": 4 / 3, "texts": ["その場合は詳細ボタンを押下"]},
-                      {"key": "正方形 9", "sheet": "手順"}]
+            steps = ["手順1 ログイン画面を開く", "実行ボタンを押下する", "結果一覧が表示される"]
+            new = _pdf(tmp / "new.pdf", [(["表紙 システム概要"], False), (steps, True), (["補足 注意事項"], False)])
+            old = _pdf(tmp / "old.pdf", [(["表紙 システム概要"], False), (["補足 注意事項"], False), (steps, True)])
+            book = _pdf(tmp / "book.pdf", [(["別シート 変更履歴"], False), (["表紙 システム概要"], False), (steps, True)])
             with patch.object(ir.fix_images, "IMAGES_DIR", tmp):
-                ir.pdf_crops(tmp / "a.pdf", tmp / "a.xlsx", groups)
-            self.assertEqual(groups[0]["pdf_page"], 2)
-            self.assertTrue((tmp / groups[0]["pdf_img"]).is_file())
-            self.assertIn("不是截图", groups[1]["pdf_why"])
+                rows = ir.page_rows(tmp / "a.xlsx", "手順", new, old, book)
+                self.assertEqual(len(rows), 1)
+                row = rows[0]
+                self.assertEqual((row["page"], row["old_page"], row["pdf_page"]), (2, 3, 3))
+                for key in ("new_img", "old_img", "pdf_img"):
+                    self.assertTrue((tmp / row[key]).is_file())
+                none = ir.page_rows(tmp / "a.xlsx", "手順", new, None, None)
+                self.assertIn("没导出", none[0]["old_why"])
+                self.assertIn("没找到同名 PDF", none[0]["pdf_why"])
+                other = _pdf(tmp / "other.pdf", [(["まったく別の内容"], False)])
+                miss = ir.page_rows(tmp / "a.xlsx", "手順", new, other, other)
+                self.assertIn("没找到文字对得上的页", miss[0]["old_why"])
 
-    def test_ambiguous_without_text_is_skipped(self):
+    def test_no_bitmap_lists_first_pages(self):
         import tempfile
         from pathlib import Path
-        from core.pdf_detector import fitz
+        from unittest.mock import patch
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 40, 30), 0)
-            doc = fitz.open()
-            for _ in range(2):
-                doc.new_page().insert_image(fitz.Rect(50, 80, 450, 380), pixmap=pix)
-            doc.save(tmp / "a.pdf")
-            groups = [{"key": "図 1", "sheet": "手順", "aspect": 4 / 3, "texts": ["見つからない文字"]}]
-            ir.pdf_crops(tmp / "a.pdf", tmp / "a.xlsx", groups)
-            self.assertIn("认不出", groups[0]["pdf_why"])
+            new = _pdf(tmp / "new.pdf", [([f"ページ{i} の内容です"], False) for i in range(8)])
+            with patch.object(ir.fix_images, "IMAGES_DIR", tmp):
+                rows = ir.page_rows(tmp / "a.xlsx", "手順", new, new, None)
+            self.assertEqual(len(rows), ir.SHOW_ALL_MAX)
+            self.assertTrue(rows[0]["note"])
+            self.assertEqual(rows[3]["old_page"], 4)
 
 
-class RenderFallbackTest(unittest.TestCase):
-    def test_screen_failure_falls_back_to_pdf(self):
+class _Cell:
+    def __init__(self, row, col):
+        self.Row, self.Column = row, col
+
+
+class _Range:
+    def __init__(self, r1, c1, r2, c2):
+        self.Row, self.Column, self.r2, self.c2 = r1, c1, r2, c2
+        self.Rows = type("R", (), {"Count": r2 - r1 + 1})
+        self.Columns = type("C", (), {"Count": c2 - c1 + 1})
+
+
+class _Breaks:
+    def __init__(self, rows):
+        self.rows, self.Count = rows, len(rows)
+
+    def Item(self, i):
+        return type("B", (), {"Location": _Cell(self.rows[i - 1], 1)})
+
+
+class PageSheet:
+    """打印区域 A1:K120，分页在第 41、81 行"""
+    def __init__(self, breaks=(41, 81), area="$A$1:$K$120"):
+        self.PageSetup = type("P", (), {"PrintArea": area})
+        self.HPageBreaks = _Breaks(list(breaks))
+        self.UsedRange = _Range(3, 2, 100, 8)
+        self.Shapes = type("S", (), {"Count": 1, "Item": staticmethod(lambda i: type("Sh", (), {"BottomRightCell": _Cell(130, 12)}))})
+
+    def Activate(self):
+        pass
+
+    def Cells(self, row, col):
+        return _Cell(row, col)
+
+    def Range(self, a, b=None):
+        return _Range(1, 1, 120, 11) if b is None else _Range(a.Row, a.Column, b.Row, b.Column)
+
+
+class PageRangesTest(unittest.TestCase):
+    def test_pages_are_row_bands_between_breaks(self):
+        bands = ir.page_ranges(PageSheet(), 3)
+        self.assertEqual([(b.Row, b.r2, b.c2) for b in bands], [(1, 40, 11), (41, 80, 11), (81, 120, 11)])
+
+    def test_no_print_area_starts_at_a1_and_covers_shapes(self):
+        bands = ir.page_ranges(PageSheet(area=""), 3)
+        self.assertEqual([(b.Row, b.Column, b.r2, b.c2) for b in bands], [(1, 1, 40, 12), (41, 1, 80, 12), (81, 1, 130, 12)])
+
+    def test_page_count_mismatch_refused(self):
+        with self.assertRaises(RuntimeError):
+            ir.page_ranges(PageSheet(), 4)
+
+    def test_screen_pages_keeps_export_image_when_capture_fails(self):
+        from pathlib import Path
         from unittest.mock import patch
-        with patch.object(ir, "render_screen", side_effect=RuntimeError("剪贴板被占用")), \
-                patch.object(ir, "render_pdf", return_value="a.png"):
-            self.assertEqual(ir.render_area(object(), ["図 1"], "a.png"), ("a.png", "pdf"))
-        with patch.object(ir, "render_screen", return_value="a.png"):
-            self.assertEqual(ir.render_area(object(), ["図 1"], "a.png"), ("a.png", "screen"))
-        with patch.object(ir, "render_screen", side_effect=RuntimeError("x")), \
-                patch.object(ir, "render_pdf", side_effect=RuntimeError("y")):
-            self.assertEqual(ir.render_area(object(), ["図 1"], "a.png"), ("", ""))
+        rows = [{"page": 2, "new_img": "pdf.png", "new_how": "pdf", "old_page": 3, "old_img": "o.png", "old_how": "pdf"}]
+        with patch.object(ir, "render_screen", return_value=1.5) as shot:
+            ir.screen_pages(PageSheet(), rows, "new", 3, Path("a.xlsx"), "手順")
+            self.assertEqual((rows[0]["new_how"], rows[0]["new_ratio"], shot.call_args[0][1].Row), ("screen", 1.5, 41))
+            ir.screen_pages(PageSheet(), rows, "old", 3, Path("a.xlsx"), "手順")
+            self.assertEqual((rows[0]["old_how"], shot.call_args[0][1].Row), ("screen", 81))
+        rows = [{"page": 2, "new_img": "pdf.png", "new_how": "pdf"}]
+        with patch.object(ir, "render_screen", side_effect=RuntimeError("剪贴板被占用")):
+            ir.screen_pages(PageSheet(), rows, "new", 3, Path("a.xlsx"), "手順")
+        self.assertEqual((rows[0]["new_img"], rows[0]["new_how"]), ("pdf.png", "pdf"))
+        ir.screen_pages(PageSheet(), rows, "new", 5, Path("a.xlsx"), "手順")  # 分页数对不上：整张表不拍
+        self.assertEqual(rows[0]["new_how"], "pdf")
 
 
 class MergeTest(unittest.TestCase):
@@ -172,6 +242,11 @@ class MergeTest(unittest.TestCase):
         only = ir._merge(None, "group", root, None, None, [{"name": "b.xlsx", "error": None, "count": 0, "grouped": 1}])
         self.assertFalse(only["scanned"])
         self.assertEqual(only["old_folder"], "")
+
+    def test_scan_keeps_stamp_so_images_do_not_reload(self):
+        from pathlib import Path
+        done = ir._merge(None, "scan", Path("D:/x"), Path("D:/y"), None, [], 12345)
+        self.assertEqual(done["stamp"], 12345)
 
 
 class OverlayHostsTest(unittest.TestCase):
