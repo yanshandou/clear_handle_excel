@@ -6,7 +6,11 @@
 大小不跟着缩。红框的位置 = 它挂的格子 + 偏移，跟着网格往左上缩；按钮在截图里的位置却是截图左上角 + 固定磅数，
 两者就错开了，离截图左上角越远错得越多。组合成一个图形后，里面的东西按同一个比例一起画，就不会错开。
 
-做法（全部满足才组合）：
+导出时的做法（grouped_overlays，2026-11-11 扩大）：看得见的图片 / 自选图形 / 线条 / 文本框 / 任意多边形 / 标注 / 已有的组合，
+互相重叠或隔 2 磅以内的连成一堆，每堆临时组合成一个图形——没有底图、全靠图形拼出来的画面也一起管。
+重名的图形按图形 ID 找序号来组合。
+
+永久组合的做法（group_permanently，会保存进文件，所以保守；全部满足才组合）：
 - 截图：图片（嵌入或链接），可见，不在组合里；
 - 叠加物：自选图形 / 线条 / 文本框 / 任意多边形 / 标注，可见，不在组合里，整个落在截图范围里（容差 2 磅）；
   落在好几张截图里的，归最小那张；
@@ -107,41 +111,146 @@ def _placement(shape: Any) -> Any:
         return None
 
 
+MSO_GROUP = 6
+CLUSTER_TYPES = PICTURES | OVERLAYS | {MSO_GROUP}
+GAP = 2.0  # 两个图形隔这么近（磅）以内就算挨着
+
+
+def _touch(a: tuple, b: tuple) -> bool:
+    return a[0] <= b[2] + GAP and b[0] <= a[2] + GAP and a[1] <= b[3] + GAP and b[1] <= a[3] + GAP
+
+
+def find_clusters(sheet: Any) -> list[list[Any]]:
+    """互相重叠或紧挨着的图形分成一堆一堆（至少两个图形才算一堆），每堆按原来的叠放顺序。
+    用户 2026-11-11：用很多图形拼出来的画面（按钮、标注、虚线框，没有底图），导出 PDF 后蓝色按钮掉到绿色标注下面，
+    手动组合后就好了——各图形挂各的格子、有的随格子动有的不动，打印时网格一伸缩就互相错开。
+    看得见的图片、自选图形、线、文本框、任意多边形、标注、已有的组合都算；图表、控件、批注不碰"""
+    try:
+        shapes = sheet.Shapes
+        items = [shapes.Item(i) for i in range(1, int(shapes.Count) + 1)]
+    except Exception:
+        return []
+    found = []
+    for shape in items:
+        try:
+            kind = int(shape.Type)
+        except Exception:
+            continue
+        if kind not in CLUSTER_TYPES or not _visible(shape):
+            continue
+        box = _box(shape)
+        if box is not None:
+            found.append((shape, box))
+    parent = list(range(len(found)))
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(len(found)):
+        for j in range(i + 1, len(found)):
+            if _touch(found[i][1], found[j][1]):
+                parent[root(j)] = root(i)
+    clusters: dict[int, list[Any]] = {}
+    for i, (shape, _box_) in enumerate(found):
+        clusters.setdefault(root(i), []).append(shape)
+    return [members for members in clusters.values() if len(members) > 1]
+
+
+def _shape_id(shape: Any) -> int | None:
+    try:
+        return int(shape.ID)
+    except Exception:
+        return None
+
+
+def _name_counts(sheet: Any) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    try:
+        shapes = sheet.Shapes
+        for i in range(1, int(shapes.Count) + 1):
+            name = str(getattr(shapes.Item(i), "Name", "") or "")
+            counts[name] = counts.get(name, 0) + 1
+    except Exception:
+        pass
+    return counts
+
+
+def _range_of(sheet: Any, members: list[Any], counts: dict[str, int]) -> Any:
+    """这几个图形的 ShapeRange：名字在表里都不重复就按名字拿（不用再读一遍图形，图形多的表省时间）；
+    有重名的（复制粘贴出来的图形常常同名）按图形 ID 找现在的序号拿"""
+    shapes = sheet.Shapes
+    wanted = [str(s.Name) for s in members]
+    if all(counts.get(n) == 1 for n in wanted):
+        return shapes.Range(wanted)
+    ids = {_shape_id(s) for s in members}
+    if None in ids or len(ids) != len(members):
+        raise RuntimeError("有重名图形，又读不到图形 ID")
+    indexes = [i for i in range(1, int(shapes.Count) + 1) if _shape_id(shapes.Item(i)) in ids]
+    if len(indexes) != len(members):
+        raise RuntimeError("按图形 ID 没找全")
+    return shapes.Range(indexes)
+
+
+def _restore_placements(sheet: Any, parts: Any, by_id: dict[int, Any], by_name: dict[str, Any]) -> None:
+    """拆开后把每个图形原来的「对象の位置関係」放回去：先按拆出来的图形的 ID 认，认不到再按（不重名的）名字"""
+    done: set[str] = set()
+    try:
+        members = [parts.Item(i) for i in range(1, int(parts.Count) + 1)] if parts is not None else []
+    except Exception:
+        members = []
+    for shape in members:
+        value = by_id.get(_shape_id(shape))
+        if value is None:
+            continue
+        try:
+            if shape.Placement != value:
+                shape.Placement = value
+            done.add(str(shape.Name))
+        except Exception as err:
+            debug_log.event("⚠️ 图形的位置关係放不回去", 表=str(getattr(sheet, "Name", "?")), 图形=str(getattr(shape, "Name", "?")), 错误=str(err))
+    for name, value in by_name.items():
+        if value is None or name in done:
+            continue
+        try:
+            shape = sheet.Shapes.Item(name)
+            if shape.Placement != value:
+                shape.Placement = value
+        except Exception as err:
+            debug_log.event("⚠️ 图形的位置关係放不回去", 表=str(getattr(sheet, "Name", "?")), 图形=name, 错误=str(err))
+
+
 @contextmanager
 def grouped_overlays(sheet: Any) -> Iterator[int]:
-    """with 块里截图和上面的标注是组合着的；返回组合了几组"""
+    """with 块里互相重叠 / 挨着的图形是一堆一堆组合着的（截图 + 上面的红框也在内）；返回组合了几组"""
     sheet_name = str(getattr(sheet, "Name", "?"))
-    made: list[tuple[Any, dict[str, Any]]] = []  # (组合, {名字: 原 Placement})
-    for picture, members in find_overlay_sets(sheet):
-        everyone = [picture, *members]
-        names = [str(s.Name) for s in everyone]
-        placements = {str(s.Name): _placement(s) for s in everyone}
+    made: list[tuple[Any, dict[int, Any], dict[str, Any], list[str]]] = []  # (组合, {ID: 原 Placement}, {不重名的名字: 原 Placement}, 名字)
+    clusters = find_clusters(sheet)
+    counts = _name_counts(sheet) if clusters else {}
+    for members in clusters:
+        names = [str(getattr(s, "Name", "?")) for s in members]
+        by_id = {i: _placement(s) for s in members if (i := _shape_id(s)) is not None}
+        by_name = {n: _placement(s) for s, n in zip(members, names) if counts.get(n) == 1}
         try:
-            group = sheet.Shapes.Range(names).Group()
-            made.append((group, placements))
+            group = _range_of(sheet, members, counts).Group()
+            made.append((group, by_id, by_name, names))
         except Exception as err:
-            debug_log.event("⚠️ 截图和标注组合不了，照原样导出", 表=sheet_name, 图形="、".join(names), 错误=str(err))
+            debug_log.event("⚠️ 挨着的图形组合不了，照原样导出", 表=sheet_name, 图形="、".join(names[:12]), 个数=len(names), 错误=str(err))
     if made:
-        debug_log.event("📌 导出 PDF 临时把截图和上面的标注组合起来（防止红框错位）", 表=sheet_name,
-                        组="；".join("、".join(p) for _g, p in made))
+        debug_log.event("📌 导出 PDF 临时把挨着的图形组合起来（防止互相错位）", 表=sheet_name, 组数=len(made),
+                        组="；".join("、".join(n[:6]) + (f"…共 {len(n)} 个" if len(n) > 6 else "") for *_x, n in made[:20]))
     try:
         yield len(made)
     finally:
-        for group, placements in made:
+        for group, by_id, by_name, names in made:
             try:
-                group.Ungroup()
+                parts = group.Ungroup()
             except Exception as err:
-                debug_log.event("⚠️ 截图和标注拆不开", 表=sheet_name, 图形="、".join(placements), 错误=str(err))
+                debug_log.event("⚠️ 临时组合拆不开", 表=sheet_name, 图形="、".join(names[:12]), 错误=str(err))
                 continue
-            for name, value in placements.items():
-                if value is None:
-                    continue
-                try:
-                    shape = sheet.Shapes.Item(name)
-                    if shape.Placement != value:
-                        shape.Placement = value
-                except Exception as err:
-                    debug_log.event("⚠️ 图形的位置关係放不回去", 表=sheet_name, 图形=name, 错误=str(err))
+            _restore_placements(sheet, parts, by_id, by_name)
 
 
 XL_MOVE = 2  # 「セルに合わせて移動するがサイズ変更はしない」
