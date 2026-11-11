@@ -74,8 +74,9 @@
     }
   }
 
-  function shot(label, name, why, ratio) {
-    return `<figure class="img-shot"><figcaption>${esc(label)}</figcaption>`
+  // pathHtml：这一列是哪个文件（完整路径，点了打开），用户 2026-11-11 要每页都能看到路径
+  function shot(label, name, why, ratio, pathHtml = '') {
+    return `<figure class="img-shot"><figcaption>${esc(label)}</figcaption><div class="img-path">${pathHtml}</div>`
       + (name ? `<img src="/api/batch/image/${encodeURIComponent(name)}?v=${result()?.stamp || 0}" alt="${esc(label)}" loading="lazy"${ratio ? ` style="aspect-ratio:${ratio}"` : ''}>`
         : `<div class="img-none"${ratio ? ` style="aspect-ratio:${ratio}"` : ''}>${esc(why || '没有')}</div>`) + '</figure>';
   }
@@ -123,9 +124,11 @@
       const pages = (s.pages || []).map(p => `<div class="img-page" data-mark="${esc(markKey(folder, f.name, s.sheet, p.page))}">`
         + `<div class="img-page-head"><span>这张表第 ${p.page} / ${p.pages} 页${p.note ? `（${esc(p.note)}）` : ''}</span>`
         + '<button class="btn btn-outline btn-sm" type="button" data-mark-btn>✓ 无需处理</button></div>'
-        + `<div class="img-group">${shot(`原版 Excel${p.old_page ? `（第 ${p.old_page} 页 · ${how(p.old_how)}）` : ''}`, p.old_img, p.old_why, p.old_ratio || p.ratio)}`
-        + shot(`新版 Excel${f.fixed ? '（修复前）' : ''}（第 ${p.page} 页 · ${how(p.new_how)}）`, p.new_img, '', p.new_ratio || p.ratio)
-        + `${shot(`新版 PDF${p.pdf_page ? `（第 ${p.pdf_page} 页）` : ''}`, p.pdf_img, p.pdf_why, p.pdf_ratio || p.ratio)}</div></div>`).join('');
+        + `<div class="img-group">${shot(`原版 Excel${p.old_page ? `（第 ${p.old_page} 页 · ${how(p.old_how)}）` : ''}`, p.old_img, p.old_why, p.old_ratio || p.ratio,
+          f.old ? compare(esc(f.old), s.sheet, cell) : '没有对应的原版文件')}`
+        + shot(`新版 Excel${f.fixed ? '（修复前）' : ''}（第 ${p.page} 页 · ${how(p.new_how)}）`, p.new_img, '', p.new_ratio || p.ratio, openNew(esc(f.path || f.name), s.sheet, cell))
+        + `${shot(`新版 PDF${p.pdf_page ? `（第 ${p.pdf_page} 页）` : ''}`, p.pdf_img, p.pdf_why, p.pdf_ratio || p.ratio,
+          f.pdf ? `<a href="#" data-open-pdf="${esc(f.name)}" title="点击打开这份 PDF">${esc(f.pdf)}</a>` : '没找到同名 PDF')}</div></div>`).join('');
       return head + (pages || `<div class="img-none">${esc(s.pages_why || '这张表没有导出页')}</div>`);
     }).join('');
     return `<div class="img-file${f.fixed ? ' is-fixed' : ''}"><div class="img-file-head"><span class="img-file-name">${esc(f.name)}</span>`

@@ -228,6 +228,19 @@ class PageRangesTest(unittest.TestCase):
         self.assertEqual(rows[0]["new_how"], "pdf")
 
 
+class OpenDuringScanTest(unittest.TestCase):
+    def test_finished_files_can_open_while_scanning(self):
+        from unittest.mock import patch
+        status = {"running": True, "mode": "scan", "result": {"files": [{"name": "a.xlsx"}]}}
+        with patch.object(ir, "_STATUS", status):
+            self.assertEqual(ir.open_block_reason("a.xlsx"), "")
+            self.assertIn("还没查完", ir.open_block_reason("b.xlsx"))
+        with patch.object(ir, "_STATUS", {**status, "mode": "fix"}):
+            self.assertIn("正在修复图片", ir.open_block_reason("a.xlsx"))
+        with patch.object(ir, "_STATUS", {"running": False}):
+            self.assertEqual(ir.open_block_reason("b.xlsx"), "")
+
+
 class MergeTest(unittest.TestCase):
     def test_group_result_merged_into_scan(self):
         from pathlib import Path
