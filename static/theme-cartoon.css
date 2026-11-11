@@ -1,0 +1,643 @@
+/* ==========================================
+   卡通手游画风（参考：蓝紫渐变 + 半调圆点 + 粗描边 3D 卡通图标素材）
+   - 背景：亮蓝渐变到紫色，中间一团半调圆点光晕，几道淡淡的斜向光块，底部一条紫色斜边
+   - 所有面板、按钮、卡片：深藏青粗描边（像漫画的墨线）+ 往下的硬投影 + 顶部高光
+   - 主按钮橙黄、选中紫色、信息蓝色、删除红色；标题白字藏青粗描边 + 蓝色立体厚度
+   放在 theme-casual.css 后面加载，只换外观：边框粗细、圆角、间距、尺寸都沿用原来的，
+   布局一像素都不动；没有任何会让元素挪位置或变大小的动画。
+   约束照旧：文字对比度 ≥ 4.5:1；彩色底白字加深色描边；三色审核和问题类型的颜色不动。
+   ========================================== */
+:root {
+  --cartoon-ink: #141a52;           /* 墨线：所有描边、硬投影 */
+  --cartoon-ink-soft: #2a3480;
+  --ink: #18205e;                   /* 正文深色字（白底上对比度 > 14:1） */
+  --ink-2: #1f2a6e;
+  --ink-3: #3c4a8c;
+  --ink-4: #7d88b8;
+  --paper: #eef4ff;
+  --line-soft: #d5e0fb;
+  --rim: #141a52;
+  --rim-strong: #141a52;
+  --purple: #7a3fe0;
+  --purple-soft: #ece4ff;
+  --purple-ink: #4e22b0;
+  --sky: #1f8bff;
+  --sky-soft: #e3f0ff;
+  --drop: 0 4px 0 var(--cartoon-ink);
+  --drop-lg: 0 7px 0 var(--cartoon-ink), 0 14px 26px rgba(10, 18, 70, 0.35);
+  --white-stroke:
+    1px 0 0 #141a52, -1px 0 0 #141a52, 0 1px 0 #141a52, 0 -1px 0 #141a52,
+    1px 1px 0 #141a52, -1px -1px 0 #141a52, 1px -1px 0 #141a52, -1px 1px 0 #141a52,
+    0 2px 0 #141a52;
+  --brown-stroke:
+    1px 0 0 #141a52, -1px 0 0 #141a52, 0 1px 0 #141a52, 0 -1px 0 #141a52,
+    1px 1px 0 #141a52, -1px -1px 0 #141a52, 1px -1px 0 #141a52, -1px 1px 0 #141a52,
+    0 2px 0 #141a52;
+  --on-bg-text: 0 1px 0 #10164a, 0 0 2px #10164a, 0 2px 0 #10164a;
+}
+
+/* ---------- 背景 ---------- */
+html {
+  background-color: #2457e0;
+  background-image:
+    /* 底部紫色斜边条 */
+    linear-gradient(176deg, transparent 0 calc(100% - 64px), #6a2fd6 calc(100% - 63px) calc(100% - 26px), #4a1eae calc(100% - 25px)),
+    /* 斜向光块 */
+    linear-gradient(118deg, transparent 0 8%, rgba(255, 255, 255, 0.07) 8% 17%, transparent 17% 100%),
+    linear-gradient(62deg, transparent 0 74%, rgba(255, 255, 255, 0.06) 74% 83%, transparent 83% 100%),
+    linear-gradient(140deg, transparent 0 55%, rgba(120, 200, 255, 0.08) 55% 61%, transparent 61% 100%),
+    /* 中间青色光晕 */
+    radial-gradient(ellipse 55% 45% at 50% 42%, rgba(60, 220, 255, 0.55) 0%, rgba(40, 170, 255, 0.25) 45%, transparent 75%),
+    /* 主渐变：亮蓝 → 宝蓝 → 紫 */
+    linear-gradient(180deg, #1d4fd8 0%, #1f74f0 32%, #2a6ef0 55%, #3d48d8 80%, #5a2fc8 100%);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}
+
+/* 半调圆点：中间密、往外渐隐。body 是透明的，所以这层画在背景上、内容下面 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    radial-gradient(circle, rgba(150, 235, 255, 0.55) 0 4px, transparent 4.6px),
+    radial-gradient(circle, rgba(150, 235, 255, 0.35) 0 2.2px, transparent 2.8px);
+  background-size: 26px 26px, 26px 26px;
+  background-position: 0 0, 13px 13px;
+  -webkit-mask-image: radial-gradient(ellipse 42% 40% at 50% 42%, #000 0%, rgba(0, 0, 0, 0.55) 45%, transparent 100%);
+  mask-image: radial-gradient(ellipse 42% 40% at 50% 42%, #000 0%, rgba(0, 0, 0, 0.55) 45%, transparent 100%);
+}
+
+::selection {
+  background: #ffd84a;
+  color: var(--ink);
+}
+
+code {
+  background: var(--sky-soft);
+  color: #12398f;
+  border-color: #b7cdf5;
+}
+
+/* ---------- 顶栏：深宝蓝 + 墨线底边 ---------- */
+.app-header {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12) 0 50%, transparent 50%),
+    linear-gradient(180deg, #2257d6 0%, #1638a8 100%);
+  box-shadow: 0 4px 0 var(--cartoon-ink), 0 10px 22px rgba(10, 18, 70, 0.4);
+}
+
+.app-header h1 {
+  color: #ffffff;
+  text-shadow: var(--white-stroke), 0 3px 0 #0f2a8a;
+}
+
+.subtitle {
+  color: #e3edff;
+}
+
+.nav-link {
+  color: #ffffff;
+  border-color: var(--cartoon-ink);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28) 0 42%, transparent 42%),
+    linear-gradient(180deg, #4f95ff 0%, #2266e6 100%);
+  box-shadow: inset 0 -3px 0 #1748b8, 0 3px 0 var(--cartoon-ink);
+  text-shadow: var(--white-stroke);
+}
+
+.nav-link:hover {
+  color: #ffffff;
+  border-color: var(--cartoon-ink);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.32) 0 42%, transparent 42%),
+    linear-gradient(180deg, #62a2ff 0%, #2f74ef 100%);
+}
+
+.nav-link.active,
+.nav-link.active:hover {
+  color: #ffffff;
+  border-color: var(--cartoon-ink);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.35) 0 42%, transparent 42%),
+    linear-gradient(180deg, #ffd23f 0%, #ff9414 100%);
+  box-shadow: inset 0 -4px 0 #d46a00, 0 3px 0 var(--cartoon-ink);
+  text-shadow: var(--white-stroke);
+}
+
+.nav-badge,
+.nav-link.active .nav-badge {
+  color: var(--ink);
+  background: #ffffff;
+  border-color: var(--cartoon-ink);
+}
+
+.status-pill {
+  color: var(--ink);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.45) 0 45%, transparent 45%),
+    linear-gradient(180deg, #fff1a8 0%, #ffd23f 100%);
+  border-color: var(--cartoon-ink);
+  box-shadow: inset 0 -3px 0 #e0a414, 0 3px 0 var(--cartoon-ink);
+}
+
+/* ---------- 面板：白底、墨线粗框、硬投影 ---------- */
+.panel {
+  background:
+    linear-gradient(180deg, #ffffff 0%, #f3f7ff 100%);
+  border-color: var(--cartoon-ink);
+  box-shadow: inset 0 -5px 0 #dbe6fb, var(--drop-lg);
+}
+
+.panel-section-head {
+  border-bottom-color: #d5e0fb;
+}
+
+.panel-section-title {
+  color: var(--ink);
+}
+
+/* 步骤标签：橙黄徽章 + 墨线 */
+.step-chip {
+  color: #3b2000;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.45) 0 45%, transparent 45%),
+    linear-gradient(180deg, #ffe066 0%, #ffb21f 100%);
+  border-color: var(--cartoon-ink);
+  box-shadow: inset 0 -3px 0 #db8a00, 0 3px 0 var(--cartoon-ink);
+}
+
+.step-chip-teal {
+  color: #ffffff;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.3) 0 45%, transparent 45%),
+    linear-gradient(180deg, #a57bff 0%, #6c34e0 100%);
+  border-color: var(--cartoon-ink);
+  box-shadow: inset 0 -3px 0 #4c1fb0, 0 3px 0 var(--cartoon-ink);
+  text-shadow: var(--white-stroke);
+}
+
+/* ---------- 输入框：白底、墨线、聚焦时黄色光圈 ---------- */
+.input-groove-wrap,
+input[type="text"],
+input[type="search"],
+input[type="number"],
+select {
+  border-color: var(--cartoon-ink);
+  background: #ffffff;
+  box-shadow: inset 0 3px 0 rgba(20, 26, 82, 0.1);
+}
+
+.input-groove-wrap:focus-within,
+input[type="text"]:focus,
+input[type="search"]:focus,
+input[type="number"]:focus {
+  border-color: var(--cartoon-ink);
+  box-shadow: inset 0 3px 0 rgba(20, 26, 82, 0.1), 0 0 0 4px #ffd23f;
+}
+
+/* ---------- 按钮：墨线框 + 上半截高光 + 厚底 + 硬投影 ---------- */
+.btn {
+  --b-top: #ffffff;
+  --b: #e8f0ff;
+  --b-edge: #b9cdf3;
+  --b-rim: var(--cartoon-ink);
+  color: var(--ink);
+  border-color: var(--cartoon-ink);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.4) 0 44%, transparent 44%),
+    linear-gradient(180deg, var(--b-top) 0%, var(--b) 100%);
+  box-shadow: inset 0 -5px 0 var(--b-edge), 0 4px 0 var(--cartoon-ink);
+}
+
+.btn-sm {
+  box-shadow: inset 0 -4px 0 var(--b-edge), 0 3px 0 var(--cartoon-ink);
+}
+
+.btn-outline,
+.btn-outline:hover:not(:disabled),
+.btn-outline:active:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--cartoon-ink);
+}
+
+.btn-outline:hover:not(:disabled) {
+  --b-top: #ffffff;
+  --b: #fff3c2;
+  --b-edge: #f0cf62;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.4) 0 44%, transparent 44%),
+    linear-gradient(180deg, var(--b-top) 0%, var(--b) 100%);
+}
+
+/* 主操作：橙黄 */
+.btn-primary { --b-top: #ffd53f; --b: #ff9212; --b-edge: #d06400; --b-rim: var(--cartoon-ink); color: #ffffff; }
+/* 选中 / 信息：紫 */
+.btn-success { --b-top: #a57bff; --b: #6c34e0; --b-edge: #4c1fb0; --b-rim: var(--cartoon-ink); color: #ffffff; }
+/* 删除：红 */
+.btn-danger { --b-top: #ff6b86; --b: #e62a52; --b-edge: #a8143a; --b-rim: var(--cartoon-ink); color: #ffffff; }
+
+.btn-primary,
+.btn-success,
+.btn-danger,
+.btn-primary:hover:not(:disabled),
+.btn-success:hover:not(:disabled),
+.btn-danger:hover:not(:disabled) {
+  border-color: var(--cartoon-ink);
+  text-shadow: var(--white-stroke);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.3) 0 44%, transparent 44%),
+    linear-gradient(180deg, var(--b-top) 0%, var(--b) 100%);
+}
+
+.btn-primary:hover:not(:disabled),
+.btn-success:hover:not(:disabled),
+.btn-danger:hover:not(:disabled),
+.btn-outline:hover:not(:disabled) {
+  box-shadow: inset 0 -5px 0 var(--b-edge), 0 4px 0 var(--cartoon-ink);
+  filter: brightness(1.05);
+}
+
+.btn.btn-sm:hover:not(:disabled) {
+  box-shadow: inset 0 -4px 0 var(--b-edge), 0 3px 0 var(--cartoon-ink);
+}
+
+/* 按下：只是投影和厚底变薄，按钮本身不挪 */
+.btn:active:not(:disabled),
+.btn-outline:active:not(:disabled),
+.btn-primary:active:not(:disabled),
+.btn-success:active:not(:disabled),
+.btn-danger:active:not(:disabled),
+.btn.btn-sm:active:not(:disabled) {
+  box-shadow: inset 0 -2px 0 var(--b-edge), 0 1px 0 var(--cartoon-ink);
+}
+
+.pv-size-switch .btn.is-active {
+  --b-top: #a57bff;
+  --b: #6c34e0;
+  --b-edge: #4c1fb0;
+  color: #ffffff;
+  text-shadow: var(--white-stroke);
+}
+
+/* 不可用：灰蓝底、深色字、虚线框 */
+.btn:disabled,
+.btn:disabled:hover,
+.batch-tools .btn:disabled,
+.btn-outline:disabled,
+.btn-primary:disabled,
+.btn-success:disabled,
+.btn-danger:disabled {
+  --b-top: #eef1f8;
+  --b: #e2e7f2;
+  --b-edge: #e2e7f2;
+  color: #4a5478;
+  border-color: #7f89ad;
+  border-style: dashed;
+  text-shadow: none;
+  box-shadow: none;
+  filter: none;
+  background: #e8ecf5;
+}
+
+/* ---------- 开关 ---------- */
+input[type="checkbox"]:not(.hidden) {
+  border-color: var(--cartoon-ink);
+  background: #ffffff;
+}
+
+input[type="checkbox"]:not(.hidden)::before {
+  background: #8a95c4;
+}
+
+input[type="checkbox"]:not(.hidden):checked {
+  background: linear-gradient(180deg, #4f95ff 0%, #2266e6 100%);
+  border-color: var(--cartoon-ink);
+}
+
+input[type="checkbox"]:not(.hidden):checked::before {
+  background: #ffd23f;
+  box-shadow: 0 0 0 2px var(--cartoon-ink);
+}
+
+.checkbox-label {
+  border-color: var(--cartoon-ink);
+  box-shadow: 0 3px 0 var(--cartoon-ink);
+}
+
+/* ---------- 进度条：深蓝槽 + 橙黄斜纹填充 ---------- */
+.progress-wrap,
+.mini-progress-box {
+  background: #ffffff;
+  border-color: var(--cartoon-ink);
+}
+
+.progress-track {
+  border-color: var(--cartoon-ink);
+  background: #dbe5fa;
+  box-shadow: inset 0 3px 0 rgba(20, 26, 82, 0.15);
+}
+
+.progress-fill {
+  background:
+    repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.3) 0 8px, rgba(255, 255, 255, 0) 8px 16px),
+    linear-gradient(180deg, #ffd53f 0%, #ff9212 100%);
+  box-shadow: inset 0 -3px 0 #d06400, inset 0 3px 0 rgba(255, 255, 255, 0.45);
+}
+
+.progress-pct {
+  color: #ffffff;
+  background: #2266e6;
+  border-color: var(--cartoon-ink);
+  text-shadow: var(--white-stroke);
+}
+
+.badge {
+  border-color: var(--cartoon-ink);
+}
+
+/* ---------- 主页 ---------- */
+.home-hero p,
+.home-hero .route-done-note {
+  color: #ffffff;
+  text-shadow: var(--on-bg-text);
+}
+
+.home-hero p b,
+.home-hero p strong {
+  color: #ffe066;
+}
+
+/* 大标题：白色粗字 + 墨线描边 + 蓝色立体厚度（像素材图里的标题字） */
+.home-hero h2 {
+  color: transparent;
+  background: linear-gradient(180deg, #ffffff 0%, #ffffff 50%, #cfe6ff 52%, #9ccbff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  filter:
+    drop-shadow(2px 0 0 var(--cartoon-ink)) drop-shadow(-2px 0 0 var(--cartoon-ink))
+    drop-shadow(0 2px 0 var(--cartoon-ink)) drop-shadow(0 -2px 0 var(--cartoon-ink))
+    drop-shadow(0 3px 0 #2a5fe0) drop-shadow(0 2px 0 var(--cartoon-ink));
+}
+
+/* 功能卡：彩色底保留（相邻不同色），描边换成墨线，硬投影 */
+.feature-card,
+.feature-card:hover {
+  border-color: var(--cartoon-ink);
+  background:
+    radial-gradient(ellipse 70% 40% at 50% 0%, rgba(255, 255, 255, 0.45) 0, rgba(255, 255, 255, 0) 100%),
+    radial-gradient(circle, rgba(255, 255, 255, 0.18) 0 2px, transparent 2.6px) 0 0 / 14px 14px,
+    linear-gradient(180deg, var(--g-top) 0%, var(--g-bot) 100%);
+  box-shadow: inset 0 -9px 0 var(--g-edge), inset 0 4px 0 rgba(255, 255, 255, 0.5),
+    0 7px 0 var(--cartoon-ink), 0 14px 26px rgba(10, 18, 70, 0.35);
+}
+
+.feature-card:active {
+  box-shadow: inset 0 -5px 0 var(--g-edge), inset 0 3px 0 rgba(255, 255, 255, 0.35),
+    0 3px 0 var(--cartoon-ink), 0 8px 18px rgba(10, 18, 70, 0.3);
+}
+
+.feature-text {
+  border-color: var(--cartoon-ink);
+  box-shadow: inset 0 -4px 0 #dfe8fb;
+}
+
+.feature-text::before {
+  background: linear-gradient(180deg, #4f95ff 0%, #2266e6 100%);
+}
+
+.feature-meta {
+  border-color: var(--cartoon-ink);
+}
+
+/* ---------- 滚动条 ---------- */
+::-webkit-scrollbar-thumb {
+  background: #2f74ef;
+  border-color: #e3edff;
+}
+
+/* 主页「当前任务」一行直接放在蓝色背景上：白字 + 墨线描边 */
+.work-task-bar,
+.work-task-more summary,
+.work-task-paths dt,
+.work-task-paths dd,
+.work-task-hint,
+.work-task-note {
+  color: #ffffff;
+  text-shadow: var(--on-bg-text);
+}
+
+.work-task-bar strong,
+.work-task-bar.single .work-task-title strong {
+  color: #ffe066;
+}
+
+.wt-pick-btn,
+.work-task-single,
+.wt-pick-list {
+  border-color: var(--cartoon-ink);
+  text-shadow: none;
+}
+
+.wt-pick-btn,
+.work-task-single {
+  box-shadow: 0 3px 0 var(--cartoon-ink);
+}
+
+.wt-pick-btn:hover:not(:disabled),
+.work-task-single:hover {
+  background: #fff3c2;
+}
+
+/* ---------- 查看切字 ---------- */
+.learn-cat,
+.learn-mode,
+.tb-group-bar {
+  border-color: var(--cartoon-ink);
+  box-shadow: 0 3px 0 var(--cartoon-ink);
+}
+
+.learn-cat:hover {
+  background: #fff3c2;
+}
+
+.learn-cat[aria-pressed="true"],
+.learn-mode-btn[aria-pressed="true"],
+.pr-set .pr-mark-btn.is-on,
+.pr-cat.is-on,
+.filter-pill.active {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28) 0 45%, transparent 45%),
+    linear-gradient(180deg, #a57bff 0%, #6c34e0 100%);
+  border-color: var(--cartoon-ink);
+  color: #ffffff;
+  text-shadow: var(--white-stroke);
+}
+
+.learn-count {
+  border-color: var(--cartoon-ink);
+}
+
+.learn-mode-btn + .learn-mode-btn {
+  border-left-color: var(--cartoon-ink);
+}
+
+.tb-chip {
+  border-color: var(--cartoon-ink);
+  box-shadow: inset 0 -3px 0 rgba(20, 26, 82, 0.12);
+}
+
+.tb-chip[aria-pressed="true"] {
+  border-color: var(--cartoon-ink);
+  box-shadow: 0 0 0 2px #ffd23f, inset 0 -3px 0 rgba(0, 0, 0, 0.2);
+}
+
+.tb-shot {
+  border-color: #c3d3f5;
+  background: #f5f8ff;
+}
+
+.tb-bar,
+.pr-bar {
+  border-color: var(--cartoon-ink);
+  background: #ffffffF2;
+  box-shadow: var(--drop-lg);
+}
+
+.tb-cell {
+  border-color: #c3d3f5;
+  box-shadow: 0 3px 0 rgba(20, 26, 82, 0.18);
+}
+
+/* ---------- 调整页面 ---------- */
+.pr-doc-head {
+  border-color: var(--cartoon-ink);
+  box-shadow: 0 4px 0 var(--cartoon-ink), 0 8px 18px rgba(10, 18, 70, 0.22);
+}
+
+.pr-mark,
+.pr-regen-btn,
+.pr-cat {
+  border-color: var(--cartoon-ink);
+}
+
+.pr-regen-btn {
+  color: #12398f;
+}
+
+.pr-cat {
+  box-shadow: 0 2px 0 var(--cartoon-ink);
+}
+
+/* ---------- 其他页面里直接放在蓝色背景上的文字 ---------- */
+.clean-legend,
+.clean-filter,
+.clean-filter-hint,
+.analysis-nav a,
+.analysis-eyebrow,
+.analysis-header h1,
+.analysis-header p,
+.analysis-scope {
+  color: #ffffff;
+  text-shadow: var(--on-bg-text);
+}
+
+.analysis-header h1 {
+  text-shadow: var(--white-stroke), 0 3px 0 #0f2a8a;
+}
+
+.clean-legend .preview-sheet-tag,
+.clean-legend .sheet-shared-mark,
+.clean-filter-btn {
+  text-shadow: none;
+}
+
+.panel .analysis-eyebrow {
+  color: #12398f;
+  text-shadow: none;
+}
+
+.analysis-metric {
+  border-color: var(--cartoon-ink);
+  box-shadow: 0 4px 0 var(--cartoon-ink);
+}
+
+/* ---------- 页头「下一步 ➜」：黄色、深色字（不加描边，小字加描边会糊） ---------- */
+.nav-link.nav-next,
+.nav-link.nav-next:hover {
+  color: var(--ink);
+  border-color: var(--cartoon-ink);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.4) 0 45%, transparent 45%),
+    linear-gradient(180deg, #ffe066 0%, #ffc21f 100%);
+  box-shadow: inset 0 -4px 0 #d89b00, 0 3px 0 var(--cartoon-ink);
+  text-shadow: none;
+}
+
+/* ---------- 本次流程（flow.css）：外框换成墨线 ---------- */
+.flow-bar,
+.flow-page-bar,
+.tool-extras {
+  border-color: var(--cartoon-ink);
+  background: #ffffff;
+}
+
+.flow-bar {
+  box-shadow: inset 0 -5px 0 #dbe6fb, var(--drop-lg);
+}
+
+.flow-page-bar,
+.tool-extras {
+  box-shadow: 0 4px 0 var(--cartoon-ink);
+}
+
+.flow-step {
+  border-color: var(--cartoon-ink);
+  background: #eef4ff;
+  box-shadow: 0 3px 0 var(--cartoon-ink);
+}
+
+.flow-no {
+  background: #2266e6;
+  box-shadow: 0 0 0 2px var(--cartoon-ink);
+}
+
+.flow-sign {
+  border-color: var(--cartoon-ink);
+}
+
+.flow-link {
+  border-color: var(--cartoon-ink);
+}
+
+.fpb-step {
+  border-color: #8a9ad0;
+  background: #f1f5ff;
+}
+
+.fpb-step:hover {
+  border-color: var(--cartoon-ink);
+}
+
+/* 橙黄主按钮用深色字（橙底配墨色字对比度 > 7:1，比白字加描边清楚，小按钮也不糊） */
+.btn-primary,
+.btn-primary:hover:not(:disabled),
+.btn-primary:active:not(:disabled) {
+  color: var(--cartoon-ink);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+/* 小号紫/红按钮：描边减薄一点，免得字糊成一团 */
+.btn-sm.btn-success,
+.btn-sm.btn-danger {
+  text-shadow: 1px 0 0 #141a52, -1px 0 0 #141a52, 0 1px 0 #141a52, 0 -1px 0 #141a52;
+}
+
+.nav-link.active,
+.nav-link.active:hover {
+  color: var(--cartoon-ink);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.45);
+}
