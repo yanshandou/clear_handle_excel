@@ -682,6 +682,9 @@ class WebHandler(upload_manager.Handler):
         elif self.path == "/api/batch/show_low_risk":
             # 黄色（只是压线 / 被裁，字都在 PDF 里）默认不列；查看切字页可以打开「也列出来」（用户 2026-11-10）
             self._send_json({"ok": True, "show": batch.set_show_low_risk(payload.get("show"))})
+        elif self.path == "/api/batch/page_view":
+            # 看大图：这一格所在的 PDF 整页 + 这页问题格位置（打开时才渲染）
+            self._send_json({"ok": True, **batch.page_view(payload.get("card_id"))})
         elif self.path == "/api/batch/card_images":
             # 工具箱里每格的 PDF 截图（卡片快照默认不带图，按需取）
             self._send_json({"ok": True, "images": batch.card_images(payload.get("card_ids"))})

@@ -80,7 +80,7 @@ function toolboxCellHtml(card, showFile) {
   const fix = card.cell_fix ? `<p class="tb-note" title="${esc(card.message || '')}">用过「${esc(card.cell_fix.label)}」还没过</p>` : '';
   const kinds = (card.category || ['', ''])[1];
   return `<div class="tb-cell" data-tb-card="${esc(card.id)}">`
-    + `<button type="button" class="tb-shot" data-tb-shot title="单击看大图；Ctrl + 单击用 Excel 打开这一格">${shot}</button>`
+    + `<button type="button" class="tb-shot" data-tb-shot title="单击看整页大图（问题格画框）；Ctrl + 单击用 Excel 打开这一格">${shot}</button>`
     + `<div class="tb-cell-info"><span class="tb-where">${excelLinkHtml(where, jump)}</span>`
     + (showFile ? `<span class="tb-file" title="${esc(card.wb_name)}">${esc(card.wb_name)}</span>` : `<span class="tb-file" title="${esc(kinds)}">${esc(kinds)}</span>`)
     + `<span class="tb-text" title="${esc(card.cell_text ?? card.text ?? '')}">${esc(card.cell_text ?? card.text ?? '')}</span></div>`
@@ -225,13 +225,77 @@ function toolboxAfterRender() {
   }
 }
 
-function toolboxShowLarge(card) {
-  const url = toolboxImages.get(card.id);
-  if (!url) return;
+// 看大图（用户 2026-11-11 要）：这一格所在的 PDF 整页，宽度占满；这一页的问题格按红 / 灰 / 黄画框，
+// 当前这格蓝色外圈、上面写原因（Excel 里的字、PDF 里只显示到哪）。整页图打开时才让后台画，扫描不画
+let largeCard = null;
+let largeSeq = 0;
+function largeList() {
+  const group = groupCurrent(groupList());
+  return group ? [...$('learnDetail').querySelectorAll('[data-tb-card]')].map(el => el.dataset.tbCard) : [];
+}
+function largeWhyHtml(box) {
+  if (!box) return '这一格的问题位置没找到。';
+  const rows = [`<span class="why-row"><b>${esc(box.addr)} · ${esc(box.label)}</b>：${esc(box.reason)}</span>`];
+  if (box.text) rows.push(`<span class="why-row">Excel 里的字：<code>${esc(box.text)}</code></span>`);
+  if (box.visible) rows.push(`<span class="why-row">PDF 里只显示到：<code>${esc(box.visible)}</code>${box.missing ? `　没显示出来的：<code>${esc(box.missing)}</code>` : ''}</span>`);
+  return rows.join('');
+}
+function largeBoxHtml(box) {
+  const [x0, y0, x1, y1] = box.rect;
+  const pct = v => `${(v * 100).toFixed(3)}%`;
+  const tip = [box.addr, box.label, box.reason, box.visible ? `PDF 里只显示到：${box.visible}` : ''].filter(Boolean).join('\n');
+  return `<div class="tb-box sev-${esc(box.severity)}${box.current ? ' is-current' : ''}" title="${esc(tip)}"`
+    + ` style="left:${pct(x0)};top:${pct(y0)};width:${pct(x1 - x0)};height:${pct(y1 - y0)}">`
+    + `<span class="tb-box-tag">${esc(box.addr)} ${esc(box.label)}</span></div>`;
+}
+async function toolboxShowLarge(card) {
   const dialog = $('tbLarge');
+  largeCard = card;
+  const seq = ++largeSeq;
+  const list = largeList();
+  const at = list.indexOf(card.id);
   $('tbLargeTitle').textContent = `${card.wb_name} / ${card.sheet_name}!${card.cell_addr}`;
-  $('tbLargeImg').src = url;
-  dialog.showModal();
+  $('tbLargeMeta').textContent = list.length ? `第 ${at + 1} / ${list.length} 格 · 正在画整页…` : '正在画整页…';
+  $('tbLargePrev').disabled = at <= 0;
+  $('tbLargeNext').disabled = at < 0 || at >= list.length - 1;
+  $('tbLargeWhy').innerHTML = '';
+  const page = $('tbLargePage'), msg = $('tbLargeMsg');
+  page.querySelectorAll('.tb-box').forEach(el => el.remove());
+  page.style.visibility = 'hidden';
+  msg.hidden = true;
+  if (!dialog.open) dialog.showModal();
+  try {
+    const res = await fetch('/api/batch/page_view', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ card_id: card.id }) });
+    const data = await res.json();
+    if (seq !== largeSeq) return;
+    if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const img = $('tbLargeImg');
+    await new Promise(resolve => { img.onload = img.onerror = resolve; img.src = data.image; });
+    if (seq !== largeSeq) return;
+    page.insertAdjacentHTML('beforeend', data.boxes.map(largeBoxHtml).join(''));
+    const others = data.boxes.filter(b => !b.current).length;
+    $('tbLargeMeta').textContent = `${list.length ? `第 ${at + 1} / ${list.length} 格 · ` : ''}PDF 第 ${data.page} / ${data.pages} 页`
+      + (others ? ` · 这页还有 ${others} 处` : '') + (data.low_risk_hidden ? '（压线 / 被裁没画）' : '');
+    $('tbLargeWhy').innerHTML = largeWhyHtml(data.boxes.find(b => b.current));
+    page.style.visibility = '';
+    // 只在大图框里把这一格滚到中间（页面本身不动）
+    const current = page.querySelector('.tb-box.is-current');
+    const body = $('tbLargeBody');
+    if (current) body.scrollTop = Math.max(0, current.offsetTop - body.clientHeight / 2 + current.offsetHeight / 2);
+  } catch (err) {
+    if (seq !== largeSeq) return;
+    page.style.visibility = 'hidden';
+    msg.textContent = `看不了大图：${err.message || err}`;
+    msg.hidden = false;
+    $('tbLargeMeta').textContent = list.length ? `第 ${at + 1} / ${list.length} 格` : '';
+  }
+}
+function largeStep(delta) {
+  if (!largeCard) return;
+  const list = largeList();
+  const id = list[list.indexOf(largeCard.id) + delta];
+  const card = id && (batchState.cards || []).find(c => c.id === id);
+  if (card) toolboxShowLarge(card);
 }
 
 function toolboxHandleClick(event) {
@@ -275,4 +339,14 @@ function toolboxHandleClick(event) {
 
 $('tbApply')?.addEventListener('click', () => toolboxApply());
 $('tbLargeClose')?.addEventListener('click', () => $('tbLarge').close());
+$('tbLargePrev')?.addEventListener('click', () => largeStep(-1));
+$('tbLargeNext')?.addEventListener('click', () => largeStep(1));
+$('tbLargeExcel')?.addEventListener('click', () => {
+  if (largeCard) document.querySelector(`[data-tb-card="${CSS.escape(largeCard.id)}"] .tb-where .excel-link`)?.click();
+});
+$('tbLarge')?.addEventListener('keydown', event => {
+  if (event.key === 'ArrowLeft') { event.preventDefault(); largeStep(-1); }
+  else if (event.key === 'ArrowRight') { event.preventDefault(); largeStep(1); }
+});
+$('tbLarge')?.addEventListener('close', () => { largeSeq++; largeCard = null; });
 $('tbLarge')?.addEventListener('click', event => { if (event.target === $('tbLarge')) $('tbLarge').close(); });

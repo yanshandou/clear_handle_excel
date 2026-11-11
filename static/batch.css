@@ -266,9 +266,36 @@ tr[data-state="marked"] .learn-state { background: var(--purple-ink, #1f5fc4); c
 .tb-apply { flex: none; display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 .tb-apply-text { display: inline-block; min-width: 6.5em; text-align: center; }
 .tb-count { display: inline-block; min-width: 2.2em; padding: 0 6px; border-radius: 999px; background: #ffc21f; color: #3d2a00; font-size: 13px; font-weight: 800; text-align: center; text-shadow: none; line-height: 1.5; font-variant-numeric: tabular-nums; }
-.tb-large { width: min(1100px, calc(100vw - 48px)); }
-.tb-large-body { max-height: 75vh; overflow: auto; margin: 0 22px; text-align: center; }
-.tb-large-body img { max-width: 100%; }
+/* 看大图（2026-11-11）：PDF 整页占满屏宽，问题格按红 / 灰 / 黄画框 */
+.tb-large { width: calc(100vw - 32px); max-width: none; max-height: calc(100vh - 24px); display: none; flex-direction: column; }
+.tb-large[open] { display: flex; }
+.tb-large-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.tb-large-meta { font-size: 14px; color: #3a3f5c; font-weight: 600; }
+.tb-large-legend { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; color: #1c2858; }
+.tb-large-legend i { display: inline-block; width: 18px; height: 12px; border: 3px solid; border-radius: 3px; margin-left: 8px; }
+.tb-large-legend .sev-red, .tb-box.sev-red { border-color: #e0242b; }
+.tb-large-legend .sev-gray, .tb-box.sev-gray { border-color: #6b6f80; }
+.tb-large-legend .sev-yellow, .tb-box.sev-yellow { border-color: #e9a400; }
+.tb-large-head, .tb-large-foot, .tb-large-why { flex: none; }
+.tb-large-why { margin: 0 22px 8px; padding: 8px 12px; border-radius: 8px; background: #fff4f4; border: 2px solid #f3c2c2; font-size: 14px; line-height: 1.6; color: #1c2858; min-height: 2.2em; }
+.tb-large-why b { color: #a01818; }
+.tb-large-why .why-row { display: block; }
+.tb-large-why code { font-family: inherit; background: #fff; border: 1px solid #e5d0d0; border-radius: 4px; padding: 0 4px; }
+.tb-large-body { flex: 1; min-height: 200px; overflow: auto; margin: 0 22px; background: #8a8fa6; border-radius: 8px; padding: 10px; }
+.tb-large-page { position: relative; width: 100%; background: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.25); }
+.tb-large-page img { display: block; width: 100%; height: auto; }
+.tb-box { position: absolute; border: 3px solid; border-radius: 3px; box-sizing: content-box; margin: -5px 0 0 -5px; padding: 2px; pointer-events: auto; }
+.tb-box.sev-red { background: rgba(224, 36, 43, .08); }
+.tb-box.sev-yellow { background: rgba(233, 164, 0, .08); }
+.tb-box.is-current { border-width: 5px; margin: -7px 0 0 -7px; box-shadow: 0 0 0 3px #fff, 0 0 0 6px #1f5fc4; }
+.tb-box-tag { position: absolute; left: -3px; bottom: 100%; margin-bottom: 2px; padding: 0 5px; border-radius: 4px; font-size: 12px; font-weight: 800; line-height: 1.5; white-space: nowrap; color: #fff; }
+.tb-box.sev-red .tb-box-tag { background: #c41d23; }
+.tb-box.sev-gray .tb-box-tag { background: #555a6b; }
+.tb-box.sev-yellow .tb-box-tag { background: #8a5d00; }
+.tb-box.is-current .tb-box-tag { background: #1f5fc4; }
+.tb-large-msg { margin: 40px auto; max-width: 640px; padding: 16px; background: #fff; border-radius: 8px; text-align: center; font-weight: 700; color: #1c2858; }
+.tb-large-foot { display: flex; align-items: center; gap: 10px; }
+.tb-large-tip { margin-left: auto; font-size: 13px; color: #3a3f5c; }
 .tb-group-apply { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
 
 /* 按「字丢没丢」分级（2026-11-10）：左边分类分三段，黄色默认不列 */

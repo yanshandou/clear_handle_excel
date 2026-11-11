@@ -4,6 +4,7 @@
 不自动加高、开换行或调整原有样式（用户 2026-11-05 定）。
 审核颜色只写数据库；旧版本留下的自动修改由独立、可续跑的审核任务统一还原。
 """
+import base64
 import copy
 import hashlib
 import math
@@ -722,6 +723,70 @@ def snapshot(detail_paths: set[str] | None = None) -> dict:
                 "job": copy.deepcopy(wf.STATE["job"]), "progress": dict(wf.STATE["scan_progress"]),
                 "feed": _job_feed(wf.STATE["job"]),
                 "logs": wf.STATE["logs"][-100:]}
+
+
+PAGE_VIEW_ZOOM = 2.0  # 大图占满屏宽也清楚（A4 横向约 1680 像素宽）
+PAGE_VIEW_BOX_LIMIT = 300
+
+
+def page_view(card_id: Any) -> dict[str, Any]:
+    """查看切字「看大图」（用户 2026-11-11 要）：这一格所在的 PDF 整页，打开时才渲染（扫描不画，不拖慢扫描），
+    加上这一页所有还没解决的问题格位置，网页按红 / 灰 / 黄画框、写原因，一眼看出为什么标色、问题出在哪。"""
+    if not isinstance(card_id, str):
+        raise ValueError("请给出格子")
+    hide = None
+    with wf.STATE_LOCK:
+        card = _data()["cards"].get(card_id)
+        if card is None or card.get("dismissed"):
+            raise ValueError("这一格已经不在列表里了，刷新一下再看")
+        mine = _items_at(card)
+        live = [it for it in mine if it.get("status") not in wf.RESOLVED_STATUSES] or mine
+        item = next((it for it in live if it.get("pdf_path") and it.get("page_index") is not None
+                     and isinstance(it.get("bbox"), (list, tuple)) and len(it["bbox"]) == 4), None)
+        if item is None:
+            raise ValueError("这一格在 PDF 里没定位到（PDF 未匹配到文字），没有大图，请打开 Excel 看")
+        pdf_path, page_index = item["pdf_path"], int(item["page_index"])
+        hide = autofix.low_risk_hidden(wf.STATE)
+        boxes = []
+        for it in wf.STATE["items"].values():
+            if (it.get("pdf_path") != pdf_path or it.get("page_index") != page_index
+                    or not isinstance(it.get("bbox"), (list, tuple)) or len(it["bbox"]) != 4):
+                continue
+            current = _cell(it) == _cell(card)
+            if it.get("status") in wf.RESOLVED_STATUSES and not current:
+                continue
+            kind = autofix.item_error_type(it)
+            severity = autofix.error_severity([kind])
+            if hide and severity == autofix.SEVERITY_YELLOW and not current:
+                continue  # 黄色默认藏起来的，大图上也不画，免得满页都是框
+            problem = _problem(it)
+            boxes.append({"bbox": [float(v) for v in it["bbox"]], "severity": severity, "current": current,
+                          "addr": it.get("cell_addr") or "", "label": autofix.error_type_label(kind),
+                          "reason": problem["reason"] or "", "missing": problem["missing"],
+                          "text": str(it.get("text") or "")[:200],
+                          "visible": str(it.get("visible_text") or "")[:200] if it.get("kind") == "hidden" else ""})
+        boxes.sort(key=lambda b: (not b["current"], b["bbox"][1], b["bbox"][0]))
+        boxes = boxes[:PAGE_VIEW_BOX_LIMIT]
+        title = f"{card.get('wb_name') or Path(card['wb_path']).name} / {card['sheet_name']}!{card.get('cell_addr', '')}"
+    if not Path(pdf_path).is_file():
+        raise ValueError("这份 PDF 已经不在了（可能复检后重新导出过），复检一次再看")
+    started = time.perf_counter()
+    with fitz.open(pdf_path) as doc:
+        if not 0 <= page_index < len(doc):
+            raise ValueError("PDF 页数变了，复检一次再看")
+        page = doc[page_index]
+        png = page.get_pixmap(matrix=fitz.Matrix(PAGE_VIEW_ZOOM, PAGE_VIEW_ZOOM), annots=False).tobytes("png")
+        width, height, pages = float(page.rect.width), float(page.rect.height), len(doc)
+        x0, y0 = float(page.rect.x0), float(page.rect.y0)
+    for box in boxes:  # 换成相对整页的比例，网页按百分比画框，图多大都对得上
+        b = box["bbox"]
+        box["rect"] = [round((b[0] - x0) / width, 5), round((b[1] - y0) / height, 5),
+                       round((b[2] - x0) / width, 5), round((b[3] - y0) / height, 5)]
+        del box["bbox"]
+    debug_log.event("🖼 看大图", 格=title, 页=page_index + 1, 框=len(boxes), 秒=round(time.perf_counter() - started, 2))
+    return {"title": title, "page": page_index + 1, "pages": pages, "width": width, "height": height,
+            "image": "data:image/png;base64," + base64.b64encode(png).decode("ascii"), "boxes": boxes,
+            "low_risk_hidden": bool(hide)}
 
 
 CARD_IMAGES_LIMIT = 200

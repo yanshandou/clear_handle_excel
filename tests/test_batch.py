@@ -1515,6 +1515,30 @@ class BatchTests(unittest.TestCase):
         with patch.object(batch, "workbook_locked", return_value=False):
             self.assertEqual(batch.snapshot()["recheck_ready"], [self.path])
 
+    def test_page_view_renders_page_on_demand_with_problem_boxes(self):
+        # 看大图：打开时才画整页，这一页的问题格按等级给位置（比例），黄色默认不画
+        from core.hidden_text import REASON_CLIPPED, REASON_TRUNCATED
+        pdf = self.root / "S1.pdf"
+        with batch.fitz.open() as doc:
+            doc.new_page(width=600, height=800).insert_text((40, 60), "hello")
+            doc.save(pdf)
+        cut, cut_item = self.add_card("A5")
+        cut_item.update(status="pending", hidden_reason=REASON_TRUNCATED, pdf_path=str(pdf), text="ABCDEF",
+                        visible_text="ABC", bbox=[60, 80, 120, 100])
+        other, other_item = self.add_card("B5")
+        other_item.update(status="pending", hidden_reason=REASON_CLIPPED, pdf_path=str(pdf), bbox=[300, 400, 360, 420])
+        view = batch.page_view(cut["id"])
+        self.assertTrue(view["image"].startswith("data:image/png;base64,"))
+        self.assertEqual((view["page"], view["pages"]), (1, 1))
+        self.assertEqual(len(view["boxes"]), 1)
+        box = view["boxes"][0]
+        self.assertEqual((box["current"], box["severity"], box["missing"]), (True, "red", "DEF"))
+        self.assertEqual(box["rect"], [0.1, 0.1, 0.2, 0.125])
+        batch.set_show_low_risk(True)
+        self.assertEqual([b["addr"] for b in batch.page_view(cut["id"])["boxes"]], ["A5", "B5"])
+        with self.assertRaisesRegex(ValueError, "不在列表里"):
+            batch.page_view("nope")
+
     def test_snapshot_image_urls_change_with_content(self):
         card, _ = self.add_card()
         batch._save_shot(card, "before", "data:image/png;base64,YQ==")
