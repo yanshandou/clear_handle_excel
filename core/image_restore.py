@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core import debug_log, file_problem, fix_images, print_overlays, progress_log, workflow as wf
+from core import debug_log, file_problem, fix_images, image_compare, print_overlays, progress_log, workflow as wf
 from core.backup_compare import pair_files, require_manual_file_check
 from core.common import workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, quit_background_excel, start_background_excel
@@ -195,6 +195,29 @@ def render_area(sheet: Any, names: list[str], out_name: str) -> tuple[str, str]:
         return "", ""
 
 
+def _screen_thumb(sheet: Any, group: dict, img_key: str, how_key: str, box: dict | None) -> Any:
+    """屏幕原样截图里，只取截图本身那块（按区域和截图在表上的位置换算）；打印效果的或没截出来的不比"""
+    if group.get(how_key) != "screen" or not group.get(img_key) or not box:
+        return None
+    try:
+        area = _area_of(sheet, group["names"])
+        rect = (float(area.Left), float(area.Top), float(area.Width), float(area.Height))
+        return image_compare.thumb_from_png(str(fix_images.IMAGES_DIR / group[img_key]), rect,
+                                            (box["left"], box["top"], box["width"], box["height"]))
+    except Exception as err:
+        debug_log.event("⚠️ 截图取样失败", 表=str(getattr(sheet, "Name", "?")), 截图=group["key"], 错误=str(err))
+        return None
+
+
+def _score(groups: list[dict]) -> None:
+    """按图比：原版↔新版 Excel、原版↔新版 PDF；疑似有问题的标 suspect，取样数据用完丢掉"""
+    for group in groups:
+        old = group.pop("_old_thumb", None)
+        group["cmp_excel"] = image_compare.compare(old, group.pop("_new_thumb", None))
+        group["cmp_pdf"] = image_compare.compare(old, group.pop("_pdf_thumb", None))
+        group["suspect"] = any(c and c["suspect"] for c in (group["cmp_excel"], group["cmp_pdf"]))
+
+
 def _anchor(sheet: Any, name: str) -> str:
     try:
         return str(sheet.Shapes.Item(name).TopLeftCell.Address(False, False))
@@ -273,6 +296,10 @@ def pdf_crops(pdf: Path, path: Path, groups: list[dict]) -> None:
             fix_images.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
             page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip, annots=False).save(str(fix_images.IMAGES_DIR / name))
             group["pdf_img"], group["pdf_page"] = name, number + 1
+            try:  # 只取截图本身那块（不留边）给按图比用
+                group["_pdf_thumb"] = image_compare.thumb_from_page(page, rect)
+            except Exception as err:
+                debug_log.event("⚠️ PDF 截图取样失败", 截图=group["key"], 错误=str(err))
         debug_log.event("📄 在新版 PDF 里找截图", PDF=pdf.name,
                         结果=[f"{g['key']}：{('第 ' + str(g['pdf_page']) + ' 页') if g.get('pdf_img') else g.get('pdf_why')}" for g in groups])
     finally:
@@ -329,6 +356,9 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf:
                     group["aspect"] = host["width"] / host["height"]  # PDF 是新版导出的，按新版截图的比例找
                     group["texts"] = _nearby_texts(sheet, group["names"])
                 group["new_img"], group["new_how"] = render_area(sheet, group["names"], _image_name(path, cur["name"], group["key"], "new"))
+                if group.get("picture"):
+                    group["_new_thumb"] = _screen_thumb(sheet, group, "new_img", "new_how", cur_by.get(group["key"]))
+                    group["_old_box"] = _unique(ref["shapes"]).get(group["key"])
             debug_log.event("🔍 找到受影响的图片", 文件=path.name, 表=cur["name"],
                             图形=[d for g in groups.values() for d in g["details"]])
             ordered = sorted(groups.values(), key=lambda g: not g["changed"])
@@ -343,6 +373,8 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf:
                 old_sheet = old_book.Worksheets(entry["old_sheet"])
                 for group in entry["groups"]:
                     group["old_img"], group["old_how"] = render_area(old_sheet, group["names"], _image_name(path, entry["sheet"], group["key"], "old"))
+                    if group.get("picture"):
+                        group["_old_thumb"] = _screen_thumb(old_sheet, group, "old_img", "old_how", group.get("_old_box"))
         finally:
             old_book.Close(SaveChanges=False)
     if sheets and pdf:
@@ -356,7 +388,14 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf:
     for entry in sheets:
         for group in entry["groups"]:
             group.pop("texts", None)
-    return {"count": sum(s["count"] for s in sheets), "sheets": sheets, "review": sum(s["review"] for s in sheets)}
+            group.pop("_old_box", None)
+        _score(entry["groups"])
+        entry["suspect"] = sum(1 for g in entry["groups"] if g.get("suspect"))
+        entry["groups"].sort(key=lambda g: (not g.get("suspect") and not g["changed"], not g["changed"]))
+        debug_log.event("🔬 按图比", 文件=path.name, 表=entry["sheet"],
+                        结果=[f"{g['key']}：Excel {g.get('cmp_excel')} / PDF {g.get('cmp_pdf')}" for g in entry["groups"]])
+    return {"count": sum(s["count"] for s in sheets), "sheets": sheets, "review": sum(s["review"] for s in sheets),
+            "suspect": sum(s["suspect"] for s in sheets)}
 
 
 def _image_refs() -> list[str]:
@@ -452,7 +491,8 @@ def describe(entry: dict, mode: str = "fix") -> str:
         return entry["error"]
     if mode == "scan":
         review = f"，{entry['review']} 张图片请看三列目测" if entry.get("review") else ""
-        return (f"{entry['count']} 个图形变了" if entry.get("count") else "程序没量出变化") + review
+        suspect = f"，按图比 {entry['suspect']} 张疑似有问题" if entry.get("suspect") else ""
+        return (f"{entry['count']} 个图形变了" if entry.get("count") else "程序没量出变化") + suspect + review
     parts = [f"放回 {entry['count']} 个图形" if entry.get("count") else "",
              f"组合 {entry['grouped']} 组截图和标注" if entry.get("grouped") else ""]
     parts = [p for p in parts if p]

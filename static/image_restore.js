@@ -88,6 +88,10 @@
     return shot(label, g.pdf_img, (g.pdf_why || '没在 PDF 里找到这一处') + '，请点上面「新版 PDF」自己看');
   }
 
+  // 按图比的结果：红框偏了多少（按截图边长 %）、整体差多少（0～1）
+  const cmpText = (label, c) => !c ? `${label}：没法比` : `${label}：${c.red_shift == null ? '没有红框' : `红框偏 ${c.red_shift}%`}，整体差 ${c.diff}${c.suspect ? ' ⚠' : ''}`;
+  const scoreHtml = g => (g.cmp_excel || g.cmp_pdf)
+    ? `<div class="img-score${g.suspect ? ' is-suspect' : ''}">${g.suspect ? '⚠ 按图比疑似有问题 · ' : '按图比 · '}${esc(cmpText('原版↔新版 Excel', g.cmp_excel))}｜${esc(cmpText('原版↔新版 PDF', g.cmp_pdf))}</div>` : '';
   const groupTitle = f => (f.group_sheets || []).map(g => `【${g.sheet}】${g.groups.join('；')}`).join('\n');
 
   function renderFile(f, data) {
@@ -102,11 +106,12 @@
     const badge = f.fixed ? `<span class="img-badge">✓ 已修复 ${f.fixed_count || 0} 个图形</span>`
       : f.fix_error ? `<span class="img-badge is-bad">! 没修好：${esc(f.fix_error)}</span>`
       : f.count ? `<button class="btn btn-outline btn-sm" type="button" data-fix-file="${esc(f.name)}">🖼️ 修复这份</button>`
+      : f.suspect ? `<span class="img-badge is-bad" title="图形数字没变，但按图比红框偏了或差别大：多半只在 PDF 里错开，或 Excel 里看着不一样">⚠ 按图比 ${f.suspect} 张疑似有问题</span>`
       : '<span class="img-badge is-bad" title="程序量出来大小、位置都没变；请看三列，有问题就点「新版 Excel」手动调">程序没量出变化 · 请目测</span>';
     const groupBadge = f.grouped ? `<span class="img-badge is-group" title="${esc(groupTitle(f))}">📌 已组合 ${f.grouped} 组</span>` : '';
     const sheets = (f.sheets || []).map(s => `<div class="img-sheet">【${esc(s.sheet)}】${s.count ? `${s.count} 个图形变了` : ''}${s.count && s.review ? '，' : ''}${s.review ? `${s.review} 张图片请目测` : ''}</div>`
       + (s.groups || []).map(g => `<div class="img-group">${shot('原版 Excel' + how(g.old_how), g.old_img)}${shot((f.fixed ? '新版 Excel（修复前）' : '新版 Excel') + how(g.new_how), g.new_img)}${pdfShot(f, g)}`
-        + `<div class="img-detail">${(g.details || []).map(d => '· ' + esc(d)).join('\n')}\n`
+        + `<div class="img-detail">${scoreHtml(g)}${(g.details || []).map(d => '· ' + esc(d)).join('\n')}\n`
         + `${compare(`🆚 对照打开这里${g.cell ? `（${esc(g.cell)}）` : ''}`, s.sheet, g.cell || '')}</div></div>`).join('')).join('');
     return `<div class="img-file${f.fixed ? ' is-fixed' : ''}"><div class="img-file-head"><span class="img-file-name">${esc(f.name)}</span>`
       + `<span class="img-links">${links}</span>${badge}${groupBadge}</div>${sheets}</div>`;
@@ -131,12 +136,14 @@
       return;
     }
     const bad = files.filter(f => f.error), hit = files.filter(f => !f.error && f.count);
-    const review = files.filter(f => !f.error && !f.count && f.review);
+    const review = files.filter(f => !f.error && !f.count && f.review)
+      .sort((a, b) => (b.suspect || 0) - (a.suspect || 0));  // 按图比疑似有问题的排前面
     const same = files.filter(f => !f.error && !f.count && !f.review);
     const link = f => f.path ? window.excelLinkHtml(esc(f.name), { file: f.name, folder: data.folder }) : esc(f.name);
     const badHtml = bad.map(f => `<li class="font-item is-bad"><span class="font-mark">!</span><span class="font-name">${link(f)}</span><span class="font-error">没查：${esc(f.error)}</span></li>`).join('');
     $('imgResults').innerHTML = (data.partial ? `<p class="toolbar-hint">还在查（已查 ${files.length} 份），查完的先列在下面，可以边看边处理。</p>` : '')
       + `<p class="font-summary"><span class="is-bad">${hit.length} 份程序量出变化</span>`
+      + `<span class="is-bad">${files.filter(f => f.suspect).length} 份按图比疑似有问题</span>`
       + `<span class="is-bad">${review.length} 份有图片、请目测</span>`
       + `<span class="is-ok">${same.length} 份没有图片</span>` + (bad.length ? `<span class="is-bad">! ${bad.length} 份没查</span>` : '') + '</p>'
       + (hit.length || review.length ? [...hit, ...review].map(f => renderFile(f, data)).join('') : '<p>没有图片。</p>')
