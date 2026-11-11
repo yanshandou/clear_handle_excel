@@ -20,6 +20,7 @@
     .font-error { grid-column: 2; font-size: 14px; color: #b42318; overflow-wrap: anywhere; }
     .img-fields { grid-template-columns: minmax(0, 1fr); max-width: 860px; }
     .img-file { border: 1px solid #dce5ef; border-radius: 12px; padding: 12px 14px; margin: 14px 0; background: #fff; }
+    .only-bad > .img-file:not(.is-flag) { display: none; }
     .img-file.is-fixed { border-color: #86c9a3; background: #f3fbf6; }
     .img-file-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
     .img-file-name { font-weight: 700; overflow-wrap: anywhere; margin-right: auto; }

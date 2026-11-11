@@ -586,17 +586,19 @@ def _run(mode: str, root: Path, paths: list[Path], old_root: Path | None, old_pa
             finally:
                 with _LOCK:
                     _STATUS.update(running=False, done=len(paths), current="", step="")
-                    _STATUS["result"] = _merge(_STATUS.get("result"), mode, root, old_root, pdf_root, files)
+                    _STATUS["result"] = _merge(_STATUS.get("result"), mode, root, old_root, pdf_root, files, stamp)
                 with wf.STATE_LOCK:
                     wf.STATE["busy"] = False
                     wf.STATE.pop("maintenance", None)
 
 
-def _merge(previous: dict | None, mode: str, root: Path, old_root: Path | None, pdf_root: Path | None, files: list[dict]) -> dict:
+def _merge(previous: dict | None, mode: str, root: Path, old_root: Path | None, pdf_root: Path | None, files: list[dict],
+           stamp: int | None = None) -> dict:
     """找的结果直接替换；修 / 组合的结果按文件名并进上次找到的清单（fixed / fix_error / fixed_count / grouped）"""
     base = {"folder": str(root), "old_folder": str(old_root or ""), "pdf_folder": str(pdf_root or ""), "files": files, "mode": mode}
     if mode == "scan" or not previous or previous.get("folder") != str(root) or not previous.get("scanned"):
-        return {**base, "scanned": mode == "scan", "stamp": int(time.time())}  # stamp：局部截图地址带上，重新找过浏览器才换图
+        # stamp：局部截图地址带上，重新找过浏览器才换图；沿用查的过程中那个，查完不重新下载图（页面不跳）
+        return {**base, "scanned": mode == "scan", "stamp": stamp or int(time.time())}
     def outcome(done: dict) -> dict:
         info = {"grouped": done.get("grouped", 0), "group_sheets": done.get("group_sheets", [])}
         if mode == "fix":

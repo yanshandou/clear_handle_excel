@@ -173,6 +173,11 @@ class MergeTest(unittest.TestCase):
         self.assertFalse(only["scanned"])
         self.assertEqual(only["old_folder"], "")
 
+    def test_scan_keeps_stamp_so_images_do_not_reload(self):
+        from pathlib import Path
+        done = ir._merge(None, "scan", Path("D:/x"), Path("D:/y"), None, [], 12345)
+        self.assertEqual(done["stamp"], 12345)
+
 
 class OverlayHostsTest(unittest.TestCase):
     def test_every_lists_all_pictures_and_groups(self):

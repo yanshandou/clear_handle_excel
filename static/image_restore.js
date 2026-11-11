@@ -8,6 +8,8 @@
   const OLD = 'clear_handle_excel.oldFolder';
   const PDF = 'clear_handle_excel.imgPdfFolder';
   const GROUP = 'clear_handle_excel.imgGroupOnFix';
+  const shown = new Map();  // 文件名 → 已显示的那一块
+  let listKey = '', onlyBad = false;
   let latest = {}, lastSig = '', loading = true, submitting = false, timer = 0, initial = true, wasRunning = false;
   try {
     $('imgFolder').value = localStorage.getItem(FOLDER) || '';
@@ -123,6 +125,7 @@
     const sig = JSON.stringify([latest.running && latest.mode === 'scan', data]);
     if (sig === lastSig) return;
     lastSig = sig;
+    if (!data || !data.scanned) listKey = '';
     if (latest.running && latest.mode === 'scan' && !data) { $('imgResults').innerHTML = '<p>正在找，查完一份就会列在这里；进度看右下角的进度框。</p>'; return; }
     if (!data) { $('imgResults').innerHTML = '<p>尚未开始。</p>'; $('imgResultFolder').textContent = ''; return; }
     $('imgResultFolder').textContent = `新版：${data.folder}` + (data.old_folder ? ` · 原版：${data.old_folder}` : '') + (data.pdf_folder ? ` · PDF：${data.pdf_folder}` : '');
@@ -135,22 +138,50 @@
       $('imgResults').innerHTML = rows ? `<ul class="font-list">${rows}</ul>` : '<p>没有截图上叠着红框、箭头的地方，什么都没改。</p>';
       return;
     }
+    // 按查找顺序往下追加（用户 2026-11-11 要：查看时页面不动，新查完的接到最下面，不重排、不顶掉正在看的位置）。
+    // 已经显示的那份只在它自己内容变了（比如点了修复）时原地换，别的不碰。
+    const key = `${data.folder}|${data.stamp}`;
+    if (key !== listKey || !$('imgList')) {
+      listKey = key;
+      shown.clear();
+      $('imgResults').innerHTML = '<p id="imgSummary" class="font-summary"></p><p id="imgHint" class="toolbar-hint"></p>'
+        + `<label class="img-group-opt"><input type="checkbox" id="imgOnlyBad"${onlyBad ? ' checked' : ''}>只看程序量出变化、⚠ 疑似有问题、没查的（其余先藏起来）</label>`
+        + `<div id="imgList"${onlyBad ? ' class="only-bad"' : ''}></div><p id="imgEmpty" hidden>没有图片。</p>`;
+    }
     const bad = files.filter(f => f.error), hit = files.filter(f => !f.error && f.count);
-    const review = files.filter(f => !f.error && !f.count && f.review)
-      .sort((a, b) => (b.suspect || 0) - (a.suspect || 0));  // 按图比疑似有问题的排前面
+    const review = files.filter(f => !f.error && !f.count && f.review);
     const same = files.filter(f => !f.error && !f.count && !f.review);
-    const link = f => f.path ? window.excelLinkHtml(esc(f.name), { file: f.name, folder: data.folder }) : esc(f.name);
-    const badHtml = bad.map(f => `<li class="font-item is-bad"><span class="font-mark">!</span><span class="font-name">${link(f)}</span><span class="font-error">没查：${esc(f.error)}</span></li>`).join('');
-    $('imgResults').innerHTML = (data.partial ? `<p class="toolbar-hint">还在查（已查 ${files.length} 份），查完的先列在下面，可以边看边处理。</p>` : '')
-      + `<p class="font-summary"><span class="is-bad">${hit.length} 份程序量出变化</span>`
+    $('imgSummary').innerHTML = `<span class="is-bad">${hit.length} 份程序量出变化</span>`
       + `<span class="is-bad">${files.filter(f => f.suspect).length} 份按图比疑似有问题</span>`
       + `<span class="is-bad">${review.length} 份有图片、请目测</span>`
-      + `<span class="is-ok">${same.length} 份没有图片</span>` + (bad.length ? `<span class="is-bad">! ${bad.length} 份没查</span>` : '') + '</p>'
-      + (hit.length || review.length ? [...hit, ...review].map(f => renderFile(f, data)).join('') : '<p>没有图片。</p>')
-      + (badHtml ? `<ul class="font-list">${badHtml}</ul>` : '');
+      + `<span class="is-ok">${same.length} 份没有图片</span>` + (bad.length ? `<span class="is-bad">! ${bad.length} 份没查</span>` : '');
+    $('imgHint').textContent = data.partial ? `还在查（已查 ${files.length} 份）：按查找顺序排，新查完的接在最下面，正在看的位置不会动。`
+      : `按查找顺序排（共 ${files.length} 份）。勾下面「只看…」可以先藏起没量出问题的。`;
+    const link = f => f.path ? window.excelLinkHtml(esc(f.name), { file: f.name, folder: data.folder }) : esc(f.name);
+    const list = $('imgList');
+    for (const f of files) {
+      if (!f.error && !f.count && !f.review) continue;
+      const html = f.error
+        ? `<div class="img-file is-flag"><ul class="font-list"><li class="font-item is-bad"><span class="font-mark">!</span><span class="font-name">${link(f)}</span><span class="font-error">没查：${esc(f.error)}</span></li></ul></div>`
+        : renderFile(f, data).replace('<div class="img-file', `<div class="img-file${f.count || f.suspect ? ' is-flag' : ''}`);
+      const old = shown.get(f.name);
+      if (old && old.html === html) continue;
+      const box = document.createElement('div');
+      box.innerHTML = html;
+      const el = box.firstElementChild;
+      if (old) old.el.replaceWith(el); else list.append(el);
+      shown.set(f.name, { html, el });
+    }
+    $('imgEmpty').hidden = !!shown.size || !!data.partial;
   }
 
-  function render() { controls(); renderProgress(); renderPanel(); renderResults(); controls(); }
+  // 查完时上面的进度条会收起，结果整体往上挪；用户已经往下看结果时把滚动补回去，眼前的内容不动
+  function render() {
+    const anchor = $('imgResults'), before = anchor.getBoundingClientRect().top;
+    controls(); renderProgress(); renderPanel(); renderResults(); controls();
+    const moved = anchor.getBoundingClientRect().top - before;
+    if (before < 0 && Math.abs(moved) >= 1) window.scrollBy(0, moved);
+  }
 
   async function refresh() {
     clearTimeout(timer);
@@ -226,6 +257,11 @@
   $('imgFixAll').addEventListener('click', () => start('fix', pending().map(f => f.name)));
   $('imgGroup').addEventListener('click', () => start('group'));
   $('imgGroupOnFix').addEventListener('change', () => { try { localStorage.setItem(GROUP, $('imgGroupOnFix').checked ? '1' : '0'); } catch (_) {} });
+  $('imgResults').addEventListener('change', event => {
+    if (event.target.id !== 'imgOnlyBad') return;
+    onlyBad = event.target.checked;
+    $('imgList')?.classList.toggle('only-bad', onlyBad);
+  });
   $('imgResults').addEventListener('click', async event => {
     const fix = event.target.closest('[data-fix-file]');
     if (fix) { start('fix', [fix.dataset.fixFile]); return; }
