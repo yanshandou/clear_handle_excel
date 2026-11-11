@@ -1,8 +1,11 @@
 # Excel 批处理重复开存优化分析报告
 
-> 分析日期：2026-11-11  
-> 代码基线：本地 HEAD `16a1f63`，结合分析时的实际工作树；并非仅对已提交版本的审查。  
-> 范围：核对优化建议、分析约束、提出实施和验收建议；本次不修改业务代码、不启动 Excel 处理用户文件。  
+> 初版日期：2026-11-11；修订日期：2026-11-12。
+>
+> 代码基线：本地 HEAD `3a1bd53`；修订开始时工作树干净。日志是另外读取的运行时快照，不固定于该提交。
+>
+> 范围：核对优化建议、分析约束、提出实施和验收建议；本次仅修订报告，不修改业务代码、不启动 Excel 处理用户文件。
+>
 > 证据性质：打开次数来自实际调用路径的静态计数；时间收益是条件估算，不是性能实测。
 
 ## 1. 结论摘要
@@ -11,14 +14,27 @@
 
 主要结论如下：
 
-1. **精简 Sheet 后自动检查确实存在较多重复开存。** 全部相关选项启用、每个修改分支均命中且没有重试时，当前文件可发生 **8 次 Excel COM 打开**，不是 7 次；参考文件另有 **2～3 次**，不应混在当前文件次数里。
-2. **上传预处理确实可以集中写回。** 对普通 `.xlsx/.xlsm`，有颜色需要恢复时，常见路径是当前文件 3 次 COM 打开、参考文件 1 次，外加两次 openpyxl 解析；“每份 4 次”若指两份文件合计大致成立，若指当前文件则不准确。
+1. **精简 Sheet 后自动检查确实存在较多重复开存。** 全部相关选项启用、每个修改分支均命中且没有重试时，当前文件仍可发生 **8 次 Excel COM 打开**。参考须另计：引用修复会按候选配对逐个模拟，必要时反复打开参考，初版“参考合计 2～3 次”不再是上界。
+2. **上传三步预处理的开存次数没有变化，仍可集中写回。** 对普通 `.xlsx/.xlsm`，有颜色需要恢复时，是当前文件 3 次 COM 打开、参考文件 1 次，外加两次颜色计划的 openpyxl 解析；但外围已有人工差异确认和多阶段版本校验，三步预处理不是整个上传流程。
 3. **“只开一次”不等于“把现有函数放在一个循环里”。** 当前各函数自己负责打开、关闭、保存，还依赖磁盘版本、工作表历史、参考文件模拟和任务状态，需要拆开资源管理与具体操作。
 4. **同名参考文件不能在同一个 Excel 实例中与当前文件同时打开。** 对引用修复，参考文件还会在内存中被删表、改名以模拟损坏，不能当成始终不变的共享工作簿。
 5. **最后一次保存不等于完整事务。** 能避免正常执行异常前主动保存部分修改，但不能自动保证保存失败、进程被终止、旧版 `.xls` 写锁副作用以及数据库写入失败时原件和记录完全一致。
 6. **“一项失败整份停止”是行为变更。** 当前精简自动检查是一步失败后继续后面的步骤；“无法确认所以不改”和真正的执行异常必须区分，不能把所有提示都升级为整份失败。
 7. **建议先建立基线，再以⑤上传预处理验证集中开存，再推进①精简链路。** 这是按改动范围与验证难度排序，不是断言⑤能节省更多时间；若真实日志证明①占绝对大头，也可调整实施顺序。
-8. **组合截图与标注、宽一页不要与第一轮 I/O 重构无条件捆绑。** 它们会改变 Excel 图形结构或打印设置，是独立的行为扩展，应分别验收。
+8. **组合截图与标注、宽一页不要与第一轮 I/O 重构无条件捆绑。** 它们会改变 Excel 图形结构或打印设置，应分别验收；新增的“恢复可见列宽”是独立入口，尚未进入精简自动链，不能因此把8次改成9次。
+
+### 本次修订相对初版的关键变化
+
+| 初版描述或缺口 | 本版修正 |
+| --- | --- |
+| 引用参考最多打开一次，整条链参考合计2～3次 | 参考打开随候选模拟变化；仅单一方案路径仍可用原数字 |
+| 引用修复主要描述唯一配对 | 补充多候选同值恢复、未验证候选阻断和跨单元格配对一致性 |
+| 上传只描述清标记、颜色、视图 | 增加人工审核、预处理前后哈希校验及远端提交边界 |
+| 默认只有一个参考目录 | 区分默认目录、逐处理目录覆盖、旧入口及上传自身的参考路径 |
+| 未覆盖普通可见列宽恢复 | 补充独立列宽修复的开存次数与验收要求 |
+| 日志359行、未找到自动链和保存记录 | 更新为本次读取的1547行快照；已有相关记录，但仍不足以测算572份收益 |
+
+本版更新代码引用与测试资产；这些变化不代表集中开存优化已经实现。
 
 ## 2. 分析口径与边界
 
@@ -53,7 +69,8 @@
 - 单份业务文件的一次完整尝试；
 - 不含失败重试、暂停后的重新执行；
 - 不含用户在 Excel 中手动打开；
-- 不含进入执行前的页面预览、选表扫描；
+- 不含进入执行前的页面预览、选表扫描；上传三步计数不包含外围差异审核；
+- 引用修复一次尝试内的候选模拟重开属于正常执行成本，必须计入参考打开，不能排除为失败重试；
 - COM 打开与 Python 解析分别计算；
 - 临时副本承接当前文件修改时，归入“当前文件处理侧”，不误写为原路径被再次打开；
 - 保存次数指业务修改的保存，临时格式转换另列。
@@ -77,7 +94,7 @@
 - 自动化测试套件；
 - 业务代码修改、部署或提交。
 
-分析开始时工作树已有前端等未提交修改，期间还出现了后端路径范围适配等并行修改；本报告不改动这些现有工作，交付前已复核相关差异并更新引用位置。源码后续仍可能变化，请同时按所列函数名定位，不将此文档视为动态更新的代码索引。
+初版基于 `16a1f63` 及当时的并行工作树修改；本次重新核对到 `3a1bd53`，修订开始时工作树干净。全文的“当前”指本版代码基线；本轮只修改这份报告。源码后续仍可能变化，请同时按所列函数名定位，不将本文视为动态更新的代码索引。
 
 ## 3. 对原建议的逐项判断
 
@@ -85,12 +102,12 @@
 | --- | --- | --- |
 | ①精简加自动检查是主要合并候选 | 成立 | 重复开存明确存在，但是否为真实耗时“大头”还需要计时 |
 | ①同一份文件最多开 7 次 | 计数需修正 | 全选且各修改分支命中时，当前文件 COM 打开可达 8 次；参考另计 |
-| ①当前可写一次、参考只读一次即可完成 | 目标有条件成立 | 同名冲突、参考模拟损坏、历史投影和未保存状态都需要处理 |
+| ①当前可写一次、参考只读一次即可完成 | 当前集中写回可作为目标，参考一次不是已证明方案 | 同名冲突、每个候选的独立模拟、历史投影和未保存状态都需要处理 |
 | ②调整页面已经恒为一次打开 | 仅主路径成立 | 缓存命中 0 次；主路径 1 次；稀疏页修复可能再开一次 |
 | ③只有需要标色的文件才会第二次打开 | 不完整 | 清旧标记、核对标记、恢复标签及补存视图也可能触发可写打开 |
 | ③扫描先不合并 | 赞同 | 当前检测阶段有专门的只读和超时隔离，不应为省一次 Open 直接去掉 |
 | ④修改与复检本来就是两件事，没有可合并空间 | 前半句成立，后半句过强 | 必须保留验证阶段，但逻辑分离不必然要求物理重开；还有调整页面 PDF 重导分支 |
-| ⑤上传预处理值得合并 | 成立 | 原函数有自行开存及部分成功/跳过语义，需重构而非直接拼接 |
+| ⑤上传预处理值得合并 | 成立 | 三步仍自行开存；合并不能绕过外围人工审核和最终版本校验 |
 | ⑤每份约开 4 次 | 取决于口径和格式 | 普通 XML 格式有修改时：当前 3 次、参考 1 次；二进制路径可能合计 6 次 |
 | ⑥同名 PDF 与 JSON 复制都只开一次 | 分类不准确 | 同名 PDF 用 Excel，只读 1 次；JSON 复制是 Excel COM 0 次 |
 | ⑥同名 PDF 已没有可省 | 过于绝对 | 独立同名 PDF 入口目前记录缓存，但没有在此入口命中后跳过导出 |
@@ -122,8 +139,8 @@
 证据：
 
 - [core/workflow.py:578 — 精简任务收尾后启动 clean_chain](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/workflow.py#L578)
-- [core/clean_chain.py:210 — BL 扫描与清除](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/clean_chain.py#L210)
-- [core/clean_chain.py:298 — run 按步骤运行整个文件夹](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/clean_chain.py#L298)
+- [core/clean_chain.py:216 — BL 扫描与清除](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/clean_chain.py#L216)
+- [core/clean_chain.py:304 — run 按步骤运行整个批次](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/clean_chain.py#L304)
 
 合并后的结构则是：
 
@@ -141,9 +158,15 @@
 - 原独立工具页面能否继续显示同一批结果；
 - 精简选中的文件范围与自动检查文件范围如何对应。
 
-目前精简入口支持 `options.files` 过滤，而自动链只接收文件夹和选项，再由各模块列文件；合并前应明确是否让两者统一使用同一份清单，不能在重构中悄悄改变范围。
+目前精简入口支持 `options.files` 过滤，而自动链接收批次根路径和选项，再由各模块列文件；合并前应明确是否让两者统一使用同一份清单，不能在重构中悄悄改变范围。
 
-证据：[core/workflow.py:3804 — 精简文件范围过滤](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/workflow.py#L3804)。
+批次根路径现在还可能代表 `WorkbookScope` 管理的多个文件或目录，而不是真实原件所在的单个目录。枚举、相对名称、参考覆盖和PDF归属必须保留范围语义；不能简单用批次目录递归扫描替代。跨卷选择也不一定存在一个共同物理根目录。
+
+证据：
+
+- [core/workflow.py:3804 — 精简文件范围过滤](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/workflow.py#L3804)
+- [core/workbook_scope.py:40 — WorkbookScope 与路径身份](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/workbook_scope.py#L40)
+- [core/workbook_scope.py:189 — list_files 按所选范围枚举](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/workbook_scope.py#L189)
 
 ### 4.2 单文件打开与保存次数
 
@@ -153,10 +176,16 @@
 | --- | ---: | ---: | ---: | --- |
 | 精简 Sheet | 0～1 | 0 | 0～1 | 预检确认无需删表、改名、排序时，不打开 Excel |
 | BL 超链接 | 1～2 | 0 | 0～1 | 只读扫描必需；有命中才可写清除 |
-| 引用错误 | 1～2 | 0～1 | 0～1 | 当前先扫描；有错误才读参考；有可修项才写回 |
+| 引用错误 | 1～2 | `R`，未对比时为0，进入对比后至少1次 | 0～1 | 先扫描当前；参考读取次数随候选模拟增加；有可修项才写回 |
 | 隐藏状态 | 1～2 | 1～2 | 0～1 | 推断出改名时，参考会带新投影再读一次 |
 | 统一字体 | 1 | 0 | 0～1 | 还需检查图形，无目标单元格不代表可跳过 COM 打开 |
-| 全部修改分支命中的合计 | **8** | **2～3** | **5** | 不含 Python 解析、临时转换、失败重试 |
+| 全部修改分支命中的合计 | **8** | **`R + H`，其中 `H` 为隐藏步骤的1～2次** | **5** | 不含 Python 解析、临时转换、失败重试 |
+
+`R` 是引用对比实际发生的参考 COM Open 次数，不是错误格个数，也不一定等于候选配对数。第一次打开读取候选原值，并可复用该工作簿模拟第一种方案；其余方案只有包含待验证项时才重新打开参考。单一方案下 `R=1`，全链参考合计仍可为2～3次；多方案时这个数字不再是上界。
+
+候选枚举使用笛卡尔积再过滤不满足一对一关系的方案。已有测试构造5张表、每张2个独立候选，枚举得到32种方案；这不是实测32次 Excel Open，但说明不能为一般输入承诺固定的参考打开上界。
+
+证据：[core/link_repair.py:149 — _sheet_mappings](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/link_repair.py#L149)、[core/link_repair.py:196 — _check_mapping 的按需打开](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/link_repair.py#L196)、[tests/test_formula_links.py:150 — 多候选枚举测试](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_formula_links.py#L150)。
 
 对应证据：
 
@@ -164,9 +193,9 @@
 - [core/workflow.py:3450 — 精简保存与历史记录](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/workflow.py#L3450)
 - [core/bl_links.py:103 — scan_file](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/bl_links.py#L103)
 - [core/bl_links.py:167 — clear_file](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/bl_links.py#L167)
-- [core/link_repair.py:262 — repair 按 hits / ready 决定是否读参考和写回](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/link_repair.py#L262)
-- [core/hidden_repair.py:236 — plan_file 与参考重读](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/hidden_repair.py#L236)
-- [core/hidden_repair.py:258 — apply_file](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/hidden_repair.py#L258)
+- [core/link_repair.py:406 — repair 按 hits / ready 决定是否读参考和写回](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/link_repair.py#L406)
+- [core/hidden_repair.py:250 — plan_file 与参考重读](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/hidden_repair.py#L250)
+- [core/hidden_repair.py:272 — apply_file](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/hidden_repair.py#L272)
 - [core/font_fix.py:122 — fix_workbook](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/font_fix.py#L122)
 
 补充说明：
@@ -179,9 +208,9 @@
 
 证据：
 
-- [core/clean_chain.py:63 — 可选步骤及默认值](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/clean_chain.py#L63)
-- [core/hidden_repair.py:26 — DEFAULT_OPTIONS](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/hidden_repair.py#L26)
-- [core/hidden_repair.py:150 — 列定义与二进制临时转换](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/hidden_repair.py#L150)
+- [core/clean_chain.py:64 — 可选步骤及默认值](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/clean_chain.py#L64)
+- [core/hidden_repair.py:27 — DEFAULT_OPTIONS](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/hidden_repair.py#L27)
+- [core/hidden_repair.py:152 — 列定义与二进制临时转换](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/hidden_repair.py#L152)
 
 ### 4.3 合并时必须保留的正确性规则
 
@@ -237,7 +266,7 @@
 
 合并后不再经过中间保存与重开，必须验证引用扫描、模拟比较和最终验证仍使用一致的比较规则。
 
-证据：[core/link_repair.py:96 — _formula_identity](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/link_repair.py#L96)。
+证据：[core/link_repair.py:101 — _formula_identity](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/link_repair.py#L101)。
 
 ## 5. “参考只读打开一次”的真实难度
 
@@ -256,29 +285,44 @@
 
 现有代码明确说明第二次打开可能返回空对象。
 
-证据：[core/mark_finder.py:631 — _read_old](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/mark_finder.py#L631)。
+证据：[core/mark_finder.py:637 — _read_old](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/mark_finder.py#L637)。
 
 ### 5.2 ReadOnly 只约束保存，不代表内存对象不变
 
 引用修复的参考对比执行以下过程：
 
-1. 只读打开参考；
-2. 全量计算并捕获原公式、区域和计算值；
-3. 在参考工作簿内存中模拟删除不保留的 Sheet；
-4. 模拟改名并再次计算；
-5. 比较模拟后的损坏公式与当前文件；
-6. 不保存地关闭参考。
+1. 只读打开参考，计算并读取候选表的原公式、区域、锚点和计算值；
+2. 结合历史、表名、代码名与内容证据，得到固定配对和歧义候选；
+3. 枚举可行的一对一工作表配对方案；
+4. 第一方案可在本次已打开的参考内存中模拟删表、改名、计算，再比较损坏公式；
+5. 关闭参考且不保存；后续方案需要模拟时，从磁盘重新只读打开未被模拟修改的参考；
+6. 汇总候选结果，并核对多个待恢复单元格是否支持共同的工作簿配对方案。
 
-证据：[core/link_repair.py:112 — preview_file](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/link_repair.py#L112)。
+证据：[core/link_repair.py:280 — preview_file](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/link_repair.py#L280)。
 
-**因此，不能直接把做完引用模拟后的参考工作簿交给隐藏恢复或颜色恢复。** 那时它已经不再表示原始参考内容。
+**因此，既不能把一个方案已经删改过的参考工作簿直接交给下一方案，也不能交给隐藏恢复或颜色恢复。** 这些重新打开包含恢复原始模拟起点的用途，不能一概当成无意义的重复 I/O。
+
+当前候选判定也不再等价于“无法唯一配对就一律跳过”：
+
+- 模拟和局部检查排除不匹配候选后，只剩一个有效来源，可以恢复；
+- 多个候选通过核对，且值和区域尺寸一致、没有尚未验证候选时，可以恢复固定值；多个来源时 `old_sheet` 可以为空，来源明细保存在 `source`；
+- 存在未验证候选、通过候选的恢复值不一致，或不同单元格支持的配对方案互相冲突时，不贸然恢复；
+- 已通过的其他单元格还可以缩小共同配对范围，进一步消除歧义。
+
+这些是必须保留的安全规则，不能为实现“一次打开”而删除。也不能把引用模块的多候选同值规则直接推广到颜色和隐藏恢复，它们仍各自执行配对与内容验证。
+
+证据：
+
+- [core/link_repair.py:223 — _candidate_result](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/link_repair.py#L223)
+- [core/link_repair.py:255 — _reconcile_candidates](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/link_repair.py#L255)
+- [core/backup_compare.py:122 — pair_sheets 的历史与冲突候选规则](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/backup_compare.py#L122)
 
 ### 5.3 对“先读参考快照，再打开当前文件”的进一步限定
 
 前一轮简短答复提出的“先读参考快照”是可选技术方向，不是已经证明能覆盖①全部行为的完整方案。
 
 - 对⑤颜色恢复，现有 `_read_old` 已经是按目标单元格读取参考快照的模式，较容易复用。
-- 对①引用修复，当前实现依赖 Excel 的真实删表、改名与重新计算；普通的静态值快照不能直接取代它。
+- 对①引用修复，当前实现依赖每个候选方案各自的 Excel 删表、改名与重新计算；普通静态值快照既不能直接代替模拟，也不能替代各方案独立的原始起点。
 - 要一次读齐所有后续需要的数据，可能需要读取更多公式、值、列状态和样式，增加内存和 COM 通信成本。
 - 隐藏恢复当前还会因推断改名而重算参考内容投影，不能只缓存一个不带阶段信息的最终签名。
 
@@ -294,9 +338,33 @@
 
 此外，`Application.CalculateFull()` 会作用于该 Excel 实例内的工作簿；若将原本分开打开的文件同时留在同一实例中，计算行为也需要实机验证。
 
+### 5.4 多参考目录与不同入口的边界
+
+`ReferenceFolders` / `ReferenceIndex` 支持默认参考目录和按处理目录覆盖：
+
+- 对当前文件取最近父目录的覆盖设置，否则使用默认参考目录；
+- 在所选参考目录中递归查找完整文件名，包含扩展名，并按系统大小写规则及复检前缀规范化；
+- 唯一同名才匹配；缺失或多份同名返回原因，不自动转向其他参考目录；
+- 拒绝无效目录、当前批次外的目录覆盖以及处理范围与参考范围重叠；
+- 目录索引可在同一个索引对象中复用，但这不等于 Excel 参考工作簿或候选模拟结果已经共享。
+
+自动链可以传入这套参考配置；仍保留旧字符串入口的兼容路径。因此，不能把全项目概括为“只接受一个参考文件夹”，也不能把新索引的严格同名规则当成所有旧入口唯一的配对方式。
+
+**上传预处理没有接入这个索引**：任务上传仍使用 `task["reference"]` 下的相对路径找参考，自由上传仍传 `None`。合并时保留各入口明确的参考来源，不要顺手改变配对规则。
+
+证据：
+
+- [core/reference_folders.py:23 — ReferenceFolders 配置与范围校验](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/reference_folders.py#L23)
+- [core/reference_folders.py:101 — match 与目录覆盖](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/reference_folders.py#L101)
+- [core/reference_folders.py:118 — 新索引与旧入口分支](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/reference_folders.py#L118)
+- [core/clean_chain.py:314 — 自动链传递参考配置](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/clean_chain.py#L314)
+- [core/distribute.py:791 — 任务上传参考路径](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/distribute.py#L791)
+
 ## 6. ⑤上传前预处理
 
-### 6.1 当前调用链
+### 6.1 三步预处理内部调用链
+
+以下仅描述 `upload_prep.prepare`，不包含外围人工差异审核、版本检查、额外PDF导出和上传。三步函数及其COM开存结构相对初版未变。
 
 ```text
 prepare
@@ -320,7 +388,7 @@ prepare
 
 - [core/upload_prep.py:75 — prepare](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/upload_prep.py#L75)
 - [core/batch.py:3725 — clear_marks_in_file](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/batch.py#L3725)
-- [core/mark_finder.py:690 — _apply_colors](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/mark_finder.py#L690)
+- [core/mark_finder.py:696 — _apply_colors](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/mark_finder.py#L696)
 - [core/upload_prep.py:56 — _normalize](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/upload_prep.py#L56)
 
 ### 6.2 分格式、分命中情况的计数
@@ -340,7 +408,7 @@ prepare
 证据：
 
 - [core/color_compare.py:203 — plan_file 格式分支](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/color_compare.py#L203)
-- [core/mark_finder.py:661 — apply_file 与 .xls 副本保护](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/mark_finder.py#L661)
+- [core/mark_finder.py:667 — apply_file 与 .xls 副本保护](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/mark_finder.py#L667)
 
 普通成功路径中，清标记和颜色恢复都是有变化才保存，视图标准化则会调用保存；因此不能把每个 Open 都算成一次 Save。
 
@@ -381,9 +449,9 @@ prepare
 
 - 有标记删不掉：抛异常，阻断该文件上传；
 - 颜色无法安全恢复：记录 `color_skipped`，不一定阻断上传；
-- 参考缺失：跳过颜色对比，仍执行其余步骤；
+- 颜色参考缺失：`prepare` 跳过颜色对比，仍执行其余步骤；这不豁免外围上传审核，也不等于缺少上传版本基准；
 - 个别工作表视图设置失败：收集并写日志，随后仍可保存并返回 `normalized=True`；
-- 真正抛出的预处理异常：上传层对该文件重试或失败，不影响其他文件。
+- 真正抛出的预处理异常：上传层对该文件重试或失败，不影响其他文件；预处理成功后仍可能因最终版本校验失败而不上传。
 
 这说明“全部三步成功”当前是流程返回意义上的成功，**不等于所有单元格与每张表的设置都成功**。
 
@@ -393,7 +461,7 @@ prepare
 
 - [core/excel_ops.py:946 — normalize_workbook_view 的按表错误处理](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/excel_ops.py#L946)
 - [core/upload_prep.py:32 — 颜色成功、跳过结果汇总](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/upload_prep.py#L32)
-- [core/distribute.py:846 — 预处理失败与重试](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/distribute.py#L846)
+- [core/distribute.py:828 — 预处理失败与重试](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/distribute.py#L828)
 
 ### 6.6 不要破坏上传模式和 PDF 缓存边界
 
@@ -404,13 +472,56 @@ prepare
 - Excel 与 PDF 一起上传时，即使 PDF 缓存可用，Excel 预处理仍可能执行。
 - 无可复用 PDF 时，预处理后还有独立的同名 PDF 导出调用；这次打开不在前面的“三步预处理”计数内。
 - 自由起点到终点上传的预处理使用临时副本，且没有参考颜色恢复。
+- 任务上传即使只传PDF，仍走必要时人工确认的审核调度；自由上传只传PDF则跳过人工差异确认，但仍做版本校验。
 
-合并方案必须维持这些边界，不能为了统一生命周期反而让缓存命中的文件重新打开。
+“0次COM打开”只说明可以省去预处理与导出的 Excel 操作，不代表没有哈希读取、差异解析或人工等待。合并方案必须维持这些边界，不能为了统一生命周期反而让缓存命中的文件重新打开。
 
 证据：
 
-- [core/distribute.py:796 — _prepare_task_files](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/distribute.py#L796)
-- [core/distribute.py:1634 — _prepare_free](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/distribute.py#L1634)
+- [core/distribute.py:772 — _prepare_task_files](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/distribute.py#L772)
+- [core/distribute.py:1586 — _prepare_free](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/distribute.py#L1586)
+
+### 6.7 上传审核和提交检查不属于三步开存
+
+当前任务上传的整体顺序是：
+
+```text
+检查本地、远程和上传基准
+    ↓
+无需审核的文件直接继续；需审核的文件后台生成差异，等待用户确认
+    ↓
+对获准批次再次校验
+    ↓
+三步预处理；记录处理后哈希
+    ↓
+替换前检查共享版本、中转版本及待复制内容哈希
+    ↓
+复制Excel；按选项上传PDF；保存基准记录
+```
+
+需要人工确认的情况包括：没有基准、远程版本改变、已知远程文件被删除、选择逐份Excel对比等。审核器不会因差异结果相同就自动批准；等待审核的文件不妨碍无需审核的其他文件先处理、上传。
+
+审核比较的是**预处理前**本地文件与远程文件；预处理后主要是版本和哈希校验，不是重新做一次内容审核，也不是上传后复检。当前任务上传入口不再将冲突文件自动同步为共享最新版后继续，不能在优化中重新引入这种行为。
+
+需生成差异的二进制工作簿还受比较器仅支持 `.xlsx/.xlsm` 的限制，可能在预处理前就审核失败；不能用“二进制预处理内部支持转换”推导它在所有上传模式下都能成功。
+
+“失败不上传”的保证应按阶段写清：
+
+- 未获批准或预处理最终失败：该文件不进入Excel复制提交；此前本地修改不回滚。
+- 预处理成功但最终版本变了：阻止提交，不能把旧批准用于新版本。
+- Excel已经复制后，PDF上传或基准记录失败：没有撤销先前Excel复制的整体事务，不能据最终失败推断远端未变。
+
+合并三步时必须保留审核前后本地/远程的版本绑定、`_prepared_sha256` 以及替换前的共享和中转校验；它们不是可以为提速删除的重复检查。
+
+证据：
+
+- [core/distribute.py:733 — _upload_review_reason](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/distribute.py#L733)
+- [core/upload_review.py:46 — 人工决定与 batches 调度](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/upload_review.py#L46)
+- [core/upload_review.py:83 — 差异生成前后校验](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/upload_review.py#L83)
+- [core/distribute.py:796 — 预处理前版本及处理后哈希](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/distribute.py#L796)
+- [core/distribute.py:1065 — 任务上传审核、预处理与提交](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/distribute.py#L1065)
+- [core/distribute.py:1665 — 自由上传只传PDF的审核差异](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/distribute.py#L1665)
+- [core/excel_diff.py:178 — 差异比较格式限制](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/excel_diff.py#L178)
 
 ## 7. ②③④⑥其他流程的补充核查
 
@@ -439,6 +550,10 @@ prepare
 - [core/workflow.py:3463 — _export_workbook_pdfs](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/workflow.py#L3463)
 - [core/workflow.py:3616 — _fix_sparse_pages](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/workflow.py#L3616)
 - [core/print_layout.py:24 — 当前方向比较关闭](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/print_layout.py#L24)
+
+多路径批次还调整了PDF归属和清理范围：此类批次不再执行清理来源旁旧PDF的分支。这属于范围保护，不是减少工作簿开存的新优化。
+
+证据：[core/workflow.py:3827 — 多路径批次的PDF清理边界](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/workflow.py#L3827)。
 
 结论：暂不优先改是合理的，但原因应是“主路径已合并、剩余是条件分支”，不是“绝无可省”。
 
@@ -530,8 +645,8 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
 
 证据：
 
-- [core/distribute.py:513 — copy_one](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/distribute.py#L513)
-- [core/distribute.py:290 — 覆盖判断中的内容比较](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/distribute.py#L290)
+- [core/distribute.py:514 — copy_one](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/distribute.py#L514)
+- [core/distribute.py:291 — 覆盖判断中的内容比较](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/distribute.py#L291)
 - [core/content_check.py:81 — snapshot](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/content_check.py#L81)
 
 结论：没有 COM 重开可合并，文件复制和内容比较成本应单独度量。
@@ -556,7 +671,7 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
 - [core/print_overlays.py:123 — find_clusters](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/print_overlays.py#L123)
 - [core/print_overlays.py:265 — grouped_overlays](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/print_overlays.py#L265)
 - [core/print_overlays.py:304 — group_permanently](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/print_overlays.py#L304)
-- [core/image_restore.py:483 — group_workbook](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/image_restore.py#L483)
+- [core/image_restore.py:484 — group_workbook](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/image_restore.py#L484)
 
 ### 8.2 永久组合不等于修复已经变形的图片
 
@@ -597,6 +712,32 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
 3. 若最终都放进同一文件流水线，可按“先内容与字体，再图形组合，再页面设置”的方向设计，但以 PDF 与工作簿实测结果为准。
 4. 不因永久组合失败的现有日志警告，默认升级成全文件失败；严格程度需单独确定。
 
+### 8.5 新增独立列宽修复：不属于永久组合，也未加入精简链
+
+`image_restore` 增加 `widths` 模式，调用 `hidden_repair.plan_file(..., WIDTH_OPTIONS)`，有可恢复项时再调用 `apply_file`。
+
+与原超窄列恢复不同，这个入口恢复参考中的普通可见列宽，既可加宽也可缩窄；不把隐藏列改成可见列。仍需内容、公式位置和保护状态等检查，不能把它简化为无条件复制所有列宽。
+
+在有唯一参考、无失败重试的条件下：
+
+| 阶段 | 当前处理侧 COM 打开 | 参考 COM 打开 | 保存 |
+| --- | ---: | ---: | ---: |
+| 生成列宽恢复计划 | 1 | 1～2 | 原件0次；二进制列定义读取可能另存临时文件 |
+| 存在可恢复项并写回 | 再加1 | 0 | 当前文件1次 |
+| 合计 | 1～2 | 1～2 | 当前文件0～1次 |
+
+参考第二次读取仍来自推断改名后的内容投影。这一入口不需要PDF，也不会自动执行图片几何修复或永久组合。精简自动链仍只有 BL、引用、可选隐藏、字体四项，因此不将独立列宽修复成本加到前面的8次。
+
+如果未来希望把列宽恢复并入固定流程，应独立确认其业务范围、重复执行和图形/打印结果，而不是借同模块复用隐式开启。
+
+证据：
+
+- [core/image_restore.py:504 — repair_widths](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/image_restore.py#L504)
+- [core/image_restore.py:665 — widths 与其他模式的入口边界](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/image_restore.py#L665)
+- [core/hidden_repair.py:28 — WIDTH_OPTIONS](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/hidden_repair.py#L28)
+- [core/hidden_repair.py:196 — 普通列宽与超窄列的计划分支](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/hidden_repair.py#L196)
+- [core/clean_chain.py:319 — 实际自动链步骤](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/clean_chain.py#L319)
+
 ## 9. 失败、重试与“不会半改半存”的保证边界
 
 ### 9.1 现有流程不是统一的全有或全无
@@ -608,11 +749,11 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
 - 图形字体无法修改等情况可能只记日志；
 - 引用与隐藏规则无法安全确认时会跳过相应项。
 
-上传预处理则是“抛出的异常阻断这份上传”，但此前步骤可能已经保存；部分颜色和视图问题只是提示。
+上传预处理抛出的异常经重试仍未解决时，会阻断这份Excel复制，但此前本地步骤可能已经保存；部分颜色和视图问题只是提示。外围审核与最终版本校验也可能阻断提交；Excel已经复制后的PDF或记录失败，不回滚已提交的Excel。
 
 证据：
 
-- [core/clean_chain.py:319 — 单步失败后继续](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/clean_chain.py#L319)
+- [core/clean_chain.py:331 — 单步失败后继续](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/clean_chain.py#L331)
 - [core/workflow.py:3425 — 改名失败后仍继续精简](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/workflow.py#L3425)
 - [core/font_fix.py:108 — 图形字体按段错误处理](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/font_fix.py#L108)
 
@@ -624,7 +765,8 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
 | --- | --- | --- |
 | 无需修改 | 没有 BL、字体已符合要求 | 正常继续 |
 | 未启用 | 没勾隐藏恢复 | 正常跳过 |
-| 无参考且规则允许跳过 | 上传颜色恢复无参考 | 记录原因，按现行规则继续 |
+| 颜色参考缺失且规则允许跳过 | prepare 没有颜色参考 | 跳过颜色步骤，不豁免上传审核或版本检查 |
+| 等待上传确认 | 无基准、远程改变、要求逐份对比 | 等待明确批准或跳过，不与颜色恢复结果混为一谈 |
 | 不能安全自动修复 | 内容不一致、合并区域不同 | 保持原值，记录人工核对项 |
 | 明确执行失败 | COM 异常、写入回读不一致 | 中止本文件，释放资源，再决定重试/跳过 |
 | 提交失败 | Save 或替换失败 | 不宣布成功，记录提交阶段和恢复信息 |
@@ -659,7 +801,7 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
 
 旧版 `.xls` 写锁副作用在现有代码中已有专门处理，不能视为纯理论问题。
 
-证据：[core/hidden_repair.py:277 — .xls 写锁后的版本基准](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/hidden_repair.py#L277)。
+证据：[core/hidden_repair.py:291 — .xls 写锁后的版本基准](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/core/hidden_repair.py#L291)。
 
 #### 方案 B：工作副本处理，成功后校验并替换
 
@@ -735,9 +877,11 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
 - BL、引用、隐藏、字体分别有多少命中；
 - XML 与二进制格式的比例；
 - 文件大小、图形数量、公式复杂度；
-- 参考是否存在、配对是否成功；
+- 参考是否存在、配对是否成功，以及默认目录/逐目录覆盖的使用情况；
+- 引用候选方案数、实际模拟次数、因模拟而重开的参考次数；
 - PDF 缓存命中率；
-- 重试、超时、用户等待占多少时间。
+- 上传差异解析和版本校验成本；
+- 重试、超时、人工审核等待各占多少时间。
 
 例如：无 BL 的文件只做一次扫描，不会做清除开存；没有可恢复颜色的 XML 文件没有颜色写回那次 Open；隐藏未勾选时整个步骤没有成本。
 
@@ -749,7 +893,8 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
   + 当前工作簿 Open / Close
   + 参考工作簿 Open / Close
   + Save / 临时 SaveAs
-  + 计算、扫描、比对、修改
+  + 计算、扫描、比对、修改（引用候选模拟单列）
+  + 上传差异审核的机器处理
   + openpyxl / XML 解析
   + 复制与哈希
   + PDF 导出与检测
@@ -765,19 +910,22 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
 - 新增快照、复制、校验、状态协调成本
 ```
 
-尤其不要把“改成同一个工作簿”理解为可以删除全部 `CalculateFull()`：部分计算是依赖变化后的正确性要求。
+尤其不要把“改成同一个工作簿”理解为可以删除全部 `CalculateFull()`：部分计算是依赖变化后的正确性要求。新增的候选模拟必须保持独立起点和判定等价；在没有等价替代实现前，不能把全部模拟Open都算成可消除成本。人工等待单独报告，不能算成减少开存直接带来的收益。
 
 ### 10.4 当前仓库日志不足以验证原时间假设
 
-本次读取的 [log.txt](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/log.txt) 快照为：
+本次修订重新读取的 [log.txt](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/log.txt) 快照为：
 
-- 大小：52,648 字节；
-- 行数：359 行；
-- 时间范围：2026-11-11 22:09:52 至 22:32:10；
-- 可见内容包含浏览器测试的 `mock-shared` 场景；
-- 检索未发现本次所需的 `clean_chain`、`任务 clean_sheets`、`统一字体`、`上传前处理完成`、`保存了 Excel`、`打开工作簿` 或 `572` 相关记录。
+- 大小：257,294 字节；
+- 行数：1,547 行；
+- 时间范围：2026-11-11 22:09:52.197 至 2026-11-12 00:00:41.768；
+- 按包含关键词的日志行计，`clean_chain` 为56行，`保存了 Excel` 为9行；不能将这些行数当作任务数或完整Save次数；
+- `任务 clean_sheets`、`统一字体`、`上传前处理完成`、`打开工作簿`、`572` 五个关键词均无匹配行；
+- 内容仍包含 `mock-shared`，新增记录也混有测试调用栈、Mock和临时验证文件。
 
-这只说明**当前仓库这份日志不构成本次大批量性能证据**，不代表其他数据目录、历史归档里没有日志。
+初版“没有自动链和保存记录”的描述已撤销。**有这些日志不等于有572份真实生产样本或可比较的新旧性能基线**；本快照仍不足以测算批量收益，不代表其他数据目录、历史归档里没有合适日志。日志会继续增长，上述统计只对应本次读取时的内容。
+
+证据：[log.txt:1089 — 保存事件](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/log.txt#L1089)、[log.txt:1176 — 自动链记录中的测试调用栈](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/log.txt#L1176)。
 
 另外，`saved_excel` 主要记录保存来源、大小和修改时间，并没有测量 Save 调用本身的持续时间；即使找到保存记录，也不能直接把相邻两行的时间差当成 Save 耗时。
 
@@ -797,7 +945,9 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
 - `.xlsx/.xlsm` 与 `.xls/.xlsb`；
 - 无修改、少量修改、多步骤均有修改；
 - 大量图形与大量公式；
-- 同名参考、无参考、无法唯一配对；
+- 同名参考、无颜色参考、无上传基准、多个参考目录与无法唯一配对；
+- 引用单候选、多候选同值、不同值、读取失败和跨单元格配对冲突；
+- 上传直接通过、需人工确认及任务/自由上传只传PDF的不同路径；
 - 首次处理与已处理后的再次执行。
 
 每份记录：
@@ -805,10 +955,10 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
 | 分类 | 指标 |
 | --- | --- |
 | 基本属性 | 格式、大小、工作表数、启用步骤 |
-| 资源使用 | 当前/参考 Open 次数、Save 次数、临时 SaveAs 次数 |
-| 分段耗时 | Open、Close、Save、计算、扫描、比对、修改、复制、哈希、记录 |
-| 业务结果 | 每步命中数、修改数、跳过数、异常数 |
-| 总体结果 | 总耗时、提交状态、重试数、缓存命中 |
+| 资源使用 | 当前/参考 Open 次数、Save 次数、临时 SaveAs 次数；候选数与实际模拟数单列 |
+| 分段耗时 | Open、Close、Save、计算、扫描、候选模拟、差异审核、修改、复制、哈希、记录 |
+| 业务结果 | 每步命中数、修改数、跳过数、异常数；审核原因和批准版本 |
+| 总体结果 | 总耗时、提交阶段、重试数、缓存命中；人工等待与机器执行分别报告 |
 
 旧流程与新流程必须从同一原始输入各复制一份开始，不能让新流程直接处理旧流程已经修改过的结果，再宣称加速。
 
@@ -838,7 +988,9 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
 - `prepare` 负责生命周期、阶段信息和最终提交；
 - 颜色计划明确处理清标记后的标签变化；
 - 保留格式分支和 `.xls` 工作副本保护；
-- 保留只传 PDF、无参考和缓存命中的现有边界。
+- 保留只传PDF、无颜色参考和缓存命中的现有边界，不将缺参考与缺上传基准混淆；
+- 保留必要时人工确认、审核前后本地/远程版本、处理后哈希及替换前中转检查；
+- 区分本地预处理提交、远端Excel复制、PDF上传和基准记录，不承诺它们已经是一个事务。
 
 目标可定义为：
 
@@ -850,10 +1002,10 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
 
 需要额外完成：
 
-- 文件范围统一；
+- 保留多路径批次的选定范围、路径身份、默认参考与逐目录覆盖，并明确各步骤共用的文件清单；
 - 文件内暂存的删表、改名和保留值投影；
 - 当前内存状态上的扫描与修复；
-- 引用参考模拟的隔离；
+- 每个候选方案的引用参考模拟隔离，保留同值恢复、未验证阻断与跨单元格一致性检查；
 - 字体预检数据随表身份变化；
 - 统一的阶段结果与文件级提交状态；
 - 与独立工具结果页面的衔接；
@@ -896,13 +1048,17 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
 | 删表加改名、同名复用 | 后续参考配对正确，不误认另一张旧表 |
 | BL 合并区域和超链接 | 与原规则相同，只删除目标链接及内容 |
 | 引用错误 | 数组/溢出区域、邻近锚点、公式身份和修复后验证保持一致 |
+| 引用多候选 | 同值、异值、读取失败、候选排除与跨格共同配对；多来源时空 old_sheet 和 source 明细正确 |
 | 隐藏 Sheet/列/超窄列 | 内容签名、保护、至少保留一张可见表等约束保持 |
+| 独立普通列宽恢复 | 可加宽或缩窄可见列，不改变隐藏列；无需PDF，未误加入精简自动链 |
 | 字体 | 不改标准样式、字号、颜色；已删表不再访问，改名后的表正确处理 |
 | 清标记 | 仅清工具标记，不删除正常条件格式 |
 | 恢复颜色 | 内容、合并关系、空行、主题色、图案色、标签色正确 |
-| 无参考与选项关闭 | 继续保留原有跳过与提示行为 |
+| 多路径和多参考 | 仅处理选中文件，最近父目录覆盖正确，跨目录同名歧义被拒绝，PDF归属及续跑范围不变 |
+| 无颜色参考与选项关闭 | 继续保留各入口跳过与提示行为，不豁免上传审核 |
+| 上传审核 | 无基准、远程变更、已知文件删除、逐份对比按规则确认；即使差异相同也不擅自批准 |
 | 视图 | 分页预览、A1、100% 与预期一致，按表失败可解释 |
-| 只传 PDF | 原 Excel 不被预处理修改；命中缓存仍可零打开 |
+| 只传 PDF | 原Excel不被预处理修改，命中缓存仍可零COM；任务仍按需审核，自由上传免人工审核但保留版本校验 |
 | 二进制与宏工作簿 | 不丢宏、不意外转换格式、不因元数据变化误报外部修改 |
 
 ### 12.2 故障与恢复
@@ -913,6 +1069,10 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
 - 清标记部分失败；
 - 参考在读取后发生变化；
 - 当前文件在提交前被外部修改；
+- 审核期间本地或远程变化、批准后再次变化、预处理后的文件变化；
+- 共享/中转目标变化、远端删除后的重建确认、审核失败或用户跳过；
+- 二进制文件需要差异审核时的格式拒绝，与三步预处理支持的格式分开验证；
+- Excel已复制后PDF或基准记录失败，报告准确呈现已完成和未完成阶段，不虚报整体回滚；
 - 文件被占用或只读；
 - Save 失败、临时文件保存失败、替换失败；
 - 文件提交后状态记录失败；
@@ -936,12 +1096,12 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
 ### 12.4 性能验收
 
 - 当前处理侧 Open、Save 的次数符合各分支设计；
-- 参考 Open、Python 解析与临时 SaveAs 均单独记录；
+- 参考Open、候选枚举/模拟、Python解析与临时SaveAs均单独记录，不将必要模拟误计为可删除开销；
 - 端到端总耗时确实下降，而不只是 Open 次数下降；
 - 大文件、高公式量、高图形量的 P95 不出现明显退化；
 - 缓存命中场景不退化成重新打开；
 - 无命中场景不因强制集中可写打开而增加大量成本；
-- 失败重试时间与等待时间单独报告。
+- 失败重试、上传审核机器处理及人工等待时间分开报告，不能用审核等待掩盖或放大I/O优化收益。
 
 ## 13. 现有测试资产与待补覆盖
 
@@ -952,8 +1112,8 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
 | [tests/test_clean_chain.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_clean_chain.py) | 自动链顺序、可选项、失败继续、状态恢复；文件级全有或全无会改变部分预期 |
 | [tests/test_upload_prep.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_upload_prep.py) | 清标记→恢复颜色→视图顺序、无参考、步骤错误、单份失败不影响其他上传 |
 | [tests/test_bl_links.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_bl_links.py) | BL 识别和清除规则 |
-| [tests/test_formula_links.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_formula_links.py) | 公式与删表保护 |
-| [tests/test_hidden_repair.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_hidden_repair.py) | 隐藏状态比较与修复 |
+| [tests/test_formula_links.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_formula_links.py) | 公式与删表保护；候选模拟、同值/异值/读取失败、共同配对和超过16种方案的枚举 |
+| [tests/test_hidden_repair.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_hidden_repair.py) | 隐藏状态与普通可见列宽恢复；保留隐藏列 |
 | [tests/test_font_fix.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_font_fix.py) | 字体识别与修改 |
 | [tests/test_color_compare.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_color_compare.py) | 颜色计划 |
 | [tests/test_mark_finder.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_mark_finder.py) | 参考颜色读取与恢复 |
@@ -963,7 +1123,17 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
 | [tests/test_print_overlays.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_print_overlays.py) | 临时/永久组合及 Placement |
 | [tests/test_image_restore.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_image_restore.py) | 图形恢复与组合相关回归 |
 | [tests/test_file_problem.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_file_problem.py) | 重试、跳过与问题分类 |
-| [tests/test_upload_pdf.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_upload_pdf.py) | 上传 PDF 与预处理、缓存边界 |
+| [tests/test_upload_pdf.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_upload_pdf.py) | 上传PDF、预处理和缓存；自由上传只传PDF免人工确认、复制时共享变化 |
+| [tests/test_backup_inference.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_backup_inference.py) | 表名/代码/内容冲突、历史歧义及参考推断安全边界 |
+| [tests/test_backup_file_guess.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_backup_file_guess.py) | 跨目录显式文件共用递归参考目录与文件名推断限制 |
+| [tests/test_repair_tasks.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_repair_tasks.py) | 逐目录参考覆盖、同名歧义及维修任务边界 |
+| [tests/test_quick_tasks.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_quick_tasks.py) | 多路径去重、排除未选文件、PDF归属和恢复批次 |
+| [tests/test_batch.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_batch.py) | 扫描只处理选定范围等批次回归 |
+| [tests/test_image_restore_open.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_image_restore_open.py) | 列宽修复入口需要参考但不依赖PDF |
+| [tests/test_relay_upload.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_relay_upload.py) | 中转上传、远端版本变化和审核 |
+| [tests/test_content_check.py](file:///C:/Users/XuJunhao/Documents/GitHub/clear_handle_excel/tests/test_content_check.py) | 内容比较与上传确认相关回归 |
+
+这些新增测试是现有行为的回归资产，不表示已经实现或验证集中提交、失败回滚和真实Excel下重复组合。
 
 还应补充针对新生命周期的断言：
 
@@ -972,9 +1142,11 @@ PDF 可以复用，但命中检查发生在工作簿已打开之后，主要省�
 3. 中间步骤使用的是修改后的内存状态，而非旧磁盘状态。
 4. 失败后没有错误的成功记录或重复历史。
 5. 同名参考在真实 Excel 中可工作。
-6. 引用模拟不污染其他步骤使用的原始参考数据。
+6. 各候选引用模拟相互隔离，不污染后续步骤的原始参考数据，不能为省Open跳过必要候选。
 7. 连续执行两遍永久组合的结果经过实机验证。
 8. 新旧流程从相同原始副本出发，输出语义等价。
+9. 新集中提交仍保留人工批准对应的版本和处理后哈希；本地保存成功不能替代远端提交许可。
+10. 多路径、参考覆盖、独立列宽入口及任务/自由上传PDF模式在合并后仍保持各自边界。
 
 Mock 测试可以验证调用次数和生命周期，但不能独立证明 Excel 的同名限制、公式重算、图形分组和打印效果；这些需要真实 Excel 样本。
 
@@ -986,4 +1158,4 @@ Mock 测试可以验证调用次数和生命周期，但不能独立证明 Excel
 
 默认顺序建议为：**测量与语义确认 → ⑤集中预处理 → ①集中精简链路 → 独立验收图形组合/页面行为 → 根据数据继续优化其他分支。**
 
-当前不能承诺省多少小时，也不能承诺“参考只开一次就天然等价”；可以确认的是，重复开存真实存在，而且通过边界明确的重构有实质性的优化机会。
+在 `3a1bd53` 基线上，当前工作簿重复开存仍真实存在，上传三步计数未变；引用候选模拟、上传审核、多参考解析和独立列宽入口则必须纳入实施边界。当前不能承诺省多少小时，也不能承诺“参考只开一次就天然等价”；应以结果、版本和失败语义不退化为前提，验证集中开存的实际净收益。
