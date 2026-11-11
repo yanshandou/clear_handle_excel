@@ -12,7 +12,8 @@
 - 改完回读核对，有一个没对上整份不保存。
 
 页面分两步（用户 2026-11-11 要）：先「找出受影响的图片」——两份都只读打开，不改任何文件，每处列出
-原版 / 新版的局部截图（把那块区域临时设成打印区域导出 PDF 再转图片）、新版 Excel、对照打开、PDF；
+原版 / 新版的局部截图（Excel 屏幕原样：复制为图片贴进临时图表导出；不行再退回打印效果）、
+新版 PDF 里同一处的截图、新版 Excel、对照打开、PDF；
 用户看完再点「修复这份」或「全部修复」，也可以自己打开三个文件处理。
 """
 from __future__ import annotations
@@ -72,7 +73,7 @@ def pair_book_sheets(current: list[dict], old: list[dict]) -> list[tuple[dict, d
 
 # ---------- 找出受影响的地方（不改文件） ----------
 
-RENDER_WIDTH = 760  # 局部截图的像素宽
+RENDER_WIDTH = 760  # 打印效果截图的像素宽
 
 
 def pdf_for(path: Path, root: Path, pdf_root: Path | None) -> Path | None:
@@ -92,38 +93,106 @@ def _image_name(path: Path, sheet: str, key: str, side: str) -> str:
     return f"imgfix_{digest}_{side}.png"
 
 
-def render_area(sheet: Any, names: list[str], out_name: str) -> str:
-    """把这几个图形占的格子区域临时设成打印区域、缩成一页导出 PDF，转成 PNG 存起来；返回文件名，失败返回空。
-    只用在只读打开、不保存的工作簿上"""
-    from core.pdf_detector import fitz
+XL_SCREEN, XL_BITMAP = 1, 2
+SCREEN_SCALE = 2.0  # 屏幕截图放大倍数（Excel 按 96dpi 出图，原大太糊）
+
+
+def _area_of(sheet: Any, names: list[str]) -> Any:
+    shapes = [sheet.Shapes.Item(n) for n in names]
+    r1 = min(int(s.TopLeftCell.Row) for s in shapes)
+    c1 = min(int(s.TopLeftCell.Column) for s in shapes)
+    r2 = max(int(s.BottomRightCell.Row) for s in shapes)
+    c2 = max(int(s.BottomRightCell.Column) for s in shapes)
+    return sheet.Range(sheet.Cells(max(1, r1 - 1), max(1, c1 - 1)), sheet.Cells(r2 + 1, c2 + 1))
+
+
+def render_screen(sheet: Any, names: list[str], out_name: str) -> str:
+    """Excel 屏幕上的样子（用户 2026-11-11 要「100% 真实的 Excel 排版」）：那块区域「复制为图片（如屏幕所示）」，
+    贴进临时图表存成 PNG。要借用剪贴板（Ditto 之类会记下这些截图）；剪贴板被别的程序占着时重试几次。
+    只用在只读打开、不保存的工作簿上，临时图表用完删掉"""
+    area = _area_of(sheet, names)
+    width, height = float(area.Width), float(area.Height)
     try:
-        shapes = [sheet.Shapes.Item(n) for n in names]
-        r1 = min(int(s.TopLeftCell.Row) for s in shapes)
-        c1 = min(int(s.TopLeftCell.Column) for s in shapes)
-        r2 = max(int(s.BottomRightCell.Row) for s in shapes)
-        c2 = max(int(s.BottomRightCell.Column) for s in shapes)
-        area = sheet.Range(sheet.Cells(max(1, r1 - 1), max(1, c1 - 1)), sheet.Cells(r2 + 1, c2 + 1))
-        setup = sheet.PageSetup
-        setup.PrintArea = area.Address
-        setup.Zoom = False
-        setup.FitToPagesWide = 1
-        setup.FitToPagesTall = 1
-        with tempfile.TemporaryDirectory(prefix="imgfix_") as tmp:
-            pdf = Path(tmp) / "area.pdf"
-            sheet.ExportAsFixedFormat(Type=0, Filename=str(pdf), Quality=0, IncludeDocProperties=False,
-                                      IgnorePrintAreas=False, OpenAfterPublish=False)
-            doc = fitz.open(str(pdf))
+        sheet.Activate()
+    except Exception:
+        pass
+    holder = None
+    try:
+        last: Exception | None = None
+        for attempt in range(6):
             try:
-                page = doc[0]
-                zoom = min(3.0, RENDER_WIDTH / max(1.0, float(page.rect.width)))
-                fix_images.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-                page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), annots=False).save(str(fix_images.IMAGES_DIR / out_name))
-            finally:
-                doc.close()
+                area.CopyPicture(Appearance=XL_SCREEN, Format=XL_BITMAP)
+                break
+            except Exception as err:  # 剪贴板正被 Ditto 等占用
+                last = err
+                time.sleep(0.3 * (attempt + 1))
+        else:
+            raise RuntimeError(f"复制成图片失败（剪贴板被占用？）：{last}")
+        holder = sheet.ChartObjects().Add(0, 0, width * SCREEN_SCALE, height * SCREEN_SCALE)
+        chart = holder.Chart
+        try:
+            chart.ChartArea.Format.Line.Visible = 0
+            chart.ChartArea.Format.Fill.Visible = 0
+        except Exception:
+            pass
+        try:
+            holder.Activate()  # 不激活有时贴进去是空白
+        except Exception:
+            pass
+        chart.Paste()
+        pasted = chart.Shapes.Item(chart.Shapes.Count)
+        pasted.LockAspectRatio = 0
+        pasted.Left, pasted.Top = 0, 0
+        pasted.Width, pasted.Height = width * SCREEN_SCALE, height * SCREEN_SCALE
+        fix_images.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+        target = fix_images.IMAGES_DIR / out_name
+        if not chart.Export(str(target), "PNG") or not target.is_file() or target.stat().st_size < 200:
+            raise RuntimeError("图表导出的图片是空的")
         return out_name
+    finally:
+        if holder is not None:
+            try:
+                holder.Delete()
+            except Exception:
+                pass
+
+
+def render_pdf(sheet: Any, names: list[str], out_name: str) -> str:
+    """打印效果：那块区域临时设成打印区域、缩成一页导出 PDF，转成 PNG。只用在只读打开、不保存的工作簿上"""
+    from core.pdf_detector import fitz
+    area = _area_of(sheet, names)
+    setup = sheet.PageSetup
+    setup.PrintArea = area.Address
+    setup.Zoom = False
+    setup.FitToPagesWide = 1
+    setup.FitToPagesTall = 1
+    with tempfile.TemporaryDirectory(prefix="imgfix_") as tmp:
+        pdf = Path(tmp) / "area.pdf"
+        sheet.ExportAsFixedFormat(Type=0, Filename=str(pdf), Quality=0, IncludeDocProperties=False,
+                                  IgnorePrintAreas=False, OpenAfterPublish=False)
+        doc = fitz.open(str(pdf))
+        try:
+            page = doc[0]
+            zoom = min(3.0, RENDER_WIDTH / max(1.0, float(page.rect.width)))
+            fix_images.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+            page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), annots=False).save(str(fix_images.IMAGES_DIR / out_name))
+        finally:
+            doc.close()
+    return out_name
+
+
+def render_area(sheet: Any, names: list[str], out_name: str) -> tuple[str, str]:
+    """先拍 Excel 屏幕原样；不行再退回打印效果。返回 (文件名, "screen" | "pdf" | "")"""
+    where = {"表": str(getattr(sheet, "Name", "?")), "图形": "、".join(names)}
+    try:
+        return render_screen(sheet, names, out_name), "screen"
     except Exception as err:
-        debug_log.event("⚠️ 局部截图没做出来", 表=str(getattr(sheet, "Name", "?")), 图形="、".join(names), 错误=str(err))
-        return ""
+        debug_log.event("⚠️ 局部截图（屏幕原样）没做出来，改用打印效果", **where, 错误=str(err))
+    try:
+        return render_pdf(sheet, names, out_name), "pdf"
+    except Exception as err:
+        debug_log.event("⚠️ 局部截图没做出来", **where, 错误=str(err))
+        return "", ""
 
 
 def _anchor(sheet: Any, name: str) -> str:
@@ -247,7 +316,7 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf:
                 if host and host["type"] in PICTURES and host["height"] > 0:
                     group["aspect"] = host["width"] / host["height"]  # PDF 是新版导出的，按新版截图的比例找
                     group["texts"] = _nearby_texts(sheet, group["names"])
-                group["new_img"] = render_area(sheet, group["names"], _image_name(path, cur["name"], group["key"], "new"))
+                group["new_img"], group["new_how"] = render_area(sheet, group["names"], _image_name(path, cur["name"], group["key"], "new"))
             debug_log.event("🔍 找到受影响的图片", 文件=path.name, 表=cur["name"],
                             图形=[d for g in groups.values() for d in g["details"]])
             sheets.append({"sheet": cur["name"], "old_sheet": ref["name"], "count": len(changes), "groups": list(groups.values())})
@@ -259,7 +328,7 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf:
             for entry in sheets:
                 old_sheet = old_book.Worksheets(entry["old_sheet"])
                 for group in entry["groups"]:
-                    group["old_img"] = render_area(old_sheet, group["names"], _image_name(path, entry["sheet"], group["key"], "old"))
+                    group["old_img"], group["old_how"] = render_area(old_sheet, group["names"], _image_name(path, entry["sheet"], group["key"], "old"))
         finally:
             old_book.Close(SaveChanges=False)
     if sheets and pdf:

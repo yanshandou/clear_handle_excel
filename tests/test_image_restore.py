@@ -145,5 +145,18 @@ class PdfCropTest(unittest.TestCase):
             self.assertIn("认不出", groups[0]["pdf_why"])
 
 
+class RenderFallbackTest(unittest.TestCase):
+    def test_screen_failure_falls_back_to_pdf(self):
+        from unittest.mock import patch
+        with patch.object(ir, "render_screen", side_effect=RuntimeError("剪贴板被占用")), \
+                patch.object(ir, "render_pdf", return_value="a.png"):
+            self.assertEqual(ir.render_area(object(), ["図 1"], "a.png"), ("a.png", "pdf"))
+        with patch.object(ir, "render_screen", return_value="a.png"):
+            self.assertEqual(ir.render_area(object(), ["図 1"], "a.png"), ("a.png", "screen"))
+        with patch.object(ir, "render_screen", side_effect=RuntimeError("x")), \
+                patch.object(ir, "render_pdf", side_effect=RuntimeError("y")):
+            self.assertEqual(ir.render_area(object(), ["図 1"], "a.png"), ("", ""))
+
+
 if __name__ == "__main__":
     unittest.main()
