@@ -61,6 +61,36 @@ def _unique(shapes: list[dict]) -> dict[str, dict]:
     return {s["name"]: s for s in shapes if seen[s["name"]] == 1}
 
 
+def overlay_hosts(current: list[dict], old: list[dict], every: bool = False) -> dict[str, list[str]]:
+    """{截图名: [叠在它上面的图形名]}（按原版位置判断、两边名字类型都对得上的）。
+    every=False 时没叠东西的截图不列；every=True 时所有截图、所有组合图形都列（组合里多半是截图+标注）"""
+    cur, ref = _unique(current), _unique(old)
+    names = [n for n in cur if n in ref and cur[n]["type"] == ref[n]["type"]]
+    pictures = [n for n in names if ref[n]["type"] in PICTURES]
+    hosts: dict[str, list[str]] = {n: [] for n in names if every and (n in pictures or ref[n]["type"] == 6)}
+    for n in names:
+        if n in pictures:
+            continue
+        inside = [p for p in pictures if _inside(ref[n], ref[p])]
+        if inside:
+            hosts.setdefault(min(inside, key=lambda p: ref[p]["width"] * ref[p]["height"]), []).append(n)
+    return hosts
+
+
+def diagnose(current: list[dict], old: list[dict]) -> dict:
+    """调试日志用：两边图形各多少、配上几个、类型分布、最大差多少磅（查「为什么没找出来」）"""
+    cur, ref = _unique(current), _unique(old)
+    matched = [n for n in cur if n in ref and cur[n]["type"] == ref[n]["type"]]
+    kinds: dict[int, int] = {}
+    for s in old:
+        kinds[s["type"]] = kinds.get(s["type"], 0) + 1
+    worst = max((max(abs(cur[n][k] - ref[n][k]) for k in ("width", "height")) for n in matched), default=0.0)
+    return {"原版图形": len(old), "新版图形": len(current), "配上": len(matched),
+            "没配上": sorted(set(ref) - set(matched))[:8], "类型": kinds, "大小最大差": round(worst, 2),
+            "截图": sum(1 for n in matched if ref[n]["type"] in PICTURES),
+            "组合": sum(1 for n in matched if ref[n]["type"] == 6), "带标注的截图": len(overlay_hosts(current, old))}
+
+
 def plan_sheet(current: list[dict], old: list[dict]) -> list[dict]:
     """返回 [{name, kind: picture|overlay|shape, host, before:{…}, after:{…}}]，只列真要改的"""
     cur, ref = _unique(current), _unique(old)

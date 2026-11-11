@@ -32,7 +32,7 @@ from core.backup_compare import pair_files, require_manual_file_check
 from core.common import workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, quit_background_excel, start_background_excel
 from core.link_repair import fingerprint
-from core.shape_geometry import PICTURES, _unique, apply_sheet, describe_change, plan_sheet, read_shapes
+from core.shape_geometry import PICTURES, _unique, apply_sheet, diagnose, overlay_hosts, describe_change, plan_sheet, read_shapes
 
 _LOCK = threading.RLock()
 _STATUS: dict[str, Any] = {"running": False}
@@ -296,7 +296,11 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf:
             if on_sheet:
                 on_sheet(index, len(pairs), cur["name"])
             changes = plan_sheet(cur["shapes"], ref["shapes"])
-            if not changes:
+            hosts = overlay_hosts(cur["shapes"], ref["shapes"], every=True)  # 所有图片都列（用户 2026-11-11 要）
+            if cur["shapes"] or ref["shapes"]:
+                debug_log.event("🔎 对照一张表", 文件=path.name, 表=cur["name"], 变了=len(changes),
+                                **diagnose(cur["shapes"], ref["shapes"]))
+            if not changes and not hosts:
                 continue
             sheet = book.Worksheets(cur["name"])
             ref_names = set(_unique(ref["shapes"]))
@@ -304,10 +308,18 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf:
             for item in changes:
                 key = item["host"] or item["name"]
                 group = groups.setdefault(key, {"key": key, "names": [key] if key in ref_names else [], "details": [],
-                                                "picture": bool(item["host"]) or item["kind"] == "picture"})
+                                                "picture": bool(item["host"]) or item["kind"] == "picture", "changed": True})
                 if item["name"] not in group["names"]:
                     group["names"].append(item["name"])
                 group["details"].append(describe_change(item))
+            # 程序没量出变化的图片也全部列出来让人目测（用户 2026-11-11：人工看出不少问题，程序一个没找出；有图片的都要列）
+            for host, overlays in hosts.items():
+                group = groups.get(host)
+                if group is None:
+                    groups[host] = {"key": host, "names": [host, *overlays], "picture": True, "changed": False,
+                                    "details": ["程序没量出大小或位置变化，请看三列目测"]}
+                else:
+                    group["names"] += [n for n in overlays if n not in group["names"]]
             cur_by = _unique(cur["shapes"])
             for group in groups.values():
                 group["cell"] = _anchor(sheet, group["key"])
@@ -319,7 +331,9 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf:
                 group["new_img"], group["new_how"] = render_area(sheet, group["names"], _image_name(path, cur["name"], group["key"], "new"))
             debug_log.event("🔍 找到受影响的图片", 文件=path.name, 表=cur["name"],
                             图形=[d for g in groups.values() for d in g["details"]])
-            sheets.append({"sheet": cur["name"], "old_sheet": ref["name"], "count": len(changes), "groups": list(groups.values())})
+            ordered = sorted(groups.values(), key=lambda g: not g["changed"])
+            sheets.append({"sheet": cur["name"], "old_sheet": ref["name"], "count": len(changes), "groups": ordered,
+                           "review": sum(not g["changed"] for g in ordered)})
     finally:
         book.Close(SaveChanges=False)
     if sheets:
@@ -342,7 +356,7 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf:
     for entry in sheets:
         for group in entry["groups"]:
             group.pop("texts", None)
-    return {"count": sum(s["count"] for s in sheets), "sheets": sheets}
+    return {"count": sum(s["count"] for s in sheets), "sheets": sheets, "review": sum(s["review"] for s in sheets)}
 
 
 def _image_refs() -> list[str]:
@@ -437,7 +451,8 @@ def describe(entry: dict, mode: str = "fix") -> str:
     if entry.get("error"):
         return entry["error"]
     if mode == "scan":
-        return f"{entry['count']} 个图形变了（{len(entry['sheets'])} 张表）" if entry.get("count") else "图片都没变"
+        review = f"，{entry['review']} 张图片请看三列目测" if entry.get("review") else ""
+        return (f"{entry['count']} 个图形变了" if entry.get("count") else "程序没量出变化") + review
     parts = [f"放回 {entry['count']} 个图形" if entry.get("count") else "",
              f"组合 {entry['grouped']} 组截图和标注" if entry.get("grouped") else ""]
     parts = [p for p in parts if p]
@@ -451,6 +466,7 @@ def _run(mode: str, root: Path, paths: list[Path], old_root: Path | None, old_pa
     """mode=scan：只找不改；mode=fix：改这几份（结果并进上次找出来的清单，标成已修复）；
     mode=group：只把截图和标注永久组合，不对照原版（old_root 可以是 None）"""
     files: list[dict] = []
+    stamp = int(time.time())  # 局部截图地址带上它：查的过程中不变，页面重画不重新下载图
     excel, initialized = None, False
     guard = file_problem.Guard({"scan": "找出受影响的图片", "fix": "修复图片", "group": "组合截图和标注"}[mode])
     try:
@@ -511,6 +527,9 @@ def _run(mode: str, root: Path, paths: list[Path], old_root: Path | None, old_pa
             wf.log_msg(f"🖼️ {name}：{describe(entry, mode)}")
             with _LOCK:
                 progress_log.add(_STATUS, name, not entry["error"], describe(entry, mode), path=str(path))
+                if mode == "scan":  # 边查边显示：查完一份就能在页面上看三列（用户 2026-11-11 要）
+                    _STATUS["result"] = {"folder": str(root), "old_folder": str(old_root or ""), "pdf_folder": str(pdf_root or ""),
+                                         "files": list(files), "mode": "scan", "scanned": True, "partial": True, "stamp": stamp}
     except Exception as error:
         debug_log.exception(error, "图片任务")
         files.append({"name": "任务", "path": "", "error": str(error), "count": 0, "sheets": []})
@@ -594,7 +613,7 @@ def start(folder: str, old_folder: str, mode: str = "scan", names: Any = None, p
         if job.get("pending_adjustment") or job.get("deferred_adjustments"):
             raise ValueError("还有未完成的文件写入，请先继续或放弃上次写入")
         wf.STATE.update(busy=True, maintenance="image_restore")
-        result = _STATUS.get("result")
+        result = None if mode == "scan" else _STATUS.get("result")  # 重新找：清掉上次的清单，查完一份列一份
         _STATUS.clear()
         _STATUS.update(running=True, mode=mode, folder=str(root), old_folder=str(old_root or ""), pdf_folder=str(pdf_root or ""),
                        total=len(paths), done=0, current="", result=result)

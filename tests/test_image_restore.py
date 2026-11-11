@@ -174,5 +174,15 @@ class MergeTest(unittest.TestCase):
         self.assertEqual(only["old_folder"], "")
 
 
+class OverlayHostsTest(unittest.TestCase):
+    def test_every_lists_all_pictures_and_groups(self):
+        ref = [s("図 1", 13, 0, 0, 300, 300), s("正方形 2", 1, 10, 10, 20, 20), s("図 3", 13, 400, 0, 100, 100),
+               s("グループ 4", 6, 600, 0, 100, 100)]
+        self.assertEqual(sg.overlay_hosts(ref, ref), {"図 1": ["正方形 2"]})
+        self.assertEqual(sg.overlay_hosts(ref, ref, every=True), {"図 1": ["正方形 2"], "図 3": [], "グループ 4": []})
+        info = sg.diagnose(ref, ref)
+        self.assertEqual((info["配上"], info["截图"], info["组合"], info["大小最大差"]), (4, 2, 1, 0))
+
+
 if __name__ == "__main__":
     unittest.main()
