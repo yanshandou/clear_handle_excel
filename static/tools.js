@@ -21,8 +21,9 @@
     { id: 'font', size: 'small', title: '统一字体', sub: '游ゴシック → ＭＳ Ｐゴシック', url: '/fix-fonts', vector: 'type', tone: 'green', inc: 'clean', incKey: 'font' },
     { id: 'colors', size: 'small', title: '修复颜色', sub: '对照参考恢复残留底色', url: '/repair-colors', ops: 'colors', vector: 'palette', tone: 'purple', inc: 'upload' },
     { id: 'view', size: 'small', title: '视图标准化', sub: 'A1 · 100% · 停在第一张表', url: '/?task=normalize_view', action: "openTask('normalize_view')", ops: 'view', vector: 'target', tone: 'purple', inc: 'upload' },
-    { id: 'new', size: 'wide', title: '新任务 · 拿文件', sub: '填共享文件夹路径，自动建好参考、处理文件夹，再从共享拿文件', url: '/distribute/start', sprite: 'new', tone: 'lime', linkId: 'workTaskNew' },
-    { id: 'images', size: 'small', title: '修复图片', sub: '截图变形 · 红框错位 · 列宽', url: '/fix-images', vector: 'image', tone: 'teal' },
+    { id: 'new', size: 'small', title: '新任务 · 拿文件', sub: '填共享路径，从共享拿文件', url: '/distribute/start', sprite: 'new', tone: 'lime', linkId: 'workTaskNew' },
+    { id: 'images', size: 'small', title: '修复图片', sub: '截图变形 · 红框错位', url: '/fix-images', vector: 'image', tone: 'teal' },
+    { id: 'widths', size: 'small', title: '修复列宽', sub: '按参考恢复被改过的列宽', url: '/fix-images?tool=widths', vector: 'grid', tone: 'teal' },
     { id: 'bundle', size: 'small', title: '批量导出同名 PDF', sub: 'aaa.xlsx 旁边生成 aaa.pdf', url: '/pdf-bundle', vector: 'document', tone: 'blue' },
     { id: 'json', size: 'small', title: '按 JSON 复制 Excel', sub: '按上传记录复制、建目录', url: '/distribute?mode=json', vector: 'layers', tone: 'pink' },
     { id: 'finish', size: 'small', title: '完成任务', sub: '收尾检查：都传回共享了没有', url: '/finish?start=1', pages: ['/finish'], sprite: 'finish', tone: 'yellow', linkId: 'workTaskFinish' },
@@ -56,6 +57,7 @@
   function currentToolId() {
     const path = location.pathname.replace(/\/+$/, '') || '/';
     if (path === '/distribute') return new URLSearchParams(location.search).get('mode') === 'json' ? 'json' : 'upload';
+    if (path === '/fix-images') return new URLSearchParams(location.search).get('tool') === 'widths' ? 'widths' : 'images';
     const tool = TOOLS.find(t => !t.action && t.url.split('?')[0] === path || (t.pages || []).includes(path));
     return tool ? tool.id : '';
   }

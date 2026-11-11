@@ -17,7 +17,7 @@
   list-style: none;
 }
 
-/* 位置：上两行 精简(大) | 调整页面 + 查看切字(横) | 上传(大)；第三行是被大卡顺便做的 6 步；第四行是其他工具 */
+/* 位置：上两行 精简(大) | 调整页面 + 查看切字(横) | 上传(大)；第三行是被大卡顺便做的 6 步；第四行是新任务、其他工具、完成任务 */
 .tile[data-tool='clean'] { grid-area: 1 / 1 / 3 / 3; }
 .tile[data-tool='adjust'] { grid-area: 1 / 3 / 2 / 5; }
 .tile[data-tool='cells'] { grid-area: 2 / 3 / 3 / 5; }
@@ -28,8 +28,9 @@
 .tile[data-tool='font'] { grid-area: 3 / 4; }
 .tile[data-tool='colors'] { grid-area: 3 / 5; }
 .tile[data-tool='view'] { grid-area: 3 / 6; }
-.tile[data-tool='new'] { grid-area: 4 / 1 / 5 / 3; }
-.tile[data-tool='images'] { grid-area: 4 / 3; }
+.tile[data-tool='new'] { grid-area: 4 / 1; }
+.tile[data-tool='images'] { grid-area: 4 / 2; }
+.tile[data-tool='widths'] { grid-area: 4 / 3; }
 .tile[data-tool='bundle'] { grid-area: 4 / 4; }
 .tile[data-tool='json'] { grid-area: 4 / 5; }
 .tile[data-tool='finish'] { grid-area: 4 / 6; }

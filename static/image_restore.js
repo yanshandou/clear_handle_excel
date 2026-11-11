@@ -425,3 +425,10 @@
   controls();
   refresh();
 })();
+
+// 从主页「修复列宽」卡片进来（/fix-images?tool=widths）：「修复列宽」变成主按钮
+if (new URLSearchParams(location.search).get('tool') === 'widths') {
+  const widths = document.getElementById('imgWidths'), scan = document.getElementById('imgScan');
+  widths.classList.replace('btn-outline', 'btn-primary');
+  scan.classList.replace('btn-primary', 'btn-outline');
+}

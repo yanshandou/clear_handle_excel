@@ -89,11 +89,11 @@ async function main() {
     await cdp('Network.enable');
     await resize(1440);
     await navigate('/');
-    await until("document.querySelectorAll('#tileGrid .tile').length === 15");
+    await until("document.querySelectorAll('#tileGrid .tile').length === 16");
     await evaluate(`Promise.all(['/static/icons/garden-tools-v1.webp','/static/images/garden-workshop-v1.webp'].map(src => new Promise((resolve,reject) => { const image = new Image(); image.onload = resolve; image.onerror = reject; image.src = src; }))).then(() => true)`);
     assert.equal(await evaluate("document.querySelectorAll('#tileGrid .tile-big').length"), 2);
     assert.equal(await evaluate("document.querySelectorAll('#tileGrid .garden-sprite').length"), 6);
-    assert.equal(await evaluate("document.querySelectorAll('#tileGrid svg use').length"), 9);
+    assert.equal(await evaluate("document.querySelectorAll('#tileGrid svg use').length"), 10);
     assert.equal(await evaluate("document.querySelectorAll('.flow-bar, .flow-page-bar').length"), 0, 'workflow rail is gone');
     await capture('home-desktop');
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'desktop has no horizontal overflow');
