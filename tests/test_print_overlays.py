@@ -135,6 +135,22 @@ class ClusterTest(unittest.TestCase):
         self.assertEqual((a.Placement, b.Placement), (3, 1))
 
 
+class FollowCellsTest(unittest.TestCase):
+    """导出时临时「随单元格移动和改变大小」，导完放回（用户 2026-11-11：图片在 PDF 里盖住格子里的字）"""
+    def test_singles_and_temp_groups_follow_cells_then_restored(self):
+        alone = Shape("図 9", 13, 900, 900, 100, 100, placement=2)
+        floating = Shape("メモ 8", 17, 2000, 10, 50, 20, placement=3)
+        chart = Shape("グラフ 5", 3, 3000, 10, 50, 50, placement=2)   # 图表不碰
+        a = Shape("ボタン 1", 1, 0, 0, 50, 50, placement=2)
+        b = Shape("吹き出し 2", 2, 40, 40, 50, 50, placement=3)
+        sheet = Sheet([alone, floating, chart, a, b])
+        with print_overlays.grouped_overlays(sheet) as n:
+            self.assertEqual(n, 1)
+            group = next(s for s in sheet.Shapes.items if isinstance(s, Group))
+            self.assertEqual((alone.Placement, floating.Placement, group.Placement, chart.Placement), (1, 1, 1, 2))
+        self.assertEqual((alone.Placement, floating.Placement, chart.Placement, a.Placement, b.Placement), (2, 3, 2, 2, 3))
+
+
 class GroupPermanentlyTest(unittest.TestCase):
     def test_grouped_and_set_move_dont_size(self):
         pic = Shape("図 1", 13, 30, 40, 330, 310)

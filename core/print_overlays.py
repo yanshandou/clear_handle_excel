@@ -8,7 +8,8 @@
 
 导出时的做法（grouped_overlays，2026-11-11 扩大）：看得见的图片 / 自选图形 / 线条 / 文本框 / 任意多边形 / 标注 / 已有的组合，
 互相重叠或隔 2 磅以内的连成一堆，每堆临时组合成一个图形——没有底图、全靠图形拼出来的画面也一起管。
-重名的图形按图形 ID 找序号来组合。
+重名的图形按图形 ID 找序号来组合。同时把临时组合和其余单个图形都临时设成「随单元格移动和改变大小」，
+让它们在打印时跟着格子一起缩，不盖住下面格子里的字；导完改回原设置。
 
 永久组合（group_permanently，保存进文件；用户 2026-11-11：「不用再拆开了吧，能合都合了」）按同样的一堆一堆来组，
 设成「随单元格移动、不改变大小」。导出时的临时组合留着：扫描等只读打开的地方存不了，还没永久组合过的文件也要靠它。
@@ -221,6 +222,43 @@ def _restore_placements(sheet: Any, parts: Any, by_id: dict[int, Any], by_name: 
             debug_log.event("⚠️ 图形的位置关係放不回去", 表=str(getattr(sheet, "Name", "?")), 图形=name, 错误=str(err))
 
 
+XL_MOVE_AND_SIZE = 1  # 「セルに合わせて移動やサイズ変更をする」
+
+
+def _follow_cells(sheet: Any, temp_groups: list[Any]) -> list[tuple[Any, Any]]:
+    """导出的那一刻，把图形都临时设成「随单元格移动和改变大小」（用户 2026-11-11：图片在 PDF 里盖住格子里的字）。
+    打印时 Excel 按打印机重量行高列宽，格子缩了、图形大小不缩，图形下边缘就压到下面那行字；设成跟着格子改变大小，
+    打印时图形跟格子一起缩。文件里保存的设置不动（平时「不改变大小」才不会被行高拉变形），导完放回。
+    返回 [(图形, 原设置)]——临时组合不用记（反正要拆）"""
+    for group in temp_groups:
+        try:
+            group.Placement = XL_MOVE_AND_SIZE
+        except Exception as err:
+            debug_log.event("⚠️ 临时组合设不了「随单元格移动和改变大小」", 表=str(getattr(sheet, "Name", "?")), 错误=str(err))
+    skip = {i for i in (_shape_id(g) for g in temp_groups) if i is not None}
+    changed: list[tuple[Any, Any]] = []
+    try:
+        shapes = sheet.Shapes
+        items = [shapes.Item(i) for i in range(1, int(shapes.Count) + 1)]
+    except Exception:
+        return changed
+    for shape in items:
+        try:
+            if int(shape.Type) not in CLUSTER_TYPES or not _visible(shape) or _shape_id(shape) in skip:
+                continue
+            value = shape.Placement
+            if value == XL_MOVE_AND_SIZE:
+                continue
+            shape.Placement = XL_MOVE_AND_SIZE
+            changed.append((shape, value))
+        except Exception:
+            continue
+    if changed or temp_groups:
+        debug_log.event("📐 导出 PDF 临时让图形跟着格子移动和改变大小（防止盖住文字）", 表=str(getattr(sheet, "Name", "?")),
+                        单个图形=len(changed), 临时组合=len(temp_groups))
+    return changed
+
+
 @contextmanager
 def grouped_overlays(sheet: Any) -> Iterator[int]:
     """with 块里互相重叠 / 挨着的图形是一堆一堆组合着的（截图 + 上面的红框也在内）；返回组合了几组"""
@@ -240,9 +278,15 @@ def grouped_overlays(sheet: Any) -> Iterator[int]:
     if made:
         debug_log.event("📌 导出 PDF 临时把挨着的图形组合起来（防止互相错位）", 表=sheet_name, 组数=len(made),
                         组="；".join("、".join(n[:6]) + (f"…共 {len(n)} 个" if len(n) > 6 else "") for *_x, n in made[:20]))
+    follow = _follow_cells(sheet, [group for group, *_x in made])
     try:
         yield len(made)
     finally:
+        for shape, value in follow:  # 先把没进临时组合的图形改回去，再拆临时组合
+            try:
+                shape.Placement = value
+            except Exception as err:
+                debug_log.event("⚠️ 图形的位置关係放不回去", 表=sheet_name, 图形=str(getattr(shape, "Name", "?")), 错误=str(err))
         for group, by_id, by_name, names in made:
             try:
                 parts = group.Ungroup()
