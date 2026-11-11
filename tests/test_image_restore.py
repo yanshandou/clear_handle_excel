@@ -105,5 +105,45 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(sg.restore_book(object(), {"手順": []}), 0)
 
 
+class PdfCropTest(unittest.TestCase):
+    def test_finds_picture_by_aspect_and_nearby_text(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from core.pdf_detector import fitz
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 40, 30), 0)
+            pix.clear_with(200)
+            doc = fitz.open()
+            for text in ("別のページ", "その場合は詳細ボタンを押下"):
+                page = doc.new_page()
+                page.insert_text((50, 60), text, fontname="japan")
+                page.insert_image(fitz.Rect(50, 80, 450, 380), pixmap=pix)   # 4:3
+            doc.save(tmp / "a.pdf")
+            groups = [{"key": "図 1", "sheet": "手順", "aspect": 4 / 3, "texts": ["その場合は詳細ボタンを押下"]},
+                      {"key": "正方形 9", "sheet": "手順"}]
+            with patch.object(ir.fix_images, "IMAGES_DIR", tmp):
+                ir.pdf_crops(tmp / "a.pdf", tmp / "a.xlsx", groups)
+            self.assertEqual(groups[0]["pdf_page"], 2)
+            self.assertTrue((tmp / groups[0]["pdf_img"]).is_file())
+            self.assertIn("不是截图", groups[1]["pdf_why"])
+
+    def test_ambiguous_without_text_is_skipped(self):
+        import tempfile
+        from pathlib import Path
+        from core.pdf_detector import fitz
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 40, 30), 0)
+            doc = fitz.open()
+            for _ in range(2):
+                doc.new_page().insert_image(fitz.Rect(50, 80, 450, 380), pixmap=pix)
+            doc.save(tmp / "a.pdf")
+            groups = [{"key": "図 1", "sheet": "手順", "aspect": 4 / 3, "texts": ["見つからない文字"]}]
+            ir.pdf_crops(tmp / "a.pdf", tmp / "a.xlsx", groups)
+            self.assertIn("认不出", groups[0]["pdf_why"])
+
+
 if __name__ == "__main__":
     unittest.main()

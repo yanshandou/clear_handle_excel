@@ -31,7 +31,7 @@ from core.backup_compare import pair_files, require_manual_file_check
 from core.common import workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, quit_background_excel, start_background_excel
 from core.link_repair import fingerprint
-from core.shape_geometry import _unique, apply_sheet, describe_change, plan_sheet, read_shapes
+from core.shape_geometry import PICTURES, _unique, apply_sheet, describe_change, plan_sheet, read_shapes
 
 _LOCK = threading.RLock()
 _STATUS: dict[str, Any] = {"running": False}
@@ -133,7 +133,84 @@ def _anchor(sheet: Any, name: str) -> str:
         return ""
 
 
-def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None) -> dict:
+def _nearby_texts(sheet: Any, names: list[str]) -> list[str]:
+    """图形上面几行、下面几行格子里的字（去掉空白），按离图形由近到远；在 PDF 里找这一处时当路标"""
+    import re
+    try:
+        shapes = [sheet.Shapes.Item(n) for n in names]
+        r1 = min(int(s.TopLeftCell.Row) for s in shapes)
+        r2 = max(int(s.BottomRightCell.Row) for s in shapes)
+        c1 = max(1, min(int(s.TopLeftCell.Column) for s in shapes) - 2)
+        c2 = max(int(s.BottomRightCell.Column) for s in shapes) + 2
+        rows = [r for r in [*range(r1 - 1, max(0, r1 - 7), -1), *range(r2 + 1, r2 + 4)] if r >= 1]
+        texts = []
+        for row in rows:
+            values = sheet.Range(sheet.Cells(row, c1), sheet.Cells(row, c2)).Value
+            for value in (values[0] if isinstance(values, tuple) else [values]):
+                text = re.sub(r"\s+", "", str(value or ""))
+                if len(text) >= 4 and text not in texts:
+                    texts.append(text[:40])
+        return texts[:8]
+    except Exception:
+        return []
+
+
+def _norm(text: str) -> str:
+    import re
+    return re.sub(r"\s+", "", text or "")
+
+
+def pdf_crops(pdf: Path, path: Path, groups: list[dict]) -> None:
+    """在新版 PDF 里找每处截图：PDF 里纵横比和新版截图差不多（±12%）的图片里，挑附近有同样文字的那张，
+    把那块（四周多留一点）转成 PNG，写进 group["pdf_img"] / group["pdf_page"]；找不到写 group["pdf_why"]"""
+    from core.pdf_detector import fitz
+    wanted = [g for g in groups if g.get("aspect")]
+    for group in groups:
+        if not group.get("aspect"):
+            group["pdf_why"] = "不是截图，没在 PDF 里定位"
+    if not wanted:
+        return
+    doc = fitz.open(str(pdf))
+    try:
+        pages = []
+        for page in doc:
+            try:
+                images = [fitz.Rect(info["bbox"]) for info in page.get_image_info()]
+            except Exception:
+                images = []
+            pages.append({"text": _norm(page.get_text()), "images": [r for r in images if r.width > 30 and r.height > 30]})
+        for group in wanted:
+            aspect = group["aspect"]
+            found = []
+            for number, info in enumerate(pages):
+                hits = [t for t in group.get("texts", []) if t in info["text"]]
+                for rect in info["images"]:
+                    ratio = rect.width / rect.height
+                    if abs(ratio - aspect) / aspect <= 0.12:
+                        found.append((len(hits), -abs(ratio - aspect), number, rect))
+            if not found:
+                group["pdf_why"] = "PDF 里没找到大小比例对得上的截图"
+                continue
+            found.sort(key=lambda f: (f[0], f[1]), reverse=True)
+            best = found[0]
+            if best[0] == 0 and len(found) > 1:
+                group["pdf_why"] = f"PDF 里有 {len(found)} 张比例差不多的截图，认不出是哪张"
+                continue
+            number, rect = best[2], best[3]
+            page = doc[number]
+            clip = fitz.Rect(rect.x0 - 30, rect.y0 - 40, rect.x1 + 30, rect.y1 + 30) & page.rect
+            zoom = min(3.0, RENDER_WIDTH / max(1.0, clip.width))
+            name = _image_name(path, group["sheet"], group["key"], "pdf")
+            fix_images.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+            page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip, annots=False).save(str(fix_images.IMAGES_DIR / name))
+            group["pdf_img"], group["pdf_page"] = name, number + 1
+        debug_log.event("📄 在新版 PDF 里找截图", PDF=pdf.name,
+                        结果=[f"{g['key']}：{('第 ' + str(g['pdf_page']) + ' 页') if g.get('pdf_img') else g.get('pdf_why')}" for g in groups])
+    finally:
+        doc.close()
+
+
+def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf: Path | None = None) -> dict:
     """两份都只读打开，返回受影响的地方：{count, sheets:[{sheet, old_sheet, count, groups:[…]}]}"""
     if path.resolve() == old_path.resolve():
         raise ValueError("处理后的文件和参考文件是同一个，请分别选两个文件夹")
@@ -162,8 +239,14 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None) -> d
                 if item["name"] not in group["names"]:
                     group["names"].append(item["name"])
                 group["details"].append(describe_change(item))
+            cur_by = _unique(cur["shapes"])
             for group in groups.values():
                 group["cell"] = _anchor(sheet, group["key"])
+                group["sheet"] = cur["name"]
+                host = cur_by.get(group["key"])
+                if host and host["type"] in PICTURES and host["height"] > 0:
+                    group["aspect"] = host["width"] / host["height"]  # PDF 是新版导出的，按新版截图的比例找
+                    group["texts"] = _nearby_texts(sheet, group["names"])
                 group["new_img"] = render_area(sheet, group["names"], _image_name(path, cur["name"], group["key"], "new"))
             debug_log.event("🔍 找到受影响的图片", 文件=path.name, 表=cur["name"],
                             图形=[d for g in groups.values() for d in g["details"]])
@@ -179,6 +262,17 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None) -> d
                     group["old_img"] = render_area(old_sheet, group["names"], _image_name(path, entry["sheet"], group["key"], "old"))
         finally:
             old_book.Close(SaveChanges=False)
+    if sheets and pdf:
+        try:
+            pdf_crops(pdf, path, [g for entry in sheets for g in entry["groups"]])
+        except Exception as err:
+            debug_log.event("⚠️ 新版 PDF 读不了", PDF=str(pdf), 错误=str(err))
+            for entry in sheets:
+                for group in entry["groups"]:
+                    group.setdefault("pdf_why", f"PDF 读不了：{err}")
+    for entry in sheets:
+        for group in entry["groups"]:
+            group.pop("texts", None)
     return {"count": sum(s["count"] for s in sheets), "sheets": sheets}
 
 
@@ -187,7 +281,7 @@ def _image_refs() -> list[str]:
     with _LOCK:
         files = ((_STATUS.get("result") or {}).get("files")) or []
         return [g.get(k) for f in files for s in f.get("sheets", []) for g in s.get("groups", [])
-                for k in ("old_img", "new_img") if g.get(k)]
+                for k in ("old_img", "new_img", "pdf_img") if g.get(k)]
 
 
 fix_images.register_references(_image_refs)
@@ -286,7 +380,7 @@ def _run(mode: str, root: Path, paths: list[Path], old_root: Path, old_paths: li
                             progress_log.step(_STATUS, f"正在对照第 {i} / {total} 张表：{sheet}")
 
                     if mode == "scan":
-                        entry.update(inspect_workbook(excel, path, old_path, on_sheet))
+                        entry.update(inspect_workbook(excel, path, old_path, on_sheet, pdf))
                     else:
                         entry.update(fix_workbook(excel, path, old_path, on_sheet))
                 except Exception as error:

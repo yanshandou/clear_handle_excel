@@ -67,10 +67,17 @@
     }
   }
 
-  function shot(label, name) {
+  function shot(label, name, why = '截图没做出来（看调试日志「⚠️ 局部截图」），请对照打开看') {
     return `<figure class="img-shot"><figcaption>${label}</figcaption>`
-      + (name ? `<img src="/api/batch/image/${encodeURIComponent(name)}?v=${Date.now() % 1e7}" alt="${esc(label)}" loading="lazy">`
-        : '<div class="img-none">截图没做出来（看调试日志「⚠️ 局部截图」），请对照打开看</div>') + '</figure>';
+      + (name ? `<img src="/api/batch/image/${encodeURIComponent(name)}?v=${result()?.stamp || 0}" alt="${esc(label)}" loading="lazy">`
+        : `<div class="img-none">${esc(why)}</div>`) + '</figure>';
+  }
+
+  // 第三列：新版 PDF 里同一张截图（PDF 没找到 / 认不出时写原因）
+  function pdfShot(f, g) {
+    if (!f.pdf) return shot('新版 PDF', '', '没找到同名 PDF（Excel 旁边和 PDF 文件夹里都没有）');
+    const label = `新版 PDF${g.pdf_page ? `（第 ${g.pdf_page} 页）` : ''}`;
+    return shot(label, g.pdf_img, (g.pdf_why || '没在 PDF 里找到这一处') + '，请点上面「新版 PDF」自己看');
   }
 
   function renderFile(f, data) {
@@ -86,7 +93,7 @@
       : f.fix_error ? `<span class="img-badge is-bad">! 没修好：${esc(f.fix_error)}</span>`
       : `<button class="btn btn-outline btn-sm" type="button" data-fix-file="${esc(f.name)}">🖼️ 修复这份</button>`;
     const sheets = (f.sheets || []).map(s => `<div class="img-sheet">【${esc(s.sheet)}】${s.count} 个图形变了</div>`
-      + (s.groups || []).map(g => `<div class="img-group">${shot('原版', g.old_img)}${shot(f.fixed ? '新版（修复前）' : '新版', g.new_img)}`
+      + (s.groups || []).map(g => `<div class="img-group">${shot('原版 Excel', g.old_img)}${shot(f.fixed ? '新版 Excel（修复前）' : '新版 Excel', g.new_img)}${pdfShot(f, g)}`
         + `<div class="img-detail">${(g.details || []).map(d => '· ' + esc(d)).join('\n')}\n`
         + `${compare(`🆚 对照打开这里${g.cell ? `（${esc(g.cell)}）` : ''}`, s.sheet, g.cell || '')}</div></div>`).join('')).join('');
     return `<div class="img-file${f.fixed ? ' is-fixed' : ''}"><div class="img-file-head"><span class="img-file-name">${esc(f.name)}</span>`
