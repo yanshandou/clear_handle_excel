@@ -86,18 +86,18 @@
     box.remove();
     return ok;
   }
-  // pathHtml：这一列是哪个文件（完整路径，点了打开），用户 2026-11-11 要每页都能看到路径
-  function shot(label, name, why, ratio, pathHtml = '') {
-    return `<figure class="img-shot"><figcaption>${esc(label)}</figcaption><div class="img-path">${pathHtml}</div>`
-      + (name ? `<img src="/api/batch/image/${encodeURIComponent(name)}?v=${result()?.stamp || 0}" alt="${esc(label)}" loading="lazy"${ratio ? ` style="aspect-ratio:${ratio}"` : ''}>`
-        : `<div class="img-none"${ratio ? ` style="aspect-ratio:${ratio}"` : ''}>${esc(why || '没有')}</div>`) + '</figure>';
+  // 一列：标题 + 这是哪个文件（完整路径，点了打开）+ 这张表的所有页从上到下
+  function column(title, pathHtml, pages, why) {
+    const stamp = result()?.stamp || 0;
+    const body = (pages || []).map(p => `<div class="img-page-no">第 ${p.page} 页${p.how === 'pdf' && title !== '新版 PDF' ? ' · 导出效果，非屏幕原样' : ''}</div>`
+      + `<img src="/api/batch/image/${encodeURIComponent(p.img)}?v=${stamp}" alt="${esc(title)} 第 ${p.page} 页" loading="lazy"${p.ratio ? ` style="aspect-ratio:${p.ratio}"` : ''}>`).join('');
+    return `<figure class="img-shot"><figcaption>${esc(title)}${pages?.length ? `（共 ${pages.length} 页）` : ''}</figcaption>`
+      + `<div class="img-path">${pathHtml}</div>${body || `<div class="img-none">${esc(why || '没有')}</div>`}</figure>`;
   }
 
-  // 屏幕原样拍不了、退回导出效果时标出来（导出效果可能本身就有错位，不能当 Excel 原样看）
-  const how = h => h === 'screen' ? '屏幕原样' : '导出效果，非屏幕原样';
   const groupTitle = f => (f.group_sheets || []).map(g => `【${g.sheet}】${g.groups.join('；')}`).join('\n');
 
-  // 「无需处理」记在浏览器里（按 新版文件夹 + 文件 + 表 + 页），只改这一页的样子，不重画别的
+  // 「无需处理」记在浏览器里（按 新版文件夹 + 文件 + 表），只改这一页的样子，不重画别的
   const MARKS = 'clear_handle_excel.imgNoNeed';
   let marks = {};
   try { marks = JSON.parse(localStorage.getItem(MARKS) || '{}') || {}; } catch (_) {}
@@ -110,10 +110,10 @@
       if (button) button.textContent = on ? '↩ 取消「无需处理」' : '✓ 无需处理';
     });
     const all = root.querySelectorAll('[data-mark]').length, done = root.querySelectorAll('[data-mark].is-noneed').length;
-    if ($('imgMarkCount')) $('imgMarkCount').textContent = all ? `已标无需处理 ${done} / ${all} 页` : '';
+    if ($('imgMarkCount')) $('imgMarkCount').textContent = all ? `已标无需处理 ${done} / ${all} 张表` : '';
   }
 
-  // 一页一行三列整页图（用户 2026-11-11 要：看整页，能比对也能定位）。前两列是 Excel 屏幕原样（拍不了才退回导出效果）
+  // 每张表三列，每列把这张表的所有页列全（用户 2026-11-11 定：不按页配对）。前两列是 Excel 屏幕原样（拍不了才退回导出效果）
   function renderFile(f, data) {
     const folder = data.folder;
     const openNew = (label, sheet = '', cell = '') => window.excelLinkHtml(label, { file: f.name, folder, sheet, cell });
@@ -133,15 +133,16 @@
       const head = `<div class="img-sheet">【${esc(s.sheet)}】${s.count ? `程序量出 ${s.count} 个图形变了` : '程序没量出变化，请看整页目测'}`
         + ` <span class="img-sheet-open">${compare('🆚 对照打开这张表', s.sheet, cell)}</span></div>`
         + (details.length ? `<div class="img-detail">${details.map(d => '· ' + esc(d)).join('\n')}</div>` : '');
-      const pages = (s.pages || []).map(p => `<div class="img-page" data-mark="${esc(markKey(folder, f.name, s.sheet, p.page))}">`
-        + `<div class="img-page-head"><span>这张表第 ${p.page} / ${p.pages} 页${p.note ? `（${esc(p.note)}）` : ''}</span>`
+      const cols = s.cols;
+      if (!cols) return head + `<div class="img-none">${esc(s.pages_why || '这张表的整页图没做出来')}</div>`;
+      const screen = [...cols.old, ...cols.new].some(p => p.how === 'screen');
+      return `<div class="img-page" data-mark="${esc(markKey(folder, f.name, s.sheet, 'all'))}">${head}`
+        + `<div class="img-page-head"><span>三列各自从第 1 页列到最后一页${screen ? '，前两列是 Excel 屏幕原样' : ''}</span>`
         + '<button class="btn btn-outline btn-sm" type="button" data-mark-btn>✓ 无需处理</button></div>'
-        + `<div class="img-group">${shot(`原版 Excel${p.old_page ? `（第 ${p.old_page} 页 · ${how(p.old_how)}）` : ''}`, p.old_img, p.old_why, p.old_ratio || p.ratio,
-          f.old ? compare(esc(f.old), s.sheet, cell) + copyBtn(f.old) : '没有对应的原版文件')}`
-        + shot(`新版 Excel${f.fixed ? '（修复前）' : ''}（第 ${p.page} 页 · ${how(p.new_how)}）`, p.new_img, '', p.new_ratio || p.ratio, openNew(esc(f.path || f.name), s.sheet, cell) + copyBtn(f.path))
-        + `${shot(`新版 PDF${p.pdf_page ? `（第 ${p.pdf_page} 页）` : ''}`, p.pdf_img, p.pdf_why, p.pdf_ratio || p.ratio,
-          f.pdf ? `<a href="#" data-open-pdf="${esc(f.name)}" title="点击打开这份 PDF">${esc(f.pdf)}</a>` + copyBtn(f.pdf) : '没找到同名 PDF')}</div></div>`).join('');
-      return head + (pages || `<div class="img-none">${esc(s.pages_why || '这张表没有导出页')}</div>`);
+        + `<div class="img-group">${column('原版 Excel', f.old ? compare(esc(f.old), s.sheet, cell) + copyBtn(f.old) : '没有对应的原版文件', cols.old, s.old_why || '原版这张表没有页')}`
+        + column(`新版 Excel${f.fixed ? '（修复前）' : ''}`, openNew(esc(f.path || f.name), s.sheet, cell) + copyBtn(f.path), cols.new, '')
+        + column('新版 PDF', f.pdf ? `<a href="#" data-open-pdf="${esc(f.name)}" title="点击打开这份 PDF">${esc(f.pdf)}</a>` + copyBtn(f.pdf) : '没找到同名 PDF', cols.pdf, s.pdf_why)
+        + '</div></div>';
     }).join('');
     return `<div class="img-file${f.fixed ? ' is-fixed' : ''}"><div class="img-file-head"><span class="img-file-name">${esc(f.name)}</span>`
       + `<span class="img-links">${links}</span>${badge}${groupBadge}</div>${sheets}</div>`;
@@ -174,7 +175,7 @@
       shown.clear();
       $('imgResults').innerHTML = '<p id="imgSummary" class="font-summary"></p><p id="imgHint" class="toolbar-hint"></p>'
         + `<label class="img-group-opt"><input type="checkbox" id="imgOnlyBad"${onlyBad ? ' checked' : ''}>只看程序量出变化、没查的文件（其余先藏起来）</label>`
-        + `<label class="img-group-opt"><input type="checkbox" id="imgHideDone"${hideDone ? ' checked' : ''}>藏起已标「无需处理」的页 <span id="imgMarkCount"></span></label>`
+        + `<label class="img-group-opt"><input type="checkbox" id="imgHideDone"${hideDone ? ' checked' : ''}>藏起已标「无需处理」的表 <span id="imgMarkCount"></span></label>`
         + `<div id="imgList" class="${onlyBad ? 'only-bad ' : ''}${hideDone ? 'hide-done' : ''}"></div><p id="imgEmpty" hidden>没有图片。</p>`;
     }
     const bad = files.filter(f => f.error), hit = files.filter(f => !f.error && f.count);

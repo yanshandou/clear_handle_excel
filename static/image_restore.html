@@ -22,6 +22,9 @@
     .img-file { border: 1px solid #dce5ef; border-radius: 12px; padding: 12px 14px; margin: 14px 0; background: #fff; }
     .only-bad > .img-file:not(.is-flag) { display: none; }
     .img-page { border-top: 1px dashed #cbd5e1; margin-top: 10px; padding-top: 8px; }
+    .img-page-no { font-size: 12px; font-weight: 700; color: #64748b; margin: 8px 0 3px; }
+    .img-group { align-items: start; }
+    .img-path { flex: 0 0 auto; min-height: 2.6em; }
     .img-page-head { display: flex; align-items: center; gap: 12px; font-size: 14px; font-weight: 700; color: #334155; }
     .img-page.is-noneed { opacity: .45; }
     .hide-done .img-page.is-noneed { display: none; }
@@ -62,7 +65,7 @@
       <h2>找出被行高列宽拉坏的截图、跑偏的红框</h2>
       <ul class="font-rules toolbar-hint">
         <li>以前修切字时加高行、加宽列，Excel 的图形默认跟着格子一起变：截图被拉长变形，截图上的红框、箭头挂在别的格子上，就框不住原来的地方了。</li>
-        <li>先点<b>「🔍 找出受影响的图片」</b>：原版、新版都只读打开，不改任何文件。有图片的每一页并排列出<b>原版 Excel / 新版 Excel / 新版 PDF</b> 三列整页图（前两列是 Excel 屏幕原样，要借用剪贴板，Ditto 会记下这些截图；个别页拍不了会退回导出效果并标出来；第三列是你已有的 PDF），既能比对也能看出在哪一页哪个位置。看过没问题的页点<b>「✓ 无需处理」</b>（记在这台电脑的浏览器里）。可以点开新版 Excel、左右对照打开原版、打开新版 PDF。</li>
+        <li>先点<b>「🔍 找出受影响的图片」</b>：原版、新版都只读打开，不改任何文件。有图片的表并排列出<b>原版 Excel / 新版 Excel / 新版 PDF</b> 三列，每列把这张表的所有页从上到下列全（前两列是 Excel 屏幕原样，要借用剪贴板，Ditto 会记下这些截图；个别页拍不了会退回导出效果并标出来；第三列是你已有的 PDF）。每列写着文件路径，点了打开，也可以复制路径。看过没问题的表点<b>「✓ 无需处理」</b>（记在这台电脑的浏览器里）。结果里出现的文件都已经查完，查找还在进行时也能打开。</li>
         <li>看完再点<b>「修复这份」</b>或底部<b>「全部修复」</b>：截图左上角不动、大小改回原版的；红框、箭头按原版里<b>相对截图的位置</b>放回去。行高、列宽、格子内容都不动，改完回读核对，有一个没对上整份不保存。</li>
         <li>图形按名字配对，有重名的不碰；原版只读打开，不会改。</li>
       </ul>

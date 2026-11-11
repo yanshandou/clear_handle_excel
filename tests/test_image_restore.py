@@ -121,43 +121,27 @@ def _pdf(target, pages):
     return target
 
 
-class PageRowsTest(unittest.TestCase):
-    def test_picture_pages_matched_by_text(self):
+class SheetPagesTest(unittest.TestCase):
+    def test_all_pages_listed_and_pdf_range_found_by_text(self):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            steps = ["手順1 ログイン画面を開く", "実行ボタンを押下する", "結果一覧が表示される"]
-            new = _pdf(tmp / "new.pdf", [(["表紙 システム概要"], False), (steps, True), (["補足 注意事項"], False)])
-            old = _pdf(tmp / "old.pdf", [(["表紙 システム概要"], False), (["補足 注意事項"], False), (steps, True)])
-            book = _pdf(tmp / "book.pdf", [(["別シート 変更履歴"], False), (["表紙 システム概要"], False), (steps, True)])
+            steps = [["手順1 ログイン画面を開く", "実行ボタンを押下する"], ["手順2 結果一覧が表示される", "明細を確認する"],
+                     ["手順3 終了ボタンを押下する", "ログアウトする"]]
+            new = _pdf(tmp / "new.pdf", [(steps[0], True), (steps[1], False), (steps[2], False)])
+            book = _pdf(tmp / "book.pdf", [(["別シート 変更履歴"], False), (steps[0], True), (steps[1], False), (steps[2], False),
+                                           (["別シート 補足事項"], False)])
             with patch.object(ir.fix_images, "IMAGES_DIR", tmp):
-                rows = ir.page_rows(tmp / "a.xlsx", "手順", new, old, book)
-                self.assertEqual(len(rows), 1)
-                row = rows[0]
-                self.assertEqual((row["page"], row["old_page"], row["pdf_page"]), (2, 3, 3))
-                for key in ("new_img", "old_img", "pdf_img"):
-                    self.assertTrue((tmp / row[key]).is_file())
-                none = ir.page_rows(tmp / "a.xlsx", "手順", new, None, None)
-                self.assertIn("没导出", none[0]["old_why"])
-                self.assertIn("没找到同名 PDF", none[0]["pdf_why"])
+                pages = ir.sheet_pages(new, tmp / "a.xlsx", "手順", "new")
+                self.assertEqual([p["page"] for p in pages], [1, 2, 3])   # 没图片的页也列
+                self.assertTrue(all((tmp / p["img"]).is_file() and p["how"] == "pdf" for p in pages))
+                found, why = ir.pdf_pages(book, tmp / "a.xlsx", "手順", pages)
+                self.assertEqual(([p["page"] for p in found], why), ([2, 3, 4], ""))
+                self.assertIn("没找到同名 PDF", ir.pdf_pages(None, tmp / "a.xlsx", "手順", pages)[1])
                 other = _pdf(tmp / "other.pdf", [(["まったく別の内容"], False)])
-                miss = ir.page_rows(tmp / "a.xlsx", "手順", new, other, other)
-                self.assertIn("没找到文字对得上的页", miss[0]["old_why"])
-
-    def test_no_bitmap_lists_first_pages(self):
-        import tempfile
-        from pathlib import Path
-        from unittest.mock import patch
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            new = _pdf(tmp / "new.pdf", [([f"ページ{i} の内容です"], False) for i in range(8)])
-            with patch.object(ir.fix_images, "IMAGES_DIR", tmp):
-                rows = ir.page_rows(tmp / "a.xlsx", "手順", new, new, None)
-            self.assertEqual(len(rows), ir.SHOW_ALL_MAX)
-            self.assertTrue(rows[0]["note"])
-            self.assertEqual(rows[3]["old_page"], 4)
+                self.assertEqual(ir.pdf_pages(other, tmp / "a.xlsx", "手順", pages)[0], [])
 
 
 class _Cell:
@@ -214,18 +198,20 @@ class PageRangesTest(unittest.TestCase):
     def test_screen_pages_keeps_export_image_when_capture_fails(self):
         from pathlib import Path
         from unittest.mock import patch
-        rows = [{"page": 2, "new_img": "pdf.png", "new_how": "pdf", "old_page": 3, "old_img": "o.png", "old_how": "pdf"}]
+        make = lambda: [{"page": n, "img": f"pdf{n}.png", "how": "pdf", "ratio": 0.7} for n in (1, 2, 3)]
+        pages = make()
         with patch.object(ir, "render_screen", return_value=1.5) as shot:
-            ir.screen_pages(PageSheet(), rows, "new", 3, Path("a.xlsx"), "手順")
-            self.assertEqual((rows[0]["new_how"], rows[0]["new_ratio"], shot.call_args[0][1].Row), ("screen", 1.5, 41))
-            ir.screen_pages(PageSheet(), rows, "old", 3, Path("a.xlsx"), "手順")
-            self.assertEqual((rows[0]["old_how"], shot.call_args[0][1].Row), ("screen", 81))
-        rows = [{"page": 2, "new_img": "pdf.png", "new_how": "pdf"}]
-        with patch.object(ir, "render_screen", side_effect=RuntimeError("剪贴板被占用")):
-            ir.screen_pages(PageSheet(), rows, "new", 3, Path("a.xlsx"), "手順")
-        self.assertEqual((rows[0]["new_img"], rows[0]["new_how"]), ("pdf.png", "pdf"))
-        ir.screen_pages(PageSheet(), rows, "new", 5, Path("a.xlsx"), "手順")  # 分页数对不上：整张表不拍
-        self.assertEqual(rows[0]["new_how"], "pdf")
+            ir.screen_pages(PageSheet(), pages, "new", Path("a.xlsx"), "手順")
+        self.assertEqual([(p["how"], p["ratio"]) for p in pages], [("screen", 1.5)] * 3)
+        self.assertEqual([c.args[1].Row for c in shot.call_args_list], [1, 41, 81])
+        pages = make()
+        with patch.object(ir, "render_screen", side_effect=RuntimeError("剪贴板被占用")), patch.object(ir.time, "sleep"):
+            ir.screen_pages(PageSheet(), pages, "old", Path("a.xlsx"), "手順")
+        self.assertEqual([(p["img"], p["how"]) for p in pages], [(f"pdf{n}.png", "pdf") for n in (1, 2, 3)])
+        pages = make()[:2]  # 分页数对不上：整张表不拍
+        with patch.object(ir, "render_screen") as shot:
+            ir.screen_pages(PageSheet(), pages, "new", Path("a.xlsx"), "手順")
+        shot.assert_not_called()
 
 
 class OpenDuringScanTest(unittest.TestCase):
