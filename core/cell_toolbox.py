@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core import autofix, debug_log, file_problem, pdf_store, print_layout, sheet_history, workflow as wf
+from core import autofix, debug_log, file_problem, pdf_store, print_layout, shape_geometry, sheet_history, workflow as wf
 from core import batch as b
 from core.common import workbook_rel_name
 from core.excel_ops import close_saved_workbooks, normalize_workbook_view, open_workbook_checked
@@ -186,6 +186,7 @@ def apply_tools(excel: Any, path: str, plan: dict[str, dict]) -> dict:
     try:
         if book.ReadOnly:
             raise ValueError(f"{name} 以只读方式打开，没能修改")
+        shapes_before = shape_geometry.snapshot_book(book)  # 改行高前记下图形，保存前放回（用户 2026-11-11 要）
         for cid, card in cards.items():
             choice = plan[cid]
             where = f"{card['sheet_name']}!{card['cell_addr']}"
@@ -228,6 +229,7 @@ def apply_tools(excel: Any, path: str, plan: dict[str, dict]) -> dict:
                 after = _page_count(sheet)
                 if pages_before.get(sheet_name) is not None and after is not None and after != pages_before[sheet_name]:
                     pages.append({"sheet": sheet_name, "before": pages_before[sheet_name], "after": after})
+            shape_geometry.restore_book(book, shapes_before, f"工具箱 {name}")
             normalize_workbook_view(excel, book)
             book.Save()
             b._followed_own_save(path, before)

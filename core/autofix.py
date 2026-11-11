@@ -28,7 +28,7 @@ from typing import Any
 from uuid import uuid4
 
 from core import fix_images
-from core import print_layout
+from core import print_layout, shape_geometry
 from core.common import STALE_LOCK_HINT, workbook_locked, XL_SHEET_VISIBLE, as_bbox, col_index_to_letters
 from core.excel_ops import (
     CellProbe, extract_sheet_snapshot, normalize_workbook_view, quit_background_excel, snapshot_cells,
@@ -1173,8 +1173,10 @@ def _apply(session: _ExcelSession, wb_path: str, gids: list[str]) -> bool:
     excel = session.app()
     workbook = open_workbook_checked(excel, str(path.resolve()), UpdateLinks=0)
     try:
+        shapes_before = shape_geometry.snapshot_book(workbook, [p[1] for p in plan])  # 图形不跟着行高变（2026-11-11）
         for _, sheet_name, row, _, height, *_ in plan:
             workbook.Sheets(sheet_name).Rows(row).RowHeight = height
+        shape_geometry.restore_book(workbook, shapes_before, f"自动修复写入 {path.name}")
         normalize_workbook_view(excel, workbook)
         before_print_save = _file_version(path)
         workbook.Save()

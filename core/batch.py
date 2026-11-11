@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from core import (autofix, debug_log, file_problem, fix_images, page_breaks, pdf_store, print_layout, scan_analysis,
+from core import (autofix, debug_log, file_problem, fix_images, page_breaks, pdf_store, print_layout, scan_analysis, shape_geometry,
                   sheet_history, workflow as wf)
 from core.common import STALE_LOCK_HINT, is_inspection_exempt_sheet, workbook_locked, workbook_rel_name
 from core.excel_ops import (
@@ -1095,6 +1095,7 @@ def _write_rows(excel: Any, journal: dict) -> None:
     try:
         if book.ReadOnly:
             raise ValueError(f"{where} 文件以只读方式打开，未写入")
+        shapes_before = shape_geometry.snapshot_book(book)  # 改行高列宽前记下图形，保存前放回（用户 2026-11-11 要）
         actual = [_row_value(book, r) for r in journal["rows"]]
         for value, r in zip(actual, journal["rows"]):
             debug_log.event("✍️ 写入行", 动作=journal.get("action"), 位置=_adjustment_where(r),
@@ -1125,6 +1126,7 @@ def _write_rows(excel: Any, journal: dict) -> None:
                     )
                 else:
                     sheet.Rows(row["row"]).RowHeight = row["target"]
+            shape_geometry.restore_book(book, shapes_before, f"写入行高 {Path(path).name}")
             normalize_workbook_view(excel, book)
             before = _version_or_none(path)
             book.Save()
@@ -2306,6 +2308,7 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float, skip: set[str] | None = 
     try:
         if book.ReadOnly:
             raise ValueError(f"{name} 以只读方式打开，没能开换行、加高")
+        shapes_before = shape_geometry.snapshot_book(book)  # 加高前记下图形，保存前放回（用户 2026-11-11 要）
         rows: dict[tuple[str, int], dict] = {}
         for card in cards:
             where = f"{card['sheet_name']}!{card['cell_addr']}"
@@ -2381,6 +2384,7 @@ def _grow_and_wrap(excel: Any, path: str, ratio: float, skip: set[str] | None = 
                 done[cid].update(sheet=sheet_name, base=round(base, 2), applied=applied, ratio=ratio)
         horizontal_count = sum(bool(d.get("horizontal_fix")) for d in done.values())
         if rows or horizontal_count:
+            shape_geometry.restore_book(book, shapes_before, f"开换行加高 {name}")
             normalize_workbook_view(excel, book)
             book.Save()
             _followed_own_save(path, before)
@@ -2594,6 +2598,7 @@ def _tighten_rows(excel: Any, path: str, ratio: float) -> dict[tuple[str, int], 
     try:
         if book.ReadOnly:
             raise ValueError(f"{name} 以只读方式打开，没能收紧行高")
+        shapes_before = shape_geometry.snapshot_book(book)  # 收行高前记下图形，保存前放回（用户 2026-11-11 要）
         rows: dict[str, tuple[Any, set[int]]] = {}
         for card in cards:
             sheet = _find_sheet(book, card["sheet_name"])
@@ -2631,6 +2636,7 @@ def _tighten_rows(excel: Any, path: str, ratio: float) -> dict[tuple[str, int], 
                     wf.log_msg(f"⚠️ {name} / {where} 没能收紧：{err}")
                     debug_log.event("⚠️ 收紧行高失败", 行=where, 原因=str(err)[:200])
         if done:
+            shape_geometry.restore_book(book, shapes_before, f"收紧行高 {name}")
             normalize_workbook_view(excel, book)
             book.Save()
             _followed_own_save(path, before)
@@ -2665,11 +2671,13 @@ def _restore_rows(excel: Any, path: str, rows: dict[tuple[str, int], float]) -> 
     before = wf._file_version(Path(path))
     book = open_workbook_checked(excel, str(Path(path).resolve()), UpdateLinks=0)
     try:
+        shapes_before = shape_geometry.snapshot_book(book)  # 退回行高前记下图形，保存前放回（用户 2026-11-11 要）
         for (sheet_name, row), height in rows.items():
             sheet = _find_sheet(book, sheet_name)
             if sheet is not None:
                 sheet.Rows(row).RowHeight = height
                 debug_log.event("↩️ 退回原行高", 行=f"{sheet_name}!{row} 行", 行高=height)
+        shape_geometry.restore_book(book, shapes_before, f"退回原行高 {Path(path).name}")
         normalize_workbook_view(excel, book)
         book.Save()
         _followed_own_save(path, before)
