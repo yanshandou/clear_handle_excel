@@ -132,7 +132,7 @@ class UploadPdfTests(unittest.TestCase):
         preview = distribute.preview_free(str(other), str(dest))
         check = distribute.pdf_check(preview_id=preview["id"])
         self.assertTrue(check["files"][0]["exists"])
-        distribute.start_free(preview["id"], False, {**PDF_ON, "overwrite": {"x.xlsx": check["files"][0]["sha256"]}})
+        distribute.start_free(preview["id"], {**PDF_ON, "overwrite": {"x.xlsx": check["files"][0]["sha256"]}})
         result = self.wait()
         self.assertEqual(result["summary"]["PDF 已传"], 1)
         self.assertEqual(read(dest / "x.pdf"), "PDF of X")
@@ -157,7 +157,7 @@ class UploadPdfTests(unittest.TestCase):
         dest = Path(self.tmp.name) / "终点"
         write(dest / "x.xlsx", "终点原来的 Excel")
         preview = distribute.preview_free(str(other), str(dest))
-        distribute.start_free(preview["id"], False, {**PDF_ON, "only": True})
+        distribute.start_free(preview["id"], {**PDF_ON, "only": True})
         result = self.wait()
         self.assertEqual(read(dest / "x.xlsx"), "终点原来的 Excel")
         self.assertEqual(read(dest / "x.pdf"), "PDF of X")
@@ -179,7 +179,7 @@ class UploadPdfTests(unittest.TestCase):
         self.assertTrue(files["a.xlsx"]["pdf_uploaded_at"])
         self.assertFalse(files["sub/b.xlsx"]["pdf_uploaded_at"])
 
-    def test_shared_changed_at_copy_time_marks_prep_and_pdf_stale(self):
+    def test_shared_changed_at_copy_time_blocks_excel_and_pdf_for_that_file(self):
         def export(excel, wb_path, *args, **kwargs):
             info = fake_export(excel, wb_path, *args, **kwargs)
             if wb_path.name == "a.xlsx":
@@ -188,15 +188,13 @@ class UploadPdfTests(unittest.TestCase):
         self.export.side_effect = export
         result = self.upload(PDF_ON)
         a, b = result["files"]
-        self.assertEqual(a["status"], "review")
-        self.assertTrue(a["prep_stale"])
-        self.assertEqual(a["pdf"]["status"], "stale")
-        self.assertIn("复制前一刻发现共享里的这份被人改过", a["error"])
-        self.assertFalse((self.work / "a.pdf").exists())  # 过期 PDF 删掉了
-        self.assertEqual(read(self.work / "a.xlsx"), "A 别人刚改")  # 同步了共享最新版
-        self.assertEqual(b["status"], "ok")  # 不挡后面的，照常传上去
+        self.assertEqual(a["status"], "failed")
+        self.assertIn("共享版本发生变化", a["error"])
+        self.assertFalse((self.company / "a.pdf").exists())
+        self.assertEqual(read(self.company / "a.xlsx"), "A 别人刚改")
+        self.assertEqual(read(self.work / "a.xlsx"), "A fixed")
+        self.assertEqual(b["status"], "ok")
         self.assertEqual(read(self.company / "sub" / "b.xlsx"), "B fixed")
-        self.assertIn("同步前那一版", distribute.markdown(result))
 
     # ───── 同名 PDF 缓存（用户 2026-11-10）：Excel 没变、设置没变、PDF 没被换 → 不再处理、不再导 ─────
     def test_pdf_only_reuses_pdf_when_excel_unchanged(self):
@@ -260,7 +258,7 @@ class UploadPdfTests(unittest.TestCase):
         dest = Path(self.tmp.name) / "终点"
         dest.mkdir()
         preview = distribute.preview_free(str(other), str(dest))
-        distribute.start_free(preview["id"], False, {**PDF_ON, "only": True})
+        distribute.start_free(preview["id"], {**PDF_ON, "only": True})
         result = self.wait()
         self.export.assert_not_called()
         upload_prep.prepare.assert_not_called()

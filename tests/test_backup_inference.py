@@ -22,6 +22,32 @@ def matches(current, old, history=None):
 
 
 class SheetGuessTests(unittest.TestCase):
+    def test_missing_same_name_uses_clean_rename_with_or_without_an_old_version(self):
+        current = [s("Layout(1)"), s("Keep")]
+        for older in ([], [s("旧Layout (１)")]):
+            with self.subTest(older=older):
+                old = [s("新Layout（１）"), s("Keep"), *older]
+                result = matches(current, old)
+                self.assertEqual(result["Layout(1)"][0]["name"], "新Layout（１）")
+                self.assertEqual(result["Layout(1)"][1], "guess")
+
+    def test_delete_markers_and_numbered_pages_are_not_renames(self):
+        for name in ("旧Layout", "Layout_bak", "Layout_20241003", "Layout(2)", "新規約"):
+            with self.subTest(name=name):
+                current = "規約" if name == "新規約" else "Layout"
+                self.assertEqual(matches([s(current)], [s(name)]), {})
+        self.assertEqual(matches([s("Layout", words=["Title", "Amount"])],
+                                 [s("旧Layout", words=["Title", "Amount"])]), {})
+
+    def test_retained_old_sheet_or_multiple_renames_prevents_name_only_pairing(self):
+        old = [s("新Layout"), s("旧Layout")]
+        self.assertNotIn("Layout", matches([s("Layout"), s("旧Layout")], old))
+        self.assertEqual(matches([s("Layout")], [s("新Layout"), s("新 Layout")]), {})
+
+    def test_unique_rename_with_code_evidence_is_available_for_formula_comparison(self):
+        result = matches([s("Layout", "New")], [s("新Layout", "New"), s("旧Layout", "Old")])
+        self.assertEqual(inferred_renames(result, lambda sheet: sheet["name"]), {"新Layout": "Layout"})
+
     def test_new_version_can_win_against_same_name_by_unique_code_or_content(self):
         old = [s("Layout", "Old", ["old"]), s("新Layout", "New", ["new", "title"])]
         for current in (s("Layout", "New"), s("Layout", "", ["new", "title"])):

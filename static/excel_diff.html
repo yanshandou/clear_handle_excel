@@ -89,7 +89,7 @@
     <nav class="header-nav" aria-label="功能导航"><a href="/" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#home"></use></svg>主页</a><a href="/distribute" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#upload"></use></svg>上传</a></nav>
   </header>
   <main class="container clean-container">
-    <section class="panel">
+    <section id="xdInputPanel" class="panel">
       <h2>对比哪两份</h2>
       <div class="xd-fields">
         <label for="xdTheirs">远程现在这份（旧，左边）<input id="xdTheirs" type="text" spellcheck="false" autocomplete="off" placeholder="共享 / 终点里那份 Excel 的完整路径"></label>
@@ -101,7 +101,16 @@
       <p id="xdStatus" role="status" aria-live="polite"></p>
       <p id="xdError" class="batch-error" role="alert"></p>
     </section>
-    <section class="panel">
+    <section id="xdReviewPanel" class="panel" hidden>
+      <h2 id="xdReviewName">确认上传</h2>
+      <p id="xdReviewStatus" role="status"></p>
+      <div id="xdReviewActions" class="link-actions" hidden>
+        <button id="xdApprove" class="btn btn-primary" type="button">确认覆盖并上传</button>
+        <button id="xdSkip" class="btn btn-outline" type="button">跳过这份</button>
+      </div>
+      <p id="xdReviewError" class="batch-error" role="alert"></p>
+    </section>
+    <section id="xdResultPanel" class="panel">
       <h2>对比结果</h2>
       <div id="xdResult"><p>填好两份文件的路径后点「🔍 开始对比」。从上传页点「🔍 对比」进来会自动开始。</p></div>
     </section>

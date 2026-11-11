@@ -65,6 +65,102 @@ class BackupPairingTests(unittest.TestCase):
         self.assertEqual(pair_files(root, paths, ["book.xlsx"], Path("current/001"))["book.xlsx"], paths[1])
 
 
+class AmbiguousReferenceTests(unittest.TestCase):
+    class Sheets(list):
+        def __call__(self, name):
+            return next(sheet for sheet in self if sheet.Name == name)
+
+    def preview(self, old_cells, new_cells, formulas):
+        books = []
+
+        def open_reference(*args, **kwargs):
+            self.assertTrue(kwargs["ReadOnly"])
+            sheets = self.Sheets()
+            for name, content in (("Layout", old_cells), ("新Layout", new_cells), ("旧Layout", {})):
+                sheet = NS(Name=name)
+                ranges = {addr: NS(Formula=formula, Value2=value, Text=str(value), Address=addr,
+                                   HasArray=False, HasSpill=False, Worksheet=sheet,
+                                   Rows=NS(Count=1), Columns=NS(Count=1))
+                          for addr, (formula, value) in content.items()}
+
+                def get_cell(addr, ranges=ranges):
+                    cell = ranges[addr]
+                    if isinstance(cell.Value2, Exception):
+                        raise cell.Value2
+                    return cell
+
+                sheet.Range = get_cell
+                sheet.Delete = lambda sheet=sheet: sheets.remove(sheet)
+                sheet.ranges = ranges
+                sheets.append(sheet)
+
+            def calculate():
+                if any(sheet.Name == "旧Layout" for sheet in sheets):
+                    return
+                for sheet in sheets:
+                    for cell in sheet.ranges.values():
+                        cell.Formula = cell.Formula.replace("旧Layout!", "#REF!")
+
+            book = NS(Worksheets=sheets, Sheets=sheets, Application=NS(CalculateFull=calculate), Close=Mock(), Save=Mock())
+            books.append(book)
+            return book
+
+        hits = [{"sheet": "Layout", "addr": addr, "anchor": addr, "formula": formula, "formulas": formula,
+                 "kind": "cell", "anchors": []} for addr, formula in formulas.items()]
+        file = {"path": "current.xlsx", "sheets": [{"name": "Layout", "code": "", "words": []}], "hits": hits}
+        with patch.object(link_repair, "fingerprint", return_value="unchanged"), \
+                patch.object(link_repair.sheet_history, "for_paths", return_value=None), \
+                patch.object(link_repair, "_sheet_info", side_effect=lambda sheet: {"name": sheet.Name, "code": "", "words": []}), \
+                patch.object(link_repair, "open_workbook_checked", side_effect=open_reference):
+            plan = link_repair.preview_file(Mock(), file, Path("reference.xlsx"))
+        expected_opens = 1 if all(isinstance(value, Exception) for _, value in new_cells.values()) else 2
+        self.assertEqual(len(books), expected_opens)
+        for book in books:
+            book.Close.assert_called_once_with(SaveChanges=False)
+            book.Save.assert_not_called()
+        return plan["cells"]
+
+    def test_only_candidate_with_matching_damage_is_used(self):
+        result, = self.preview({"A1": ("=旧Layout!A1+1", 11)}, {"A1": ("=旧Layout!A1+2", 12)}, {"A1": "=#REF!+2"})
+        self.assertEqual((result["action"], result["old_sheet"], result["value"]), ("restore", "新Layout", 12))
+
+    def test_legacy_current_prefix_is_paired_even_without_code_name(self):
+        current = [{"name": "新Main", "code": "", "words": []}]
+        old = [{"name": "Main", "code": "", "words": []}]
+        self.assertEqual(link_repair._pair_sheets(current, old)["新Main"][0]["name"], "Main")
+
+    def test_candidates_must_agree_on_the_value_and_be_readable(self):
+        for value, action in ((12, "restore"), (21, "skip"), (RuntimeError("读取失败"), "skip")):
+            with self.subTest(value=value):
+                result, = self.preview({"A1": ("=旧Layout!A1+2", 12)}, {"A1": ("=旧Layout!A2+2", value)}, {"A1": "=#REF!+2"})
+                self.assertEqual(result["action"], action)
+                self.assertIn("Layout!A1", result["source"])
+                self.assertIn("新Layout!A1", result["source"])
+                if action == "restore":
+                    self.assertEqual(result["value"], 12)
+                    self.assertEqual(result["old_sheet"], "")
+
+    def test_confirmed_mapping_can_resolve_another_cells_disagreement(self):
+        result = self.preview({"A1": ("=旧Layout!A1+1", 11), "A2": ("=旧Layout!A1+2", 12)},
+                              {"A1": ("=旧Layout!A1+2", 12), "A2": ("=旧Layout!A2+2", 22)},
+                              {"A1": "=#REF!+2", "A2": "=#REF!+2"})
+        self.assertEqual([(cell["action"], cell["old_sheet"], cell["value"]) for cell in result],
+                         [("restore", "新Layout", 12), ("restore", "新Layout", 22)])
+
+    def test_workbooks_with_more_than_sixteen_mappings_are_still_checked(self):
+        ambiguous = {f"Layout{index}": [f"Layout{index}", f"新Layout{index}"] for index in range(5)}
+        mappings, reason = link_repair._sheet_mappings([{"name": name} for name in ambiguous], {}, ambiguous)
+        self.assertFalse(reason)
+        self.assertEqual(sum(1 for _ in mappings), 32)
+
+    def test_cells_cannot_use_conflicting_workbook_mappings(self):
+        result = self.preview({"A1": ("=旧Layout!A1+1", 11), "A2": ("=旧Layout!A2+2", 22)},
+                              {"A1": ("=旧Layout!A1+2", 12), "A2": ("=旧Layout!A2+1", 21)},
+                              {"A1": "=#REF!+1", "A2": "=#REF!+1"})
+        self.assertEqual([cell["action"] for cell in result], ["skip", "skip"])
+        self.assertTrue(all("互相冲突" in cell["reason"] for cell in result))
+
+
 class RepairTaskTests(unittest.TestCase):
     def setUp(self):
         self.state = {"busy": False, "job": None}

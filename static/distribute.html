@@ -120,7 +120,6 @@
     .dist-pdf-box { margin: 12px 0; padding: 12px 14px; border: 2px dashed #c4b5fd; border-radius: 12px; background: #fff; }
     .dist-diff { display: inline-block; margin-left: 8px; padding: 1px 9px; border: 1.5px solid #4c1d95; border-radius: 999px; background: #fff; color: #4c1d95; font-size: 13px; font-weight: 700; text-decoration: none; white-space: nowrap; }
     .dist-diff:hover { background: #ede9fe; }
-    .dist-force { display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; color: #b42318; font-weight: 700; cursor: pointer; }
     .dist-pdf-mode { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
     .dist-pdf-mode strong { margin-right: 4px; }
     .dist-pdf-mode label { position: relative; cursor: pointer; }
@@ -273,9 +272,9 @@
             </div>
             <div id="distPdfBox" class="dist-pdf-box">
               <div class="dist-pdf-mode" role="radiogroup" aria-labelledby="distGuardModeTitle">
-                <strong id="distGuardModeTitle">怎么判断远程被改过</strong>
-                <label><input type="radio" name="distGuardMode" value="auto" checked><span>🔑 先比 hash，对不上再比内容</span></label>
-                <label><input type="radio" name="distGuardMode" value="content"><span>🔎 只比内容</span></label>
+                <strong id="distGuardModeTitle">上传前版本检查</strong>
+                <label><input type="radio" name="distGuardMode" value="auto" checked><span>先核对基准哈希</span></label>
+                <label><input type="radio" name="distGuardMode" value="content"><span>逐份做 Excel 对比</span></label>
               </div>
               <p id="distGuardNote" class="toolbar-hint"></p>
               <div class="dist-pdf-mode" role="radiogroup" aria-labelledby="distPdfModeTitle">
@@ -327,6 +326,11 @@
             <p id="distProgress" class="dist-activity" role="status" aria-live="polite"></p>
             <div class="progress-track progress-track-sm is-done"><div id="distProgressFill" class="progress-fill" style="width:0%"></div></div>
             <p id="distError" class="batch-error dist-activity" role="alert"></p>
+            <div id="distUploadReviews" hidden>
+              <h3>待确认上传</h3>
+              <ul id="distUploadReviewList" class="dist-list"></ul>
+              <p id="distUploadReviewError" class="link-error" role="alert"></p>
+            </div>
             <div id="distResults"><p>还没有上传结果。</p></div>
           </section>
         </section>

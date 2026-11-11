@@ -1,6 +1,7 @@
-"""没有 hash 记录 / 记录太旧时，上传前按全部文字 + 打印区域格子数核对（用户 2026-11-11）"""
+"""轻量内容核对，以及上传时需要确认的完整 Excel 差异。"""
 import json
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -8,7 +9,7 @@ from unittest.mock import Mock, patch
 
 from openpyxl import Workbook, load_workbook
 
-from core import content_check, distribute, storage, upload_prep, work_task, workflow as wf
+from core import content_check, distribute, excel_diff, storage, upload_prep, work_task, workflow as wf
 
 
 def make(path: Path, cells: dict, area: str | None = "A1:C10", sheets: tuple = ("仕様",), image_note: str = "") -> Path:
@@ -174,55 +175,77 @@ class JsonCopyTests(unittest.TestCase):
         self.assertIn(prev["folders"][0]["files"][0]["guard"], ("content_same", "identical"))
 
 
+def wait_until(predicate):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        result = predicate()
+        if result:
+            return result
+        time.sleep(0.02)
+    raise AssertionError(f"上传状态没有及时更新：{distribute.status()}")
+
+
+def next_review(rel):
+    return wait_until(lambda: next((r for r in distribute.status().get("reviews", []) if r["rel"] == rel), None))
+
+
 class FreeUploadTests(JsonCopyTests):
-    """起点 → 终点：没有记录时不再只是「要确认」，按内容决定"""
+    def test_no_base_requires_each_review_and_uploads_while_next_diff_runs(self):
+        from web_clip_fixer import WebHandler
 
-    def test_free_no_record(self):
-        make(self.src / "a.xlsx", {"A1": "画面"}, image_note="修了图片")
-        make(self.src / "b.xlsx", {"A1": "画面"})
-        make(self.dst / "a.xlsx", {"A1": "画面"})
-        make(self.dst / "b.xlsx", {"A1": "画面"}, area="A1:C20")
-        prev = distribute.preview_free(str(self.src), str(self.dst))
-        files = {f["rel"]: f for f in prev["files"]}
-        self.assertEqual((files["a.xlsx"]["action"], files["a.xlsx"]["guard"]), ("overwrite", "content"))
-        self.assertIn("核对一致", files["a.xlsx"]["note"])
-        self.assertEqual(files["b.xlsx"]["action"], "conflict")
-        self.assertIn("打印区域格子数", files["b.xlsx"]["error"])
-        self.assertEqual(prev["summary"]["要确认"], 0)
+        def request(action, token, **payload):
+            handler = object.__new__(WebHandler)
+            handler.path = "/api/distribute/upload_" + action
+            handler._send_json = Mock()
+            handler._handle_post({"token": token, **payload})
+            return handler._send_json.call_args.args[0]
 
-    def test_free_content_only_ignores_manifest_and_baseline(self):
-        make(self.dst / "a.xlsx", {"A1": "画面"})
-        make(self.src / "a.xlsx", {"A1": "画面", "B2": "我改的"})
-        auto = distribute.preview_free(str(self.src), str(self.dst))
-        self.assertEqual(auto["files"][0]["action"], "conflict")  # 没记录、内容不一样
-        make(self.src / "a.xlsx", {"A1": "画面"}, image_note="修了图片")
-        strict = distribute.preview_free(str(self.src), str(self.dst), "content")
-        self.assertEqual(strict["guard"], "content")
-        self.assertEqual((strict["files"][0]["action"], strict["files"][0]["guard"]), ("overwrite", "content"))
-        self.assertIn("选了只比内容", strict["files"][0]["note"])
+        a = make(self.src / "a.xlsx", {"A1": "同样文字"}, image_note="修了格式")
+        b = make(self.src / "b.xlsx", {"A1": "本地 B"})
+        bad = self.src / "c.xlsx"
+        bad.write_text("broken", encoding="utf-8")
+        target_a = make(self.dst / "a.xlsx", {"A1": "同样文字"})
+        target_b = make(self.dst / "b.xlsx", {"A1": "远程 B"})
+        make(self.dst / "c.xlsx", {"A1": "远程 C"})
+        old_a, old_b = target_a.read_bytes(), target_b.read_bytes()
+        preview = distribute.preview_free(str(self.src), str(self.dst))
+        self.assertEqual([f["action"] for f in preview["files"]], ["review"] * 3)
+        self.assertEqual(preview["summary"]["要确认"], 3)
+        self.assertEqual(len(distribute.pdf_check(preview_id=preview["id"])["files"]), 3)
 
-    def test_free_force_overwrite(self):
-        make(self.src / "a.xlsx", {"A1": "画面"})
-        make(self.dst / "a.xlsx", {"A1": "画面"}, sheets=("仕様", "画面一覧"))
-        prev = distribute.preview_free(str(self.src), str(self.dst))
-        self.assertEqual(prev["files"][0]["action"], "conflict")
-        self.assertEqual(distribute.pdf_check(files=["a.xlsx"], preview_id=prev["id"])["files"][0]["rel"], "a.xlsx")
-        with patch.object(upload_prep, "prepare", side_effect=lambda *a: dict(PREP)), \
-                patch("core.excel_ops.start_background_excel", Mock()), patch("core.excel_ops.quit_background_excel", Mock()), \
-                patch("core.file_problem.ask", Mock(return_value="skip")):
-            distribute.start_free(prev["id"], False, None, ["a.xlsx"])
-            result = self.wait_free()
-        item = result["files"][0]
-        self.assertEqual((item["action"], item["status"]), ("force", "ok"), item.get("error"))
-        self.assertIn("只有终点有", item["forced_reason"])  # 画面一覧 不是精简会删的表
-        self.assertEqual((self.dst / "a.xlsx").read_bytes(), (self.src / "a.xlsx").read_bytes())
+        continue_b = threading.Event()
+        b_started = threading.Event()
+        compare = excel_diff.diff
 
-    def wait_free(self):
-        for _ in range(200):
-            if not distribute.status().get("running"):
-                break
-            time.sleep(0.05)
-        return distribute.status()["applied"]
+        def hold_b(mine, theirs):
+            if mine.name == "b.xlsx":
+                b_started.set()
+                if not continue_b.wait(8):
+                    raise AssertionError("timed out waiting to compare b")
+            return compare(mine, theirs)
+
+        with (patch.object(excel_diff, "diff", side_effect=hold_b),
+              patch.object(upload_prep, "prepare", return_value=dict(PREP))):
+            distribute.start_free(preview["id"])
+            try:
+                a_review = next_review("a.xlsx")
+                self.assertTrue(b_started.wait(5))
+                self.assertEqual(target_a.read_bytes(), old_a)
+                self.assertFalse(request("review", a_review["token"])["diff"]["identical"])
+                request("decision", a_review["token"], decision="upload")
+                wait_until(lambda: target_a.read_bytes() == a.read_bytes())
+                self.assertTrue(distribute.status()["running"])
+                self.assertEqual(target_b.read_bytes(), old_b)
+                continue_b.set()
+                b_review = next_review("b.xlsx")
+                self.assertFalse(request("review", b_review["token"])["diff"]["identical"])
+                request("decision", b_review["token"], decision="skip")
+                wait_until(lambda: not distribute.status()["running"])
+            finally:
+                continue_b.set()
+        self.assertEqual(target_b.read_bytes(), old_b)
+        self.assertEqual(load_workbook(b).active["A1"].value, "本地 B")
+        self.assertEqual([f["status"] for f in distribute.status()["applied"]["files"]], ["ok", "skipped", "failed"])
 
     test_no_record_same_content_overwrites = test_no_record_different_content_blocks = None
     test_destination_changed_after_preview_blocks = test_old_record_but_same_content_overwrites = None
@@ -232,7 +255,7 @@ PREP = {"marks": 0, "tabs": 0, "colors": 0, "color_skipped": 0, "color_problems"
 
 
 class TaskUploadTests(unittest.TestCase):
-    """当前任务上传：共享版本和记录对不上（拿很久以前的版本修的）时，内容一样就照常传"""
+    """当前任务上传的哈希快路径和逐文件版本确认。"""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -263,47 +286,44 @@ class TaskUploadTests(unittest.TestCase):
             time.sleep(0.05)
         return distribute.status()["applied"]
 
-    def upload(self, guard=None):
+    def start_upload(self, guard=None):
         distribute.start_task_upload(self.task["id"], ["a.xlsx"], {}, None, guard)
-        return self.wait()
 
-    def test_content_only_blocks_even_when_hash_matches(self):
+    def test_matching_base_skips_diff_for_local_edits(self):
         make(self.work / "a.xlsx", {"A1": "画面", "B2": "説明（改）"})
-        result = self.upload("content")
-        item = result["files"][0]
-        self.assertEqual(item["status"], "failed")
-        self.assertIn("只比内容", item["error"])
-        self.assertIn("B2", item["error"])
-        # 默认（先比 hash）：共享没人动过，照常上传
-        self.assertEqual(self.upload()["files"][0]["status"], "ok")
-
-    def test_content_only_same_content_uploads(self):
-        make(self.work / "a.xlsx", {"A1": "画面", "B2": "説明"}, image_note="我修了图片")
-        item = self.upload("content")["files"][0]
+        with patch.object(excel_diff, "diff") as compare:
+            self.start_upload()
+            item = self.wait()["files"][0]
+        compare.assert_not_called()
         self.assertEqual(item["status"], "ok", item.get("error"))
-        self.assertIn("只比内容", item["content_check"])
 
-    def test_shared_reformatted_but_same_text_uploads(self):
-        make(self.work / "a.xlsx", {"A1": "画面", "B2": "説明"}, image_note="我修了图片")
-        make(self.shared / "a.xlsx", {"A1": "画面", "B2": "説明"}, image_note="别人另存过")
-        edit(self.shared / "a.xlsx")
-        result = self.upload()
-        item = result["files"][0]
-        self.assertEqual(item["status"], "ok", item.get("error"))
-        self.assertIn("核对一致", item["content_check"])
-        self.assertEqual((self.shared / "a.xlsx").read_bytes(), (self.work / "a.xlsx").read_bytes())
+    def test_always_compare_requires_confirmation_even_with_matching_base(self):
+        local = make(self.work / "a.xlsx", {"A1": "画面", "B2": "説明（改）"})
+        remote = self.shared / "a.xlsx"
+        before = remote.read_bytes()
+        self.start_upload("content")
+        token = next_review("a.xlsx")["token"]
+        self.assertEqual(remote.read_bytes(), before)
+        self.assertFalse(distribute.upload_review(token)["diff"]["identical"])
+        distribute.decide_upload_review(token, "upload")
+        self.assertEqual(self.wait()["files"][0]["status"], "ok")
+        self.assertEqual(remote.read_bytes(), local.read_bytes())
 
-    def test_shared_text_changed_is_synced_not_overwritten(self):
-        make(self.work / "a.xlsx", {"A1": "画面", "B2": "説明"}, image_note="我修了图片")
-        mine = (self.work / "a.xlsx").read_bytes()
-        make(self.shared / "a.xlsx", {"A1": "画面", "B2": "説明（別の人が修正）"})
-        theirs = (self.shared / "a.xlsx").read_bytes()
-        result = self.upload()
-        item = result["files"][0]
-        self.assertEqual(item["status"], "review")
-        self.assertIn("按内容核对和共享不一样", item["error"])
-        self.assertEqual((self.shared / "a.xlsx").read_bytes(), theirs)  # 共享没被盖
-        self.assertEqual(Path(item["backup_path"]).read_bytes(), mine)  # 我改的先备份
+    def test_changed_remote_and_local_invalidate_confirmation(self):
+        for change_remote in (True, False):
+            with self.subTest(change_remote=change_remote):
+                local = make(self.work / "a.xlsx", {"A1": "画面", "B2": "我的修改"})
+                remote = make(self.shared / "a.xlsx", {"A1": "画面", "B2": "共享变过"})
+                self.start_upload()
+                token = next_review("a.xlsx")["token"]
+                self.assertFalse(distribute.upload_review(token)["diff"]["identical"])
+                edit(remote if change_remote else local, B2="确认前刚改")
+                remote_expected, local_expected = remote.read_bytes(), local.read_bytes()
+                distribute.decide_upload_review(token, "upload")
+                item = self.wait()["files"][0]
+                self.assertIn("发生变化", item["error"])
+                self.assertEqual(remote.read_bytes(), remote_expected)
+                self.assertEqual(local.read_bytes(), local_expected)
 
 
 if __name__ == "__main__":

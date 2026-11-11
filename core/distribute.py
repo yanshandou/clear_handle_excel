@@ -35,6 +35,7 @@ from typing import Any, Callable
 
 from core import content_check, debug_log, file_problem, pdf_cache, storage, workflow as wf
 from core.common import _held_open, workbook_locked
+from core.upload_review import Candidate, UploadReview
 
 # Microsoft Excel 的表格文件（加载项 .xla/.xlam、CSV 不算）
 EXCEL_SUFFIXES = (".xls", ".xlsx", ".xlsm", ".xlsb", ".xlt", ".xltx", ".xltm")
@@ -511,7 +512,7 @@ def _explain(err: BaseException) -> str:
 
 
 def copy_one(src: Path, dst: Path, *, check_source_open: bool = True,
-             before_replace: Callable[[], None] | None = None) -> str:
+             before_replace: Callable[[], None] | None = None, expected_digest: str | None = None) -> str:
     """先复制成临时文件再替换：网络断开或中途出错时，目的地原来的文件不会只剩半个。
     返回复制过去的内容的哈希（复制前后核对过，和来源一致）"""
     if check_source_open and source_open(src):
@@ -525,6 +526,8 @@ def copy_one(src: Path, dst: Path, *, check_source_open: bool = True,
         digest = _digest(temp)
         if temp.stat().st_size != src.stat().st_size or digest != _digest(src):
             raise OSError(5, "复制后内容和来源不一致", str(dst))
+        if expected_digest is not None and digest != expected_digest:
+            raise ValueError("待上传的文件在检查后发生变化，请重新检查这份文件")
         if before_replace:
             before_replace()
         os.replace(temp, dst)
@@ -668,7 +671,7 @@ def _task_file(root: Path, rel: str) -> Path:
 
 
 def _guard_mode(value: Any) -> str:
-    """判断远程有没有被改（用户 2026-11-11）：auto 先比 hash、对不上再比内容（默认）/ content 只比内容"""
+    """默认先核对基准哈希。content 模式逐份做 Excel 对比。"""
     return "content" if value == "content" else "auto"
 
 
@@ -702,88 +705,61 @@ def _shared_digest(path: Path) -> str | None:
         return None
 
 
-def _sync_task_file(task: dict[str, Any], item: dict[str, Any], local: Path, shared: Path,
-                    reference: Path, current: str, backup_root: Path) -> None:
-    key, task_id = _base_key(shared), task["id"]
-    review = {"token": uuid.uuid4().hex, "sha256": current, "ready": False}
-    # 两份副本都同步成功之前，即使中途中断，也不能确认复检或上传。
-    _save_baseline({key: {"tasks": {task_id: {"review": review}}}})
-    local_sha = _digest(local)
-    if local_sha != current:
-        backup = _task_file(backup_root / "处理", item["rel"])
-        if copy_one(local, backup) != local_sha:
-            raise ValueError("备份期间处理文件发生变化，请关闭 Excel 后重试")
-        item["backup_path"] = str(backup)
+class _SharedVersionChanged(ValueError):
+    pass
 
-    def verify_local() -> None:
-        if _digest(local) != local_sha:
-            raise ValueError("同步期间处理文件发生变化，请关闭 Excel 后重试")
 
-    digest = copy_one(shared, local, check_source_open=False, before_replace=verify_local)
-    ref_backup = _refresh_reference(local, reference, _task_file(backup_root / "参考", item["rel"]))
-    if ref_backup:
-        item["ref_backup_path"] = ref_backup
-    if _digest(reference) != digest:
-        raise ValueError("参考与处理副本的版本不一致，请重试同步")
-    entry = _base_entry(shared, digest, "上传前同步", task_id)
-    entry["tasks"][task_id]["review"] = {**review, "sha256": digest, "ready": True}
-    _save_baseline({key: entry})
+def _verify_upload_candidate(candidate: Candidate) -> None:
+    item, local, remote, expected = candidate
+    if _shared_digest(remote) != expected:
+        raise _SharedVersionChanged("远程文件在检查后发生变化，请重新检查这份文件")
+    if _digest(local) != item["src_sha256"]:
+        raise ValueError("本地文件在检查后发生变化，请重新检查这份文件")
+
+
+def _verified_uploads(batch: list[Candidate]) -> list[Candidate]:
+    ready = []
+    for candidate in batch:
+        try:
+            _verify_upload_candidate(candidate)
+        except (OSError, ValueError) as err:
+            candidate[0].update(status="conflict" if isinstance(err, _SharedVersionChanged) else "failed",
+                                error=_explain(err))
+        else:
+            ready.append(candidate)
+    return ready
+
+
+def _upload_review_reason(known: str | None, current: str | None, guard: str) -> str:
+    if current is None:
+        return "远程原有的同名文件已移走或删除，请确认是否重新创建" if known else ""
+    if guard == "content":
+        return "已选择逐份做 Excel 对比"
+    if not known:
+        return "没有这份文件的基准哈希"
+    return "远程版本和本地开工时的基准不同" if current != known else ""
 
 
 def _check_task_file(task: dict[str, Any], item: dict[str, Any], local: Path, shared: Path,
-                     backup_root: Path, baseline: dict[str, Any], content_only: bool = False) -> str | None:
+                     baseline: dict[str, Any], guard: str) -> str | None:
     if not Path(task["shared"]).is_dir():
         raise ValueError("共享文件夹不可用，请确认网络连接或同步状态")
-    base = baseline.get(_base_key(shared), {})
-    version = _task_baseline(base, task["id"])
+    version = baseline.get(_base_key(shared), {}).get("tasks", {}).get(task["id"], {})
     review = version.get("review")
-    reference = _task_file(Path(task["reference"]), item["rel"])
     known = version.get("sha256")
-    current = _shared_digest(shared)
+    reference = _task_file(Path(task["reference"]), item["rel"])
     if not known and reference.is_file():
         known = _digest(reference)
-    if current is None and (known or review):
-        raise ValueError("共享中的文件已移走或删除，请核对路径")
-    pending = review and (not review["ready"] or current != review["sha256"])
-    if content_only and current is not None and current == known and not pending:
-        # 用户 2026-11-11：选了「只比内容」——hash 一样也照样比全部文字 + 打印区域格子数
-        check = content_check.compare(local, shared, "你这份", "共享")
-        if check["checked"] and not check["same"]:
-            item.update(status="failed", content_diffs=check["diffs"],
-                        error=f"只比内容：你这份和共享现在这份不一样（{content_check.describe(check)}），没有上传。"
-                              "请先拉取共享最新版、在上面改好再传；如果这些不一样是你自己改的，换回「先比 hash」再传")
-            debug_log.event("🔎 只比内容：不一致，不上传", 文件=item["rel"], 第一处=check["diffs"][0][:80])
-            return current
-        if check["checked"]:
-            item["content_check"] = "只比内容：文字和打印区域都和共享一致，照常覆盖" + content_check.skipped_note(check)
-        else:
-            item["content_check"] = f"只比内容：这份读不了内容（{check['reason']}），按 hash 核对"
-    if current is not None and current != known and not pending:
-        # 用户 2026-11-11：没有 hash 记录、或者手上这份本来就是拿很久以前的版本修的（hash 一定对不上），
-        # 改成直接比要上传的这份和共享现在这份的全部文字 + 打印区域格子数：一样就照常覆盖，不一样才同步、要求重新处理
-        check = content_check.compare(local, shared, "你这份", "共享")
-        if check["same"]:
-            item["content_check"] = ("只比内容：" if content_only else "") + \
-                ("没有共享端版本记录" if not known else "共享这份和记下的版本不一样") + "，按文字和打印区域核对一致，照常覆盖" + content_check.skipped_note(check)
-            debug_log.event("🔎 版本对不上但内容一致，照常上传", 文件=item["rel"], 有记录=bool(known))
-            return current
-        if not known and not review and not check["checked"]:
-            raise ValueError(f"缺少共享端版本记录，也没法按内容核对（{check['reason']}），"
-                             "请先用「从共享拿最新版」建立快照")
-        if check["checked"]:
-            item["content_diffs"] = check["diffs"]
-    if current is not None and (current != known or pending):
-        _sync_task_file(task, item, local, shared, reference, current, backup_root)
-        diffs = item.get("content_diffs")
-        item.update(status="review", error="已同步共享最新版，请重新处理并复检"
-                    + (f"（按内容核对和共享不一样：{content_check.describe({'diffs': diffs})}）" if diffs else ""))
+    current = _shared_digest(shared)
+    reason = _upload_review_reason(known, current, guard)
+    if review and (not review["ready"] or current != review["sha256"]):
+        reason = reason or "此前的共享版本复检尚未完成"
+    if reason:
+        item["review_reason"] = reason
     elif review and review["token"] != item["reviewed"]:
         item.update(status="review", error="请确认已在共享最新版上重新处理并复检")
+    item["src_sha256"] = _digest(local)
     return current
-
-
-class _SharedVersionChanged(Exception):
-    pass
 
 
 def _sheet_progress(index: int, total: int, rel: str, guard: Any) -> Callable[[int, int, str], None]:
@@ -817,9 +793,14 @@ def _prepare_task_files(task: dict[str, Any], checked: list[tuple], total: int,
                 _progress(index, total, f"上传前处理 {item['rel']}")
                 where: dict[str, str] = {}
                 try:
+                    current = _digest(local)
+                    expected_source = item.get("_prepared_sha256", item["src_sha256"]) if temp_root is None else item["src_sha256"]
+                    if current != expected_source:
+                        item.update(status="failed", error="本地文件在检查后发生变化，请重新检查这份文件")
+                        break
                     if guard.file(item["rel"]):  # 进度框能「跳过这一份」
                         excel = None
-                    pre = _digest(local) if pdf_settings else ""
+                    pre = current if pdf_settings else ""
                     cached = pdf_settings and _use_cached_pdf(item, local, _pdf_target(local), pre, pdf_settings)
                     if cached and temp_root is not None:
                         # 只传 PDF、Excel 没变过、PDF 是按这一版导的：不再处理、不再导，直接传这份 PDF（用户 2026-11-10）
@@ -830,6 +811,7 @@ def _prepare_task_files(task: dict[str, Any], checked: list[tuple], total: int,
                         target.parent.mkdir(parents=True, exist_ok=True)
                         copy_one(local, target)  # 处理文件夹里那份在 Excel 里开着（有没保存的修改）时这里会报错
                     item["prep"] = upload_prep.prepare(get_excel, target, reference, where)
+                    item["_prepared_sha256"] = _digest(target)
                     wf.log_msg(f"🧽 {item['rel']}：{upload_prep.text(item['prep'])}")
                     if cached:  # 表格和 PDF 一起：Excel 照样处理、上传，PDF 沿用；处理保存后的 Excel 也认这份 PDF
                         pdf_cache.add_excel_hash(_pdf_target(local), _digest(local))
@@ -900,8 +882,7 @@ def pdf_check(task_id: Any = None, files: Any = None, preview_id: Any = None) ->
         if not data or data.get("kind") != "free_upload" or data.get("id") != preview_id:
             raise ValueError("清单已变化，请重新生成")
         dest_root = Path(data["dest_root"])
-        forced = {_key(rel) for rel in files} if isinstance(files, list) else set()  # 起点→终点：勾了强制覆盖的
-        rels = [f["rel"] for f in data["files"] if f["action"] != "conflict" or _key(f["rel"]) in forced]
+        rels = [f["rel"] for f in data["files"] if f["action"] != "conflict"]
     else:
         from core import work_task
         task = _upload_task(task_id)
@@ -1052,67 +1033,62 @@ def _pdf_text(pdf: dict[str, Any] | None) -> str:
     return pdf.get("error") or "同名 PDF 没传"
 
 
-def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
+def _run_task_upload(data: dict[str, Any], reviews: UploadReview) -> dict[str, Any]:
     task = data["task"]
     work, shared = Path(task["work"]), Path(task["shared"])
     relay = Path(data["dest_root"]) if data.get("relay") else None
     if relay is not None and not relay.is_dir():
         raise ValueError(f"终点文件夹不可用：{relay}（OneDrive 的话请确认已经同步到这台电脑）")
-    relayed: dict[str, dict[str, Any]] = {}
     items = data["files"]
-    backup_root = Path(task["fetch_backup"]) / (datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8])
     baseline = load_baseline(strict=True)
-    pdf_claimed: set[str] = set()
-    checked = []
+    ready = []
     for index, item in enumerate(items):
         _progress(index, len(items), f"检查 {item['rel']}")
         try:
             local, dest = _task_file(work, item["rel"]), _task_file(shared, item["rel"])
-            current = _check_task_file(task, item, local, dest, backup_root, baseline, data.get("guard") == "content")
-            checked.append((item, local, dest, current))
+            current = _check_task_file(task, item, local, dest, baseline, data["guard"])
+            if not item.get("status"):
+                if relay is not None:
+                    item["_relay_sha256"] = _shared_digest(_task_file(relay, item["rel"]))
+                ready.append((item, local, dest, current))
         except (OSError, ValueError) as err:
             item.update(status="failed", error=_explain(err))
-    # 用户 2026-11-10：整批顺着跑完，不因为一份卡住整批。检查没通过的（共享有更新已同步、出错）先记着，
-    # 其余的照常处理、上传，最后一起告诉用户哪些要重新处理
-    ready = [entry for entry in checked if not entry[0].get("status")]
-    if ready:
-        # 上传前每个文件都先清标记色、对照参考恢复残留颜色、视图标准化（core/upload_prep.py）；没做成的这份不传
-        temp_root = None
-        if (data.get("pdf") or {}).get("only"):
-            import tempfile
-            temp_root = Path(tempfile.mkdtemp(prefix="只传PDF_"))
-            data["_temp_root"] = str(temp_root)  # 跑完（出错也一样）由 start() 删掉
-        _prepare_task_files(task, ready, len(items), data.get("pdf"), temp_root)
-    for index, (item, local, dest, expected) in enumerate(ready):
-        if item.get("status"):  # 上传前处理没做成
+
+    pdf = data.get("pdf")
+    temp_root = None
+    if (pdf or {}).get("only"):
+        import tempfile
+        temp_root = Path(tempfile.mkdtemp(prefix="只传PDF_"))
+        data["_temp_root"] = str(temp_root)
+    pdf_claimed: set[str] = set()
+    relayed: dict[str, dict[str, Any]] = {}
+    for batch_index, batch in enumerate(reviews.batches(ready, _verify_upload_candidate)):
+        verified = _verified_uploads(batch)
+        if not verified:
             continue
-        if True:
-            _progress(index, len(items), f"上传 {item['rel']}")
+        _prepare_task_files(task, verified, len(items), pdf, temp_root / str(batch_index) if temp_root else None)
+        for item, local, dest, expected in verified:
+            if item.get("status"):
+                continue
+            _progress(sum(bool(f.get("status")) for f in items), len(items), f"上传 {item['rel']}")
+            target = _task_file(relay, item["rel"]) if relay is not None else dest
 
             def verify_shared() -> None:
                 if not shared.is_dir() or _shared_digest(dest) != expected:
-                    raise _SharedVersionChanged
+                    raise _SharedVersionChanged("上传前共享版本发生变化，请重新检查这份文件")
+                if relay is not None and (not relay.is_dir() or _shared_digest(target) != item["_relay_sha256"]):
+                    raise _SharedVersionChanged("上传前中转版本发生变化，请重新检查这份文件")
 
-            # 中转：公司共享照样核对版本，文件复制到终点（团队文件夹），公司那份不动
-            target = _task_file(relay, item["rel"]) if relay is not None else dest
-            if (data.get("pdf") or {}).get("only"):
-                # 只传 PDF（用户 2026-11-10）：共享版本照样核对过（共享 Excel 被人改了就先同步、不导旧版的 PDF），
-                # Excel 不传、不记上传版本，不划掉本轮清单
-                _progress(index, len(items), f"上传同名 PDF {item['rel']}")
-                _save_baseline(_upload_pdf(item, target, data["pdf"], pdf_claimed, task["id"]))
-                _pdf_only_status(item)
-                continue
             try:
-                digest = copy_one(local, target, before_replace=verify_shared)
-            except _SharedVersionChanged:
-                try:
-                    _check_task_file(task, item, local, dest, backup_root, load_baseline(strict=True),
-                                     data.get("guard") == "content")
-                    if not item.get("status"):
-                        item.update(status="failed", error="上传期间共享版本发生变化，请重新检查")
-                except (OSError, ValueError) as err:
-                    item.update(status="failed", error=_explain(err))
-                continue  # 这份记着最后告诉用户，接着传下一份
+                if (pdf or {}).get("only"):
+                    verify_shared()
+                    if _digest(local) != item["src_sha256"]:
+                        raise ValueError("本地文件在检查后发生变化，请重新检查这份文件")
+                    _save_baseline(_upload_pdf(item, target, pdf, pdf_claimed, task["id"]))
+                    _pdf_only_status(item)
+                    continue
+                digest = copy_one(local, target, before_replace=verify_shared,
+                                  expected_digest=item["_prepared_sha256"])
             except (OSError, ValueError) as err:
                 item.update(status="failed", error=_explain(err))
                 continue
@@ -1120,35 +1096,22 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
             item.update(status="ok", uploaded_at=entry["upload"]["at"])
             entry["tasks"][task["id"]]["review"] = None
             changes = {_base_key(target): entry}
-            if data.get("pdf"):
-                _progress(index, len(items), f"上传同名 PDF {item['rel']}")
-                changes.update(_upload_pdf(item, target, data["pdf"], pdf_claimed, task["id"]))
+            if pdf:
+                _progress(sum(bool(f.get("status")) for f in items), len(items), f"上传同名 PDF {item['rel']}")
+                changes.update(_upload_pdf(item, target, pdf, pdf_claimed, task["id"]))
             if relay is not None:
                 changes[_base_key(dest)] = {"tasks": {task["id"]: {"review": None}}}
                 relayed[item["rel"]] = {"shared_sha256": expected, "sha256": digest, "uploaded_at": entry["upload"]["at"]}
             _save_baseline(changes)
-    if relayed:
-        try:
-            item_path = write_manifest(relay, shared, relayed, task["name"])
-            data["manifest"] = str(item_path)
-        except (OSError, ValueError) as err:
-            debug_log.exception(err, "写拿取版本清单")
-            data["manifest_error"] = _explain(err)
-    for item in items:  # 复制前一刻发现共享被人改过、已同步回来的：前面的处理和 PDF 都是按旧版做的
-        if item.get("status") == "review" and (item.get("prep") or item.get("pdf")):
-            item["prep_stale"] = bool(item.get("prep"))
-            item["error"] = ("复制前一刻发现共享里的这份被人改过，没有覆盖。已把共享最新版同步到处理和参考文件夹"
-                             "（你处理好的那一版先备份了，见下面的路径），请在新版上重新处理并复检")
-            pdf = item.get("pdf") or {}
-            if pdf.get("status") == "exported":
-                old = _pdf_target(_task_file(work, item["rel"]))
-                pdf_cache.forget(old)
-                try:
-                    old.unlink(missing_ok=True)
-                except OSError as err:
-                    debug_log.event("⚠️ 过期的同名 PDF 删不掉", 文件=str(old), 原因=str(err))
-                pdf["status"] = "stale"
-                item.pop("_pdf_local", None)
+        if relayed:
+            try:
+                manifest = write_manifest(relay, shared, relayed, task["name"])
+                data["manifest"] = str(manifest)
+                data.pop("manifest_error", None)
+                relayed.clear()
+            except (OSError, ValueError) as err:
+                debug_log.exception(err, "写拿取版本清单")
+                data["manifest_error"] = _explain(err)
     done = [item["rel"] for item in items if item.get("status") == "ok" and not item.get("pdf_only")]
     if done:  # 本轮清单里的文件传上去了就划掉，全划掉自动回到整个文件夹
         from core import work_task
@@ -1158,9 +1121,12 @@ def _run_task_upload(data: dict[str, Any]) -> dict[str, Any]:
             debug_log.event("⚠️ 没能更新本轮清单", 原因=str(err))
     summary = {"已复制": sum(item.get("status") == "ok" for item in items),
                "待重新处理": sum(item.get("status") == "review" for item in items),
-               "没复制成功": sum(item.get("status") == "failed" for item in items), **_pdf_summary(items)}
+               "已跳过": sum(item.get("status") == "skipped" for item in items),
+               "没复制成功": sum(item.get("status") in ("failed", "conflict") for item in items), **_pdf_summary(items)}
     for item in items:
         item.pop("reviewed", None)
+        item.pop("_prepared_sha256", None)
+        item.pop("_relay_sha256", None)
         item.pop("_pdf_local", None)
     return {**data, "id": uuid.uuid4().hex[:12], "summary": summary,
             "finished": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
@@ -1303,7 +1269,7 @@ def start(preview_id: str | None = None, *, upload: dict[str, Any] | None = None
     """按最后一次确认的清单开始复制"""
     with wf.STATE_LOCK, _LOCK:
         preview_data = upload or copy.deepcopy(_STATUS.get("preview"))
-        if not preview_data or preview_id is not None and preview_id != preview_data.get("id"):
+        if not preview_data or preview_id is not None and preview_id != (_STATUS.get("preview") or {}).get("id"):
             raise ValueError("清单已变化，请重新生成")
         from core import bl_links, hidden_repair, link_repair, mark_finder
         if (wf.STATE.get("busy") or _STATUS.get("running") or link_repair.status().get("running")
@@ -1317,6 +1283,7 @@ def start(preview_id: str | None = None, *, upload: dict[str, Any] | None = None
             raise ValueError("目的地这些文件夹里没有 Excel 文件可拿")
         if not fetching and not task_upload and not free_upload and not any(f["files"] or f.get("dirs_to_create") for f in preview_data["folders"]):
             raise ValueError("清单里没有要复制的 Excel 文件，也没有要新建的文件夹")
+        reviews = UploadReview(pdf_only=bool((preview_data.get("pdf") or {}).get("only"))) if task_upload or free_upload else None
         wf.STATE["busy"] = True
         wf.STATE["maintenance"] = "distribute"
         preview_data["_started"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1324,6 +1291,8 @@ def start(preview_id: str | None = None, *, upload: dict[str, Any] | None = None
         _STATUS.update(running=True, done=0, total=total, current="", label=preview_data["label"],
                        kind=preview_data["kind"])
         _LIVE["data"] = preview_data  # 网页实时进度框：跑的时候按每个文件的 status 列出做完的
+        if reviews is not None:
+            _LIVE["reviews"] = reviews
         if task_upload:
             _STATUS.pop("preview", None)
         _STATUS.pop("applied", None)
@@ -1338,9 +1307,9 @@ def start(preview_id: str | None = None, *, upload: dict[str, Any] | None = None
                                       "label": preview_data["label"], "files": _STATUS.get("total")}):
                 ids = operation_history.begin(preview_data["source_root" if fetching or task_upload else "dest_root"], ["distribute"])
                 if task_upload:
-                    result = _run_task_upload(preview_data)
+                    result = _run_task_upload(preview_data, reviews)
                 elif free_upload:
-                    result = _run_free(preview_data)
+                    result = _run_free(preview_data, reviews)
                 else:
                     with file_problem.task("从目的地拿最新版" if fetching else "按 JSON 复制 Excel"):
                         result = _run_fetch(preview_data) if fetching else _run(preview_data)
@@ -1360,6 +1329,8 @@ def start(preview_id: str | None = None, *, upload: dict[str, Any] | None = None
                                 "summary": {"已复制": sum(f.get("status") == "ok" for f in preview_data["files"])}
                                 if task_upload or free_upload else {}}
         finally:
+            if reviews is not None:
+                reviews.close()
             temp = preview_data.pop("_temp_root", "")
             if result is not None:
                 result.pop("_temp_root", None)
@@ -1378,10 +1349,13 @@ def start(preview_id: str | None = None, *, upload: dict[str, Any] | None = None
     try:
         threading.Thread(target=run, name="按JSON复制", daemon=True).start()
     except Exception:
+        if reviews is not None:
+            reviews.close()
         with wf.STATE_LOCK, _LOCK:
             wf.STATE["busy"] = False
             wf.STATE.pop("maintenance", None)
             _STATUS["running"] = False
+            _LIVE.clear()
         raise
 
 
@@ -1394,7 +1368,8 @@ def _live_log() -> list[dict[str, Any]]:
         pairs = [(f"{folder.get('dest_rel' if data.get('kind') == 'fetch' else 'source_rel', '')}/{item.get('rel', '')}", item)
                  for folder in data.get("folders", []) for item in folder.get("files", [])]
     words = {"ok": "拿好了" if data.get("kind") == "fetch" else "传好了" if "upload" in str(data.get("kind")) else "复制好了",
-             "conflict": "别人改过，没有覆盖", "review": "要重新处理并复检", "failed": "没成功"}
+             "conflict": "别人改过，没有覆盖", "review": "要重新处理并复检", "failed": "没成功",
+             "skipped": "已跳过"}
     log = []
     for name, item in pairs:
         state = item.get("status")
@@ -1414,15 +1389,39 @@ def status() -> dict[str, Any]:
         data = copy.deepcopy(_STATUS)
         if data.get("running") and _LIVE.get("data"):
             data["log"] = _live_log()
+            if (reviews := _LIVE.get("reviews")) is not None:
+                data["reviews"], data["comparing"] = reviews.status()
+                data["review_task_id"] = (_LIVE["data"].get("task") or {}).get("id")
+                data["done"] = sum(bool(f.get("status")) for f in _LIVE["data"]["files"])
     if data.get("preview"):
         data["preview"] = _public(data["preview"])
     return data
 
 
+def _active_review(token: Any) -> UploadReview:
+    if not isinstance(token, str) or not token:
+        raise ValueError("需要有效的上传确认")
+    with _LOCK:
+        reviews = _LIVE.get("reviews")
+    if reviews is None:
+        raise ValueError("这份上传确认已结束，请回到上传页")
+    return reviews
+
+
+def upload_review(token: Any) -> dict[str, Any]:
+    return _active_review(token).result(token)
+
+
+def decide_upload_review(token: Any, decision: Any) -> None:
+    if decision not in ("upload", "skip"):
+        raise ValueError("请选择确认上传或跳过")
+    _active_review(token).decide(token, decision == "upload")
+
+
 # ───────────────────────── 拿取版本清单 + 自由上传（起点 → 终点） ─────────────────────────
 # 用户 2026-11-07：几个账号分着做，张三把处理好的文件先传到团队 OneDrive（中转），李四再从团队传到公司 OneDrive。
 # 张三上传到中转时，在中转文件夹里放一份「拿取版本.json」，记下每份文件当初从公司拿的是哪个版本；
-# 李四从中转传到公司时读这份清单：公司那份还是这个版本就覆盖，变了（期间有人改过）就不覆盖、标红。
+# 李四从中转传到公司时读这份清单：公司那份还是这个版本就覆盖，版本变了就逐份对比并确认。
 # 上传前在本机临时副本上清标记 + 视图标准化（保存的人就是最終更新者），起点那份不动。
 
 MANIFEST_NAME = "拿取版本.json"
@@ -1504,13 +1503,13 @@ def preview_free(source_text: Any, dest_text: Any, guard: Any = None) -> dict[st
     mismatch: set[str] = set()
     listed_shared: dict[str, tuple[Path, set[str]]] = {}  # 用上的清单：共享根目录 → 当时共享里有的文件
     for rel in sorted(found["excel"], key=_key):
-        src_file, dest_file = src / rel, dst / rel
         info = found["excel"][rel]
-        item = {"rel": rel, "size": info["size"], "mtime": info["mtime"], "src_sha256": _digest(src_file),
-                "dest_sha256": _shared_digest(dest_file)}
-        if (_guard_mode(guard) == "content" and item["dest_sha256"] is not None
-                and _free_content_check(item, src_file, dest_file, "选了只比内容")):
-            files.append(item)  # 用户 2026-11-11：选了「只比内容」——不看拿取清单和记录，直接按内容决定
+        item = {"rel": rel, "size": info["size"], "mtime": info["mtime"]}
+        try:
+            src_file, dest_file = _task_file(src, rel), _task_file(dst, rel)
+            item.update(src_sha256=_digest(src_file), dest_sha256=_shared_digest(dest_file))
+        except (OSError, ValueError) as err:
+            files.append({**item, "action": "conflict", "guard": "none", "error": _explain(err)})
             continue
         hit = _manifest_for(src_file, manifests)
         record = None
@@ -1524,30 +1523,24 @@ def preview_free(source_text: Any, dest_text: Any, guard: Any = None) -> dict[st
                 mismatch.add(str(folder))
                 notes.append(f"「{folder / MANIFEST_NAME}」记的共享文件夹是「{data['shared']}」，和这次的终点对不上，"
                              "里面记的版本没法用（请确认终点有没有填错）")
-        if record is not None:
+        upload = (baseline.get(_base_key(dest_file), {}).get("upload") or {})
+        if upload.get("source") == _base_key(src_file) and (
+            record is None or upload.get("source_sha256") == item["src_sha256"] == record.get("sha256")
+        ):
+            known = upload.get("sha256")
+            item["guard"] = "baseline"
+        elif record and item["src_sha256"] == record.get("sha256"):
+            known = record.get("shared_sha256")
             item["guard"] = "manifest"
-            if item["dest_sha256"] is None:
-                item["action"] = "new"
-                if record.get("shared_sha256"):
-                    item["note"] = "清单里记着共享原来有这个文件，现在没有了（可能被别人移走或删掉），会新建"
-            elif item["dest_sha256"] == record.get("shared_sha256"):
-                item["action"] = "overwrite"
-            elif not _free_content_check(item, src_file, dest_file, "终点这份和拿的时候不一样"):
-                item["action"] = "conflict"
-                item["error"] = ("拿走之后共享里的这份被别人改过，没有覆盖" if record.get("shared_sha256")
-                                 else "拿的时候共享里还没有这份，后来别人新放了一份同名的，没有覆盖")
         else:
-            base = baseline.get(_base_key(dest_file), {})
-            known = {v for v in [base.get("sha256"), (base.get("upload") or {}).get("sha256")] if v}
-            item["guard"] = "baseline" if known else "none"
-            if item["dest_sha256"] is None:
-                item["action"] = "new"
-            elif item["dest_sha256"] in known:
-                item["action"] = "overwrite"
-            elif not _free_content_check(item, src_file, dest_file,
-                                         "终点这份和上次的记录不一样" if known else "没有拿取记录"):
-                item["action"] = "confirm"  # 这种格式按内容核对不了：照旧要你确认
-                item["note"] = "终点已有同名文件，没有拿取记录，没法知道期间有没有人改过"
+            known = None
+            item["guard"] = "none"
+        current = item["dest_sha256"]
+        reason = _upload_review_reason(known, current, _guard_mode(guard))
+        if reason:
+            item.update(action="review", review_reason=reason, note=reason)
+        else:
+            item["action"] = "new" if current is None else "overwrite"
         files.append(item)
     # 终点里有、起点没有的 Excel：不动，只列出来；有清单的话分出「期间别人新加的」
     after = scan_folder(dst)
@@ -1563,7 +1556,7 @@ def preview_free(source_text: Any, dest_text: Any, guard: Any = None) -> dict[st
         else:
             extra.append(rel)
     summary = {"要上传": sum(f["action"] != "conflict" for f in files), "新建": sum(f["action"] == "new" for f in files),
-               "覆盖": sum(f["action"] == "overwrite" for f in files), "要确认": sum(f["action"] == "confirm" for f in files),
+               "覆盖": sum(f["action"] == "overwrite" for f in files), "要确认": sum(f["action"] == "review" for f in files),
                "别人改过": sum(f["action"] == "conflict" for f in files), "期间新加": len(added), "终点多出": len(extra),
                "有清单": sum(f["guard"] == "manifest" for f in files)}
     result = {"id": uuid.uuid4().hex[:12], "kind": "free_upload", "label": f"{src.name} → {dst.name}", "guard": _guard_mode(guard),
@@ -1578,57 +1571,16 @@ def preview_free(source_text: Any, dest_text: Any, guard: Any = None) -> dict[st
     return result
 
 
-def _free_content_check(item: dict[str, Any], src_file: Path, dest_file: Path, why: str) -> bool:
-    """用户 2026-11-11：hash 对不上（没有记录 / 记录太旧）时按全部文字 + 打印区域格子数核对。
-    一样 → 照常覆盖，返回 True；不一样 → 标成不覆盖，返回 True；读不了 → 返回 False，按原来的规则"""
-    if item["src_sha256"] == item["dest_sha256"]:
-        item.update(action="overwrite", guard="content", note="终点已经和起点这份一模一样")
-        return True
-    check = content_check.compare(src_file, dest_file, "起点", "终点")
-    if not check["checked"]:
-        return False
-    item["guard"] = "content"
-    if check["same"]:
-        item["action"] = "overwrite"
-        item["note"] = f"{why}，按文字和打印区域核对一致，照常覆盖" + content_check.skipped_note(check)
-    else:
-        item["action"] = "conflict"
-        item["content_diffs"] = check["diffs"]
-        item["error"] = (f"{why}，按内容核对不一样（{content_check.describe(check)}），没有覆盖。"
-                         "请先拿取终点最新版，在上面改好再传")
-    return True
-
-
-def _apply_force(preview_data: dict[str, Any], force: Any) -> None:
-    """用户 2026-11-11：清单里标了「不覆盖」的，用户自己勾了「强制覆盖」的照样传。
-    只认清单里确实是 conflict 的文件；复制前一刻终点又变了照样拦（_run_free 按清单时的哈希核对）"""
-    wanted = {_key(rel) for rel in force} if isinstance(force, list) else set()
-    for item in preview_data["files"]:
-        if item["action"] == "conflict" and _key(item["rel"]) in wanted:
-            item.update(action="force", forced_reason=item.pop("error", ""))
-            debug_log.event("⚠️ 用户选了强制覆盖", 文件=item["rel"], 原来不覆盖的原因=item["forced_reason"][:80])
-    files = preview_data["files"]
-    preview_data["summary"].update({"要上传": sum(f["action"] != "conflict" for f in files),
-                                    "别人改过": sum(f["action"] == "conflict" for f in files),
-                                    "强制覆盖": sum(f["action"] == "force" for f in files)})
-
-
-def start_free(preview_id: Any, confirm_overwrite: bool, pdf: Any = None, force: Any = None) -> None:
+def start_free(preview_id: Any, pdf: Any = None) -> None:
     pdf_settings = _pdf_settings(pdf)
     with _LOCK:
         preview_data = _STATUS.get("preview")
-        if preview_data and preview_data.get("kind") == "free_upload" and preview_data.get("id") == preview_id:
-            preview_data["pdf"] = pdf_settings
-            if force:
-                _apply_force(preview_data, force)
-        preview_data = copy.deepcopy(preview_data)
-    if not preview_data or preview_data.get("kind") != "free_upload" or preview_data.get("id") != preview_id:
-        raise ValueError("清单已变化，请重新生成")
-    if preview_data["summary"]["要确认"] and not confirm_overwrite and not (pdf_settings or {}).get("only"):
-        raise ValueError("有终点已有、没法检查的同名文件，请先确认覆盖")
-    if not preview_data["summary"]["要上传"]:
-        raise ValueError("清单里没有能上传的文件（都被别人改过）")
-    start(preview_data["id"])
+        if not preview_data or preview_data.get("kind") != "free_upload" or preview_data.get("id") != preview_id:
+            raise ValueError("清单已变化，请重新生成")
+        if not preview_data["summary"]["要上传"]:
+            raise ValueError("清单里没有能上传的文件")
+        upload = {**copy.deepcopy(preview_data), "pdf": pdf_settings}
+    start(preview_id, upload=upload)
 
 
 def _prepare_free(items: list[dict[str, Any]], temp_root: Path, src: Path,
@@ -1667,6 +1619,7 @@ def _prepare_free(items: list[dict[str, Any]], temp_root: Path, src: Path,
                     if copy_one(src / item["rel"], local) != item["src_sha256"]:
                         raise ValueError("起点的文件在生成清单之后变了，请重新生成清单")
                     item["prep"] = {**upload_prep.prepare(get_excel, local, None, where), "no_reference": True}
+                    item["_prepared_sha256"] = _digest(local)
                     wf.log_msg(f"🧽 {item['rel']}：{upload_prep.text(item['prep'])}")
                     if pdf_settings and not cached:  # 从清过标记的临时副本导出，PDF 放在临时副本旁边
                         where["step"] = "导出同名 PDF"
@@ -1692,61 +1645,67 @@ def _prepare_free(items: list[dict[str, Any]], temp_root: Path, src: Path,
             wf.pythoncom.CoUninitialize()
 
 
-def _run_free(data: dict[str, Any]) -> dict[str, Any]:
+def _run_free(data: dict[str, Any], reviews: UploadReview) -> dict[str, Any]:
     import tempfile
     src, dst = Path(data["source_root"]), Path(data["dest_root"])
-    items = [item for item in data["files"] if item["action"] != "conflict"]
+    if not dst.is_dir():
+        raise ValueError(f"终点文件夹不可用：{dst}")
+    ready: list[Candidate] = []
     for item in data["files"]:
         if item["action"] == "conflict":
             item["status"] = "conflict"
-    temp_root = Path(tempfile.mkdtemp(prefix="自由上传_"))
-    try:
-        if not dst.is_dir():
-            raise ValueError(f"终点文件夹不可用：{dst}")
-        _prepare_free(items, temp_root, src, data.get("pdf"))
-        if True:  # 上传前处理没做成的那份不传，其余照传（用户 2026-11-10）
-            changes: dict[str, dict[str, Any]] = {}
-            pdf_claimed: set[str] = set()
-            try:
-                for index, item in enumerate(items):
-                    if item.get("status"):  # 上传前处理没做成
-                        continue
-                    _progress(index, len(items), f"上传 {item['rel']}")
-                    dest = dst / item["rel"]
+            continue
+        try:
+            ready.append((item, _task_file(src, item["rel"]), _task_file(dst, item["rel"]), item["dest_sha256"]))
+        except ValueError as err:
+            item.update(status="failed", error=_explain(err))
+    pdf = data.get("pdf")
+    pdf_claimed: set[str] = set()
+    with tempfile.TemporaryDirectory(prefix="自由上传_") as temp:
+        for index, batch in enumerate(reviews.batches(ready, _verify_upload_candidate,
+                                                      require_review=not (pdf or {}).get("only"))):
+            verified = _verified_uploads(batch)
+            if not verified:
+                continue
+            _prepare_free([item for item, _, _, _ in verified], Path(temp) / str(index), src, pdf)
+            for candidate in verified:
+                item, source, dest, _ = candidate
+                if item.get("status"):
+                    continue
+                _progress(sum(bool(f.get("status")) for f in data["files"]), len(data["files"]), f"上传 {item['rel']}")
 
-                    def verify_dest() -> None:
-                        if _shared_digest(dest) != item["dest_sha256"]:
-                            raise _SharedVersionChanged
+                def verify_dest() -> None:
+                    if not dst.is_dir():
+                        raise _SharedVersionChanged("终点文件夹不可用，请重新检查")
+                    _verify_upload_candidate(candidate)
 
-                    if (data.get("pdf") or {}).get("only"):  # 只传 PDF：终点的 Excel 不动
-                        _progress(index, len(items), f"上传同名 PDF {item['rel']}")
-                        changes.update(_upload_pdf(item, dest, data["pdf"], pdf_claimed))
+                try:
+                    if (pdf or {}).get("only"):
+                        verify_dest()
+                        _save_baseline(_upload_pdf(item, dest, pdf, pdf_claimed))
                         _pdf_only_status(item)
                         continue
-                    try:
-                        digest = copy_one(Path(item["_temp"]), dest, check_source_open=False, before_replace=verify_dest)
-                    except _SharedVersionChanged:
-                        item.update(status="conflict", error="生成清单之后终点的这份被改过，没有覆盖，请重新生成清单")
-                        continue
-                    except (OSError, ValueError) as err:
-                        item.update(status="failed", error=_explain(err))
-                        continue
-                    entry = _base_entry(dest, digest, "复制")
-                    changes[_base_key(dest)] = entry
-                    item.update(status="ok", uploaded_at=entry["upload"]["at"])
-                    if data.get("pdf"):
-                        _progress(index, len(items), f"上传同名 PDF {item['rel']}")
-                        changes.update(_upload_pdf(item, dest, data["pdf"], pdf_claimed))
-            finally:
+                    digest = copy_one(Path(item["_temp"]), dest, check_source_open=False, before_replace=verify_dest,
+                                      expected_digest=item["_prepared_sha256"])
+                except (OSError, ValueError) as err:
+                    item.update(status="conflict" if isinstance(err, _SharedVersionChanged) else "failed", error=_explain(err))
+                    continue
+                entry = _base_entry(dest, digest, "复制")
+                entry["upload"]["source"] = _base_key(source)
+                entry["upload"]["source_sha256"] = item["src_sha256"]
+                item.update(status="ok", uploaded_at=entry["upload"]["at"])
+                changes = {_base_key(dest): entry}
+                if pdf:
+                    changes.update(_upload_pdf(item, dest, pdf, pdf_claimed))
                 _save_baseline(changes)
-    finally:
-        shutil.rmtree(temp_root, ignore_errors=True)
     for item in data["files"]:
         item.pop("_temp", None)
+        item.pop("_prepared_sha256", None)
         item.pop("_pdf_local", None)
     files = data["files"]
     data["summary"] = {**data["summary"], "已复制": sum(f.get("status") == "ok" for f in files),
                        "别人改过没覆盖": sum(f.get("status") == "conflict" for f in files),
+                       "已跳过": sum(f.get("status") == "skipped" for f in files),
                        "没复制成功": sum(f.get("status") == "failed" for f in files), **_pdf_summary(files)}
     return {**data, "id": uuid.uuid4().hex[:12], "finished": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
@@ -1769,7 +1728,8 @@ def markdown_free(result: dict[str, Any]) -> str:
         if item.get("pdf_only"):
             status = "只传 PDF，Excel 没传" if item.get("status") == "ok" else status
         elif item.get("status") == "ok":
-            status += ("（强制覆盖）" if item["action"] == "force" else
+            status += ("（看过差异后确认覆盖）" if item.get("review_confirmed") and item.get("dest_sha256") else
+                       "（强制覆盖）" if item["action"] == "force" else
                        "（覆盖）" if item["action"] in ("overwrite", "confirm") else "（新建）")
         if item.get("prep"):
             status += f"（上传前：{upload_prep.text(item['prep'])}）"

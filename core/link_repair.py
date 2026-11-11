@@ -4,6 +4,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import threading
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
+from itertools import product
 from pathlib import Path
 from uuid import uuid4
 from typing import Any
@@ -45,9 +48,10 @@ def _sheet_info(sheet: Any) -> dict:
     return {"name": sheet.Name, "code": sheet.CodeName, "words": sorted(words)}
 
 
-def _pair_sheets(current: list[dict], old: list[dict], history=None) -> dict:
+def _pair_sheets(current: list[dict], old: list[dict], history=None, *, ambiguous=None) -> dict:
     return pair_sheets(current, old, title=lambda item: item["name"],
-                       code=lambda item: item["code"], words=lambda item: set(item["words"]), history=history)
+                       code=lambda item: item["code"], words=lambda item: set(item["words"]),
+                       history=history, ambiguous=ambiguous)
 
 
 def _anchors(cell: Any) -> list[dict]:
@@ -110,79 +114,217 @@ def _formula_identity(value: Any) -> Any:
     return "=" + "".join(result)
 
 
+class _SourceMismatch(ValueError):
+    """已读取候选，发现与当前格不符的证据。"""
+
+
+def _source_check(old: Any, cell: dict, source: str, how: str) -> dict:
+    item = {**cell, "old_sheet": source, "match": how, "source": f"{source}!{cell['addr']}"}
+    try:
+        if not item["formula"]:
+            raise _SourceMismatch("当前是固定的错误值，缺少公式线索，不能确认原位置")
+        sheet = old.Worksheets(source)
+        original_cell = sheet.Range(item["anchor"])
+        original_formula = links.formula(original_cell)
+        if not original_formula:
+            raise _SourceMismatch("备份同一位置没有公式，不能确认对应关系")
+        if links.broken_formula(original_formula):
+            raise ValueError("备份的原公式本身已有失效引用，不能作为恢复来源")
+        for anchor in item["anchors"]:
+            other = sheet.Range(anchor["addr"])
+            if bool(other.HasFormula) or not _same(other.Value2, anchor["value"]):
+                raise _SourceMismatch("附近的内容和备份不同，可能移动过行列，请人工检查")
+        original = links.capture(original_cell)
+        if original["addr"] != item["addr"] or original["kind"] != item["kind"]:
+            raise _SourceMismatch("新旧数组或溢出区域不同，请人工检查，避免覆盖其他格子")
+        item.update(check="ready", value=original["value"], rows=original["rows"], cols=original["cols"],
+                    source_formula=original["formula"], display=_text(original_cell.Text))
+    except _SourceMismatch as error:
+        item.update(check="mismatch", reason=str(error))
+    except Exception as error:
+        item.update(check="unverified", reason=str(error))
+    return item
+
+
+def _sheet_mappings(sheets: list[dict], matched: dict, ambiguous: dict[str, list[str]]) -> tuple[Iterator[dict[str, str]], str]:
+    fixed = {name: match[0]["name"] for name, match in matched.items()}
+    if not ambiguous:
+        return iter((fixed,)), ""
+    if fixed.keys() | ambiguous.keys() != {sheet["name"] for sheet in sheets}:
+        return iter(()), "还有工作表缺少可核对的来源，无法完整模拟删表"
+    used = set(fixed.values())
+    options = [[source for source in candidates if source not in used] for candidates in ambiguous.values()]
+    return ({**fixed, **dict(zip(ambiguous, sources))} for sources in product(*options)
+            if len(set(sources)) == len(sources)), ""
+
+
+def _simulate_mapping(old: Any, mapping: dict[str, str], ready: list[dict]) -> None:
+    keep = set(mapping.values())
+    for sheet in list(old.Sheets):
+        if sheet.Name not in keep:
+            sheet.Delete()
+    renames = [(old.Worksheets(source), name) for name, source in mapping.items() if source != name]
+    for sheet, _ in renames:
+        sheet.Name = "CHE_" + uuid4().hex[:20]
+    for sheet, name in renames:
+        sheet.Name = name
+    old.Application.CalculateFull()
+    for item in ready:
+        try:
+            sheet = old.Worksheets(item["sheet"])
+            cell = sheet.Range(item["anchor"])
+            if _formula_identity(sheet.Range(item["addr"]).Formula) != _formula_identity(item["formulas"]):
+                raise _SourceMismatch("模拟删除旧表后的公式与当前不一致，不能确认原引用")
+            if not (links.broken_formula(links.formula(cell)) or links.is_ref_error(cell)):
+                raise _SourceMismatch("备份模拟删表后未出现相同引用错误，不能确认错误来源")
+            item.update(check="confirmed", action="restore", reason="原公式与删表后的损坏形态一致，恢复备份计算结果为固定值")
+        except _SourceMismatch as error:
+            item.update(check="mismatch", reason=str(error))
+        except Exception as error:
+            item.update(check="unverified", reason=str(error))
+
+
+@contextmanager
+def _open_reference(excel: Any, path: str):
+    book = open_workbook_checked(excel, path, UpdateLinks=0, ReadOnly=True)
+    try:
+        yield book
+    finally:
+        book.Close(SaveChanges=False)
+
+
+def _check_mapping(open_old: Callable[[], AbstractContextManager[Any]], mapping: dict[str, str],
+                   cells: list[dict], checks: list[dict],
+                   attempts: list[list[dict]], *, multiple: bool) -> None:
+    selected = {i: checks[i][mapping[cell["sheet"]]].copy() for i, cell in enumerate(cells)
+                if cell["sheet"] in mapping}
+    ready = [item for item in selected.values() if item["check"] == "ready"]
+    if ready:
+        with open_old() as old:
+            try:
+                _simulate_mapping(old, mapping, ready)
+            except Exception as error:
+                if not multiple:
+                    raise
+                for item in ready:
+                    if item["check"] == "ready":
+                        item.update(check="unverified", reason=f"无法模拟删表和改名（{error}）")
+    for i, item in selected.items():
+        attempts[i].append(item)
+
+
+def _candidate_details(attempts: list[dict]) -> str:
+    details = dict.fromkeys(f"{item['source']} {item['source_formula']} → {item['value']!r}"
+                            if item["check"] == "confirmed" else f"{item['source']}（{item['reason']}）"
+                            for item in attempts)
+    return " / ".join(details)
+
+
+def _candidate_result(cell: dict, attempts: list[dict], ambiguity: str) -> dict:
+    if not attempts:
+        reason = "备份工作表无法唯一配对，请人工检查"
+        return {**cell, "reason": f"{reason}（{ambiguity}）" if ambiguity else reason}
+    if len(attempts) == 1:
+        return {key: value for key, value in attempts[0].items() if key != "check"}
+
+    confirmed = [item for item in attempts if item["check"] == "confirmed"]
+    unverified = any(item["check"] == "unverified" for item in attempts)
+    if confirmed and not unverified:
+        first = confirmed[0]
+        if all(_same(first["value"], item["value"]) and first["rows"] == item["rows"]
+               and first["cols"] == item["cols"] for item in confirmed):
+            result = {key: value for key, value in first.items() if key != "check"}
+            sources = list(dict.fromkeys(item["source"] for item in confirmed))
+            if len(sources) > 1:
+                formulas = dict.fromkeys(item["source_formula"] for item in confirmed)
+                result.update(old_sheet="", source="、".join(sources), source_formula=" / ".join(formulas),
+                              reason="通过模拟核对的候选恢复值一致，恢复为固定值")
+            elif first["match"] == "candidate":
+                result["reason"] = "候选核对后只剩一个来源，恢复备份计算结果为固定值"
+            return result
+    if unverified:
+        reason = "有候选未能完成核对，请人工检查"
+    elif confirmed:
+        reason = "多个候选通过核对，但恢复值不同，请人工检查"
+    else:
+        reason = "所有候选均与当前错误不符，请人工检查"
+    return {**cell, "old_sheet": "", "source": _candidate_details(attempts),
+            "reason": f"备份工作表无法唯一配对（{reason}）"}
+
+
+def _reconcile_candidates(cells: list[dict], results: list[dict], attempts: list[list[dict]], count: int) -> None:
+    """用已通过核对的格子缩小配对范围，同一批恢复必须有共同的方案。"""
+    support = {i: {index for index, item in enumerate(choices) if item["check"] == "confirmed"}
+               for i, choices in enumerate(attempts) if results[i]["action"] == "restore"}
+    if not support:
+        return
+    compatible = sorted(set.intersection(*support.values()))
+    if compatible:
+        if len(compatible) == count:
+            return
+        for i, choices in enumerate(attempts):
+            if not choices or results[i]["action"] == "restore":
+                continue
+            surviving = [choices[index] for index in compatible]
+            if all(item["check"] == "confirmed" for item in surviving):
+                refined = _candidate_result(cells[i], surviving, "")
+                if refined["action"] == "restore":
+                    results[i] = {**refined, "match": "candidate", "reason": "结合其他错误格核对配对后，恢复备份计算结果为固定值"}
+        return
+    for i, options in support.items():
+        if len(options) < count:
+            results[i] = {**cells[i], "old_sheet": "", "source": _candidate_details(attempts[i]),
+                          "reason": "备份工作表无法唯一配对（不同单元格的核对结果指向互相冲突的配对方案）"}
+
+
 def preview_file(excel: Any, file: dict, old_path: Path) -> dict:
-    """先读旧值，再仅在内存中模拟删表/改名，核对是否产生与当前相同的损坏公式。"""
+    """只读核对候选原值，再逐个模拟可行的删表与改名方案。"""
     if old_path.resolve() == Path(file["path"]).resolve():
         raise ValueError("配对到的是当前文件本身，请选择原始备份")
     stamp = fingerprint(old_path)
-    old = open_workbook_checked(excel, str(old_path.resolve()), UpdateLinks=0, ReadOnly=True)
+    path = str(old_path.resolve())
     cells = [{**hit, "action": "skip", "reason": "", "source_formula": "", "display": ""} for hit in file["hits"]]
-    try:
+    attempts: list[list[dict]] = [[] for _ in cells]
+    with _open_reference(excel, path) as old:
         old.Application.CalculateFull()
         old_sheets = [_sheet_info(sheet) for sheet in old.Worksheets]
         history = sheet_history.for_paths(file["path"], old_path, file.get("sheet_names", [s["name"] for s in file["sheets"]]),
                                           [s.Name for s in old.Sheets], old_hash=stamp)
-        matched = _pair_sheets(file["sheets"], old_sheets, history)
-        ready = []
-        for item in cells:
-            match = matched.get(item["sheet"])
-            if match is None:
-                item["reason"] = "备份工作表无法唯一配对，请人工检查"
-                continue
-            item["old_sheet"], item["match"] = match[0]["name"], match[1]
-            if not item["formula"]:
-                item["reason"] = "当前是固定的错误值，缺少公式线索，不能确认原位置"
-                continue
-            sheet = old.Worksheets(item["old_sheet"])
-            cell = sheet.Range(item["anchor"])
-            try:
-                if not links.formula(cell):
-                    raise ValueError("备份同一位置没有公式，不能确认对应关系")
-                if links.broken_formula(links.formula(cell)):
-                    raise ValueError("备份的原公式本身已有失效引用，不能作为恢复来源")
-                original = links.capture(cell)
-                if original["addr"] != item["addr"] or original["kind"] != item["kind"]:
-                    raise ValueError("新旧数组或溢出区域不同，请人工检查，避免覆盖其他格子")
-                for anchor in item["anchors"]:
-                    other = sheet.Range(anchor["addr"])
-                    if bool(other.HasFormula) or not _same(other.Value2, anchor["value"]):
-                        raise ValueError("附近的内容和备份不同，可能移动过行列，请人工检查")
-                item.update(value=original["value"], rows=original["rows"], cols=original["cols"],
-                            source_formula=original["formula"], display=_text(cell.Text),
-                            source=f"{item['old_sheet']}!{original['addr']}")
-                ready.append(item)
-            except Exception as error:
-                item["reason"] = str(error)
-        # 模拟损坏只发生在只读打开的备份内存里，始终 Close(False)。
-        keep = {match[0]["name"] for match in matched.values()}
-        if ready:
-            for sheet in list(old.Sheets):
-                if sheet.Name not in keep:
-                    sheet.Delete()
-            renames = [(old.Worksheets(match[0]["name"]), name)
-                       for name, match in matched.items() if match[0]["name"] != name]
-            for sheet, _ in renames:
-                sheet.Name = "CHE_" + uuid4().hex[:20]
-            for sheet, name in renames:
-                sheet.Name = name
-            old.Application.CalculateFull()
-        for item in ready:
-            sheet = old.Worksheets(item["sheet"])
-            cell = sheet.Range(item["anchor"])
-            if _formula_identity(sheet.Range(item["addr"]).Formula) != _formula_identity(item["formulas"]):
-                item["reason"] = "模拟删除旧表后的公式与当前不一致，不能确认原引用"
-            elif not (links.broken_formula(links.formula(cell)) or links.is_ref_error(cell)):
-                item["reason"] = "备份模拟删表后未出现相同引用错误，不能确认错误来源"
+        ambiguous: dict[str, list[str]] = {}
+        matched = _pair_sheets(file["sheets"], old_sheets, history, ambiguous=ambiguous)
+        mappings, ambiguity = _sheet_mappings(file["sheets"], matched, ambiguous)
+        first_mapping = next(mappings, None)
+        if first_mapping is None and not ambiguity:
+            ambiguity = "候选工作表之间没有可行的一对一配对"
+        reserved = {match[0]["name"] for match in matched.values()}
+        checks = []
+        for cell in cells:
+            name = cell["sheet"]
+            sources = ([matched[name][0]["name"]] if name in matched
+                       else [source for source in ambiguous.get(name, []) if source not in reserved])
+            how = matched[name][1] if name in matched else "candidate"
+            checks.append({source: _source_check(old, cell, source, how) for source in sources} if first_mapping is not None else {})
+            if first_mapping is None and name in ambiguous:
+                cell.update(old_sheet="", source="、".join(ambiguous[name]))
+        if first_mapping is not None:
+            if any(item["check"] == "ready" for candidates in checks for item in candidates.values()):
+                _check_mapping(lambda: nullcontext(old), first_mapping, cells, checks, attempts, multiple=bool(ambiguous))
             else:
-                item.update(action="restore", reason="原公式与删表后的损坏形态一致，恢复备份计算结果为固定值")
-    finally:
-        old.Close(SaveChanges=False)
+                attempts = [list(candidates.values()) for candidates in checks]
+                mappings = iter(())
+    count = int(first_mapping is not None)
+    for mapping in mappings:
+        _check_mapping(lambda: _open_reference(excel, path), mapping, cells, checks, attempts, multiple=True)
+        count += 1
+    results = [_candidate_result(cell, options, ambiguity) for cell, options in zip(cells, attempts)]
+    if count > 1:
+        _reconcile_candidates(cells, results, attempts, count)
     if stamp != fingerprint(old_path):
         raise ValueError("备份在对比期间发生变化，请重新对比")
-    for item in cells:
+    for item in results:
         debug_log.event("🔗 引用对比", 位置=f"{item['sheet']}!{item['addr']}",
                         原公式=item["source_formula"], 动作=item["action"], 原因=item["reason"], 恢复值=item["display"])
-    return {**file, "old": str(old_path), "old_fingerprint": stamp, "cells": cells}
+    return {**file, "old": str(old_path), "old_fingerprint": stamp, "cells": results}
 
 
 def apply_file(excel: Any, file: dict) -> list[dict]:
@@ -213,7 +355,8 @@ def apply_file(excel: Any, file: dict) -> list[dict]:
                 continue
             links.write_values(sheet, item)
             changed = True
-            results.append({**item, "status": "ok", "reason": "已恢复备份计算结果为固定值"})
+            reason = item["reason"] if item.get("match") == "candidate" else "已恢复备份计算结果为固定值"
+            results.append({**item, "status": "ok", "reason": reason})
         book.Application.CalculateFull()
         after = links.error_positions(book)
         if after - before:

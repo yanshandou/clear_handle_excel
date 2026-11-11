@@ -152,7 +152,9 @@ def _problem(file: dict, item: dict | None, reason: str, *, error: bool = False)
         found.update(sheet=item.get("sheet", ""), cell=item.get("anchor") or item.get("addr", ""),
                      addr=item.get("addr", ""))
         if file.get("old"):
-            found["old_sheet"] = item.get("old_sheet") or item.get("sheet", "")
+            found["old_sheet"] = item.get("old_sheet", item.get("sheet", ""))
+        if item.get("old_sheet") == "" and item.get("source"):
+            found["reason"] = f"{reason}。{item['source']}"
     return found
 
 

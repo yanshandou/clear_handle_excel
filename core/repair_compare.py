@@ -36,7 +36,7 @@ def _chain_target(kind: str, folder: str, name: str, sheet: str, cell: str) -> d
     if current == backup:
         raise ValueError("当前文件和参考文件是同一个文件，不能用于对比")
     return {"current": current, "backup": backup, "sheet": problem.get("sheet", ""),
-            "old_sheet": problem.get("old_sheet") or problem.get("sheet", ""), "cell": problem.get("cell", "")}
+            "old_sheet": problem.get("old_sheet", problem.get("sheet", "")), "cell": problem.get("cell", "")}
 
 
 def comparison_target(kind: str, folder: str, name: str, sheet: str = "", cell: str = "") -> dict:
@@ -164,7 +164,9 @@ class ComparisonWindows:
                         book.Windows(1).Caption = f"{label}{'（只读）' if readonly else ''} · {target[role].name}"
                     except Exception:
                         pass
-                note = ops.focus_workbook_in_excel(excel, book, target["old_sheet"] if readonly else target["sheet"], target["cell"])
+                sheet_name = target["old_sheet"] if readonly else target["sheet"]
+                address = "" if readonly and not sheet_name else target["cell"]
+                note = ops.focus_workbook_in_excel(excel, book, sheet_name, address)
                 if note:
                     notes.append(f"{label}：{note}")
                 if not readonly and book.ReadOnly:

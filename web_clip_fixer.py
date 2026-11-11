@@ -510,6 +510,13 @@ class WebHandler(upload_manager.Handler):
                 raise ValueError("需要两份 Excel 的完整路径")
             self._send_json({"ok": True, **excel_diff.diff(mine.strip(), theirs.strip())})
             return
+        if self.path == "/api/distribute/upload_review":
+            self._send_json({"ok": True, **distribute.upload_review(payload.get("token"))})
+            return
+        if self.path == "/api/distribute/upload_decision":
+            distribute.decide_upload_review(payload.get("token"), payload.get("decision"))
+            self._send_json({"ok": True})
+            return
         if self.path == "/api/excel/open" and isinstance(payload.get("problem"), str):
             problem = file_problem.pending()
             if not problem or problem["id"] != payload["problem"]:
@@ -650,8 +657,7 @@ class WebHandler(upload_manager.Handler):
         elif self.path == "/api/distribute/free_preview":
             self._send_json({"ok": True, "preview": distribute.preview_free(payload.get("source"), payload.get("dest"), payload.get("guard"))})
         elif self.path == "/api/distribute/free_start":
-            distribute.start_free(payload.get("preview_id"), payload.get("confirm_overwrite") is True, payload.get("pdf"),
-                                  payload.get("force"))
+            distribute.start_free(payload.get("preview_id"), payload.get("pdf"))
             self._send_json({"ok": True})
         elif self.path == "/api/tasks/switch":
             self._send_json({"ok": True, "task": work_task.switch(str(payload.get("id") or ""))})

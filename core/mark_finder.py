@@ -417,7 +417,7 @@ def _old_colors(cell: Any) -> dict:
 
 
 SIMILAR_ROWS = 200
-_HOW = {"guess": "去掉「新」/ 日期等后的表名", "code": "代码名", "content": "内容", "history": "Sheet 操作历史", "rule": "清理规则及代码名或内容推断"}
+_HOW = {"guess": "去掉「新」后的表名", "code": "代码名", "content": "内容", "history": "Sheet 操作历史", "rule": "清理规则及代码名或内容推断"}
 
 
 def _sheet_words(ws: Any) -> set[str]:

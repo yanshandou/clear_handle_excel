@@ -4,7 +4,8 @@ from typing import Any, Callable
 import unicodedata
 
 from core.common import (
-    _original_name_of, find_new_prefix_sheets, strip_new_prefix, strip_uncertain_prefix, workbook_rel_name,
+    find_clean_targets, find_new_prefix_sheets, has_numbered_suffix, strip_new_prefix, strip_uncertain_prefix,
+    workbook_rel_name,
 )
 from core import workbook_scope
 from core.reference_folders import ReferenceIndex
@@ -119,8 +120,9 @@ def pair_files(old_root: Path | ReferenceIndex, old_paths: list[Path], names: li
 
 
 def pair_sheets(current: list[Any], old: list[Any], *, title: Callable,
-                code: Callable, words: Callable, history: Projection | None = None) -> dict[str, tuple[Any, str]]:
-    """先按操作历史追溯身份，再按表名、代码名、内容；歧义留给人工。"""
+                code: Callable, words: Callable, history: Projection | None = None,
+                ambiguous: dict[str, list[str]] | None = None) -> dict[str, tuple[Any, str]]:
+    """按历史、表名、代码名及内容配对，必要时提供有清理规则依据的冲突候选。"""
     found: dict[str, tuple[Any, str]] = {}
     left, rest = list(old), list(current)
 
@@ -136,21 +138,32 @@ def pair_sheets(current: list[Any], old: list[Any], *, title: Callable,
             left.remove(same[0])
         rest.remove(sheet)  # 有历史但不能唯一追溯时，不回退到同名的另一张表。
 
-    # 旧版清理可能删除同名旧表并把「新X」改为「X」。先检查这类同名冲突，
-    # 单靠命名规则无法证明历史：必须有唯一代码名或明显更相似的内容。
-    old_new_names = set(find_new_prefix_sheets([title(sheet) for sheet in old]))
+    # 只重放精简实际会做的自动改名。原「新」表或配对的「旧」表仍在时，不能推定已去掉「新」。
     present = {norm(title(sheet)) for sheet in current}
+    old_names = [title(sheet) for sheet in old]
+    renamed_sources: dict[str, str] = {}
+    for source, older in find_new_prefix_sheets(old_names).items():
+        target = strip_new_prefix(source)
+        if target != source and norm(source) not in present and all(norm(name) not in present for name in older):
+            renamed_sources[source] = norm(target)
+
     for sheet in list(rest):
         name = norm(title(sheet))
-        candidates = [other for other in left if norm(title(other)) == name or
-                      (title(other) in old_new_names and norm(strip_new_prefix(title(other))) == name
-                       and norm(title(other)) not in present)]
-        alternatives = [other for other in candidates if norm(title(other)) != name]
-        if not alternatives or not any(norm(title(other)) == name for other in candidates):
+        alternatives = [other for other in left if renamed_sources.get(title(other)) == name]
+        if not alternatives or sum(norm(title(other)) == name for other in current) != 1:
             continue
+        same = [other for other in left if norm(title(other)) == name]
+        candidates = same + alternatives
         code_value = norm(code(sheet) or "")
-        coded = [other for other in candidates if code_value and norm(code(other) or "") == code_value]
-        code_match = coded[0] if len(coded) == 1 and sum(norm(code(other) or "") == code_value for other in old) == 1 and sum(norm(code(other) or "") == code_value for other in rest) == 1 else None
+        coded = [other for other in old if code_value and norm(code(other) or "") == code_value]
+        code_match = (coded[0] if len(coded) == 1
+                      and sum(norm(code(other) or "") == code_value for other in current) == 1 else None)
+        if code_match is not None and not any(code_match is other for other in candidates):
+            if same or not any(code_match is other for other in left):
+                rest.remove(sheet)
+                if ambiguous is not None and same:
+                    ambiguous[title(sheet)] = [title(other) for other in (*candidates, code_match)]
+            continue  # 有另一个唯一代码名时，交给代码名配对，或将同名冲突留给人工。
         current_words = words(sheet)
         scores = []
         for other in candidates:
@@ -159,26 +172,45 @@ def pair_sheets(current: list[Any], old: list[Any], *, title: Callable,
             overlap = len(current_words & old_words)
             scores.append((overlap / len(union) if union else 0, other, overlap))
         scores.sort(key=lambda pair: pair[0], reverse=True)
-        content_match = scores[0][1] if scores[0][2] >= 2 and scores[0][0] >= 0.6 and scores[0][0] - scores[1][0] >= 0.1 else None
+        score, closest, overlap = scores[0]
+        content_match = (closest if overlap >= 2 and score >= 0.6
+                         and (len(scores) == 1 or score - scores[1][0] >= 0.1) else None)
         match = None if code_match is not None and content_match is not None and code_match is not content_match else code_match or content_match
         if match is not None:
             found[title(sheet)] = (match, "rule")
             left.remove(match)
-        rest.remove(sheet)  # 冲突证据不足时不能再按同名配对。
+        elif len(candidates) == 1:
+            found[title(sheet)] = (candidates[0], "guess")
+            left.remove(candidates[0])
+        elif ambiguous is not None:
+            ambiguous[title(sheet)] = [title(other) for other in candidates]
+        rest.remove(sheet)  # 冲突证据不足时不再降级为同名或内容配对。
 
-    def assign(key: Callable, how: str) -> None:
+    def assign(key: Callable, how: str, reference_key: Callable | None = None) -> None:
+        reference_key = reference_key or key
         for sheet in list(rest):
             value = key(sheet)
-            same = [other for other in left if value and key(other) == value]
+            same = [other for other in left if value and reference_key(other) == value]
             if len(same) == 1 and sum(key(other) == value for other in rest) == 1:
                 found[title(sheet)] = (same[0], how)
                 left.remove(same[0])
                 rest.remove(sheet)
 
-    assign(lambda sheet: norm(title(sheet)), "name")
-    assign(lambda sheet: _original_name_of(strip_new_prefix(strip_uncertain_prefix(title(sheet)))), "guess")
+    title_key = lambda sheet: norm(title(sheet))
+    assign(title_key, "name")
     assign(lambda sheet: norm(code(sheet) or ""), "code")
+    # 兼容旧版或人工给当前表加「新」的情况，只尝试仍空缺的单一原名。
+    current_new = find_new_prefix_sheets([title(sheet) for sheet in current])
+
+    def legacy_name(sheet: Any) -> str:
+        name = title(sheet)
+        base = norm(strip_new_prefix(name))
+        return base if name in current_new and base not in present else ""
+
+    assign(legacy_name, "guess", title_key)
     if rest and left:
+        default_deleted = {name for name in find_clean_targets(old_names) if not has_numbered_suffix(name)}
+        left = [sheet for sheet in left if title(sheet) not in default_deleted]
         old_words = {id(sheet): words(sheet) for sheet in left}
         for sheet in rest:
             current_words = words(sheet)

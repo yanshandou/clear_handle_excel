@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from core import distribute, storage, upload_prep, work_task, workflow as wf
+from core import distribute, excel_diff, storage, upload_prep, work_task, workflow as wf
 
 
 def write(path: Path, text: str) -> None:
@@ -96,44 +96,59 @@ class RelayUploadTests(unittest.TestCase):
             work_task.set_upload_to(self.task["id"], str(self.company / "sub"))
         self.assertEqual(work_task.set_upload_to(self.task["id"], "")["upload_to"], "")
 
-    def test_free_upload_from_relay_overwrites_unchanged_and_blocks_changed(self):
+    def review(self, rel, decision):
+        for _ in range(200):
+            pending = next((r for r in distribute.status().get("reviews", []) if r["rel"] == rel), None)
+            if pending:
+                distribute.upload_review(pending["token"])
+                distribute.decide_upload_review(pending["token"], decision)
+                return
+            time.sleep(0.05)
+        self.fail(f"{rel} 没有进入逐文件确认")
+
+    def test_free_upload_from_relay_uses_manifest_and_reviews_changed_remote(self):
         self.relay_upload()
         write(self.company / "sub" / "b.xlsx", "B 别人改了")
         write(self.company / "c.xlsx", "C 别人新加")
         preview = distribute.preview_free(str(self.team), str(self.company))
         actions = {f["rel"]: f["action"] for f in preview["files"]}
-        self.assertEqual(actions, {"a.xlsx": "overwrite", "sub/b.xlsx": "conflict"})
+        self.assertEqual(actions, {"a.xlsx": "overwrite", "sub/b.xlsx": "review"})
         self.assertEqual(preview["added"], ["c.xlsx"])
         seen = self.patches()
-        distribute.start_free(preview["id"], False)
-        result = self.wait()
+        with patch.object(excel_diff, "diff", return_value={"identical": False}) as compare:
+            distribute.start_free(preview["id"])
+            self.review("sub/b.xlsx", "skip")
+            result = self.wait()
+        compare.assert_called_once_with(self.team / "sub" / "b.xlsx", self.company / "sub" / "b.xlsx")
         self.assertEqual(result["summary"]["已复制"], 1)
         self.assertEqual(read(self.company / "a.xlsx"), "A fixed +标准化")
         self.assertEqual(read(self.company / "sub" / "b.xlsx"), "B 别人改了")
-        self.assertEqual(read(self.team / "a.xlsx"), "A fixed")  # 起点不动，标准化做在临时副本上
+        self.assertEqual(read(self.team / "a.xlsx"), "A fixed")
         self.assertNotEqual(seen[0][0].parent.parent, self.team)
-        self.assertIsNone(seen[0][1])  # 没有参考，不恢复颜色
+        self.assertIsNone(seen[0][1])
         self.assertIn("期间别人新加", distribute.markdown(result))
 
-    def test_free_upload_without_manifest_needs_confirm(self):
+    def test_free_upload_without_manifest_tracks_the_approved_source(self):
         other = Path(self.tmp.name) / "别处"
         write(other / "a.xlsx", "A 别处")
         write(other / "new.xlsx", "N")
         dest = Path(self.tmp.name) / "终点"
         write(dest / "a.xlsx", "A 终点原来的")
         preview = distribute.preview_free(str(other), str(dest))
-        self.assertEqual({f["rel"]: f["action"] for f in preview["files"]}, {"a.xlsx": "confirm", "new.xlsx": "new"})
-        with self.assertRaises(ValueError):
-            distribute.start_free(preview["id"], False)
+        self.assertEqual({f["rel"]: f["action"] for f in preview["files"]}, {"a.xlsx": "review", "new.xlsx": "new"})
         self.patches()
-        distribute.start_free(preview["id"], True)
-        result = self.wait()
+        with patch.object(excel_diff, "diff", return_value={"identical": False}):
+            distribute.start_free(preview["id"])
+            self.review("a.xlsx", "upload")
+            result = self.wait()
         self.assertEqual(result["summary"]["已复制"], 2)
         self.assertEqual(read(dest / "a.xlsx"), "A 别处 +标准化")
-        # 传过一次就有记录，下次不用再确认
         write(other / "a.xlsx", "A 第二版")
         again = distribute.preview_free(str(other), str(dest))
-        self.assertEqual({f["rel"]: f["action"] for f in again["files"]}["a.xlsx"], "overwrite")
+        self.assertEqual({f["rel"]: f["action"] for f in again["files"]}, {"a.xlsx": "overwrite", "new.xlsx": "overwrite"})
+        unrelated = Path(self.tmp.name) / "另一个起点"
+        write(unrelated / "a.xlsx", "和上次的起点无关")
+        self.assertEqual(distribute.preview_free(str(unrelated), str(dest))["files"][0]["action"], "review")
 
     def test_failed_preparation_skips_only_that_file(self):
         other = Path(self.tmp.name) / "别处"
@@ -150,7 +165,7 @@ class RelayUploadTests(unittest.TestCase):
 
         preview = distribute.preview_free(str(other), str(dest))
         self.patches(prepare)
-        distribute.start_free(preview["id"], False)
+        distribute.start_free(preview["id"])
         result = self.wait()
         # 用户 2026-11-10：没做成的那份不传，其余照传
         self.assertEqual(result["summary"]["已复制"], 1)
@@ -166,7 +181,7 @@ class RelayUploadTests(unittest.TestCase):
         preview = distribute.preview_free(str(other), str(dest))
         write(dest / "a.xlsx", "刚被别人放进来")
         self.patches()
-        distribute.start_free(preview["id"], False)
+        distribute.start_free(preview["id"])
         result = self.wait()
         self.assertEqual(result["files"][0]["status"], "conflict")
         self.assertEqual(read(dest / "a.xlsx"), "刚被别人放进来")

@@ -230,6 +230,59 @@
       $('xdRun').disabled = false;
     }
   }
+  const token = params.get('review');
+  async function reviewRequest(action, fields = {}) {
+    const response = await fetch('/api/distribute/upload_' + action, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, ...fields }),
+    });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || '上传确认失败');
+    return data;
+  }
+
+  async function loadReview() {
+    $('xdInputPanel').hidden = true;
+    $('xdReviewPanel').hidden = false;
+    $('xdResultPanel').hidden = true;
+    $('xdReviewStatus').textContent = '正在读取后台已完成的对比…';
+    try {
+      const data = await reviewRequest('review');
+      $('xdReviewName').textContent = data.rel;
+      $('xdReviewStatus').textContent = data.reason;
+      if (data.diff) {
+        render(data.diff);
+        $('xdResultPanel').hidden = false;
+      } else {
+        $('xdApprove').textContent = '确认重新创建并上传';
+      }
+      if (data.pdf_only) $('xdApprove').textContent = '确认上传这份 PDF';
+      $('xdReviewActions').hidden = false;
+    } catch (error) {
+      $('xdReviewStatus').textContent = '';
+      $('xdReviewError').textContent = error.message;
+    }
+  }
+
+  async function decideReview(decision) {
+    const buttons = [$('xdApprove'), $('xdSkip')];
+    buttons.forEach(button => { button.disabled = true; });
+    $('xdReviewError').textContent = '';
+    try {
+      await reviewRequest('decision', { decision });
+      $('xdReviewActions').hidden = true;
+      $('xdReviewStatus').textContent = decision === 'upload' ? '已进入上传队列。请回到上传页查看结果。' : '已跳过这份。';
+    } catch (error) {
+      $('xdReviewError').textContent = error.message;
+      buttons.forEach(button => { button.disabled = false; });
+    }
+  }
+
+  if (token) {
+    $('xdApprove').addEventListener('click', () => decideReview('upload'));
+    $('xdSkip').addEventListener('click', () => decideReview('skip'));
+    loadReview();
+    return;
+  }
   $('xdRun').addEventListener('click', run);
   for (const id of ['xdMine', 'xdTheirs']) $(id).addEventListener('keydown', event => { if (event.key === 'Enter') run(); });
   if ($('xdMine').value && $('xdTheirs').value) run();
