@@ -157,9 +157,10 @@ def _drop_marks(wb: Any, wb_path: Path) -> tuple[int, list[str]]:
 
 def _export_sheet(sheet: Any, target: Path) -> None:
     from core import page_fill  # 交给用户看的 PDF 一律宽一页（用户 2026-11-10 定）；只读打开，不保存
-    from core import print_frames
+    from core import print_frames, print_overlays
     page_fill.force_one_page_wide(sheet)
-    with print_frames.hidden_frames(sheet):  # 整段外面的空心大框不印（用户 2026-11-10 要）
+    # 整段外面的空心大框不印（用户 2026-11-10 要）；截图上的红框和截图临时组合，免得错位（2026-11-11）
+    with print_frames.hidden_frames(sheet), print_overlays.grouped_overlays(sheet):
         sheet.ExportAsFixedFormat(
             Type=XL_TYPE_PDF, Filename=str(target), Quality=0, IncludeDocProperties=True,
             IgnorePrintAreas=False, OpenAfterPublish=False,
