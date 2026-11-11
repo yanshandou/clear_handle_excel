@@ -13,20 +13,20 @@
 <body>
   <header class="app-header">
     <a href="/" class="header-brand" title="返回主页">
-      <div class="header-logo-badge" aria-hidden="true">📐</div>
+      <div class="header-logo-badge" aria-hidden="true"></div>
       <div class="header-title">
-        <h1>Excel 整理与 PDF 切字工具箱</h1>
-        <span class="subtitle">常用功能一键直达 · 支持递归扫描子文件夹 · 自动生成执行记录</span>
+        <h1>Excel 整理工坊</h1>
+        <span class="subtitle">整理表格，也整理好每一步</span>
       </div>
     </a>
     <div class="header-nav">
-      <a href="/" class="nav-link active">🏠 主页</a>
-      <a href="/clean" class="nav-link">🧹 精简 Sheet</a>
-      <a href="/workbench" class="nav-link">📐 切字检查工作台</a>
-      <a href="/analysis" class="nav-link">📈 扫描分析</a>
-      <a href="/history" class="nav-link">🗂️ 文件夹历史</a>
-      <a href="/records" class="nav-link">
-        📊 执行记录与进度看板
+      <a href="/" class="nav-link active" aria-current="page"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#home"></use></svg>主页</a>
+      <a href="/clean" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#grid"></use></svg>精简 Sheet</a>
+      <a href="/workbench" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#search"></use></svg>切字检查</a>
+      <a href="/analysis" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#chart"></use></svg>扫描分析</a>
+      <a href="/history" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#folder"></use></svg>文件夹历史</a>
+      <a href="/records" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#layers"></use></svg>
+        执行记录
         <span id="navProgressBadge" class="nav-badge">0%</span>
       </a>
       <span id="statusText" class="status-pill">✅ 就绪</span>
@@ -35,23 +35,32 @@
 
   <main class="container home-container">
     <section class="home-hero">
-      <div>
-        <h2>工具箱</h2>
-        <p>挑要用的工具拖进「本次流程」，按第 1 步、第 2 步往下做，每步做完页面顶上有「下一步」。单击卡片直接打开那个工具。每一步都递归扫描所选文件夹及其子文件夹，进度可在「执行记录与进度看板」查看。</p>
+      <div class="hero-copy">
+        <span class="hero-eyebrow">EXCEL WORKSHOP</span>
+        <h2>把繁琐整理，<br>变成<em>轻松几步。</em></h2>
+        <p>精简表格、调整页面、检查切字，一站式轻松完成。<br>挑选你的工具，让每一份文件井井有条。</p>
+        <div class="hero-start">
+          <a class="btn btn-primary" href="/distribute/start">开始新任务 <svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#arrow"></use></svg></a>
+          <span class="hero-start-note">支持子文件夹 · 自动记录处理进度</span>
+        </div>
         <p id="routeDoneNote" class="route-done-note hidden"></p>
       </div>
+    </section>
+
+    <section class="home-tools-heading" aria-label="工具与进度备份">
+      <div><h2>我的工具箱</h2><p>单击打开工具，或拖进流程，按顺序完成。</p></div>
       <div class="home-hero-actions">
         <button type="button" class="btn btn-outline btn-sm" id="exportProgressBtn" onclick="exportProgress()"
           title="把扫描结果、人工判断、续跑点和执行记录保存为备份文件">
-          ⬇ 导出进度
+          <svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#download"></use></svg>导出进度
         </button>
         <button type="button" class="btn btn-outline btn-sm" id="importProgressBtn" onclick="pickProgressFile()"
           title="从备份文件恢复进度，会替换当前全部进度">
-          ⬆ 导入进度
+          <svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#upload"></use></svg>导入进度
         </button>
         <button type="button" class="btn btn-outline btn-sm" onclick="openFileProblemSettings()"
           title="批量任务遇到出错的文件时：等你选择重试 / 跳过，或者多少分钟没人选就自动跳过">
-          ⏸ 出错时
+          <svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#settings"></use></svg>出错时
         </button>
         <input type="file" id="progressFileInput" class="hidden" accept=".json,application/json">
       </div>
@@ -99,8 +108,8 @@
          卡片、轨道由 static/home_toolbox.js 画（工具清单在 static/flow.js），状态文字 id、上传卡 id、新任务 / 完成任务的 id 都和以前一样 -->
     <section class="flow-bar" aria-label="本次流程">
       <div class="flow-bar-head">
-        <h3>🧭 本次流程</h3>
-        <span class="flow-bar-tip">按住下面的工具卡拖进来就多一步；步骤之间拖动调顺序，✕ 去掉。每一步做完，页面顶上会提示下一步。</span>
+        <h3><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#route"></use></svg>本次流程</h3>
+        <span class="flow-bar-tip">拖入工具，自由排序。每一步完成后，都有下一步指引。</span>
         <span class="flow-bar-btns">
           <button type="button" class="btn btn-outline btn-sm" id="flowResetBtn" title="改回 精简 Sheet → 调整页面 → 查看切字 → 上传">↺ 恢复默认 4 步</button>
           <button type="button" class="btn btn-outline btn-sm" id="flowClearBtn">清空</button>
@@ -111,9 +120,10 @@
 
     <section class="route-map toolbox-map" aria-label="工具箱">
       <ol class="route-steps toolbox-grid" id="toolGrid"></ol>
-      <h3 class="toolbox-more-title">🧰 更多工具 <small>单独做某一件事时用；也可以拖进上面的流程。标「单独用」的平时已经被精简或上传顺便做了</small></h3>
+      <h3 class="toolbox-more-title">更多好帮手 <small>按需使用，也能加入流程。标「单独用」的功能，精简或上传时已可顺便完成。</small></h3>
       <ol class="route-steps toolbox-grid" id="toolGridMore"></ol>
     </section>
+    <footer class="home-footer"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#check"></use></svg>每一步都有记录，让整理更安心。</footer>
   </main>
 
   <!-- 单项功能对话框：填写文件夹 → 执行 → 查看结果（精简 Sheet 在独立页面 /clean） -->

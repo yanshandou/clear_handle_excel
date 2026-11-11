@@ -16,7 +16,10 @@
   let dragging = null; // { id, from: 'card' | 'step' }
 
   function cardHtml(t) {
-    const icon = t.icon ? `<span class="feature-icon feature-icon-${t.icon}"></span>` : `<span class="tool-emoji">${t.emoji}</span>`;
+    const vectors = { bundle: 'document', json: 'layers', colors: 'palette', images: 'image', font: 'type', links: 'link', bl: 'link', hidden: 'eye', view: 'target' };
+    const icon = t.main
+      ? `<span class="feature-icon garden-sprite sprite-${t.id}"></span>`
+      : `<span class="tool-vector"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#${vectors[t.id]}"></use></svg></span>`;
     const attrs = t.action ? `type="button" onclick="${t.action}"` : `href="${esc(t.url)}"${t.linkId ? ` id="${t.linkId}"` : ''}`;
     const tag = t.action ? 'button' : 'a';
     return `<li class="route-stop tool-stop" data-tool="${t.id}"${t.ops ? ` data-ops="${t.ops}"` : ''}>
@@ -114,9 +117,9 @@
         </span>`;
     }).join('');
     const empty = flow.length ? '' : '<span class="flow-link" aria-hidden="true"></span><span class="flow-empty">把下面的工具卡拖到这里</span>';
-    road.innerHTML = `<a class="flow-sign flow-start" href="/distribute/start" id="workTaskNew" title="打开「新任务 · 拿文件」页：填共享文件夹路径，自动生成参考、处理文件夹，再从共享拿文件">🆕 新任务</a>
+    road.innerHTML = `<a class="flow-sign flow-start" href="/distribute/start" id="workTaskNew" title="打开「新任务 · 拿文件」页：填共享文件夹路径，自动生成参考、处理文件夹，再从共享拿文件"><span class="garden-sprite sprite-new" aria-hidden="true"></span>新任务</a>
       ${steps}${empty}<span class="flow-link" aria-hidden="true"></span>
-      <a class="flow-sign flow-finish" href="/finish?start=1" id="workTaskFinish" title="打开「完成任务 · 收尾检查」页：逐项检查处理好的文件都传回共享了没有，通过就标记任务完成">🏁 完成任务</a>
+      <a class="flow-sign flow-finish" href="/finish?start=1" id="workTaskFinish" title="打开「完成任务 · 收尾检查」页：逐项检查处理好的文件都传回共享了没有，通过就标记任务完成"><span class="garden-sprite sprite-finish" aria-hidden="true"></span>完成任务</a>
       <i class="flow-marker hidden" aria-hidden="true"></i>`;
   }
 
