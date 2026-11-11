@@ -190,6 +190,8 @@ class WebHandler(upload_manager.Handler):
             self._serve_static_file("font_fix.html")
         elif parsed.path == "/api/font_fix":
             self._send_json(font_fix.status())
+        elif parsed.path == "/excel-diff":
+            self._serve_static_file("excel_diff.html")
         elif parsed.path == "/fix-images":
             self._serve_static_file("image_restore.html")
         elif parsed.path == "/api/image_restore":
@@ -474,6 +476,13 @@ class WebHandler(upload_manager.Handler):
             return
         if self.path == "/api/job/skip/settings":
             self._send_json({"ok": True, "settings": file_problem.set_slow_settings(payload.get("file_limit_minutes"))})
+            return
+        if self.path == "/api/excel_diff":  # 仿 Git 对比两份 Excel：只读，别的任务在跑也能看
+            from core import excel_diff
+            mine, theirs = payload.get("mine"), payload.get("theirs")
+            if not isinstance(mine, str) or not isinstance(theirs, str) or not mine.strip() or not theirs.strip():
+                raise ValueError("需要两份 Excel 的完整路径")
+            self._send_json({"ok": True, **excel_diff.diff(mine.strip(), theirs.strip())})
             return
         if self.path == "/api/excel/open" and isinstance(payload.get("problem"), str):
             problem = file_problem.pending()
