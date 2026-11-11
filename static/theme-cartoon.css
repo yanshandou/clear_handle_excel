@@ -641,3 +641,108 @@ input[type="checkbox"]:not(.hidden):checked::before {
   color: var(--cartoon-ink);
   text-shadow: 0 1px 0 rgba(255, 255, 255, 0.45);
 }
+
+/* ==========================================
+   对比度加强（用户 2026-11-11：再好分辨一点）
+   - 背景整体压深，青色光晕和半调圆点调淡，背景上的白字对比度 ≥ 8:1
+   - 顶栏导航、紫色选中按钮的底色加深，白字不靠描边也 ≥ 6:1
+   - 面板里的灰色说明字加深
+   ========================================== */
+:root {
+  --ink-3: #26326e;
+  --ink-4: #4f5a8c;
+}
+
+html {
+  background-color: #12389e;
+  background-image:
+    linear-gradient(176deg, transparent 0 calc(100% - 64px), #4a1fae calc(100% - 63px) calc(100% - 26px), #33137e calc(100% - 25px)),
+    linear-gradient(118deg, transparent 0 8%, rgba(255, 255, 255, 0.045) 8% 17%, transparent 17% 100%),
+    linear-gradient(62deg, transparent 0 74%, rgba(255, 255, 255, 0.04) 74% 83%, transparent 83% 100%),
+    radial-gradient(ellipse 55% 45% at 50% 42%, rgba(50, 170, 255, 0.28) 0%, rgba(40, 120, 255, 0.12) 50%, transparent 78%),
+    linear-gradient(180deg, #0d2c8c 0%, #1440b4 35%, #173cae 58%, #22279a 82%, #331784 100%);
+}
+
+body::before {
+  background-image:
+    radial-gradient(circle, rgba(130, 210, 255, 0.28) 0 4px, transparent 4.6px),
+    radial-gradient(circle, rgba(130, 210, 255, 0.16) 0 2.2px, transparent 2.8px);
+}
+
+.app-header {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08) 0 50%, transparent 50%),
+    linear-gradient(180deg, #17399c 0%, #0e2670 100%);
+}
+
+.subtitle,
+.toolbox-more-title small {
+  color: #ffffff;
+}
+
+.nav-link,
+.nav-link:hover {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.16) 0 42%, transparent 42%),
+    linear-gradient(180deg, #2a5fd0 0%, #1a46ac 100%);
+  box-shadow: inset 0 -3px 0 #102f80, 0 3px 0 var(--cartoon-ink);
+}
+
+.nav-link:hover {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2) 0 42%, transparent 42%),
+    linear-gradient(180deg, #3368d8 0%, #1f4db6 100%);
+}
+
+/* 紫色：选中按钮、标签 */
+.btn-success,
+.pv-size-switch .btn.is-active {
+  --b-top: #7a48e6;
+  --b: #5520c0;
+  --b-edge: #3e1494;
+}
+
+.step-chip-teal,
+.learn-cat[aria-pressed="true"],
+.learn-mode-btn[aria-pressed="true"],
+.pr-set .pr-mark-btn.is-on,
+.pr-cat.is-on,
+.filter-pill.active {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.14) 0 45%, transparent 45%),
+    linear-gradient(180deg, #7a48e6 0%, #5520c0 100%);
+}
+
+.btn-danger {
+  --b-top: #f0466a;
+  --b: #cc1d45;
+  --b-edge: #94102f;
+}
+
+.btn-success,
+.btn-danger,
+.btn-success:hover:not(:disabled),
+.btn-danger:hover:not(:disabled) {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.14) 0 44%, transparent 44%),
+    linear-gradient(180deg, var(--b-top) 0%, var(--b) 100%);
+}
+
+.flow-no,
+.progress-pct,
+.feature-text::before {
+  background: #1a4fc4;
+}
+
+.fpb-sep {
+  color: #26326e;
+}
+
+.fpb-step {
+  border-color: #5f6ea8;
+}
+
+/* 面板里的分隔线和浅色框加深一点，区块更好分 */
+.panel-section-head {
+  border-bottom-color: #b3c4ec;
+}
