@@ -654,6 +654,9 @@ class WebHandler(upload_manager.Handler):
             # 单元格工具箱「🛠 统一修改」：按选好的工具改格子、保存、整份复检（用户 2026-11-08 要）
             from core import cell_toolbox
             self._start_job("batch_fix", cell_toolbox.job_options(cell_toolbox.validate(payload)))
+        elif self.path == "/api/batch/show_low_risk":
+            # 黄色（只是压线 / 被裁，字都在 PDF 里）默认不列；查看切字页可以打开「也列出来」（用户 2026-11-10）
+            self._send_json({"ok": True, "show": batch.set_show_low_risk(payload.get("show"))})
         elif self.path == "/api/batch/card_images":
             # 工具箱里每格的 PDF 截图（卡片快照默认不带图，按需取）
             self._send_json({"ok": True, "images": batch.card_images(payload.get("card_ids"))})
