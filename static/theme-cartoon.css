@@ -768,3 +768,10 @@ body::before {
 .home-hero p strong {
   color: #ffe066;
 }
+
+/* 预览页顶部说明、文件夹历史的空提示：直接在背景上，白字 */
+.clean-legend .preview-legend > span:not(.preview-sheet-tag):not(.sheet-shared-mark),
+.history-layout > aside > p {
+  color: #ffffff;
+  text-shadow: var(--on-bg-text);
+}
