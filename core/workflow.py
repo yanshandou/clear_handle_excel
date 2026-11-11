@@ -44,7 +44,7 @@ from core.common import (
     workbook_locked,
     workbook_rel_name,
 )
-from core import debug_log, file_problem, fix_images, folder_progress, page_breaks, page_fill, pdf_detector, pdf_store, print_frames, print_layout, progress_log, scan_analysis, sheet_history
+from core import debug_log, file_problem, fix_images, folder_progress, page_breaks, page_fill, pdf_detector, pdf_store, print_frames, print_layout, print_overlays, progress_log, scan_analysis, shape_geometry, sheet_history
 from core.excel_watchdog import ExcelWatchdog
 from core.formula_links import delete_sheets_preserving_values
 from core.excel_ops import (
@@ -1411,7 +1411,8 @@ def _export_sheet_pdf_raw(sheet: Any, pdf_path: Path, pages: tuple[int, int] | N
     page_fill.force_one_page_wide(sheet)
     span = {"From": pages[0], "To": pages[1]} if pages else {}
     scan_analysis.count("pdf_exports")
-    with print_frames.hidden_frames(sheet):  # 整段外面的空心大框不印（用户 2026-11-10 要），导完放回
+    # 整段外面的空心大框不印（用户 2026-11-10 要）；截图上的红框和截图临时组合，免得 PDF 里错位（2026-11-11）；导完放回
+    with print_frames.hidden_frames(sheet), print_overlays.grouped_overlays(sheet):
         sheet.ExportAsFixedFormat(
             Type=XL_TYPE_PDF,
             Filename=str(pdf_path.resolve()),
@@ -2884,7 +2885,9 @@ def fix_selected_workflow(
                                         _persist_state()
 
                             # 先写入目标高度，再保存 Excel；重启后重放同一目标，不重复递增。
+                            shapes_before = shape_geometry.snapshot_book(wb, [sheet.Name])  # 用户 2026-11-11 要：图形不跟着行高变
                             sheet.Rows(target_row).RowHeight = new_h
+                            shape_geometry.restore_book(wb, shapes_before, f"微调行高 {wb_path.name}")
                             before_print_save = _file_version(wb_path)
                             wb.Save()
                             print_layout.followed_save(STATE.setdefault("print_layouts", {}), wb_path_str, before_print_save)

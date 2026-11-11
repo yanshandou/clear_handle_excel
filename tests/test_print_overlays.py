@@ -1,0 +1,107 @@
+import unittest
+
+from core import print_overlays
+
+
+class Shape:
+    def __init__(self, name, kind, left, top, w, h, visible=True, placement=1):
+        self.Name, self.Type = name, kind
+        self.Left, self.Top, self.Width, self.Height = left, top, w, h
+        self.Visible, self.Placement = visible, placement
+
+
+class Group:
+    def __init__(self, shapes, members):
+        self.shapes, self.members = shapes, members
+        self.Type = 6
+
+    def Ungroup(self):
+        for s in self.members:
+            s.Placement = 2  # Excel 拆开后 Placement 可能被改掉
+        self.shapes.items.remove(self)
+        self.shapes.items.extend(self.members)
+
+
+class Range:
+    def __init__(self, shapes, names):
+        self.shapes, self.names = shapes, names
+
+    def Group(self):
+        if self.shapes.fail:
+            raise RuntimeError("保護されたシート")
+        members = [self.shapes.Item(n) for n in self.names]
+        for m in members:
+            self.shapes.items.remove(m)
+        group = Group(self.shapes, members)
+        self.shapes.items.append(group)
+        self.shapes.groups.append(members)
+        return group
+
+
+class Shapes:
+    def __init__(self, items, fail=False):
+        self.items, self.fail, self.groups = list(items), fail, []
+
+    @property
+    def Count(self):
+        return len(self.items)
+
+    def Item(self, key):
+        if isinstance(key, int):
+            return self.items[key - 1]
+        return next(s for s in self.items if s.Name == key)
+
+    def Range(self, names):
+        return Range(self, list(names))
+
+
+class Sheet:
+    def __init__(self, items, fail=False):
+        self.Name = "手順"
+        self.Shapes = Shapes(items, fail)
+
+
+class PrintOverlaysTest(unittest.TestCase):
+    def test_red_box_on_picture_grouped_then_restored(self):
+        pic = Shape("図 1", 13, 30, 40, 330, 310)
+        box = Shape("正方形 2", 1, 220, 300, 50, 33)
+        far = Shape("矢印 3", 1, 500, 40, 50, 20)      # 不在截图上
+        sheet = Sheet([pic, box, far])
+        with print_overlays.grouped_overlays(sheet) as n:
+            self.assertEqual(n, 1)
+            self.assertEqual(sheet.Shapes.groups, [[pic, box]])
+            self.assertNotIn(box, sheet.Shapes.items)
+        self.assertIn(box, sheet.Shapes.items)
+        self.assertEqual((pic.Placement, box.Placement, far.Placement), (1, 1, 1))
+
+    def test_smallest_picture_wins_and_hidden_ignored(self):
+        big = Shape("図 1", 13, 0, 0, 800, 800)
+        small = Shape("図 2", 11, 100, 100, 200, 200)
+        box = Shape("正方形 3", 1, 150, 150, 20, 20)
+        hidden = Shape("正方形 4", 1, 10, 10, 20, 20, visible=False)
+        sets = print_overlays.find_overlay_sets(Sheet([big, small, box, hidden]))
+        self.assertEqual([(p.Name, [m.Name for m in ms]) for p, ms in sets], [("図 2", ["正方形 3"])])
+
+    def test_duplicate_names_skipped(self):
+        pic = Shape("図 1", 13, 0, 0, 300, 300)
+        a = Shape("正方形 2", 1, 10, 10, 20, 20)
+        b = Shape("正方形 2", 1, 500, 500, 20, 20)
+        self.assertEqual(print_overlays.find_overlay_sets(Sheet([pic, a, b])), [])
+
+    def test_group_failure_exports_as_is(self):
+        pic = Shape("図 1", 13, 0, 0, 300, 300)
+        box = Shape("正方形 2", 1, 10, 10, 20, 20)
+        sheet = Sheet([pic, box], fail=True)
+        with print_overlays.grouped_overlays(sheet) as n:
+            self.assertEqual(n, 0)
+        self.assertEqual(sheet.Shapes.items, [pic, box])
+
+    def test_unreadable_sheet_does_nothing(self):
+        class Bad:
+            Name = "グラフ"
+        with print_overlays.grouped_overlays(Bad()) as n:
+            self.assertEqual(n, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
