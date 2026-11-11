@@ -80,6 +80,8 @@
         : `<div class="img-none"${ratio ? ` style="aspect-ratio:${ratio}"` : ''}>${esc(why || '没有')}</div>`) + '</figure>';
   }
 
+  // 屏幕原样拍不了、退回导出效果时标出来（导出效果可能本身就有错位，不能当 Excel 原样看）
+  const how = h => h === 'screen' ? '屏幕原样' : '导出效果，非屏幕原样';
   const groupTitle = f => (f.group_sheets || []).map(g => `【${g.sheet}】${g.groups.join('；')}`).join('\n');
 
   // 「无需处理」记在浏览器里（按 新版文件夹 + 文件 + 表 + 页），只改这一页的样子，不重画别的
@@ -98,7 +100,7 @@
     if ($('imgMarkCount')) $('imgMarkCount').textContent = all ? `已标无需处理 ${done} / ${all} 页` : '';
   }
 
-  // 一页一行三列整页图（用户 2026-11-11 要：看整页，能比对也能定位）。三列都是导出 PDF 的样子
+  // 一页一行三列整页图（用户 2026-11-11 要：看整页，能比对也能定位）。前两列是 Excel 屏幕原样（拍不了才退回导出效果）
   function renderFile(f, data) {
     const folder = data.folder;
     const openNew = (label, sheet = '', cell = '') => window.excelLinkHtml(label, { file: f.name, folder, sheet, cell });
@@ -121,9 +123,9 @@
       const pages = (s.pages || []).map(p => `<div class="img-page" data-mark="${esc(markKey(folder, f.name, s.sheet, p.page))}">`
         + `<div class="img-page-head"><span>这张表第 ${p.page} / ${p.pages} 页${p.note ? `（${esc(p.note)}）` : ''}</span>`
         + '<button class="btn btn-outline btn-sm" type="button" data-mark-btn>✓ 无需处理</button></div>'
-        + `<div class="img-group">${shot(`原版 Excel${p.old_page ? `（导出后第 ${p.old_page} 页）` : ''}`, p.old_img, p.old_why, p.ratio)}`
-        + shot(`新版 Excel${f.fixed ? '（修复前）' : ''}（导出后第 ${p.page} 页）`, p.new_img, '', p.ratio)
-        + `${shot(`新版 PDF${p.pdf_page ? `（第 ${p.pdf_page} 页）` : ''}`, p.pdf_img, p.pdf_why, p.ratio)}</div></div>`).join('');
+        + `<div class="img-group">${shot(`原版 Excel${p.old_page ? `（第 ${p.old_page} 页 · ${how(p.old_how)}）` : ''}`, p.old_img, p.old_why, p.old_ratio || p.ratio)}`
+        + shot(`新版 Excel${f.fixed ? '（修复前）' : ''}（第 ${p.page} 页 · ${how(p.new_how)}）`, p.new_img, '', p.new_ratio || p.ratio)
+        + `${shot(`新版 PDF${p.pdf_page ? `（第 ${p.pdf_page} 页）` : ''}`, p.pdf_img, p.pdf_why, p.pdf_ratio || p.ratio)}</div></div>`).join('');
       return head + (pages || `<div class="img-none">${esc(s.pages_why || '这张表没有导出页')}</div>`);
     }).join('');
     return `<div class="img-file${f.fixed ? ' is-fixed' : ''}"><div class="img-file-head"><span class="img-file-name">${esc(f.name)}</span>`

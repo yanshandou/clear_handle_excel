@@ -160,6 +160,74 @@ class PageRowsTest(unittest.TestCase):
             self.assertEqual(rows[3]["old_page"], 4)
 
 
+class _Cell:
+    def __init__(self, row, col):
+        self.Row, self.Column = row, col
+
+
+class _Range:
+    def __init__(self, r1, c1, r2, c2):
+        self.Row, self.Column, self.r2, self.c2 = r1, c1, r2, c2
+        self.Rows = type("R", (), {"Count": r2 - r1 + 1})
+        self.Columns = type("C", (), {"Count": c2 - c1 + 1})
+
+
+class _Breaks:
+    def __init__(self, rows):
+        self.rows, self.Count = rows, len(rows)
+
+    def Item(self, i):
+        return type("B", (), {"Location": _Cell(self.rows[i - 1], 1)})
+
+
+class PageSheet:
+    """打印区域 A1:K120，分页在第 41、81 行"""
+    def __init__(self, breaks=(41, 81), area="$A$1:$K$120"):
+        self.PageSetup = type("P", (), {"PrintArea": area})
+        self.HPageBreaks = _Breaks(list(breaks))
+        self.UsedRange = _Range(3, 2, 100, 8)
+        self.Shapes = type("S", (), {"Count": 1, "Item": staticmethod(lambda i: type("Sh", (), {"BottomRightCell": _Cell(130, 12)}))})
+
+    def Activate(self):
+        pass
+
+    def Cells(self, row, col):
+        return _Cell(row, col)
+
+    def Range(self, a, b=None):
+        return _Range(1, 1, 120, 11) if b is None else _Range(a.Row, a.Column, b.Row, b.Column)
+
+
+class PageRangesTest(unittest.TestCase):
+    def test_pages_are_row_bands_between_breaks(self):
+        bands = ir.page_ranges(PageSheet(), 3)
+        self.assertEqual([(b.Row, b.r2, b.c2) for b in bands], [(1, 40, 11), (41, 80, 11), (81, 120, 11)])
+
+    def test_no_print_area_starts_at_a1_and_covers_shapes(self):
+        bands = ir.page_ranges(PageSheet(area=""), 3)
+        self.assertEqual([(b.Row, b.Column, b.r2, b.c2) for b in bands], [(1, 1, 40, 12), (41, 1, 80, 12), (81, 1, 130, 12)])
+
+    def test_page_count_mismatch_refused(self):
+        with self.assertRaises(RuntimeError):
+            ir.page_ranges(PageSheet(), 4)
+
+    def test_screen_pages_keeps_export_image_when_capture_fails(self):
+        from pathlib import Path
+        from unittest.mock import patch
+        rows = [{"page": 2, "new_img": "pdf.png", "new_how": "pdf", "old_page": 3, "old_img": "o.png", "old_how": "pdf"}]
+        with patch.object(ir, "render_screen", return_value=1.5) as shot:
+            ir.screen_pages(PageSheet(), rows, "new", 3, Path("a.xlsx"), "手順")
+            self.assertEqual((rows[0]["new_how"], rows[0]["new_ratio"], shot.call_args[0][1].Row), ("screen", 1.5, 41))
+            ir.screen_pages(PageSheet(), rows, "old", 3, Path("a.xlsx"), "手順")
+            self.assertEqual((rows[0]["old_how"], shot.call_args[0][1].Row), ("screen", 81))
+        rows = [{"page": 2, "new_img": "pdf.png", "new_how": "pdf"}]
+        with patch.object(ir, "render_screen", side_effect=RuntimeError("剪贴板被占用")):
+            ir.screen_pages(PageSheet(), rows, "new", 3, Path("a.xlsx"), "手順")
+        self.assertEqual((rows[0]["new_img"], rows[0]["new_how"]), ("pdf.png", "pdf"))
+        ir.screen_pages(PageSheet(), rows, "new", 5, Path("a.xlsx"), "手順")  # 分页数对不上：整张表不拍
+        self.assertEqual(rows[0]["new_how"], "pdf")
+
+
 class MergeTest(unittest.TestCase):
     def test_group_result_merged_into_scan(self):
         from pathlib import Path
