@@ -18,6 +18,23 @@
     .font-name { overflow-wrap: anywhere; font-weight: 600; }
     .font-detail { white-space: pre-line;  grid-column: 2; font-size: 14px; color: #475569; overflow-wrap: anywhere; }
     .font-error { grid-column: 2; font-size: 14px; color: #b42318; overflow-wrap: anywhere; }
+    .img-fields { grid-template-columns: minmax(0, 1fr); max-width: 860px; }
+    .img-file { border: 1px solid #dce5ef; border-radius: 12px; padding: 12px 14px; margin: 14px 0; background: #fff; }
+    .img-file.is-fixed { border-color: #86c9a3; background: #f3fbf6; }
+    .img-file-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+    .img-file-name { font-weight: 700; overflow-wrap: anywhere; margin-right: auto; }
+    .img-links { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 14px; }
+    .img-badge { font-size: 13px; font-weight: 700; padding: 2px 10px; border-radius: 999px; background: #e7f6ee; color: #14633c; }
+    .img-badge.is-bad { background: #fff4e0; color: #89580b; }
+    .img-sheet { margin-top: 10px; font-weight: 600; color: #334155; }
+    .img-group { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin: 8px 0 14px; }
+    .img-shot { margin: 0; }
+    .img-shot figcaption { font-size: 13px; font-weight: 700; color: #475569; margin-bottom: 4px; }
+    .img-shot img { display: block; max-width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; cursor: zoom-in; }
+    .img-shot .img-none { font-size: 13px; color: #64748b; padding: 18px 8px; border: 1px dashed #cbd5e1; border-radius: 6px; text-align: center; }
+    .img-detail { grid-column: 1 / -1; font-size: 14px; color: #475569; white-space: pre-line; overflow-wrap: anywhere; }
+    .img-zoom { position: fixed; inset: 0; background: rgba(15, 23, 42, .78); display: flex; align-items: center; justify-content: center; z-index: 9000; cursor: zoom-out; }
+    .img-zoom img { max-width: 94vw; max-height: 92vh; background: #fff; border-radius: 6px; }
   </style>
   <link rel="stylesheet" href="/static/theme-casual.css">
   <link rel="stylesheet" href="/static/flow.css?v=1"><script src="/static/flow.js?v=1"></script>
@@ -29,20 +46,24 @@
   </header>
   <main class="container clean-container">
     <section class="panel">
-      <h2>把被行高列宽拉变形的截图、跑偏的红框放回原样</h2>
+      <h2>找出被行高列宽拉坏的截图、跑偏的红框</h2>
       <ul class="font-rules toolbar-hint">
         <li>以前修切字时加高行、加宽列，Excel 的图形默认跟着格子一起变：截图被拉长变形，截图上的红框、箭头挂在别的格子上，就框不住原来的地方了。</li>
-        <li>拿<b>参考文件夹里的原文件</b>对照：截图和其他图形<b>左上角不动</b>，大小改回原文件的；截图上的红框、箭头、文字框按原文件里<b>相对截图的位置</b>放回去。</li>
-        <li>只改真的变了的图形；行高、列宽、格子内容都不动。改完回读核对，有一个没对上整份不保存。</li>
-        <li>图形按名字配对，有重名的不碰；参考文件只读打开，不会改。</li>
+        <li>先点<b>「🔍 找出受影响的图片」</b>：原版、新版都只读打开，不改任何文件。每一处列出<b>原版 / 新版的局部截图</b>，可以点开新版 Excel、左右对照打开原版、打开新版 PDF。</li>
+        <li>看完再点<b>「修复这份」</b>或底部<b>「全部修复」</b>：截图左上角不动、大小改回原版的；红框、箭头按原版里<b>相对截图的位置</b>放回去。行高、列宽、格子内容都不动，改完回读核对，有一个没对上整份不保存。</li>
+        <li>图形按名字配对，有重名的不碰；原版只读打开，不会改。</li>
       </ul>
-      <div class="link-fields">
-        <label for="imgFolder">处理后的 Excel 文件夹（含子文件夹）<input id="imgFolder" type="text" placeholder="例如 D:\处理\001"></label>
-        <label for="imgOldFolder">参考文件夹（原文件）<input id="imgOldFolder" type="text" placeholder="例如 D:\参考\001，或包含 001 的总目录"></label>
+      <div class="link-fields img-fields">
+        <label for="imgFolder">新版 Excel 文件夹（含子文件夹）<input id="imgFolder" type="text" placeholder="例如 D:\\处理\\001"></label>
+        <label for="imgOldFolder">原版文件夹（参考）<input id="imgOldFolder" type="text" placeholder="例如 D:\\参考\\001，或包含 001 的总目录"></label>
+        <label for="imgPdfFolder">新版 PDF 文件夹（可不填：默认找 Excel 旁边的同名 PDF）<input id="imgPdfFolder" type="text" placeholder="例如 D:\\处理\\PDF"></label>
       </div>
-      <div class="link-actions"><button id="imgRun" class="btn btn-primary" type="button" disabled>🖼️ 修复图片</button></div>
-      <p class="toolbar-hint">请先保存并关闭要处理的 Excel。关闭网页后任务继续；刷新页面可查看进度与结果。</p>
-      <p id="imgProgress" role="status" aria-live="polite">填写两个文件夹后点按钮开始。</p>
+      <div class="link-actions">
+        <button id="imgScan" class="btn btn-primary" type="button" disabled>🔍 找出受影响的图片</button>
+        <button id="imgFixAll" class="btn btn-secondary" type="button" disabled hidden>🖼️ 全部修复</button>
+      </div>
+      <p class="toolbar-hint">修复前请先保存并关闭要处理的 Excel。关闭网页后任务继续；刷新页面可查看进度与结果。</p>
+      <p id="imgProgress" role="status" aria-live="polite">填写文件夹后点「找出受影响的图片」。</p>
       <div id="imgTrack" class="progress-track progress-track-sm"><div id="imgFill" class="progress-fill" style="width:0%"></div></div>
       <p id="imgError" class="batch-error" role="alert"></p>
     </section>

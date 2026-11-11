@@ -45,6 +45,9 @@ def comparison_target(kind: str, folder: str, name: str, sheet: str = "", cell: 
 
     if kind in {"chain_links", "chain_hidden"}:
         return _chain_target(kind.removeprefix("chain_"), folder, name, sheet, cell)
+    if kind == "images":  # 修复图片页：左新版、右原版（2026-11-11）
+        from core import image_restore
+        return image_restore.compare_target(name, sheet, cell)
     if kind not in {"links", "colors", "hidden"}:
         raise ValueError("未知的修复结果类型")
     status = {"links": link_repair, "colors": mark_finder, "hidden": hidden_repair}[kind].status()

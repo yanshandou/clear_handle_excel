@@ -547,8 +547,14 @@ class WebHandler(upload_manager.Handler):
             font_fix.start(_require_folder(payload))
             self._send_json({"ok": True})
         elif self.path == "/api/image_restore/run":
-            image_restore.start(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}, "reference"))
+            image_restore.start(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}, "reference"),
+                                payload.get("mode") or "scan", payload.get("names"), payload.get("pdf_folder") or "")
             self._send_json({"ok": True})
+        elif self.path == "/api/image_restore/open_pdf":
+            name = payload.get("file")
+            if not isinstance(name, str) or not name:
+                raise ValueError("需要有效的文件名")
+            self._send_json({"ok": True, **image_restore.open_pdf(name)})
         elif self.path == "/api/pdf_bundle/run":
             pdf_bundle.start(_require_folder(payload), payload.get("options"))
             self._send_json({"ok": True})
