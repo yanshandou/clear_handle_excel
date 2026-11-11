@@ -27,12 +27,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core import debug_log, file_problem, fix_images, progress_log, workflow as wf
+from core import debug_log, file_problem, fix_images, image_compare, print_overlays, progress_log, workflow as wf
 from core.backup_compare import pair_files, require_manual_file_check
 from core.common import workbook_locked, workbook_rel_name
 from core.excel_ops import open_workbook_checked, quit_background_excel, start_background_excel
 from core.link_repair import fingerprint
-from core.shape_geometry import PICTURES, _unique, apply_sheet, describe_change, plan_sheet, read_shapes
+from core.shape_geometry import PICTURES, _unique, apply_sheet, diagnose, overlay_hosts, describe_change, plan_sheet, read_shapes
 
 _LOCK = threading.RLock()
 _STATUS: dict[str, Any] = {"running": False}
@@ -195,6 +195,29 @@ def render_area(sheet: Any, names: list[str], out_name: str) -> tuple[str, str]:
         return "", ""
 
 
+def _screen_thumb(sheet: Any, group: dict, img_key: str, how_key: str, box: dict | None) -> Any:
+    """屏幕原样截图里，只取截图本身那块（按区域和截图在表上的位置换算）；打印效果的或没截出来的不比"""
+    if group.get(how_key) != "screen" or not group.get(img_key) or not box:
+        return None
+    try:
+        area = _area_of(sheet, group["names"])
+        rect = (float(area.Left), float(area.Top), float(area.Width), float(area.Height))
+        return image_compare.thumb_from_png(str(fix_images.IMAGES_DIR / group[img_key]), rect,
+                                            (box["left"], box["top"], box["width"], box["height"]))
+    except Exception as err:
+        debug_log.event("⚠️ 截图取样失败", 表=str(getattr(sheet, "Name", "?")), 截图=group["key"], 错误=str(err))
+        return None
+
+
+def _score(groups: list[dict]) -> None:
+    """按图比：原版↔新版 Excel、原版↔新版 PDF；疑似有问题的标 suspect，取样数据用完丢掉"""
+    for group in groups:
+        old = group.pop("_old_thumb", None)
+        group["cmp_excel"] = image_compare.compare(old, group.pop("_new_thumb", None))
+        group["cmp_pdf"] = image_compare.compare(old, group.pop("_pdf_thumb", None))
+        group["suspect"] = any(c and c["suspect"] for c in (group["cmp_excel"], group["cmp_pdf"]))
+
+
 def _anchor(sheet: Any, name: str) -> str:
     try:
         return str(sheet.Shapes.Item(name).TopLeftCell.Address(False, False))
@@ -273,6 +296,10 @@ def pdf_crops(pdf: Path, path: Path, groups: list[dict]) -> None:
             fix_images.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
             page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip, annots=False).save(str(fix_images.IMAGES_DIR / name))
             group["pdf_img"], group["pdf_page"] = name, number + 1
+            try:  # 只取截图本身那块（不留边）给按图比用
+                group["_pdf_thumb"] = image_compare.thumb_from_page(page, rect)
+            except Exception as err:
+                debug_log.event("⚠️ PDF 截图取样失败", 截图=group["key"], 错误=str(err))
         debug_log.event("📄 在新版 PDF 里找截图", PDF=pdf.name,
                         结果=[f"{g['key']}：{('第 ' + str(g['pdf_page']) + ' 页') if g.get('pdf_img') else g.get('pdf_why')}" for g in groups])
     finally:
@@ -296,7 +323,11 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf:
             if on_sheet:
                 on_sheet(index, len(pairs), cur["name"])
             changes = plan_sheet(cur["shapes"], ref["shapes"])
-            if not changes:
+            hosts = overlay_hosts(cur["shapes"], ref["shapes"], every=True)  # 所有图片都列（用户 2026-11-11 要）
+            if cur["shapes"] or ref["shapes"]:
+                debug_log.event("🔎 对照一张表", 文件=path.name, 表=cur["name"], 变了=len(changes),
+                                **diagnose(cur["shapes"], ref["shapes"]))
+            if not changes and not hosts:
                 continue
             sheet = book.Worksheets(cur["name"])
             ref_names = set(_unique(ref["shapes"]))
@@ -304,10 +335,18 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf:
             for item in changes:
                 key = item["host"] or item["name"]
                 group = groups.setdefault(key, {"key": key, "names": [key] if key in ref_names else [], "details": [],
-                                                "picture": bool(item["host"]) or item["kind"] == "picture"})
+                                                "picture": bool(item["host"]) or item["kind"] == "picture", "changed": True})
                 if item["name"] not in group["names"]:
                     group["names"].append(item["name"])
                 group["details"].append(describe_change(item))
+            # 程序没量出变化的图片也全部列出来让人目测（用户 2026-11-11：人工看出不少问题，程序一个没找出；有图片的都要列）
+            for host, overlays in hosts.items():
+                group = groups.get(host)
+                if group is None:
+                    groups[host] = {"key": host, "names": [host, *overlays], "picture": True, "changed": False,
+                                    "details": ["程序没量出大小或位置变化，请看三列目测"]}
+                else:
+                    group["names"] += [n for n in overlays if n not in group["names"]]
             cur_by = _unique(cur["shapes"])
             for group in groups.values():
                 group["cell"] = _anchor(sheet, group["key"])
@@ -317,9 +356,14 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf:
                     group["aspect"] = host["width"] / host["height"]  # PDF 是新版导出的，按新版截图的比例找
                     group["texts"] = _nearby_texts(sheet, group["names"])
                 group["new_img"], group["new_how"] = render_area(sheet, group["names"], _image_name(path, cur["name"], group["key"], "new"))
+                if group.get("picture"):
+                    group["_new_thumb"] = _screen_thumb(sheet, group, "new_img", "new_how", cur_by.get(group["key"]))
+                    group["_old_box"] = _unique(ref["shapes"]).get(group["key"])
             debug_log.event("🔍 找到受影响的图片", 文件=path.name, 表=cur["name"],
                             图形=[d for g in groups.values() for d in g["details"]])
-            sheets.append({"sheet": cur["name"], "old_sheet": ref["name"], "count": len(changes), "groups": list(groups.values())})
+            ordered = sorted(groups.values(), key=lambda g: not g["changed"])
+            sheets.append({"sheet": cur["name"], "old_sheet": ref["name"], "count": len(changes), "groups": ordered,
+                           "review": sum(not g["changed"] for g in ordered)})
     finally:
         book.Close(SaveChanges=False)
     if sheets:
@@ -329,6 +373,8 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf:
                 old_sheet = old_book.Worksheets(entry["old_sheet"])
                 for group in entry["groups"]:
                     group["old_img"], group["old_how"] = render_area(old_sheet, group["names"], _image_name(path, entry["sheet"], group["key"], "old"))
+                    if group.get("picture"):
+                        group["_old_thumb"] = _screen_thumb(old_sheet, group, "old_img", "old_how", group.get("_old_box"))
         finally:
             old_book.Close(SaveChanges=False)
     if sheets and pdf:
@@ -342,7 +388,14 @@ def inspect_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, pdf:
     for entry in sheets:
         for group in entry["groups"]:
             group.pop("texts", None)
-    return {"count": sum(s["count"] for s in sheets), "sheets": sheets}
+            group.pop("_old_box", None)
+        _score(entry["groups"])
+        entry["suspect"] = sum(1 for g in entry["groups"] if g.get("suspect"))
+        entry["groups"].sort(key=lambda g: (not g.get("suspect") and not g["changed"], not g["changed"]))
+        debug_log.event("🔬 按图比", 文件=path.name, 表=entry["sheet"],
+                        结果=[f"{g['key']}：Excel {g.get('cmp_excel')} / PDF {g.get('cmp_pdf')}" for g in entry["groups"]])
+    return {"count": sum(s["count"] for s in sheets), "sheets": sheets, "review": sum(s["review"] for s in sheets),
+            "suspect": sum(s["suspect"] for s in sheets)}
 
 
 def _image_refs() -> list[str]:
@@ -358,7 +411,8 @@ fix_images.register_references(_image_refs)
 
 # ---------- 一份 Excel ----------
 
-def fix_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None) -> dict:
+def fix_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None, group: bool = True) -> dict:
+    """放回原样；group=True 时放回后顺便把每张表的截图和标注永久组合（用户 2026-11-11 要）"""
     if path.resolve() == old_path.resolve():
         raise ValueError("处理后的文件和参考文件是同一个，请分别选两个文件夹")
     if workbook_locked(path):
@@ -390,36 +444,77 @@ def fix_workbook(excel: Any, path: Path, old_path: Path, on_sheet=None) -> dict:
             sheets.append({"sheet": cur["name"], "count": len(changes), "details": details[:30],
                            "pictures": sum(c["kind"] == "picture" for c in changes),
                            "overlays": sum(c["kind"] == "overlay" for c in changes)})
-        if sheets:
+        grouped = _group_book(book) if group else []
+        if sheets or grouped:
             if fingerprint(path) != stamp:
                 raise ValueError("修复期间文件被别人改过，没有保存")
             book.Save()
             debug_log.saved_excel("修复图片", path)
     finally:
         book.Close(SaveChanges=False)
-    return {"count": sum(s["count"] for s in sheets), "sheets": sheets}
+    return {"count": sum(s["count"] for s in sheets), "sheets": sheets,
+            "grouped": sum(len(g["groups"]) for g in grouped), "group_sheets": grouped}
+
+
+def _group_book(book: Any) -> list[dict]:
+    """每张表的截图和标注永久组合，返回 [{sheet, groups:[说明]}]"""
+    out = []
+    for sheet in book.Worksheets:
+        done = print_overlays.group_permanently(sheet)
+        if done:
+            out.append({"sheet": str(sheet.Name), "groups": done})
+    return out
+
+
+def group_workbook(excel: Any, path: Path, on_sheet=None) -> dict:
+    """只组合、不对照原版（「📌 只组合」按钮）。已经被拉坏的图会按坏的样子组合，所以请先修复"""
+    if workbook_locked(path):
+        raise ValueError("文件正在 Excel 中打开，请保存并关闭后再组合")
+    stamp = fingerprint(path)
+    book = open_workbook_checked(excel, str(path.resolve()), UpdateLinks=0)
+    try:
+        if book.ReadOnly:
+            raise ValueError("文件以只读方式打开，没有修改")
+        grouped = _group_book(book)
+        if grouped:
+            if fingerprint(path) != stamp:
+                raise ValueError("组合期间文件被别人改过，没有保存")
+            book.Save()
+            debug_log.saved_excel("截图和标注永久组合", path)
+    finally:
+        book.Close(SaveChanges=False)
+    return {"count": 0, "sheets": [], "grouped": sum(len(g["groups"]) for g in grouped), "group_sheets": grouped}
 
 
 def describe(entry: dict, mode: str = "fix") -> str:
     if entry.get("error"):
         return entry["error"]
     if mode == "scan":
-        return f"{entry['count']} 个图形变了（{len(entry['sheets'])} 张表）" if entry.get("count") else "图片都没变"
-    return f"放回 {entry['count']} 个图形（{len(entry['sheets'])} 张表）" if entry.get("count") else "图片都没变"
+        review = f"，{entry['review']} 张图片请看三列目测" if entry.get("review") else ""
+        suspect = f"，按图比 {entry['suspect']} 张疑似有问题" if entry.get("suspect") else ""
+        return (f"{entry['count']} 个图形变了" if entry.get("count") else "程序没量出变化") + suspect + review
+    parts = [f"放回 {entry['count']} 个图形" if entry.get("count") else "",
+             f"组合 {entry['grouped']} 组截图和标注" if entry.get("grouped") else ""]
+    parts = [p for p in parts if p]
+    return "，".join(parts) if parts else ("没有要组合的截图" if mode == "group" else "图片都没变")
 
 
 # ---------- 后台任务 ----------
 
-def _run(mode: str, root: Path, paths: list[Path], old_root: Path, old_paths: list[Path], pdf_root: Path | None) -> None:
-    """mode=scan：只找不改；mode=fix：改这几份（结果并进上次找出来的清单，标成已修复）"""
+def _run(mode: str, root: Path, paths: list[Path], old_root: Path | None, old_paths: list[Path], pdf_root: Path | None,
+         group: bool = True) -> None:
+    """mode=scan：只找不改；mode=fix：改这几份（结果并进上次找出来的清单，标成已修复）；
+    mode=group：只把截图和标注永久组合，不对照原版（old_root 可以是 None）"""
     files: list[dict] = []
+    stamp = int(time.time())  # 局部截图地址带上它：查的过程中不变，页面重画不重新下载图
     excel, initialized = None, False
-    guard = file_problem.Guard("找出受影响的图片" if mode == "scan" else "修复图片")
+    guard = file_problem.Guard({"scan": "找出受影响的图片", "fix": "修复图片", "group": "组合截图和标注"}[mode])
     try:
         wf.pythoncom.CoInitialize()
         initialized = True
         inferred: set[str] = set()
-        pairs = pair_files(old_root, old_paths, [workbook_rel_name(p, root) for p in paths], root, inferred=inferred)
+        pairs = (pair_files(old_root, old_paths, [workbook_rel_name(p, root) for p in paths], root, inferred=inferred)
+                 if old_root else {})
         for index, path in enumerate(paths):
             name = workbook_rel_name(path, root)
             while True:
@@ -434,12 +529,13 @@ def _run(mode: str, root: Path, paths: list[Path], old_root: Path, old_paths: li
                     if guard.file(name):  # 进度框能「跳过这一份」
                         excel = None
                     old_path = pairs.get(name)
-                    if old_path is None:
-                        raise ValueError("参考文件夹里找不到唯一对应的原文件")
-                    entry["old"] = str(old_path)
-                    if name in inferred:
-                        require_manual_file_check(entry)
-                        break
+                    if mode != "group":
+                        if old_path is None:
+                            raise ValueError("参考文件夹里找不到唯一对应的原文件")
+                        entry["old"] = str(old_path)
+                        if name in inferred:
+                            require_manual_file_check(entry)
+                            break
                     if excel is None:
                         excel = guard.watch(start_background_excel())
 
@@ -450,8 +546,10 @@ def _run(mode: str, root: Path, paths: list[Path], old_root: Path, old_paths: li
 
                     if mode == "scan":
                         entry.update(inspect_workbook(excel, path, old_path, on_sheet, pdf))
+                    elif mode == "group":
+                        entry.update(group_workbook(excel, path, on_sheet))
                     else:
-                        entry.update(fix_workbook(excel, path, old_path, on_sheet))
+                        entry.update(fix_workbook(excel, path, old_path, on_sheet, group))
                 except Exception as error:
                     debug_log.exception(error, f"{'找受影响的图片' if mode == 'scan' else '修复图片'} {name}")
                     retry, entry["error"] = guard.problem(error, path, name, root,
@@ -463,11 +561,15 @@ def _run(mode: str, root: Path, paths: list[Path], old_root: Path, old_paths: li
                         continue
                 break
             files.append(entry)
-            debug_log.event("🖼️ 图片一份", 动作=mode, 文件=name, 图形=entry.get("count", 0), 错误=entry["error"] or "",
+            debug_log.event("🖼️ 图片一份", 动作=mode, 文件=name, 图形=entry.get("count", 0), 组合=entry.get("grouped", 0),
+                            错误=entry["error"] or "",
                             PDF=entry["pdf"] or "-", 秒=round(time.perf_counter() - started, 2))
             wf.log_msg(f"🖼️ {name}：{describe(entry, mode)}")
             with _LOCK:
                 progress_log.add(_STATUS, name, not entry["error"], describe(entry, mode), path=str(path))
+                if mode == "scan":  # 边查边显示：查完一份就能在页面上看三列（用户 2026-11-11 要）
+                    _STATUS["result"] = {"folder": str(root), "old_folder": str(old_root or ""), "pdf_folder": str(pdf_root or ""),
+                                         "files": list(files), "mode": "scan", "scanned": True, "partial": True, "stamp": stamp}
     except Exception as error:
         debug_log.exception(error, "图片任务")
         files.append({"name": "任务", "path": "", "error": str(error), "count": 0, "sheets": []})
@@ -490,31 +592,45 @@ def _run(mode: str, root: Path, paths: list[Path], old_root: Path, old_paths: li
                     wf.STATE.pop("maintenance", None)
 
 
-def _merge(previous: dict | None, mode: str, root: Path, old_root: Path, pdf_root: Path | None, files: list[dict]) -> dict:
-    """找的结果直接替换；修的结果按文件名并进上次找到的清单（fixed / fix_error / fixed_count）"""
-    base = {"folder": str(root), "old_folder": str(old_root), "pdf_folder": str(pdf_root or ""), "files": files, "mode": mode}
+def _merge(previous: dict | None, mode: str, root: Path, old_root: Path | None, pdf_root: Path | None, files: list[dict]) -> dict:
+    """找的结果直接替换；修 / 组合的结果按文件名并进上次找到的清单（fixed / fix_error / fixed_count / grouped）"""
+    base = {"folder": str(root), "old_folder": str(old_root or ""), "pdf_folder": str(pdf_root or ""), "files": files, "mode": mode}
     if mode == "scan" or not previous or previous.get("folder") != str(root) or not previous.get("scanned"):
         return {**base, "scanned": mode == "scan", "stamp": int(time.time())}  # stamp：局部截图地址带上，重新找过浏览器才换图
+    def outcome(done: dict) -> dict:
+        info = {"grouped": done.get("grouped", 0), "group_sheets": done.get("group_sheets", [])}
+        if mode == "fix":
+            info.update(fixed=not done["error"], fix_error=done["error"] or "", fixed_count=done.get("count", 0))
+        else:
+            info.update(group_error=done["error"] or "")
+        return info
+
     by_name = {f["name"]: f for f in files}
     merged = []
     for old in previous.get("files", []):
         done = by_name.pop(old["name"], None)
-        if done is not None:
-            old = {**old, "fixed": not done["error"], "fix_error": done["error"] or "", "fixed_count": done.get("count", 0)}
-        merged.append(old)
+        merged.append({**old, **outcome(done)} if done is not None else old)
     for extra in by_name.values():
-        merged.append({**extra, "fixed": not extra["error"], "fix_error": extra["error"] or "", "fixed_count": extra.get("count", 0)})
-    return {**previous, "files": merged, "scanned": True, "mode": "fix"}
+        merged.append({**extra, **outcome(extra)})
+    return {**previous, "files": merged, "scanned": True, "mode": mode}
 
 
-def start(folder: str, old_folder: str, mode: str = "scan", names: Any = None, pdf_folder: Any = "") -> None:
-    """mode=scan 找出受影响的图片（不改文件）；mode=fix 修复。names：只修这几份（文件名列表），不给就是全部"""
-    if mode not in {"scan", "fix"}:
+def start(folder: str, old_folder: str, mode: str = "scan", names: Any = None, pdf_folder: Any = "",
+          group: Any = True) -> None:
+    """mode=scan 找出受影响的图片（不改文件）；mode=fix 修复（group=True 顺便永久组合）；mode=group 只组合（不用原版）。
+    names：只做这几份（文件名列表），不给就是全部"""
+    if mode not in {"scan", "fix", "group"}:
         raise ValueError("不认识的操作")
+    if not isinstance(group, bool):
+        raise ValueError("组合选项不对")
     root, paths = list_workbooks(folder)
-    old_root, old_paths = list_workbooks(old_folder)
-    if root == old_root or root in old_root.parents or old_root in root.parents:
-        raise ValueError("处理后的文件夹和参考文件夹不能相同或互相包含")
+    old_root, old_paths = None, []
+    if mode != "group" or (old_folder or "").strip():
+        if not (old_folder or "").strip():
+            raise ValueError("请输入原版文件夹")
+        old_root, old_paths = list_workbooks(old_folder)
+        if root == old_root or root in old_root.parents or old_root in root.parents:
+            raise ValueError("处理后的文件夹和参考文件夹不能相同或互相包含")
     pdf_root = None
     if isinstance(pdf_folder, str) and pdf_folder.strip():
         pdf_root = Path(pdf_folder.strip().strip('"').strip("'")).expanduser().resolve()
@@ -522,7 +638,7 @@ def start(folder: str, old_folder: str, mode: str = "scan", names: Any = None, p
             raise ValueError(f"PDF 文件夹不存在：{pdf_root}")
     if names is not None:
         if not isinstance(names, list) or not all(isinstance(n, str) for n in names) or not names:
-            raise ValueError("请选择要修复的文件")
+            raise ValueError("请选择要处理的文件")
         wanted = set(names)
         paths = [p for p in paths if workbook_rel_name(p, root) in wanted]
         if not paths:
@@ -537,14 +653,15 @@ def start(folder: str, old_folder: str, mode: str = "scan", names: Any = None, p
         if job.get("pending_adjustment") or job.get("deferred_adjustments"):
             raise ValueError("还有未完成的文件写入，请先继续或放弃上次写入")
         wf.STATE.update(busy=True, maintenance="image_restore")
-        result = _STATUS.get("result")
+        result = None if mode == "scan" else _STATUS.get("result")  # 重新找：清掉上次的清单，查完一份列一份
         _STATUS.clear()
-        _STATUS.update(running=True, mode=mode, folder=str(root), old_folder=str(old_root), pdf_folder=str(pdf_root or ""),
+        _STATUS.update(running=True, mode=mode, folder=str(root), old_folder=str(old_root or ""), pdf_folder=str(pdf_root or ""),
                        total=len(paths), done=0, current="", result=result)
 
     def run() -> None:
-        with debug_log.side_task("image_restore", {"mode": mode, "folder": str(root), "old_folder": str(old_root), "files": len(paths)}):
-            _run(mode, root, paths, old_root, old_paths, pdf_root)
+        with debug_log.side_task("image_restore", {"mode": mode, "folder": str(root), "old_folder": str(old_root or ""),
+                                                   "files": len(paths), "group": group}):
+            _run(mode, root, paths, old_root, old_paths, pdf_root, group)
 
     try:
         threading.Thread(target=run, name="修复图片", daemon=True).start()

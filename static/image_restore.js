@@ -7,11 +7,13 @@
   const FOLDER = 'clear_handle_excel.lastFolder';
   const OLD = 'clear_handle_excel.oldFolder';
   const PDF = 'clear_handle_excel.imgPdfFolder';
+  const GROUP = 'clear_handle_excel.imgGroupOnFix';
   let latest = {}, lastSig = '', loading = true, submitting = false, timer = 0, initial = true, wasRunning = false;
   try {
     $('imgFolder').value = localStorage.getItem(FOLDER) || '';
     $('imgOldFolder').value = localStorage.getItem(OLD) || '';
     $('imgPdfFolder').value = localStorage.getItem(PDF) || '';
+    $('imgGroupOnFix').checked = localStorage.getItem(GROUP) !== '0';
   } catch (_) {}
 
   const result = () => latest.result || null;
@@ -19,7 +21,7 @@
 
   function controls() {
     const busy = loading || submitting || latest.running;
-    for (const id of ['imgFolder', 'imgOldFolder', 'imgPdfFolder', 'imgScan']) $(id).disabled = !!busy;
+    for (const id of ['imgFolder', 'imgOldFolder', 'imgPdfFolder', 'imgScan', 'imgGroup', 'imgGroupOnFix']) $(id).disabled = !!busy;
     const left = pending().length;
     $('imgFixAll').hidden = !result()?.scanned || !left;
     $('imgFixAll').disabled = !!busy;
@@ -34,7 +36,7 @@
     $('imgFill').style.width = `${Math.round((running ? fraction : 1) * 100)}%`;
     $('imgTrack').hidden = !running;
     window.ProgressEta?.update($('imgFill'), 'image_restore_' + (latest.mode || 'scan'), fraction, running);
-    const verb = latest.mode === 'fix' ? '修复' : '查找';
+    const verb = { fix: '修复', group: '组合' }[latest.mode] || '查找';
     if (running) {
       $('imgProgress').textContent = `正在${verb} ${Math.min(done + 1, total)} / ${total} 份：${latest.current || '正在启动后台 Excel…'}` + (latest.step ? ` · ${latest.step}` : '');
       return;
@@ -43,15 +45,18 @@
     const bad = files.filter(f => f.error).length;
     const hit = files.filter(f => !f.error && f.count).length;
     const fixed = files.filter(f => f.fixed).length;
+    const grouped = files.filter(f => f.grouped).length;
+    const groupedText = grouped ? `，${grouped} 份已永久组合截图和标注` : '';
     $('imgProgress').textContent = !files.length ? '填写文件夹后点「找出受影响的图片」。'
-      : `${bad ? '!' : '✓'} 查了 ${files.length} 份：${hit} 份有图片变形或红框跑偏` + (fixed ? `，已修复 ${fixed} 份` : '')
-        + (bad ? `，${bad} 份没查（看下面的原因）` : '');
+      : !result()?.scanned ? `${bad ? '!' : '✓'} 处理了 ${files.length} 份${groupedText || '，没有要组合的截图'}` + (bad ? `，${bad} 份没处理` : '')
+      : `${bad ? '!' : '✓'} 查了 ${files.length} 份：${hit} 份程序量出变化，${files.filter(f => !f.error && !f.count && f.review).length} 份有图片请目测` + (fixed ? `，已修复 ${fixed} 份` : '')
+        + groupedText + (bad ? `，${bad} 份没查（看下面的原因）` : '');
   }
 
   function renderPanel() {
     if (!window.JobPanel || (!latest.running && !latest.result)) return;
     const log = latest.log || [];
-    const verb = latest.mode === 'fix' ? '修复图片' : '找受影响的图片';
+    const verb = { fix: '修复图片', group: '组合截图和标注' }[latest.mode] || '找受影响的图片';
     if (latest.running) {
       window.JobPanel.run('image_restore', {
         title: `正在${verb}`, count: window.JobPanel.count(latest.done, latest.total, '份 Excel'),
@@ -83,6 +88,12 @@
     return shot(label, g.pdf_img, (g.pdf_why || '没在 PDF 里找到这一处') + '，请点上面「新版 PDF」自己看');
   }
 
+  // 按图比的结果：红框偏了多少（按截图边长 %）、整体差多少（0～1）
+  const cmpText = (label, c) => !c ? `${label}：没法比` : `${label}：${c.red_shift == null ? '没有红框' : `红框偏 ${c.red_shift}%`}，整体差 ${c.diff}${c.suspect ? ' ⚠' : ''}`;
+  const scoreHtml = g => (g.cmp_excel || g.cmp_pdf)
+    ? `<div class="img-score${g.suspect ? ' is-suspect' : ''}">${g.suspect ? '⚠ 按图比疑似有问题 · ' : '按图比 · '}${esc(cmpText('原版↔新版 Excel', g.cmp_excel))}｜${esc(cmpText('原版↔新版 PDF', g.cmp_pdf))}</div>` : '';
+  const groupTitle = f => (f.group_sheets || []).map(g => `【${g.sheet}】${g.groups.join('；')}`).join('\n');
+
   function renderFile(f, data) {
     const folder = data.folder;
     const openNew = (label, sheet = '', cell = '') => window.excelLinkHtml(label, { file: f.name, folder, sheet, cell });
@@ -94,13 +105,16 @@
     ].filter(Boolean).join('');
     const badge = f.fixed ? `<span class="img-badge">✓ 已修复 ${f.fixed_count || 0} 个图形</span>`
       : f.fix_error ? `<span class="img-badge is-bad">! 没修好：${esc(f.fix_error)}</span>`
-      : `<button class="btn btn-outline btn-sm" type="button" data-fix-file="${esc(f.name)}">🖼️ 修复这份</button>`;
-    const sheets = (f.sheets || []).map(s => `<div class="img-sheet">【${esc(s.sheet)}】${s.count} 个图形变了</div>`
+      : f.count ? `<button class="btn btn-outline btn-sm" type="button" data-fix-file="${esc(f.name)}">🖼️ 修复这份</button>`
+      : f.suspect ? `<span class="img-badge is-bad" title="图形数字没变，但按图比红框偏了或差别大：多半只在 PDF 里错开，或 Excel 里看着不一样">⚠ 按图比 ${f.suspect} 张疑似有问题</span>`
+      : '<span class="img-badge is-bad" title="程序量出来大小、位置都没变；请看三列，有问题就点「新版 Excel」手动调">程序没量出变化 · 请目测</span>';
+    const groupBadge = f.grouped ? `<span class="img-badge is-group" title="${esc(groupTitle(f))}">📌 已组合 ${f.grouped} 组</span>` : '';
+    const sheets = (f.sheets || []).map(s => `<div class="img-sheet">【${esc(s.sheet)}】${s.count ? `${s.count} 个图形变了` : ''}${s.count && s.review ? '，' : ''}${s.review ? `${s.review} 张图片请目测` : ''}</div>`
       + (s.groups || []).map(g => `<div class="img-group">${shot('原版 Excel' + how(g.old_how), g.old_img)}${shot((f.fixed ? '新版 Excel（修复前）' : '新版 Excel') + how(g.new_how), g.new_img)}${pdfShot(f, g)}`
-        + `<div class="img-detail">${(g.details || []).map(d => '· ' + esc(d)).join('\n')}\n`
+        + `<div class="img-detail">${scoreHtml(g)}${(g.details || []).map(d => '· ' + esc(d)).join('\n')}\n`
         + `${compare(`🆚 对照打开这里${g.cell ? `（${esc(g.cell)}）` : ''}`, s.sheet, g.cell || '')}</div></div>`).join('')).join('');
     return `<div class="img-file${f.fixed ? ' is-fixed' : ''}"><div class="img-file-head"><span class="img-file-name">${esc(f.name)}</span>`
-      + `<span class="img-links">${links}</span>${badge}</div>${sheets}</div>`;
+      + `<span class="img-links">${links}</span>${badge}${groupBadge}</div>${sheets}</div>`;
   }
 
   function renderResults() {
@@ -109,17 +123,30 @@
     const sig = JSON.stringify([latest.running && latest.mode === 'scan', data]);
     if (sig === lastSig) return;
     lastSig = sig;
-    if (latest.running && latest.mode === 'scan') { $('imgResults').innerHTML = '<p>正在找，做完会列在这里；进度看右下角的进度框。</p>'; return; }
+    if (latest.running && latest.mode === 'scan' && !data) { $('imgResults').innerHTML = '<p>正在找，查完一份就会列在这里；进度看右下角的进度框。</p>'; return; }
     if (!data) { $('imgResults').innerHTML = '<p>尚未开始。</p>'; $('imgResultFolder').textContent = ''; return; }
-    $('imgResultFolder').textContent = `新版：${data.folder} · 原版：${data.old_folder}` + (data.pdf_folder ? ` · PDF：${data.pdf_folder}` : '');
+    $('imgResultFolder').textContent = `新版：${data.folder}` + (data.old_folder ? ` · 原版：${data.old_folder}` : '') + (data.pdf_folder ? ` · PDF：${data.pdf_folder}` : '');
     const files = data.files || [];
+    if (!data.scanned) {  // 只组合（没先找）：列出每份组合了几组
+      const link = f => f.path ? window.excelLinkHtml(esc(f.name), { file: f.name, folder: data.folder }) : esc(f.name);
+      const rows = files.filter(f => f.error || f.grouped).map(f => f.error
+        ? `<li class="font-item is-bad"><span class="font-mark">!</span><span class="font-name">${link(f)}</span><span class="font-error">没处理：${esc(f.error)}</span></li>`
+        : `<li class="font-item is-ok"><span class="font-mark">📌</span><span class="font-name">${link(f)}</span><span class="font-detail">组合了 ${f.grouped} 组\n${esc(groupTitle(f))}</span></li>`).join('');
+      $('imgResults').innerHTML = rows ? `<ul class="font-list">${rows}</ul>` : '<p>没有截图上叠着红框、箭头的地方，什么都没改。</p>';
+      return;
+    }
     const bad = files.filter(f => f.error), hit = files.filter(f => !f.error && f.count);
-    const same = files.filter(f => !f.error && !f.count);
+    const review = files.filter(f => !f.error && !f.count && f.review)
+      .sort((a, b) => (b.suspect || 0) - (a.suspect || 0));  // 按图比疑似有问题的排前面
+    const same = files.filter(f => !f.error && !f.count && !f.review);
     const link = f => f.path ? window.excelLinkHtml(esc(f.name), { file: f.name, folder: data.folder }) : esc(f.name);
     const badHtml = bad.map(f => `<li class="font-item is-bad"><span class="font-mark">!</span><span class="font-name">${link(f)}</span><span class="font-error">没查：${esc(f.error)}</span></li>`).join('');
-    $('imgResults').innerHTML = `<p class="font-summary"><span class="is-bad">${hit.length} 份有问题</span>`
-      + `<span class="is-ok">${same.length} 份图片没变</span>` + (bad.length ? `<span class="is-bad">! ${bad.length} 份没查</span>` : '') + '</p>'
-      + (hit.length ? hit.map(f => renderFile(f, data)).join('') : '<p>没有变形或跑偏的图片。</p>')
+    $('imgResults').innerHTML = (data.partial ? `<p class="toolbar-hint">还在查（已查 ${files.length} 份），查完的先列在下面，可以边看边处理。</p>` : '')
+      + `<p class="font-summary"><span class="is-bad">${hit.length} 份程序量出变化</span>`
+      + `<span class="is-bad">${files.filter(f => f.suspect).length} 份按图比疑似有问题</span>`
+      + `<span class="is-bad">${review.length} 份有图片、请目测</span>`
+      + `<span class="is-ok">${same.length} 份没有图片</span>` + (bad.length ? `<span class="is-bad">! ${bad.length} 份没查</span>` : '') + '</p>'
+      + (hit.length || review.length ? [...hit, ...review].map(f => renderFile(f, data)).join('') : '<p>没有图片。</p>')
       + (badHtml ? `<ul class="font-list">${badHtml}</ul>` : '');
   }
 
@@ -137,6 +164,7 @@
       if (wasRunning && !latest.running) {
         const files = result()?.files || [];
         console.info('🖼️ 图片任务做完', { 动作: latest.mode, 份数: files.length, 有问题: files.filter(f => f.count).length, 已修复: files.filter(f => f.fixed).length });
+        if (latest.mode === 'group') window.gameFx?.celebrate?.('截图和标注组合好了！', `${files.filter(f => f.grouped).length} 份`);
         if (latest.mode === 'fix') window.gameFx?.celebrate?.('图片放回原样了！', `已修复 ${files.filter(f => f.fixed).length} 份`);
       }
       wasRunning = !!latest.running;
@@ -158,19 +186,32 @@
     if (loading || submitting || latest.running) return;
     const folder = $('imgFolder').value.trim(), oldFolder = $('imgOldFolder').value.trim(), pdfFolder = $('imgPdfFolder').value.trim();
     $('imgError').textContent = '';
-    if (!folder || !oldFolder) { $('imgError').textContent = '请填写新版文件夹和原版文件夹'; return; }
+    if (!folder || (!oldFolder && mode !== 'group')) { $('imgError').textContent = '请填写新版文件夹和原版文件夹'; return; }
+    const group = $('imgGroupOnFix').checked;
+    if (mode === 'group') {
+      const okGo = await window.appConfirm(
+        `要把这个文件夹（含子文件夹）里每张截图和上面的红框、箭头、文字框永久组合，并保存 Excel 吗？\n\n${folder}\n\n`
+        + '· 组合设成「随单元格移动、不改变大小」：以后调行高列宽、导出 PDF 都不会错开\n'
+        + '· 不对照原版：已经被拉坏的截图会按坏的样子组合，请先「找出受影响的图片」修好\n\n请先保存并关闭这些 Excel。',
+        { title: '组合截图和标注', okText: '开始组合' });
+      if (!okGo) return;
+    }
     if (mode === 'fix') {
       const okGo = await window.appConfirm(
         `要把 ${names ? names.length : pending().length} 份 Excel 里的截图和红框放回原样，并保存吗？\n\n`
-        + '· 截图左上角不动，大小改回原版的\n· 截图上的红框、箭头按原版里相对截图的位置放回\n· 行高、列宽、格子内容都不动\n\n请先保存并关闭这些 Excel。',
+        + '· 截图左上角不动，大小改回原版的\n· 截图上的红框、箭头按原版里相对截图的位置放回\n· 行高、列宽、格子内容都不动\n'
+        + (group ? '· 放回后把截图和标注永久组合（随单元格移动、不改变大小）\n' : '') + '\n请先保存并关闭这些 Excel。',
         { title: '修复图片', okText: '开始修复' });
       if (!okGo) return;
     }
     submitting = true; controls();
     console.info('🖼️ 图片任务开始', { 动作: mode, 新版: folder, 原版: oldFolder, PDF: pdfFolder || '(Excel 旁边)', 份数: names?.length || '全部' });
     try {
-      await post('/run', { folder, old_folder: oldFolder, pdf_folder: pdfFolder, mode, ...(names ? { names } : {}) });
-      try { localStorage.setItem(FOLDER, folder); localStorage.setItem(OLD, oldFolder); localStorage.setItem(PDF, pdfFolder); } catch (_) {}
+      await post('/run', { folder, old_folder: oldFolder, pdf_folder: pdfFolder, mode, group, ...(names ? { names } : {}) });
+      try {
+        localStorage.setItem(FOLDER, folder); localStorage.setItem(PDF, pdfFolder); localStorage.setItem(GROUP, group ? '1' : '0');
+        if (oldFolder) localStorage.setItem(OLD, oldFolder);
+      } catch (_) {}
       wasRunning = true;
     } catch (error) {
       console.warn('🖼️ 图片任务没能开始', error.message);
@@ -183,6 +224,8 @@
 
   $('imgScan').addEventListener('click', () => start('scan'));
   $('imgFixAll').addEventListener('click', () => start('fix', pending().map(f => f.name)));
+  $('imgGroup').addEventListener('click', () => start('group'));
+  $('imgGroupOnFix').addEventListener('change', () => { try { localStorage.setItem(GROUP, $('imgGroupOnFix').checked ? '1' : '0'); } catch (_) {} });
   $('imgResults').addEventListener('click', async event => {
     const fix = event.target.closest('[data-fix-file]');
     if (fix) { start('fix', [fix.dataset.fixFile]); return; }

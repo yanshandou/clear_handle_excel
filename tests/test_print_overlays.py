@@ -103,5 +103,20 @@ class PrintOverlaysTest(unittest.TestCase):
             self.assertEqual(n, 0)
 
 
+class GroupPermanentlyTest(unittest.TestCase):
+    def test_grouped_and_set_move_dont_size(self):
+        pic = Shape("図 1", 13, 30, 40, 330, 310)
+        box = Shape("正方形 2", 1, 220, 300, 50, 33)
+        sheet = Sheet([pic, box])
+        done = print_overlays.group_permanently(sheet)
+        self.assertEqual(len(done), 1)
+        self.assertEqual(sheet.Shapes.groups, [[pic, box]])
+        group = next(s for s in sheet.Shapes.items if isinstance(s, Group))
+        self.assertEqual(group.Placement, print_overlays.XL_MOVE)
+
+    def test_nothing_to_group(self):
+        self.assertEqual(print_overlays.group_permanently(Sheet([Shape("図 1", 13, 0, 0, 100, 100)])), [])
+
+
 if __name__ == "__main__":
     unittest.main()

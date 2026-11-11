@@ -35,6 +35,11 @@
     .img-detail { grid-column: 1 / -1; font-size: 14px; color: #475569; white-space: pre-line; overflow-wrap: anywhere; }
     .img-zoom { position: fixed; inset: 0; background: rgba(15, 23, 42, .78); display: flex; align-items: center; justify-content: center; z-index: 9000; cursor: zoom-out; }
     .img-zoom img { max-width: 94vw; max-height: 92vh; background: #fff; border-radius: 6px; }
+    .img-group-opt { display: block; margin: 10px 0 0; font-size: 14px; color: #334155; }
+    .img-group-opt input { margin-right: 6px; vertical-align: -2px; }
+    .img-badge.is-group { background: #ede9fe; color: #5b21b6; }
+    .img-score { font-size: 13px; color: #475569; margin-bottom: 4px; }
+    .img-score.is-suspect { color: #b42318; font-weight: 700; }
   </style>
   <link rel="stylesheet" href="/static/theme-casual.css">
   <link rel="stylesheet" href="/static/flow.css?v=1"><script src="/static/flow.js?v=1"></script>
@@ -61,7 +66,9 @@
       <div class="link-actions">
         <button id="imgScan" class="btn btn-primary" type="button" disabled>🔍 找出受影响的图片</button>
         <button id="imgFixAll" class="btn btn-secondary" type="button" disabled hidden>🖼️ 全部修复</button>
+        <button id="imgGroup" class="btn btn-outline" type="button" disabled title="不对照原版，直接把新版文件夹里每张截图和上面的标注组合起来。已经被拉坏的请先修复，否则会按坏的样子组合">📌 只组合截图和标注</button>
       </div>
+      <label class="img-group-opt"><input id="imgGroupOnFix" type="checkbox" checked> 修复时顺便把截图和上面的红框、箭头<b>永久组合</b>（推荐：组合设成「随单元格移动、不改变大小」，以后再调行高列宽、导出 PDF 都不会错开）</label>
       <p class="toolbar-hint">修复前请先保存并关闭要处理的 Excel。关闭网页后任务继续；刷新页面可查看进度与结果。</p>
       <p id="imgProgress" role="status" aria-live="polite">填写文件夹后点「找出受影响的图片」。</p>
       <div id="imgTrack" class="progress-track progress-track-sm"><div id="imgFill" class="progress-fill" style="width:0%"></div></div>

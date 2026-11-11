@@ -547,8 +547,12 @@ class WebHandler(upload_manager.Handler):
             font_fix.start(_require_folder(payload))
             self._send_json({"ok": True})
         elif self.path == "/api/image_restore/run":
-            image_restore.start(_require_folder(payload), _require_folder({"folder": payload.get("old_folder")}, "reference"),
-                                payload.get("mode") or "scan", payload.get("names"), payload.get("pdf_folder") or "")
+            mode = payload.get("mode") or "scan"
+            old_folder = payload.get("old_folder") or ""
+            # 只组合不需要原版；其他都要
+            old_folder = _require_folder({"folder": old_folder}, "reference") if mode != "group" or old_folder else ""
+            image_restore.start(_require_folder(payload), old_folder, mode, payload.get("names"),
+                                payload.get("pdf_folder") or "", payload.get("group", True))
             self._send_json({"ok": True})
         elif self.path == "/api/image_restore/open_pdf":
             name = payload.get("file")

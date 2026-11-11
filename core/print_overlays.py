@@ -142,3 +142,29 @@ def grouped_overlays(sheet: Any) -> Iterator[int]:
                         shape.Placement = value
                 except Exception as err:
                     debug_log.event("⚠️ 图形的位置关係放不回去", 表=sheet_name, 图形=name, 错误=str(err))
+
+
+XL_MOVE = 2  # 「セルに合わせて移動するがサイズ変更はしない」
+
+
+def group_permanently(sheet: Any) -> list[str]:
+    """把截图和上面的红框、箭头、文字框永久组合（用户 2026-11-11 要，领导演示过），组合设成「随单元格移动、不改变大小」：
+    以后再改行高列宽，整组只跟着挪位置，截图不变形、红框不跑偏；打印 / PDF 也不再错开。
+    返回组合了哪些（每组一句）；组合不了的只写日志。调用方负责保存"""
+    sheet_name = str(getattr(sheet, "Name", "?"))
+    done = []
+    for picture, members in find_overlay_sets(sheet):
+        names = [str(s.Name) for s in [picture, *members]]
+        try:
+            group = sheet.Shapes.Range(names).Group()
+        except Exception as err:
+            debug_log.event("⚠️ 截图和标注没能永久组合", 表=sheet_name, 图形="、".join(names), 错误=str(err))
+            continue
+        try:
+            group.Placement = XL_MOVE
+        except Exception as err:
+            debug_log.event("⚠️ 组合设不了「随单元格移动、不改变大小」", 表=sheet_name, 图形="、".join(names), 错误=str(err))
+        done.append(f"截图「{names[0]}」+ {len(members)} 个标注（{'、'.join(names[1:6])}{'…' if len(names) > 6 else ''}）")
+    if done:
+        debug_log.event("📌 截图和标注永久组合", 表=sheet_name, 组=done)
+    return done
