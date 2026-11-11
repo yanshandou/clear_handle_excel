@@ -746,3 +746,25 @@ body::before {
 .panel-section-head {
   border-bottom-color: #b3c4ec;
 }
+
+/* 直接压在背景上的小字说明：垫一层半透明深藏青底（用 box-shadow 往外扩，不加 padding，
+   位置和换行都不变），字改成纯白、去掉发虚的模糊描边 */
+.home-hero p,
+.toolbox-more-title small,
+.work-task-hint {
+  color: #ffffff;
+  background: rgba(8, 14, 58, 0.78);
+  box-shadow: 0 0 0 6px rgba(8, 14, 58, 0.78);
+  border-radius: 4px;
+  text-shadow: 0 1px 0 #080e3a;
+}
+
+.toolbox-more-title small {
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.home-hero p b,
+.home-hero p strong {
+  color: #ffe066;
+}
