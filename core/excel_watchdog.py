@@ -191,7 +191,7 @@ class ExcelWatchdog:
         self._thread = threading.Thread(target=self._run, name="excel-watchdog", daemon=True)
 
     def start(self, *, listed: bool = True) -> None:
-        """listed=False：不占任务槽的旁路活（Excel 对比导 PDF）用，进度框的「跳过这一份 / 结束整个任务」管不到它"""
+        """listed=False：不占任务的旁路活（Excel 对比导 PDF）用，进度框的「跳过这一份 / 结束整个任务」管不到它"""
         if listed:
             with _ACTIVE_LOCK:
                 _ACTIVE.append(self)

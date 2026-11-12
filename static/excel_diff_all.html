@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>一页对比 - Excel 整理工具箱</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/repair.css"><script src="/static/game_fx.js"></script>
+  <style>
+    [hidden] { display: none !important; }
+    .xa-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 8px 0; }
+    .xa-bar label { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; }
+    .xa-count { font-weight: 800; color: #1f2937; }
+    .xa-list { display: flex; flex-direction: column; gap: 10px; }
+    .xa-card { border: 2px solid #c9cfdb; border-radius: 12px; background: #fff; }
+    .xa-card.is-same { border-color: #1a7f37; } .xa-card.is-diff { border-color: #b7791f; }
+    .xa-card.is-err { border-color: #cf222e; } .xa-card.is-up { border-color: #2563eb; }
+    .xa-head { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+      padding: 10px 14px; background: #f6f7fb; border-radius: 10px 10px 0 0; }
+    .xa-card:not(.is-open) .xa-head { border-radius: 10px; }
+    .xa-name { flex: 1 1 360px; min-width: 0; font-weight: 800; overflow-wrap: anywhere; color: #111827; }
+    .xa-name small { display: block; font-weight: 400; color: #3b4658; }
+    .xa-state { font-weight: 800; padding: 3px 10px; border-radius: 999px; background: #e5e7eb; color: #1f2937; white-space: nowrap; }
+    .xa-card.is-same .xa-state { background: #e4f5ea; color: #14532d; }
+    .xa-card.is-diff .xa-state { background: #fff3d6; color: #5c3b00; }
+    .xa-card.is-err .xa-state { background: #ffebe9; color: #82071e; }
+    .xa-card.is-up .xa-state { background: #dbeafe; color: #1e3a8a; }
+    .xa-body { padding: 0 6px 8px; }
+    .xa-body iframe.xa-diff { display: block; width: 100%; height: 160px; border: 0; }
+    .xa-pdfs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 8px 6px; }
+    .xa-pdf { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .xa-pdf strong { overflow-wrap: anywhere; }
+    .xa-pdf.is-old strong { color: #82071e; } .xa-pdf.is-new strong { color: #14532d; }
+    .xa-pdf iframe { width: 100%; height: 78vh; border: 2px solid #c9cfdb; border-radius: 8px; background: #f3f4f6; }
+    .xa-pdf .xa-none { padding: 24px 12px; border: 2px dashed #c9cfdb; border-radius: 8px; color: #3b4658; }
+    .xa-warn { color: #7a4b00; font-weight: 700; }
+  </style>
+  <link rel="stylesheet" href="/static/theme-casual.css">
+  <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/how_notes.css">
+</head>
+<body>
+  <header class="app-header">
+    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">一页对比</h1><span class="subtitle">当前任务要上传的文件都在这一页对比 · 每份可以单独上传</span></div></a>
+    <nav class="header-nav" aria-label="功能导航"><a href="/" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#home"></use></svg>主页</a><a href="/distribute" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#upload"></use></svg>上传</a></nav>
+  </header>
+  <main class="container clean-container">
+    <section class="panel">
+      <h2 id="xaTitle">当前任务</h2>
+      <p id="xaTask" class="toolbar-hint">正在读取当前任务…</p>
+      <div class="xa-bar">
+        <button id="xaRunAll" class="btn btn-primary" type="button" disabled>▶ 全部对比</button>
+        <button id="xaPause" class="btn btn-outline" type="button" hidden>⏸ 暂停</button>
+        <label><input id="xaShowAll" type="checkbox"> 也列出当前版本已经上传过的</label>
+        <button id="xaReload" class="btn btn-outline btn-sm" type="button">刷新文件列表</button>
+        <span id="xaCount" class="xa-count" role="status" aria-live="polite"></span>
+      </div>
+      <details class="how-notes">
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">一份一份对比：逐格比 + Excel 真导 PDF 逐页比，只读</span><span class="how-notes-toggle"></span></summary>
+        <div class="how-notes-body">
+          <section class="how-notes-group">
+            <h3>📋 列哪些文件</h3>
+            <ul>
+              <li>当前任务处理文件夹里、还要上传的 Excel（和上传页清单里带「🔍 对比」的是同一批）。勾「也列出当前版本已经上传过的」可以全部列出来。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>🔍 怎么比</h3>
+            <ul>
+              <li>左边是共享里远程现在那份（旧），右边是你处理好的这份（新）。和单份的「Excel 对比」页是同一套：先逐格比（很快）；有不同的表再用后台 Excel 真导一次 PDF，两边每一页逐像素比，印出来不一样的地方左边盖红、右边盖绿（图片换了也看得出来）。</li><li>完全一样的文件不导 PDF；导过的按文件内容记下，文件没变再看不重导。</li>
+              <li>「▶ 全部对比」从上往下一份一份比，可以暂停。完全一样的自动收起；有不同的展开给你看。</li>
+              <li>点某一份的「🔍 对比」只比这一份；「收起」会把那份的结果从页面上拿掉，几百份也不会卡。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>📕 看印出来的样子</h3>
+            <ul>
+              <li>「📕 并排看 PDF」另外打开两边已经有的同名 PDF（共享里的、处理文件夹里的），用浏览器自带的 PDF 查看，看整份。</li>
+              <li>这里只显示已经有的同名 PDF，不新导；PDF 比 Excel 旧时会提醒你。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>⬆️ 上传这一份</h3>
+            <ul>
+              <li>对比完每份里面有「⬆ 没问题，上传这一份」，和单份对比页一样：上传那一刻两份文件还是你看的这两个版本才直接传。同一时间只能传一份。</li>
+            </ul>
+          </section>
+        </div>
+      </details>
+      <p id="xaError" class="batch-error" role="alert"></p>
+    </section>
+    <section class="panel">
+      <div id="xaList" class="xa-list"><p>正在读取文件…</p></div>
+    </section>
+    <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
+  </main>
+  <script src="/static/dialog.js"></script><script src="/static/open_excel.js"></script>
+  <script src="/static/excel_diff_all.js"></script><script src="/static/debug_log.js"></script>
+</body>
+</html>

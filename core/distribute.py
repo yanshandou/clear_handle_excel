@@ -655,6 +655,36 @@ def task_files(task_id: Any) -> dict[str, Any]:
     return {"files": files, "errors": found["errors"], "dest": str(dest_root), "relay": work_task.is_relay(task)}
 
 
+def diff_pdf(task_id: Any, rel: Any, side: Any) -> Path:
+    """一页对比（/excel-diff/all）里并排看的同名 PDF：mine = 处理文件夹里的 aaa.pdf，theirs = 共享里的 aaa.pdf。
+    只给已经有的，不导新的（用户 2026-11-12：不开 Excel、不另导 PDF）"""
+    from core import work_task
+    task = work_task.get(str(task_id))
+    if side not in ("mine", "theirs"):
+        raise ValueError("side 只能是 mine 或 theirs")
+    return _pdf_target(_task_file(Path(task["work"] if side == "mine" else task["shared"]), rel))
+
+
+def diff_pdfs(task_id: Any, rel: Any) -> dict[str, Any]:
+    """两边有没有同名 PDF、PDF 是不是比 Excel 旧（旧 = 印出来的样子可能不是这版 Excel 的）"""
+    from core import work_task
+    task = work_task.get(str(task_id))
+    out: dict[str, Any] = {}
+    for side, root in (("mine", task["work"]), ("theirs", task["shared"])):
+        excel = _task_file(Path(root), rel)
+        pdf = _pdf_target(excel)
+        info: dict[str, Any] = {"pdf": str(pdf), "exists": False}
+        try:
+            pdf_time = pdf.stat().st_mtime
+            info["exists"] = True
+            info["pdf_at"] = datetime.fromtimestamp(pdf_time).strftime("%Y-%m-%d %H:%M")
+            info["stale"] = excel.is_file() and excel.stat().st_mtime > pdf_time + 2
+        except OSError:
+            pass
+        out[side] = info
+    return out
+
+
 def _task_baseline(base: dict[str, Any], task_id: str) -> dict[str, Any]:
     versions = base.get("tasks", {})
     return versions.get(task_id, {}) if task_id and versions else base
