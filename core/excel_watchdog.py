@@ -190,11 +190,9 @@ class ExcelWatchdog:
         self._stop_task = False  # 用户点了「结束整个任务」
         self._thread = threading.Thread(target=self._run, name="excel-watchdog", daemon=True)
 
-    def start(self, *, listed: bool = True) -> None:
-        """listed=False：不占任务槽的旁路活（Excel 对比导 PDF）用，进度框的「跳过这一份 / 结束整个任务」管不到它"""
-        if listed:
-            with _ACTIVE_LOCK:
-                _ACTIVE.append(self)
+    def start(self) -> None:
+        with _ACTIVE_LOCK:
+            _ACTIVE.append(self)
         self._thread.start()
 
     def file(self, label: str | None) -> bool:
