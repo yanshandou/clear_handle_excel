@@ -84,7 +84,8 @@
   $('distSource').value = load(KEYS.source);
   $('distDest').value = load(KEYS.dest);
   $('distPlan').value = load(KEYS.plan);
-  $('distFreeSource').value = load(KEYS.freeSource);
+  // 起点默认填当前在处理的路径（各处理页共用的 lastFolder，可能是多行；用户 2026-11-12），没有才用上次填的
+  $('distFreeSource').value = load('clear_handle_excel.lastFolder') || load(KEYS.freeSource);
   $('distFreeDest').value = load(KEYS.freeDest);
 
   // ───── 导出同名 PDF 并一起上传（用户 2026-11-10）：导出设置沿用「批量导出同名 PDF」页（同一份 localStorage） ─────

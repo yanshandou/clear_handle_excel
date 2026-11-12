@@ -6,7 +6,8 @@
   let busy = false;
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) || '{}');
-    $('pickPaths').value = saved.paths || '';
+    // 默认填当前在处理的路径（各处理页共用的 lastFolder；用户 2026-11-12），没有才用上次贴的
+    $('pickPaths').value = localStorage.getItem('clear_handle_excel.lastFolder') || saved.paths || '';
     $('pickDest').value = saved.dest || '';
   } catch (_) {}
 
