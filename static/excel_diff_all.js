@@ -55,6 +55,7 @@
     return `<div class="xa-head"><span class="xa-name">${window.excelLinkHtml ? window.excelLinkHtml(esc(file.rel), { folder: task.work, file: file.rel }) : esc(file.rel)}<small>${esc(status)}</small></span>`
       + `<span class="xa-state">等待对比</span>`
       + `<button type="button" class="btn btn-outline btn-sm" data-act="diff">🔍 对比</button>`
+      + `<button type="button" class="btn btn-primary btn-sm" data-act="upload" hidden disabled title="对比完才能点；和下面对比结果里的上传按钮是同一个">⬆ 上传这一份</button>`
       + `<button type="button" class="btn btn-outline btn-sm" data-act="pdf">📕 并排看 PDF</button>`
       + `<a class="btn btn-outline btn-sm" target="_blank" rel="noopener" href="${esc(diffUrl(file.rel))}">↗ 单独打开</a></div>`
       + `<div class="xa-body" hidden><div class="xa-pdfs" hidden></div></div>`;
@@ -148,11 +149,27 @@
       syncOpen(card);
       console.warn('🔍 一页对比：比不了', { 文件: rel, 原因: msg.text });
       card.wait?.();
-    } else if (msg.event === 'uploaded') {
+    } else if (msg.event === 'upload-state') {
+      // 卡片标题吸顶，滑到哪里都能点上传（用户 2026-11-12）
+      const up = card.el.querySelector('[data-act="upload"]');
+      up.hidden = !msg.shown;
+      up.disabled = !msg.ready;
+      up.textContent = msg.ready ? msg.label || '⬆ 上传这一份' : msg.status && !msg.status.startsWith('✓') ? '上传中…' : msg.status.startsWith('✓') ? '✓ 已上传' : '⬆ 上传这一份';
+      up.title = msg.error || msg.status || '对比完才能点；和下面对比结果里的上传按钮是同一个';
+        } else if (msg.event === 'uploaded') {
       setState(rel, 'up');
       console.info('🔍 一页对比：已上传', { 文件: rel });
     }
   });
+
+  // 卡片标题吸在页头下面（页头是固定的，吸在 0 会被它挡住；用户 2026-11-12 要滑到哪都能点上传）
+  function stickyTop() {
+    const header = document.querySelector('.app-header');
+    const fixed = header && ['fixed', 'sticky'].includes(getComputedStyle(header).position);
+    document.documentElement.style.setProperty('--xa-sticky-top', `${fixed ? Math.ceil(header.getBoundingClientRect().height) : 0}px`);
+  }
+  stickyTop();
+  window.addEventListener('resize', stickyTop);
 
   async function runAll() {
     if (queue || loading) return;
@@ -201,6 +218,11 @@
     if (!button) return;
     const rel = button.closest('.xa-card').dataset.rel;
     if (button.dataset.act === 'pdf') { togglePdf(rel); return; }
+    if (button.dataset.act === 'upload') {
+      const card = cards.get(rel);
+      card?.frame?.contentWindow?.postMessage({ type: 'excel-diff-cmd', cmd: 'upload' }, location.origin);
+      return;
+    }
     const card = cards.get(rel);
     if (!card.frame || card.state === 'err') { compare(rel); syncControls(); return; }
     card.open = !card.open;

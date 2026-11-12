@@ -21,6 +21,29 @@
   watch('xdError', text => !!text, 'error');
   watch('xdUploadStatus', text => text.startsWith('✓'), 'uploaded');
 
+  // 外面卡片吸顶标题上的「⬆ 上传这一份」（用户 2026-11-12）：这里告诉外面能不能点、正在干什么；外面点了就替它点里面的按钮
+  const panel = document.getElementById('xdUploadPanel'), button = document.getElementById('xdUpload');
+  const status = document.getElementById('xdUploadStatus'), failed = document.getElementById('xdUploadError');
+  let lastUpload = '';
+  const uploadState = () => {
+    if (!panel || !button) return;
+    const state = { ready: !panel.hidden && !button.disabled, shown: !panel.hidden, label: button.textContent.trim(),
+                    status: (status?.textContent || '').trim(), error: (failed?.textContent || '').trim() };
+    const key = JSON.stringify(state);
+    if (key !== lastUpload) { lastUpload = key; tell('upload-state', state); }
+  };
+  for (const el of [panel, button, status, failed]) {
+    if (el) new MutationObserver(uploadState).observe(el, { attributes: true, childList: true, characterData: true, subtree: true });
+  }
+  window.addEventListener('message', event => {
+    if (event.origin !== location.origin || event.source !== window.parent || event.data?.type !== 'excel-diff-cmd') return;
+    if (event.data.cmd === 'upload' && panel && !panel.hidden && button && !button.disabled) {
+      console.info('📤 一页对比：从卡片标题点了上传这一份', { 文件: rel });
+      button.click();
+    }
+  });
+  uploadState();
+
   let last = 0;
   const main = document.querySelector('main');
   const size = () => {
