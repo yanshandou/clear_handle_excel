@@ -1,6 +1,8 @@
 """新任务：只填共享文件夹路径，自动生成本地的「参考」「处理」文件夹（用户 2026-11-03 定）。
 
-一个任务对应共享文件夹里的一个文件夹（连子文件夹一起）。例：
+一个任务对应共享文件夹里的一个文件夹（连子文件夹一起）。
+共享路径也可以每行填一个（文件夹或 Excel 文件，用户 2026-11-12 要「根据多个路径批量拿文件」）：
+任务的共享文件夹取它们共同的上级，task["picks"] 记下选中的相对路径，拿文件时只拿这些（空 = 整个文件夹）。例：
 
     共享  D:\\Users\\s.go\\OneDrive - 会社\\介舟ファミリー\\20基本設計\\10DB\\12.ビュー定義書
     参考  D:\\Users\\s.go\\Desktop\\handle-excel\\参考\\介舟ファミリー\\20基本設計\\10DB\\12.ビュー定義書
@@ -18,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import uuid
 from datetime import datetime
@@ -50,6 +53,60 @@ def relative_part(shared: Path) -> list[str]:
     return rel or [shared.name or "共享"]
 
 
+def _is_excel(name: str) -> bool:
+    from core.distribute import is_excel
+    return is_excel(name)
+
+
+def parse_shared(shared_text: Any, *, must_exist: bool = True) -> tuple[Path, list[str], list[Path]]:
+    """共享路径框：每行一个文件夹或 Excel 文件。返回 (任务的共享文件夹, 只拿这些相对路径, 每行的路径)。
+    只填一个文件夹时和以前一样（picks 为空 = 整个文件夹）；多行时共享文件夹取共同上级。"""
+    if not isinstance(shared_text, str) or not shared_text.strip():
+        raise ValueError("请填写共享文件夹路径")
+    items: list[Path] = []
+    seen: set[str] = set()
+    for line in shared_text.splitlines():
+        if not line.strip():
+            continue
+        path = _clean(line, "共享文件夹路径")
+        if must_exist:
+            if not path.exists():
+                raise ValueError(f"共享里找不到：{path}（OneDrive 的话请确认已经同步到这台电脑）")
+            path = path.resolve()
+            if path.is_file() and not _is_excel(path.name):
+                raise ValueError(f"不是 Excel 文件：{path}")
+        key = str(path).replace("\\", "/").casefold()
+        if key not in seen:
+            seen.add(key)
+            items.append(path)
+    if len(items) == 1 and not (must_exist and items[0].is_file()):
+        return items[0], [], items
+    folders = [p.parent if must_exist and p.is_file() else p for p in items]
+    try:
+        root = Path(os.path.commonpath([str(p) for p in folders]))
+    except ValueError:
+        raise ValueError("这些路径不在同一个盘上，请分成几个任务分别开") from None
+    if root.parent == root or (any(_is_onedrive(p) for p in root.parts) and _is_onedrive(root.name)):
+        raise ValueError(f"这些路径共同的上级只有「{root}」，太靠上了；请分成几个任务分别开，或只填同一个项目下的路径")
+    picks: list[str] = []
+    for path in items:
+        rel = path.relative_to(root).as_posix()
+        if rel in ("", "."):
+            return root, [], items  # 填了共同上级本身 = 整个文件夹都拿
+        picks.append(rel)
+    # 填了 A 又填了 A 里面的东西：只留 A
+    picks = [p for p in picks if not any(p != q and p.casefold().startswith(q.casefold() + "/") for q in picks)]
+    return root, picks, items
+
+
+def in_picks(rel: str, picks: list[str] | None) -> bool:
+    """rel（共享文件夹下的相对路径）在不在选中的范围里；没选 = 都在"""
+    if not picks:
+        return True
+    key = rel.replace("\\", "/").casefold()
+    return any(key == p.casefold() or key.startswith(p.casefold() + "/") for p in picks)
+
+
 def default_work_root(shared: Path | None = None) -> Path:
     """默认放在桌面的 handle-excel 下（用户 2026-11-03 定：D:\\Users\\<用户名>\\Desktop\\handle-excel，用户名按当前用户）"""
     return Path.home() / "Desktop" / APP_DIR
@@ -57,11 +114,9 @@ def default_work_root(shared: Path | None = None) -> Path:
 
 def derive(shared_text: Any, work_root_text: Any = "", *, must_exist: bool = True) -> dict[str, Any]:
     """按共享路径算出参考 / 处理 / 备份文件夹，不建任何文件夹"""
-    shared = _clean(shared_text, "共享文件夹路径")
+    shared, picks, _ = parse_shared(shared_text, must_exist=must_exist)
     if must_exist and not shared.is_dir():
         raise ValueError(f"共享文件夹不存在：{shared}（OneDrive 的话请确认已经同步到这台电脑）")
-    if must_exist:
-        shared = shared.resolve()
     root = _clean(work_root_text, "本地工作文件夹") if isinstance(work_root_text, str) and work_root_text.strip() \
         else default_work_root(shared)
     if any(_is_onedrive(p) for p in root.parts):
@@ -81,6 +136,7 @@ def derive(shared_text: Any, work_root_text: Any = "", *, must_exist: bool = Tru
         "reference": str(root.joinpath(REFERENCE, *rel)),
         "work": str(root.joinpath(WORK, *rel)),
         "fetch_backup": str(root.joinpath(FETCH_BACKUP, *rel)),
+        "picks": picks,
     }
 
 
@@ -133,7 +189,7 @@ def create(shared_text: Any, work_root_text: Any = "") -> dict[str, Any]:
         data["single"] = False  # 开任务 = 回到任务模式
         wf.activate_folder(task["work"], commit=lambda: _save(data))
     debug_log.event("🆕 新任务" if not same else "🔁 沿用以前的任务", 共享=paths["shared"], 参考=paths["reference"],
-                    处理=paths["work"])
+                    处理=paths["work"], 只拿=len(paths["picks"]) or "整个文件夹")
     return task
 
 
@@ -332,7 +388,7 @@ def _check(task: dict[str, Any], progress=None) -> dict[str, Any]:
         report(phase="list")
         baseline = distribute.load_baseline()
         mine = list(distribute.scan_folder(work)["excel"])
-        shared_files = distribute.scan_folder(shared)["excel"]
+        shared_files = [rel for rel in distribute.scan_folder(shared)["excel"] if in_picks(rel, task.get("picks"))]
         relay = upload_dest(task) if is_relay(task) else None
         if relay is not None and not relay.is_dir():
             raise ValueError(f"中转文件夹不存在了：{relay}")

@@ -227,7 +227,7 @@ def _task_args(task_id: Any, plan_text: str, source_root: str, dest_root: str) -
     task = work_task.get(str(task_id))
     args = work_task.plan_for(task)
     info = {"id": task["id"], "name": task["name"], "shared": task["shared"], "work": task["work"],
-            "reference": args["reference"], "fetch_backup": args["fetch_backup"]}
+            "reference": args["reference"], "fetch_backup": args["fetch_backup"], "picks": list(task.get("picks") or [])}
     return args["plan"], args["source_root"], args["dest_root"], info
 
 
@@ -1941,7 +1941,7 @@ def _fetch_decide(shared_file: Path, local_file: Path, local_exists: bool, base:
 
 
 def _fetch_folder(item: dict[str, Any], src_root: Path, dst_root: Path,
-                  baseline: dict[str, dict[str, Any]], task_id: str = "") -> dict[str, Any]:
+                  baseline: dict[str, dict[str, Any]], task_id: str = "", picks: list[str] | None = None) -> dict[str, Any]:
     local = src_root.joinpath(*item["source"])
     shared = dst_root.joinpath(*item["destination"])
     entry: dict[str, Any] = {
@@ -1964,6 +1964,14 @@ def _fetch_folder(item: dict[str, Any], src_root: Path, dst_root: Path,
         return entry
     found = scan_folder(shared)
     have = scan_folder(local) if local.is_dir() else {"excel": {}, "errors": []}
+    if picks:  # 新任务填了多个路径：只拿选中的文件夹 / 文件（用户 2026-11-12）
+        from core.work_task import in_picks
+        found["excel"] = {rel: info for rel, info in found["excel"].items() if in_picks(rel, picks)}
+        have["excel"] = {rel: info for rel, info in have["excel"].items() if in_picks(rel, picks)}
+        entry["picks"] = list(picks)
+        entry["picks_missing"] = [pick for pick in picks if not (shared / pick).exists()]
+        for pick in entry["picks_missing"]:
+            found["errors"].append(f"{pick}：共享里现在找不到（可能被删了或改了名）")
     have_keys = {_key(rel): info for rel, info in have["excel"].items()}
     shared_keys = {_key(rel) for rel in found["excel"]}
     for rel, info in found["excel"].items():
@@ -2022,7 +2030,8 @@ def preview_fetch(plan_text: str, source_root: str, dest_root: str, task_id: Any
     with debug_log.side_task("distribute_fetch_preview", {"source": str(src_root), "dest": str(dst_root),
                                                           "folders": len(plan["folders"]), "label": plan["label"]}):
         baseline = load_baseline()
-        folders = [_fetch_folder(item, src_root, dst_root, baseline, (task or {}).get("id", "")) for item in plan["folders"]]
+        folders = [_fetch_folder(item, src_root, dst_root, baseline, (task or {}).get("id", ""), (task or {}).get("picks"))
+                   for item in plan["folders"]]
         result = {
             "id": uuid.uuid4().hex[:12],
             "kind": "fetch",
