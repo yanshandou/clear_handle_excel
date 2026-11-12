@@ -109,7 +109,7 @@
 
 「当前任务上传」和「起点 → 终点 上传」默认先核对基准 SHA-256。基准与远程一致时，文件直接进入上传队列。缺少基准或远程版本变了，后台逐份对比两份 Excel。对比完成一份，就可以打开该份的结果，确认上传或跳过。已确认的文件可以在后台继续比较其他文件时上传。如果本地或远程版本在确认后发生变化，需重新检查该文件。完整 Excel 对比支持 `.xlsx` 和 `.xlsm`。遇到无法对比的同名文件，上传结果会显示失败原因。
 
-上传页文件清单上方的「🔍 一页对比全部」打开 `/excel-diff/all`：当前任务还要上传的文件列在一页，「▶ 全部对比」一份一份逐格比（每份嵌一个单份对比页 `/excel-diff?embed=1`，`static/excel_diff_embed.js`），完全一样的自动收起，每份里可以直接「上传这一份」。「📕 并排看 PDF」只显示两边已经有的同名 PDF（`/api/distribute/diff_pdf`），不开 Excel、不新导。
+上传页文件清单上方的「🔍 一页对比全部」打开 `/excel-diff/all`：当前任务还要上传的文件列在一页，「▶ 全部对比」一份一份逐格比（每份嵌一个单份对比页 `/excel-diff?embed=1`，`static/excel_diff_embed.js`），完全一样的自动收起，每份里可以直接「上传这一份」。对比页里有不同的表还会用后台 Excel 真导一次 PDF（`core/excel_diff_pdf.py`，按文件哈希缓存在程序数据 `excel_diff_pdf/`），网页上两边每页逐像素比，不一样处左红右绿蒙版（`static/excel_diff_real.js`）。「📕 并排看 PDF」只显示两边已经有的同名 PDF（`/api/distribute/diff_pdf`），不开 Excel、不新导。
 
 管理系统与工具箱共用一个 Python 服务；后端使用 Python 标准库和已有的 openpyxl，浏览器使用普通 JavaScript，无需安装 Node.js 或运行 npm。日期选择改用浏览器日历，字体和图标使用本地资源，无需外部 CDN。
 

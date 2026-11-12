@@ -56,7 +56,7 @@
         <span id="xaCount" class="xa-count" role="status" aria-live="polite"></span>
       </div>
       <details class="how-notes">
-        <summary>📖 程序会怎么做 <span class="how-notes-tip">一份一份逐格对比，只读，不开 Excel、不导 PDF</span><span class="how-notes-toggle"></span></summary>
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">一份一份对比：逐格比 + Excel 真导 PDF 逐页比，只读</span><span class="how-notes-toggle"></span></summary>
         <div class="how-notes-body">
           <section class="how-notes-group">
             <h3>📋 列哪些文件</h3>
@@ -67,7 +67,7 @@
           <section class="how-notes-group">
             <h3>🔍 怎么比</h3>
             <ul>
-              <li>左边是共享里远程现在那份（旧），右边是你处理好的这份（新）。和单份的「Excel 对比」页是同一套：逐格比文字、公式、样式、行高列宽、打印设置、图片图形，画红绿色块的效果图。</li>
+              <li>左边是共享里远程现在那份（旧），右边是你处理好的这份（新）。和单份的「Excel 对比」页是同一套：先逐格比（很快）；有不同的表再用后台 Excel 真导一次 PDF，两边每一页逐像素比，印出来不一样的地方左边盖红、右边盖绿（图片换了也看得出来）。</li><li>完全一样的文件不导 PDF；导过的按文件内容记下，文件没变再看不重导。</li>
               <li>「▶ 全部对比」从上往下一份一份比，可以暂停。完全一样的自动收起；有不同的展开给你看。</li>
               <li>点某一份的「🔍 对比」只比这一份；「收起」会把那份的结果从页面上拿掉，几百份也不会卡。</li>
             </ul>
@@ -75,8 +75,8 @@
           <section class="how-notes-group">
             <h3>📕 看印出来的样子</h3>
             <ul>
-              <li>点「📕 并排看 PDF」：左边是共享里那份 Excel 旁边的同名 PDF，右边是处理文件夹里的同名 PDF，用浏览器自带的 PDF 查看。</li>
-              <li>只显示已经有的 PDF，不会新导。哪边没有，先到「批量导出同名 PDF」导一下。PDF 比 Excel 旧时会提醒你：印出来的可能不是这一版。</li>
+              <li>「📕 并排看 PDF」另外打开两边已经有的同名 PDF（共享里的、处理文件夹里的），用浏览器自带的 PDF 查看，看整份。</li>
+              <li>这里只显示已经有的同名 PDF，不新导；PDF 比 Excel 旧时会提醒你。</li>
             </ul>
           </section>
           <section class="how-notes-group">

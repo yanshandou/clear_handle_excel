@@ -83,6 +83,23 @@
       .xd-fields, .xd-files { grid-template-columns: minmax(0, 1fr); }
       .xd-table col.c-where, .xd-table col.c-kind { width: auto; }
     }
+    /* 真实效果（static/excel_diff_real.js）：Excel 导出的 PDF 页面，左红右绿蒙版 */
+    .xr-real { margin: 6px 0 12px; }
+    .xr-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 6px; }
+    .xr-head label { display: inline-flex; align-items: center; gap: 4px; font-weight: 700; }
+    .xr-status { font-weight: 700; color: #1f2937; }
+    .xr-warn { color: #7a4b00; font-weight: 700; }
+    .xr-page { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; margin-bottom: 14px; }
+    .xr-page.is-same { display: none; } .xr-real.is-allpages .xr-page.is-same { display: grid; }
+    .xr-page-title { grid-column: 1 / -1; font-weight: 800; color: #111827; }
+    .xr-side small { display: block; font-weight: 700; margin-bottom: 2px; }
+    .xr-side.is-old small { color: #82071e; } .xr-side.is-new small { color: #14532d; }
+    .xr-frame { position: relative; border: 2px solid #c9cfdb; background: #fff; line-height: 0; }
+    .xr-side.is-old .xr-frame { border-color: #cf222e; } .xr-side.is-new .xr-frame { border-color: #1a7f37; }
+    .xr-frame canvas { width: 100%; height: auto; }
+    .xr-frame .xr-mask { position: absolute; inset: 0; pointer-events: none; opacity: .32; } /* 实心色块整体调透明：重叠处不会越叠越深、盖住字 */
+    .xr-real.is-nomask .xr-mask { display: none; }
+    .xv-sketch > summary { cursor: pointer; font-weight: 700; margin: 6px 0; }
     /* 嵌在一页对比里（static/excel_diff_embed.js）：只留状态、上传这一份和结果 */
     .xd-embed body { background: #fff; min-height: 0; }
     .xd-embed .app-header, .xd-embed #xdInputPanel > h2, .xd-embed .xd-fields, .xd-embed #xdInputPanel .link-actions,
@@ -124,7 +141,7 @@
             <h3>👀 怎么看</h3>
             <ul>
               <li>左边是远程现在这份（旧），右边是你要上传的这份（新）。</li>
-              <li>每张有差异的表先画一张左右对照的效果图：按格子画出字体、颜色、边框、行高列宽、合并格（图片图形本身画不出来），只画有不同的行和上下 3 行，色块标出不一样的格子，虚线框标出不一样的图片 / 图形占的位置，两边一起滚动。</li>
+              <li><b>真实效果</b>：有不同的表（和只有一边有的表）用后台 Excel 真导一次 PDF，和上传的同名 PDF 一样的印法（宽一页、去掉本工具的标记色；页眉页脚照原样）。两边每一页逐像素比，印出来不一样的地方左边盖红、右边盖绿；图片换了、挪了也看得出来。完全一样的页收起来。一边没有的页整页盖色。</li><li>导 PDF 要等一会儿（每张表几秒），排队一份一份导；导好的按文件内容记下来，文件没变再看不用重导。复制一份再只读打开，原文件不动；别的任务在跑也能用。</li><li>上面哪一行变高了，下面的内容会整体往下挪，那几页会大片红绿。这时具体改了什么，看下面的差异清单。</li><li>「🧩 按格子画的示意图」是程序照格子画的（不是真实效果），收在下面，想看具体哪一格时展开。</li>
               <li>下面是逐条的差异清单；点类型按钮可以暂时不看某一类。差异太多时，每张表文字 / 公式最多列 400 处，每类样式最多列 60 组。</li>
               <li>点表名可以在 Excel 里打开那张表。</li>
             </ul>
@@ -177,6 +194,6 @@
     <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
   </main>
   <script src="/static/dialog.js"></script><script src="/static/open_excel.js"></script>
-  <script src="/static/excel_diff.js"></script><script src="/static/excel_diff_embed.js"></script><script src="/static/debug_log.js"></script>
+  <script src="/static/excel_diff.js"></script><script src="/static/excel_diff_real.js"></script><script src="/static/excel_diff_embed.js"></script><script src="/static/debug_log.js"></script>
 </body>
 </html>

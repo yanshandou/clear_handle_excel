@@ -113,9 +113,10 @@
     const note = [shapes ? '虚线框 = 不一样的图片 / 图形占的位置（图片本身画不出来）' : '', count ? `色块 = 不一样的格子（${count} 格，鼠标移上去看是哪一类）` : '', view.row_marks.length ? '行号带颜色 = 行高不一样' : '',
       view.col_marks.length ? '列标带颜色 = 列宽不一样' : '', '斜纹 = 这边的行 / 列比对面小', view.cols_cut ? `右边还有 ${view.cols_cut} 列没画` : '',
       view.marks_cut ? `不一样的格子太多，只标了前 5000 格` : ''].filter(Boolean).join('；');
-    return `<div class="xv-titles"><strong class="is-old">− 远程现在这份（旧）</strong><strong class="is-new">+ 你要上传的这份（新）</strong></div>`
+    // 真实效果在上面（static/excel_diff_real.js），这张按格子画的示意图收起来，要看格子位置再展开（用户 2026-11-12）
+    return `<details class="xv-sketch"><summary>🧩 按格子画的示意图（不是真实效果，看格子位置用）</summary><div class="xv-titles"><strong class="is-old">− 远程现在这份（旧）</strong><strong class="is-new">+ 你要上传的这份（新）</strong></div>`
       + `<div class="xv-wrap">${paneHtml(view, 'old', sheet.name)}${paneHtml(view, 'new', sheet.name)}</div>`
-      + `<p class="toolbar-hint xv-note">按格子画出来的样子（字体、颜色、边框、行高列宽、合并格），图片图形本身画不出来；只画有不同的行和上下 3 行。${note}。两边一起滚动。</p>`;
+      + `<p class="toolbar-hint xv-note">按格子画出来的样子（字体、颜色、边框、行高列宽、合并格），图片图形本身画不出来；只画有不同的行和上下 3 行。${note}。两边一起滚动。</p></details>`;
   }
 
   function sheetHtml(sheet, data) {
@@ -125,7 +126,7 @@
       const cls = sheet.doomed ? 'is-doomed' : old ? 'is-old' : 'is-new';
       const text = old ? '只有远程有，你这份没有' + (sheet.doomed ? '（精简注定会删，不算差异）' : '（上传后这张表就没了）')
         : '只有你这份有，远程没有' + (sheet.doomed ? '（精简注定会删，不算差异）' : '（上传后会多出这张表）');
-      return `<details class="xd-sheet ${cls}"${sheet.view ? ' open' : ''}><summary>${old ? '−' : '+'} ${link(sheet.name, old ? data.theirs : data.mine, sheet.name)}`
+      return `<details class="xd-sheet ${cls}" data-sheet="${esc(sheet.name)}"${sheet.view || !sheet.doomed ? ' open' : ''}><summary>${old ? '−' : '+'} ${link(sheet.name, old ? data.theirs : data.mine, sheet.name)}`
         + `<span class="xd-badge">${text}</span>${doomed}</summary>${sheet.view ? `<div class="xd-body">${viewHtml(sheet)}</div>` : ''}</details>`;
     }
     if (sheet.status === 'same') {
@@ -145,7 +146,7 @@
     }
     for (const item of sheet.whole) rows.push(row(item.kind, esc(item.what), item.old, item.new));
     const badges = Object.entries(sheet.counts).map(([kind, count]) => `<span class="xd-badge">${esc(kind)} ${count}</span>`).join('');
-    return `<details class="xd-sheet is-changed" open><summary>± ${link(sheet.name, data.mine, sheet.name)}${badges}${doomed}</summary>`
+    return `<details class="xd-sheet is-changed" data-sheet="${esc(sheet.name)}" open><summary>± ${link(sheet.name, data.mine, sheet.name)}${badges}${doomed}</summary>`
       + `<div class="xd-body">${viewHtml(sheet)}<details class="xd-list"${sheet.view ? '' : ' open'}><summary>📋 差异清单（逐条列出改了什么）</summary><table class="xd-table"><colgroup><col class="c-where"><col class="c-kind"><col><col></colgroup>`
       + `<thead><tr><th>位置（点了在你这份里打开）</th><th>类型</th><th>− 远程现在这份（旧）</th><th>+ 你要上传的这份（新）</th></tr></thead>`
       + `<tbody>${rows.join('')}</tbody></table></details></div></details>`;

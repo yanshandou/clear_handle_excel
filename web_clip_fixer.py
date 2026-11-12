@@ -207,6 +207,16 @@ class WebHandler(upload_manager.Handler):
             self._send_json(font_fix.status())
         elif parsed.path == "/excel-diff":
             self._serve_static_file("excel_diff.html")
+        elif parsed.path == "/api/excel_diff/page":  # 对比用 PDF 的页面图（两边同样放大，网页上逐像素比）
+            from core import excel_diff_pdf
+            query = parse_qs(parsed.query)
+            pick = lambda key: (query.get(key) or [""])[0]
+            try:
+                image = excel_diff_pdf.page_png(pick("key"), pick("sheet"), pick("p"))
+            except (ValueError, OSError) as err:
+                self._send_json({"ok": False, "error": str(err)}, status=404)
+            else:
+                self._send_bytes(image, "image/png", cacheable=True)  # 地址带内容哈希，内容不会变
         elif parsed.path == "/excel-diff/all":  # 一页对比当前任务的文件（用户 2026-11-12）
             self._serve_static_file("excel_diff_all.html")
         elif parsed.path == "/api/distribute/diff_pdf":  # 一页对比里并排看的同名 PDF（只给已有的）
@@ -465,7 +475,7 @@ class WebHandler(upload_manager.Handler):
                 raise ValueError("请求内容不是有效的 JSON（文件可能已损坏）") from None
             if not isinstance(payload, dict):
                 raise ValueError("请求内容必须为 JSON 对象")
-            if not self.path.startswith("/api/pcl/"):  # 检查台边打字边自动保存，不记进调试日志
+            if not self.path.startswith("/api/pcl/") and self.path != "/api/excel_diff/pdf_status":  # 检查台边打字边自动保存、对比页问进度，不记进调试日志
                 debug_log.event("🖱️ 网页操作", 路径=self.path, 参数=debug_log.summary(payload)[:600])
             self._handle_post(payload)
         except ConnectionError:
@@ -553,6 +563,16 @@ class WebHandler(upload_manager.Handler):
                 except OSError:
                     sha[key] = ""
             self._send_json({"ok": True, **excel_diff.diff(mine.strip(), theirs.strip()), "sha256": sha})
+            return
+        if self.path == "/api/excel_diff/pdf":  # 对比的「真实效果」：两边要哪些表的 PDF（core/excel_diff_pdf.py），只读旁路
+            from core import excel_diff_pdf
+            sheets = payload.get("sheets") if isinstance(payload.get("sheets"), dict) else {}
+            self._send_json({"ok": True, **{side: excel_diff_pdf.request(payload.get(side), sheets.get(side))
+                                            for side in ("mine", "theirs") if sheets.get(side)}})
+            return
+        if self.path == "/api/excel_diff/pdf_status":
+            from core import excel_diff_pdf
+            self._send_json({"ok": True, "status": excel_diff_pdf.status(payload.get("keys"))})
             return
         if self.path.startswith("/api/pcl/"):  # 单体测试检查台：和 Excel 任务无关，别的任务在跑也能用
             self._send_json({"ok": True, **pcl_check.handle_post(self.path.removeprefix("/api/pcl/"), payload)})
