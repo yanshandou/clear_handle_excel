@@ -33,6 +33,21 @@ _QUEUE: list[str] = []                      # 排队的哈希
 _JOBS: dict[str, dict[str, Any]] = {}       # 哈希 → {path, sheets: set, state, error, current}
 _HASHES: dict[tuple[str, int, int], str] = {}  # (路径, 大小, 修改时间) → 哈希，免得每次都重算
 _worker: threading.Thread | None = None
+# 实际用时（秒）：打开一份 Excel、导一张表，各留最近几次，网页上按它估「还要多久」
+_TIMES: dict[str, list[float]] = {"open": [], "sheet": []}
+_DEFAULT_SECONDS = {"open": 4.0, "sheet": 4.0}
+
+
+def _remember_time(kind: str, seconds: float) -> None:
+    with _LOCK:
+        times = _TIMES[kind]
+        times.append(seconds)
+        del times[:-20]
+
+
+def _average(kind: str) -> float:
+    times = _TIMES[kind]
+    return round(sum(times) / len(times), 2) if times else _DEFAULT_SECONDS[kind]
 
 
 def _root() -> Path:
@@ -136,8 +151,21 @@ def _status(sha: str, names: list[str]) -> dict[str, Any]:
     if len(have) != len(names) and state in (None, "done"):
         state, error = "error", "部分表的 PDF 已失效，请重新对比"
     position = _QUEUE.index(sha) + 1 if sha in _QUEUE else 0
+    # 排在它前面的活：正在导的那份剩几张 + 前面排队的每份几张（估时间用）
+    ahead_files, ahead_sheets = 0, 0
+    for other, item in _JOBS.items():
+        if other == sha:
+            continue
+        if item["state"] == "running":
+            ahead_sheets += max(0, item.get("total", 0) - item.get("done", 0))
+        elif item["state"] == "queued" and other in _QUEUE and (not position or _QUEUE.index(other) < position - 1):
+            ahead_files += 1
+            ahead_sheets += len(item["sheets"])
     return {"key": sha, "state": state, "sheets": have, "error": error,
-            "current": job.get("current", ""), "queue": position, "zoom": PAGE_ZOOM}
+            "current": job.get("current", ""), "queue": position, "zoom": PAGE_ZOOM,
+            "done": job.get("done", 0) if state == "running" else 0, "total": job.get("total", 0) if state == "running" else 0,
+            "ahead_files": ahead_files, "ahead_sheets": ahead_sheets,
+            "open_seconds": _average("open"), "sheet_seconds": _average("sheet")}
 
 
 def page_png(sha: Any, sheet: Any, page: Any) -> bytes:
@@ -246,8 +274,12 @@ def _export(excel: Any, sha: str, path: Path, names: list[str], job: dict[str, A
     tmp = Path(tempfile.mkdtemp(prefix="excel_diff_pdf_"))
     try:
         copy = tmp / ("book" + path.suffix.lower())
+        with _LOCK:
+            job.update(done=0, total=len(names), current="正在打开 Excel")
+        opened = time.perf_counter()
         shutil.copyfile(path, copy)  # 复制一份再开：原文件不碰，别人开着也不怕
         wb = open_workbook_checked(excel, str(copy), ReadOnly=True, UpdateLinks=0, IgnoreReadOnlyRecommended=True)
+        _remember_time("open", time.perf_counter() - opened)
         try:
             pdf_bundle._drop_marks(wb, path)
             by_name = {str(s.Name): s for s in wb.Sheets}
@@ -256,7 +288,8 @@ def _export(excel: Any, sha: str, path: Path, names: list[str], job: dict[str, A
                 if dog is not None:
                     dog.progress()
                 with _LOCK:
-                    job["current"] = f"{index} / {len(names)}：{name}"
+                    job.update(current=f"{index} / {len(names)}：{name}", done=index - 1)
+                sheet_started = time.perf_counter()
                 sheet = by_name.get(name)
                 if sheet is None:
                     results[name] = {"pages": 0, "error": "Excel 里找不到这张表"}
@@ -273,6 +306,7 @@ def _export(excel: Any, sha: str, path: Path, names: list[str], job: dict[str, A
                     results[name] = {"pages": 0, "error": "没有可打印的内容"}
                     continue
                 results[name] = {"pages": _page_count(target), "file": target.name}
+                _remember_time("sheet", time.perf_counter() - sheet_started)
         finally:
             wb.Close(SaveChanges=False)
         with _LOCK:
