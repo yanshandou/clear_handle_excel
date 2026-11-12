@@ -90,13 +90,14 @@ async function main() {
     await resize(1440);
     await navigate('/');
     await until("window.Tools && document.querySelectorAll('#tileGrid .tile').length === Tools.TOOLS.length");
-    await evaluate(`Promise.all(['/static/icons/garden-tools-v1.webp', '/static/images/bg.png', '/static/images/dev-toolbox-logo.png'].map(src => {
+    await evaluate(`Promise.all(['/static/icons/garden-tools-v1.webp', '/static/images/bg.png', '/static/images/ship-logo.png', '/static/images/dev-toolbox-logo.png'].map(src => {
       const image = new Image();
       image.src = src;
       return image.decode();
     })).then(() => true)`);
     assert.match(await evaluate("getComputedStyle(document.querySelector('.home-seascape')).backgroundImage"), /\/static\/images\/bg\.png/);
-    assert.match(await evaluate("getComputedStyle(document.querySelector('.header-logo-badge')).backgroundImage"), /\/static\/images\/dev-toolbox-logo\.png/);
+    assert.match(await evaluate("getComputedStyle(document.querySelector('.header-logo-badge')).backgroundImage"), /\/static\/images\/ship-logo\.png/);
+    assert.equal(await evaluate(`document.querySelector('link[rel="icon"]').getAttribute('href')`), '/static/images/dev-toolbox-logo.png');
     assert.equal(await evaluate("document.querySelector('.header-title-text').textContent"), '开发百宝箱');
     assert.equal(await evaluate("document.querySelectorAll('#tileGrid .tile-big').length"), 2);
     assert.equal(await evaluate("document.querySelectorAll('#tileGrid .garden-sprite').length"), 6);
