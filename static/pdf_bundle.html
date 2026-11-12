@@ -10,7 +10,6 @@
     .bundle-skip-field { display: grid !important; gap: 8px; font-weight: 600; }
     .bundle-skip-field textarea { width: 100%; max-width: 760px; box-sizing: border-box; font: inherit; font-weight: 400; padding: 10px 12px; border-radius: 10px; border: 1px solid #c9d8e9; resize: vertical; }
     .bundle-skip-note { display: flex; align-items: center; gap: 12px; margin: 0; }
-    .bundle-rules { margin: 0; padding-left: 22px; line-height: 1.9; }
     .bundle-fields { grid-template-columns: minmax(0, 1fr); max-width: 760px; }
     .bundle-summary { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 6px 0 4px; font-weight: 600; }
     .bundle-summary .is-ok { color: #14633c; } .bundle-summary .is-bad { color: #89580b; }
@@ -28,6 +27,7 @@
   <link rel="stylesheet" href="/static/theme-casual.css">
   <script src="/static/tools.js?v=1"></script>
   <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/how_notes.css">
 </head>
 <body>
   <header class="app-header">
@@ -37,13 +37,56 @@
   <main class="container clean-container">
     <section class="panel">
       <h2>把做好的 Excel 批量转成 PDF，和 Excel 放在一起</h2>
-      <ul class="bundle-rules toolbar-hint">
-        <li><b>文件名一致</b>：<code>aaa.xlsx</code> 旁边生成 <code>aaa.pdf</code>，同一个文件夹（含子文件夹）；已有同名 PDF 会被覆盖。</li>
-        <li><b>内容完整</b>：一份 PDF 里按工作表顺序放这份 Excel 所有工作表的全部页，每张表在 PDF 里有一个书签。</li>
-        <li><b>宽度一律一页</b>：每张表都压成宽一页、高自动（已经是宽一页的不动），列不会被拆到别的页；打印区域、横竖照 Excel 里设的。只读打开，不改也不保存 Excel。</li>
-        <li><b>去掉本工具的标记色</b>：查切字等功能加的黄色 / 橙色标记导出时在内存里临时去掉，PDF 是干净的；表格原有的颜色、你自己涂的颜色都不动。</li>
-        <li>下面名单里的表跳过（默认 <code>変更履歴</code>）；完全空白的表没有东西可印，也跳过。跳过的都在结果里写明。</li>
-      </ul>
+      <details class="how-notes">
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">aaa.xlsx 旁边生成 aaa.pdf，所有要打印的表合成一份，Excel 本身不改</span><span class="how-notes-toggle"></span></summary>
+        <div class="how-notes-body">
+          <section class="how-notes-group">
+            <h3>📁 PDF 放在哪里、叫什么</h3>
+            <ul>
+              <li><code>aaa.xlsx</code> 旁边、同一个文件夹生成 <code>aaa.pdf</code>；子文件夹里的 Excel 也一样，各放各的旁边。</li>
+              <li>文件名前面的「★」临时标记会去掉：<code>★aaa.xlsx</code> 也生成 <code>aaa.pdf</code>。</li>
+              <li>已有同名 PDF <b>直接覆盖</b>：先写成临时文件再一次换上，中途出错不会留下半份 PDF。PDF 正在阅读器里开着时会报错，关掉后点「重试」。</li>
+              <li>同一个文件夹里 <code>aaa.xlsx</code> 和 <code>aaa.xlsm</code> 会生成同一个 PDF：只导第一份，第二份报错，请改名后再导。</li>
+              <li>和「调整页面」的 PDF（放在 PDFS 文件夹、一张表一份）完全分开，互不影响。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>📑 PDF 里放哪些表</h3>
+            <ul>
+              <li>按工作表顺序，把每张要打印的表的<b>全部页</b>拼成一份；每张表在 PDF 里有一个书签，点了跳到那张表。</li>
+              <li>这些表不放进去，结果里逐张写明原因：
+                <br>· 下面名单里的表（默认 <code>変更履歴</code>；比较时不管全角半角、大小写、前后空格）；
+                <br>· 隐藏的表（勾了「隐藏的工作表也放进 PDF」才放）；
+                <br>· 完全空白、也没有图形的表；
+                <br>· Excel 说「印刷する対象がありません」的表（比如打印区域里全是空格子）。</li>
+              <li>一张能放的表都没有时，这份 Excel 不生成 PDF，算出错。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>📐 版面怎么定</h3>
+            <ul>
+              <li>不是「宽一页」的表，导出时改成<b>宽一页、高自动</b>：列不会被拆到别的页，纵向几页由 Excel 定。已经是宽一页的不动，向下取整定死的页高也保留。</li>
+              <li>打印区域、横竖方向、页边距照 Excel 里设的。</li>
+              <li>默认去掉页眉页脚（包括「首页不同」「奇偶页不同」另设的那几套）和打印的行号列标；不勾就保留。</li>
+              <li>框住整段内容的空心大矩形不印，PDF 上不会出现「凵」形黑框；截图和上面的红框、箭头导出时临时组合，免得在 PDF 里错位。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>🧽 标记色和 Excel 本身</h3>
+            <ul>
+              <li>本工具加的问题标记（查看切字按问题类型标的各种底色、多种问题的黑底黄字，都是带 <code>CHE_MARK</code> 标识的条件格式）导出前在内存里删掉，PDF 是干净的；还没「修复颜色」的文件也一样。</li>
+              <li>表格原有的颜色、你自己涂的颜色、别的条件格式都不动。有标记删不掉（比如表有保护）时，结果里会提醒「PDF 上可能还有标记色」。</li>
+              <li>Excel <b>只读打开</b>：上面的改动都只在内存里，关闭时不保存，原文件一点不变。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group is-wide">
+            <h3>♻️ 和上传的关系</h3>
+            <ul>
+              <li>导出时记下这份 PDF 是哪一版 Excel 导的。上传页选「表格和 PDF 一起」或「只传 PDF」时，Excel 没改过、导出设置也一样，就直接用这份 PDF，不再重导。</li>
+            </ul>
+          </section>
+        </div>
+      </details>
       <div class="link-fields bundle-fields">
         <label for="bundleFolder">Excel 文件或文件夹路径<textarea id="bundleFolder" class="workbook-paths" rows="2" aria-label="Excel 文件或文件夹路径" placeholder="每行一个 Excel 文件或文件夹路径"></textarea></label>
       </div>

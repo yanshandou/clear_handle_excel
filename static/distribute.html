@@ -153,6 +153,7 @@
     .dist-pdf-line { color: #4c1d95; }
     .dist-pdf-line.is-bad { color: #b42318; font-weight: 700; }
   </style>
+  <link rel="stylesheet" href="/static/how_notes.css">
 </head>
 <body>
   <header class="app-header distribution-header">
@@ -217,8 +218,35 @@
             <div class="section-kicker">COPY OVERVIEW <span>01 / 复制规则</span></div>
             <div class="overview-title"><h2>按清单复制</h2></div>
             <p>需要生成 JSON？<a href="/distribute/manage">打开文件管理与上传方案 →</a>，确认方案后可直接带入此页。</p>
-            <p>JSON 里每个文件夹的 source 接在「来源根目录」后面，destination 接在「目的地根目录」后面。先按目录结构把目的地文件夹全部建好（来源里的子文件夹、空文件夹也照样建，来源找不到的也建一个空的），再把 Excel 复制进对应的文件夹：只复制 Excel 表格文件（.xls / .xlsx / .xlsm / .xlsb / .xlt / .xltx / .xltm，~$ 临时文件不算），其他文件不管。只复制不移动，来源文件原样保留。目的地已有同名文件时覆盖，文件名不改，覆盖了哪些写在复制记录里。</p>
-            <p><strong>覆盖前检查别人改过没有：</strong>用「⬇ 从目的地拿最新版」把目的地（共享文件夹）的 Excel 拿回来源时，会记下每个文件拿到的版本。复制时如果目的地的文件和记下的不一样（拿走之后被别人改过），这个文件<strong>不覆盖</strong>、标红列出来；请再拿一次最新版，在新版上改好再复制。复制成功的文件也会记下放进去的版本，下次接着检查。没有记录的文件（以前手动拿的）没法检查，照旧覆盖，清单里会标出来。</p>
+            <details class="how-notes">
+              <summary>📖 程序会怎么做 <span class="how-notes-tip">按 JSON 建好目录、只复制 Excel、同名覆盖，覆盖前查别人改过没有</span><span class="how-notes-toggle"></span></summary>
+              <div class="how-notes-body">
+                <section class="how-notes-group">
+                  <h3>📁 怎么复制</h3>
+                  <ul>
+                    <li>JSON 里每个文件夹的 source 接在「来源根目录」后面，destination 接在「目的地根目录」后面；owner、startDate 只是记录，不影响复制。</li>
+                    <li>先按目录结构把目的地文件夹全部建好：来源里的子文件夹、空文件夹也照样建，来源找不到的也建一个空的。</li>
+                    <li>只复制 Excel 表格文件（.xls / .xlsx / .xlsm / .xlsb / .xlt / .xltx / .xltm，~$ 临时文件不算），其他文件不管。</li>
+                    <li>只复制不移动，来源文件原样保留。目的地已有同名文件时覆盖，文件名不改，覆盖了哪些写在复制记录里。</li>
+                  </ul>
+                </section>
+                <section class="how-notes-group">
+                  <h3>🔢 核对三个数</h3>
+                  <ul>
+                    <li>每个文件夹比较：JSON 写的 files、来源实际找到的 Excel 数、复制后目的地的 Excel 数；对不上的写清楚是哪两个数、哪些文件、哪边多了。</li>
+                    <li>两个文件夹复制到同一个目的地、或来源互相包含，也会提醒。</li>
+                  </ul>
+                </section>
+                <section class="how-notes-group is-wide">
+                  <h3>🛡 覆盖前检查别人改过没有</h3>
+                  <ul>
+                    <li>用「⬇ 从目的地拿最新版」把目的地（共享文件夹）的 Excel 拿回来源时，会记下每个文件拿到的版本。</li>
+                    <li>复制时目的地的文件和记下的不一样（拿走之后被别人改过），这个文件<b>不覆盖</b>、标红列出来；请再拿一次最新版，在新版上改好再复制。</li>
+                    <li>复制成功的文件也记下放进去的版本，下次接着检查。没有记录的文件（以前手动拿的）没法检查，照旧覆盖，清单里会标出来。</li>
+                  </ul>
+                </section>
+              </div>
+            </details>
           </div>
         </section>
         <section id="distNewTask" class="planner dist-section" aria-labelledby="distNewTaskTitle" hidden>
@@ -253,7 +281,48 @@
             </div>
           </div>
           <div id="distTaskBox" class="dist-surface" hidden>
-            <p class="toolbar-hint">在处理文件夹中勾选要传回共享的 Excel，或点「全选待上传」。系统只检查选中文件的共享版本，有更新就先同步到参考和处理文件夹，等你重新处理并复检。</p>
+            <p class="toolbar-hint">在处理文件夹中勾选要传回共享的 Excel，或点「全选待上传」，再点下面「检查并批量上传」。</p>
+            <details class="how-notes">
+              <summary>📖 程序会怎么做 <span class="how-notes-tip">核对远程版本 → 上传前处理 → 复制到终点，远程被人改过的先给你看 Excel 对比</span><span class="how-notes-toggle"></span></summary>
+              <div class="how-notes-body">
+                <section class="how-notes-group">
+                  <h3>🔍 先核对远程那份</h3>
+                  <ul>
+                    <li>只查你选中的文件，不读没选的。</li>
+                    <li>从共享拿文件时，每份都记下了当时的版本（基准哈希；没有记录的用参考文件夹里那份算）。</li>
+                    <li>「先核对基准哈希」：远程那份和基准一样，说明没人动过，直接进上传队列。</li>
+                    <li>没有基准、远程和基准不一样（被人改过）、远程那份被移走或删掉了，或者你选了「逐份做 Excel 对比」：一份一份打开 Excel 对比页，你看完点「确认覆盖并上传」才传这份，「跳过这份」就不传。</li>
+                    <li>以前标成「待重新处理」、还没在共享新版上处理完的文件不传。</li>
+                  </ul>
+                </section>
+                <section class="how-notes-group">
+                  <h3>🧽 上传前处理（每份只开存一次）</h3>
+                  <ul>
+                    <li>清掉本工具加的标记色（<code>CHE_MARK</code> 条件格式）和标成橙黄色的表标签。</li>
+                    <li>对照参考文件夹里的原件恢复残留的配色（规则和「修复颜色」一样，对不上的不动）。</li>
+                    <li>视图标准化：每张可见表分页预览、A1、100%，停在第一张表。</li>
+                    <li>直接在处理文件夹里那份上做并保存；选「只传 PDF」时在本机临时副本上做，处理文件夹里的 Excel 不动。</li>
+                    <li>任何一步没做成，这份不传，同一批的其他文件照传。</li>
+                  </ul>
+                </section>
+                <section class="how-notes-group">
+                  <h3>⬆️ 复制到终点</h3>
+                  <ul>
+                    <li>终点不填就是共享文件夹，按同样的子文件夹结构放。</li>
+                    <li>传之前最后再核对一次：远程或本地在检查之后变了，这份不传，请重新检查。</li>
+                    <li>先写成临时文件再一次换上，网络断开也不会只剩半个文件。传成功后记下放进去的版本，下次接着用来核对。</li>
+                    <li>传好的文件从「本轮只处理」清单里划掉，全部划掉自动回到整个文件夹。</li>
+                  </ul>
+                </section>
+                <section class="how-notes-group">
+                  <h3>👥 几个人分着做（终点填中转）</h3>
+                  <ul>
+                    <li>终点填团队 OneDrive 的中转文件夹时传到中转，并在中转文件夹里写一份「拿取版本.json」，记下每份当初从公司拿的是哪个版本。</li>
+                    <li>汇总的人再用「起点 → 终点 上传」传到公司，程序按这份清单检查公司那份期间有没有被人改过。请不要删这个文件。</li>
+                  </ul>
+                </section>
+              </div>
+            </details>
             <div class="dist-dest-row">
               <label for="distTaskDest">上传到（终点）<small class="toolbar-hint">不填就是共享文件夹。几个人分着做时，填团队 OneDrive 的中转文件夹，汇总的人再用「起点 → 终点 上传」传到公司</small>
                 <input id="distTaskDest" type="text" spellcheck="false" autocomplete="off"></label>
@@ -293,8 +362,28 @@
             <div id="distPdfAsk" class="dist-pdf-ask" role="region" aria-labelledby="distPdfAskTitle" hidden></div>
           </div>
           <div id="distFreeFields" class="dist-surface" hidden>
-            <p class="toolbar-hint">起点里的 Excel（包括子文件夹）按同样的目录结构传到终点。每个文件先复制到本机临时文件夹，清掉标记色、视图标准化（A1、100%）再传，所以「最終更新者」是你；起点的文件不动。
-              起点里有「拿取版本.json」（别人用本工具传到中转时放的）就用它检查终点期间有没有被人改过，改过的不覆盖。</p>
+            <details class="how-notes">
+              <summary>📖 程序会怎么做 <span class="how-notes-tip">起点里的 Excel 按同样的目录结构传到终点，起点的文件不动</span><span class="how-notes-toggle"></span></summary>
+              <div class="how-notes-body">
+                <section class="how-notes-group">
+                  <h3>📋 先生成清单（只读）</h3>
+                  <ul>
+                    <li>起点里的 Excel（包括子文件夹）一个对一个，对到终点同样的位置；起点和终点不能是同一个、也不能互相包含。</li>
+                    <li>终点那份能不能直接覆盖，按记录判断：这份以前就是从这个起点传上去的 → 用上次记下的版本；起点里或上几层有「拿取版本.json」（别人用本工具传到中转时放的）→ 用里面记的公司版本。</li>
+                    <li>终点那份和记下的版本一样才直接覆盖；不一样（期间被人改过），或者没有记录没法判断，就一份一份给你看 Excel 对比，确认后才传。</li>
+                    <li>终点里有、起点没有的 Excel 不动，只列出来；有清单时还会分出「期间别人新加的」。</li>
+                  </ul>
+                </section>
+                <section class="how-notes-group">
+                  <h3>⬆️ 上传</h3>
+                  <ul>
+                    <li>每份先复制到本机临时文件夹，在副本上清掉标记色、视图标准化（分页预览、A1、100%）再传，所以「最終更新者」是你；这里没有参考文件夹，不恢复颜色。</li>
+                    <li>起点的文件一点都不动。</li>
+                    <li>传之前再核对一次终点有没有变，变了不覆盖；先写成临时文件再换上。</li>
+                  </ul>
+                </section>
+              </div>
+            </details>
             <div class="link-fields">
               <label for="distFreeSource">起点<input id="distFreeSource" type="text" spellcheck="false" autocomplete="off" placeholder="例如 团队 OneDrive 里的 AAA 文件夹"></label>
               <label for="distFreeDest">终点<input id="distFreeDest" type="text" spellcheck="false" autocomplete="off" placeholder="例如 公司 OneDrive 里对应的文件夹"></label>

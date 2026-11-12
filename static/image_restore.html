@@ -57,6 +57,7 @@
   <link rel="stylesheet" href="/static/theme-casual.css">
   <script src="/static/tools.js?v=1"></script>
   <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/how_notes.css">
 </head>
 <body>
   <header class="app-header">
@@ -66,12 +67,53 @@
   <main class="container clean-container">
     <section class="panel">
       <h2>找出被行高列宽拉坏的截图、跑偏的红框</h2>
-      <ul class="font-rules toolbar-hint">
-        <li>以前修切字时加高行、加宽列，Excel 的图形默认跟着格子一起变：截图被拉长变形，截图上的红框、箭头挂在别的格子上，就框不住原来的地方了。</li>
-        <li>先点<b>「🔍 找出受影响的图片」</b>：原版、新版都只读打开，不改任何文件。有图片的表并排列出<b>原版 Excel / 新版 Excel / 新版 PDF</b> 三列，每列把这张表的所有页从上到下列全（前两列是 Excel 屏幕原样，要借用剪贴板，Ditto 会记下这些截图；个别页拍不了会退回导出效果并标出来；第三列是你已有的 PDF）。每列写着文件路径，点了打开，也可以复制路径。看过没问题的表点<b>「✓ 无需处理」</b>（记在这台电脑的浏览器里）。结果里出现的文件都已经查完，查找还在进行时也能打开。</li>
-        <li>看完再点<b>「修复这份」</b>或底部<b>「全部修复」</b>：截图左上角不动、大小改回原版的；红框、箭头按原版里<b>相对截图的位置</b>放回去。行高、列宽、格子内容都不动，改完回读核对，有一个没对上整份不保存。</li>
-        <li>图形按名字配对，有重名的不碰；原版只读打开，不会改。</li>
-      </ul>
+      <details class="how-notes">
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">先只读找出变形的截图和跑偏的红框给你看，你确认后再按原版放回去</span><span class="how-notes-toggle"></span></summary>
+        <div class="how-notes-body">
+          <section class="how-notes-group is-wide">
+            <h3>🤔 为什么会坏</h3>
+            <ul>
+              <li>以前修切字时加高行、加宽列，Excel 的图形默认「随单元格移动和改变大小」：截图中间的行加高，截图被拉长变形；截图上的红框、箭头挂在别的格子上，只会整体挪动，于是框不住原来的地方了。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>🔍「找出受影响的图片」（不改任何文件）</h3>
+            <ul>
+              <li>新版和原版（参考文件夹里同名的那份）都<b>只读打开</b>。</li>
+              <li>有图片的表并排三列：<b>原版 Excel / 新版 Excel / 新版 PDF</b>，每列把这张表的所有页从上到下列全，不按页一一对应（两边分页可能不一样）。</li>
+              <li>前两列是 Excel 屏幕原样：按分页把每页「复制为图片」，要借用剪贴板，Ditto 这类工具会记下这些截图；个别页拍不了会退回导出效果并标出来。第三列是你已有的 PDF（默认找 Excel 旁边的同名 PDF，也可以填 PDF 文件夹）。</li>
+              <li>每列写着文件路径，点了打开，也能复制路径。查找还在进行时，结果里已经出现的文件也能打开。</li>
+              <li>看过没问题的表点「✓ 无需处理」（记在这台电脑的浏览器里）；全部标完后上方显示还剩几份，可以复制剩下的路径、一次打开 10 份或只组合剩下的。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>🖼️「修复这份」「全部修复」</h3>
+            <ul>
+              <li>工作表按名字（找不到再按代码名）配对，图形按「名字 + 类型」配对，任一边有重名的不碰。</li>
+              <li>截图和不在截图上的图形：<b>左上角不动</b>，大小改回原版的。</li>
+              <li>整个落在截图范围里的其他图形算这张截图的标注：大小改回原版的，位置 = 截图现在的左上角 + 原版里它相对截图左上角的偏移。</li>
+              <li>只改真的变了的（大小差超过 1 磅，或标注相对截图偏了超过 1 磅）；行高、列宽、格子内容都不动。</li>
+              <li>改完回读核对，有一个没对上整份不保存。原版只读，不会改。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>📌 组合（修复时顺便做 / 「只组合」）</h3>
+            <ul>
+              <li>互相重叠、或隔得很近（约两行以内）的图形连成一堆，每堆组合成一个，设成「随单元格移动、不改变大小」：以后再调行高列宽、导出 PDF 都不会错开。</li>
+              <li>框住整段内容的空心大框不进组合。</li>
+              <li>「只组合」不对照原版，按现在的样子组合；已经被拉坏的请先修复再组合。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>📏「修复列宽」</h3>
+            <ul>
+              <li>对照原版，把现在可见、列宽和原版不一样的列改回原版的列宽；隐藏列、行高不动。</li>
+              <li>和「修复隐藏页」一样先核对：表的内容、公式和位置要和原版一样才改，对不上、受保护、配不上的表跳过并写原因。</li>
+              <li>列宽改回去以后截图和红框还跑偏的，再「找出受影响的图片」修。</li>
+            </ul>
+          </section>
+        </div>
+      </details>
       <div class="link-fields img-fields">
         <label for="imgFolder">新版 Excel 文件或文件夹路径<textarea id="imgFolder" class="workbook-paths" rows="2" aria-label="Excel 文件或文件夹路径" placeholder="每行一个 Excel 文件或文件夹路径"></textarea></label>
         <label for="imgOldFolder">默认参考文件夹<input id="imgOldFolder" type="text" placeholder="例如 D:\\参考\\001，或包含 001 的总目录"></label>
@@ -83,7 +125,6 @@
         <button id="imgFixAll" class="btn btn-secondary" type="button" disabled hidden>🖼️ 全部修复</button>
         <button id="imgGroup" class="btn btn-outline" type="button" disabled title="不对照原版，直接把新版文件夹里互相重叠、挨着的图形（截图和上面的标注、用图形拼出来的画面）都组合起来。已经被拉坏的请先修复，否则会按坏的样子组合">📌 只组合（挨着的图形都合）</button>
       </div>
-      <p class="toolbar-hint">如果调整列宽后截图和红框跑偏，可以先按原版修复列宽，再查找受影响的图片。</p>
       <label class="img-group-opt"><input id="imgGroupOnFix" type="checkbox" checked> 修复时顺便把互相重叠、挨着的图形（截图和上面的红框、箭头，用图形拼出来的画面）<b>永久组合</b>（推荐：组合设成「随单元格移动、不改变大小」，以后再调行高列宽、导出 PDF 都不会错开）</label>
       <p class="toolbar-hint">修复前请先保存并关闭要处理的 Excel。关闭网页后任务继续；刷新页面可查看进度与结果。</p>
       <p id="imgProgress" role="status" aria-live="polite">填写文件夹后点「找出受影响的图片」。</p>

@@ -18,6 +18,7 @@
   <link rel="stylesheet" href="/static/theme-casual.css">
   <script src="/static/tools.js?v=1"></script>
   <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/how_notes.css">
 </head>
 <body>
   <header class="app-header">
@@ -27,7 +28,43 @@
   <main class="container clean-container">
     <section class="panel">
       <h2>先扫描，确认后再清除</h2>
-      <p class="toolbar-hint">找出每一行里「左边单元格内容包含大写 BL 或 Bl 开头的词（如 BlKaihoCal，Black 这类普通单词不算）、右边单元格是内容为 @ 的超链接」这样的单元格。第一步只列出位置，你看完确认后再点「清除」，删除这些超链接并清空内容。</p>
+      <details class="how-notes">
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">找出「左边写着 BL、右边是 @ 超链接」的格子，看过清单再清除</span><span class="how-notes-toggle"></span></summary>
+        <div class="how-notes-body">
+          <section class="how-notes-group is-wide">
+            <h3>🔎 找哪些格子（两个条件同时满足）</h3>
+            <ul>
+              <li><b>右边这格</b>：本身是超链接，显示的内容正好是 <code>@</code>（前后空格不算）。</li>
+              <li><b>左边紧挨着的那格</b>（同一行、左边一列；是合并格的按合并区域左上角那格的内容）满足其中一条：
+                <br>· 内容里任何位置有大写 <code>BL</code>，比如 <code>TABLE</code> 里的 BL 也算；
+                <br>· 有一个以 <code>Bl</code> / <code>bl</code> 开头的词：前面不是英文字母、后面不跟小写字母，如 <code>BlKaihoCal</code>、<code>Class:blUtil</code>。<code>Black</code>、<code>table</code> 这类普通单词不算。</li>
+              <li>所有工作表都查，隐藏表也查；第一列的超链接左边没有格子，不查。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>🔎 第一步「扫描」</h3>
+            <ul>
+              <li>Excel <b>只读打开</b>，只列出位置、左边写的什么、链接指向哪里，不改文件。</li>
+              <li>扫描期间文件被改了会报错，请重新扫描。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>🧽 第二步「清除」</h3>
+            <ul>
+              <li>只处理上一次扫描列出来的格子：<b>删掉超链接、清空内容</b>，格子的格式保留。</li>
+              <li>动手前先核对：文件在扫描后改过就不清，让你重新扫描；有一处已经不符合上面的条件，整份不保存。</li>
+              <li>清完回读核对，有一处链接没删掉或内容没清空，整份不保存。</li>
+              <li>清除不能撤销；文件正在 Excel 里打开时不清。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group is-wide">
+            <h3>🔗 和精简 Sheet 的关系</h3>
+            <ul>
+              <li>精简 Sheet「确认执行」后默认会接着自动做这一步：扫描到的直接清除，不再等你确认（精简页底部「做完后顺便做」可以勾掉）。这一页是单独跑、想先看清单再清的时候用。</li>
+            </ul>
+          </section>
+        </div>
+      </details>
       <div class="link-fields">
         <label for="blFolder">Excel 文件或文件夹路径<textarea id="blFolder" class="workbook-paths" rows="2" aria-label="Excel 文件或文件夹路径" placeholder="每行一个 Excel 文件或文件夹路径"></textarea></label>
       </div>
@@ -35,7 +72,7 @@
         <button id="blScan" class="btn btn-primary" type="button" disabled>🔎 扫描 BL 超链接</button>
         <button id="blClear" class="btn btn-danger" type="button" disabled>🧽 清除这些单元格</button>
       </div>
-      <p class="toolbar-hint">清除会删除超链接并清空内容，属于不可恢复操作，请在扫描结果里核对无误后再点「清除」。清除前请保存并关闭目标 Excel 文件。关闭网页后任务继续。</p>
+      <p class="toolbar-hint">清除前请保存并关闭目标 Excel 文件。关闭网页后任务继续。</p>
       <p id="blProgress" role="status" aria-live="polite">填写文件夹后点「扫描」。</p>
       <div class="progress-track progress-track-sm"><div id="blProgressFill" class="progress-fill" style="width:0%"></div></div>
       <p id="blError" class="batch-error" role="alert"></p>

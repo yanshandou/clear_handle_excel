@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/static/theme-casual.css">
   <script src="/static/tools.js?v=1"></script>
   <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/how_notes.css">
 </head>
 <body data-repair-kind="links">
   <header class="app-header">
@@ -18,7 +19,51 @@
   <main class="container clean-container">
     <section class="panel">
       <h2>扫描引用错误，对照备份直接修复</h2>
-      <p class="toolbar-hint">扫描全部工作表中的 #REF!，包括隐藏表和间接产生的引用错误。对照备份里的原公式与计算结果，恢复为固定值，并保留当前格式。</p>
+      <details class="how-notes">
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">找出 #REF!，能和原始备份对上的改成备份里算出来的固定值，对不上的留给人工</span><span class="how-notes-toggle"></span></summary>
+        <div class="how-notes-body">
+          <section class="how-notes-group">
+            <h3>🔍 找哪些错误</h3>
+            <ul>
+              <li>先让 Excel 完整重算一次，再查<b>所有工作表</b>（包括隐藏表）。</li>
+              <li>公式里有失效引用的格子（如 <code>=#REF!A1</code>），和计算结果是 <code>#REF!</code> 的格子，都算；引用了报错格、跟着报错的也会找出来。</li>
+              <li>数组公式、溢出区域整块算一处。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>📚 怎么确认原来是什么</h3>
+            <ul>
+              <li>按文件名在参考文件夹（含子文件夹）里找这份的原始备份，备份<b>只读打开</b>，不会改。</li>
+              <li>工作表按名字、代码名和表里的文字配对；配法不唯一时把可能的配法都核对一遍。</li>
+              <li>每个错误格都要对上：备份同一位置有公式、那个公式本身没坏、周围几格（上下各 1 行、左右各 2 列）的固定内容和备份一样、数组 / 溢出区域一样大。</li>
+              <li>再在备份里模拟「删表、改名」，确认备份的公式坏掉后正是现在这个样子，才用备份算出来的结果。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>✍️ 怎么改、什么时候不保存</h3>
+            <ul>
+              <li>把备份里的<b>计算结果写成固定值</b>（不再是公式），格式、合并、批注都保留。复杂公式也是写入备份里完整的计算结果。</li>
+              <li>上游的格子修好后自己恢复正常的，保留现有公式不动。</li>
+              <li>改完全部重算：出现新的引用错误，或改过的格子还在报错，<b>整份不保存</b>。</li>
+              <li>扫描后文件或备份被改过、文件正在 Excel 里打开，都不改。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group is-warn">
+            <h3>✋ 留给人工的情况（结果里写原因）</h3>
+            <ul>
+              <li>格子里是固定的错误值、没有公式线索；备份同一位置没有公式。</li>
+              <li>附近内容和备份不同（可能挪过行列）；数组 / 溢出区域大小变了。</li>
+              <li>备份的公式本身也坏了；工作表配不上，或几种配法算出来的值不一样。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group is-wide">
+            <h3>🔗 和精简 Sheet 的关系</h3>
+            <ul>
+              <li>精简 Sheet「确认执行」后默认会接着自动做这一步（精简页填了参考文件夹才做，没填就跳过）。这一页是单独跑用的。</li>
+            </ul>
+          </section>
+        </div>
+      </details>
       <div class="link-fields">
         <label for="repairFolder">当前 Excel 文件夹（含子文件夹）<textarea id="repairFolder" class="workbook-paths" rows="2" aria-label="Excel 文件或文件夹路径" placeholder="每行一个 Excel 文件或文件夹路径"></textarea></label>
         <label for="repairOldFolder">默认参考文件夹<input id="repairOldFolder" type="text" placeholder="按 Excel 文件名搜索此文件夹及子文件夹"></label>
@@ -26,8 +71,7 @@
       <div class="link-actions">
         <button id="repairRun" class="btn btn-primary" type="button" disabled>🔗 扫描并修复引用错误</button>
       </div>
-      <p class="toolbar-hint">复杂公式恢复的是备份中的完整计算结果。配对不明确、附近内容已变、备份本身也报错的格子会列出原因，留给人工检查。修复前请保存并关闭目标 Excel 文件。</p>
-      <p class="toolbar-hint">点击后自动完成扫描、备份对比和修复，直接保存当前文件。关闭网页后任务继续。</p>
+      <p class="toolbar-hint">点一次就扫描、对比、修复并保存。修复前请保存并关闭目标 Excel 文件。关闭网页后任务继续。</p>
       <p id="repairProgress" role="status" aria-live="polite">填写两个文件夹，一次完成扫描和修复。</p>
       <div class="progress-track progress-track-sm"><div id="repairProgressFill" class="progress-fill" style="width:0%"></div></div>
       <p id="repairError" class="batch-error" role="alert"></p>

@@ -7,7 +7,6 @@
   <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
   <link rel="stylesheet" href="/static/repair.css"><script src="/static/game_fx.js"></script>
   <style>
-    .font-rules { margin: 0; padding-left: 22px; line-height: 1.9; }
     .font-fields { grid-template-columns: minmax(0, 1fr); max-width: 760px; }
     .font-summary { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 6px 0 4px; font-weight: 600; }
     .font-summary .is-ok { color: #14633c; } .font-summary .is-bad { color: #89580b; }
@@ -23,6 +22,7 @@
   <link rel="stylesheet" href="/static/theme-casual.css">
   <script src="/static/tools.js?v=1"></script>
   <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/how_notes.css">
 </head>
 <body>
   <header class="app-header">
@@ -32,12 +32,40 @@
   <main class="container clean-container">
     <section class="panel">
       <h2>把游ゴシック换回标准字体ＭＳ Ｐゴシック</h2>
-      <ul class="font-rules toolbar-hint">
-        <li>游ゴシック比ＭＳ Ｐゴシック宽、行距大，原来放得下的字会被挤出去，查切字时报成误报，多半出在<b>图形</b>（对话框、文本框）里。</li>
-        <li>查<b>图形</b>里的每一段文字和<b>有内容的格子</b>：只换游ゴシック一家（游ゴシック、游ゴシック 本文、Yu Gothic 等），别的字体、字号、颜色都不动。</li>
-        <li>不改 Excel 的「標準」样式（改了整张表的列宽、行高都会变）。.xls / .xlsb 只查图形。</li>
-        <li>精简 Sheet 之后会自动做这一步；这里是单独跑用的。改完直接保存。</li>
-      </ul>
+      <details class="how-notes">
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">图形里和有内容的格子里，游ゴシック 一律换成ＭＳ Ｐゴシック，别的不动</span><span class="how-notes-toggle"></span></summary>
+        <div class="how-notes-body">
+          <section class="how-notes-group is-wide">
+            <h3>🤔 为什么要换</h3>
+            <ul>
+              <li>游ゴシック比ＭＳ Ｐゴシック宽、行距大，原来放得下的字会被挤出去，查切字时报成误报，多半出在<b>图形</b>（对话框、文本框）里。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>🔤 换哪些</h3>
+            <ul>
+              <li>只认游ゴシック一家：游ゴシック、游ゴシック 本文、游ゴシック Light、半角写的 游ｺﾞｼｯｸ、Yu Gothic / Yu Gothic UI 都算（不管全角半角、大小写、空格）。</li>
+              <li><b>图形</b>：每个图形里的每一段文字各自判断（组合图形拆开看里面的每一个），游ゴシック的那段换成ＭＳ Ｐゴシック，西文、日文字体一起换；别的段、字号、颜色不动。</li>
+              <li><b>格子</b>：只看有内容、字体是游ゴシック的格子，整格换成ＭＳ Ｐゴシック；字号、颜色、粗体等不变。</li>
+              <li>.xls / .xlsb 只改图形，格子查不了。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>🚫 不碰的</h3>
+            <ul>
+              <li>不改 Excel 的「標準」样式：改了整张表的标准列宽、行高都会变。</li>
+              <li>空白格子、别的字体、行高列宽都不动。</li>
+              <li>一处都不用换的文件不保存；文件正在 Excel 里打开时不改。改完直接保存，没有确认这一步。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group is-wide">
+            <h3>🔗 和精简 Sheet 的关系</h3>
+            <ul>
+              <li>精简 Sheet「确认执行」后默认会接着自动做这一步（精简页底部「做完后顺便做」可以勾掉）。这一页是单独跑用的。</li>
+            </ul>
+          </section>
+        </div>
+      </details>
       <div class="link-fields font-fields">
         <label for="fontFolder">Excel 文件或文件夹路径<textarea id="fontFolder" class="workbook-paths" rows="2" aria-label="Excel 文件或文件夹路径" placeholder="每行一个 Excel 文件或文件夹路径"></textarea></label>
       </div>

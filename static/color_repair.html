@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/static/theme-casual.css">
   <script src="/static/tools.js?v=1"></script>
   <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/how_notes.css">
 </head>
 <body data-repair-kind="colors">
   <header class="app-header">
@@ -27,11 +28,45 @@
     </section>
     <section class="panel">
       <h2>清除标记并对照备份修复配色</h2>
-      <p class="toolbar-hint">比较全部单元格直接设置的底色、字色及 Sheet 标签颜色，不限预设颜色。颜色相同则保留，颜色不同且对应关系能确认时，恢复备份原色；备份没有填充或标签颜色时清除当前颜色，缺失的原色也会恢复。</p>
+      <details class="how-notes">
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">先清掉本工具的标记，再对照原始备份把被改过的底色、字色、标签颜色改回去</span><span class="how-notes-toggle"></span></summary>
+        <div class="how-notes-body">
+          <section class="how-notes-group">
+            <h3>🧽 第一步：清标记</h3>
+            <ul>
+              <li>删掉本工具加的问题标记：带 <code>CHE_MARK</code> 标识的条件格式规则。单元格直接设置的颜色这一步不动。</li>
+              <li>程序标成橙黄色的工作表标签改回标之前的颜色（没记下原色的当作原来没颜色）；标签已经被人改成别的颜色的不覆盖。</li>
+              <li>清除失败的文件照样接着查配色，原因写在下面的「标记清除结果」里。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>🎨 第二步：对照备份修配色</h3>
+            <ul>
+              <li>按文件名在参考文件夹里找原始备份，<b>只读</b>；工作表按名字和内容配对。</li>
+              <li>比较每个格子<b>直接设置</b>的底色、字色，以及工作表标签颜色，不管是不是预设颜色。</li>
+              <li>颜色一样不动；不一样、且能确认是同一个格子（内容、公式、合并区域都和备份一致）时改回备份的颜色；备份没有填充或标签颜色的，清掉现在的；备份有、现在没有的，补回去。</li>
+              <li>条件格式显示出来的颜色不是直接配色，不比也不改。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group is-warn">
+            <h3>✋ 留给人工的情况（结果里写原因）</h3>
+            <ul>
+              <li>内容、公式或合并区域和备份对不上；工作表或格子配对不明确。</li>
+              <li>渐变填充、整行整列的默认配色等复杂情况。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>💾 文件格式和保存</h3>
+            <ul>
+              <li>支持 .xlsx / .xlsm / .xls / .xlsb；.xls / .xlsb 要在后台 Excel 里读颜色，慢一些。.xltx / .xltm 模板只对比不写回，请另存为工作簿后再修。</li>
+              <li>改完回读核对，有一处没改回备份颜色，整份不保存。文件正在 Excel 里打开时不改。</li>
+              <li>按当前任务上传时，每份文件上传前也会自动做这两步（「上传前处理」，参考文件夹里有对应文件才修配色）。</li>
+            </ul>
+          </section>
+        </div>
+      </details>
       <div class="link-actions"><button id="repairRun" class="btn btn-primary" type="button" disabled>🎨 清除标记并修复颜色</button></div>
-      <p class="toolbar-hint">先清除程序添加的 CHE_MARK 条件格式标记，并将橙黄色的工作表标签设为无颜色；再对照备份检查并修复配色。清除失败的文件仍会检查配色，失败原因会列在结果中。</p>
-      <p class="toolbar-hint">点击后自动对比并保存修复结果。内容、公式或合并区域对不上，以及配对不明确、渐变填充、整行整列的默认配色等复杂情况，会列出原因供人工核对。修复前请保存并关闭目标 Excel 文件。</p>
-      <p class="toolbar-hint">支持 .xlsx / .xlsm / .xls / .xlsb；.xltx / .xltm 模板只读对比，请另存为工作簿后修复。其他条件格式动态显示的颜色不属于直接配色。关闭网页后任务继续。</p>
+      <p class="toolbar-hint">点一次就清标记、对比并保存。修复前请保存并关闭目标 Excel 文件。关闭网页后任务继续。</p>
       <p id="repairProgress" role="status" aria-live="polite">填写两个文件夹后开始处理。</p>
       <div class="progress-track progress-track-sm"><div id="repairProgressFill" class="progress-fill" style="width:0%"></div></div>
     </section>

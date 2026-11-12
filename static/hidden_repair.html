@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/static/theme-casual.css">
   <script src="/static/tools.js?v=1"></script>
   <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/how_notes.css">
 </head>
 <body data-repair-kind="hidden">
   <header class="app-header">
@@ -18,7 +19,43 @@
   <main class="container clean-container">
     <section class="panel">
       <h2>找回原来隐藏的工作表和列</h2>
-      <p class="toolbar-hint">扫描原始备份，对照当前文件的内容、公式和位置，恢复被显示出来的隐藏工作表、隐藏列，以及被加宽的超窄列。</p>
+      <details class="how-notes">
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">备份里隐藏、现在被显示出来的表和列重新藏起来；被加宽的超窄列改回原宽度</span><span class="how-notes-toggle"></span></summary>
+        <div class="how-notes-body">
+          <section class="how-notes-group">
+            <h3>🙈 恢复哪些（看下面三个勾）</h3>
+            <ul>
+              <li><b>隐藏工作表</b>：备份里是隐藏 / 深度隐藏、现在可见的表，改回原来的隐藏方式。</li>
+              <li><b>隐藏列</b>：备份里隐藏、现在可见的列，重新隐藏。</li>
+              <li><b>超窄列</b>：备份里列宽大于 0、不超过 1 个字符、现在被加宽的列，改回备份的列宽，仍然可见。</li>
+              <li>只往「和备份一样」的方向改：现在隐藏、备份可见的不动；隐藏行不处理；正常宽度的列不调整；已删除的表不重建。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>🔒 先核对，核对不了就跳过</h3>
+            <ul>
+              <li>按文件名在参考文件夹里找原始备份，<b>只读打开</b>；工作表按名字、代码名和内容配对。</li>
+              <li>表的内容、公式和位置要和备份完全一样才动（防止挪过行列后藏错列）；每张表最多完整核对 100 万格，包含使用区域里的空白格，超过就跳过。</li>
+              <li>改完回读核对，有一处没恢复成，<b>整份不保存</b>。文件正在 Excel 里打开时不改。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group is-warn">
+            <h3>✋ 会跳过并写明原因的情况</h3>
+            <ul>
+              <li>工作表配不上（比如同名旧表和「新」表并存，证据不足）；内容、公式或位置和备份不同；名字不同又是空白表。</li>
+              <li>工作簿结构受保护（不能隐藏表）；工作表受保护（不能改列）。</li>
+              <li>恢复后一张可见表都不剩（Excel 至少要留一张）。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>🔗 和精简 Sheet 的关系</h3>
+            <ul>
+              <li>精简 Sheet「确认执行」后可以顺便做这一步，<b>默认不勾</b>，勾上时三项都恢复；没填参考文件夹就跳过。</li>
+              <li>只想把列宽整个改回参考的，用主页「修复列宽」。</li>
+            </ul>
+          </section>
+        </div>
+      </details>
       <div class="link-fields">
         <label for="repairFolder">当前 Excel 文件夹（含子文件夹）<textarea id="repairFolder" class="workbook-paths" rows="2" aria-label="Excel 文件或文件夹路径" placeholder="每行一个 Excel 文件或文件夹路径"></textarea></label>
         <label for="repairOldFolder">默认参考文件夹<input id="repairOldFolder" type="text" placeholder="按 Excel 文件名搜索此文件夹及子文件夹"></label>
@@ -28,10 +65,8 @@
         <label><input id="repairColumns" type="checkbox" checked> 隐藏列</label>
         <label><input id="repairNarrow" type="checkbox" checked> 超窄列恢复原列宽（备份列宽大于 0、且不超过 1 个字符）</label>
       </fieldset>
-      <p class="toolbar-hint">“隐藏列”会恢复隐藏属性；“超窄列”只恢复备份中的原列宽，仍然可见。正常宽度的列不调整。已删除的工作表不会重建。</p>
       <div class="link-actions"><button id="repairRun" class="btn btn-primary" type="button" disabled>🙈 扫描并修复隐藏页</button></div>
-      <p class="toolbar-hint">点击后自动对比并保存当前文件，备份只读。内容或公式不同、配对不明确、受保护或无法完整核对的表会跳过并说明原因。每张表最多完整核对 100 万格，包含使用区域内的空白格。</p>
-      <p class="toolbar-hint">请先保存并关闭目标 Excel 文件。关闭网页后任务继续；刷新页面可查看进度与结果。</p>
+      <p class="toolbar-hint">点一次就对比并保存。请先保存并关闭目标 Excel 文件。关闭网页后任务继续；刷新页面可查看进度与结果。</p>
       <p id="repairProgress" role="status" aria-live="polite">填写两个文件夹，一次完成扫描和修复。</p>
       <div class="progress-track progress-track-sm"><div id="repairProgressFill" class="progress-fill" style="width:0%"></div></div>
       <p id="repairError" class="batch-error" role="alert"></p>
