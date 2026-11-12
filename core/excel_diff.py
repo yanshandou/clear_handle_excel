@@ -603,6 +603,47 @@ def _view(name: str, old: dict[str, Any] | None, new: dict[str, Any] | None, mar
             "row_marks": row_marks, "col_marks": col_marks, "boxes": boxes, "rows_cut": cut, "cols_cut": cols_cut, "last_row": last_row}
 
 
+MAX_EDGE_SPOTS = 400   # PDF 对照上最多标多少行 / 列的行高、列宽不同
+
+
+def _edge_cells(info: dict[str, Any], rows: list[int], cols: list[str], last: tuple[int, int]) -> dict[str, dict]:
+    """行高 / 列宽不一样的行、列各挑一个会印出来的格子：在 PDF 上找到它，就知道这一行 / 列印在哪（core/excel_diff_pdf.py）。
+    不挑隐藏行列、打印区域外的；也不挑跨行（跨列）的合并格，它比这一行（列）大"""
+    from openpyxl.utils.cell import column_index_from_string, get_column_letter, range_boundaries
+    sheet = info["sheet"]
+    area = re.search(r"[A-Z]+\d+:[A-Z]+\d+", info["setup"]["打印区域"])
+    left, top, right, bottom = range_boundaries(area[0]) if area else (1, 1, last[1], last[0])
+    tall, wide = set(), set()
+    for rng in sheet.merged_cells.ranges:
+        if (rng.max_row - rng.min_row + 1) * (rng.max_col - rng.min_col + 1) > 50000:
+            continue
+        cells = {(r, c) for r in range(rng.min_row, rng.max_row + 1) for c in range(rng.min_col, rng.max_col + 1)}
+        if rng.max_row > rng.min_row:
+            tall |= cells
+        if rng.max_col > rng.min_col:
+            wide |= cells
+    hidden_rows = {r for r, dim in sheet.row_dimensions.items() if dim.hidden}
+    hidden_cols: set[int] = set()
+    for dim in sheet.column_dimensions.values():
+        if dim.hidden and dim.min:
+            hidden_cols.update(range(dim.min, min(dim.max or dim.min, right) + 1))
+    out: dict[str, dict] = {"rows": {}, "cols": {}}
+    for row in rows[:MAX_EDGE_SPOTS]:
+        if row in hidden_rows or not top <= row <= bottom:
+            continue
+        col = next((c for c in range(left, right + 1) if c not in hidden_cols and (row, c) not in tall), None)
+        if col:
+            out["rows"][row] = f"{get_column_letter(col)}{row}"
+    for name in cols[:MAX_EDGE_SPOTS]:
+        col = column_index_from_string(name)
+        if col in hidden_cols or not left <= col <= right:
+            continue
+        row = next((r for r in range(top, min(bottom, top + 200) + 1) if r not in hidden_rows and (r, col) not in wide), None)
+        if row:
+            out["cols"][name] = f"{name}{row}"
+    return out
+
+
 def _addr_key(addr: str) -> tuple[int, int, str]:
     letters = re.sub(r"\d", "", addr)
     return int(re.sub(r"\D", "", addr) or 0), len(letters), letters
@@ -627,8 +668,9 @@ def _hyperlink(cell: Any) -> str:
     return str(link.target or (f"#{link.location}" if link.location else "") or "")
 
 
-def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any], caches: tuple[dict, dict]) -> dict[str, Any]:
-    """old = 远程（左），new = 要上传的（右）"""
+def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any], caches: tuple[dict, dict],
+                spots: bool = False) -> dict[str, Any]:
+    """old = 远程（左），new = 要上传的（右）。spots=True：多带一份「不一样的地方都在哪」，给 PDF 对照标位置用"""
     a, b = _sheet_info(old, name), _sheet_info(new, name)
     counts: dict[str, int] = {}
     # ── 文字 ──
@@ -690,12 +732,14 @@ def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any], caches: tup
     # ── 整张表 ──
     whole = []
     size_marks: dict[str, list] = {}
+    size_notes: dict[str, list] = {}
     for kind, field, label in (("行高", "rows", "第 {} 行"), ("列宽", "cols", "{} 列")):
         da, db = a[field], b[field]
         keys = [k for k in da.keys() | db.keys() if da.get(k, "默认") != db.get(k, "默认")]
         keys.sort(key=(lambda k: k) if field == "rows" else (lambda k: (len(k), k)))
         counts[kind] = len(keys)
         size_marks[field] = list(keys)
+        size_notes[field] = [[k, f"{label.format(k)}：{kind} {da.get(k, '默认')} → {db.get(k, '默认')}"] for k in keys]
         merged: dict[tuple[str, str], list] = {}
         for k in keys:
             merged.setdefault((da.get(k, "默认"), db.get(k, "默认")), []).append(k)
@@ -738,14 +782,20 @@ def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any], caches: tup
             whole.append({"kind": kind, "what": what, "old": fmt(a[field]), "new": fmt(b[field])})
     counts = {k: v for k, v in counts.items() if v}
     view = _view(name, old, new, marks, size_marks.get("rows", []), size_marks.get("cols", []), only_a + only_b, boxes) if counts else None
-    return {"name": name, "status": "changed" if counts else "same", "counts": counts, "view": view,
-            "text": text_rows, "text_more": max(0, len(changed) - MAX_TEXT_ROWS),
-            "formulas": formulas[:MAX_TEXT_ROWS], "formulas_more": max(0, len(formulas) - MAX_TEXT_ROWS),
-            "notes": (notes["批注"] + notes["超链接"])[:MAX_TEXT_ROWS],
-            "styles": styles, "whole": whole}
+    entry = {"name": name, "status": "changed" if counts else "same", "counts": counts, "view": view,
+             "text": text_rows, "text_more": max(0, len(changed) - MAX_TEXT_ROWS),
+             "formulas": formulas[:MAX_TEXT_ROWS], "formulas_more": max(0, len(formulas) - MAX_TEXT_ROWS),
+             "notes": (notes["批注"] + notes["超链接"])[:MAX_TEXT_ROWS],
+             "styles": styles, "whole": whole}
+    if spots and counts:
+        last = tuple(max(pair) for pair in zip(_used_bounds(old, name), _used_bounds(new, name)))
+        entry["spots"] = {"cells": marks, "rows": size_notes["rows"], "cols": size_notes["cols"], "boxes": boxes,
+                          "edges": {side: _edge_cells(info, size_marks["rows"], size_marks["cols"], last)
+                                    for side, info in (("old", a), ("new", b))}}
+    return entry
 
 
-def diff(mine: Path | str, theirs: Path | str) -> dict[str, Any]:
+def diff(mine: Path | str, theirs: Path | str, *, spots: bool = False) -> dict[str, Any]:
     """mine = 你要上传的这份（右 / 新），theirs = 远程现在这份（左 / 旧）"""
     mine, theirs = Path(mine), Path(theirs)
     with debug_log.side_task("excel_diff", {"mine": str(mine), "theirs": str(theirs)}):
@@ -764,7 +814,7 @@ def diff(mine: Path | str, theirs: Path | str) -> dict[str, Any]:
                     sheets.append({"name": name, "status": "only_new", "doomed": doomed, "counts": {},
                                    "view": None if doomed else _view(name, None, new, {}, [], [], [])})
                 else:
-                    entry = _diff_sheet(name, old, new, caches)
+                    entry = _diff_sheet(name, old, new, caches, spots)
                     entry["doomed"] = doomed
                     sheets.append(entry)
             order_changed = [n for n in names_old if n in names_new] != [n for n in names_new if n in names_old]
