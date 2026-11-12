@@ -186,6 +186,39 @@ class RelayUploadTests(unittest.TestCase):
         self.assertEqual(result["files"][0]["status"], "conflict")
         self.assertEqual(read(dest / "a.xlsx"), "刚被别人放进来")
 
+    def test_free_upload_from_task_work_to_relay_writes_manifest(self):
+        """用户 2026-11-12：起点 → 终点从任务处理文件夹传到团队中转，也要写拿取版本.json"""
+        preview = distribute.preview_free(str(self.work), str(self.team))
+        self.assertEqual(preview["relay_task"]["id"], self.task["id"])
+        self.patches()
+        distribute.start_free(preview["id"])
+        result = self.wait()
+        self.assertEqual(result["summary"]["已复制"], 2)
+        manifest = json.loads(read(self.team / distribute.MANIFEST_NAME))
+        self.assertEqual(Path(manifest["shared"]), self.company.resolve())
+        self.assertEqual(manifest["files"]["a.xlsx"]["shared_sha256"], distribute._digest(self.company / "a.xlsx"))
+        self.assertEqual(manifest["files"]["a.xlsx"]["sha256"], distribute._digest(self.team / "a.xlsx"))
+        self.assertIn("拿取版本清单", distribute.markdown(result))
+        # 再从中转传回公司：按清单核对，公司没变 → 直接覆盖
+        back = distribute.preview_free(str(self.team), str(self.company))
+        self.assertEqual({f["rel"]: f["guard"] for f in back["files"]}, {"a.xlsx": "manifest", "sub/b.xlsx": "manifest"})
+        self.assertEqual({f["rel"]: f["action"] for f in back["files"]}, {"a.xlsx": "overwrite", "sub/b.xlsx": "overwrite"})
+
+    def test_free_upload_from_task_subfolder_maps_to_shared_subfolder(self):
+        preview = distribute.preview_free(str(self.work / "sub"), str(self.team))
+        self.assertEqual(Path(preview["relay_task"]["shared"]), self.company.resolve() / "sub")
+
+    def test_free_upload_back_to_shared_or_unrelated_source_writes_no_manifest(self):
+        self.assertNotIn("relay_task", distribute.preview_free(str(self.work), str(self.company)))
+        other = Path(self.tmp.name) / "别处"
+        write(other / "a.xlsx", "A")
+        self.assertNotIn("relay_task", distribute.preview_free(str(other), str(self.team)))
+
+    def test_local_desktop_shared_is_not_a_real_share(self):
+        self.assertTrue(distribute._is_local_shared(Path(r"D:/Users/s.go/Desktop/doublecheck/10画面")))
+        self.assertFalse(distribute._is_local_shared(Path(r"D:/Users/k.haku/OneDrive - 会社/Desktop/x")))
+        self.assertFalse(distribute._is_local_shared(Path(r"D:/Users/k.haku/会社/共用 - ファミリー/50Common")))
+
     def test_start_and_dest_cannot_contain_each_other(self):
         with self.assertRaises(ValueError):
             distribute.preview_free(str(self.company), str(self.company / "sub"))
