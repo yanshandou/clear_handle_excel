@@ -325,6 +325,32 @@ class TaskUploadTests(unittest.TestCase):
                 self.assertEqual(remote.read_bytes(), remote_expected)
                 self.assertEqual(local.read_bytes(), local_expected)
 
+    def test_confirmed_on_diff_page_uploads_without_second_review(self):
+        """对比页看过差异点「上传这一份」：还是那两个版本就直接传，不再逐份确认（用户 2026-11-12）"""
+        local = make(self.work / "a.xlsx", {"A1": "画面", "B2": "我的修改"})
+        remote = make(self.shared / "a.xlsx", {"A1": "画面", "B2": "共享变过"})
+        seen = {"a.xlsx": {"mine": distribute._digest(local), "theirs": distribute._digest(remote)}}
+        with patch.object(excel_diff, "diff") as compare:
+            distribute.start_task_upload(self.task["id"], ["a.xlsx"], {}, None, None, seen)
+            item = self.wait()["files"][0]
+        compare.assert_not_called()
+        self.assertEqual(item["status"], "ok", item.get("error"))
+        self.assertTrue(item["review_confirmed"])
+        self.assertEqual(remote.read_bytes(), local.read_bytes())
+
+    def test_confirmation_from_diff_page_is_void_after_remote_changes(self):
+        make(self.work / "a.xlsx", {"A1": "画面", "B2": "我的修改"})
+        remote = make(self.shared / "a.xlsx", {"A1": "画面", "B2": "共享变过"})
+        seen = {"a.xlsx": {"mine": distribute._digest(self.work / "a.xlsx"), "theirs": distribute._digest(remote)}}
+        edit(remote, B2="看完差异后别人又改了")
+        before = remote.read_bytes()
+        distribute.start_task_upload(self.task["id"], ["a.xlsx"], {}, None, None, seen)
+        token = next_review("a.xlsx")["token"]  # 没直接传，回到逐份确认
+        self.assertEqual(remote.read_bytes(), before)
+        distribute.decide_upload_review(token, "skip")
+        self.assertEqual(self.wait()["files"][0]["status"], "skipped")
+
+
 
 if __name__ == "__main__":
     unittest.main()

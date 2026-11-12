@@ -510,7 +510,14 @@ class WebHandler(upload_manager.Handler):
             mine, theirs = payload.get("mine"), payload.get("theirs")
             if not isinstance(mine, str) or not isinstance(theirs, str) or not mine.strip() or not theirs.strip():
                 raise ValueError("需要两份 Excel 的完整路径")
-            self._send_json({"ok": True, **excel_diff.diff(mine.strip(), theirs.strip())})
+            from pathlib import Path as _Path
+            sha = {}  # 对比的是哪两个版本：对比页「上传这一份」要带回来，上传那一刻还是这两个版本才直接传
+            for key, value in (("mine", mine), ("theirs", theirs)):
+                try:
+                    sha[key] = distribute._digest(_Path(value.strip()))
+                except OSError:
+                    sha[key] = ""
+            self._send_json({"ok": True, **excel_diff.diff(mine.strip(), theirs.strip()), "sha256": sha})
             return
         if self.path == "/api/distribute/upload_review":
             self._send_json({"ok": True, **distribute.upload_review(payload.get("token"))})
@@ -643,7 +650,7 @@ class WebHandler(upload_manager.Handler):
                                                                payload.get("preview_id"))})
         elif self.path == "/api/distribute/task_upload":
             distribute.start_task_upload(payload.get("task_id"), payload.get("files"), payload.get("reviewed", {}),
-                                         payload.get("pdf"), payload.get("guard"))
+                                         payload.get("pdf"), payload.get("guard"), payload.get("confirmed"))
             self._send_json({"ok": True})
         elif self.path == "/api/distribute/fetch_preview":
             self._send_json({"ok": True, "preview": distribute.preview_fetch(

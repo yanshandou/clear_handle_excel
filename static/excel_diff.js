@@ -88,6 +88,16 @@
       const box = boxes.get(r + ':' + c) || { x: colX[c - 1], y: rowY[ri], w: side.col_px[c - 1] || colW[c - 1], h: side.row_px[ri] || rowH[ri] };
       parts.push(`<b class="xv-mark is-${tone}" style="left:${box.x}px;top:${box.y}px;width:${Math.max(box.w, 6)}px;height:${Math.max(box.h, 6)}px" title="${esc(addr)}：${esc(kinds.join('、'))}不一样"></b>`);
     }
+    // 不一样的图片 / 图形：在它占的格子上画虚线框（图片本身画不出来，只标位置）
+    for (const [top, left, bottom, right, label, own] of (view.boxes || {})[sideKey] || []) {
+      const shown = view.rows.map((r, i) => (r >= top && r <= bottom ? i : -1)).filter(i => i >= 0);
+      if (!shown.length || left > view.cols.length) continue;
+      const first = shown[0], last = shown[shown.length - 1], lastCol = Math.min(right, view.cols.length) - 1;
+      const bx = colX[left - 1], by = rowY[first];
+      const bw = Math.max(own ? Math.min(own[0], width - bx) : colX[lastCol] + colW[lastCol] - bx, 24);
+      const bh = Math.max(own ? Math.min(own[1], height - by) : rowY[last] + rowH[last] - by, 18);
+      parts.push(`<b class="xv-shape is-${tone}" style="left:${bx}px;top:${by}px;width:${bw}px;height:${bh}px" title="${esc(label)}"><span>🖼 ${esc(label)}</span></b>`);
+    }
     const colHead = view.cols.map((name, i) => colW[i] ? `<span class="${colMarks.has(name) ? 'is-' + tone : ''}" style="left:${colX[i]}px;width:${colW[i]}px"${colMarks.has(name) ? ` title="${name} 列的列宽不一样"` : ''}>${name}</span>` : '').join('');
     const rowHead = view.rows.map((r, i) => rowH[i] ? `<span class="${rowMarks.has(r) ? 'is-' + tone : ''}" style="top:${rowY[i]}px;height:${rowH[i]}px"${rowMarks.has(r) ? ` title="第 ${r} 行的行高不一样"` : ''}>${r}</span>` : '').join('');
     return `<div class="xv-pane is-${tone}" data-sheet="${esc(sheetName)}">`
@@ -99,12 +109,13 @@
     const view = sheet.view;
     if (!view) return '';
     const count = Object.keys(view.marks || {}).length + (view.marks_cut || 0);
-    const note = [count ? `色块 = 不一样的格子（${count} 格，鼠标移上去看是哪一类）` : '', view.row_marks.length ? '行号带颜色 = 行高不一样' : '',
+    const shapes = ((view.boxes || {}).old || []).length + ((view.boxes || {}).new || []).length;
+    const note = [shapes ? '虚线框 = 不一样的图片 / 图形占的位置（图片本身画不出来）' : '', count ? `色块 = 不一样的格子（${count} 格，鼠标移上去看是哪一类）` : '', view.row_marks.length ? '行号带颜色 = 行高不一样' : '',
       view.col_marks.length ? '列标带颜色 = 列宽不一样' : '', '斜纹 = 这边的行 / 列比对面小', view.cols_cut ? `右边还有 ${view.cols_cut} 列没画` : '',
       view.marks_cut ? `不一样的格子太多，只标了前 5000 格` : ''].filter(Boolean).join('；');
     return `<div class="xv-titles"><strong class="is-old">− 远程现在这份（旧）</strong><strong class="is-new">+ 你要上传的这份（新）</strong></div>`
       + `<div class="xv-wrap">${paneHtml(view, 'old', sheet.name)}${paneHtml(view, 'new', sheet.name)}</div>`
-      + `<p class="toolbar-hint xv-note">按格子画出来的样子（字体、颜色、边框、行高列宽、合并格），不含图片图形；只画有不同的行和上下 3 行。${note}。两边一起滚动。</p>`;
+      + `<p class="toolbar-hint xv-note">按格子画出来的样子（字体、颜色、边框、行高列宽、合并格），图片图形本身画不出来；只画有不同的行和上下 3 行。${note}。两边一起滚动。</p>`;
   }
 
   function sheetHtml(sheet, data) {
@@ -220,6 +231,7 @@
       console.info('🔍 Excel 对比', { 用时秒: ((performance.now() - started) / 1000).toFixed(1), 完全一样: data.identical, ...data.summary });
       off.clear();
       render(data);
+      offerUpload(data);
       $('xdStatus').textContent = `✓ 对比完成，用了 ${((performance.now() - started) / 1000).toFixed(1)} 秒。`;
       history.replaceState(null, '', `?theirs=${encodeURIComponent(theirs)}&mine=${encodeURIComponent(mine)}`);
     } catch (error) {
@@ -230,6 +242,66 @@
       $('xdRun').disabled = false;
     }
   }
+  // 从当前任务的文件清单进来（带 task + rel）：对比完可以直接上传这一份（用户 2026-11-12）
+  const uploadTask = params.get('task') || '', uploadRel = params.get('rel') || '';
+  let seen = null, uploading = false;
+  function offerUpload(data) {
+    seen = null;
+    if (!uploadTask || !uploadRel || !data.sha256 || !data.sha256.mine) return;
+    if ($('xdMine').value.trim() !== (params.get('mine') || '') || $('xdTheirs').value.trim() !== (params.get('theirs') || '')) {
+      $('xdUploadPanel').hidden = true;  // 路径被手动改过：不是清单里那一份了
+      return;
+    }
+    seen = data.sha256;
+    $('xdUploadName').textContent = '上传这一份：' + uploadRel;
+    $('xdUploadPanel').hidden = false;
+    if (!uploading) { $('xdUpload').disabled = false; $('xdUploadStatus').textContent = ''; }
+  }
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  async function api(path, body) {
+    const response = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || '请求失败');
+    return data;
+  }
+  async function uploadThis() {
+    if (!seen || uploading) return;
+    uploading = true;
+    $('xdUpload').disabled = true;
+    $('xdUploadError').textContent = '';
+    $('xdUploadStatus').textContent = '正在开始上传…';
+    console.info('📤 对比页：上传这一份', { 文件: uploadRel, 任务: uploadTask });
+    try {
+      await api('/api/distribute/task_upload', { task_id: uploadTask, files: [uploadRel], reviewed: {}, pdf: null,
+        guard: 'auto', confirmed: { [uploadRel]: seen } });
+      for (;;) {
+        await wait(1000);
+        const status = await api('/api/distribute/status');
+        if (!status.running) break;
+        $('xdUploadStatus').textContent = (status.reviews || []).length
+          ? '这份文件在对比之后又变了，没有直接传。请回上传页，在「等待确认」里重新看差异再确认。'
+          : '正在上传：' + (status.current || '准备中…');
+      }
+      const files = (await api('/api/distribute/task_files', { task_id: uploadTask })).files || [];
+      const file = files.find(item => item.rel === uploadRel);
+      if (file && file.uploaded_current && !file.review) {
+        $('xdUploadStatus').textContent = '✓ 已上传这一份。';
+        console.info('📤 对比页：上传完成', { 文件: uploadRel });
+        return;
+      }
+      $('xdUploadStatus').textContent = '';
+      $('xdUploadError').textContent = '! 这一份没有传成，请回上传页看原因。';
+      console.warn('📤 对比页：没传成', { 文件: uploadRel, 状态: file });
+    } catch (error) {
+      $('xdUploadStatus').textContent = '';
+      $('xdUploadError').textContent = error.message;
+      $('xdUpload').disabled = false;
+    } finally {
+      uploading = false;
+    }
+  }
+  $('xdUpload').addEventListener('click', uploadThis);
+
   const token = params.get('review');
   async function reviewRequest(action, fields = {}) {
     const response = await fetch('/api/distribute/upload_' + action, {
