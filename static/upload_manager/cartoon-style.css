@@ -6,7 +6,7 @@
   background: var(--garden-page) fixed;
   color-scheme: light;
   --ink: var(--garden-ink);
-  --ink-2: #3e5140;
+  --ink-2: #304b5e;
   --ink-3: var(--garden-muted);
   --muted: var(--garden-muted);
   --line: var(--garden-panel-border);
@@ -24,7 +24,7 @@ body {
 
 /* Cream navigation with a lime active tab. */
 .sidebar {
-  background: linear-gradient(180deg, #fffef9, #f6f8ed);
+  background: var(--garden-surface);
   border-right: 3px solid var(--line);
   box-shadow: 4px 0 18px #5267440a;
 }
@@ -54,7 +54,7 @@ body {
 .sidebar-bottom .online-dot { background: #438441; border: 2px solid #d8eacb; width: 12px; height: 12px; box-shadow: none; }
 
 .topbar {
-  background: linear-gradient(#fffefb, #fbfaf2);
+  background: var(--garden-surface);
   border-bottom: 3px solid var(--line);
 }
 .breadcrumb, .today { color: var(--muted); }
@@ -107,9 +107,8 @@ body {
   filter: none;
 }
 
-/* Mint-white overview. */
 .overview {
-  background: linear-gradient(120deg, #fcfff7, #eef7e9);
+  background: var(--garden-surface);
   border: 2px solid var(--line);
   border-radius: var(--garden-panel-radius);
   box-shadow: inset 0 2px 0 #fff, var(--garden-panel-shadow);
@@ -207,14 +206,14 @@ body {
 .plan-preview-bar, .date-history-bar { color: var(--ink); background: #fcf3d9; border: 2px solid var(--line); border-radius: 10px; box-shadow: 0 3px 10px var(--shadow); }
 .date-history-empty { color: var(--muted); }
 
-/* Cream table card and honey selection details. These also cover dialog tables. */
+/* Table surfaces and selection details also cover dialog tables. */
 .table-card {
-  background: var(--garden-panel);
+  background: var(--garden-surface);
   border: 2px solid var(--line);
   border-radius: var(--garden-panel-radius);
   box-shadow: var(--garden-panel-shadow);
 }
-.table-toolbar, .owner-filters, .tree-actions { background: #fafaf1; }
+.table-toolbar, .owner-filters, .tree-actions { background: #f3f9fc; }
 .tree-actions { border-top: 2px dashed var(--line); }
 .search-box { color: var(--muted); background: var(--garden-panel); border: 2px solid var(--line); border-radius: 12px; box-shadow: inset 0 2px 3px #72694c0a; }
 .search-box input { color: var(--ink); }
@@ -242,7 +241,7 @@ body {
   text-shadow: none;
 }
 
-thead { background: linear-gradient(#f3f5e7, #edf0df); border-top: 0; border-bottom: 3px solid var(--line); }
+thead { background: linear-gradient(#f1f8fc, #e9f4fa); border-top: 0; border-bottom: 3px solid var(--line); }
 th { color: var(--ink); font-size: 12px; text-shadow: none; }
 td { color: var(--ink); border-color: #eae5d4; }
 tbody tr:hover { background: #f8f3df; }
@@ -276,7 +275,7 @@ tbody tr:hover { background: #f8f3df; }
 .folder-status svg { filter: none; }
 .folder-status:hover:not(:disabled) { box-shadow: inset 0 2px 0 #fff, inset 0 -3px 0 var(--status-dark), 0 3px 9px #52674426; }
 .folder-status:active:not(:disabled) { box-shadow: inset 0 2px 4px var(--status-dark); }
-.table-footer { color: var(--muted); background: #fafaf1; border-top: 2px solid var(--line); }
+.table-footer { color: var(--muted); background: #f3f9fc; border-top: 2px solid var(--line); }
 .empty-state, .empty-state strong, .empty-state span { color: var(--muted); }
 .empty-state svg { color: #8a9c73; }
 .page-footer, .page-footer span span { color: var(--muted); }

@@ -33,7 +33,7 @@
   if (jsonMode) {
     for (const id of ['distJsonIntro', 'distJsonFields', 'distJsonHelp', 'distActions']) $(id).hidden = false;
     $('distTaskNotice').hidden = true;
-    document.title = '按 JSON 复制 Excel - Excel 整理工具箱';
+    document.title = '按 JSON 复制 Excel - 开发百宝箱';
     $('distNavOverview').textContent = '复制 Excel';
     $('distBreadcrumb').textContent = 'JSON 复制';
     $('distHeading').textContent = '先生成清单，确认后再复制';
@@ -47,7 +47,7 @@
     $('distJsonIntro').querySelector('h2').textContent = '起点 → 终点 上传';
     $('distJsonIntro').querySelector('.section-kicker').innerHTML = 'UPLOAD <span>01 / 从哪儿传到哪儿</span>';
     for (const el of $('distJsonIntro').querySelectorAll('p')) el.hidden = true;
-    document.title = '起点 → 终点 上传 - Excel 整理工具箱';
+    document.title = '起点 → 终点 上传 - 开发百宝箱';
     $('distNavOverview').textContent = '起点 → 终点 上传';
     $('distBreadcrumb').textContent = '起点 → 终点';
     $('distHeading').textContent = '从起点传到终点';
@@ -57,7 +57,7 @@
     $('distGoUpload').hidden = false;
   } else if (startMode) {
     document.body.classList.add('dist-start');
-    document.title = '新任务 · 拿文件 - Excel 整理工具箱';
+    document.title = '新任务 · 拿文件 - 开发百宝箱';
     $('distNavOverview').textContent = '新任务 · 拿文件';
     $('distBreadcrumb').textContent = '新任务 · 拿文件';
     $('distHeading').textContent = '新任务 · 从共享拿文件';
@@ -70,7 +70,7 @@
     $('distNewTask').hidden = false;
     $('distGoManage').hidden = true;
     $('distBrandName').textContent = '新任务 · 入口';
-    $('distBrandSub').textContent = 'Excel 整理工坊 · 起点';
+    $('distBrandSub').textContent = '开发百宝箱 · 起点';
     $('distNavResults').textContent = '拿取清单';
     $('distCrumbRoot').textContent = '起点';
     $('distFooter').textContent = 'EXCEL 整理工具箱 / 起点 · 新任务';

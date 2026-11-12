@@ -1,9 +1,32 @@
 /* ==========================================
-   主页卡片页（static/home_tiles.js，用户 2026-11-11 要）
-   布局参考开始菜单的大小磁贴：6 列网格，大卡 2×2、横卡 2×1、小卡 1×1；画风还是花园风。
-   只做电脑版。卡片位置写死，悬停 / 选中 / 闪边框都只换颜色和阴影，不改尺寸、不挪位置。
-   文字对比度都 ≥ 4.5:1。
+   首页的海景、工作区面板和工具卡片。
+   宽屏采用 6 列磁贴布局，悬停、按下和返回高亮都不改变卡片位置。
    ========================================== */
+.home-seascape {
+  height: clamp(142px, 15vw, 226px);
+  background:
+    linear-gradient(180deg, #f4faff32, #eff8fc12 62%, #eaf6fc 100%),
+    url('/static/images/bg.png') center 55% / cover no-repeat,
+    #d2ebf8;
+}
+
+.home-workspace {
+  box-sizing: border-box;
+  position: relative;
+  width: min(1360px, calc(100% - 2 * clamp(12px, 3vw, 48px)));
+  margin: -22px auto 44px;
+  padding: clamp(14px, 2.2vw, 30px);
+  border: 1px solid var(--garden-panel-border);
+  border-radius: var(--garden-panel-radius);
+  background: var(--garden-surface);
+  box-shadow: inset 0 1px 0 #fff, var(--garden-panel-shadow);
+}
+
+.home-workspace .home-tools-heading h2 {
+  font-size: clamp(21px, 2vw, 28px);
+  line-height: 1.3;
+}
+
 .tile-board { margin: 0; }
 
 .tile-grid {
@@ -58,6 +81,10 @@
 .tile:hover {
   border-color: var(--t-ink);
   box-shadow: inset 0 2px 0 #ffffffb0, 0 4px 0 var(--t-ink), 0 8px 18px #52632c26;
+}
+
+.tile:has(.tile-link:active) {
+  box-shadow: inset 0 2px 5px #203f562e, 0 1px 0 var(--t-ink);
 }
 
 .tile-link {
@@ -215,6 +242,7 @@
   .tile-grid .tile-wide { grid-column: span 2; }
 }
 @media (max-width: 699px) {
+  .home-seascape { background-position: center, center 62%, center; }
   .tile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .tile-big .tile-icon.garden-sprite { width: 96px; height: 96px; }
   .tile-big .tile-text { max-width: calc(100% - 96px); }

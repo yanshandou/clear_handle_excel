@@ -1,18 +1,19 @@
 :root {
-  --garden-ink: #294735;
-  --garden-muted: #5e6d55;
-  --garden-panel: #fffdf6;
-  --garden-panel-border: #e7dfca;
-  --garden-line: #e2e8d7;
-  --garden-field: #fffefb;
-  --garden-field-border: #c5d1b8;
+  --garden-ink: #203f56;
+  --garden-muted: #4b6274;
+  --garden-panel: #fdfefe;
+  --garden-panel-border: #d2e3ec;
+  --garden-line: #dce8ee;
+  --garden-field: #fff;
+  --garden-field-border: #b7cdd9;
   --garden-focus: #087d9d;
-  --garden-page: radial-gradient(ellipse at 90% 0, #e8f4d4, transparent 48%), linear-gradient(#f9fbf2, #f1f5e5);
+  --garden-page: linear-gradient(#eaf6fc, #f5fafc 38%, #edf5f9);
+  --garden-surface: linear-gradient(#fffffff5, #f7fcfff0);
   --garden-panel-radius: 22px;
   --garden-field-radius: 12px;
-  --garden-panel-shadow: 0 3px 0 #e1e4d0, 0 8px 20px #415d2810;
-  --garden-dialog-shadow: 0 6px 0 #cbd3b9, 0 24px 70px #20311c38;
-  --garden-backdrop: #22381b66;
+  --garden-panel-shadow: 0 3px 0 #dbe9f0, 0 8px 20px #234c6912;
+  --garden-dialog-shadow: 0 6px 0 #cadae5, 0 24px 70px #16344938;
+  --garden-backdrop: #18394f66;
   --garden-font: "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Yu Gothic UI", Meiryo, sans-serif;
 
   --garden-button-top: #fffef9;
@@ -42,9 +43,9 @@
   gap: 10px 22px;
   padding: 14px clamp(16px, 2vw, 28px);
   color: var(--garden-ink);
-  background: #fffef9;
+  background: var(--garden-surface);
   border-bottom: 1px solid var(--garden-line);
-  box-shadow: 0 3px 0 #e7ead9, 0 6px 18px #47613708;
+  box-shadow: 0 3px 0 #dcebf3, 0 6px 18px #234c690b;
 }
 .app-header .header-brand {
   display: flex;
@@ -60,14 +61,12 @@
   width: 44px;
   height: 44px;
   font-size: 0;
-  border: 1px solid #d6e2c4;
-  border-radius: 14px;
-  background: #eff8df url('/static/icons/garden-tools-v1.webp') 50% 100% / 300% 200% no-repeat;
-  box-shadow: inset 0 1px 0 #fff, 0 2px 0 #c4d8a6;
+  border: 0;
+  border-radius: 50%;
+  background: url('/static/images/dev-toolbox-logo.png') center / contain no-repeat;
+  box-shadow: none;
   transform: none;
 }
-.distribution-header .header-logo-badge { background-position: 0 100%; }
-.dist-start .distribution-header .header-logo-badge { background-position: 50% 100%; }
 .app-header .header-title { display: grid; gap: 3px; min-width: 0; }
 .app-header .header-title-text {
   margin: 0;
@@ -101,7 +100,7 @@
   padding: 6px 10px;
   border: 1px solid transparent;
   border-radius: 999px;
-  color: #536747;
+  color: var(--garden-muted);
   background: transparent;
   box-shadow: none;
   font: 700 13px/1.4 var(--garden-font);
@@ -109,12 +108,12 @@
   text-shadow: none;
   transition: background-color .15s, border-color .15s;
 }
-.app-header .nav-link:hover { background: #f0f5e6; border-color: #d5e1c3; }
+.app-header .nav-link:hover { background: #edf7fd; border-color: #cbdfe9; }
 .app-header .nav-link[aria-current='page'] {
-  color: var(--garden-primary-ink);
-  background: linear-gradient(#edf7d6, #d4eab3);
-  border-color: #b3cc8b;
-  box-shadow: inset 0 1px 0 #fff, 0 2px 0 #a7c37d;
+  color: #1e506d;
+  background: linear-gradient(#effaff, #d5edf8);
+  border-color: #aacddd;
+  box-shadow: inset 0 1px 0 #fff, 0 2px 0 #abcddd;
 }
 .app-header .nav-link.nav-next {
   color: #624714;

@@ -341,7 +341,7 @@ class WebHandler(upload_manager.Handler):
             self._send_json({**folder_history(folder), "operations": operation_history.events(folder),
                              "scans": scan_analysis.history(folder)})
         elif parsed.path == "/favicon.ico":
-            self._serve_static_file("favicon.svg")
+            self._serve_static_file("images/dev-toolbox-logo.png")
         elif parsed.path.startswith("/static/"):
             rel = parsed.path.removeprefix("/static/")
             self._serve_static_file(rel)
