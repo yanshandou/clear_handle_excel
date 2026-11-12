@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/static/home_route.css?v=3"><link rel="stylesheet" href="/static/work_task.css?v=6"><link rel="stylesheet" href="/static/theme-casual.css"><script src="/static/game_fx.js"></script>
   <link rel="stylesheet" href="/static/theme-cartoon.css">
   <link rel="stylesheet" href="/static/how_notes.css">
-  <link rel="stylesheet" href="/static/home_tiles.css?v=2">
+  <link rel="stylesheet" href="/static/home_tiles.css?v=3">
 </head>
 <body>
   <header class="app-header">
@@ -21,12 +21,12 @@
       </div>
     </a>
     <nav class="header-nav" aria-label="功能导航">
-      <a href="/" class="nav-link active" aria-current="page"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#home"></use></svg>主页</a>
-      <a href="/clean" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#grid"></use></svg>精简 Sheet</a>
-      <a href="/workbench" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#search"></use></svg>切字检查</a>
-      <a href="/analysis" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#chart"></use></svg>扫描分析</a>
-      <a href="/history" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#folder"></use></svg>文件夹历史</a>
-      <a href="/records" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#layers"></use></svg>
+      <a href="/" class="nav-link active" aria-current="page"><span class="ui-icon harbor-icon icon-home" aria-hidden="true"></span>主页</a>
+      <a href="/clean" class="nav-link"><span class="ui-icon harbor-icon icon-grid" aria-hidden="true"></span>精简 Sheet</a>
+      <a href="/workbench" class="nav-link"><span class="ui-icon harbor-icon icon-search" aria-hidden="true"></span>切字检查</a>
+      <a href="/analysis" class="nav-link"><span class="ui-icon harbor-icon icon-chart" aria-hidden="true"></span>扫描分析</a>
+      <a href="/history" class="nav-link"><span class="ui-icon harbor-icon icon-folder" aria-hidden="true"></span>文件夹历史</a>
+      <a href="/records" class="nav-link"><span class="ui-icon harbor-icon icon-layers" aria-hidden="true"></span>
         执行记录
         <span id="navProgressBadge" class="nav-badge">0%</span>
       </a>
@@ -41,15 +41,15 @@
       <div class="home-hero-actions">
         <button type="button" class="btn btn-outline btn-sm" id="exportProgressBtn" onclick="exportProgress()"
           title="把扫描结果、人工判断、续跑点和执行记录保存为备份文件">
-          <svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#download"></use></svg>导出进度
+          <span class="ui-icon harbor-icon icon-download" aria-hidden="true"></span>导出进度
         </button>
         <button type="button" class="btn btn-outline btn-sm" id="importProgressBtn" onclick="pickProgressFile()"
           title="从备份文件恢复进度，会替换当前全部进度">
-          <svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#upload"></use></svg>导入进度
+          <span class="ui-icon harbor-icon icon-upload" aria-hidden="true"></span>导入进度
         </button>
         <button type="button" class="btn btn-outline btn-sm" onclick="openFileProblemSettings()"
           title="批量任务遇到出错的文件时：等你选择重试 / 跳过，或者多少分钟没人选就自动跳过">
-          <svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#settings"></use></svg>出错时
+          <span class="ui-icon harbor-icon icon-settings" aria-hidden="true"></span>出错时
         </button>
         <input type="file" id="progressFileInput" class="hidden" accept=".json,application/json">
       </div>
@@ -78,7 +78,7 @@
 
     <!-- 当前任务：一个任务对应共享文件夹里的一个文件夹；只填共享路径，参考 / 处理文件夹自动生成（static/work_task.js） -->
     <section id="workTaskPanel" class="work-task-bar" aria-label="当前任务">
-      <span class="work-task-title">📁 当前任务：<strong id="workTaskName">还没有任务</strong></span>
+      <span class="work-task-title"><span class="ui-icon harbor-icon icon-folder" aria-hidden="true"></span> 当前任务：<strong id="workTaskName">还没有任务</strong></span>
       <details class="work-task-more"><summary>看路径</summary><dl id="workTaskPaths" class="work-task-paths"></dl>
         <p id="workTaskHint" class="work-task-hint"></p></details>
       <div class="work-task-switch">切换
@@ -103,7 +103,7 @@
   <!-- 单项功能对话框：填写文件夹 → 执行 → 查看结果（精简 Sheet 在独立页面 /clean） -->
   <dialog id="taskDialog" class="task-dialog" aria-labelledby="taskDialogTitle">
     <div id="taskDialogHead" class="task-dialog-head feature-sky">
-      <span id="taskDialogIcon" class="task-dialog-icon" aria-hidden="true">📄</span>
+      <span id="taskDialogIcon" class="task-dialog-icon harbor-icon icon-adjust" aria-hidden="true"></span>
       <div class="task-dialog-heading">
         <h2 id="taskDialogTitle">调整页面</h2>
         <p id="taskDialogSub"></p>
@@ -153,7 +153,7 @@
   </dialog>
 
   <script src="/static/eta.js"></script><script src="/static/job_panel.js"></script><script src="/static/dialog.js"></script>
-  <script src="/static/tools.js?v=1"></script><script src="/static/home_tiles.js?v=1"></script>
+  <script src="/static/tools.js?v=2"></script><script src="/static/home_tiles.js?v=2"></script>
   <script src="/static/home.js"></script>
   <script src="/static/work_task.js?v=8"></script>
   <script src="/static/debug_log.js"></script>

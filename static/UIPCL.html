@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="arcade">
+<html lang="zh-CN" data-theme="harbor">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -640,6 +640,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
   .task{break-inside:avoid;margin-bottom:5px}
 }
 </style>
+<link rel="stylesheet" href="/static/pcl-harbor.css" media="screen">
 </head>
 <body>
 <div class="app">
@@ -647,19 +648,21 @@ button:disabled{opacity:.5;cursor:not-allowed}
     <div class="masthead-strip">
       <a class="home-link" href="/">← 首页</a><span aria-hidden="true">◈ PCL / QA SYSTEM</span><span aria-hidden="true">UNIT TEST FIELD GUIDE</span><span class="strip-edition" aria-hidden="true">VOL. 01 &nbsp; JP / CN</span>
       <div class="theme-switch" role="group" aria-label="页面主题">
-        <button type="button" data-theme-choice="arcade" aria-pressed="true" aria-label="主题 1 · 黄黑街机" title="黄黑街机">主题 1</button>
+        <button type="button" data-theme-choice="harbor" aria-pressed="true">海港</button>
+        <button type="button" data-theme-choice="arcade" aria-pressed="false" aria-label="主题 1 · 黄黑街机" title="黄黑街机">主题 1</button>
         <button type="button" data-theme-choice="neon" aria-pressed="false" aria-label="主题 2 · 霓虹机甲" title="霓虹机甲">主题 2</button>
       </div>
     </div>
     <div class="toprow">
       <div class="hero-copy">
-        <div class="eyebrow">ARCADE QA &nbsp; / &nbsp; STATION 01</div>
+        <div class="eyebrow"><span class="pcl-legacy-label">ARCADE QA &nbsp; / &nbsp; STATION 01</span><span class="pcl-harbor-label">海港检查站</span></div>
         <span class="hero-type hero-arcade-text" aria-hidden="true">PCL CHECK!</span>
         <span class="hero-type hero-neon-text" aria-hidden="true">PCL CORE</span>
         <h1>单体测试 · 检查台</h1>
         <p>日文标准 · 中文检查步骤 · 源码自动校验 · 覆盖率 · 测试报告</p>
       </div>
       <div class="arcade-rig">
+        <img class="hero-harbor" src="/static/images/harbor/console.webp" width="664" height="498" alt="">
         <svg class="hero-arcade" viewBox="0 0 350 240" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
           <defs>
             <pattern id="arcade-dots" width="6" height="6" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.1" fill="#191815" opacity=".45"/></pattern>

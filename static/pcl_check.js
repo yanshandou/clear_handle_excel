@@ -70,7 +70,8 @@ function setupTheme() {
     document.documentElement.dataset.theme = theme;
     for (const button of buttons) button.setAttribute('aria-pressed', String(button.dataset.themeChoice === theme));
   }
-  apply(read(THEME_KEY) === 'neon' ? 'neon' : 'arcade');
+  const savedTheme = read(THEME_KEY);
+  apply(['arcade', 'neon'].includes(savedTheme) ? savedTheme : 'harbor');
   for (const button of buttons) {
     button.addEventListener('click', () => { apply(button.dataset.themeChoice); write(THEME_KEY, button.dataset.themeChoice); });
   }

@@ -1,0 +1,51 @@
+@import url("/static/garden-shell.css");
+
+.hero-harbor, .pcl-harbor-label { display: none; }
+
+html[data-theme="harbor"] {
+  --ink: #183d5b;
+  --muted: #4a6578;
+  --paper: #f2faff;
+  --stock: #e8f6fb;
+  --yellow: #f5dda2;
+  --line: #bfddea;
+  --shadow: none;
+  --checks: none;
+}
+[data-theme="harbor"] body { background: var(--stock); }
+[data-theme="harbor"] :is(.panel, .masthead) {
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  border-image: var(--harbor-cloud) 66 fill / 16px;
+}
+[data-theme="harbor"] .masthead { background: #d5f8ef; border-image-source: var(--harbor-mint); }
+[data-theme="harbor"] .masthead-strip { flex-wrap: wrap; }
+[data-theme="harbor"] .toprow::before,
+[data-theme="harbor"] .hero-base,
+[data-theme="harbor"] .hero-type,
+[data-theme="harbor"] .arcade-rig svg,
+[data-theme="harbor"] .pcl-legacy-label { display: none; }
+[data-theme="harbor"] .pcl-harbor-label { display: inline; }
+[data-theme="harbor"] .hero-harbor { display: block; width: 100%; height: auto; }
+[data-theme="harbor"] .header-progress {
+  inset: 51% 29% auto 12%;
+  color: #effbff;
+  transform: translateY(-50%);
+}
+[data-theme="harbor"] :is(.btn, .utility-btn, .run-one, .theme-switch button) {
+  border-radius: 8px;
+  border-image: var(--harbor-foam) 66 fill / 8px;
+  box-shadow: none;
+  color: #164d61;
+  background: #dcf6f6;
+}
+[data-theme="harbor"] :is(.btn-run, .btn-primary.done, .theme-switch button[aria-pressed="true"]) {
+  border-image-source: var(--harbor-ocean);
+  background: #075dac;
+  color: #fff;
+}
+[data-theme="harbor"] :is(.btn, .utility-btn, .run-one, .theme-switch button):active:not(:disabled) {
+  transform: none;
+  filter: brightness(.94);
+}
+[data-theme="harbor"] .btn:disabled { border-image: none; background: #eaede5; color: #505b52; }

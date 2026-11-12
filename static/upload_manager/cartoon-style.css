@@ -1,6 +1,6 @@
 @import url("/static/garden-shell.css");
 
-/* Soft garden-game surfaces. Keep the existing geometry and responsive layouts. */
+/* Shared harbor artwork, with the upload desk layout and status colors. */
 :root {
   color: var(--garden-ink);
   background: var(--garden-page) fixed;
@@ -22,6 +22,9 @@ body {
   font-family: var(--garden-font);
 }
 
+.manager-icon { width: 16px; height: 16px; vertical-align: middle; }
+.mini-chart .manager-icon, .empty-state .manager-icon { width: 24px; height: 24px; }
+
 /* Cream navigation with a lime active tab. */
 .sidebar {
   background: var(--garden-surface);
@@ -41,9 +44,10 @@ body {
 .nav-item:hover, #folder-nav .nav-item:hover { background: #edf3e4; color: var(--ink); }
 .nav-item.active, .nav-item.active:hover, #folder-nav .nav-item.active {
   color: #294b23;
-  background: linear-gradient(#e1f5ac, #c2e681);
+  background: #d5f8ef;
   border: 3px solid #b9d88d;
-  box-shadow: inset 0 2px 0 #ffffffb3, inset 0 -2px 0 #acce762e, 0 3px 9px var(--shadow);
+  border-image: var(--harbor-mint) 66 fill / 10px;
+  box-shadow: none;
   text-shadow: none;
 }
 .nav-caption .subtle-icon { color: var(--muted); }
@@ -111,7 +115,8 @@ body {
   background: var(--garden-surface);
   border: 2px solid var(--line);
   border-radius: var(--garden-panel-radius);
-  box-shadow: inset 0 2px 0 #fff, var(--garden-panel-shadow);
+  border-image: var(--harbor-cloud) 66 fill / 15px;
+  box-shadow: var(--garden-panel-shadow);
 }
 .overview .section-kicker { color: #577047; }
 .overview .section-kicker span, .overview-title p, .metric-value span, .metric-foot { color: var(--muted); }
@@ -142,10 +147,11 @@ body {
 
 /* Cream-yellow planner and nested surfaces. */
 .planner {
-  background: linear-gradient(135deg, #fffdf0, #faf3dc);
+  background: #fff6de;
   border: 2px solid var(--line);
   border-radius: var(--garden-panel-radius);
-  box-shadow: inset 0 2px 0 #fff, var(--garden-panel-shadow);
+  border-image: var(--harbor-gold) 66 fill / 15px;
+  box-shadow: var(--garden-panel-shadow);
 }
 .planner .section-kicker { color: #7c6535; text-shadow: none; }
 .planner .section-kicker span { color: var(--muted); }

@@ -23,9 +23,7 @@
   }
 
   function tileHtml(t) {
-    const icon = t.sprite
-      ? `<span class="tile-icon garden-sprite sprite-${t.sprite}" aria-hidden="true"></span>`
-      : `<span class="tile-icon tool-vector" aria-hidden="true"><svg class="ui-icon"><use href="/static/icons/garden-ui.svg#${t.vector}"></use></svg></span>`;
+    const icon = `<span class="tile-icon harbor-icon icon-${t.icon}" aria-hidden="true"></span>`;
     const attrs = t.action ? `type="button" onclick="${t.action}"` : `href="${esc(t.url)}"${t.linkId ? ` id="${t.linkId}"` : ''}`;
     const tag = t.action ? 'button' : 'a';
     return `<li class="tile tile-${t.size} tone-${t.tone}" data-tool="${t.id}"${t.ops ? ` data-ops="${t.ops}"` : ''}>

@@ -3,11 +3,8 @@
    宽屏采用 6 列磁贴布局，悬停、按下和返回高亮都不改变卡片位置。
    ========================================== */
 .home-seascape {
-  height: clamp(142px, 15vw, 226px);
-  background:
-    linear-gradient(180deg, #f4faff32, #eff8fc12 62%, #eaf6fc 100%),
-    url('/static/images/bg.png') center 55% / cover no-repeat,
-    #d2ebf8;
+  height: clamp(142px, 20vw, 288px);
+  background: #d2ebf8 url('/static/images/bg.png') center 59% / cover no-repeat;
 }
 
 .home-workspace {
@@ -18,8 +15,9 @@
   padding: clamp(14px, 2.2vw, 30px);
   border: 1px solid var(--garden-panel-border);
   border-radius: var(--garden-panel-radius);
-  background: var(--garden-surface);
-  box-shadow: inset 0 1px 0 #fff, var(--garden-panel-shadow);
+  background: #edf8ff;
+  border-image: var(--harbor-cloud) 66 fill / 20px;
+  box-shadow: var(--garden-panel-shadow);
 }
 
 .home-workspace .home-tools-heading h2 {
@@ -58,34 +56,24 @@
 .tile[data-tool='json'] { grid-area: 4 / 5; }
 .tile[data-tool='finish'] { grid-area: 4 / 6; }
 
-/* 每种颜色：底色、边框、底边、标题字 */
-.tile { --t-bg: #eef6df; --t-bg2: #dcecc2; --t-line: #b9d195; --t-edge: #a9c283; --t-ink: #2f4a1f; }
-.tile.tone-lime { --t-bg: #e3f5bf; --t-bg2: #c5e68a; --t-line: #9cc75a; --t-edge: #86b146; --t-ink: #2b4710; }
-.tile.tone-teal { --t-bg: #e4f6f6; --t-bg2: #c4e8ea; --t-line: #9fd0d4; --t-edge: #8abcc1; --t-ink: #134a54; }
-.tile.tone-blue { --t-bg: #e6f0fb; --t-bg2: #cbdff5; --t-line: #a6c4e6; --t-edge: #92b1d4; --t-ink: #1d3f66; }
-.tile.tone-yellow { --t-bg: #fff6d9; --t-bg2: #fbe6a6; --t-line: #e3c877; --t-edge: #cfb362; --t-ink: #5a4108; }
-.tile.tone-orange { --t-bg: #ffeede; --t-bg2: #fbd9b8; --t-line: #e6b98d; --t-edge: #d2a376; --t-ink: #643812; }
-.tile.tone-purple { --t-bg: #f1eafa; --t-bg2: #dfd0f2; --t-line: #c2aee0; --t-edge: #ad98cd; --t-ink: #43296b; }
-.tile.tone-pink { --t-bg: #fdebf3; --t-bg2: #f6cfe0; --t-line: #e3aac4; --t-edge: #cf94af; --t-ink: #6a2447; }
+/* 用同一组手绘底板区分工具类别。 */
+.tile { --t-bg: #eef6df; --t-line: #b9d195; --t-ink: #264c39; --t-art: var(--harbor-mint); }
+.tile.tone-teal, .tile.tone-blue { --t-bg: #e6f0fb; --t-line: #a6c4d0; --t-ink: #164958; --t-art: var(--harbor-sky); }
+.tile.tone-yellow { --t-bg: #fff6d9; --t-line: #e3c877; --t-ink: #5a4108; --t-art: var(--harbor-gold); }
+.tile.tone-purple { --t-bg: #f1eafa; --t-line: #c2aee0; --t-ink: #43296b; --t-art: var(--harbor-periwinkle); }
+.tile.tone-pink { --t-bg: #fdebf3; --t-line: #e3aac4; --t-ink: #6a2447; --t-art: var(--harbor-rose); }
 
 .tile {
   position: relative;
   min-width: 0;
   border: 2px solid var(--t-line);
-  border-radius: 20px;
-  background: linear-gradient(160deg, var(--t-bg), var(--t-bg2));
-  box-shadow: inset 0 2px 0 #ffffffb0, 0 4px 0 var(--t-edge), 0 8px 16px #52632c14;
-  transition: border-color .15s, box-shadow .15s;
+  border-radius: 16px;
+  background: var(--t-bg);
+  border-image: var(--t-art) 66 fill / 19px;
+  transition: filter .15s;
 }
-
-.tile:hover {
-  border-color: var(--t-ink);
-  box-shadow: inset 0 2px 0 #ffffffb0, 0 4px 0 var(--t-ink), 0 8px 18px #52632c26;
-}
-
-.tile:has(.tile-link:active) {
-  box-shadow: inset 0 2px 5px #203f562e, 0 1px 0 var(--t-ink);
-}
+.tile:hover { filter: brightness(1.025); }
+.tile:has(.tile-link:active) { filter: brightness(.96); }
 
 .tile-link {
   position: absolute;
@@ -125,25 +113,22 @@
 }
 
 /* 图标 */
-.tile .tile-icon { flex: none; }
-.tile .tile-icon.garden-sprite { display: block; }
-.tile .tool-vector { width: 44px; height: 44px; border-radius: 14px; }
-.tile .tool-vector .ui-icon { width: 24px; height: 24px; }
+.tile .tile-icon { display: block; }
 
 /* 小卡：图标在上，字在下 */
 .tile-small .tile-link { flex-direction: column; justify-content: flex-end; gap: 8px; }
-.tile-small .tile-icon.garden-sprite { width: 52px; height: 52px; margin: -4px 0 -4px -4px; }
+.tile-small .tile-icon { width: 52px; height: 52px; margin: -4px 0 -4px -4px; }
 
 /* 横卡：图标在左，字在右 */
 .tile-wide .tile-link { align-items: center; gap: 16px; padding: 14px 20px; }
-.tile-wide .tile-icon.garden-sprite { width: 104px; height: 104px; }
+.tile-wide .tile-icon { width: 104px; height: 104px; }
 .tile-wide .tile-title { font-size: 21px; }
 .tile-wide .tile-sub { font-size: 13px; }
 
 /* 大卡：图标在右上，字在左，下面留一条「顺便做」 */
 .tile-big .tile-link { flex-direction: column; justify-content: flex-start; padding: 22px 22px 84px; }
-.tile-big .tile-icon.garden-sprite { position: absolute; top: 14px; right: 16px; width: 150px; height: 150px; }
-.tile-big .tile-text { gap: 8px; max-width: calc(100% - 150px); }
+.tile-big .tile-icon { position: absolute; top: 14px; right: 16px; width: 136px; height: 136px; }
+.tile-big .tile-text { gap: 8px; max-width: calc(100% - 145px); }
 .tile-big .tile-title { font-size: 27px; }
 .tile-big .tile-sub { font-size: 14px; }
 
@@ -203,24 +188,23 @@
   border-radius: 50%;
   color: #ffffff;
   background: #1f7a2e;      /* 白字对比度 > 5:1 */
-  box-shadow: 0 2px 0 #14531f, 0 4px 8px #1f3d1433;
+  box-shadow: none;
   font-size: 18px;
   font-weight: 900;
   line-height: 1;
   cursor: help;
 }
 .tile-done.hidden { display: none; }
-.tile-done.is-warn { color: #3b2a00; background: #ffc21f; box-shadow: 0 2px 0 #a87400, 0 4px 8px #1f3d1433; }
+.tile-done.is-warn { color: #3b2a00; background: #ffc21f; }
 
 /* 从这张卡的页面回到首页：边框闪 4 下后消失。画在 ::after 上，不占位置，卡片不动 */
 .tile.is-back::after {
   content: '';
   position: absolute;
   z-index: 3;
-  inset: -7px;
-  border: 5px solid #ffb300;
-  border-radius: 25px;
-  box-shadow: 0 0 0 3px #fff8d6, 0 0 22px 6px #ffc93c, inset 0 0 14px #ffd95e;
+  inset: -4px;
+  border: 3px solid #af6a07;
+  border-radius: 19px;
   pointer-events: none;
   opacity: 0;
   animation: tile-back-flash .7s ease-in-out 4;
@@ -230,6 +214,7 @@
   45%, 60% { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
+  .tile { transition: none; }
   .tile.is-back::after { animation: tile-back-fade 2.8s linear 1; }
   @keyframes tile-back-fade { 0%, 80% { opacity: 1; } 100% { opacity: 0; } }
 }
@@ -242,12 +227,14 @@
   .tile-grid .tile-wide { grid-column: span 2; }
 }
 @media (max-width: 699px) {
-  .home-seascape { background-position: center, center 62%, center; }
-  .tile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-  .tile-big .tile-icon.garden-sprite { width: 96px; height: 96px; }
+  .home-seascape { background-position: center 62%; }
+  .tile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(150px, auto); gap: 12px; }
+  .tile-small .tile-link { position: relative; justify-content: flex-start; padding: 12px; }
+  .tile-small .tile-icon { width: 42px; height: 42px; margin: 0; }
+  .tile-big .tile-icon { width: 96px; height: 96px; }
   .tile-big .tile-text { max-width: calc(100% - 96px); }
   .tile-big .tile-title { font-size: 21px; }
-  .tile-wide .tile-icon.garden-sprite { width: 72px; height: 72px; }
+  .tile-wide .tile-icon { width: 72px; height: 72px; }
   .tile-wide .tile-title { font-size: 17px; }
   .tile-extras { font-size: 12px; gap: 4px 8px; padding: 6px 8px; }
   .tile-inc { display: none; }

@@ -1,7 +1,7 @@
 const TASKS = {
   export_pdf: {
     title: '调整页面',
-    icon: '📐',
+    icon: 'adjust',
     theme: 'feature-sky',
     sub: '先把每张表设成宽一页、高自动并导出 PDF，再在网页上点按钮告诉程序怎么改（横竖、向下取整），程序改完重新生成 PDF',
     // 说明分组显示在对话框里的「📖 程序会怎么做」（默认折叠）；要和 core/workflow.py _export_workbook_pdfs 的实际做法一致
@@ -36,7 +36,7 @@ const TASKS = {
   },
   normalize_view: {
     title: '视图标准化',
-    icon: '🎯',
+    icon: 'target',
     theme: 'feature-mint',
     sub: '所有可见工作表开启分页预览、定位到 A1、缩放设为 100% 后保存',
     tip: '每张可见表切到分页预览、选中 A1、缩放 100%，保存时停在第一张可见表',
@@ -180,7 +180,7 @@ function openTask(kind) {
   phase = isTaskRunning(kind) ? 'running' : 'form';
 
   document.getElementById('taskDialogHead').className = `task-dialog-head ${task.theme}`;
-  document.getElementById('taskDialogIcon').textContent = task.icon;
+  document.getElementById('taskDialogIcon').className = `task-dialog-icon harbor-icon icon-${task.icon}`;
   document.getElementById('taskDialogTitle').textContent = task.title;
   document.getElementById('taskDialogSub').textContent = task.sub;
   document.getElementById('taskNotesTip').textContent = task.tip || '';

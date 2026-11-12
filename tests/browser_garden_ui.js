@@ -90,7 +90,7 @@ async function main() {
     await resize(1440);
     await navigate('/');
     await until("window.Tools && document.querySelectorAll('#tileGrid .tile').length === Tools.TOOLS.length");
-    await evaluate(`Promise.all(['/static/icons/garden-tools-v1.webp', '/static/images/bg.png', '/static/images/ship-logo.png', '/static/images/dev-toolbox-logo.png'].map(src => {
+    await evaluate(`Promise.all(['/static/images/harbor/icons.webp', '/static/images/bg.png', '/static/images/ship-logo.png', '/static/images/dev-toolbox-logo.png'].map(src => {
       const image = new Image();
       image.src = src;
       return image.decode();
@@ -100,8 +100,8 @@ async function main() {
     assert.equal(await evaluate(`document.querySelector('link[rel="icon"]').getAttribute('href')`), '/static/images/dev-toolbox-logo.png');
     assert.equal(await evaluate("document.querySelector('.header-title-text').textContent"), '开发百宝箱');
     assert.equal(await evaluate("document.querySelectorAll('#tileGrid .tile-big').length"), 2);
-    assert.equal(await evaluate("document.querySelectorAll('#tileGrid .garden-sprite').length"), 6);
-    assert.equal(await evaluate("document.querySelectorAll('#tileGrid svg use').length === Tools.TOOLS.filter(tool => !tool.sprite).length"), true);
+    assert.equal(await evaluate("document.querySelectorAll('#tileGrid .harbor-icon').length === Tools.TOOLS.length"), true);
+    assert.match(await evaluate("getComputedStyle(document.querySelector('[data-tool=clean]')).borderImageSource"), /harbor\/mint\.webp/);
     assert.equal(await evaluate("document.querySelectorAll('.flow-bar, .flow-page-bar').length"), 0, 'workflow rail is gone');
     await capture('home-desktop');
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'desktop has no horizontal overflow');
@@ -149,14 +149,25 @@ async function main() {
       assert.ok(await evaluate('document.body.innerText.length > 50'), `${route} renders`);
       assert.ok(await evaluate("document.querySelector('header.app-header .header-nav .ui-icon')"), `${route} uses the shared header`);
     }
+    assert.match(await evaluate("getComputedStyle(document.querySelector('#manager-task-upload .harbor-icon')).backgroundImage"), /harbor\/icons\.webp/);
+    assert.match(await evaluate("document.querySelector('#empty-state span').textContent"), /导入 Excel 或添加文件夹/);
     await resize(320, 900);
     for (const route of routes) {
       await navigate(route);
       assert.ok(await evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), `${route} fits a 320px viewport`);
     }
+    await navigate('/pcl');
+    assert.equal(await evaluate("document.documentElement.dataset.theme"), 'harbor');
+    assert.equal(await evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth"), true, 'PCL fits a 320px viewport');
+    await resize(1440);
+    await capture('pcl');
+    await click('[data-theme-choice="neon"]');
+    await until("document.documentElement.dataset.theme === 'neon'");
+    await navigate('/pcl');
+    assert.equal(await evaluate("document.documentElement.dataset.theme"), 'neon', 'PCL keeps the selected theme after reload');
     assert.deepEqual(errors, [], 'no runtime exceptions');
     assert.deepEqual(failedRequests, [], 'no failed resources or API responses');
-    console.log(`Garden UI: sprites, SVGs, dialog, workflow interactions, shared headers and responsive layouts across ${routes.length} tool routes passed.`);
+    console.log(`Harbor UI: raster assets, dialog, workflow interactions, shared headers and responsive layouts across ${routes.length} tool routes passed.`);
     console.log('Screenshots:', screenshots);
   } finally {
     if (socket) socket.close();
