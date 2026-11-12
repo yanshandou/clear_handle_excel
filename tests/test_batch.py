@@ -1495,11 +1495,12 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(batch._problem(clip)["missing"], "")
 
     def test_low_risk_cards_hidden_until_shown(self):
-        # 用户 2026-11-10：压线 / 被裁（字都在 PDF 里）默认不列、不标色；真丢字（截断）照常列
+        # 用户 2026-11-10：被裁（字都在 PDF 里）默认不列；2026-11-12 起压线算红、不标色；真丢字（截断）照常列
         from core import autofix
         from core.hidden_text import REASON_CLIPPED, REASON_MISSING, REASON_TRUNCATED
-        self.assertEqual(autofix.error_severity(["border_clip", "box_overflow"]), "yellow")
-        self.assertEqual(autofix.error_severity(["border_clip", "text_missing"]), "gray")
+        self.assertEqual(autofix.error_severity(["box_overflow"]), "yellow")
+        self.assertEqual(autofix.error_severity(["border_clip", "box_overflow"]), "red")
+        self.assertEqual(autofix.error_severity(["box_overflow", "text_missing"]), "gray")
         self.assertEqual(autofix.error_severity(["border_clip", "text_truncated"]), "red")
         self.assertEqual(autofix.error_severity(["page_break_cut"]), "red")
         cut, cut_item = self.add_card("A5")

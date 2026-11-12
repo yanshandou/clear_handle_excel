@@ -15,12 +15,12 @@ try {
 
 const shortLabel = label => label.split(' · ')[0];
 
-// 按「字丢没丢」分级（用户 2026-11-10）：红 = 字丢了必须改；灰 = PDF 里没对上文字，扫一眼；黄 = 压线 / 被裁，字都在，可以不管
+// 按「字丢没丢」分级（用户 2026-11-10）：红 = 字丢了必须改；灰 = PDF 里没对上文字，扫一眼；黄 = 被裁，字都在，可以不管（压线 2026-11-12 起算红）
 const SEVERITY_RANK = { red: 0, gray: 1, yellow: 2 };
 const SEVERITY_HEADS = {
-  red: ['🔴 必须改：字丢了', '只印出前半段、显示成 ###、被分页切开'],
+  red: ['🔴 必须改：切字 / 字丢了', '压线（半截字）、只印出前半段、###、被分页切开'],
   gray: ['⚪ 扫一眼：PDF 里没对上文字', '多半是符号、格式造成的误报'],
-  yellow: ['🟡 可以不管：压线 / 被裁', '字都还在 PDF 的文字里，AI 读得到'],
+  yellow: ['🟡 可以不管：被裁', '字超出格子被挡住（多半是隐藏了列），字还在 PDF 里'],
 };
 const sevRank = card => SEVERITY_RANK[card.severity] ?? 0;
 const groupSeverity = cards => cards.reduce((best, c) => (sevRank(c) < SEVERITY_RANK[best] ? c.severity : best), 'yellow');
@@ -197,7 +197,7 @@ function renderCategories() {
   toolboxAfterRender();
 }
 
-// 「也列出压线 / 被裁」：黄色默认不列、不标色、不算待处理；打开后马上列出来，Excel 标色下次打开 / 复检时跟上
+// 「也列出被裁」：黄色默认不列、不标色、不算待处理；打开后马上列出来，Excel 标色下次打开 / 复检时跟上
 function renderLowRisk() {
   const box = $('lowRiskToggle');
   if (!box) return;

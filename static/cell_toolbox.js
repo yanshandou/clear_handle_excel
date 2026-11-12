@@ -275,7 +275,7 @@ async function toolboxShowLarge(card) {
     page.insertAdjacentHTML('beforeend', data.boxes.map(largeBoxHtml).join(''));
     const others = data.boxes.filter(b => !b.current).length;
     $('tbLargeMeta').textContent = `${list.length ? `第 ${at + 1} / ${list.length} 格 · ` : ''}PDF 第 ${data.page} / ${data.pages} 页`
-      + (others ? ` · 这页还有 ${others} 处` : '') + (data.low_risk_hidden ? '（压线 / 被裁没画）' : '');
+      + (others ? ` · 这页还有 ${others} 处` : '') + (data.low_risk_hidden ? '（被裁的没画）' : '');
     $('tbLargeWhy').innerHTML = largeWhyHtml(data.boxes.find(b => b.current));
     page.style.visibility = '';
     // 只在大图框里把这一格滚到中间（页面本身不动）

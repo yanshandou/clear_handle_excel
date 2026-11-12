@@ -994,7 +994,7 @@ def _problem_counts(path: str) -> dict[str, Any]:
     items = [item for item in STATE["items"].values() if _report_name(item["wb_path"]) == name]
     fixed = sum(item["status"] == "fixed" for item in items)
     accepted = sum(item["status"] == "accepted" for item in items)
-    # 黄色（只是压线 / 被裁，字都在 PDF 里）默认不算待处理（用户 2026-11-10）
+    # 黄色（只是被裁，字都在 PDF 里）默认不算待处理（用户 2026-11-10）
     low_risk = sum(item["status"] not in RESOLVED_STATUSES and autofix.is_low_risk_item(item)
                    for item in items) if autofix.low_risk_hidden(STATE) else 0
     return {
