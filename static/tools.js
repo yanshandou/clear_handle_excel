@@ -25,6 +25,7 @@
     { id: 'images', size: 'small', title: '修复图片', sub: '截图变形 · 红框错位', url: '/fix-images', vector: 'image', tone: 'teal' },
     { id: 'widths', size: 'small', title: '修复列宽', sub: '按参考恢复被改过的列宽', url: '/fix-images?tool=widths', vector: 'grid', tone: 'teal' },
     { id: 'bundle', size: 'small', title: '批量导出同名 PDF', sub: 'aaa.xlsx 旁边生成 aaa.pdf', url: '/pdf-bundle', vector: 'document', tone: 'blue' },
+    { id: 'pick', size: 'small', title: '挑文件复制', sub: '贴路径，保留目录只复制这些', url: '/pick-copy', vector: 'layers', tone: 'pink' },
     { id: 'json', size: 'small', title: '按 JSON 复制 Excel', sub: '按上传记录复制、建目录', url: '/distribute?mode=json', vector: 'layers', tone: 'pink' },
     { id: 'finish', size: 'small', title: '完成任务', sub: '收尾检查：都传回共享了没有', url: '/finish?start=1', pages: ['/finish'], sprite: 'finish', tone: 'yellow', linkId: 'workTaskFinish' },
   ];

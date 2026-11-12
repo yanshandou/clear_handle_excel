@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>挑文件复制 - Excel 整理工具箱</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/repair.css"><script src="/static/game_fx.js"></script>
+  <style>
+    .pick-fields { grid-template-columns: minmax(0, 1fr); max-width: 980px; }
+    .pick-fields textarea { min-height: 9em; }
+    .pick-summary { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 6px 0 4px; font-weight: 600; }
+    .pick-summary .is-ok { color: #14633c; } .pick-summary .is-bad { color: #b42318; } .pick-summary .is-warn { color: #89580b; }
+    .pick-root { font-family: ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
+    .pick-tree { margin: 12px 0 0; padding: 0; list-style: none; font-family: ui-monospace, Consolas, monospace; font-size: 14px; }
+    .pick-tree .pick-dir { margin-top: 10px; font-weight: 700; color: #1f3a5f; overflow-wrap: anywhere; }
+    .pick-tree .pick-file { padding: 2px 0 2px 1.6em; overflow-wrap: anywhere; }
+    .pick-file.is-exists::after { content: "  目标里已有，会覆盖"; color: #89580b; font-family: inherit; }
+    .pick-file.is-ok::before { content: "✓ "; color: #14633c; font-weight: 800; }
+    .pick-file.is-failed { color: #b42318; } .pick-file.is-failed::before { content: "! "; font-weight: 800; }
+    .pick-missing { margin: 12px 0 0; padding-left: 1.2em; color: #b42318; overflow-wrap: anywhere; }
+    .pick-missing small { color: #89580b; }
+  </style>
+  <link rel="stylesheet" href="/static/theme-casual.css">
+  <script src="/static/tools.js?v=1"></script>
+  <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/how_notes.css">
+</head>
+<body>
+  <header class="app-header">
+    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">挑文件复制</h1><span class="subtitle">贴一串路径 · 保留目录结构 · 只复制这些文件</span></div></a>
+    <nav class="header-nav" aria-label="功能导航"><a href="/" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#home"></use></svg>主页</a></nav>
+  </header>
+  <main class="container clean-container">
+    <section class="panel">
+      <h2>只把这些文件复制出来，目录结构照原样</h2>
+      <details class="how-notes">
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">从这些路径共同的上级文件夹算起，照原来的子文件夹复制到目标里，别的文件不带</span><span class="how-notes-toggle"></span></summary>
+        <div class="how-notes-body">
+          <section class="how-notes-group">
+            <h3>📋 怎么填</h3>
+            <ul>
+              <li>每行一个文件或文件夹，可以直接粘贴「复制为路径」带引号的路径；重复的行只算一次。</li>
+              <li>填文件夹 = 里面所有 Excel（连子文件夹）。填文件 = 就这一份，什么类型都行。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>📁 目录结构</h3>
+            <ul>
+              <li>例：<b>…\doublecheck\10画面\01_CM\a.xlsx</b> 和 <b>…\10画面\03_KS\b.xlsx</b> → <b>目标\10画面\01_CM\a.xlsx</b>、<b>目标\10画面\03_KS\b.xlsx</b>。</li>
+              <li>共同上级（上例的 10画面）自己的名字也保留，把目标里的它打包发出去就行。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group is-wide">
+            <h3>🚫 不碰的</h3>
+            <ul>
+              <li>只复制：来源文件不改、不动当前任务、不记版本。找不到的行列出来，其他照常复制。</li>
+              <li>目标里已经有同名文件时先问你，确认了才覆盖。</li>
+            </ul>
+          </section>
+        </div>
+      </details>
+      <div class="link-fields pick-fields">
+        <label for="pickPaths">要复制的文件或文件夹路径<textarea id="pickPaths" class="workbook-paths" rows="8" spellcheck="false" placeholder="每行一个文件或文件夹路径"></textarea></label>
+        <label for="pickDest">目标文件夹 <small class="toolbar-hint">没有会自动建</small><input id="pickDest" type="text" spellcheck="false" autocomplete="off" placeholder="例如 D:\Users\s.go\Desktop\发给同事"></label>
+      </div>
+      <div class="link-actions">
+        <button id="pickPreview" class="btn" type="button">📋 先看看会复制什么</button>
+        <button id="pickRun" class="btn btn-primary" type="button">📦 复制</button>
+        <button id="pickOpen" class="btn" type="button" hidden>📂 打开目标文件夹</button>
+      </div>
+      <p id="pickProgress" role="status" aria-live="polite">贴好路径、填好目标文件夹后点按钮。</p>
+      <p id="pickError" class="batch-error" role="alert"></p>
+    </section>
+    <section class="panel"><h2>清单</h2><div id="pickResults"><p>尚未开始。</p></div></section>
+    <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
+  </main>
+  <script src="/static/dialog.js"></script>
+  <script src="/static/pick_copy.js"></script><script src="/static/debug_log.js"></script>
+</body>
+</html>

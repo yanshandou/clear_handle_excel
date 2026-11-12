@@ -128,6 +128,27 @@ class RelayUploadTests(unittest.TestCase):
         self.assertIsNone(seen[0][1])
         self.assertIn("期间别人新加", distribute.markdown(result))
 
+    def test_free_upload_source_can_be_pasted_paths(self):
+        """起点贴多行（用户 2026-11-12）：起点取共同上级，只传贴的文件夹 / 文件"""
+        other = Path(self.tmp.name) / "别处" / "10画面"
+        write(other / "01" / "a.xlsx", "A")
+        write(other / "01" / "不传.xlsx", "X")
+        write(other / "03" / "b.xlsx", "B")
+        write(other / "05" / "c.xlsx", "C")
+        dest = Path(self.tmp.name) / "终点"
+        dest.mkdir()
+        text = f'"{other / "01" / "a.xlsx"}"\n{other / "01" / "a.xlsx"}\n{other / "03"}\n'
+        preview = distribute.preview_free(text, str(dest))
+        self.assertEqual(Path(preview["source_root"]), other.resolve())
+        self.assertEqual({f["rel"]: f["action"] for f in preview["files"]}, {"01/a.xlsx": "new", "03/b.xlsx": "new"})
+        self.assertEqual(preview["picks"], ["01/a.xlsx", "03"])
+        single = distribute.preview_free(str(other / "05" / "c.xlsx"), str(dest))  # 只贴一个文件：只传这一份
+        self.assertEqual([f["rel"] for f in single["files"]], ["c.xlsx"])
+        whole = distribute.preview_free(str(other), str(dest))  # 一个文件夹：和以前一样
+        self.assertEqual((len(whole["files"]), whole["picks"]), (4, []))
+        with self.assertRaisesRegex(ValueError, "起点里找不到"):
+            distribute.preview_free(f"{other / '03'}\n{other / '没有.xlsx'}", str(dest))
+
     def test_free_upload_without_manifest_tracks_the_approved_source(self):
         other = Path(self.tmp.name) / "别处"
         write(other / "a.xlsx", "A 别处")

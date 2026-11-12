@@ -58,20 +58,20 @@ def _is_excel(name: str) -> bool:
     return is_excel(name)
 
 
-def parse_shared(shared_text: Any, *, must_exist: bool = True) -> tuple[Path, list[str], list[Path]]:
+def parse_shared(shared_text: Any, *, must_exist: bool = True, label: str = "共享") -> tuple[Path, list[str], list[Path]]:
     """共享路径框：每行一个文件夹或 Excel 文件。返回 (任务的共享文件夹, 只拿这些相对路径, 每行的路径)。
     只填一个文件夹时和以前一样（picks 为空 = 整个文件夹）；多行时共享文件夹取共同上级。"""
     if not isinstance(shared_text, str) or not shared_text.strip():
-        raise ValueError("请填写共享文件夹路径")
+        raise ValueError(f"请填写{label}文件夹路径")
     items: list[Path] = []
     seen: set[str] = set()
     for line in shared_text.splitlines():
         if not line.strip():
             continue
-        path = _clean(line, "共享文件夹路径")
+        path = _clean(line, f"{label}文件夹路径")
         if must_exist:
             if not path.exists():
-                raise ValueError(f"共享里找不到：{path}（OneDrive 的话请确认已经同步到这台电脑）")
+                raise ValueError(f"{label}里找不到：{path}（OneDrive 的话请确认已经同步到这台电脑）")
             path = path.resolve()
             if path.is_file() and not _is_excel(path.name):
                 raise ValueError(f"不是 Excel 文件：{path}")
@@ -85,9 +85,9 @@ def parse_shared(shared_text: Any, *, must_exist: bool = True) -> tuple[Path, li
     try:
         root = Path(os.path.commonpath([str(p) for p in folders]))
     except ValueError:
-        raise ValueError("这些路径不在同一个盘上，请分成几个任务分别开") from None
+        raise ValueError("这些路径不在同一个盘上，请分开来做") from None
     if root.parent == root or (any(_is_onedrive(p) for p in root.parts) and _is_onedrive(root.name)):
-        raise ValueError(f"这些路径共同的上级只有「{root}」，太靠上了；请分成几个任务分别开，或只填同一个项目下的路径")
+        raise ValueError(f"这些路径共同的上级只有「{root}」，太靠上了；请分开来做，或只填同一个项目下的路径")
     picks: list[str] = []
     for path in items:
         rel = path.relative_to(root).as_posix()
