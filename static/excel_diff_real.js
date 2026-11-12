@@ -124,6 +124,15 @@
     return { old, new: current, draw, count: diff ? diff.visibleCount : -1, subtle: !!diff?.pixelCount };
   }
 
+  // 等待中：转圈 + 已经等了多久（用户 2026-11-12：什么提示都没有，看不出是卡住了还是在导）
+  const waitingSince = new WeakMap();
+  function busy(box, text) {
+    if (!waitingSince.has(box)) waitingSince.set(box, Date.now());
+    const seconds = Math.round((Date.now() - waitingSince.get(box)) / 1000);
+    box.innerHTML = `<p class="xr-status xr-busy"><span class="xr-spinner" aria-hidden="true"></span>📄 真实效果：${esc(text)}`
+      + `${seconds >= 3 ? `<small class="xr-elapsed">已等 ${seconds} 秒</small>` : ''}</p>`;
+  }
+
   function block(details) {
     let body = details.querySelector(':scope > .xd-body');
     if (!body) { body = document.createElement('div'); body.className = 'xd-body'; details.appendChild(body); }
@@ -143,9 +152,12 @@
     if (n && n.error) notes.push(`你这份：${n.error}`);
     const oldPages = o && !o.error ? o.pages : 0, newPages = n && !n.error ? n.pages : 0;
     const total = Math.max(oldPages, newPages);
-    if (!total) { box.innerHTML = `<p class="xr-status">📄 真实效果：没有可以看的页面。${esc(notes.join('；'))}</p>`; return; }
+    if (!total) {  // 出错要说清楚：哪一边、什么原因（用户 2026-11-12）
+      box.innerHTML = `<p class="${notes.length ? 'xr-warn' : 'xr-status'}">📄 真实效果：没有可以看的页面${notes.length ? `。${esc(notes.join('；'))}` : '（两边这张表都没有可打印的内容）'}</p>`;
+      return;
+    }
     if (o && n && oldPages !== newPages && oldPages && newPages) notes.push(`页数不一样：远程 ${oldPages} 页，你这份 ${newPages} 页`);
-    box.innerHTML = `<div class="xr-head"><strong>📄 真实效果（Excel 导出的 PDF）</strong><span class="xr-status">正在逐页比…</span>`
+    box.innerHTML = `<div class="xr-head"><strong>📄 真实效果（Excel 导出的 PDF）</strong><span class="xr-status xr-busy"><span class="xr-spinner" aria-hidden="true"></span>正在取页面图、逐页比（共 ${total} 页）…</span>`
       + `<label><input type="checkbox" class="xr-toggle" checked> 显示红绿蒙版</label>`
       + `<label title="查看轻微偏移、抗锯齿和噪点等像素变化"><input type="checkbox" class="xr-strict"> 显示细微像素差异</label>`
       + `<button type="button" class="btn btn-outline btn-sm xr-all" hidden>显示所有页</button></div>`
@@ -161,7 +173,7 @@
     });
     box.querySelector('.xr-all').addEventListener('click', event => {
       const showing = box.classList.toggle('is-allpages');
-      event.target.textContent = showing ? '收起无差异的页' : '显示所有页';
+      event.target.textContent = showing ? '收起无差异的页' : `显示其余 ${pages.querySelectorAll('.xr-page.is-same, .xr-page.is-subtle').length} 页（无明显差异）`;
     });
     (async () => {
       let differ = 0, same = 0, subtle = 0, unavailable = 0, wholeShift = 0;
@@ -172,6 +184,8 @@
           p < newPages ? loadImage(pageUrl(newKey, sheet, p)) : null,
         ]).catch(() => [null, null]);
         if (gen !== generation) return;
+        const progress = box.querySelector('.xr-status.xr-busy');
+        if (progress) progress.lastChild.textContent = `正在取页面图、逐页比（第 ${p + 1} / ${total} 页）…`;
         if ((p < oldPages && !oldImg) || (p < newPages && !newImg)) { unavailable++; continue; }
         const result = compare(oldImg, newImg);
         if (result.count || result.subtle) {
@@ -203,13 +217,27 @@
         if (result.count > 0 && result.count > 0.4 * Math.ceil(result.old.base.width / BLOCK) * Math.ceil(result.old.base.height / BLOCK)) wholeShift++;
       }
       const status = box.querySelector('.xr-status');
+      status.classList.remove('xr-busy');
+      status.querySelector('.xr-spinner')?.remove();
       status.textContent = [
         differ ? `${differ} 页有明显差异` : total > unavailable ? '未发现明显的打印差异' : '',
         subtle ? `${subtle} 页仅有细微像素差异` : '',
         unavailable ? `${unavailable} 页预览加载失败` : '',
       ].filter(Boolean).join('，') + '。';
       if (wholeShift) status.textContent += ' 大片标色可能来自版式移动，具体改动可查下面的差异清单。';
-      box.querySelector('.xr-all').hidden = !(same || subtle);
+      const all = box.querySelector('.xr-all');
+      all.hidden = !(same || subtle);
+      if (!differ && total > unavailable) {
+        // 一页都没有看得出的差异：页面直接摆出来给人核对，不收起（用户 2026-11-12：看不到页面，分不清是没差异还是没做出来）
+        box.classList.add('is-allpages');
+        all.textContent = '收起无差异的页';
+        status.textContent = `已导出并逐页比完：印出来的 ${total - unavailable} 页都没有看得出的差异。`
+          + '上面逐格比出的不同多半没印出来（在打印区域外、在隐藏的行列里，或改动太小）。两边的页面都在下面，可以自己核对。'
+          + (unavailable ? ` ${unavailable} 页预览加载失败。` : '');
+      } else if (same || subtle) {
+        all.textContent = `显示其余 ${same + subtle} 页（无明显差异）`;
+      }
+      if (unavailable) status.classList.add('xr-warn');
       console.info('📄 真实效果对比', { 表: sheet, 有明显差异的页: differ, 仅有细微差异的页: subtle, 未发现差异的页: same, 预览加载失败的页: unavailable });
     })();
   }
@@ -230,7 +258,7 @@
       const details = [...document.querySelectorAll('details.xd-sheet[data-sheet]')].find(d => d.dataset.sheet === sheet.name);
       if (details) {
         const box = block(details);
-        box.innerHTML = '<p class="xr-status">📄 真实效果：正在请后台 Excel 导出 PDF…</p>';
+        busy(box, '正在请后台 Excel 导出 PDF…');
         boxes.set(sheet.name, box);
       }
     }
@@ -268,7 +296,7 @@
           paint(box, name, info, keys.theirs?.key, keys.mine?.key, gen);
         } else {
           const k = [keys.theirs, keys.mine].find(item => item && item.state !== 'done');
-          box.innerHTML = `<p class="xr-status">📄 真实效果：${k && k.state === 'running' ? `后台 Excel 正在导出 PDF（${esc(k.current || '准备中')}）…` : `排队等后台 Excel 导出 PDF${k && k.queue ? `（前面还有 ${k.queue - 1} 份）` : ''}…`}</p>`;
+          busy(box, k && k.state === 'running' ? `后台 Excel 正在导出 PDF（${k.current || '准备中'}），每张表要几秒…` : `排队等后台 Excel 导出 PDF${k && k.queue > 1 ? `（前面还有 ${k.queue - 1} 份）` : ''}…`);
         }
       }
       if (painted.size === boxes.size) {
