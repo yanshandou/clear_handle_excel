@@ -82,6 +82,7 @@
   </style>
   <link rel="stylesheet" href="/static/theme-casual.css">
   <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/how_notes.css">
 </head>
 <body>
   <header class="app-header">
@@ -96,8 +97,42 @@
         <label for="xdMine">你要上传的这份（新，右边）<input id="xdMine" type="text" spellcheck="false" autocomplete="off" placeholder="你改好的那份 Excel 的完整路径"></label>
       </div>
       <div class="link-actions"><button id="xdRun" class="btn btn-primary" type="button">🔍 开始对比</button></div>
-      <p class="toolbar-hint">只读两份文件，不改任何东西，也不用关 Excel。比：每格的文字、公式、批注、超链接、字体字号、字的颜色、填充色、边框、对齐换行、数字格式、保护；整张表的行高列宽、合并单元格、冻结窗格、打印设置、图片图形个数、标签颜色。
-        图片图形只比个数（位置大小请点文件名在 Excel 里看）。只支持 .xlsx / .xlsm。</p>
+      <details class="how-notes">
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">像 Git 一样左右两栏列出两份 Excel 的所有差异，只读，不用关 Excel</span><span class="how-notes-toggle"></span></summary>
+        <div class="how-notes-body">
+          <section class="how-notes-group">
+            <h3>📋 比哪些</h3>
+            <ul>
+              <li><b>表</b>：只有一边有的表单独列出；精简 Sheet 本来就会删的表（変更履歴、备份表、灰色标签、空白表等）另外标出，不算差异。</li>
+              <li><b>每个格子</b>：显示的文字、公式、批注、超链接、字体（名字、字号、粗斜体、下划线、删除线）、字的颜色、填充色、边框、对齐 / 换行、数字格式、保护。</li>
+              <li><b>整张表</b>：行高、列宽、隐藏的行列、合并单元格、冻结窗格、打印设置（打印区域、方向、缩放、纸张）、图片图形个数、标签颜色、表是否隐藏、条件格式条数。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>👀 怎么看</h3>
+            <ul>
+              <li>左边是远程现在这份（旧），右边是你要上传的这份（新）。</li>
+              <li>每张有差异的表先画一张左右对照的效果图：按格子画出字体、颜色、边框、行高列宽、合并格（不含图片图形），只画有不同的行和上下 3 行，色块标出不一样的格子，两边一起滚动。</li>
+              <li>下面是逐条的差异清单；点类型按钮可以暂时不看某一类。差异太多时，每张表文字 / 公式最多列 400 处，每类样式最多列 60 组。</li>
+              <li>点表名可以在 Excel 里打开那张表。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group is-warn">
+            <h3>⚠️ 比不了的</h3>
+            <ul>
+              <li>图片图形只比个数，位置和大小请在 Excel 里看。</li>
+              <li>不开 Excel、直接读文件，所以只支持 .xlsx / .xlsm。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>⬆️ 从上传页进来时</h3>
+            <ul>
+              <li>上传时远程那份和开工时记下的版本对不上（或你选了「逐份做 Excel 对比」），会一份一份带到这里，自动开始对比。</li>
+              <li>看完点「确认覆盖并上传」才传这一份；「跳过这份」不传。</li>
+            </ul>
+          </section>
+        </div>
+      </details>
       <p id="xdStatus" role="status" aria-live="polite"></p>
       <p id="xdError" class="batch-error" role="alert"></p>
     </section>

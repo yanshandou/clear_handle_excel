@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/static/finish.css">
   <link rel="stylesheet" href="/static/theme-casual.css">
   <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/how_notes.css">
   <script src="/static/tools.js?v=1"></script>
 </head>
 <body>
@@ -20,7 +21,36 @@
       <h2>当前任务：<span id="finTaskName">正在读取…</span> <span id="finTaskDone" class="fin-chip" hidden>✓ 已完成</span></h2>
       <dl id="finTaskPaths" class="fin-paths"></dl>
       <p id="finNoTask" class="toolbar-hint" hidden>还没有任务。请回主页点「🆕 新任务」开一个任务。</p>
-      <p class="toolbar-hint">收尾检查只读不改：把处理文件夹里的每个 Excel 和共享文件夹里的那份比一比，看看有没有漏传的。全部通过就把任务标成「已完成」。</p>
+      <details class="how-notes">
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">只读不改：处理文件夹里的每个 Excel 和共享里的那份逐个比，全部一样才标「已完成」</span><span class="how-notes-toggle"></span></summary>
+        <div class="how-notes-body">
+          <section class="how-notes-group">
+            <h3>🔍 怎么查</h3>
+            <ul>
+              <li>先列出处理文件夹和共享文件夹（含子文件夹）里的 Excel，按相对路径一一对上（不分大小写）。</li>
+              <li>再逐个比<b>整个文件</b>是否完全一样（按文件哈希，不是只比内容），所以要读文件，份数多时慢一些。</li>
+              <li>上传终点填的是团队 OneDrive 中转文件夹时，和中转里那份比（公司那份等汇总的人上传）。</li>
+              <li>只读，不改任何文件。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group is-warn">
+            <h3>❗ 查出来的问题分这几类</h3>
+            <ul>
+              <li><b>共享里没有</b>：处理文件夹里有、共享里没有的 Excel（新文件还没传）。</li>
+              <li><b>待重新处理</b>：以前标成「要在共享新版上重新处理」、还没处理完的文件（上传页「待重新处理」那几份）。</li>
+              <li><b>没上传</b>：和共享（或中转）那份不一样，共享还是你拿的时候的版本。</li>
+              <li><b>别人改过</b>：不一样，而且共享那份在你拿走之后被别人改过，要先拿最新版。</li>
+              <li><b>读不到</b>：文件打不开、被占用等，写明原因。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group is-wide">
+            <h3>🏁 通过以后</h3>
+            <ul>
+              <li>一个问题都没有，就把当前任务标成「已完成」；有问题不标，下面逐个文件列出来，可以按类别只看某一类。</li>
+            </ul>
+          </section>
+        </div>
+      </details>
       <div class="link-actions"><button id="finStart" class="btn btn-primary" type="button" disabled>🏁 开始收尾检查</button></div>
     </section>
 

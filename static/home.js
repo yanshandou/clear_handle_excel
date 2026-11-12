@@ -4,14 +4,28 @@ const TASKS = {
     icon: '📐',
     theme: 'feature-sky',
     sub: '先把每张表设成宽一页、高自动并导出 PDF，再在网页上点按钮告诉程序怎么改（横竖、向下取整），程序改完重新生成 PDF',
+    // 说明分组显示在对话框里的「📖 程序会怎么做」（默认折叠）；要和 core/workflow.py _export_workbook_pdfs 的实际做法一致
+    tip: '每张表设成宽一页、高自动并导出 PDF，导完进调整页面点按钮让程序改',
     notes: [
-      '全部导出完后按钮变成「📐 调整页面」，点了进调整页面',
-      '导出前每张表设成「宽一页、高自动」并保存进 Excel：横向不会拆成几页，纵向几页由 Excel 自己定（已经是宽一页的表不动）',
-      '末页只多一点的表在调整页面上自动标黄，建议向下取整；改方向、取整都在网页上点，程序去改 Excel',
-      '处理所选 Excel 及所选文件夹中的 Excel（含子文件夹）；跳过隐藏表、変更履歴和备份表',
-      '正在 Excel 里打开的文件不改设置，只按原样导出',
-      'PDF 统一放在「PDFS」文件夹，完成后可在「调整页面」查看',
-      '导出时记下每个 Excel 的哈希值：Excel 没改过就沿用上次的 PDF，改过的才重新导出',
+      { title: '📂 导哪些', items: [
+        '所选的 Excel，和所选文件夹里（含子文件夹）的 Excel',
+        '每份里可见的表；隐藏表、変更履歴、备份表、灰色标签的表跳过',
+        'Excel 没改过（哈希和上次导出时一样）、PDF 也都还在的，直接沿用上次的 PDF，不打开 Excel',
+      ] },
+      { title: '📐 导出时改 Excel 的地方', items: [
+        '没设成宽一页的表改成「宽一页、高自动」并保存进 Excel：横向不会拆成几页，纵向几页由 Excel 定；已经是宽一页的不动，向下取整定死的页高也保留',
+        '能保存的文件顺便把视图存成分页预览（缩放、选区不变）',
+        '导出时发现内容很少的页：手动分页造成的空页，清掉手动分页再核对；最后几页全是空格子的也会修；修好了保存，没把握的在调整页面上标黄',
+        '正在 Excel 里打开的文件照样按宽一页导出 PDF，只是这些改动存不进 Excel；关掉文件后在调整页面点「🔄 重新生成」',
+      ] },
+      { title: '📁 PDF 放在哪', items: [
+        '统一放在所选文件夹下的「PDFS」文件夹（保留子文件夹），一张表一份',
+        '开始前删掉 PDFS 里对应 Excel 已经不在了的 PDF，以及以前和 Excel 放在一起的「Excel 名_表名.pdf」旧 PDF；「批量导出同名 PDF」生成的 aaa.pdf 不删',
+      ] },
+      { title: '➡️ 导完以后', items: [
+        '按钮变成「📐 调整页面」，点了进调整页面',
+        '末页只多一点（两页以上、最后一页印了不到 20%）的表在调整页面上自动标黄，建议向下取整；横竖、取整都在网页上点，程序去改 Excel',
+      ] },
     ],
     runLabel: '📄 导出 PDF',
   },
@@ -20,9 +34,17 @@ const TASKS = {
     icon: '🎯',
     theme: 'feature-mint',
     sub: '所有可见工作表开启分页预览、定位到 A1、缩放设为 100% 后保存',
+    tip: '每张可见表切到分页预览、选中 A1、缩放 100%，保存时停在第一张可见表',
     notes: [
-      '处理所选 Excel 及所选文件夹中的 Excel（含子文件夹）',
-      '保存时停留在第一个可见工作表',
+      { title: '🎯 做什么', items: [
+        '所选的 Excel，和所选文件夹里（含子文件夹）的 Excel',
+        '每张可见的表：切到分页预览、跳到 A1、缩放设成 100%；隐藏表不动',
+        '保存时停在第一张可见表，别人打开时看到的就是这样',
+      ] },
+      { title: 'ℹ️ 注意', items: [
+        '会直接保存 Excel，请先关掉要处理的文件',
+        '上传页每份文件上传前也会自动做这一步，一般不用单独跑',
+      ] },
     ],
     runLabel: '🎯 开始标准化',
   },
@@ -156,8 +178,11 @@ function openTask(kind) {
   document.getElementById('taskDialogIcon').textContent = task.icon;
   document.getElementById('taskDialogTitle').textContent = task.title;
   document.getElementById('taskDialogSub').textContent = task.sub;
-  document.getElementById('taskNotes').innerHTML =
-    task.notes.map(note => `<li>${escapeHtml(note)}</li>`).join('');
+  document.getElementById('taskNotesTip').textContent = task.tip || '';
+  document.getElementById('taskNotesBox').open = false; // 每次打开对话框都先折叠
+  document.getElementById('taskNotes').innerHTML = task.notes.map(group =>
+    `<section class="how-notes-group"><h3>${escapeHtml(group.title)}</h3><ul>`
+    + group.items.map(note => `<li>${escapeHtml(note)}</li>`).join('') + '</ul></section>').join('');
 
   const input = document.getElementById('taskFolderInput');
   const folder = (phase === 'running' && overview.job.folder) || readLastFolder() || (overview && overview.folder) || '';

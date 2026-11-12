@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/static/theme.css">
   <link rel="stylesheet" href="/static/home_route.css?v=3"><link rel="stylesheet" href="/static/work_task.css?v=6"><link rel="stylesheet" href="/static/theme-casual.css"><script src="/static/game_fx.js"></script>
   <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/how_notes.css">
   <link rel="stylesheet" href="/static/home_tiles.css?v=1">
 </head>
 <body>
@@ -110,7 +111,10 @@
     </div>
 
     <div class="task-dialog-body">
-      <ul id="taskNotes" class="task-notes"></ul>
+      <details id="taskNotesBox" class="how-notes">
+        <summary>📖 程序会怎么做 <span id="taskNotesTip" class="how-notes-tip"></span><span class="how-notes-toggle"></span></summary>
+        <div id="taskNotes" class="how-notes-body"></div>
+      </details>
 
       <label class="task-field-label" for="taskFolderInput">Excel 文件或文件夹路径</label>
       <div class="input-groove-wrap">

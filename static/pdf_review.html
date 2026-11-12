@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/static/theme-casual.css">
   <script src="/static/tools.js?v=1"></script>
   <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/how_notes.css">
 </head>
 <body>
   <header class="app-header">
@@ -24,15 +25,45 @@
           <input id="prOldFolder" type="text" placeholder="例如 C:\Users\...\Desktop\excel_files_备份"></label>
         <button id="prLoad" type="button" class="btn btn-primary">📂 加载 PDF</button>
       </div>
-      <ul class="pr-tips">
-        <li>导出 PDF 时每张表已经设成<b>宽一页、高自动</b>：横向不会拆成几页，纵向几页由 Excel 自己定。</li>
-        <li>每张表标题右边三组按钮：<b>方向</b>（竖向 / 横向）、<b>页高</b>（高自动 / ⤓ 取整 N→N-1）、<b>删除这张表</b>；有手动分页的表还多一个<b>✂ 清手动分页</b>（全部清掉、改成 Excel 自动分页，看了新的 PDF 再决定要不要取整）。点了只是做标记，再点一次取消。</li>
-        <li><b>末页只多一点</b>（最后一页印了不到 20%）的表自动标<b>黄</b>，建议向下取整；不想取整就点一下「⤓ 取整」取消。</li>
-        <li>看完点底部<b>「🛠 统一修改」</b>：后台改 Excel、保存，再重新生成改过的那几张表的 PDF。改了方向后要不要取整就不一定了，看新的 PDF 再决定。可以来回改好几轮，都没问题了点「🏠 返回首页」。</li>
-        <li>上面的<b>分类</b>只看某一类的表，还能一次改这一类（比如末页只多一点的全部取整）。</li>
-        <li>要自己在 Excel 里改：点标题上的 Excel 路径，或按住 <b>Ctrl 单击</b>页面（或右键菜单），Excel 打开并跳到那一页；改完保存后点<b>「🔄 重新生成」</b>。「🔄 重新生成」只导这一张表，同一份 Excel 别的表不动。只想改一张表的话，点完方向、取整后直接点这张表的「🔄 重新生成」也行：先改进 Excel、再重新生成。</li>
-        <li>填了原始备份文件夹时，打开时老版本也一起打开（只读）、跳到同一块，左右并排对照。顶栏和底部条不碰 3 秒自动隐藏，鼠标移到窗口最上面或最下面就会出来。</li>
-      </ul>
+      <details class="how-notes">
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">在 PDF 上点按钮做标记，点「统一修改」后程序改 Excel、重新导出，你看新的 PDF 再决定</span><span class="how-notes-toggle"></span></summary>
+        <div class="how-notes-body">
+          <section class="how-notes-group">
+            <h3>📄 这里看到的 PDF</h3>
+            <ul>
+              <li>主页「调整页面」导出的 PDF：每张表一份，放在根目录的 PDFS 文件夹里。导出时每张表都设成<b>宽一页、高自动</b>：横向不会拆成几页，纵向几页由 Excel 定。</li>
+              <li>打开这一页时，导出以后 Excel 又改过、保存过的表（程序改的或你自己改的）标「⚠ Excel 改过」，后台自动重新导出成最新的。</li>
+              <li>导出时发现<b>内容很少的页</b>：有把握的已经自动修好（比如手动分页造成的空页就清掉手动分页再核对）；没把握的那一页标「⚠ 内容很少」、自动标黄。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>🔘 每张表的按钮（只是做标记，再点一次取消）</h3>
+            <ul>
+              <li><b>方向</b>：竖向 / 横向。</li>
+              <li><b>页高</b>：高自动 / ⤓ 取整（N 页 → N-1 页）。<b>末页只多一点</b>（两页以上、最后一页印了不到 20%）的表自动标<b>黄</b>、建议取整；不想取整就点一下「⤓ 取整」取消。点了取整就一定改，字缩得太小时只在结果里提醒。</li>
+              <li><b>删除这张表</b>：标红，「统一修改」时从 Excel 里删掉。</li>
+              <li>有手动分页的表还有 <b>✂ 清手动分页</b>：全部清掉，改成 Excel 自动分页；看了新的 PDF 再决定要不要取整。</li>
+              <li>上面的<b>分类</b>只看某一类的表，还能一次给这一类做标记（比如末页只多一点的全部取整）。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>🛠「统一修改」</h3>
+            <ul>
+              <li>后台按标记改 Excel、保存，再只重新导出改过的那几张表；同一份 Excel 别的表的 PDF 不动。右下角进度框显示正在改哪份、每张表的结果。</li>
+              <li>改了方向以后要不要取整就不一定了，看新的 PDF 再决定。可以来回改好几轮，都没问题了点「🏠 返回首页」。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>✋ 自己在 Excel 里改</h3>
+            <ul>
+              <li>单击页面看大图；点标题上的 Excel 路径，或按住 <b>Ctrl 单击</b>页面（或右键菜单），Excel 打开并跳到那一页。</li>
+              <li>改完保存后点这张表的「🔄 重新生成」：只重新导出这一张表，一定重新导出。这张表上点了方向、取整等还没改的，会先改进 Excel 再导出。</li>
+              <li>填了参考文件夹时，打开 Excel 会把原版也只读打开、跳到同一块，左右并排对照。</li>
+              <li>顶栏和底部条不碰 3 秒自动隐藏，鼠标移到窗口最上面或最下面就会出来。</li>
+            </ul>
+          </section>
+        </div>
+      </details>
       <div id="prCats" class="pr-cats" role="group" aria-label="按问题分类" hidden></div>
       <p id="prStatus" class="pr-status" role="status" aria-live="polite">输入文件夹后点「加载 PDF」。</p>
     </section>
