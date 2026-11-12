@@ -83,6 +83,14 @@
       .xd-fields, .xd-files { grid-template-columns: minmax(0, 1fr); }
       .xd-table col.c-where, .xd-table col.c-kind { width: auto; }
     }
+    /* 嵌在一页对比里（static/excel_diff_embed.js）：只留状态、上传这一份和结果 */
+    .xd-embed body { background: #fff; min-height: 0; }
+    .xd-embed .app-header, .xd-embed #xdInputPanel > h2, .xd-embed .xd-fields, .xd-embed #xdInputPanel .link-actions,
+    .xd-embed #xdInputPanel .how-notes, .xd-embed main > .panel:last-child, .xd-embed #xdResultPanel > h2 { display: none; }
+    .xd-embed main.container { padding: 0; margin: 0; max-width: none; }
+    .xd-embed main > .panel { margin: 0 0 10px; box-shadow: none; }
+    .xd-embed #xdInputPanel { padding: 4px 12px; }
+    .xd-embed #xdStatus:empty, .xd-embed #xdError:empty { display: none; }
   </style>
   <link rel="stylesheet" href="/static/theme-casual.css">
   <link rel="stylesheet" href="/static/theme-cartoon.css">
@@ -166,6 +174,6 @@
     <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
   </main>
   <script src="/static/dialog.js"></script><script src="/static/open_excel.js"></script>
-  <script src="/static/excel_diff.js"></script><script src="/static/debug_log.js"></script>
+  <script src="/static/excel_diff.js"></script><script src="/static/excel_diff_embed.js"></script><script src="/static/debug_log.js"></script>
 </body>
 </html>

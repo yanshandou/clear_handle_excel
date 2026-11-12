@@ -232,6 +232,7 @@
       off.clear();
       render(data);
       offerUpload(data);
+      window.dispatchEvent(new CustomEvent('xd:done', { detail: data }));  // 一页对比里嵌着时告诉外面（static/excel_diff_embed.js）
       $('xdStatus').textContent = `✓ 对比完成，用了 ${((performance.now() - started) / 1000).toFixed(1)} 秒。`;
       history.replaceState(null, '', `?theirs=${encodeURIComponent(theirs)}&mine=${encodeURIComponent(mine)}`);
     } catch (error) {

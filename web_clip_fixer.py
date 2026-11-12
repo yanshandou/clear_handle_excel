@@ -207,6 +207,18 @@ class WebHandler(upload_manager.Handler):
             self._send_json(font_fix.status())
         elif parsed.path == "/excel-diff":
             self._serve_static_file("excel_diff.html")
+        elif parsed.path == "/excel-diff/all":  # 一页对比当前任务的文件（用户 2026-11-12）
+            self._serve_static_file("excel_diff_all.html")
+        elif parsed.path == "/api/distribute/diff_pdf":  # 一页对比里并排看的同名 PDF（只给已有的）
+            query = parse_qs(parsed.query)
+            pick = lambda key: (query.get(key) or [""])[0]
+            try:
+                pdf = distribute.diff_pdf(pick("task"), pick("rel"), pick("side"))
+                body = pdf.read_bytes()
+            except (ValueError, OSError) as err:
+                self._send_json({"ok": False, "error": str(err)}, status=404)
+            else:
+                self._send_bytes(body, "application/pdf")
         elif parsed.path == "/fix-images":
             self._serve_static_file("image_restore.html")
         elif parsed.path == "/api/image_restore":
@@ -547,6 +559,9 @@ class WebHandler(upload_manager.Handler):
             return
         if self.path == "/api/distribute/upload_review":
             self._send_json({"ok": True, **distribute.upload_review(payload.get("token"))})
+            return
+        if self.path == "/api/distribute/diff_pdfs":  # 只读：两边有没有同名 PDF，别的任务在跑也能看
+            self._send_json({"ok": True, **distribute.diff_pdfs(payload.get("task_id"), payload.get("rel"))})
             return
         if self.path == "/api/distribute/upload_decision":
             distribute.decide_upload_review(payload.get("token"), payload.get("decision"))
