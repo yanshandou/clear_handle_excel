@@ -227,7 +227,7 @@ def _task_args(task_id: Any, plan_text: str, source_root: str, dest_root: str) -
     task = work_task.get(str(task_id))
     args = work_task.plan_for(task)
     info = {"id": task["id"], "name": task["name"], "shared": task["shared"], "work": task["work"],
-            "reference": args["reference"], "fetch_backup": args["fetch_backup"]}
+            "reference": args["reference"], "fetch_backup": args["fetch_backup"], "picks": list(task.get("picks") or [])}
     return args["plan"], args["source_root"], args["dest_root"], info
 
 
@@ -1489,6 +1489,50 @@ def _manifest_for(src_file: Path, manifests: list[tuple[Path, dict[str, Any]]]) 
     return None
 
 
+_LOCAL_PLACES = {"desktop", "デスクトップ", "桌面", "downloads", "ダウンロード", "下载", "documents", "ドキュメント", "文档"}
+
+
+def _is_local_shared(shared: Path) -> bool:
+    """任务的「共享」其实是本机普通文件夹（在桌面 / 下载 / 文档里，路径里没有 OneDrive）→ 拿取版本清单没意义（用户 2026-11-12）"""
+    parts = [part.casefold() for part in shared.parts]
+    if any(part.startswith("onedrive") for part in parts):
+        return False
+    return any(part in _LOCAL_PLACES for part in parts)
+
+
+def _free_relay_task(src: Path, dst: Path) -> dict[str, Any] | None:
+    """起点是某个任务的处理文件夹（或其中的子文件夹）、终点不在那个任务的共享里 → 这次就是「传到中转」，
+    要在终点写拿取版本清单（用户 2026-11-12：起点 → 终点传到团队中转也要有 JSON）。返回任务和对应的共享子路径"""
+    from core import work_task
+    for task in work_task.overview()["tasks"]:
+        if not task.get("work") or not task.get("shared"):
+            continue
+        prefix = work_task._same_or_inside(src, task["work"])
+        if prefix is None:
+            continue
+        shared = Path(task["shared"])
+        if work_task._same_or_inside(dst, str(shared)) is not None or work_task._same_or_inside(shared, str(dst)) is not None:
+            return None  # 直接传回共享（或终点包着共享），不是中转
+        if _is_local_shared(shared):
+            debug_log.event("🧾 共享是本机普通文件夹，不写拿取版本清单", 共享=str(shared))
+            return None
+        return {"id": task["id"], "name": task.get("name") or "", "shared": str(shared.joinpath(*prefix.split("/")) if prefix else shared)}
+    return None
+
+
+def _fetched_version(task: dict[str, Any], rel: str, baseline: dict[str, dict[str, Any]]) -> tuple[bool, str | None]:
+    """这份文件当初从共享拿的是哪个版本：(知道, 哈希)。共享里没有、也没记录 = 新文件（None）"""
+    shared_file = Path(task["shared"]) / rel
+    base = baseline.get(_base_key(shared_file))
+    if base:
+        digest = _task_baseline(base, task["id"]).get("sha256")
+        if digest:
+            return True, digest
+    if not shared_file.exists():
+        return True, None
+    return False, None
+
+
 def preview_free(source_text: Any, dest_text: Any, guard: Any = None) -> dict[str, Any]:
     """自由上传的清单（只读不改）：起点里的每个 Excel 传到终点同样的位置，先看终点那份能不能覆盖"""
     src, dst = _clean_root(source_text, "起点文件夹"), _clean_root(dest_text, "终点文件夹")
@@ -1563,7 +1607,11 @@ def preview_free(source_text: Any, dest_text: Any, guard: Any = None) -> dict[st
               "source_root": str(src), "dest_root": str(dst), "files": files, "added": added, "extra": extra,
               "notes": notes, "errors": found["errors"] + after["errors"], "summary": summary,
               "manifests": [str(folder / MANIFEST_NAME) for folder, _ in manifests]}
-    debug_log.event("📋 自由上传清单", 起点=str(src), 终点=str(dst), **summary)
+    relay_task = _free_relay_task(src, dst)
+    if relay_task:
+        result["relay_task"] = relay_task
+    debug_log.event("📋 自由上传清单", 起点=str(src), 终点=str(dst), **summary,
+                    写拿取版本清单=relay_task["name"] if relay_task else "否")
     with _LOCK:
         if not _STATUS.get("running"):
             _STATUS["preview"] = result
@@ -1661,6 +1709,10 @@ def _run_free(data: dict[str, Any], reviews: UploadReview) -> dict[str, Any]:
             item.update(status="failed", error=_explain(err))
     pdf = data.get("pdf")
     pdf_claimed: set[str] = set()
+    relay_task = data.get("relay_task")
+    relayed: dict[str, dict[str, Any]] = {}
+    unknown: list[str] = []
+    baseline = load_baseline() if relay_task else {}
     with tempfile.TemporaryDirectory(prefix="自由上传_") as temp:
         for index, batch in enumerate(reviews.batches(ready, _verify_upload_candidate,
                                                       require_review=not (pdf or {}).get("only"))):
@@ -1698,6 +1750,24 @@ def _run_free(data: dict[str, Any], reviews: UploadReview) -> dict[str, Any]:
                 if pdf:
                     changes.update(_upload_pdf(item, dest, pdf, pdf_claimed))
                 _save_baseline(changes)
+                if relay_task:
+                    known, shared_sha = _fetched_version(relay_task, item["rel"], baseline)
+                    if known:
+                        relayed[item["rel"]] = {"shared_sha256": shared_sha, "sha256": digest,
+                                                "uploaded_at": entry["upload"]["at"]}
+                    else:
+                        unknown.append(item["rel"])
+            if relayed:
+                try:
+                    data["manifest"] = str(write_manifest(dst, Path(relay_task["shared"]), relayed, relay_task["name"]))
+                    data.pop("manifest_error", None)
+                    relayed.clear()
+                except (OSError, ValueError) as err:
+                    debug_log.exception(err, "写拿取版本清单")
+                    data["manifest_error"] = _explain(err)
+    if unknown:
+        data["manifest_unknown"] = unknown
+        debug_log.event("⚠️ 拿取版本清单没记这几份（找不到当初拿的版本）", 文件=unknown)
     for item in data["files"]:
         item.pop("_temp", None)
         item.pop("_prepared_sha256", None)
@@ -1736,6 +1806,12 @@ def markdown_free(result: dict[str, Any]) -> str:
         if item.get("pdf"):
             status += f"；{_pdf_text(item['pdf'])}"
         lines.append(f"| {_md(item['rel'])} | {_md(status)} |")
+    if result.get("manifest"):
+        lines += ["", f"- 拿取版本清单：`{result['manifest']}`（从这里传回共享时用来检查期间有没有人改过，请不要删除）"]
+    if result.get("manifest_error"):
+        lines += ["", f"- ⚠️ 拿取版本清单没写成：{_md(result['manifest_error'])}"]
+    if result.get("manifest_unknown"):
+        lines += ["", "- ⚠️ 这几份找不到当初从共享拿的版本，拿取版本清单里没记：" + "、".join(_md(r) for r in result["manifest_unknown"])]
     if result.get("added"):
         lines += ["", "## 期间别人新加到终点的 Excel（没有动）", ""] + [f"- {_md(rel)}" for rel in result["added"]]
     if result.get("extra"):
@@ -1941,7 +2017,7 @@ def _fetch_decide(shared_file: Path, local_file: Path, local_exists: bool, base:
 
 
 def _fetch_folder(item: dict[str, Any], src_root: Path, dst_root: Path,
-                  baseline: dict[str, dict[str, Any]], task_id: str = "") -> dict[str, Any]:
+                  baseline: dict[str, dict[str, Any]], task_id: str = "", picks: list[str] | None = None) -> dict[str, Any]:
     local = src_root.joinpath(*item["source"])
     shared = dst_root.joinpath(*item["destination"])
     entry: dict[str, Any] = {
@@ -1964,6 +2040,14 @@ def _fetch_folder(item: dict[str, Any], src_root: Path, dst_root: Path,
         return entry
     found = scan_folder(shared)
     have = scan_folder(local) if local.is_dir() else {"excel": {}, "errors": []}
+    if picks:  # 新任务填了多个路径：只拿选中的文件夹 / 文件（用户 2026-11-12）
+        from core.work_task import in_picks
+        found["excel"] = {rel: info for rel, info in found["excel"].items() if in_picks(rel, picks)}
+        have["excel"] = {rel: info for rel, info in have["excel"].items() if in_picks(rel, picks)}
+        entry["picks"] = list(picks)
+        entry["picks_missing"] = [pick for pick in picks if not (shared / pick).exists()]
+        for pick in entry["picks_missing"]:
+            found["errors"].append(f"{pick}：共享里现在找不到（可能被删了或改了名）")
     have_keys = {_key(rel): info for rel, info in have["excel"].items()}
     shared_keys = {_key(rel) for rel in found["excel"]}
     for rel, info in found["excel"].items():
@@ -2022,7 +2106,8 @@ def preview_fetch(plan_text: str, source_root: str, dest_root: str, task_id: Any
     with debug_log.side_task("distribute_fetch_preview", {"source": str(src_root), "dest": str(dst_root),
                                                           "folders": len(plan["folders"]), "label": plan["label"]}):
         baseline = load_baseline()
-        folders = [_fetch_folder(item, src_root, dst_root, baseline, (task or {}).get("id", "")) for item in plan["folders"]]
+        folders = [_fetch_folder(item, src_root, dst_root, baseline, (task or {}).get("id", ""), (task or {}).get("picks"))
+                   for item in plan["folders"]]
         result = {
             "id": uuid.uuid4().hex[:12],
             "kind": "fetch",

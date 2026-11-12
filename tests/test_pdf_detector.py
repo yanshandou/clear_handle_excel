@@ -264,3 +264,24 @@ class StrikethroughTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HalfCutLastLineTests(unittest.TestCase):
+    def test_last_wrapped_line_cut_by_row_bottom_is_border_clip_not_hidden(self):
+        # 用户 2026-11-12 截图：自动换行的最后一行被行底切掉一半。Excel 导出时这一行照样写进 PDF、只是被裁剪，
+        # 字都还算「可见」（只有整个字落在裁剪区外才算看不见），所以「没显示全」查不出来，只能靠压线查出来。
+        # 压线因此算红色（必须改），不能再藏起来。
+        from core import autofix
+        from core.hidden_text import _BASE_FLAGS, _CLIP_FLAG, collect_text_pieces
+        doc = fitz.open()
+        page = doc.new_page(width=300, height=200)
+        page.insert_text((0, 0), " ", fontsize=1, fontname="helv")
+        xref = page.get_contents()[-1]
+        stream = (b"\nq 20 115 200 35 re W n BT /helv 10 Tf 22 140 Td (LINE ONE) Tj 0 -12 Td (LINE TWO) Tj"
+                  b" 0 -12 Td (LAST HALF) Tj ET Q\nq 0 0 0 RG 0.5 w 20 115 m 220 115 l S Q\n")
+        doc.update_stream(xref, doc.xref_stream(xref) + stream)
+        with fitz.open("pdf", doc.tobytes()) as pdf:
+            self.assertIn("LAST HALF", pdf[0].get_text("text", flags=_BASE_FLAGS | _CLIP_FLAG))
+            self.assertTrue(all(visible for piece in collect_text_pieces(pdf) for _, _, visible in piece.chars))
+            self.assertEqual([c["text"] for c in find_clipped_spans_on_page(pdf[0])], ["LAST HALF"])
+        self.assertEqual(autofix.error_severity([autofix.ERROR_TYPE_BORDER_CLIP]), autofix.SEVERITY_RED)

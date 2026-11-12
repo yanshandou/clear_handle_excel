@@ -639,7 +639,16 @@
         + `<td>${state}${state && why ? '<br>' : ''}${why ? `<small>${why}</small>` : ''}${prepHtml(file, data)}${pdfHtml(file)}</td><td><small>${FREE_GUARD[file.guard] || ''}</small></td></tr>`;
     });
     const list = (title, items) => items && items.length ? `<h4 class="dist-sub">${title}（${items.length}）</h4><ul class="dist-list">${items.map(rel => `<li>${fileLink(rel, data.dest_root, rel)}</li>`).join('')}</ul>` : '';
+    const relayTask = data.relay_task;
+    const manifestLine = !relayTask ? ''
+      : data.manifest_error ? `<p class="link-error">⚠️ 拿取版本.json 没写成：${esc(data.manifest_error)}</p>`
+      : applied && data.manifest ? `<p class="dist-meta">🧾 已在终点写好拿取版本.json：${esc(data.manifest)}（从这里传回共享时用来核对，请不要删）</p>`
+      : applied ? ''
+      : `<p class="dist-meta">🧾 起点是任务「${esc(relayTask.name)}」的处理文件夹，传完会在终点写拿取版本.json，记下每份当初从共享拿的版本。</p>`;
+    const unknownLine = applied && (data.manifest_unknown || []).length
+      ? `<p class="link-error">⚠️ 这几份找不到当初从共享拿的版本，拿取版本.json 里没记：${data.manifest_unknown.map(esc).join('、')}</p>` : '';
     return `<p class="dist-meta">起点：${esc(data.source_root)}<br>终点：${esc(data.dest_root)}</p><div class="dist-summary">${chipsHtml}</div>`
+      + manifestLine + unknownLine
       + (notes ? `<div class="dist-alert"><ul>${notes}</ul></div>` : '')
       + `<div class="link-table-wrap"><table class="link-table"><thead><tr><th>文件</th><th>做法</th><th>${applied ? '结果' : '说明'}</th><th>怎么核对的</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`
       + list('期间别人新加到终点的 Excel（不动）', data.added) + list('终点里有、起点没有的 Excel（不动）', data.extra)
@@ -1126,6 +1135,7 @@
   });
   function showTaskPaths() {
     $('distTaskPaths').innerHTML = `<dt>共享</dt><dd>${esc(task.shared)}</dd><dt>参考</dt><dd>${esc(task.reference)}</dd><dt>处理</dt><dd>${esc(task.work)}</dd>`
+      + ((task.picks || []).length ? `<dt>只拿</dt><dd class="dist-picks"><ul>${task.picks.map(p => `<li title="${esc(p)}">${esc(p)}</li>`).join('')}</ul></dd>` : '')
       + (task.upload_to ? `<dt>上传到</dt><dd>${esc(task.upload_to)}（中转）</dd>` : '');
     $('distTaskDest').placeholder = task.shared;
     $('distTaskDest').value = task.upload_to || '';
@@ -1205,7 +1215,9 @@
     $('distNewLast').textContent = last;
     $('distNewLast').closest('.dist-last').title = `上次：${last}`;
   };
-  const pathsHtml = t => [['共享', t.shared], ['参考', t.reference], ['处理', t.work]].map(([name, path]) => `<dt>${name}</dt><dd title="${esc(path)}">${esc(path)}</dd>`).join('');
+  const pathsHtml = t => [['共享', t.shared], ['参考', t.reference], ['处理', t.work]].map(([name, path]) => `<dt>${name}</dt><dd title="${esc(path)}">${esc(path)}</dd>`).join('')
+    // 填了多个路径：共享取共同上级，只拿下面这些（用户 2026-11-12）
+    + ((t.picks || []).length ? `<dt>只拿</dt><dd class="dist-picks"><ul>${t.picks.map(p => `<li title="${esc(p)}">${esc(p)}</li>`).join('')}</ul></dd>` : '');
   function scheduleDerive() {
     clearTimeout(deriveTimer);
     deriveTimer = setTimeout(async () => {
@@ -1250,7 +1262,7 @@
     $('distNewBox').addEventListener('toggle', () => { if ($('distNewBox').open) focusShared(); });
     $('distNewShared').addEventListener('input', scheduleDerive);
     $('distNewRoot').addEventListener('input', scheduleDerive);
-    $('distNewShared').addEventListener('keydown', event => { if (event.key === 'Enter') createTask(); });
+    $('distNewShared').addEventListener('keydown', event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) createTask(); });
     $('distNewCreate').addEventListener('click', createTask);
   }
 

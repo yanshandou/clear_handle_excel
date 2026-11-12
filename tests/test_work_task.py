@@ -99,6 +99,47 @@ class WorkTaskTests(unittest.TestCase):
         self.assertEqual(ref_backup.parent, backup.parent.parent / "参考")
         self.assertEqual(fetched["summary"]["备份参考"], 2)  # b 共享已是我们传的 b2，参考从 b1 更新，旧的也备份
 
+    def test_multiple_shared_paths_fetch_only_picked(self):
+        """新任务填多行：共享文件夹取共同上级，只拿填了的文件夹 / 文件（用户 2026-11-12）"""
+        base = self.shared.parent
+        write(base / "13.テーブル定義書" / "t.xlsx", "T")
+        write(base / "13.テーブル定義書" / "旧" / "t_old.xlsx", "O")
+        write(base / "14.その他" / "skip.xlsx", "S")
+        write(base / "15.単票" / "one.xlsx", "1")
+        write(base / "15.単票" / "two.xlsx", "2")
+        text = "\n".join([f'"{self.shared}"', str(base / "13.テーブル定義書"), "",
+                          str(base / "15.単票" / "one.xlsx"), str(self.shared / "子")])  # 子 在 12 里面，只留 12
+        paths = work_task.derive(text, str(self.work_root))
+        self.assertEqual(Path(paths["shared"]), base.resolve())
+        self.assertEqual(paths["picks"], ["12.ビュー定義書", "13.テーブル定義書", "15.単票/one.xlsx"])
+        self.assertEqual(Path(paths["work"]), self.work_root / "处理" / "介舟ファミリー" / "20基本設計")
+        task = work_task.create(text, str(self.work_root))
+        prev = distribute.preview_fetch("", "", "", task["id"])
+        rels = sorted(f["rel"] for f in prev["folders"][0]["files"])
+        self.assertEqual(rels, ["12.ビュー定義書/a.xlsx", "12.ビュー定義書/子/孫/b.xlsx", "13.テーブル定義書/t.xlsx",
+                                "13.テーブル定義書/旧/t_old.xlsx", "15.単票/one.xlsx"])
+        self.wait()
+        work = Path(task["work"])
+        self.assertTrue((work / "15.単票" / "one.xlsx").exists())
+        self.assertFalse((work / "15.単票" / "two.xlsx").exists())
+        self.assertFalse((work / "14.その他").exists())
+        self.assertEqual(work_task.finish_check(task["id"])["shared_files"], 5)
+
+    def test_single_shared_path_unchanged_and_bad_multi_paths(self):
+        self.assertEqual(work_task.derive(str(self.shared), str(self.work_root))["picks"], [])
+        one = work_task.derive(str(self.shared / "a.xlsx"), str(self.work_root))  # 只填一个文件：拿这一份
+        self.assertEqual((Path(one["shared"]), one["picks"]), (self.shared.resolve(), ["a.xlsx"]))
+        whole = work_task.derive(f"{self.shared}\n{self.shared / 'a.xlsx'}", str(self.work_root))
+        self.assertEqual(whole["picks"], [])  # 填了文件夹本身 = 整个都拿
+        with self.assertRaisesRegex(ValueError, "不是 Excel"):
+            work_task.derive(f"{self.shared}\n{self.shared / '说明.pdf'}", str(self.work_root))
+        with self.assertRaisesRegex(ValueError, "找不到"):
+            work_task.derive(f"{self.shared}\n{self.shared / '没有'}", str(self.work_root))
+        other = Path(self.tmp.name) / "Users" / "s.go" / "OneDrive - 会社" / "別案件"
+        other.mkdir(parents=True)
+        with self.assertRaisesRegex(ValueError, "太靠上"):
+            work_task.derive(f"{self.shared}\n{other}", str(self.work_root))
+
     def test_tasks_are_kept_and_switchable(self):
         first = work_task.create(str(self.shared), str(self.work_root))
         other = self.shared.parent / "13.テーブル定義書"

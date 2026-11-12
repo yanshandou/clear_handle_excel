@@ -600,6 +600,14 @@ def find_hidden_cells(
     return results
 
 
+def fully_invisible(found: dict[str, Any]) -> bool:
+    """PDF 上一个字都看不到：多半是作者有意隐藏，截不了图，不列、不改（用户 2026-11-12 定）。
+    露出哪怕一行（只印出前半段、被裁一部分）都照常算问题"""
+    if found.get("reason") == REASON_MISSING:
+        return True
+    return found.get("reason") == REASON_CLIPPED and not normalize_text(found.get("visible") or "")
+
+
 # Excel 公式错误（#NULL! #DIV/0! #VALUE! #REF! #NAME? #NUM! #N/A #SPILL! #CALC! 等）经 COM 读成整数，
 # 即 CVErr(2000～2050) = 0x800A07D0 起的 HRESULT，例如 #REF! = -2146826265
 _EXCEL_ERROR_MIN, _EXCEL_ERROR_MAX = -2146826288, -2146826288 + 63

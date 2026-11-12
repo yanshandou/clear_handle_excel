@@ -85,6 +85,10 @@
     /* 三行固定一行高：长路径截断成「…」，悬停看完整路径；没填时显示灰色占位，高度不变 */
     .dist-new-preview .dist-task-paths dd { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .dist-new-preview .dist-task-paths dd.is-empty { font-family: inherit; color: var(--ink-3); }
+    .dist-task-paths dd.dist-picks { white-space: normal; }
+    .dist-picks ul { margin: 0; padding-left: 1.2em; max-height: 8.5em; overflow-y: auto; }
+    .dist-picks li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #distNewShared { width: 100%; resize: vertical; }
     #distNewShared::placeholder { color: #6b7894; }
     /* 上次的共享路径：太长时从前面截掉（显示「…后半段」），悬停看全 */
     .dist-last { display: flex; align-items: center; gap: 8px; min-width: 0; padding-right: 28px; }
@@ -254,10 +258,10 @@
           </div>
           <details id="distNewBox" class="dist-surface" open>
             <summary id="distNewSummary">填写共享文件夹路径</summary>
-            <p class="toolbar-hint">只填共享文件夹路径，本地的参考、处理文件夹自动生成（子文件夹一起处理）。建好后马上在下面生成拿取清单，确认后才真正拿文件。</p>
+            <p class="toolbar-hint">只填共享路径，本地的参考、处理文件夹自动生成（子文件夹一起处理）。可以每行填一个文件夹或 Excel 文件，一次拿好几处，可以直接粘贴「复制为路径」带引号的路径。建好后马上在下面生成拿取清单，确认后才真正拿文件。</p>
             <div class="link-fields">
               <label for="distNewShared">共享文件夹路径 <small class="toolbar-hint dist-last"><span id="distNewLastHead">例如</span><span class="dist-last-path"><bdi id="distNewLast">D:\Users\s.go\OneDrive - 会社名\介舟ファミリー\20基本設計\10DB\12.ビュー定義書</bdi></span></small>
-                <input id="distNewShared" type="text" spellcheck="false" autocomplete="off" placeholder="粘贴新的共享文件夹路径"></label>
+                <textarea id="distNewShared" class="workbook-paths" rows="3" spellcheck="false" autocomplete="off" placeholder="每行一个共享文件夹或 Excel 文件路径（Ctrl+Enter 建好任务）"></textarea></label>
               <label for="distNewRoot">本地工作文件夹 <small class="toolbar-hint">参考、处理文件夹放在这里面，一般不用改；不能放在 OneDrive 里</small>
                 <input id="distNewRoot" type="text" spellcheck="false" autocomplete="off" placeholder="不填：桌面下的 handle-excel"></label>
             </div>
