@@ -143,12 +143,12 @@ def _items_by_cell(paths: set[str] | None = None) -> dict[tuple[str, str, str], 
 
 
 def _hidden_low_risk(card: dict, items: list[dict] | None = None) -> bool:
-    """黄色（只是压线 / 被裁，字都在）且没打开「也列出来」：不列卡片、不标色、不算待处理。调用方持有 STATE_LOCK"""
+    """黄色（只是被裁，字都在）且没打开「也列出来」：不列卡片、不标色、不算待处理。调用方持有 STATE_LOCK"""
     return autofix.low_risk_hidden(wf.STATE) and _card_severity(card, items) == autofix.SEVERITY_YELLOW
 
 
 def set_show_low_risk(show: Any) -> bool:
-    """查看切字页的开关：黄色（压线 / 被裁）也列出来。Excel 里的标色在下次复检 / 打开时跟着更新"""
+    """查看切字页的开关：黄色（被裁）也列出来。Excel 里的标色在下次复检 / 打开时跟着更新"""
     if not isinstance(show, bool):
         raise ValueError("请给出开或关")
     with wf.STATE_LOCK:
@@ -1742,7 +1742,7 @@ def _recheck_file(excel: Any, path: str, cards: list[dict], *, passed_message: s
             for item in group:
                 item.update(status="manual_review", batch_managed=True, triage_keep=False, review_reason=message)
             if _hidden_low_risk(card, group):
-                found -= 1  # 只是压线 / 被裁（字都在）：默认不列，不算查出的问题
+                found -= 1  # 只是被裁（字都在）：默认不列，不算查出的问题
         wf._persist_state()
         wf._sync_problem_counts(path, "人工复检完成" + (f"，还有 {found} 处问题" if found else "，没有查出问题"))
     wf.log_msg(f"🔁 {Path(path).name}：原来 {len(cards)} 处翻篇（{passed} 处已不再有问题），"

@@ -80,6 +80,7 @@ from core.hidden_text import (
     clip_check_supported,
     collect_text_pieces,
     find_hidden_cells,
+    fully_invisible,
 )
 from core.row_locator import (
     MAX_TAGGED_CELLS,
@@ -825,7 +826,9 @@ def _detect_sheet_results(
                 text_reads["次"] += 1
                 text_reads["秒"] += time.perf_counter() - started
 
-        hidden = find_hidden_cells(cells, pieces, display_text, probe.printed)
+        # 一个字都看不到的（有意隐藏、截不了图）不列，露出一部分的才算（用户 2026-11-12 定）
+        hidden = [found for found in find_hidden_cells(cells, pieces, display_text, probe.printed)
+                  if not fully_invisible(found)]
         lap("没显示全")
         per_page: dict[int | None, int] = {}
         for found in hidden:
@@ -893,7 +896,7 @@ def _detect_sheet_results(
 
 
 # 检测规则变化时加一：之前按旧规则查过的文件即使没改过，下次扫描也要整份重新检查
-DETECTOR_VERSION = 23  # 23：合并区域只匹配左上角一次，排除非左上格残留值造成的「PDF 未匹配」误报
+DETECTOR_VERSION = 24  # 24：一个字都看不到的格子（PDF 未匹配、整格被裁）不再列出； 23：合并区域只匹配左上角一次，排除非左上格残留值造成的「PDF 未匹配」误报
 
 
 def _confirm_clip_cells(
@@ -994,7 +997,7 @@ def _problem_counts(path: str) -> dict[str, Any]:
     items = [item for item in STATE["items"].values() if _report_name(item["wb_path"]) == name]
     fixed = sum(item["status"] == "fixed" for item in items)
     accepted = sum(item["status"] == "accepted" for item in items)
-    # 黄色（只是压线 / 被裁，字都在 PDF 里）默认不算待处理（用户 2026-11-10）
+    # 黄色（只是被裁，字都在 PDF 里）默认不算待处理（用户 2026-11-10）
     low_risk = sum(item["status"] not in RESOLVED_STATUSES and autofix.is_low_risk_item(item)
                    for item in items) if autofix.low_risk_hidden(STATE) else 0
     return {

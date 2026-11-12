@@ -437,3 +437,15 @@ class HiddenTextTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FullyInvisibleTests(unittest.TestCase):
+    # 用户 2026-11-12：一个字都看不到的当作有意隐藏不列；露出一部分（哪怕一行）的要改
+    def test_only_cells_with_nothing_shown_are_skipped(self):
+        from core.hidden_text import fully_invisible
+        self.assertTrue(fully_invisible({"reason": REASON_MISSING, "visible": ""}))
+        self.assertTrue(fully_invisible({"reason": REASON_CLIPPED, "visible": ""}))
+        self.assertFalse(fully_invisible({"reason": REASON_CLIPPED, "visible": "第一行第二行"}))
+        self.assertFalse(fully_invisible({"reason": REASON_TRUNCATED, "visible": "ABC"}))
+        self.assertFalse(fully_invisible({"reason": REASON_HASH, "visible": "###"}))
+
