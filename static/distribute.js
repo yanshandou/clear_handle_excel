@@ -1126,6 +1126,7 @@
   });
   function showTaskPaths() {
     $('distTaskPaths').innerHTML = `<dt>共享</dt><dd>${esc(task.shared)}</dd><dt>参考</dt><dd>${esc(task.reference)}</dd><dt>处理</dt><dd>${esc(task.work)}</dd>`
+      + ((task.picks || []).length ? `<dt>只拿</dt><dd class="dist-picks"><ul>${task.picks.map(p => `<li title="${esc(p)}">${esc(p)}</li>`).join('')}</ul></dd>` : '')
       + (task.upload_to ? `<dt>上传到</dt><dd>${esc(task.upload_to)}（中转）</dd>` : '');
     $('distTaskDest').placeholder = task.shared;
     $('distTaskDest').value = task.upload_to || '';
@@ -1205,7 +1206,9 @@
     $('distNewLast').textContent = last;
     $('distNewLast').closest('.dist-last').title = `上次：${last}`;
   };
-  const pathsHtml = t => [['共享', t.shared], ['参考', t.reference], ['处理', t.work]].map(([name, path]) => `<dt>${name}</dt><dd title="${esc(path)}">${esc(path)}</dd>`).join('');
+  const pathsHtml = t => [['共享', t.shared], ['参考', t.reference], ['处理', t.work]].map(([name, path]) => `<dt>${name}</dt><dd title="${esc(path)}">${esc(path)}</dd>`).join('')
+    // 填了多个路径：共享取共同上级，只拿下面这些（用户 2026-11-12）
+    + ((t.picks || []).length ? `<dt>只拿</dt><dd class="dist-picks"><ul>${t.picks.map(p => `<li title="${esc(p)}">${esc(p)}</li>`).join('')}</ul></dd>` : '');
   function scheduleDerive() {
     clearTimeout(deriveTimer);
     deriveTimer = setTimeout(async () => {
@@ -1250,7 +1253,7 @@
     $('distNewBox').addEventListener('toggle', () => { if ($('distNewBox').open) focusShared(); });
     $('distNewShared').addEventListener('input', scheduleDerive);
     $('distNewRoot').addEventListener('input', scheduleDerive);
-    $('distNewShared').addEventListener('keydown', event => { if (event.key === 'Enter') createTask(); });
+    $('distNewShared').addEventListener('keydown', event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) createTask(); });
     $('distNewCreate').addEventListener('click', createTask);
   }
 
