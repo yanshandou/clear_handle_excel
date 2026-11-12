@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -161,6 +162,14 @@ def list_pdfs(folder: str) -> dict:
         if str(pdf) in stale:
             entry["stale"] = True
         entries.append(entry)
+    exporting = _export_info(root)
+    if exporting:
+        # 边导边看：导出还在跑，只列已经导好（或出错跳过）的文件；还没轮到的那些 PDFS 里可能是上一轮的旧 PDF，先不给看
+        waiting = {str(Path(p).resolve()).casefold() for p in exporting.pop("waiting")}
+        before = len(entries)
+        # 认不出是哪份 Excel 的也先不列：多半是正在写的那份，导出记录还没写上
+        entries = [e for e in entries if e.get("wb_path") and str(Path(e["wb_path"]).resolve()).casefold() not in waiting]
+        exporting["hidden"] = before - len(entries)
     focus = None
     from core import work_task
     try:
@@ -175,7 +184,34 @@ def list_pdfs(folder: str) -> dict:
         focus = {"files": len(keys), "hidden": before - len(entries)}
     debug_log.event("🔎 PDF 复检列出", 文件夹=root, 看的是=shown_from, PDF=len(entries), 找到Excel=sum(1 for e in entries if e.get("wb_path")),
                     本轮清单=bool(focus), Excel改过=sum(1 for e in entries if e.get("stale")))
-    return {"folder": str(root), "pdf_folder": str(shown_from), "in_pdfs": shown_from == base, "pdfs": entries, "focus": focus}
+    return {"folder": str(root), "pdf_folder": str(shown_from), "in_pdfs": shown_from == base, "pdfs": entries, "focus": focus,
+            "exporting": exporting}
+
+
+def _export_info(root: Path) -> dict | None:
+    """这个文件夹正在批量导出 PDF：{total, done, current, waiting: 还没导好的 Excel}；没在导返回 None"""
+    with wf.STATE_LOCK:
+        job = wf.export_job_running()
+        if job is None:
+            return None
+        try:
+            same = Path(job["options"]["folder"]).resolve() == root.resolve()
+        except (KeyError, OSError):
+            same = False
+        if not same:
+            return None
+        done = set(job.get("completed", [])) | set(job.get("failed", []))
+        waiting = [p for p in job["workbooks"] if p not in done]
+        return {"total": len(job["workbooks"]), "done": len(job["workbooks"]) - len(waiting),
+                "current": workbook_rel_name(Path(waiting[0]), root) if waiting else "", "waiting": waiting}
+
+
+def _check_exported(job: dict, wb_paths: list[str]) -> None:
+    """边导边看：导出还在跑时，只能改已经导好的文件（调用方持有 STATE_LOCK）"""
+    for wb in dict.fromkeys(wb_paths):
+        reason = batch.open_block_reason(job, Path(wb))
+        if reason:
+            raise ValueError(f"「{Path(wb).name}」还在导出队列里（{reason.replace('才能打开', '才能改')}），导好以后再点")
 
 
 def page_png(pdf: str, page: int) -> bytes:
@@ -369,25 +405,36 @@ def process(red: Any, yellow: Any, tools: Any = None) -> None:
         raise ValueError("没有标黄、标红或标了工具的表")
     from core import bl_links, hidden_repair, link_repair, mark_finder
     with wf.STATE_LOCK, _PROCESS_LOCK:
-        if (wf.STATE.get("busy") or _PROCESS.get("running") or link_repair.status().get("running")
-                or mark_finder.status().get("running") or hidden_repair.status().get("running")
-                or bl_links.status().get("running")):
+        export = wf.export_job_running()
+        if _PROCESS.get("running") or _REGEN.get("running") or (wf.STATE.get("busy") and export is None) \
+                or link_repair.status().get("running") or mark_finder.status().get("running") \
+                or hidden_repair.status().get("running") or bl_links.status().get("running"):
             raise ValueError("后台任务正在执行，请等它结束再处理")
-        if reds or floors:
+        queued = export is not None and bool(reds or floors)
+        if export is not None:
+            # 边导边看：导出还在跑，导好的文件可以先改——排进导出队列，导完手上这一份就先做
+            _check_exported(export, [item["wb_path"] for item in reds + yellows + floors])
+        elif reds or floors:
             wf.STATE["busy"] = True  # 要改文件：别的任务这时候不能开
             wf.STATE["maintenance"] = "pdf_review_process"
         books = list(dict.fromkeys(item["wb_path"] for item in reds))
         _PROCESS.clear()
         _PROCESS.update(running=True, stage="delete" if reds else "floor" if floors else "open",
                         total=len(books), done=0, current="", step="", log=[], result=None)
+        if queued:
+            _PROCESS.update(current="排队中", step="等正在导出的这一份导完就开始")
     root = wf.STATE.get("pdf_review", {}).get("folder") or ""
 
     def run() -> None:
         result: dict[str, list] = {"deleted": [], "failed": [], "opened": [], "open_failed": [], "later": [],
                                    "changed": [], "change_failed": []}
         try:
-            with debug_log.side_task("pdf_review_process", {"folder": root, "red": len(reds), "yellow": len(yellows),
-                                                             "floor": len(floors)}):
+            with (wf.side_turn("pdf_review_process", _set_step) if queued else nullcontext()), \
+                    debug_log.side_task("pdf_review_process", {"folder": root, "red": len(reds), "yellow": len(yellows),
+                                                                "floor": len(floors)}):
+                if queued:
+                    with _PROCESS_LOCK:
+                        _PROCESS.update(current="", step="")
                 for item in reds + yellows + floors:
                     debug_log.event("🎨 PDF 复检标记",
                                     颜色={"red": "红", "yellow": "黄"}.get(item["color"]) or item.get("tool"),
@@ -401,8 +448,9 @@ def process(red: Any, yellow: Any, tools: Any = None) -> None:
                     with _PROCESS_LOCK:
                         _PROCESS.update(stage="open", current="")
                     with wf.STATE_LOCK:
-                        wf.STATE["busy"] = False  # 删完了；打开 Excel 不用占着任务槽
-                        wf.STATE.pop("maintenance", None)
+                        if wf.STATE.get("maintenance") == "pdf_review_process":  # 导出占着的任务槽不能放
+                            wf.STATE["busy"] = False  # 删完了；打开 Excel 不用占着任务槽
+                            wf.STATE.pop("maintenance", None)
                     _open_yellow(yellows, root, result)
                 debug_log.event("✅ PDF 复检一键处理完成", 删掉=len(result["deleted"]), 没删掉=len(result["failed"]),
                                 改了页面=len(result["changed"]), 没改成=len(result["change_failed"]),
@@ -805,7 +853,7 @@ def regenerate(pdf: Any, force: Any = False) -> dict:
     if same and force is not True:
         return {"started": False, "unchanged": True, "name": label}
     _start_regen(label, {"pdf": str(path), "wb_path": str(wb_path)},
-                 lambda: _regen_one(wb_path, root, label, sheet, path))
+                 lambda: _regen_one(wb_path, root, label, sheet, path), [str(wb_path)])
     return {"started": True, "name": label}
 
 
@@ -824,23 +872,37 @@ def _regen_one(wb_path: Path, root: Path, label: str, sheet: str, path: Path) ->
     return result
 
 
-def _start_regen(label: str, info: dict, work: Any) -> None:
-    """占住后台（别的任务在跑就拒绝），开线程跑 work()，结果放进 _REGEN 给网页轮询"""
+def _start_regen(label: str, info: dict, work: Any, books: list[str]) -> None:
+    """占住后台（别的任务在跑就拒绝），开线程跑 work()，结果放进 _REGEN 给网页轮询。
+    批量导出 PDF 在跑、books 都已经导好：排进导出队列（边导边看），导完手上这一份就先做"""
     from core import bl_links, hidden_repair, link_repair, mark_finder
     with wf.STATE_LOCK, _PROCESS_LOCK, _REGEN_LOCK:
-        if (wf.STATE.get("busy") or _PROCESS.get("running") or _REGEN.get("running")
+        export = wf.export_job_running()
+        if ((wf.STATE.get("busy") and export is None) or _PROCESS.get("running") or _REGEN.get("running")
                 or link_repair.status().get("running") or mark_finder.status().get("running")
                 or hidden_repair.status().get("running") or bl_links.status().get("running")):
             raise ValueError("后台任务正在执行，请等它结束再重新生成")
-        wf.STATE["busy"] = True  # 要写 PDFS：这时候别开导出 PDF 等任务
-        wf.STATE["maintenance"] = "pdf_review_regen"
+        if export is not None:
+            _check_exported(export, books)
+        else:
+            wf.STATE["busy"] = True  # 要写 PDFS：这时候别开导出 PDF 等任务
+            wf.STATE["maintenance"] = "pdf_review_regen"
         _REGEN.clear()
-        _REGEN.update({"running": True, "name": label, "pdf": "", "wb_path": "", "result": None, **info})
+        _REGEN.update({"running": True, "name": label, "pdf": "", "wb_path": "", "result": None, **info,
+                       **({"waiting": "等正在导出的这一份导完就开始"} if export is not None else {})})
+    queued = export is not None
+
+    def waiting(text: str) -> None:
+        with _REGEN_LOCK:
+            _REGEN["waiting"] = text
 
     def run() -> None:
         result: dict[str, Any] = {"ok": False, "name": label, "pdfs": [], "reason": "后台出错"}
         try:
-            result = work()
+            with wf.side_turn("pdf_review_regen", waiting) if queued else nullcontext():
+                with _REGEN_LOCK:
+                    _REGEN.pop("waiting", None)
+                result = work()
         except Exception as err:
             debug_log.exception(err, f"PDF 复检重新生成 {label}")
             result["reason"] = f"重新生成出错：{err}"
@@ -921,7 +983,8 @@ def refresh_stale(pdfs: Any) -> dict:
                 "failed": failed, "reason": "\n".join(failed), "wb_path": ""}
 
     try:
-        _start_regen(label, {"stale": True, "pdfs": all_pdfs, "total": len(jobs), "done": 0, "current": jobs[0][2]}, work)
+        _start_regen(label, {"stale": True, "pdfs": all_pdfs, "total": len(jobs), "done": 0, "current": jobs[0][2]}, work,
+                     [str(job[0]) for job in jobs])
     except ValueError as err:  # 后台正忙：先不更新，网页上标着「Excel 改过」，可以自己点「重新生成」
         debug_log.event("⏸ 调整页面：后台正忙，Excel 改过的表先不自动更新", 原因=str(err))
         return {"started": False, "busy": str(err), "files": len(jobs)}
