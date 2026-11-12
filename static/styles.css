@@ -2611,22 +2611,16 @@ input[type="text"] {
 }
 
 /* 窗口里的东西随步骤变多变少（开始后多了进度和日志、算出预计时间多一行、做完多了结果框），
-   以前放不下就整个窗口出滚动条，一会儿有一会儿没有。现在只让日志框变矮来让位置（最矮 96px），
-   窗口本身不滚；只有浏览器窗口实在太矮，日志和说明都缩到最矮也放不下时才出滚动条。 */
+   以前放不下就整个窗口出滚动条，一会儿有一会儿没有。现在只让日志框变矮来让位置（最矮 72px，约 3 行），
+   窗口本身不滚。说明框不缩（缩了会差几像素就冒出一根滚动条，用户 2026-11-08 嫌违和）；
+   只有浏览器窗口实在太矮，日志缩到最矮也放不下时，整个窗口才出滚动条。 */
 .task-dialog-body > * {
   flex-shrink: 0;
 }
 
-/* 进度、结果、日志直接排进窗口这一列，才能和说明框一起分剩下的高度 */
+/* 进度、结果、日志直接排进窗口这一列，日志框才能按窗口剩下的高度变矮 */
 .task-dialog-body > .task-run-box {
   display: contents;
-}
-
-/* 浏览器窗口矮：日志先变矮，说明框也跟着让一点（框里自己滚，至少留 3 行） */
-.task-dialog-body > .task-notes {
-  flex-shrink: 1;
-  min-height: 72px;
-  overflow-y: auto;
 }
 
 .task-run-box > * {
@@ -2635,7 +2629,7 @@ input[type="text"] {
 
 .task-run-box > .console-frame {
   flex-shrink: 4;
-  min-height: 128px; /* 标题条约 25px + 日志最矮 96px + 边框；不写的话外框会缩到 0 把日志盖掉 */
+  min-height: 104px; /* 标题条约 25px + 日志最矮 72px + 边框；不写的话外框会缩到 0 把日志盖掉 */
   display: flex;
   flex-direction: column;
 }
@@ -2646,7 +2640,7 @@ input[type="text"] {
 
 .task-run-box .log-box {
   flex: 0 1 140px;
-  min-height: 96px;
+  min-height: 72px;
 }
 
 .task-notes {
