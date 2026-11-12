@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 from core import autofix, batch, bl_links, clean_chain, debug_log, distribute, file_problem, work_task, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review, pdf_bundle, font_fix, image_restore, pick_copy
-from core import upload_manager, workbook_scope
+from core import pcl_check, upload_manager, workbook_scope
 from core.reference_folders import ReferenceFolders
 from core.common import (
     STATIC_DIR,
@@ -213,6 +213,10 @@ class WebHandler(upload_manager.Handler):
             self._send_json(image_restore.status())
         elif parsed.path == "/pick-copy":
             self._serve_static_file("pick_copy.html")
+        elif parsed.path in {"/pcl", "/UIPCL.html"}:
+            self._serve_static_file("UIPCL.html")
+        elif parsed.path.startswith("/api/pcl/"):
+            self._handle_pcl_get(parsed.path.removeprefix("/api/pcl/"), parse_qs(parsed.query))
         elif parsed.path == "/pdf-bundle":
             self._serve_static_file("pdf_bundle.html")
         elif parsed.path == "/api/pdf_bundle":
@@ -419,6 +423,24 @@ class WebHandler(upload_manager.Handler):
         else:
             self.send_error(404)
 
+    def _handle_pcl_get(self, action: str, query: dict[str, list[str]]) -> None:
+        """PCL 单体测试检查台（core/pcl_check.py）：只读，别的任务在跑也能看"""
+        value = (query.get("id") or [""])[0]
+        try:
+            if action == "targets":
+                self._send_json({"ok": True, "targets": pcl_check.list_targets()})
+            elif action == "target":
+                self._send_json({"ok": True, **pcl_check.load_target(value)})
+            elif action == "export":
+                self._send_json({"ok": True, "data": pcl_check.export_target(value)})
+            elif action == "image":
+                mime, data = pcl_check.get_image(value)
+                self._send_bytes(data, mime, cacheable=True)
+            else:
+                self.send_error(404)
+        except ValueError as err:
+            self._send_json({"ok": False, "error": str(err)}, status=404 if action == "image" else 400)
+
     def do_POST(self) -> None:
         if urlparse(self.path).path.startswith("/api/upload-manager/"):
             upload_manager.Handler.do_POST(self)
@@ -431,7 +453,8 @@ class WebHandler(upload_manager.Handler):
                 raise ValueError("请求内容不是有效的 JSON（文件可能已损坏）") from None
             if not isinstance(payload, dict):
                 raise ValueError("请求内容必须为 JSON 对象")
-            debug_log.event("🖱️ 网页操作", 路径=self.path, 参数=debug_log.summary(payload)[:600])
+            if not self.path.startswith("/api/pcl/"):  # 检查台边打字边自动保存，不记进调试日志
+                debug_log.event("🖱️ 网页操作", 路径=self.path, 参数=debug_log.summary(payload)[:600])
             self._handle_post(payload)
         except ConnectionError:
             # 浏览器已断开（刷新、关闭页面或离开），结果送不回去，也不必再回错误
@@ -518,6 +541,9 @@ class WebHandler(upload_manager.Handler):
                 except OSError:
                     sha[key] = ""
             self._send_json({"ok": True, **excel_diff.diff(mine.strip(), theirs.strip()), "sha256": sha})
+            return
+        if self.path.startswith("/api/pcl/"):  # 单体测试检查台：和 Excel 任务无关，别的任务在跑也能用
+            self._send_json({"ok": True, **pcl_check.handle_post(self.path.removeprefix("/api/pcl/"), payload)})
             return
         if self.path == "/api/distribute/upload_review":
             self._send_json({"ok": True, **distribute.upload_review(payload.get("token"))})
