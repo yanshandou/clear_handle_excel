@@ -243,12 +243,28 @@
       $('xdRun').disabled = false;
     }
   }
-  // 从当前任务的文件清单进来（带 task + rel）：对比完可以直接上传这一份（用户 2026-11-12）
-  const uploadTask = params.get('task') || '', uploadRel = params.get('rel') || '';
+  // 从上传页的清单进来（当前任务带 task，起点 → 终点带 free = 清单 id，都带 rel）：对比完可以直接上传这一份（用户 2026-11-12）
+  const uploadTask = params.get('task') || '', uploadFree = params.get('free') || '', uploadRel = params.get('rel') || '';
   let seen = null, uploading = false;
+  const load = key => { try { return localStorage.getItem(key); } catch (_) { return null; } };
+  // 传什么按上传页选好的来（同一份 localStorage）：excel 只传表格 / both 表格和 PDF 一起 / pdf 只传 PDF
+  const pdfMode = () => { const mode = load('clear_handle_excel.uploadWithPdf'); return mode === 'both' || mode === 'pdf' ? mode : 'excel'; };
+  const MODE_TEXT = { excel: '只传表格（按上传页选的）。', both: '表格和同名 PDF 一起传（按上传页选的）。', pdf: '只传同名 PDF，Excel 不传（按上传页选的）。' };
+  function pdfOptions() {
+    const skip = load('clear_handle_excel.pdfBundleSkip') ?? '変更履歴';
+    return { include_hidden: load('clear_handle_excel.pdfBundleHidden') === '1',
+      skip_sheets: [...new Set(skip.split(/[\n,，、;；]+/).map(v => v.trim()).filter(Boolean))],
+      no_header_footer: load('clear_handle_excel.pdfBundleNoHeader') !== '0' };
+  }
+  function showMode() {
+    const mode = pdfMode();
+    $('xdUploadMode').textContent = MODE_TEXT[mode];
+    $('xdUpload').textContent = mode === 'pdf' ? '⬆ 没问题，上传这一份的 PDF' : mode === 'both' ? '⬆ 没问题，上传这一份（带 PDF）' : '⬆ 没问题，上传这一份';
+  }
+  window.addEventListener('focus', () => { if (!uploading) showMode(); });  // 在上传页改了选项，回来就更新
   function offerUpload(data) {
     seen = null;
-    if (!uploadTask || !uploadRel || !data.sha256 || !data.sha256.mine) return;
+    if ((!uploadTask && !uploadFree) || !uploadRel || !data.sha256 || !data.sha256.mine) return;
     if ($('xdMine').value.trim() !== (params.get('mine') || '') || $('xdTheirs').value.trim() !== (params.get('theirs') || '')) {
       $('xdUploadPanel').hidden = true;  // 路径被手动改过：不是清单里那一份了
       return;
@@ -256,7 +272,7 @@
     seen = data.sha256;
     $('xdUploadName').textContent = '上传这一份：' + uploadRel;
     $('xdUploadPanel').hidden = false;
-    if (!uploading) { $('xdUpload').disabled = false; $('xdUploadStatus').textContent = ''; }
+    if (!uploading) { $('xdUpload').disabled = false; $('xdUploadStatus').textContent = ''; showMode(); }
   }
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   async function api(path, body) {
@@ -265,34 +281,59 @@
     if (!response.ok || data.ok === false) throw new Error(data.error || '请求失败');
     return data;
   }
+  // 要带 PDF 时：终点已经有同名 PDF 就问一次要不要覆盖。返回发给后台的 pdf 选项；null = 不带 PDF；false = 用户取消
+  async function pdfPlan() {
+    const mode = pdfMode();
+    if (mode === 'excel') return null;
+    const check = await api('/api/distribute/pdf_check', uploadFree ? { preview_id: uploadFree, files: [uploadRel] } : { task_id: uploadTask, files: [uploadRel] });
+    const found = (check.files || []).find(file => file.rel === uploadRel);
+    const overwrite = {};
+    if (found && found.exists) {
+      if (found.error) throw new Error('终点的同名 PDF 读不了：' + found.error);
+      const yes = await window.appConfirm(`终点已经有同名 PDF：${found.pdf}（${found.mtime || ''}${found.ours ? '，上次就是本工具传的' : '，不是本工具传的'}）。\n\n点「覆盖」用这次导出的换掉它；点「取消」这次先不传。`,
+        { title: '同名 PDF 已存在', okText: '覆盖', tone: 'danger' });
+      if (!yes) return false;
+      overwrite[uploadRel] = found.sha256;
+    }
+    return { options: pdfOptions(), overwrite, only: mode === 'pdf' };
+  }
+  function pdfLine(pdf) {
+    if (!pdf) return '';
+    return pdf.status === 'ok' ? ` 同名 PDF ${pdf.name || ''} 也传了。` : ` 但同名 PDF 没传：${pdf.error || pdf.status || ''}`;
+  }
   async function uploadThis() {
     if (!seen || uploading) return;
     uploading = true;
     $('xdUpload').disabled = true;
     $('xdUploadError').textContent = '';
-    $('xdUploadStatus').textContent = '正在开始上传…';
-    console.info('📤 对比页：上传这一份', { 文件: uploadRel, 任务: uploadTask });
     try {
-      await api('/api/distribute/task_upload', { task_id: uploadTask, files: [uploadRel], reviewed: {}, pdf: null,
+      $('xdUploadStatus').textContent = pdfMode() === 'excel' ? '正在开始上传…' : '正在看终点有没有同名 PDF…';
+      const pdf = await pdfPlan();
+      if (pdf === false) { $('xdUploadStatus').textContent = ''; $('xdUpload').disabled = false; return; }
+      console.info('📤 对比页：上传这一份', { 文件: uploadRel, 任务: uploadTask, 清单: uploadFree, 传什么: pdfMode() });
+      $('xdUploadStatus').textContent = '正在开始上传…';
+      if (uploadFree) await api('/api/distribute/free_start', { preview_id: uploadFree, pdf, only: uploadRel, confirmed: seen });
+      else await api('/api/distribute/task_upload', { task_id: uploadTask, files: [uploadRel], reviewed: {}, pdf,
         guard: 'auto', confirmed: { [uploadRel]: seen } });
+      let status;
       for (;;) {
         await wait(1000);
-        const status = await api('/api/distribute/status');
+        status = await api('/api/distribute/status');
         if (!status.running) break;
         $('xdUploadStatus').textContent = (status.reviews || []).length
           ? '这份文件在对比之后又变了，没有直接传。请回上传页，在「等待确认」里重新看差异再确认。'
           : '正在上传：' + (status.current || '准备中…');
       }
-      const files = (await api('/api/distribute/task_files', { task_id: uploadTask })).files || [];
-      const file = files.find(item => item.rel === uploadRel);
-      if (file && file.uploaded_current && !file.review) {
-        $('xdUploadStatus').textContent = '✓ 已上传这一份。';
-        console.info('📤 对比页：上传完成', { 文件: uploadRel });
+      const done = uploadFree ? (status.single && status.single.rel === uploadRel ? status.single : null)
+        : ((status.applied || {}).files || []).find(item => item.rel === uploadRel);
+      if (done && done.status === 'ok') {
+        $('xdUploadStatus').textContent = (done.pdf_only ? '✓ 已上传这一份的 PDF（Excel 没传）。' : '✓ 已上传这一份。' + pdfLine(done.pdf));
+        console.info('📤 对比页：上传完成', { 文件: uploadRel, PDF: done.pdf && done.pdf.status });
         return;
       }
       $('xdUploadStatus').textContent = '';
-      $('xdUploadError').textContent = '! 这一份没有传成，请回上传页看原因。';
-      console.warn('📤 对比页：没传成', { 文件: uploadRel, 状态: file });
+      $('xdUploadError').textContent = '! 这一份没有传成：' + ((done && done.error) || (status.applied || {}).stopped || '请回上传页看原因') + pdfLine(done && done.pdf && done.pdf.status !== 'ok' ? done.pdf : null);
+      console.warn('📤 对比页：没传成', { 文件: uploadRel, 结果: done });
     } catch (error) {
       $('xdUploadStatus').textContent = '';
       $('xdUploadError').textContent = error.message;

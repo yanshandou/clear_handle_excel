@@ -247,6 +247,33 @@ class FreeUploadTests(JsonCopyTests):
         self.assertEqual(load_workbook(b).active["A1"].value, "本地 B")
         self.assertEqual([f["status"] for f in distribute.status()["applied"]["files"]], ["ok", "skipped", "failed"])
 
+    def test_single_file_from_diff_page_uploads_and_keeps_rest_of_list(self):
+        """起点 → 终点：对比页「上传这一份」只传那一份、不再逐份确认，清单里其余的留着（用户 2026-11-12）"""
+        a = make(self.src / "a.xlsx", {"A1": "本地 A"})
+        make(self.src / "b.xlsx", {"A1": "本地 B"})
+        target_a = make(self.dst / "a.xlsx", {"A1": "远程 A"})
+        target_b = make(self.dst / "b.xlsx", {"A1": "远程 B"})
+        old_b = target_b.read_bytes()
+        preview = distribute.preview_free(str(self.src), str(self.dst))
+        self.assertEqual(len(distribute.pdf_check(None, ["a.xlsx"], preview["id"])["files"]), 1)
+        seen = {"mine": distribute._digest(a), "theirs": distribute._digest(target_a)}
+        with self.assertRaisesRegex(ValueError, "又变了"):
+            distribute.start_free(preview["id"], None, "a.xlsx", {**seen, "theirs": "别的版本"})
+        with (patch.object(excel_diff, "diff") as compare, patch.object(upload_prep, "prepare", return_value=dict(PREP)),
+              patch("core.excel_ops.start_background_excel", Mock()), patch("core.excel_ops.quit_background_excel", Mock())):
+            distribute.start_free(preview["id"], None, "a.xlsx", seen)
+            wait_until(lambda: not distribute.status()["running"])
+        compare.assert_not_called()
+        status = distribute.status()
+        self.assertEqual(status["single"]["status"], "ok", status["single"])
+        self.assertEqual(load_workbook(target_a).active["A1"].value, "本地 A")
+        self.assertEqual(target_b.read_bytes(), old_b)
+        self.assertEqual([f["rel"] for f in status["preview"]["files"]], ["b.xlsx"])  # 清单还在，只少了传成的那份
+        self.assertEqual(status["preview"]["id"], preview["id"])
+        self.assertEqual((status["preview"]["summary"]["要上传"], status["preview"]["summary"]["要确认"]), (1, 1))
+        with self.assertRaisesRegex(ValueError, "清单里没有这份文件"):
+            distribute.start_free(preview["id"], None, "a.xlsx", seen)
+
     test_no_record_same_content_overwrites = test_no_record_different_content_blocks = None
     test_destination_changed_after_preview_blocks = test_old_record_but_same_content_overwrites = None
 

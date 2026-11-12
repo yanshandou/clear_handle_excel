@@ -156,7 +156,9 @@
     showPdfNote();
     if (!loading) controls();  // 「全选待上传」按钮的说法跟着变
   });
-  window.addEventListener('focus', showPdfNote);  // 在另一个标签页改了导出设置，回来就更新
+  window.addEventListener('focus', showPdfNote);
+  // 在对比页单独传了一份，回到这个标签页：清单里那一行要跟着没掉（只读一次状态，页面不滚动）
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && !loading && !submitting && !latest.running) refresh(); });  // 在另一个标签页改了导出设置，回来就更新
   showPdfNote();
 
   // 终点已有同名 PDF：在按钮下面列出来，每个选「跳过（默认）/ 覆盖」，点继续才往下走。返回 {rel: 检查时的哈希} 或 null（取消）
@@ -365,9 +367,10 @@
     return root.replace(/[\\/]+$/, '') + sep + rel.split('/').join(sep);
   }
   // taskId 给了：对比页上多一个「上传这一份」按钮（用户 2026-11-12），只有当前任务上传的文件有
-  function diffLink(mineRoot, theirsRoot, rel, theirsRel = rel, taskId = '') {
+  // freeId = 起点 → 终点还没执行的清单：对比页同样有「上传这一份」，传完这份从清单里拿掉
+  function diffLink(mineRoot, theirsRoot, rel, theirsRel = rel, taskId = '', freeId = '') {
     return ` <a class="dist-diff" target="_blank" rel="noopener" title="左右两栏看你这份和远程那份哪里不一样（文字、公式、字体、颜色、行高列宽、打印设置…）"`
-      + ` href="/excel-diff?theirs=${encodeURIComponent(joinPath(theirsRoot, theirsRel))}&mine=${encodeURIComponent(joinPath(mineRoot, rel))}${taskId ? `&task=${encodeURIComponent(taskId)}&rel=${encodeURIComponent(rel)}` : ''}">🔍 对比</a>`;
+      + ` href="/excel-diff?theirs=${encodeURIComponent(joinPath(theirsRoot, theirsRel))}&mine=${encodeURIComponent(joinPath(mineRoot, rel))}${taskId ? `&task=${encodeURIComponent(taskId)}&rel=${encodeURIComponent(rel)}` : ''}${freeId ? `&free=${encodeURIComponent(freeId)}&rel=${encodeURIComponent(rel)}` : ''}">🔍 对比</a>`;
   }
 
   function folderCard(folder, data, applied) {
@@ -639,7 +642,7 @@
       const why = file.action === 'conflict' || file.status === 'conflict' ? esc(file.error || '')
         : esc(file.action === 'force' ? file.forced_reason || '' : file.note || '');
       const link = applied && file.status === 'ok' ? fileLink(file.rel, data.dest_root, file.rel) : fileLink(file.rel, data.source_root, file.rel);
-      const diff = file.dest_sha256 && file.status !== 'ok' ? diffLink(data.source_root, data.dest_root, file.rel) : '';
+      const diff = file.dest_sha256 && file.status !== 'ok' ? diffLink(data.source_root, data.dest_root, file.rel, file.rel, '', !applied && file.action !== 'conflict' ? data.id : '') : '';
       return `<tr class="${file.action === 'conflict' || file.status === 'conflict' ? 'is-conflict' : ''}"><td>${link}${diff}</td><td><span class="${cls}">${label}</span></td>`
         + `<td>${state}${state && why ? '<br>' : ''}${why ? `<small>${why}</small>` : ''}${prepHtml(file, data)}${pdfHtml(file)}</td><td><small>${FREE_GUARD[file.guard] || ''}</small></td></tr>`;
     });

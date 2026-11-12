@@ -142,7 +142,10 @@
             <ul>
               <li>上传时远程那份和开工时记下的版本对不上（或你选了「逐份做 Excel 对比」），会一份一份带到这里，自动开始对比。</li>
               <li>看完点「确认覆盖并上传」才传这一份；「跳过这份」不传。</li>
-              <li>从当前任务的文件清单点「🔍 对比」进来：对比完上面会多一个「⬆ 没问题，上传这一份」，点了就只传这一份 Excel。上传那一刻两份文件还是你看的这两个版本才直接传；变了就回上传页逐份确认。</li>
+              <li>从上传页的清单（当前任务，或「起点 → 终点」还没执行的清单）点「🔍 对比」进来：对比完上面会多一个「⬆ 没问题，上传这一份」，点了就只传这一份。</li>
+              <li>传表格、表格和 PDF 一起、还是只传 PDF，按上传页选好的来；终点已经有同名 PDF 时会问一次要不要覆盖。</li>
+              <li>上传那一刻两份文件还是你看的这两个版本才直接传；变了的话，当前任务回上传页逐份确认，「起点 → 终点」要回上传页重新生成清单。</li>
+              <li>「起点 → 终点」传成的那一份会从清单里拿掉，其余的不用重新生成清单。</li>
             </ul>
           </section>
         </div>
@@ -161,8 +164,8 @@
     </section>
     <section id="xdUploadPanel" class="panel" hidden>
       <h2 id="xdUploadName">上传这一份</h2>
-      <p class="toolbar-hint">看完下面的差异，没问题就直接传，不用回上传页再勾一遍。只传这一份 Excel（不带 PDF）；上传前照常清标记、恢复颜色、视图标准化。
-        对比之后两份文件要是又变了，不会直接传，会回到上传页逐份确认。</p>
+      <p class="toolbar-hint">看完下面的差异，没问题就直接传，不用回上传页。<b id="xdUploadMode"></b>
+        上传前照常清标记、视图标准化。对比之后两份文件要是又变了，不会直接传。</p>
       <div class="link-actions"><button id="xdUpload" class="btn btn-primary" type="button">⬆ 没问题，上传这一份</button></div>
       <p id="xdUploadStatus" role="status" aria-live="polite"></p>
       <p id="xdUploadError" class="batch-error" role="alert"></p>
