@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>精灵图草稿</title>
+<style>
+  :root { --ink: #17325a; --muted: #5a6b85; --line: #d5deeb; --bg: #eef3fa; --panel: #fff; --accent: #2f86e8; }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body { margin: 0; font: 14px/1.5 "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif; color: var(--ink); }
+  header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line); padding: 12px 20px; }
+  h1 { margin: 0 0 4px; font-size: 20px; }
+  .sum { margin: 0 0 10px; color: var(--muted); }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+  .bar label { display: inline-flex; gap: 6px; align-items: center; }
+  select, button { font: inherit; color: var(--ink); }
+  select { padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+  button { padding: 6px 12px; border: 1px solid #1d5fc0; border-radius: 8px; background: var(--accent); color: #fff; font-weight: 700; cursor: pointer; }
+  button.ghost { background: #fff; color: #1d5fc0; }
+  main { padding: 16px 20px 60px; }
+  section { margin: 0 0 28px; }
+  h2 { margin: 0 0 10px; font-size: 16px; }
+  h2 small { color: var(--muted); font-weight: 400; margin-left: 8px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, var(--cell)); gap: 0; }
+  .cell { width: var(--cell); position: relative; }
+  .art { width: var(--cell); height: var(--cell); display: block; }
+  .art svg { width: 100%; height: 100%; display: block; }
+  body.checker .art { background: repeating-conic-gradient(#dfe6f0 0 25%, #fff 0 50%) 0 0 / 16px 16px; }
+  body.outline .cell { outline: 1px dashed #c3cfe0; outline-offset: -1px; }
+  .cap { padding: 2px 4px 8px; font-size: 12px; line-height: 1.35; text-align: center; }
+  .cap b { display: block; color: #1d5fc0; }
+  .cap code { display: block; color: var(--muted); font-size: 11px; word-break: break-all; }
+  body.nolabel .cap { display: none; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); font-size: 13px; }
+  th, td { border: 1px solid var(--line); padding: 5px 7px; text-align: left; vertical-align: top; }
+  th { background: #f4f7fb; position: sticky; top: 0; }
+  td.ic { width: 44px; } td.ic svg { width: 36px; height: 36px; }
+  #listWrap[hidden] { display: none; }
+  .note { color: var(--muted); max-width: 900px; }
+</style>
+</head>
+<body class="checker outline">
+<header>
+  <h1>精灵图草稿（SVG 版）</h1>
+  <p class="sum" id="sum"></p>
+  <div class="bar">
+    <label>格子 <select id="cell"><option>64</option><option selected>128</option><option>256</option><option>512</option></select> px</label>
+    <label>分组 <select id="grp"><option value="">全部</option></select></label>
+    <label><input type="checkbox" id="lab" checked> 显示编号和名字</label>
+    <label><input type="checkbox" id="chk" checked> 棋盘格底（看透明）</label>
+    <label><input type="checkbox" id="out" checked> 格子虚线</label>
+    <label>导出每行 <select id="cols"><option>8</option><option selected>10</option><option>12</option><option>16</option></select> 个</label>
+    <button id="png">导出透明 PNG 精灵图</button>
+    <button id="pngLab" class="ghost">导出带编号的对照图</button>
+    <button id="json" class="ghost">下载位置表 JSON</button>
+    <button id="svgAll" class="ghost">下载 SVG 合集</button>
+    <button id="toggleList" class="ghost">看清单表格</button>
+  </div>
+</header>
+<main>
+  <p class="note">每格是一张透明底的图标，编号和英文名以后对应 CSS 里的 <code>.icon-英文名</code>。导出 PNG 时按「格子」大小画（选 256 或 512 就是高清），不带文字和棋盘格。只想要某一组就先在「分组」里选。美化时请保持每格同样大小、图标居中、四周留约 10% 空白。</p>
+  <div id="sections"></div>
+  <div id="listWrap" hidden><h2>清单</h2><table id="list"></table></div>
+</main>
+<script src="icons.js"></script>
+<script>
+(function () {
+  const { icons, groups } = window.SpriteIcons;
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const svgOf = (ic, size) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"${size ? ` width="${size}" height="${size}"` : ''}>${ic.svg}</svg>`;
+  const num = n => String(n).padStart(3, '0');
+
+  groups.forEach(g => { const o = document.createElement('option'); o.value = g; o.textContent = g; $('grp').append(o); });
+  $('sum').textContent = `一共 ${icons.length} 个图标，分 ${groups.length} 组：` + groups.map(g => `${g} ${icons.filter(i => i.g === g).length}`).join('、');
+
+  const chosen = () => icons.filter(i => !$('grp').value || i.g === $('grp').value);
+
+  function render() {
+    document.body.style.setProperty('--cell', $('cell').value + 'px');
+    const list = chosen();
+    const gs = [...new Set(list.map(i => i.g))];
+    $('sections').innerHTML = gs.map(g => {
+      const items = list.filter(i => i.g === g);
+      return `<section><h2>${esc(g)}<small>${items.length} 个 · ${esc(items[0].size)}</small></h2><div class="grid">`
+        + items.map(i => `<div class="cell" title="${esc(i.look)}"><div class="art">${svgOf(i)}</div><div class="cap"><b>#${num(i.no)} ${esc(i.name)}</b><code>${esc(i.id)}</code></div></div>`).join('')
+        + '</div></section>';
+    }).join('');
+    $('list').innerHTML = '<tr><th>#</th><th>图</th><th>名字 / 英文名</th><th>用途</th><th>现在用什么</th><th>出现在哪些页面</th><th>显示尺寸</th><th>建议样子</th></tr>'
+      + list.map(i => `<tr><td>${num(i.no)}</td><td class="ic">${svgOf(i)}</td><td>${esc(i.name)}<br><code>${esc(i.id)}</code></td><td>${esc(i.use)}</td><td>${esc(i.now)}</td><td>${esc(i.pages)}</td><td>${esc(i.size)}</td><td>${esc(i.look)}</td></tr>`).join('');
+  }
+  ['cell', 'grp'].forEach(id => $(id).addEventListener('change', render));
+  $('lab').addEventListener('change', e => document.body.classList.toggle('nolabel', !e.target.checked));
+  $('chk').addEventListener('change', e => document.body.classList.toggle('checker', e.target.checked));
+  $('out').addEventListener('change', e => document.body.classList.toggle('outline', e.target.checked));
+  $('toggleList').addEventListener('click', () => { $('listWrap').hidden = !$('listWrap').hidden; if (!$('listWrap').hidden) $('listWrap').scrollIntoView(); });
+
+  function loadImg(svg) {
+    return new Promise((ok, bad) => { const im = new Image(); im.onload = () => ok(im); im.onerror = bad; im.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg); });
+  }
+  function save(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }
+  function layout() {
+    const size = +$('cell').value, cols = +$('cols').value, list = chosen();
+    return { size, cols, list, rows: Math.ceil(list.length / cols) };
+  }
+  async function exportPng(withLabel) {
+    const { size, cols, list, rows } = layout();
+    const capH = withLabel ? Math.round(size * 0.28) : 0;
+    const cv = document.createElement('canvas');
+    cv.width = cols * size; cv.height = rows * (size + capH);
+    const ctx = cv.getContext('2d');
+    if (withLabel) { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, cv.width, cv.height); }
+    for (let k = 0; k < list.length; k++) {
+      const x = (k % cols) * size, y = Math.floor(k / cols) * (size + capH);
+      const im = await loadImg(svgOf(list[k], size));
+      ctx.drawImage(im, x, y, size, size);
+      if (withLabel) {
+        ctx.strokeStyle = '#c3cfe0'; ctx.strokeRect(x + .5, y + .5, size - 1, size + capH - 1);
+        ctx.fillStyle = '#17325a'; ctx.textAlign = 'center';
+        ctx.font = `700 ${Math.max(10, Math.round(size * 0.1))}px "Microsoft YaHei", sans-serif`;
+        ctx.fillText(`#${num(list[k].no)} ${list[k].name}`.slice(0, 16), x + size / 2, y + size + capH * 0.45, size - 6);
+        ctx.fillStyle = '#5a6b85'; ctx.font = `${Math.max(9, Math.round(size * 0.08))}px Consolas, monospace`;
+        ctx.fillText(list[k].id, x + size / 2, y + size + capH * 0.85, size - 6);
+      }
+    }
+    cv.toBlob(b => save(b, `sprite_${$('grp').value || 'all'}_${size}px${withLabel ? '_带编号' : ''}.png`), 'image/png');
+  }
+  $('png').addEventListener('click', () => exportPng(false));
+  $('pngLab').addEventListener('click', () => exportPng(true));
+  $('json').addEventListener('click', () => {
+    const { size, cols, list } = layout();
+    const map = { cell: size, columns: cols, rows: Math.ceil(list.length / cols), icons: {} };
+    list.forEach((ic, k) => { map.icons[ic.id] = { no: ic.no, name: ic.name, group: ic.g, col: k % cols, row: Math.floor(k / cols), x: (k % cols) * size, y: Math.floor(k / cols) * size }; });
+    save(new Blob([JSON.stringify(map, null, 2)], { type: 'application/json' }), `sprite_${$('grp').value || 'all'}_${size}px.json`);
+  });
+  $('svgAll').addEventListener('click', () => {
+    const body = chosen().map(ic => `  <symbol id="${ic.id}" viewBox="0 0 64 64"><title>#${num(ic.no)} ${esc(ic.name)}</title>${ic.svg}</symbol>`).join('\n');
+    save(new Blob([`<svg xmlns="http://www.w3.org/2000/svg">\n${body}\n</svg>\n`], { type: 'image/svg+xml' }), 'sprite_symbols.svg');
+  });
+  render();
+})();
+</script>
+</body>
+</html>
