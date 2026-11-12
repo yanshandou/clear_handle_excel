@@ -898,6 +898,8 @@ def pdf_check(task_id: Any = None, files: Any = None, preview_id: Any = None) ->
             raise ValueError("清单已变化，请重新生成")
         dest_root = Path(data["dest_root"])
         rels = [f["rel"] for f in data["files"] if f["action"] != "conflict"]
+        if isinstance(files, list):  # 对比页只传一份：只查这一份
+            rels = [rel for rel in rels if rel in files]
     else:
         from core import work_task
         task = _upload_task(task_id)
@@ -1311,6 +1313,7 @@ def start(preview_id: str | None = None, *, upload: dict[str, Any] | None = None
         if task_upload:
             _STATUS.pop("preview", None)
         _STATUS.pop("applied", None)
+        _STATUS.pop("single", None)
 
     def run() -> None:
         from core import operation_history
@@ -1355,7 +1358,15 @@ def start(preview_id: str | None = None, *, upload: dict[str, Any] | None = None
                 _STATUS.update(running=False, current="")
                 _STATUS["log"] = _live_log()  # 做完也留着，刷新页面还能看到这次每个文件的结果
                 _LIVE.clear()
-                if result is not None:
+                single = preview_data.get("_single")
+                if single is not None:  # 只传了清单里的一份：清单留着，传成的那份从清单里拿掉
+                    done = next((f for f in (result or preview_data)["files"] if f["rel"] == single), {})
+                    _STATUS["single"] = {"rel": single, "status": done.get("status") or "failed",
+                                         "error": done.get("error") or (result or {}).get("stopped") or "",
+                                         "pdf_only": bool(done.get("pdf_only")), "pdf": done.get("pdf")}
+                    if done.get("status") == "ok":
+                        _drop_from_preview(single)
+                elif result is not None:
                     _STATUS["applied"] = result
                     _STATUS.pop("preview", None)
                 wf.STATE["busy"] = False
@@ -1646,16 +1657,48 @@ def preview_free(source_text: Any, dest_text: Any, guard: Any = None) -> dict[st
     return result
 
 
-def start_free(preview_id: Any, pdf: Any = None) -> None:
+def start_free(preview_id: Any, pdf: Any = None, only: Any = None, confirmed: Any = None) -> None:
+    """only = 清单里的一份文件：只传这一份（Excel 对比页的「上传这一份」，用户 2026-11-12），清单里其余的留着。
+    confirmed = {"mine": 哈希, "theirs": 哈希}：用户在对比页看的就是这两个版本，和清单一致就不用再逐份确认"""
     pdf_settings = _pdf_settings(pdf)
     with _LOCK:
         preview_data = _STATUS.get("preview")
         if not preview_data or preview_data.get("kind") != "free_upload" or preview_data.get("id") != preview_id:
-            raise ValueError("清单已变化，请重新生成")
+            raise ValueError("清单已变化，请回上传页重新生成" if only is not None else "清单已变化，请重新生成")
         if not preview_data["summary"]["要上传"]:
             raise ValueError("清单里没有能上传的文件")
         upload = {**copy.deepcopy(preview_data), "pdf": pdf_settings}
+        if only is not None:
+            item = next((f for f in upload["files"] if f["rel"] == only), None)
+            if item is None:
+                raise ValueError("清单里没有这份文件（可能已经传过了），请回上传页看")
+            if item["action"] == "conflict":
+                raise ValueError(item.get("error") or "这份文件不能覆盖")
+            seen = confirmed if isinstance(confirmed, dict) else {}
+            if seen.get("mine") != item["src_sha256"] or (seen.get("theirs") or None) != item["dest_sha256"]:
+                raise ValueError("对比之后文件又变了（或和清单不是同一个版本），没有上传。请回上传页重新生成清单")
+            if item.pop("review_reason", None):
+                item["review_confirmed"] = True
+                debug_log.event("📤 上传：在对比页看过差异并确认，不再逐份确认", 文件=only)
+            upload.update(files=[item], _single=only, label=f"{upload['label']}：{only}")
     start(preview_id, upload=upload)
+
+
+def _drop_from_preview(rel: str) -> None:
+    """（调用方已拿着 _LOCK）单独传成的那份从还没执行的清单里拿掉，其余的不用重新生成清单"""
+    preview_data = _STATUS.get("preview")
+    if not preview_data or preview_data.get("kind") != "free_upload":
+        return
+    item = next((f for f in preview_data["files"] if f["rel"] == rel), None)
+    if item is None:
+        return
+    preview_data["files"].remove(item)
+    summary = preview_data["summary"]
+    for key in ("要上传", {"new": "新建", "overwrite": "覆盖", "review": "要确认"}.get(item["action"], "")):
+        if key and summary.get(key):
+            summary[key] -= 1
+    if item.get("guard") == "manifest" and summary.get("有清单"):
+        summary["有清单"] -= 1
 
 
 def _prepare_free(items: list[dict[str, Any]], temp_root: Path, src: Path,
