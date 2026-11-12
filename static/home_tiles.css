@@ -1,79 +1,211 @@
 /* ==========================================
-   首页的海景、工作区面板和工具卡片。
-   宽屏采用 6 列磁贴布局，悬停、按下和返回高亮都不改变卡片位置。
+   首页：热带海岛海景横幅、云朵岛屿工作台与 3D 立体玩具磁贴
+   宽屏 6 列、中屏 4 列、窄屏 2 列均严丝合缝无孤行；
+   悬停、按下和返回高亮只改光影，绝不改变卡片位置与尺寸。
    ========================================== */
 .home-seascape {
-  height: clamp(142px, 20vw, 288px);
-  background: #d2ebf8 url('/static/images/bg.png') center 59% / cover no-repeat;
+  position: relative;
+  height: clamp(184px, 24vw, 316px);
+  background: #7cc9ff url('/static/images/bg.png') center 58% / cover no-repeat;
+  overflow: hidden;
+}
+.home-seascape::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 36px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.32) 0%, rgba(255, 255, 255, 0) 100%);
+  pointer-events: none;
+}
+.home-seascape::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 68px;
+  background: linear-gradient(180deg, rgba(223, 247, 253, 0) 0%, rgba(223, 247, 253, 0.88) 100%);
+  pointer-events: none;
 }
 
 .home-workspace {
   box-sizing: border-box;
   position: relative;
-  width: min(1360px, calc(100% - 2 * clamp(12px, 3vw, 48px)));
-  margin: -22px auto 44px;
-  padding: clamp(14px, 2.2vw, 30px);
-  border: 1px solid var(--garden-panel-border);
-  border-radius: var(--garden-panel-radius);
-  background: #edf8ff;
-  border-image: var(--harbor-cloud) 66 fill / 20px;
-  box-shadow: var(--garden-panel-shadow);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: min(1380px, calc(100% - 2 * clamp(10px, 2.8vw, 44px)));
+  margin: -46px auto 52px;
+  padding: clamp(16px, 2.4vw, 32px);
+  border: 3px solid #ffffff;
+  border-radius: 32px;
+  background: linear-gradient(180deg, rgba(252, 255, 255, 0.96) 0%, rgba(235, 249, 255, 0.97) 100%);
+  box-shadow:
+    inset 0 3px 0 #ffffff,
+    inset 0 -6px 0 #cdebf8,
+    0 0 0 2px #b2dff2,
+    0 22px 48px -12px rgba(10, 86, 138, 0.18),
+    0 6px 16px rgba(10, 86, 138, 0.07);
 }
 
+.home-workspace .home-tools-heading {
+  padding: 2px 4px 0;
+}
 .home-workspace .home-tools-heading h2 {
-  font-size: clamp(21px, 2vw, 28px);
-  line-height: 1.3;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: clamp(22px, 2.1vw, 29px);
+  font-weight: 800;
+  line-height: 1.25;
+  color: #0f3a5d;
+  text-shadow: 0 2px 0 #ffffff;
+}
+.home-workspace .home-tools-heading h2::before {
+  content: '';
+  width: 12px;
+  height: 26px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #ffd463 0%, #ff9d3b 100%);
+  border: 2px solid #ffffff;
+  box-shadow: 0 2px 6px rgba(224, 138, 24, 0.30);
 }
 
-.tile-board { margin: 0; }
+.tile-board { margin: 2px 0 0; }
 
 .tile-grid {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  grid-auto-rows: 150px;
+  grid-auto-rows: 156px;
   grid-auto-flow: row dense;
-  gap: 16px;
+  gap: 18px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-/* 位置：上两行 精简(大) | 调整页面 + 查看切字(横) | 上传(大)；第三行是被大卡顺便做的 6 步；第四行是新任务、其他工具、完成任务 */
-.tile[data-tool='clean'] { grid-area: 1 / 1 / 3 / 3; }
+/* 宽屏 6 列完整对齐（5 行 × 6 列，无孤立尾卡）：
+   第 1-2 行：精简(2×2) | 调整页面(2×1) + 查看切字(2×1) | 上传(2×2)
+   第 3 行：精简与上传顺便自动做的 6 项小工具
+   第 4 行：独立专项修复、导出、复制与 PCL 检查 6 项
+   第 5 行：新任务·拿文件(左 3 列) | 完成任务·收尾检查(右 3 列) 首尾呼应 */
+.tile[data-tool='clean']  { grid-area: 1 / 1 / 3 / 3; }
 .tile[data-tool='adjust'] { grid-area: 1 / 3 / 2 / 5; }
-.tile[data-tool='cells'] { grid-area: 2 / 3 / 3 / 5; }
+.tile[data-tool='cells']  { grid-area: 2 / 3 / 3 / 5; }
 .tile[data-tool='upload'] { grid-area: 1 / 5 / 3 / 7; }
-.tile[data-tool='bl'] { grid-area: 3 / 1; }
-.tile[data-tool='links'] { grid-area: 3 / 2; }
-.tile[data-tool='hidden'] { grid-area: 3 / 3; }
-.tile[data-tool='font'] { grid-area: 3 / 4; }
-.tile[data-tool='colors'] { grid-area: 3 / 5; }
-.tile[data-tool='view'] { grid-area: 3 / 6; }
-.tile[data-tool='new'] { grid-area: 4 / 1; }
-.tile[data-tool='images'] { grid-area: 4 / 2; }
-.tile[data-tool='widths'] { grid-area: 4 / 3; }
-.tile[data-tool='bundle'] { grid-area: 4 / 4; }
-.tile[data-tool='json'] { grid-area: 4 / 5; }
-.tile[data-tool='finish'] { grid-area: 4 / 6; }
 
-/* 用同一组手绘底板区分工具类别。 */
-.tile { --t-bg: #eef6df; --t-line: #b9d195; --t-ink: #264c39; --t-art: var(--harbor-mint); }
-.tile.tone-teal, .tile.tone-blue { --t-bg: #e6f0fb; --t-line: #a6c4d0; --t-ink: #164958; --t-art: var(--harbor-sky); }
-.tile.tone-yellow { --t-bg: #fff6d9; --t-line: #e3c877; --t-ink: #5a4108; --t-art: var(--harbor-gold); }
-.tile.tone-purple { --t-bg: #f1eafa; --t-line: #c2aee0; --t-ink: #43296b; --t-art: var(--harbor-periwinkle); }
-.tile.tone-pink { --t-bg: #fdebf3; --t-line: #e3aac4; --t-ink: #6a2447; --t-art: var(--harbor-rose); }
+.tile[data-tool='bl']     { grid-area: 3 / 1; }
+.tile[data-tool='links']  { grid-area: 3 / 2; }
+.tile[data-tool='hidden'] { grid-area: 3 / 3; }
+.tile[data-tool='font']   { grid-area: 3 / 4; }
+.tile[data-tool='colors'] { grid-area: 3 / 5; }
+.tile[data-tool='view']   { grid-area: 3 / 6; }
+
+.tile[data-tool='images'] { grid-area: 4 / 1; }
+.tile[data-tool='widths'] { grid-area: 4 / 2; }
+.tile[data-tool='bundle'] { grid-area: 4 / 3; }
+.tile[data-tool='pick']   { grid-area: 4 / 4; }
+.tile[data-tool='json']   { grid-area: 4 / 5; }
+.tile[data-tool='pcl']    { grid-area: 4 / 6; }
+
+.tile[data-tool='new']    { grid-area: 5 / 1 / 6 / 4; }
+.tile[data-tool='finish'] { grid-area: 5 / 4 / 6 / 7; }
+
+/* 热带海岛六种立体玩具釉色：浅滩青绿、晴空蓝、沙滩金、帆船海蓝、珊瑚粉、海岛椰林 */
+.tile {
+  --t-top: #e2fdf6;
+  --t-bot: #b6f3e3;
+  --t-line: #76dec6;
+  --t-lip: #5fd1b7;
+  --t-glow: rgba(16, 165, 142, 0.16);
+  --t-ink: #0b443d;
+  --t-sub: #1c5c54;
+  --t-art: var(--harbor-mint);
+}
+.tile.tone-lime {
+  --t-top: #eafde1;
+  --t-bot: #c1f1ab;
+  --t-line: #86d865;
+  --t-lip: #6ec74c;
+  --t-glow: rgba(58, 166, 40, 0.16);
+  --t-ink: #184713;
+  --t-sub: #295e23;
+  --t-art: var(--harbor-mint);
+}
+.tile.tone-teal, .tile.tone-blue {
+  --t-top: #e3f6ff;
+  --t-bot: #b7e4ff;
+  --t-line: #7bc3f0;
+  --t-lip: #62b3e8;
+  --t-glow: rgba(18, 130, 212, 0.16);
+  --t-ink: #0c3f63;
+  --t-sub: #1e567d;
+  --t-art: var(--harbor-sky);
+}
+.tile.tone-yellow {
+  --t-top: #fff8df;
+  --t-bot: #ffe59e;
+  --t-line: #ecc058;
+  --t-lip: #e0ad3b;
+  --t-glow: rgba(212, 150, 20, 0.17);
+  --t-ink: #543604;
+  --t-sub: #6c4a10;
+  --t-art: var(--harbor-gold);
+}
+.tile.tone-purple {
+  --t-top: #e7f0ff;
+  --t-bot: #bfd8ff;
+  --t-line: #87b0f2;
+  --t-lip: #6f9ce8;
+  --t-glow: rgba(34, 98, 208, 0.16);
+  --t-ink: #133970;
+  --t-sub: #274f8a;
+  --t-art: var(--harbor-periwinkle);
+}
+.tile.tone-pink {
+  --t-top: #fff0eb;
+  --t-bot: #ffccc0;
+  --t-line: #f59c88;
+  --t-lip: #ea846e;
+  --t-glow: rgba(224, 90, 66, 0.16);
+  --t-ink: #631e15;
+  --t-sub: #7b3228;
+  --t-art: var(--harbor-rose);
+}
 
 .tile {
   position: relative;
   min-width: 0;
-  border: 2px solid var(--t-line);
-  border-radius: 16px;
-  background: var(--t-bg);
-  border-image: var(--t-art) 66 fill / 19px;
-  transition: filter .15s;
+  border: 2.5px solid #ffffff;
+  border-radius: 24px;
+  background:
+    radial-gradient(120% 80% at 20% 0%, rgba(255, 255, 255, 0.58) 0%, rgba(255, 255, 255, 0) 62%),
+    linear-gradient(180deg, var(--t-top) 0%, var(--t-bot) 100%);
+  /* 保留贴图源引用，边缘由矢量高光与立体底边精细呈现 */
+  border-image: var(--t-art) 66 / 0px;
+  box-shadow:
+    inset 0 3px 0 rgba(255, 255, 255, 0.92),
+    inset 0 -6px 0 var(--t-lip),
+    0 0 0 1.5px var(--t-line),
+    0 10px 22px -6px var(--t-glow);
+  transition: filter 0.16s ease, box-shadow 0.16s ease;
 }
-.tile:hover { filter: brightness(1.025); }
-.tile:has(.tile-link:active) { filter: brightness(.96); }
+
+.tile:hover {
+  filter: brightness(1.03) saturate(1.04);
+  box-shadow:
+    inset 0 3.5px 0 #ffffff,
+    inset 0 -6px 0 var(--t-lip),
+    0 0 0 2px var(--t-line),
+    0 14px 28px -6px var(--t-glow);
+}
+.tile:has(.tile-link:active) {
+  filter: brightness(0.97);
+  box-shadow:
+    inset 0 2px 4px rgba(12, 58, 92, 0.10),
+    inset 0 -2.5px 0 var(--t-lip),
+    0 0 0 1.5px var(--t-line),
+    0 4px 10px -3px var(--t-glow);
+}
 
 .tile-link {
   position: absolute;
@@ -83,9 +215,9 @@
   width: 100%;
   height: 100%;
   margin: 0;
-  padding: 14px;
+  padding: 15px 16px 17px;
   border: 0;
-  border-radius: 18px;
+  border-radius: 22px;
   color: var(--t-ink);
   background: none;
   font: inherit;
@@ -94,41 +226,121 @@
   cursor: pointer;
 }
 
-.tile-link:focus-visible { outline: 3px solid var(--garden-focus, #1d6f86); outline-offset: 3px; }
+.tile-link:focus-visible {
+  outline: 3px solid var(--garden-focus, #0d8ab8);
+  outline-offset: 3px;
+}
 
-.tile-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.tile-title { color: var(--t-ink); font-size: 16px; font-weight: 800; line-height: 1.3; }
-.tile-sub { color: #3d4a36; font-size: 12px; font-weight: 500; line-height: 1.5; overflow-wrap: anywhere; }
+.tile-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.tile-title {
+  color: var(--t-ink);
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1.28;
+  letter-spacing: 0.2px;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.65);
+}
+.tile-sub {
+  color: var(--t-sub);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.48;
+  overflow-wrap: anywhere;
+}
 .tile-meta {
   align-self: flex-start;
-  margin-top: 4px;
-  padding: 4px 9px;
-  border: 1px solid var(--t-line);
-  border-radius: 9px;
+  margin-top: 5px;
+  padding: 4px 11px;
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  border-radius: 999px;
   color: var(--t-ink);
-  background: #ffffffc7;
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow:
+    inset 0 1.5px 0 #ffffff,
+    0 2px 5px rgba(12, 58, 92, 0.08);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
   line-height: 1.4;
 }
 
-/* 图标 */
-.tile .tile-icon { display: block; }
+/* 3D 玩具图标带柔和立体悬浮投影 */
+.tile .tile-icon {
+  display: block;
+  filter: drop-shadow(0 6px 9px rgba(12, 56, 92, 0.17));
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.tile:hover .tile-icon {
+  transform: scale(1.05);
+}
 
 /* 小卡：图标在上，字在下 */
-.tile-small .tile-link { flex-direction: column; justify-content: flex-end; gap: 8px; }
-.tile-small .tile-icon { width: 52px; height: 52px; margin: -4px 0 -4px -4px; }
+.tile-small .tile-link {
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 7px;
+}
+.tile-small .tile-icon {
+  width: 54px;
+  height: 54px;
+  margin: -4px 0 auto -3px;
+}
+
+/* 首尾双门户卡（新任务·拿文件 / 完成任务）：宽屏与平板采用横向大徽章布局 */
+.tile[data-tool='new'] .tile-link,
+.tile[data-tool='finish'] .tile-link {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 18px;
+  padding: 16px 24px 20px;
+}
+.tile[data-tool='new'] .tile-icon,
+.tile[data-tool='finish'] .tile-icon {
+  width: 88px;
+  height: 88px;
+  margin: 0;
+}
+.tile[data-tool='new'] .tile-title,
+.tile[data-tool='finish'] .tile-title {
+  font-size: 20px;
+}
+.tile[data-tool='new'] .tile-sub,
+.tile[data-tool='finish'] .tile-sub {
+  font-size: 13.5px;
+}
 
 /* 横卡：图标在左，字在右 */
-.tile-wide .tile-link { align-items: center; gap: 16px; padding: 14px 20px; }
-.tile-wide .tile-icon { width: 104px; height: 104px; }
+.tile-wide .tile-link {
+  align-items: center;
+  gap: 18px;
+  padding: 15px 22px 19px;
+}
+.tile-wide .tile-icon { width: 102px; height: 102px; }
 .tile-wide .tile-title { font-size: 21px; }
 .tile-wide .tile-sub { font-size: 13px; }
 
-/* 大卡：图标在右上，字在左，下面留一条「顺便做」 */
-.tile-big .tile-link { flex-direction: column; justify-content: flex-start; padding: 22px 22px 84px; }
-.tile-big .tile-icon { position: absolute; top: 14px; right: 16px; width: 136px; height: 136px; }
-.tile-big .tile-text { gap: 8px; max-width: calc(100% - 145px); }
+/* 大卡：图标在右上，字在左，底部内嵌磨砂浪花白「顺便做」托盘 */
+.tile-big .tile-link {
+  flex-direction: column;
+  justify-content: flex-start;
+  padding: 24px 24px 108px;
+}
+.tile-big .tile-icon {
+  position: absolute;
+  top: 16px;
+  right: 18px;
+  width: 132px;
+  height: 132px;
+}
+.tile-big .tile-text {
+  gap: 8px;
+  max-width: calc(100% - 140px);
+}
 .tile-big .tile-title { font-size: 27px; }
 .tile-big .tile-sub { font-size: 14px; }
 
@@ -136,109 +348,210 @@
   position: absolute;
   left: 14px;
   right: 14px;
-  bottom: 14px;
+  bottom: 16px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, max-content));
+  align-items: center;
+  gap: 5px 16px;
+  min-height: 64px;
+  box-sizing: border-box;
+  padding: 9px 14px;
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  border-radius: 16px;
+  color: var(--t-ink);
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow:
+    inset 0 2px 4px rgba(12, 62, 98, 0.06),
+    0 2px 6px rgba(12, 62, 98, 0.06);
+  font-size: 13px;
+  font-weight: 700;
+}
+.tile-extras.is-fixed {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 12px;
-  min-height: 62px;
-  box-sizing: border-box;
-  padding: 8px 12px;
-  border: 1px solid var(--t-line);
-  border-radius: 13px;
-  color: var(--t-ink);
-  background: #fffffde0;
-  font-size: 13px;
-  font-weight: 600;
+  gap: 6px 8px;
 }
-.tile-extras b { flex-basis: 100%; font-size: 12px; font-weight: 800; }
-.tile-extras label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
-.tile-extras.is-fixed span { white-space: nowrap; }
+.tile-extras b {
+  grid-column: 1 / -1;
+  flex-basis: 100%;
+  font-size: 12px;
+  font-weight: 800;
+  opacity: 0.88;
+}
+.tile-extras label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tile-extras.is-fixed span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(226, 242, 255, 0.72);
+  white-space: nowrap;
+  font-size: 12.5px;
+}
 
-/* 小卡右上角：已含在哪张大卡里 */
+/* 小卡右上角：已含在哪张大卡里（未打对勾时贴齐右上内边距，打对勾时自动让开） */
 .tile-inc {
   position: absolute;
   top: 10px;
-  right: 26px;   /* 让开右上角的对勾 */
+  right: 12px;
   white-space: nowrap;
-  padding: 2px 7px;
-  border: 1px solid var(--t-line);
-  border-radius: 8px;
+  padding: 2px 9px;
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  border-radius: 999px;
   color: var(--t-ink);
-  background: #ffffffd9;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 2px 5px rgba(12, 58, 92, 0.08);
   font-size: 11px;
   font-weight: 700;
   line-height: 1.45;
   text-align: right;
   pointer-events: none;
 }
-.tile-inc.is-off { color: #4a4a4a; border-color: #c9c9c0; background: #f4f4ee; }
+.tile:has(.tile-done:not(.hidden)) .tile-inc {
+  right: 26px;
+}
+.tile-inc.is-off {
+  color: #4d6475;
+  border-color: #d7e5ee;
+  background: rgba(244, 249, 252, 0.9);
+}
 
-/* 做过的卡：右上角圆圈对勾；有出错的文件是黄底 ! */
+/* 做过的卡：右上角立体圆章对勾；异常时为沙滩金感叹章 */
 .tile-done {
   position: absolute;
   z-index: 4;
-  top: -11px;
-  right: -11px;
+  top: -10px;
+  right: -10px;
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
-  border: 3px solid #fffdf6;
+  width: 34px;
+  height: 34px;
+  border: 3px solid #ffffff;
   border-radius: 50%;
   color: #ffffff;
-  background: #1f7a2e;      /* 白字对比度 > 5:1 */
-  box-shadow: none;
-  font-size: 18px;
+  background: linear-gradient(180deg, #3ad977 0%, #199c4e 100%);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.45),
+    0 4px 10px rgba(18, 128, 62, 0.28);
+  font-size: 17px;
   font-weight: 900;
   line-height: 1;
   cursor: help;
 }
 .tile-done.hidden { display: none; }
-.tile-done.is-warn { color: #3b2a00; background: #ffc21f; }
+.tile-done.is-warn {
+  color: #4a2f00;
+  background: linear-gradient(180deg, #ffe37e 0%, #ffba24 100%);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.65),
+    0 4px 10px rgba(204, 136, 8, 0.30);
+}
 
-/* 从这张卡的页面回到首页：边框闪 4 下后消失。画在 ::after 上，不占位置，卡片不动 */
+/* 从工具页返回首页：沙滩金+珊瑚暖光环闪烁 4 下，画在 ::after 不挪动卡片 */
 .tile.is-back::after {
   content: '';
   position: absolute;
   z-index: 3;
-  inset: -4px;
-  border: 3px solid #af6a07;
-  border-radius: 19px;
+  inset: -5px;
+  border: 3.5px solid #ff9d2e;
+  border-radius: 28px;
+  box-shadow: 0 0 0 4px rgba(255, 190, 59, 0.36);
   pointer-events: none;
   opacity: 0;
-  animation: tile-back-flash .7s ease-in-out 4;
+  animation: tile-back-flash 0.7s ease-in-out 4;
 }
 @keyframes tile-back-flash {
   0%, 100% { opacity: 0; }
   45%, 60% { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .tile { transition: none; }
+  .tile, .tile .tile-icon { transition: none; }
+  .tile:hover .tile-icon { transform: none; }
   .tile.is-back::after { animation: tile-back-fade 2.8s linear 1; }
   @keyframes tile-back-fade { 0%, 80% { opacity: 1; } 100% { opacity: 0; } }
 }
 
-/* 窗口很窄时不出横向滚动条：改成 4 列 / 2 列，按顺序自动排 */
+/* 中屏 4 列（7 行 × 4 列 = 28 格，严丝合缝无空缺） */
 @media (max-width: 1099px) {
-  .tile-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .tile-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 15px;
+  }
   .tile-grid .tile { grid-area: auto; }
   .tile-grid .tile-big { grid-column: span 2; grid-row: span 2; }
-  .tile-grid .tile-wide { grid-column: span 2; }
+  .tile-grid .tile-big .tile-icon { width: 110px; height: 110px; right: 14px; }
+  .tile-grid .tile-big .tile-text { max-width: calc(100% - 114px); }
+  .tile-grid .tile-wide,
+  .tile-grid .tile[data-tool='new'],
+  .tile-grid .tile[data-tool='finish'] { grid-column: span 2; }
 }
+
+/* 窄屏 2 列（13 行 × 2 列 = 26 格，兼容 320px 超窄屏无横向溢出） */
 @media (max-width: 699px) {
-  .home-seascape { background-position: center 62%; }
-  .tile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(150px, auto); gap: 12px; }
-  .tile-small .tile-link { position: relative; justify-content: flex-start; padding: 12px; }
-  .tile-small .tile-icon { width: 42px; height: 42px; margin: 0; }
-  .tile-big .tile-icon { width: 96px; height: 96px; }
-  .tile-big .tile-text { max-width: calc(100% - 96px); }
+  .home-seascape { height: 164px; background-position: center 62%; }
+  .home-workspace {
+    margin: -34px auto 36px;
+    padding: 14px 12px 18px;
+    border-radius: 24px;
+    gap: 12px;
+  }
+  .tile-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: minmax(148px, auto);
+    gap: 11px;
+  }
+  .tile-grid .tile[data-tool='new'],
+  .tile-grid .tile[data-tool='finish'] { grid-column: auto; }
+
+  .tile-small .tile-link,
+  .tile[data-tool='new'] .tile-link,
+  .tile[data-tool='finish'] .tile-link {
+    position: relative;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-start;
+    gap: 8px;
+    padding: 12px 12px 15px;
+  }
+  .tile-small .tile-icon,
+  .tile[data-tool='new'] .tile-icon,
+  .tile[data-tool='finish'] .tile-icon {
+    width: 44px;
+    height: 44px;
+    margin: 0;
+  }
+  .tile[data-tool='new'] .tile-title,
+  .tile[data-tool='finish'] .tile-title { font-size: 15.5px; }
+  .tile[data-tool='new'] .tile-sub,
+  .tile[data-tool='finish'] .tile-sub { font-size: 12px; }
+
+  .tile-big .tile-link { padding: 18px 16px 86px; }
+  .tile-big .tile-icon { width: 88px; height: 88px; top: 12px; right: 12px; }
+  .tile-big .tile-text { max-width: calc(100% - 92px); }
   .tile-big .tile-title { font-size: 21px; }
-  .tile-wide .tile-icon { width: 72px; height: 72px; }
+  .tile-big .tile-sub { font-size: 13px; }
+
+  .tile-wide .tile-link { padding: 14px 16px 18px; gap: 12px; }
+  .tile-wide .tile-icon { width: 68px; height: 68px; }
   .tile-wide .tile-title { font-size: 17px; }
-  .tile-extras { font-size: 12px; gap: 4px 8px; padding: 6px 8px; }
+
+  .tile-extras { font-size: 12px; gap: 4px 8px; padding: 7px 10px; left: 10px; right: 10px; bottom: 12px; }
+  .tile-extras.is-fixed span { padding: 1px 6px; font-size: 11.5px; }
   .tile-inc { display: none; }
 }
 
-/* 标题下面那一行：✓ 是按哪个文件夹的执行记录打的（路径长就换行） */
-.home-tools-heading .route-done-note { margin: 5px 0 0; color: #3f5a2c; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+/* 标题下方的当前核对文件夹说明 */
+.home-tools-heading .route-done-note {
+  margin: 5px 0 0;
+  color: #0e6378;
+  font-size: 12.5px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}

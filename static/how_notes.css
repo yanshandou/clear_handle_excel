@@ -1,85 +1,139 @@
-/* 各功能页「程序会怎么做」说明（用户 2026-11-12 要：说明要准确、写详细，整块默认折叠，点开才看）。
-   用法：
-   <details class="how-notes">
-     <summary>📖 程序会怎么做 <span class="how-notes-tip">一句话概括 · 点开看详细</span></summary>
-     <div class="how-notes-body">
-       <section class="how-notes-group"><h3>🔎 小标题</h3><ul><li>…</li></ul></section>
-       <section class="how-notes-group is-wide">…</section>   整行宽
-       <section class="how-notes-group is-warn">…</section>   留给人工 / 注意事项（黄底）
-     </div>
-   </details>
-   展开、收起只改这一块的高度，不滚动页面。文字对比度都 ≥ 4.5:1。 */
+/* 各功能页「程序会怎么做」说明 —— 海岛沙滩告示牌卡片风格
+   默认折叠，点开看详细；展开收起只改高度，不挪动页面；对比度均 ≥ 4.5:1 */
 .how-notes {
-  margin: 10px 0 14px;
-  font-synthesis: weight; /* 上传页整页关了 font-synthesis，没有粗体字形的字体也要显示粗体 */
-  border: 2px solid #cfe0b8;
-  border-radius: 14px;
-  background: #f8fbef;
-  box-shadow: inset 0 1px 0 #fff;
+  margin: 12px 0 16px;
+  font-synthesis: weight;
+  border: 2px solid #f0d487;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #fffef8 0%, #fff6db 100%);
+  box-shadow:
+    inset 0 2px 0 #ffffff,
+    inset 0 -3px 0 #f3dd9e,
+    0 5px 14px -4px rgba(178, 128, 20, 0.12);
 }
+
 .how-notes > summary {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 4px 12px;
-  padding: 10px 16px;
+  gap: 6px 12px;
+  padding: 11px 18px;
   list-style: none;
   cursor: pointer;
   font-size: 15px;
   font-weight: 800;
-  color: #24402d;
-  border-radius: 12px;
+  color: #523607;
+  border-radius: 16px;
   user-select: none;
+  transition: background-color 0.15s ease;
 }
 .how-notes > summary::-webkit-details-marker { display: none; }
-.how-notes > summary::before { content: '▶'; font-size: 11px; color: #2f6b3c; }
+
+.how-notes > summary::before {
+  content: '▶';
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #ffe799 0%, #ffd059 100%);
+  border: 1.5px solid #e2a92e;
+  box-shadow: inset 0 1px 0 #fff;
+  font-size: 10px;
+  color: #5c3a04;
+}
 .how-notes[open] > summary::before { content: '▼'; }
-.how-notes > summary:hover { background: #eef5df; }
-.how-notes-tip { font-size: 13px; font-weight: 600; color: #4b5a45; }
-.how-notes > summary .how-notes-toggle { margin-left: auto; font-size: 13px; font-weight: 700; color: #2f6b3c; }
+
+.how-notes > summary:hover {
+  background: rgba(255, 236, 175, 0.42);
+}
+
+.how-notes-tip {
+  font-size: 13px;
+  font-weight: 600;
+  color: #694c1a;
+}
+
+.how-notes > summary .how-notes-toggle {
+  margin-left: auto;
+  padding: 3px 11px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid #ebd082;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #0e6087;
+  box-shadow: inset 0 1px 0 #fff;
+}
 .how-notes > summary .how-notes-toggle::after { content: '点开看详细'; }
 .how-notes[open] > summary .how-notes-toggle::after { content: '收起'; }
+
 .how-notes-body {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px 14px;
-  padding: 2px 14px 14px;
+  padding: 4px 16px 16px;
 }
+
 .how-notes-group {
   min-width: 0;
-  padding: 10px 14px 12px;
-  background: #fff;
-  border: 1px solid #dde7cc;
-  border-radius: 12px;
+  padding: 12px 16px 14px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1.5px solid #ebd89e;
+  border-radius: 15px;
+  box-shadow: inset 0 2px 0 #ffffff, 0 2px 6px rgba(168, 122, 24, 0.06);
 }
 .how-notes-group.is-wide { grid-column: 1 / -1; }
-.how-notes-group.is-warn { background: #fff9e8; border-color: #ecd58f; }
+.how-notes-group.is-warn {
+  background: linear-gradient(180deg, #fff7f4 0%, #ffede7 100%);
+  border-color: #f5b9ab;
+}
+
 .how-notes .how-notes-group h3 {
-  margin: 0 0 6px;
+  margin: 0 0 7px;
   font-size: 14px;
   font-weight: 800;
-  color: #1f4a35;
+  color: #11476b;
   text-shadow: none;
 }
-.how-notes-group.is-warn h3 { color: #6b4300; }
-.how-notes .how-notes-group ul, .how-notes .how-notes-group ol {
+.how-notes-group.is-warn h3 { color: #8c271e; }
+
+.how-notes .how-notes-group ul,
+.how-notes .how-notes-group ol {
   margin: 0;
   padding-left: 20px;
   font-size: 13.5px;
   line-height: 1.75;
-  color: #2f3d33;
+  color: #244761;
 }
-.how-notes-group li + li { margin-top: 3px; }
-.how-notes-group li::marker { color: #5f8a4a; }
-.how-notes-group b { color: #1d3325; }
+.how-notes-group li + li { margin-top: 4px; }
+.how-notes-group li::marker { color: #19a8b8; }
+.how-notes-group.is-warn li::marker { color: #e25a48; }
+.how-notes-group b { color: #0f3654; }
+
 .how-notes-group code {
-  padding: 0 5px;
+  padding: 1px 6px;
   font-size: 12.5px;
-  color: #245943;
-  background: #edf4e6;
-  border: 1px solid #d8e5c8;
-  border-radius: 6px;
+  color: #0b5d7a;
+  background: #e3f7fc;
+  border: 1px solid #b5e3f2;
+  border-radius: 7px;
+  box-shadow: none;
 }
-.how-notes-group p { margin: 0 0 6px; font-size: 13.5px; line-height: 1.75; color: #2f3d33; }
-/* 上传页（另一套样式）里也用同一块 */
-.dist-surface .how-notes, .dist-overview-copy .how-notes { margin: 8px 0 12px; }
+
+.how-notes-group p {
+  margin: 0 0 6px;
+  font-size: 13.5px;
+  line-height: 1.75;
+  color: #244761;
+}
+
+.dist-surface .how-notes,
+.dist-overview-copy .how-notes { margin: 10px 0 14px; }
+
+@media (max-width: 720px) {
+  .how-notes-body {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 4px 12px 12px;
+  }
+}

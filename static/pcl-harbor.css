@@ -1,51 +1,361 @@
 @import url("/static/garden-shell.css");
 
-.hero-harbor, .pcl-harbor-label { display: none; }
+/* ==========================================
+   PCL 单体测试检查台 · 海港检查站 3D 卡通海岛玩具皮肤
+   仅作用于 [data-theme="harbor"]，保留主题切换器切换到其他主题的能力
+   ========================================== */
+.hero-harbor,
+.pcl-harbor-label { display: none; }
 
 html[data-theme="harbor"] {
-  --ink: #183d5b;
-  --muted: #4a6578;
-  --paper: #f2faff;
-  --stock: #e8f6fb;
-  --yellow: #f5dda2;
-  --line: #bfddea;
-  --shadow: none;
+  --ink: #113a5c;
+  --muted: #466c8c;
+  --paper: #fbfdff;
+  --stock: #e3f5fc;
+  --yellow: #ffe38c;
+  --line: #b8e1f3;
+  --green: #149658;
+  --red: #cf3b30;
+  --shadow: var(--garden-panel-shadow);
   --checks: none;
 }
-[data-theme="harbor"] body { background: var(--stock); }
-[data-theme="harbor"] :is(.panel, .masthead) {
-  border: 1px solid var(--line);
-  border-radius: 15px;
-  border-image: var(--harbor-cloud) 66 fill / 16px;
+
+[data-theme="harbor"] body {
+  font-family: var(--garden-font);
+  background-color: #dcf4fc;
+  background-image:
+    radial-gradient(640px 320px at 8% -4%, rgba(255, 250, 224, 0.85) 0%, rgba(255, 250, 224, 0) 70%),
+    radial-gradient(640px 320px at 50% 104%, rgba(164, 244, 232, 0.45) 0%, rgba(164, 244, 232, 0) 72%),
+    linear-gradient(180deg, #c6ebff 0%, #dcf4fd 46%, #e6fbf8 100%);
+  background-attachment: fixed;
 }
-[data-theme="harbor"] .masthead { background: #d5f8ef; border-image-source: var(--harbor-mint); }
-[data-theme="harbor"] .masthead-strip { flex-wrap: wrap; }
+
+/* 顶部海港检查台主横幅 */
+[data-theme="harbor"] :is(.panel, .masthead) {
+  border: 2.5px solid #ffffff;
+  border-radius: 24px;
+  border-image: none;
+  background: linear-gradient(180deg, #ffffff 0%, #f4fbff 100%);
+  box-shadow: var(--garden-panel-shadow);
+}
+
+[data-theme="harbor"] .masthead {
+  background:
+    radial-gradient(110% 90% at 20% 0%, rgba(255, 255, 255, 0.68) 0%, rgba(255, 255, 255, 0) 65%),
+    linear-gradient(180deg, #d7fcf3 0%, #a5f0df 100%);
+  box-shadow:
+    inset 0 2.5px 0 #ffffff,
+    inset 0 -5px 0 #6fd8c3,
+    0 0 0 1.5px #7be0cb,
+    0 16px 36px -10px rgba(12, 118, 128, 0.20);
+}
+
+[data-theme="harbor"] .masthead-strip {
+  flex-wrap: wrap;
+  padding: 9px 20px;
+  background: linear-gradient(180deg, #1a6ad6 0%, #0e50b2 100%);
+  color: #e8f6ff;
+  border-bottom: 2px solid rgba(255, 255, 255, 0.35);
+}
+[data-theme="harbor"] .home-link {
+  padding: 4px 11px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+}
+[data-theme="harbor"] .home-link:hover {
+  background: rgba(255, 255, 255, 0.28);
+  text-decoration: none;
+}
+
 [data-theme="harbor"] .toprow::before,
 [data-theme="harbor"] .hero-base,
 [data-theme="harbor"] .hero-type,
 [data-theme="harbor"] .arcade-rig svg,
 [data-theme="harbor"] .pcl-legacy-label { display: none; }
+
 [data-theme="harbor"] .pcl-harbor-label { display: inline; }
-[data-theme="harbor"] .hero-harbor { display: block; width: 100%; height: auto; }
+[data-theme="harbor"] .eyebrow {
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #ffefa8 0%, #ffd057 100%);
+  border: 1.5px solid #e0a629;
+  color: #573604;
+  box-shadow: inset 0 1.5px 0 #ffffff;
+}
+[data-theme="harbor"] .masthead h1 {
+  color: #0b414a;
+  font-weight: 800;
+  text-shadow: 0 1.5px 0 rgba(255, 255, 255, 0.72);
+}
+[data-theme="harbor"] .masthead p {
+  color: #195963;
+}
+[data-theme="harbor"] .hero-harbor {
+  display: block;
+  width: 100%;
+  height: auto;
+  filter: drop-shadow(0 10px 18px rgba(10, 74, 112, 0.22));
+}
 [data-theme="harbor"] .header-progress {
   inset: 51% 29% auto 12%;
   color: #effbff;
   transform: translateY(-50%);
 }
-[data-theme="harbor"] :is(.btn, .utility-btn, .run-one, .theme-switch button) {
+[data-theme="harbor"] .header-progress strong {
+  font-family: var(--garden-font);
+  text-shadow: 0 2px 6px rgba(4, 20, 48, 0.55);
+}
+
+/* 折叠面板与三栏工作台：告别深黑硬边，改为圆润海岛玩具卡 */
+[data-theme="harbor"] .source-review {
+  overflow: hidden;
+}
+[data-theme="harbor"] .source-review > summary {
+  margin: 0 -16px;
+  padding: 12px 18px;
+  background: linear-gradient(180deg, #e3f6ff 0%, #c1e7ff 100%);
+  color: #0d436b;
+  border-bottom: 1.5px solid #9ad0f2;
+  border-radius: 21px 21px 0 0;
+}
+[data-theme="harbor"] .source-review:not([open]) > summary {
+  border-bottom: 0;
+  border-radius: 21px;
+}
+[data-theme="harbor"] .source-review > summary::marker { color: #0e6bb5; }
+[data-theme="harbor"] .source-index {
   border-radius: 8px;
-  border-image: var(--harbor-foam) 66 fill / 8px;
+  background: rgba(255, 255, 255, 0.8);
+  border-color: #82bfe8;
+  color: #0d5388;
+}
+
+[data-theme="harbor"] .desk-head,
+[data-theme="harbor"] .detail-head {
+  padding: 15px 18px;
+  border-bottom: 2px solid #edd082;
+  border-radius: 21px 21px 0 0;
+  background: linear-gradient(180deg, #fffdf0 0%, #ffe8a3 100%);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.85);
+}
+[data-theme="harbor"] .side-kicker,
+[data-theme="harbor"] .section-eyebrow,
+[data-theme="harbor"] .detail-no {
+  border-radius: 999px;
+  padding: 3px 10px;
+  background: linear-gradient(180deg, #2ca0f8 0%, #0f67d6 100%);
+  color: #ffffff;
+}
+
+/* 左侧圆形进度表盘与领域筛选 */
+[data-theme="harbor"] .dial {
+  border: 3px solid #ffffff;
+  background: conic-gradient(#1ccbc5 0 var(--p), #d8eef8 var(--p) 100%);
+  box-shadow: 0 0 0 1.5px #a8d8ee, 0 6px 14px rgba(12, 88, 140, 0.12);
+}
+[data-theme="harbor"] .dial-center {
+  border: 2px solid #c9e8f6;
+  background: #ffffff;
+}
+[data-theme="harbor"] .dial-number {
+  font-family: var(--garden-font);
+  color: #0e4a73;
+}
+[data-theme="harbor"] .side-rule {
+  height: 2px;
+  background: #d5eef9;
+  border-radius: 999px;
+}
+[data-theme="harbor"] .filter-btn {
+  border-radius: 12px;
+  padding: 6px 9px;
+}
+[data-theme="harbor"] .filter-btn:hover {
+  border-color: #a8d8ee;
+  background: #eaf8fd;
+}
+[data-theme="harbor"] .filter-btn.active {
+  border-color: #2bc4b8;
+  background: linear-gradient(180deg, #a2f8ee 0%, #52e4d6 100%);
+  color: #083e4a;
+  box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.8), inset 0 -2px 0 #22b8ad;
+}
+[data-theme="harbor"] .fcount {
+  border-radius: 999px;
+  padding: 0 6px;
+  background: rgba(255, 255, 255, 0.88);
+  color: #0f466b;
+}
+[data-theme="harbor"] .mark {
+  border-radius: 50%;
+  border-color: #7cc4e8;
+  background: #48c9e8;
+}
+
+/* 输入框、分段筛选与检查项列表卡片 */
+[data-theme="harbor"] :is(.target-bar select, .target-bar input, .report-fields input, .coverage-form input,
+  .source-toolbar input, .source-toolbar select, .source-input, .notearea, .search) {
+  border: 1.5px solid #a8d6ec;
+  border-radius: 12px;
+  background: #ffffff;
+  color: var(--ink);
+  box-shadow: inset 0 2px 4px rgba(14, 86, 134, 0.05);
+}
+[data-theme="harbor"] .segmented {
+  border: 1.5px solid #abd8ee;
+  border-radius: 12px;
+  padding: 3px;
+  background: #edf8fd;
+}
+[data-theme="harbor"] .segment { border-radius: 9px; font-weight: 700; }
+[data-theme="harbor"] .segment.active {
+  background: linear-gradient(180deg, #2ea2fc 0%, #106ad8 100%);
+  color: #ffffff;
+}
+
+[data-theme="harbor"] .task {
+  border: 1.5px solid #c3e4f3;
+  border-radius: 15px;
+  background: #ffffff;
+  box-shadow: inset 0 1.5px 0 #ffffff, 0 2px 6px rgba(12, 84, 134, 0.05);
+  transition: background-color 0.14s ease, border-color 0.14s ease;
+}
+[data-theme="harbor"] .task:hover {
+  background: #f1faff;
+  border-color: #8bc8e8;
+}
+[data-theme="harbor"] .task.selected {
+  background: linear-gradient(180deg, #fffdf2 0%, #fff2c4 100%);
+  border-color: #e5b342;
+  box-shadow: inset 4px 0 0 #e69d18, 0 4px 10px rgba(204, 142, 18, 0.12);
+}
+[data-theme="harbor"] .task.is-done:not(.selected) {
+  background: #effaf5;
+  border-color: #a8e3c7;
+}
+[data-theme="harbor"] .task-number,
+[data-theme="harbor"] .step-num {
+  border-radius: 7px;
+  background: linear-gradient(180deg, #2ba0f8 0%, #106ad8 100%);
+  color: #ffffff;
+}
+[data-theme="harbor"] .check-control {
+  border-radius: 7px;
+  border: 1.5px solid #96cae4;
+}
+[data-theme="harbor"] .check-control[aria-checked="true"] {
+  background: linear-gradient(180deg, #35d678 0%, #189c4e 100%);
+  border-color: #148241;
+  color: #ffffff;
+}
+[data-theme="harbor"] .tech-tag,
+[data-theme="harbor"] .keyword,
+[data-theme="harbor"] .detail-badge,
+[data-theme="harbor"] .auto-chip,
+[data-theme="harbor"] .cov-meter,
+[data-theme="harbor"] .source-file,
+[data-theme="harbor"] .source-result {
+  border-radius: 10px;
+  border-color: #bde0f2;
+}
+[data-theme="harbor"] .cov-bar {
+  border-radius: 999px;
+  border-color: #b5dff2;
+  background: #e7f6fc;
+}
+[data-theme="harbor"] .cov-table-wrap,
+[data-theme="harbor"] .jp-original,
+[data-theme="harbor"] .caution,
+[data-theme="harbor"] .codewrap,
+[data-theme="harbor"] .shot-drop {
+  border-radius: 14px;
+  border-color: #bde0f2;
+}
+[data-theme="harbor"] .codewrap {
+  background: #0f2d49;
+  border-color: #7cc0e3;
+  overflow: hidden;
+}
+[data-theme="harbor"] .caution {
+  background: #fff6db;
+  border-color: #ebc568;
+  border-left: 4px solid #e69d18;
+}
+[data-theme="harbor"] .utilities,
+[data-theme="harbor"] .detail-bottom {
+  border-top: 1.5px solid #d2ecf8;
+  background: #eef9fe;
+  border-radius: 0 0 21px 21px;
+}
+[data-theme="harbor"] .select-bar {
+  border-top-color: #d6ecba;
+}
+
+/* 按钮与主题切换键 */
+[data-theme="harbor"] :is(.btn, .utility-btn, .run-one, .theme-switch button) {
+  border: 1.5px solid #8fd2e6;
+  border-radius: 11px;
+  border-image: none;
+  box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.9), inset 0 -2.5px 0 #b8e4f2;
+  color: #114968;
+  background: linear-gradient(180deg, #ffffff 0%, #e4f7fb 100%);
+  font-weight: 700;
+}
+[data-theme="harbor"] .theme-switch button {
+  padding: 4px 10px;
+  border-color: rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
   box-shadow: none;
-  color: #164d61;
-  background: #dcf6f6;
 }
 [data-theme="harbor"] :is(.btn-run, .btn-primary.done, .theme-switch button[aria-pressed="true"]) {
-  border-image-source: var(--harbor-ocean);
-  background: #075dac;
-  color: #fff;
+  border-color: #0b53b5;
+  background: linear-gradient(180deg, #3da5ff 0%, #0f67d8 100%);
+  box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.45), inset 0 -2.5px 0 #084499;
+  color: #ffffff;
+}
+[data-theme="harbor"] .theme-switch button[aria-pressed="true"] {
+  border-color: #e3a829;
+  background: linear-gradient(180deg, #ffefa8 0%, #ffd057 100%);
+  box-shadow: inset 0 1.5px 0 #ffffff, inset 0 -2px 0 #d99b1e;
+  color: #573604;
+}
+[data-theme="harbor"] .verdict-btn[data-verdict="ok"][aria-pressed="true"] {
+  border-color: #128044;
+  background: linear-gradient(180deg, #38d67a 0%, #16994d 100%);
+  box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.4), inset 0 -2.5px 0 #0f753a;
+  color: #ffffff;
+}
+[data-theme="harbor"] .verdict-btn[data-verdict="ng"][aria-pressed="true"] {
+  border-color: #b52a20;
+  background: linear-gradient(180deg, #ff7f6d 0%, #dc4338 100%);
+  box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.4), inset 0 -2.5px 0 #961e16;
+  color: #ffffff;
 }
 [data-theme="harbor"] :is(.btn, .utility-btn, .run-one, .theme-switch button):active:not(:disabled) {
   transform: none;
-  filter: brightness(.94);
+  filter: brightness(0.95);
 }
-[data-theme="harbor"] .btn:disabled { border-image: none; background: #eaede5; color: #505b52; }
+[data-theme="harbor"] .btn:disabled {
+  border-image: none;
+  border-color: var(--garden-disabled-border);
+  background: var(--garden-disabled-bg);
+  color: var(--garden-disabled-ink);
+  box-shadow: none;
+}
+
+[data-theme="harbor"] .bottomline {
+  border-radius: 16px;
+  padding: 9px 16px;
+  background: rgba(255, 255, 255, 0.85);
+  border: 1.5px solid #bfe3f3;
+  color: var(--muted);
+}
+[data-theme="harbor"] .status-toast {
+  border-radius: 999px;
+  border: 2px solid #ffffff;
+  background: linear-gradient(180deg, #fff2bf 0%, #ffd25c 100%);
+  color: #543504;
+  box-shadow: 0 8px 22px rgba(188, 128, 14, 0.28);
+}

@@ -1,21 +1,71 @@
-:root {
-  --garden-ink: #203f56;
-  --garden-muted: #4b6274;
-  --garden-panel: #fdfefe;
-  --garden-panel-border: #d2e3ec;
-  --garden-line: #dce8ee;
-  --garden-field: #fff;
-  --garden-field-border: #b7cdd9;
-  --garden-focus: #087d9d;
-  --garden-page: #e8f6fb;
-  --garden-surface: #fbfdfb;
-  --garden-panel-radius: 22px;
-  --garden-field-radius: 12px;
-  --garden-panel-shadow: 0 2px 6px #234c6910;
-  --garden-dialog-shadow: 0 8px 22px #16344926;
-  --garden-backdrop: #18394f66;
-  --garden-font: "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Yu Gothic UI", Meiryo, sans-serif;
+/* ==========================================
+   3D 卡通热带海岛玩具风 · 全站共用外壳与基础组件
+   配色灵感：晴空蓝、浅滩青绿、浪花白、沙滩金、珊瑚色
+   圆润厚实的模具玩具边角 + 柔和顶部高光 + 立体底边与海风投影
+   ========================================== */
+@font-face {
+  font-family: "Fredoka";
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/fonts/fredoka-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Fredoka";
+  font-weight: 700;
+  font-display: swap;
+  src: url("/static/fonts/fredoka-latin-700-normal.woff2") format("woff2");
+}
 
+:root {
+  /* 海岛深海字色（保证白底/浅底对比度 ≥ 4.8:1 ~ 9.5:1） */
+  --garden-ink: #113a5c;
+  --garden-muted: #466c8c;
+
+  /* 浪花白与浅滩云朵面板 */
+  --garden-panel: #fbfdff;
+  --garden-surface: #ffffff;
+  --garden-panel-border: #b8e2f4;
+  --garden-line: #d4eef9;
+  --garden-field: #ffffff;
+  --garden-field-border: #a8d6ec;
+  --garden-focus: #0d8ab8;
+  --garden-page: #dff5fc;
+
+  /* 热带海岛主题五色：晴空蓝、浅滩青绿、沙滩金、珊瑚红、椰林绿 */
+  --island-sky: #2aa2ff;
+  --island-sky-deep: #0d63d6;
+  --island-sky-soft: #e3f5ff;
+  --island-lagoon: #1ecbc5;
+  --island-lagoon-deep: #0b8a8f;
+  --island-lagoon-soft: #defbf6;
+  --island-sand: #ffd15c;
+  --island-sand-deep: #d89216;
+  --island-sand-soft: #fff6d9;
+  --island-coral: #ff7866;
+  --island-coral-deep: #cf3b30;
+  --island-coral-soft: #ffebe7;
+  --island-palm: #34c76e;
+  --island-palm-deep: #188a46;
+  --island-palm-soft: #e3faec;
+
+  /* 圆润立体玩具造型与柔和光照 */
+  --garden-panel-radius: 26px;
+  --garden-field-radius: 15px;
+  --garden-panel-shadow:
+    inset 0 2.5px 0 #ffffff,
+    inset 0 -4px 0 #d5eef9,
+    0 0 0 1.5px #b9e1f3,
+    0 12px 28px -8px rgba(12, 92, 145, 0.15),
+    0 4px 10px rgba(12, 92, 145, 0.06);
+  --garden-dialog-shadow:
+    inset 0 3px 0 #ffffff,
+    inset 0 -5px 0 #d2ecf8,
+    0 0 0 2px #a6d8ef,
+    0 24px 56px -10px rgba(8, 52, 90, 0.30);
+  --garden-backdrop: rgba(11, 52, 86, 0.44);
+  --garden-font: "Fredoka", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Yu Gothic UI", Meiryo, sans-serif;
+
+  /* 海港贴图资源（保留兼容与测试引用） */
   --harbor-foam: url('/static/images/harbor/foam.webp');
   --harbor-ocean: url('/static/images/harbor/ocean.webp');
   --harbor-red: url('/static/images/harbor/red.webp');
@@ -25,95 +75,155 @@
   --harbor-sky: url('/static/images/harbor/sky.webp');
   --harbor-gold: url('/static/images/harbor/gold.webp');
   --harbor-rose: url('/static/images/harbor/rose.webp');
-  --garden-disabled-bg: #eaede5;
-  --garden-disabled-ink: #626b5b;
-  --garden-disabled-border: #c9cec2;
+
+  /* 禁用态：柔和海雾浅蓝灰，字色清晰可读（对比度 > 4.6:1） */
+  --garden-disabled-bg: #eaf3f8;
+  --garden-disabled-ink: #567187;
+  --garden-disabled-border: #c4dae7;
 }
 
+/* ==========================================
+   顶部海岛港湾悬浮导航栏
+   ========================================== */
 .app-header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 10px 22px;
-  padding: 14px clamp(16px, 2vw, 28px);
+  gap: 10px 20px;
+  padding: 12px clamp(16px, 2.4vw, 32px);
   color: var(--garden-ink);
-  background: var(--garden-surface);
-  border-bottom: 1px solid var(--garden-line);
-  box-shadow: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.97) 0%, rgba(238, 251, 255, 0.95) 100%);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 2px solid #b4e0f3;
+  box-shadow:
+    inset 0 2px 0 #ffffff,
+    inset 0 -3px 0 #d5effb,
+    0 8px 24px -6px rgba(12, 95, 148, 0.13);
 }
+
 .app-header .header-brand {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 12px;
+  gap: 13px;
   color: inherit;
   text-decoration: none;
-  border-radius: 12px;
+  border-radius: 16px;
+  transition: filter 0.15s ease;
 }
+.app-header .header-brand:hover {
+  opacity: 1;
+  filter: brightness(1.03);
+}
+
 .app-header .header-logo-badge {
   flex: none;
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
   font-size: 0;
   border: 0;
   border-radius: 50%;
   background: url('/static/images/ship-logo.png') center / contain no-repeat;
   box-shadow: none;
   transform: none;
+  filter: drop-shadow(0 4px 8px rgba(12, 86, 152, 0.22));
 }
-.app-header .header-title { display: grid; gap: 3px; min-width: 0; }
+
+.app-header .header-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
 .app-header .header-title-text {
   margin: 0;
   color: var(--garden-ink);
-  font: 750 18px/1.35 var(--garden-font);
-  text-shadow: none;
+  font: 700 19px/1.3 var(--garden-font);
+  letter-spacing: 0.3px;
+  text-shadow: 0 1.5px 0 #ffffff;
   overflow-wrap: anywhere;
 }
+
 .app-header .subtitle {
   color: var(--garden-muted);
-  font: 500 12px/1.4 var(--garden-font);
+  font: 600 12px/1.4 var(--garden-font);
   text-shadow: none;
 }
+
+/* 导航胶囊槽：像浅滩浪花托盘一样承托圆润按钮 */
 .app-header .header-nav {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   min-width: 0;
   margin-inline-start: auto;
-  padding: 0;
-  border: 0;
-  background: none;
-  box-shadow: none;
+  padding: 5px 7px;
+  border: 1.5px solid #c2e6f5;
+  border-radius: 22px;
+  background: linear-gradient(180deg, #e7f7fd 0%, #f3fbff 100%);
+  box-shadow:
+    inset 0 2px 4px rgba(14, 90, 140, 0.07),
+    0 1px 0 #ffffff;
 }
+
 .app-header .nav-link {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   min-height: 36px;
-  padding: 6px 10px;
-  border: 1px solid transparent;
+  padding: 6px 13px;
+  border: 1.5px solid transparent;
   border-radius: 999px;
-  color: var(--garden-muted);
+  color: #214e70;
   background: transparent;
   box-shadow: none;
-  font: 700 13px/1.4 var(--garden-font);
+  font: 700 13px/1.35 var(--garden-font);
   text-decoration: none;
   text-shadow: none;
-  transition: background-color .15s, border-color .15s;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
 }
-.app-header .nav-link:hover { background: #edf7f5; border-color: #cbdfe9; }
-.app-header .nav-link[aria-current='page'] {
-  color: #1e506d;
-  background: #d5f8ef;
-  border-image: var(--harbor-mint) 66 fill / 9px;
+
+.app-header .nav-link:hover {
+  color: #0d3a5c;
+  background: rgba(255, 255, 255, 0.88);
+  border-color: #b4e1f2;
+  box-shadow: inset 0 1.5px 0 #ffffff, 0 2px 6px rgba(14, 92, 145, 0.08);
 }
-.app-header .nav-link.nav-next {
-  color: #624714;
-  background: #fff0c7;
-  border-image: var(--harbor-gold) 66 fill / 9px;
+
+/* 当前页：浅滩青绿立体玩具胶囊 */
+.app-header .nav-link.active,
+.app-header .nav-link[aria-current='page'],
+.app-header .nav-link.active:hover,
+.app-header .nav-link[aria-current='page']:hover {
+  color: #083d49;
+  background: linear-gradient(180deg, #9cf8ed 0%, #4ce3d4 100%);
+  border-color: #2bc4b8;
+  border-image: none;
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.82),
+    inset 0 -3px 0 #20b5aa,
+    0 3px 8px rgba(16, 152, 148, 0.20);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
 }
+
+/* 返回首页 / 引导动作：沙滩金立体玩具胶囊 */
+.app-header .nav-link.nav-next,
+.app-header .nav-link.nav-next:hover {
+  color: #593804;
+  background: linear-gradient(180deg, #ffeda8 0%, #ffd059 100%);
+  border-color: #e3a829;
+  border-image: none;
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.85),
+    inset 0 -3px 0 #dc9b1e,
+    0 3px 8px rgba(210, 142, 16, 0.20);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
 .ui-icon {
   display: inline-block;
   width: 18px;
@@ -126,7 +236,12 @@
   stroke-linejoin: round;
   vertical-align: middle;
 }
-.app-header .ui-icon { width: 16px; height: 16px; }
+.app-header .ui-icon {
+  width: 18px;
+  height: 18px;
+  filter: drop-shadow(0 1.5px 2px rgba(12, 65, 105, 0.15));
+}
+
 .harbor-icon {
   display: inline-block;
   flex: none;
@@ -157,80 +272,170 @@
 .icon-finish { --icon-x: 50%; --icon-y: 100%; }
 .icon-map { --icon-x: 75%; --icon-y: 100%; }
 .icon-compass { --icon-x: 100%; --icon-y: 100%; }
-.distribution-header .today { color: var(--garden-muted); white-space: nowrap; }
 
-.btn, .btn-outline, .button {
-  --b-art: var(--harbor-foam);
-  --b: #dcf6f6;
-  --b-rim: #88c9d5;
-  --b-ink: #164d61;
+.distribution-header .today {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--island-sand-soft);
+  border: 1.5px solid #edd087;
+  color: #664408;
+  font: 700 12px/1.3 var(--garden-font);
+  white-space: nowrap;
+  box-shadow: inset 0 1.5px 0 #ffffff;
+}
+
+/* ==========================================
+   圆润立体玩具按钮（悬停/按下只变光影，绝不位移）
+   ========================================== */
+:is(.btn, .btn-outline, .btn-primary, .btn-success, .btn-danger, .button) {
+  --b-top: #ffffff;
+  --b-bot: #e3f7fb;
+  --b-rim: #8fd2e6;
+  --b-hi: rgba(255, 255, 255, 0.94);
+  --b-lip: #b4e3f1;
+  --b-glow: rgba(14, 102, 152, 0.12);
+  --b-ink: #114968;
   color: var(--b-ink);
-  background: var(--b);
-  border: 1px solid var(--b-rim);
-  border-radius: 10px;
-  border-image: var(--b-art) 66 fill / 9px;
-  box-shadow: none;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.24) 0%, rgba(255, 255, 255, 0.05) 48%, rgba(255, 255, 255, 0) 75%),
+    linear-gradient(180deg, var(--b-top) 0%, var(--b-bot) 100%);
+  border: 2px solid var(--b-rim);
+  border-radius: 15px;
+  border-image: none;
+  box-shadow:
+    inset 0 2px 0 var(--b-hi),
+    inset 0 -4px 0 var(--b-lip),
+    0 5px 12px -3px var(--b-glow);
+  font-family: var(--garden-font);
   font-weight: 700;
   text-shadow: none;
+  transition: filter 0.15s ease, box-shadow 0.12s ease, background 0.15s ease, border-color 0.15s ease;
 }
+
+.btn.btn-sm {
+  border-radius: 12px;
+  box-shadow:
+    inset 0 2px 0 var(--b-hi),
+    inset 0 -3px 0 var(--b-lip),
+    0 3px 8px -2px var(--b-glow);
+}
+
 .btn::before, .btn::after { display: none; }
-.btn-primary, .btn-success, .button.primary, .pv-size-switch .btn.is-active {
-  --b-art: var(--harbor-ocean);
-  --b: #075dac;
-  --b-rim: #075dac;
-  --b-ink: #fff;
+
+/* 主按钮：晴空帆船蓝立体玩具键帽 */
+.btn-primary, .button.primary, .pv-size-switch .btn.is-active {
+  --b-top: #3da5ff;
+  --b-bot: #0f67d8;
+  --b-rim: #0b53b5;
+  --b-hi: rgba(255, 255, 255, 0.46);
+  --b-lip: #084499;
+  --b-glow: rgba(13, 95, 205, 0.28);
+  --b-ink: #ffffff;
+  text-shadow: 0 1px 1px rgba(6, 42, 98, 0.42);
 }
+
+/* 成功 / 信息推进按钮：浅滩青绿立体玩具键帽 */
+.btn-success {
+  --b-top: #2cd4be;
+  --b-bot: #0d9692;
+  --b-rim: #097877;
+  --b-hi: rgba(255, 255, 255, 0.44);
+  --b-lip: #066363;
+  --b-glow: rgba(12, 145, 140, 0.25);
+  --b-ink: #ffffff;
+  text-shadow: 0 1px 1px rgba(5, 65, 65, 0.40);
+}
+
+/* 危险 / 删除按钮：热带珊瑚红立体玩具键帽 */
 .btn-danger, .button.danger {
-  --b-art: var(--harbor-red);
-  --b: #dd6058;
-  --b-rim: #9f312a;
-  --b-ink: #210814;
+  --b-top: #ff806e;
+  --b-bot: #dc4338;
+  --b-rim: #b52a20;
+  --b-hi: rgba(255, 255, 255, 0.44);
+  --b-lip: #961e16;
+  --b-glow: rgba(210, 58, 46, 0.26);
+  --b-ink: #ffffff;
+  text-shadow: 0 1px 1px rgba(96, 16, 12, 0.40);
 }
+
 :is(.btn, .btn-outline, .btn-primary, .btn-success, .btn-danger, .btn.btn-sm,
     .button.primary, .button.secondary, .button.danger):not(:disabled):is(:hover, :active) {
   color: var(--b-ink);
-  background: var(--b);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0.06) 48%, rgba(255, 255, 255, 0) 75%),
+    linear-gradient(180deg, var(--b-top) 0%, var(--b-bot) 100%);
   border-color: var(--b-rim);
-  box-shadow: none;
-  text-shadow: none;
   transform: none;
 }
-:is(.btn, .button):hover:not(:disabled) { filter: brightness(1.04); }
+
+:is(.btn, .button):hover:not(:disabled) {
+  filter: brightness(1.04) saturate(1.04);
+  box-shadow:
+    inset 0 2.5px 0 var(--b-hi),
+    inset 0 -4px 0 var(--b-lip),
+    0 7px 15px -3px var(--b-glow);
+}
+.btn.btn-sm:hover:not(:disabled) {
+  box-shadow:
+    inset 0 2px 0 var(--b-hi),
+    inset 0 -3px 0 var(--b-lip),
+    0 5px 10px -2px var(--b-glow);
+}
+
 :is(.btn, .btn-outline, .btn-primary, .btn-success, .btn-danger, .btn.btn-sm,
     .button.primary, .button.secondary, .button.danger):active:not(:disabled) {
-  filter: brightness(.95);
+  filter: brightness(0.97);
+  box-shadow:
+    inset 0 2px 3px rgba(9, 48, 82, 0.14),
+    inset 0 -1.5px 0 var(--b-lip),
+    0 2px 4px rgba(12, 72, 115, 0.10);
 }
+
 .btn:disabled, .btn:disabled:hover, .batch-tools .btn:disabled, .btn-outline:disabled,
 .btn-primary:disabled, .btn-success:disabled, .btn-danger:disabled,
 .button:disabled, .button[aria-disabled="true"] {
   color: var(--garden-disabled-ink);
-  background: var(--garden-disabled-bg);
-  border-color: var(--garden-disabled-border);
+  background: linear-gradient(180deg, #f4f9fc 0%, var(--garden-disabled-bg) 100%);
+  border: 2px solid var(--garden-disabled-border);
+  border-style: solid;
   border-image: none;
-  box-shadow: none;
+  box-shadow: inset 0 1.5px 0 #ffffff;
   text-shadow: none;
   opacity: 1;
   filter: none;
 }
 
+/* ==========================================
+   海岛云朵立体弹窗
+   ========================================== */
 .task-dialog, .app-dialog {
   color: var(--garden-ink);
   background: var(--garden-panel);
-  border: 2px solid var(--garden-panel-border);
-  border-radius: var(--garden-panel-radius);
+  border: 3px solid #ffffff;
+  border-radius: 28px;
   box-shadow: var(--garden-dialog-shadow);
 }
 .task-dialog::backdrop, .app-dialog::backdrop {
   background: var(--garden-backdrop);
-  backdrop-filter: blur(4px);
+  backdrop-filter: blur(6px);
 }
 .app-dialog { font-family: var(--garden-font); }
 .app-dialog-message {
   color: var(--garden-ink);
-  background: #f7f8ed;
-  border: 1px solid var(--garden-line);
+  background: linear-gradient(180deg, #f4fbff 0%, #ebf7fd 100%);
+  border: 1.5px solid #c3e4f4;
+  border-radius: 16px;
 }
-.app-dialog-icon { border-color: var(--garden-panel-border); box-shadow: inset 0 1px 0 #fff, 0 2px 0 #d9c793; }
+.app-dialog-icon {
+  border: 2px solid #ffffff;
+  border-radius: 16px;
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.75),
+    0 4px 10px rgba(12, 85, 138, 0.16);
+}
 .app-dialog .btn:focus-visible { outline-color: var(--garden-focus); }
 
 .app-header :focus-visible {
@@ -242,15 +447,20 @@
   .app-header { position: relative; }
   .distribution-header .today { display: none; }
 }
-@media (max-width: 850px) {
-  .app-header .header-nav { flex-basis: 100%; margin-inline-start: 0; }
+@media (max-width: 900px) {
+  .app-header .header-nav {
+    flex-basis: 100%;
+    margin-inline-start: 0;
+    border-radius: 18px;
+  }
 }
 @media (max-width: 700px) {
-  .app-header .header-logo-badge { width: 40px; height: 40px; }
-  .app-header .header-title-text { font-size: 16px; }
-  .app-header .nav-link { padding-inline: 8px; font-size: 12px; }
+  .app-header .header-logo-badge { width: 42px; height: 42px; }
+  .app-header .header-title-text { font-size: 17px; }
+  .app-header .header-nav { padding: 4px 5px; gap: 4px; }
+  .app-header .nav-link { padding-inline: 10px; font-size: 12px; min-height: 33px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .app-header .nav-link { transition: none; }
+  .app-header .nav-link, .btn, .button { transition: none; }
   .app-dialog[open] { animation: none; }
 }
