@@ -174,7 +174,6 @@
     const painted = new Set();
     for (;;) {
       if (gen !== generation) return;
-      const done = side => !keys[side] || keys[side].state === 'done' || keys[side].state === 'error';
       for (const [name, box] of boxes) {
         if (painted.has(name)) continue;
         const info = {};
@@ -184,6 +183,7 @@
           const k = keys[side];
           if (k.sheets[name]) info[side] = k.sheets[name];
           else if (k.state === 'error') info[side] = { pages: 0, error: '导出 PDF 失败：' + (k.error || '') };
+          else if (k.state === 'done') info[side] = { pages: 0, error: '这张表的 PDF 缺失，请重新对比' };
           else ready = false;
         }
         if (ready) { painted.add(name); paint(box, name, info, keys.theirs?.key, keys.mine?.key, gen); }
@@ -192,11 +192,15 @@
           box.innerHTML = `<p class="xr-status">📄 真实效果：${k && k.state === 'running' ? `后台 Excel 正在导出 PDF（${esc(k.current || '准备中')}）…` : `排队等后台 Excel 导出 PDF${k && k.queue ? `（前面还有 ${k.queue - 1} 份）` : ''}…`}</p>`;
         }
       }
-      if (painted.size === boxes.size || (done('mine') && done('theirs') && painted.size === boxes.size)) return;
+      if (painted.size === boxes.size) return;
       await wait(1500);
       try {
         const query = {};
-        for (const side of ['mine', 'theirs']) if (keys[side]) query[keys[side].key] = want[side];
+        for (const side of ['mine', 'theirs']) {
+          if (!keys[side]) continue;
+          const { key } = keys[side];
+          query[key] = [...new Set([...(query[key] || []), ...want[side]])];
+        }
         const { status } = await post('/api/excel_diff/pdf_status', { keys: query });
         for (const side of ['mine', 'theirs']) if (keys[side]) keys[side] = status[keys[side].key] || keys[side];
       } catch (error) {

@@ -587,6 +587,10 @@ class WebHandler(upload_manager.Handler):
             distribute.decide_upload_review(payload.get("token"), payload.get("decision"))
             self._send_json({"ok": True})
             return
+        if self.path == "/api/distribute/upload_cancel":
+            distribute.cancel_upload_review(payload.get("review_id"))
+            self._send_json({"ok": True})
+            return
         if self.path == "/api/excel/open" and isinstance(payload.get("problem"), str):
             problem = file_problem.pending()
             if not problem or problem["id"] != payload["problem"]:

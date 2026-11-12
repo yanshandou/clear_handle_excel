@@ -27,7 +27,7 @@
   }
 
   function stateText(card) {
-    return { idle: '还没比', running: '正在比…', same: '✓ 完全一样', diff: '有不同', err: '! 比不了', up: '✓ 已上传' }[card.state] || '';
+    return { idle: '还没比', running: '正在比…', same: '✓ 未发现差异', diff: '有不同', err: '! 比不了', up: '✓ 已上传' }[card.state] || '';
   }
   function setState(rel, state, note = '') {
     const card = cards.get(rel);
@@ -41,7 +41,7 @@
   function counts() {
     const all = [...cards.values()];
     const n = s => all.filter(c => c.state === s).length;
-    $('xaCount').textContent = `共 ${all.length} 份 · 比完 ${n('same') + n('diff') + n('err') + n('up')}（完全一样 ${n('same')}、有不同 ${n('diff')}、比不了 ${n('err')}、已上传 ${n('up')}）`;
+    $('xaCount').textContent = `共 ${all.length} 份 · 比完 ${n('same') + n('diff') + n('err') + n('up')}（未发现差异 ${n('same')}、有不同 ${n('diff')}、比不了 ${n('err')}、已上传 ${n('up')}）`;
   }
 
   function cardHtml(file) {

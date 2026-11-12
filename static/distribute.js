@@ -710,7 +710,7 @@
   function renderUploadReviews() {
     const matches = freeMode ? isFree(latest) : !jsonMode && !startMode && isUpload(latest) && latest.review_task_id === task?.id;
     const reviews = matches ? latest.reviews || [] : [];
-    $('distUploadReviews').hidden = !reviews.length;
+    $('distUploadReviews').hidden = !(matches && latest.review_id);
     const keys = reviews.map(review => review.token).join(',');
     if (visibleReviews === keys) return;
     visibleReviews = keys;
@@ -729,6 +729,22 @@
       await refresh();
     } catch (error) {
       $('distUploadReviewError').textContent = error.message;
+      button.disabled = false;
+    }
+  });
+
+  $('distUploadReviewCancel').addEventListener('click', async event => {
+    const button = event.currentTarget;
+    const reviewId = latest.review_id;
+    if (!reviewId) return;
+    button.disabled = true;
+    $('distUploadReviewError').textContent = '';
+    try {
+      await post(api + '/upload_cancel', { review_id: reviewId });
+      await refresh();
+    } catch (error) {
+      $('distUploadReviewError').textContent = error.message;
+    } finally {
       button.disabled = false;
     }
   });

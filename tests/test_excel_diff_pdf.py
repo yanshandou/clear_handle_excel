@@ -1,5 +1,6 @@
 """对比的真实效果（core/excel_diff_pdf.py）：按文件哈希排队导 PDF、只导要的表、导过的不再导、页面图取得到"""
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -80,6 +81,29 @@ class ExcelDiffPdfTests(unittest.TestCase):
             excel_diff_pdf.page_png("../x", "表1", 0)
         with self.assertRaises(ValueError):
             excel_diff_pdf.page_png("0" * 64, "表1", 0)
+
+    def test_request_for_additional_sheet_while_exporting(self):
+        entered, release = threading.Event(), threading.Event()
+        export = pdf_bundle._export_sheet
+
+        def pause_first(sheet, target):
+            if sheet.Name == "表1":
+                entered.set()
+                self.assertTrue(release.wait(4))
+            export(sheet, target)
+
+        with patch.object(pdf_bundle, "_export_sheet", pause_first):
+            first = excel_diff_pdf.request(str(self.book), ["表1"])
+            try:
+                self.assertTrue(entered.wait(4))
+                second = excel_diff_pdf.request(str(self.book), ["表1", "表2"])
+                self.assertEqual(first["key"], second["key"])
+            finally:
+                release.set()
+            done = self.wait_done(first["key"], ["表1", "表2"])
+        self.assertEqual(done["state"], "done")
+        self.assertEqual(set(done["sheets"]), {"表1", "表2"})
+        self.assertEqual(self.exported, ["表1", "表2"])
 
 
 if __name__ == "__main__":

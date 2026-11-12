@@ -708,7 +708,7 @@ def _guard_mode(value: Any) -> str:
 def start_task_upload(task_id: Any, files: Any, reviewed: Any, pdf: Any = None, guard: Any = None,
                       confirmed: Any = None) -> None:
     """confirmed = {文件: {"mine": 哈希, "theirs": 哈希}}：用户在 Excel 对比页看过这两个版本的差异后点了「上传这一份」
-    （用户 2026-11-12）。上传那一刻两边还是这两个版本，就不用再逐份确认一遍"""
+    上传前处理未改变文件且远程仍是已确认的版本时，可以沿用这次确认。"""
     task = _upload_task(task_id)
     pdf_settings = _pdf_settings(pdf)
     if not isinstance(files, list) or not files:
@@ -753,6 +753,13 @@ def _verify_upload_candidate(candidate: Candidate) -> None:
         raise ValueError("本地文件在检查后发生变化，请重新检查这份文件")
 
 
+def _verify_review_candidate(candidate: Candidate) -> None:
+    _verify_upload_candidate(candidate)
+    item = candidate[0]
+    if item.get("_temp") and _digest(Path(item["_temp"])) != item["_prepared_sha256"]:
+        raise ValueError("待上传的临时副本发生变化，请重新检查这份文件")
+
+
 def _verified_uploads(batch: list[Candidate]) -> list[Candidate]:
     ready = []
     for candidate in batch:
@@ -777,7 +784,7 @@ def _upload_review_reason(known: str | None, current: str | None, guard: str) ->
 
 
 def _check_task_file(task: dict[str, Any], item: dict[str, Any], local: Path, shared: Path,
-                     baseline: dict[str, Any], guard: str) -> str | None:
+                     baseline: dict[str, Any], guard: str, *, pdf_only: bool = False) -> str | None:
     if not Path(task["shared"]).is_dir():
         raise ValueError("共享文件夹不可用，请确认网络连接或同步状态")
     version = baseline.get(_base_key(shared), {}).get("tasks", {}).get(task["id"], {})
@@ -792,14 +799,18 @@ def _check_task_file(task: dict[str, Any], item: dict[str, Any], local: Path, sh
         reason = reason or "此前的共享版本复检尚未完成"
     item["src_sha256"] = _digest(local)
     seen_diff = item.pop("confirmed", None)
-    if reason and not review and seen_diff:
+    if not review and seen_diff:
         if seen_diff["theirs"] == current and seen_diff["mine"] == item["src_sha256"]:
-            debug_log.event("📤 上传：在对比页看过差异并确认，不再逐份确认", 文件=item["rel"], 原因=reason)
-            reason = ""
-            item["review_confirmed"] = True
+            if pdf_only:
+                reason = ""
+                item["review_confirmed"] = True
+            else:
+                item["_confirmed_original"] = True
+                reason = reason or "请确认上传前处理后的版本"
         else:
             debug_log.event("📤 上传：对比页确认之后文件又变了，改回逐份确认", 文件=item["rel"],
                             远程变了=seen_diff["theirs"] != current, 本地变了=seen_diff["mine"] != item["src_sha256"])
+            reason = reason or "对比页确认后文件发生变化"
     if reason:
         item["review_reason"] = reason
     elif review and review["token"] != item["reviewed"]:
@@ -815,9 +826,9 @@ def _sheet_progress(index: int, total: int, rel: str, guard: Any) -> Callable[[i
 
 
 def _prepare_task_files(task: dict[str, Any], checked: list[tuple], total: int,
-                        pdf_settings: dict[str, Any] | None = None, temp_root: Path | None = None) -> None:
-    """上传前处理。只传 PDF（temp_root 给了）时在本机临时副本上做，处理文件夹里的 Excel 一点不动
-    （用户 2026-11-10：不然保存后哈希变了，「当前版本已上传」会变成「本地有新版本待上传」）"""
+                        pdf_settings: dict[str, Any] | None = None, temp_root: Path | None = None,
+                        *, stage: bool = False) -> None:
+    """在原文件或临时副本上完成上传前处理。审核副本和同名 PDF 先留在临时目录。"""
     from core import upload_prep
     from core.excel_ops import quit_background_excel, start_background_excel
 
@@ -847,28 +858,31 @@ def _prepare_task_files(task: dict[str, Any], checked: list[tuple], total: int,
                         excel = None
                     pre = current if pdf_settings else ""
                     cached = pdf_settings and _use_cached_pdf(item, local, _pdf_target(local), pre, pdf_settings)
-                    if cached and temp_root is not None:
+                    if cached and temp_root is not None and not stage:
                         # 只传 PDF、Excel 没变过、PDF 是按这一版导的：不再处理、不再导，直接传这份 PDF（用户 2026-11-10）
                         break
                     target = local
                     if temp_root is not None:
                         target = temp_root / str(index) / local.name
                         target.parent.mkdir(parents=True, exist_ok=True)
-                        copy_one(local, target)  # 处理文件夹里那份在 Excel 里开着（有没保存的修改）时这里会报错
+                        copy_one(local, target, expected_digest=expected_source)
                     item["prep"] = upload_prep.prepare(get_excel, target, reference, where)
                     item["_prepared_sha256"] = _digest(target)
+                    if stage:
+                        item["_temp"] = str(target)
                     wf.log_msg(f"🧽 {item['rel']}：{upload_prep.text(item['prep'])}")
-                    if cached:  # 表格和 PDF 一起：Excel 照样处理、上传，PDF 沿用；处理保存后的 Excel 也认这份 PDF
+                    if cached and not stage:  # 处理保存后的 Excel 也认这份 PDF
                         pdf_cache.add_excel_hash(_pdf_target(local), _digest(local))
-                    elif pdf_settings:  # 清完标记、视图标准化之后再导，PDF 里不会有标记色
+                    elif pdf_settings and not cached:  # 清完标记、视图标准化之后再导
                         where["step"] = "导出同名 PDF"
                         _export_pdf(get_excel, item, target, pdf_settings, _sheet_progress(index, total, item["rel"], guard))
-                        if temp_root is not None:  # 处理文件夹里也留一份 PDF，和「一起传」时一样
+                        if temp_root is not None and not stage:  # 处理文件夹里也留一份 PDF
                             shutil.copyfile(item["_pdf_local"], _pdf_target(local))
                             item["_pdf_local"] = str(_pdf_target(local))
                         # 记下这份 PDF 是哪版 Excel 导的：处理前那版（只传 PDF 时处理文件夹里就是这版）和处理保存后那版
-                        pdf_cache.remember(_pdf_target(local), [pre, _digest(local)], pdf_settings["options"],
-                                           item["pdf"], "upload")
+                        if not stage:
+                            pdf_cache.remember(_pdf_target(local), [pre, _digest(local)], pdf_settings["options"],
+                                               item["pdf"], "upload")
                     break
                 except Exception as err:
                     debug_log.exception(err, f"上传前处理 {item['rel']}")
@@ -1087,13 +1101,15 @@ def _run_task_upload(data: dict[str, Any], reviews: UploadReview) -> dict[str, A
     if relay is not None and not relay.is_dir():
         raise ValueError(f"终点文件夹不可用：{relay}（OneDrive 的话请确认已经同步到这台电脑）")
     items = data["files"]
+    pdf = data.get("pdf")
+    pdf_only = bool((pdf or {}).get("only"))
     baseline = load_baseline(strict=True)
     ready = []
     for index, item in enumerate(items):
         _progress(index, len(items), f"检查 {item['rel']}")
         try:
             local, dest = _task_file(work, item["rel"]), _task_file(shared, item["rel"])
-            current = _check_task_file(task, item, local, dest, baseline, data["guard"])
+            current = _check_task_file(task, item, local, dest, baseline, data["guard"], pdf_only=pdf_only)
             if not item.get("status"):
                 if relay is not None:
                     item["_relay_sha256"] = _shared_digest(_task_file(relay, item["rel"]))
@@ -1101,20 +1117,27 @@ def _run_task_upload(data: dict[str, Any], reviews: UploadReview) -> dict[str, A
         except (OSError, ValueError) as err:
             item.update(status="failed", error=_explain(err))
 
-    pdf = data.get("pdf")
     temp_root = None
-    if (pdf or {}).get("only"):
+    if pdf_only:
         import tempfile
         temp_root = Path(tempfile.mkdtemp(prefix="只传PDF_"))
         data["_temp_root"] = str(temp_root)
     pdf_claimed: set[str] = set()
     relayed: dict[str, dict[str, Any]] = {}
-    for batch_index, batch in enumerate(reviews.batches(ready, _verify_upload_candidate)):
+
+    def stage(batch: list[Candidate]) -> None:
+        _prepare_task_files(task, _verified_uploads(batch), len(items), pdf, reviews.prepared_dir, stage=True)
+
+    for batch_index, batch in enumerate(reviews.batches(ready, _verify_review_candidate,
+                                                       stage=None if pdf_only else stage)):
         verified = _verified_uploads(batch)
         if not verified:
             continue
-        _prepare_task_files(task, verified, len(items), pdf, temp_root / str(batch_index) if temp_root else None)
-        for item, local, dest, expected in verified:
+        unstaged = [candidate for candidate in verified if not candidate[0].get("_temp")]
+        if unstaged:
+            _prepare_task_files(task, unstaged, len(items), pdf, temp_root / str(batch_index) if temp_root else None)
+        for candidate in verified:
+            item, local, dest, expected = candidate
             if item.get("status"):
                 continue
             _progress(sum(bool(f.get("status")) for f in items), len(items), f"上传 {item['rel']}")
@@ -1127,15 +1150,43 @@ def _run_task_upload(data: dict[str, Any], reviews: UploadReview) -> dict[str, A
                     raise _SharedVersionChanged("上传前中转版本发生变化，请重新检查这份文件")
 
             try:
-                if (pdf or {}).get("only"):
+                if pdf_only:
                     verify_shared()
                     if _digest(local) != item["src_sha256"]:
                         raise ValueError("本地文件在检查后发生变化，请重新检查这份文件")
                     _save_baseline(_upload_pdf(item, target, pdf, pdf_claimed, task["id"]))
                     _pdf_only_status(item)
                     continue
-                digest = copy_one(local, target, before_replace=verify_shared,
-                                  expected_digest=item["_prepared_sha256"])
+                prepared = Path(item["_temp"]) if item.get("_temp") else local
+                prepared_sha = item["_prepared_sha256"]
+                if prepared != local:
+                    def verify_local() -> None:
+                        _verify_upload_candidate(candidate)
+                        verify_shared()
+                        if source_open(local):
+                            raise PermissionError("本地文件正在 Excel 中打开，请关闭后重新上传")
+
+                    verify_local()
+                    if prepared_sha != item["src_sha256"]:
+                        from core import print_layout
+                        view_only = not any(item["prep"].get(key) for key in ("marks", "tabs", "colors"))
+                        before = wf._file_version(local) if view_only else None
+                        copy_one(prepared, local, before_replace=verify_local, expected_digest=prepared_sha)
+                        print_layout.followed_save(wf.STATE.setdefault("print_layouts", {}), str(local), before)
+                    if pdf:
+                        local_pdf = _pdf_target(local)
+                        if Path(item["_pdf_local"]) != local_pdf:
+                            shutil.copyfile(item["_pdf_local"], local_pdf)
+                            item["_pdf_local"] = str(local_pdf)
+                        pdf_cache.remember(local_pdf, [item["src_sha256"], prepared_sha], pdf["options"],
+                                           item["pdf"], "upload")
+
+                def verify_final() -> None:
+                    verify_shared()
+                    if prepared != local and (_digest(local) != prepared_sha or source_open(local)):
+                        raise ValueError("本地文件在检查后发生变化，请重新检查这份文件")
+
+                digest = copy_one(prepared, target, before_replace=verify_final, expected_digest=prepared_sha)
             except (OSError, ValueError) as err:
                 item.update(status="failed", error=_explain(err))
                 continue
@@ -1173,6 +1224,8 @@ def _run_task_upload(data: dict[str, Any], reviews: UploadReview) -> dict[str, A
     for item in items:
         item.pop("reviewed", None)
         item.pop("_prepared_sha256", None)
+        item.pop("_temp", None)
+        item.pop("_confirmed_original", None)
         item.pop("_relay_sha256", None)
         item.pop("_pdf_local", None)
     return {**data, "id": uuid.uuid4().hex[:12], "summary": summary,
@@ -1446,7 +1499,7 @@ def status() -> dict[str, Any]:
         if data.get("running") and _LIVE.get("data"):
             data["log"] = _live_log()
             if (reviews := _LIVE.get("reviews")) is not None:
-                data["reviews"], data["comparing"] = reviews.status()
+                data["reviews"], data["comparing"], data["review_id"] = reviews.status()
                 data["review_task_id"] = (_LIVE["data"].get("task") or {}).get("id")
                 data["done"] = sum(bool(f.get("status")) for f in _LIVE["data"]["files"])
     if data.get("preview"):
@@ -1472,6 +1525,10 @@ def decide_upload_review(token: Any, decision: Any) -> None:
     if decision not in ("upload", "skip"):
         raise ValueError("请选择确认上传或跳过")
     _active_review(token).decide(token, decision == "upload")
+
+
+def cancel_upload_review(review_id: Any) -> None:
+    _active_review(review_id).cancel(review_id)
 
 
 # ───────────────────────── 拿取版本清单 + 自由上传（起点 → 终点） ─────────────────────────
@@ -1689,7 +1746,7 @@ def preview_free(source_text: Any, dest_text: Any, guard: Any = None) -> dict[st
 
 def start_free(preview_id: Any, pdf: Any = None, only: Any = None, confirmed: Any = None) -> None:
     """only = 清单里的一份文件：只传这一份（Excel 对比页的「上传这一份」，用户 2026-11-12），清单里其余的留着。
-    confirmed = {"mine": 哈希, "theirs": 哈希}：用户在对比页看的就是这两个版本，和清单一致就不用再逐份确认"""
+    confirmed = {"mine": 哈希, "theirs": 哈希}：上传前处理未改变已确认的文件时沿用这次确认。"""
     pdf_settings = _pdf_settings(pdf)
     with _LOCK:
         preview_data = _STATUS.get("preview")
@@ -1707,9 +1764,9 @@ def start_free(preview_id: Any, pdf: Any = None, only: Any = None, confirmed: An
             seen = confirmed if isinstance(confirmed, dict) else {}
             if seen.get("mine") != item["src_sha256"] or (seen.get("theirs") or None) != item["dest_sha256"]:
                 raise ValueError("对比之后文件又变了（或和清单不是同一个版本），没有上传。请回上传页重新生成清单")
-            if item.pop("review_reason", None):
-                item["review_confirmed"] = True
-                debug_log.event("📤 上传：在对比页看过差异并确认，不再逐份确认", 文件=only)
+            if not (pdf_settings or {}).get("only"):
+                item["_confirmed_original"] = True
+                item.setdefault("review_reason", "请确认上传前处理后的版本")
             upload.update(files=[item], _single=only, label=f"{upload['label']}：{only}")
     start(preview_id, upload=upload)
 
@@ -1814,12 +1871,17 @@ def _run_free(data: dict[str, Any], reviews: UploadReview) -> dict[str, Any]:
     unknown: list[str] = []
     baseline = load_baseline() if relay_task else {}
     with tempfile.TemporaryDirectory(prefix="自由上传_") as temp:
-        for index, batch in enumerate(reviews.batches(ready, _verify_upload_candidate,
+        def stage(batch: list[Candidate]) -> None:
+            _prepare_free([item for item, *_ in _verified_uploads(batch)], reviews.prepared_dir, src, pdf)
+
+        for index, batch in enumerate(reviews.batches(ready, _verify_review_candidate, stage=stage,
                                                       require_review=not (pdf or {}).get("only"))):
             verified = _verified_uploads(batch)
             if not verified:
                 continue
-            _prepare_free([item for item, _, _, _ in verified], Path(temp) / str(index), src, pdf)
+            unstaged = [item for item, *_ in verified if not item.get("_temp")]
+            if unstaged:
+                _prepare_free(unstaged, Path(temp) / str(index), src, pdf)
             for candidate in verified:
                 item, source, dest, _ = candidate
                 if item.get("status"):
@@ -1871,6 +1933,7 @@ def _run_free(data: dict[str, Any], reviews: UploadReview) -> dict[str, Any]:
     for item in data["files"]:
         item.pop("_temp", None)
         item.pop("_prepared_sha256", None)
+        item.pop("_confirmed_original", None)
         item.pop("_pdf_local", None)
     files = data["files"]
     data["summary"] = {**data["summary"], "已复制": sum(f.get("status") == "ok" for f in files),

@@ -6,9 +6,9 @@
 - 表：只有一边有的表（精简注定会删的表单独标出来，不算差异）
 - 每个格子：显示的文字、公式、批注、超链接、字体（名字 / 字号 / 粗斜体 / 下划线 / 删除线）、字的颜色、填充色、边框、
   对齐 / 换行、数字格式、保护
-- 整张表：行高、列宽、隐藏的行列、合并单元格、冻结窗格、打印设置（打印区域 / 方向 / 缩放 / 纸张）、图片图形个数、标签颜色、表是否隐藏、条件格式条数
+- 整张表：行高、列宽、隐藏的行列、合并单元格、冻结窗格、打印设置、图片图形、标签颜色、表是否隐藏、条件格式
 
-只读文件，不用 Excel（openpyxl），所以只支持 .xlsx / .xlsm；图片图形只比个数，位置大小要在 Excel 里看。
+只读文件，不用 Excel（openpyxl），支持 .xlsx / .xlsm / .xltx / .xltm。
 """
 from __future__ import annotations
 
@@ -20,10 +20,10 @@ from xml.etree import ElementTree
 
 from core import content_check, debug_log
 
-CELL_KINDS = ("文字", "公式", "批注", "超链接", "字体", "字的颜色", "填充色", "边框", "对齐", "数字格式", "保护")
+CELL_KINDS = ("文字", "公式", "公式缓存", "批注", "超链接", "字体", "字的颜色", "填充色", "边框", "对齐", "数字格式", "保护")
 STYLE_KINDS = ("字体", "字的颜色", "填充色", "边框", "对齐", "数字格式", "保护")
 SHEET_KINDS = ("行高", "列宽", "合并单元格", "冻结窗格", "打印设置", "图片图形", "标签颜色", "显示隐藏", "条件格式")
-# 主题色的名字（参考用户自己写的 xls-diff）：实际颜色随主题变，所以只写名字
+# 主题色表缺失时使用槽位名。
 _THEME_NAMES = {0: "背景色", 1: "正文色", 2: "辅助背景色", 3: "辅助正文色", 4: "强调色1", 5: "强调色2",
                 6: "强调色3", 7: "强调色4", 8: "强调色5", 9: "强调色6"}
 MAX_TEXT_ROWS = 400      # 每张表最多列多少个文字 / 公式不一样的格子
@@ -38,7 +38,7 @@ _ALIGN_WORDS = {"left": "左", "center": "中", "right": "右", "top": "上", "b
                 "distributed": "分散", "general": "", "fill": "填满", "centerContinuous": "跨列居中"}
 
 
-def _color(color: Any) -> str:
+def _color(color: Any, theme: list[str]) -> str:
     """openpyxl 的颜色 → 「#RRGGBB」/「主题色4+40%」/「自动」；没有 → 空"""
     if color is None:
         return ""
@@ -47,9 +47,11 @@ def _color(color: Any) -> str:
         value = color.rgb
         return f"#{value[-6:].upper()}" if isinstance(value, str) and len(value) >= 6 else ""
     if kind == "theme":
+        resolved = _css_color(color, theme)
         tint = getattr(color, "tint", 0) or 0
         name = _THEME_NAMES.get(color.theme, f"主题色{color.theme}")
-        return f"主题{name}" + (f"（{'变浅' if tint > 0 else '变深'} {abs(tint):.0%}）" if abs(tint) > 0.001 else "")
+        label = f"主题{name}" + (f"（{'变浅' if tint > 0 else '变深'} {abs(tint):.0%}）" if abs(tint) > 0.001 else "")
+        return f"{resolved} {label}" if resolved else label
     if kind == "indexed":
         from openpyxl.styles.colors import COLOR_INDEX
         index = color.indexed
@@ -59,32 +61,44 @@ def _color(color: Any) -> str:
     return "自动" if kind == "auto" else ""
 
 
-def _font(font: Any) -> tuple[str, str]:
+def _font(font: Any, theme: list[str]) -> tuple[str, str]:
     if font is None:
         return "", ""
     size = font.sz
     size_text = "" if size is None else (str(int(size)) if float(size).is_integer() else str(size))
     flags = "".join(word for on, word in ((font.b, " 粗体"), (font.i, " 斜体"),
                                           (font.u, " 下划线"), (font.strike, " 删除线")) if on)
-    return f"{font.name or ''} {size_text}".strip() + flags, _color(font.color)
+    return f"{font.name or ''} {size_text}".strip() + flags, _color(font.color, theme)
 
 
-def _fill(fill: Any) -> str:
+def _fill(fill: Any, theme: list[str]) -> str:
     if fill is None or not getattr(fill, "fill_type", None):
         return ""
+    if hasattr(fill, "stop"):
+        direction = f"{fill.degree:g}°" if fill.type == "linear" else (
+            f"左 {fill.left:g} 右 {fill.right:g} 上 {fill.top:g} 下 {fill.bottom:g}"
+        )
+        stops = "、".join(f"{stop.position:.8g}：{_color(stop.color, theme)}" for stop in fill.stop)
+        return f"渐变 {fill.type} {direction} {stops}".strip()
     if fill.fill_type == "solid":
-        return _color(fill.fgColor) or "自动"
-    return f"{fill.fill_type} {_color(fill.fgColor)}".strip()
+        return _color(fill.fgColor, theme) or "自动"
+    return f"{fill.fill_type} 前景 {_color(fill.fgColor, theme)} 背景 {_color(fill.bgColor, theme)}"
 
 
-def _border(border: Any) -> str:
+def _border(border: Any, theme: list[str]) -> str:
     if border is None:
         return ""
     parts = []
-    for side, word in (("left", "左"), ("right", "右"), ("top", "上"), ("bottom", "下")):
-        style = getattr(getattr(border, side, None), "style", None)
+    for side, word in (("left", "左"), ("right", "右"), ("top", "上"), ("bottom", "下"),
+                       ("start", "起始"), ("end", "末尾"), ("horizontal", "内横"), ("vertical", "内竖"),
+                       ("diagonal", "对角")):
+        edge = getattr(border, side, None)
+        style = getattr(edge, "style", None)
         if style:
-            parts.append(word + _BORDER_WORDS.get(style, style))
+            if side == "diagonal":
+                word += ("↗" if border.diagonalUp else "") + ("↘" if border.diagonalDown else "")
+            color = _color(edge.color, theme)
+            parts.append(word + _BORDER_WORDS.get(style, style) + (f" {color}" if color else ""))
     return " ".join(parts)
 
 
@@ -105,15 +119,16 @@ def _align(alignment: Any) -> str:
     return " ".join(parts)
 
 
-def _style_of(cell: Any, cache: dict[tuple, dict[str, str]]) -> dict[str, str]:
+def _style_of(cell: Any, data: dict[str, Any]) -> dict[str, str]:
+    cache, theme = data["cache"], data["theme"]
     key = tuple(cell._style) if cell.has_style else ()
     found = cache.get(key)
     if found is None:
-        font, font_color = _font(cell.font)
+        font, font_color = _font(cell.font, theme)
         number_format = cell.number_format or ""
         protection = cell.protection
         locked = "" if protection is None else ("" if protection.locked else "不锁定") + (" 隐藏公式" if protection.hidden else "")
-        found = cache[key] = {"字体": font, "字的颜色": font_color, "填充色": _fill(cell.fill), "边框": _border(cell.border),
+        found = cache[key] = {"字体": font, "字的颜色": font_color, "填充色": _fill(cell.fill, theme), "边框": _border(cell.border, theme),
                               "对齐": _align(cell.alignment), "数字格式": "" if number_format == "General" else number_format,
                               "保护": locked.strip()}
     return found
@@ -355,7 +370,7 @@ def _page_setup(sheet: Any, area: str) -> dict[str, str]:
 
 def _load(path: Path) -> dict[str, Any]:
     if not path.name.lower().endswith(content_check.READABLE_SUFFIXES):
-        raise ValueError(f"{path.suffix or '这种'}格式没法对比，只支持 .xlsx / .xlsm：{path.name}")
+        raise ValueError(f"{path.suffix or '这种'}格式没法对比，只支持 .xlsx / .xlsm / .xltx / .xltm：{path.name}")
     if not path.is_file():
         raise ValueError(f"找不到文件：{path}")
     from openpyxl import load_workbook
@@ -366,9 +381,30 @@ def _load(path: Path) -> dict[str, Any]:
         raise ValueError(f"{path.name}：{err}") from err
     except Exception as err:
         raise ValueError(f"读不了 {path.name}（{type(err).__name__}: {err}）") from err
-    return {"book": book, "texts": texts, "drawings": _drawings(path), "cache": {}, "css": {},
-            "theme": _theme_colors(path),
-            "doomed": content_check.doomed_sheets(path, [s.title for s in book.worksheets])}
+    try:
+        return {"book": book, "texts": texts, "drawings": _drawings(path), "cache": {}, "css": {},
+                "theme": _theme_colors(path),
+                "doomed": content_check.doomed_sheets(path, [s.title for s in book.worksheets])}
+    except Exception:
+        book.close()
+        raise
+
+
+def _conditional_rules(sheet: Any) -> dict[str, list[tuple[bytes, Any, str]]]:
+    from openpyxl.xml.functions import tostring
+    result = {}
+    for group in sheet.conditional_formatting:
+        ranges = " ".join(str(area) for area in sorted(group.sqref.ranges))
+        rules = []
+        for rule in group.rules:
+            node = rule.to_tree()
+            node.attrib.pop("dxfId", None)  # 比较规则的实际格式，工作簿里的样式编号可以不同
+            operator = {"greaterThan": ">", "lessThan": "<", "greaterThanOrEqual": "≥",
+                        "lessThanOrEqual": "≤", "equal": "=", "notEqual": "≠"}.get(rule.operator, rule.operator)
+            description = " ".join(part for part in (operator, "、".join(rule.formula or ())) if part) or rule.type
+            rules.append((tostring(node), rule.dxf, description[:120]))
+        result[ranges] = rules
+    return result
 
 
 def _sheet_info(data: dict[str, Any], name: str) -> dict[str, Any]:
@@ -390,11 +426,14 @@ def _sheet_info(data: dict[str, Any], name: str) -> dict[str, Any]:
             cols[get_column_letter(index)] = _num(dim.width) + ("（隐藏）" if dim.hidden else "")
     tab = sheet.sheet_properties.tabColor
     return {"sheet": sheet, "texts": text["cells"], "rows": rows, "cols": cols,
+            "default_row": _num(sheet.sheet_format.defaultRowHeight),
+            "default_col": _num(sheet.sheet_format.defaultColWidth),
+            "base_col": _num(sheet.sheet_format.baseColWidth),
             "merged": sorted(str(r) for r in sheet.merged_cells.ranges),
-            "setup": _page_setup(sheet, text.get("area", "")),
-            "drawings": data["drawings"].get(name, []), "tab": _color(tab),
+            "setup": _page_setup(sheet, text.get("area", "") if sheet.print_area else "未设置"),
+            "drawings": data["drawings"].get(name, []), "tab": _color(tab, data["theme"]),
             "state": {"visible": "显示", "hidden": "隐藏", "veryHidden": "深度隐藏"}.get(sheet.sheet_state, sheet.sheet_state),
-            "cf": sum(len(rules.rules) for rules in sheet.conditional_formatting)}
+            "cf": _conditional_rules(sheet)}
 
 
 # ───────── 效果图（用户 2026-11-11）：左右各画一张表的样子，不一样的格子盖半透明色块；只画有不同的行和上下几行 ─────────
@@ -462,7 +501,8 @@ def _cell_css(cell: Any, data: dict[str, Any]) -> list[Any]:
     font = cell.font
     if font is not None:
         if font.name:
-            parts.append(f"font-family:'{font.name}','MS PGothic','Yu Gothic','Meiryo',sans-serif")
+            name = re.sub(r"""['"\\\x00-\x1f\x7f]""", lambda m: f"\\{ord(m[0]):x} ", font.name)
+            parts.append(f"font-family:'{name}','MS PGothic','Yu Gothic','Meiryo',sans-serif")
         if font.sz:
             parts.append(f"font-size:{float(font.sz):g}pt")
         if font.b:
@@ -476,7 +516,7 @@ def _cell_css(cell: Any, data: dict[str, Any]) -> list[Any]:
         if color:
             parts.append(f"color:{color}")
     fill = cell.fill
-    if fill is not None and fill.fill_type:
+    if fill is not None and fill.fill_type and hasattr(fill, "fgColor"):
         color = _css_color(fill.fgColor, theme)
         if color:
             parts.append(f"background:{color}")
@@ -627,23 +667,32 @@ def _hyperlink(cell: Any) -> str:
     return str(link.target or (f"#{link.location}" if link.location else "") or "")
 
 
-def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any], caches: tuple[dict, dict]) -> dict[str, Any]:
+def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     """old = 远程（左），new = 要上传的（右）"""
     a, b = _sheet_info(old, name), _sheet_info(new, name)
     counts: dict[str, int] = {}
     # ── 文字 ──
     ta, tb = a["texts"], b["texts"]
     changed = sorted((k for k in ta.keys() | tb.keys() if ta.get(k, "") != tb.get(k, "")), key=_addr_key)
-    counts["文字"] = len(changed)
-    text_rows = [{"cell": k, "old": ta.get(k, ""), "new": tb.get(k, ""),
-                  "kind": "add" if k not in ta else "del" if k not in tb else "mod"} for k in changed[:MAX_TEXT_ROWS]]
     # ── 公式、样式 ──
     ca, cb = a["sheet"]._cells, b["sheet"]._cells
-    marks: dict[str, list[str]] = {k: ["文字"] for k in changed}  # 效果图上要盖色块的格子 → 哪几类不一样
+    from openpyxl.utils.cell import coordinate_to_tuple, get_column_letter
+    text_rows, cache_rows, marks = [], [], {}
+    for addr in changed:
+        key = coordinate_to_tuple(addr)
+        va, vb = ta.get(addr, ""), tb.get(addr, "")
+        formula = _formula(ca.get(key))
+        if formula and formula == _formula(cb.get(key)):
+            cache_rows.append({"cell": addr, "old": va or "缓存结果为空或缺失", "new": vb or "缓存结果为空或缺失"})
+            marks[addr] = ["公式缓存"]
+        else:
+            text_rows.append({"cell": addr, "old": va, "new": vb,
+                              "kind": "add" if addr not in ta else "del" if addr not in tb else "mod"})
+            marks[addr] = ["文字"]
+    counts["文字"], counts["公式缓存"] = len(text_rows), len(cache_rows)
     blank = {kind: None for kind in STYLE_KINDS}
     formulas, groups = [], {kind: {} for kind in STYLE_KINDS}
     notes: dict[str, list] = {"批注": [], "超链接": []}
-    from openpyxl.utils.cell import get_column_letter
     for key in sorted(ca.keys() | cb.keys()):
         cell_a, cell_b = ca.get(key), cb.get(key)
         addr = f"{get_column_letter(key[1])}{key[0]}"
@@ -661,12 +710,10 @@ def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any], caches: tup
             have = cell_a if cell_a is not None else cell_b
             if not have.has_style:
                 continue
-            sa = _style_of(cell_a, caches[0]) if cell_a is not None else blank
-            sb = _style_of(cell_b, caches[1]) if cell_b is not None else blank
+            sa = _style_of(cell_a, old) if cell_a is not None else blank
+            sb = _style_of(cell_b, new) if cell_b is not None else blank
         else:
-            if not cell_a.has_style and not cell_b.has_style:
-                continue
-            sa, sb = _style_of(cell_a, caches[0]), _style_of(cell_b, caches[1])
+            sa, sb = _style_of(cell_a, old), _style_of(cell_b, new)
         for kind in STYLE_KINDS:
             va, vb = sa[kind], sb[kind]
             if va is None or vb is None:  # 一边没有格子：对方是默认样式（空）就不算
@@ -702,6 +749,11 @@ def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any], caches: tup
         for (va, vb), items in sorted(merged.items(), key=lambda item: -len(item[1]))[:MAX_STYLE_GROUPS]:
             shown = "、".join(label.format(i) for i in items[:8]) + (f" 等 {len(items)} 处" if len(items) > 8 else "")
             whole.append({"kind": kind, "what": shown, "old": va, "new": vb})
+    for kind, field, what in (("行高", "default_row", "默认行高"), ("列宽", "default_col", "默认列宽"),
+                              ("列宽", "base_col", "基础列宽")):
+        if a[field] != b[field]:
+            counts[kind] += 1
+            whole.append({"kind": kind, "what": what, "old": a[field], "new": b[field]})
     only_a = [m for m in a["merged"] if m not in set(b["merged"])]
     only_b = [m for m in b["merged"] if m not in set(a["merged"])]
     counts["合并单元格"] = len(only_a) + len(only_b)
@@ -731,15 +783,25 @@ def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any], caches: tup
     if len(drawing_rows) > MAX_DRAWING_ROWS:
         whole.append({"kind": "图片图形", "what": f"还有 {len(drawing_rows) - MAX_DRAWING_ROWS} 个图片 / 图形不一样，太多没列", "old": "", "new": ""})
     for kind, field, what, fmt in (("标签颜色", "tab", "标签颜色", lambda v: v or "没有"),
-                                   ("显示隐藏", "state", "这张表", str),
-                                   ("条件格式", "cf", "条件格式规则", lambda v: f"{v} 条")):
+                                   ("显示隐藏", "state", "这张表", str)):
         counts[kind] = int(a[field] != b[field])
         if a[field] != b[field]:
             whole.append({"kind": kind, "what": what, "old": fmt(a[field]), "new": fmt(b[field])})
+    ranges = [r for r in sorted(a["cf"].keys() | b["cf"].keys()) if a["cf"].get(r) != b["cf"].get(r)]
+    counts["条件格式"] = len(ranges)
+
+    def describe(rules: list[tuple[bytes, Any, str]]) -> str:
+        labels = "；".join(rule[2] for rule in rules[:3])
+        return f"{len(rules)} 条" + (f"（{labels}）" if labels else "")
+
+    for region in ranges[:MAX_STYLE_GROUPS]:
+        whole.append({"kind": "条件格式", "what": f"{region} 的规则有变化",
+                      "old": describe(a["cf"].get(region, [])), "new": describe(b["cf"].get(region, []))})
     counts = {k: v for k, v in counts.items() if v}
     view = _view(name, old, new, marks, size_marks.get("rows", []), size_marks.get("cols", []), only_a + only_b, boxes) if counts else None
     return {"name": name, "status": "changed" if counts else "same", "counts": counts, "view": view,
-            "text": text_rows, "text_more": max(0, len(changed) - MAX_TEXT_ROWS),
+            "text": text_rows[:MAX_TEXT_ROWS], "text_more": max(0, len(text_rows) - MAX_TEXT_ROWS),
+            "cache": cache_rows[:MAX_TEXT_ROWS], "cache_more": max(0, len(cache_rows) - MAX_TEXT_ROWS),
             "formulas": formulas[:MAX_TEXT_ROWS], "formulas_more": max(0, len(formulas) - MAX_TEXT_ROWS),
             "notes": (notes["批注"] + notes["超链接"])[:MAX_TEXT_ROWS],
             "styles": styles, "whole": whole}
@@ -749,11 +811,12 @@ def diff(mine: Path | str, theirs: Path | str) -> dict[str, Any]:
     """mine = 你要上传的这份（右 / 新），theirs = 远程现在这份（左 / 旧）"""
     mine, theirs = Path(mine), Path(theirs)
     with debug_log.side_task("excel_diff", {"mine": str(mine), "theirs": str(theirs)}):
-        new, old = _load(mine), _load(theirs)
+        new = _load(mine)
+        old = None
         try:
+            old = _load(theirs)
             names_new = [s.title for s in new["book"].worksheets]
             names_old = [s.title for s in old["book"].worksheets]
-            caches = (old["cache"], new["cache"])
             sheets = []
             for name in names_old + [n for n in names_new if n not in names_old]:
                 doomed = old["doomed"].get(name) or new["doomed"].get(name) or ""
@@ -764,13 +827,14 @@ def diff(mine: Path | str, theirs: Path | str) -> dict[str, Any]:
                     sheets.append({"name": name, "status": "only_new", "doomed": doomed, "counts": {},
                                    "view": None if doomed else _view(name, None, new, {}, [], [], [])})
                 else:
-                    entry = _diff_sheet(name, old, new, caches)
+                    entry = _diff_sheet(name, old, new)
                     entry["doomed"] = doomed
                     sheets.append(entry)
             order_changed = [n for n in names_old if n in names_new] != [n for n in names_new if n in names_old]
         finally:
             new["book"].close()
-            old["book"].close()
+            if old is not None:
+                old["book"].close()
         real = [s for s in sheets if not (s["doomed"] and s["status"] in ("only_old", "only_new"))]
         totals: dict[str, int] = {}
         for sheet in sheets:

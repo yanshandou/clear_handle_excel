@@ -43,14 +43,20 @@ def _root() -> Path:
 def _digest(path: Path) -> str:
     stat = path.stat()
     key = (str(path), stat.st_size, int(stat.st_mtime_ns))
-    if key in _HASHES:
-        return _HASHES[key]
+    with _LOCK:
+        cached = _HASHES.get(key)
+    if cached is not None:
+        return cached
     h = hashlib.sha256()
     with path.open("rb") as fh:
         for block in iter(lambda: fh.read(1024 * 1024), b""):
             h.update(block)
-    _HASHES[key] = h.hexdigest()
-    return _HASHES[key]
+    digest = h.hexdigest()
+    with _LOCK:
+        _HASHES[key] = digest
+        if len(_HASHES) > 2 * MAX_KEEP:
+            _HASHES.pop(next(iter(_HASHES)))
+    return digest
 
 
 def _meta_path(sha: str) -> Path:
@@ -125,9 +131,12 @@ def _status(sha: str, names: list[str]) -> dict[str, Any]:
     meta = _load_meta(sha)
     job = _JOBS.get(sha) or {}
     have = _sheet_view(sha, meta, names)
-    state = "done" if len(have) == len(names) else job.get("state") or "queued"
+    state = "done" if len(have) == len(names) else job.get("state")
+    error = job.get("error", "") if state == "error" else ""
+    if len(have) != len(names) and state in (None, "done"):
+        state, error = "error", "部分表的 PDF 已失效，请重新对比"
     position = _QUEUE.index(sha) + 1 if sha in _QUEUE else 0
-    return {"key": sha, "state": state, "sheets": have, "error": job.get("error", "") if state != "done" else "",
+    return {"key": sha, "state": state, "sheets": have, "error": error,
             "current": job.get("current", ""), "queue": position, "zoom": PAGE_ZOOM}
 
 
@@ -156,6 +165,12 @@ def _ensure_worker() -> None:
     if _worker is None or not _worker.is_alive():
         _worker = threading.Thread(target=_run, name="Excel 对比导 PDF", daemon=True)
         _worker.start()
+
+
+def _trim_jobs() -> None:
+    finished = [sha for sha, job in _JOBS.items() if job["state"] in ("done", "error")]
+    for sha in finished[:-MAX_KEEP]:
+        _JOBS.pop(sha)
 
 
 def _run() -> None:
@@ -201,7 +216,13 @@ def _run() -> None:
                 dog.progress()
                 _export(excel, sha, Path(job["path"]), names, job, dog)
                 with _LOCK:
-                    job.update(state="done", current="")
+                    job["sheets"].difference_update(names)
+                    if job["sheets"]:
+                        job.update(state="queued", current="")
+                        _QUEUE.append(sha)
+                    else:
+                        job.update(state="done", current="")
+                    _trim_jobs()
                 debug_log.event("📄 对比用 PDF 导好了", 文件=Path(job["path"]).name, 表=names,
                                 秒=round(time.perf_counter() - started, 2))
             except Exception as err:
@@ -209,6 +230,7 @@ def _run() -> None:
                 reason = dog.explain(err) if dog is not None else str(err)
                 with _LOCK:
                     job.update(state="error", error=reason, current="")
+                    _trim_jobs()
                 drop()  # Excel 可能卡住了，下一份重开
     finally:
         drop()

@@ -4,7 +4,9 @@ import unittest
 from pathlib import Path
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.formatting.rule import CellIsRule
+from openpyxl.styles import Alignment, Border, Color, Font, GradientFill, PatternFill, Side
+from openpyxl.writer.theme import theme_xml
 
 from core import excel_diff
 
@@ -101,6 +103,25 @@ class ExcelDiffTests(unittest.TestCase):
             excel_diff.diff(xls, xls)
         with self.assertRaisesRegex(ValueError, "找不到"):
             excel_diff.diff(self.root / "none.xlsx", self.root / "none.xlsx")
+
+    def test_detects_theme_gradient_border_dimensions_and_rule_changes(self):
+        paths = []
+        for i, color in enumerate(("FF0000", "00FF00")):
+            wb = Workbook()
+            wb.loaded_theme = theme_xml.replace("4F81BD", color)
+            ws = wb.active
+            ws["A1"].fill = PatternFill("solid", fgColor=Color(theme=4))
+            ws["A2"].fill = GradientFill(stop=("FFFFFF", color))
+            ws["A3"].border = Border(bottom=Side(style="thin", color=color))
+            ws.sheet_format.defaultRowHeight = 15 + i
+            ws.sheet_format.defaultColWidth = 10 + i
+            ws.conditional_formatting.add("A1:A3", CellIsRule(
+                operator=("greaterThan", "lessThan")[i], formula=["3"]))
+            paths.append(self.root / f"{i}.xlsx")
+            wb.save(paths[-1])
+        result = excel_diff.diff(paths[1], paths[0])
+        self.assertEqual(result["sheets"][0]["counts"],
+                         {"填充色": 2, "边框": 1, "行高": 1, "列宽": 1, "条件格式": 1})
 
 
 if __name__ == "__main__":

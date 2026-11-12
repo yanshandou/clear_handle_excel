@@ -377,6 +377,48 @@ class TaskUploadTests(unittest.TestCase):
         distribute.decide_upload_review(token, "skip")
         self.assertEqual(self.wait()["files"][0]["status"], "skipped")
 
+    def test_review_covers_prepared_bytes_when_preparation_changes_the_workbook(self):
+        local = make(self.work / "a.xlsx", {"A1": "处理前"})
+        remote = self.shared / "a.xlsx"
+        before_local, before_remote = local.read_bytes(), remote.read_bytes()
+        seen = {"a.xlsx": {"mine": distribute._digest(local), "theirs": distribute._digest(remote)}}
+
+        def prepare(_get_excel, path, _reference, _where):
+            edit(path, A1="处理后")
+            return dict(PREP)
+
+        with patch.object(upload_prep, "prepare", side_effect=prepare) as prep:
+            distribute.start_task_upload(self.task["id"], ["a.xlsx"], {}, None, None, seen)
+            token = next_review("a.xlsx")["token"]
+            try:
+                review = distribute.upload_review(token)
+                diff = review["diff"]
+                prepared = Path(diff["mine"]).read_bytes()
+                self.assertTrue(review["prepared"])
+                self.assertIn("处理后", [change["new"] for change in diff["sheets"][0]["text"]])
+                self.assertEqual(local.read_bytes(), before_local)
+                self.assertEqual(remote.read_bytes(), before_remote)
+            finally:
+                distribute.decide_upload_review(token, "upload")
+                item = self.wait()["files"][0]
+        self.assertEqual(item["status"], "ok", item.get("error"))
+        self.assertEqual(local.read_bytes(), prepared)
+        self.assertEqual(remote.read_bytes(), prepared)
+        prep.assert_called_once()
+
+    def test_cancelling_review_releases_upload_and_invalidates_tokens(self):
+        local = make(self.work / "a.xlsx", {"A1": "本地"})
+        remote = self.shared / "a.xlsx"
+        before = local.read_bytes(), remote.read_bytes()
+        self.start_upload("content")
+        token = next_review("a.xlsx")["token"]
+        distribute.cancel_upload_review(distribute.status()["review_id"])
+        self.assertEqual(self.wait()["files"][0]["status"], "skipped")
+        with self.assertRaises(ValueError):
+            distribute.decide_upload_review(token, "upload")
+        self.assertEqual((local.read_bytes(), remote.read_bytes()), before)
+        self.assertFalse(wf.STATE["busy"])
+
 
 
 if __name__ == "__main__":

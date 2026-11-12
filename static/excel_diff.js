@@ -19,8 +19,8 @@
   // 值：颜色带色块；空的写「（空）」
   function value(text, kind) {
     if (text === '' || text == null) return '<span>（空）</span>';
-    const m = /^#[0-9A-F]{6}$/.test(text) && (kind === '字的颜色' || kind === '填充色' || kind === '标签颜色');
-    return (m ? `<span class="xd-swatch" style="background:${text}"></span>` : '') + esc(text);
+    const color = (kind === '字的颜色' || kind === '填充色' || kind === '标签颜色') && /^#[0-9A-F]{6}(?=$| )/.exec(text);
+    return (color ? `<span class="xd-swatch" style="background:${color[0]}"></span>` : '') + esc(text);
   }
   function row(kind, whereHtml, oldText, newText) {
     const oldEmpty = oldText === '' || oldText == null, newEmpty = newText === '' || newText == null;
@@ -77,7 +77,8 @@
       const align = horizontal && horizontal !== 'general' ? horizontal : numeric ? 'right' : 'left';
       const spill = !wrap && align === 'left' && cs === 1 && !filled.has(r + ':' + (c + 1));  // 右边空着：字可以像 Excel 那样伸过去
       const v = vertical === 'top' ? 'flex-start' : vertical === 'center' ? 'center' : 'flex-end';
-      parts.push(`<div class="xv-cell${wrap ? ' is-wrap' : ''}${spill ? ' is-spill' : ''}" style="left:${colX[c - 1]}px;top:${rowY[ri]}px;width:${w}px;height:${h}px;justify-content:${v};text-align:${align === 'centerContinuous' ? 'center' : align};${css}"><span>${esc(text)}</span></div>`);
+      const style = `left:${colX[c - 1]}px;top:${rowY[ri]}px;width:${w}px;height:${h}px;justify-content:${v};text-align:${align === 'centerContinuous' ? 'center' : align};${css}`;
+      parts.push(`<div class="xv-cell${wrap ? ' is-wrap' : ''}${spill ? ' is-spill' : ''}" style="${esc(style)}"><span>${esc(text)}</span></div>`);
     }
     // 不一样的格子：半透明色块
     for (const [addr, kinds] of Object.entries(view.marks || {})) {
@@ -130,7 +131,7 @@
         + `<span class="xd-badge">${text}</span>${doomed}</summary>${sheet.view ? `<div class="xd-body">${viewHtml(sheet)}</div>` : ''}</details>`;
     }
     if (sheet.status === 'same') {
-      return `<details class="xd-sheet is-same"><summary>＝ ${esc(sheet.name)}<span class="xd-badge">完全一样</span>${doomed}</summary></details>`;
+      return `<details class="xd-sheet is-same"><summary>＝ ${esc(sheet.name)}<span class="xd-badge">未发现差异</span>${doomed}</summary></details>`;
     }
     const where = (label, cell) => `${link(label, data.mine, sheet.name, cell)}`;
     const rows = [];
@@ -138,6 +139,8 @@
     if (sheet.text_more) rows.push(`<tr data-kind="文字"><td colspan="4" class="xd-more">文字还有 ${sheet.text_more} 格不一样，没有全列出来</td></tr>`);
     for (const item of sheet.formulas) rows.push(row('公式', where(item.cell, item.cell), item.old, item.new));
     if (sheet.formulas_more) rows.push(`<tr data-kind="公式"><td colspan="4" class="xd-more">公式还有 ${sheet.formulas_more} 格不一样，没有全列出来</td></tr>`);
+    for (const item of sheet.cache || []) rows.push(row('公式缓存', where(item.cell, item.cell), item.old, item.new));
+    if (sheet.cache_more) rows.push(`<tr data-kind="公式缓存"><td colspan="4" class="xd-more">还有 ${sheet.cache_more} 格的公式缓存结果不同，没有全列出来</td></tr>`);
     for (const item of sheet.notes || []) rows.push(row(item.kind, where(item.cell, item.cell), item.old, item.new));
     for (const group of sheet.styles) {
       if (group.more) { rows.push(`<tr data-kind="${esc(group.kind)}"><td colspan="4" class="xd-more">${esc(group.kind)}还有 ${group.more} 种改法（共 ${group.count} 格），没有全列出来</td></tr>`); continue; }
@@ -147,7 +150,7 @@
     for (const item of sheet.whole) rows.push(row(item.kind, esc(item.what), item.old, item.new));
     const badges = Object.entries(sheet.counts).map(([kind, count]) => `<span class="xd-badge">${esc(kind)} ${count}</span>`).join('');
     return `<details class="xd-sheet is-changed" data-sheet="${esc(sheet.name)}" open><summary>± ${link(sheet.name, data.mine, sheet.name)}${badges}${doomed}</summary>`
-      + `<div class="xd-body">${viewHtml(sheet)}<details class="xd-list"${sheet.view ? '' : ' open'}><summary>📋 差异清单（逐条列出改了什么）</summary><table class="xd-table"><colgroup><col class="c-where"><col class="c-kind"><col><col></colgroup>`
+      + `<div class="xd-body">${viewHtml(sheet)}<details class="xd-list"${sheet.view && !params.has('review') ? '' : ' open'}><summary>📋 差异清单（逐条列出改了什么）</summary><table class="xd-table"><colgroup><col class="c-where"><col class="c-kind"><col><col></colgroup>`
       + `<thead><tr><th>位置（点了在你这份里打开）</th><th>类型</th><th>− 远程现在这份（旧）</th><th>+ 你要上传的这份（新）</th></tr></thead>`
       + `<tbody>${rows.join('')}</tbody></table></details></div></details>`;
   }
@@ -156,7 +159,7 @@
     const s = data.summary;
     const kinds = Object.entries(s['各类']);
     const verdict = data.identical
-      ? `<div class="xd-verdict is-same">✓ 两份完全一样（文字、公式、样式、行高列宽、打印设置都没有不同${s['精简会删不算'] ? '；精简会删的表不算' : ''}）</div>`
+      ? `<div class="xd-verdict is-same">✓ 在已检查的项目中未发现差异${s['精简会删不算'] ? '（精简会删的表不计入）' : ''}</div>`
       : `<div class="xd-verdict is-diff">有不同：${[
         s['有不同的表'] ? `${s['有不同的表']} 张表里有改动` : '', s['只有远程有'] ? `${s['只有远程有']} 张表只有远程有` : '',
         s['只有你这份有'] ? `${s['只有你这份有']} 张表只有你这份有` : '', s['表的顺序变了'] ? '表的顺序变了' : '',
@@ -165,7 +168,7 @@
       + (s['只有远程有'] ? `<span class="xd-chip is-static is-old">只有远程有的表<b>${s['只有远程有']}</b></span>` : '')
       + (s['只有你这份有'] ? `<span class="xd-chip is-static is-new">只有你这份有的表<b>${s['只有你这份有']}</b></span>` : '')
       + (s['精简会删不算'] ? `<span class="xd-chip is-static is-gray">精简会删、不算<b>${s['精简会删不算']}</b></span>` : '')
-      + `<span class="xd-chip is-static is-gray">完全一样的表<b>${s['一样的表']}</b></span>`;
+      + `<span class="xd-chip is-static is-gray">未发现差异的表<b>${s['一样的表']}</b></span>`;
     const order = { changed: 0, only_old: 1, only_new: 1, same: 3 };
     const sheets = data.sheets.map((sheet, index) => ({ sheet, index }))
       .sort((a, b) => ((a.sheet.doomed && a.sheet.status !== 'changed' ? 2 : order[a.sheet.status]) - (b.sheet.doomed && b.sheet.status !== 'changed' ? 2 : order[b.sheet.status])) || a.index - b.index)
@@ -321,9 +324,21 @@
         await wait(1000);
         status = await api('/api/distribute/status');
         if (!status.running) break;
-        $('xdUploadStatus').textContent = (status.reviews || []).length
-          ? '这份文件在对比之后又变了，没有直接传。请回上传页，在「等待确认」里重新看差异再确认。'
-          : '正在上传：' + (status.current || '准备中…');
+        const pending = (status.reviews || []).find(item => item.rel === uploadRel);
+        const message = $('xdUploadStatus');
+        if (pending) {
+          const href = '/excel-diff?review=' + encodeURIComponent(pending.token);
+          if (message.firstElementChild?.getAttribute('href') !== href) {
+            const reviewLink = document.createElement('a');
+            reviewLink.href = href;
+            reviewLink.target = '_blank';
+            reviewLink.rel = 'noopener';
+            reviewLink.textContent = '查看待上传版本并确认 ↗';
+            message.replaceChildren(reviewLink);
+          }
+        } else {
+          message.textContent = '正在上传：' + (status.current || '准备中…');
+        }
       }
       const done = uploadFree ? (status.single && status.single.rel === uploadRel ? status.single : null)
         : ((status.applied || {}).files || []).find(item => item.rel === uploadRel);
@@ -363,7 +378,7 @@
     try {
       const data = await reviewRequest('review');
       $('xdReviewName').textContent = data.rel;
-      $('xdReviewStatus').textContent = data.reason;
+      $('xdReviewStatus').textContent = data.reason + (data.prepared ? '。右侧是完成上传前处理的副本。' : '');
       if (data.diff) {
         render(data.diff);
         $('xdResultPanel').hidden = false;
