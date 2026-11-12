@@ -1535,10 +1535,21 @@ def _fetched_version(task: dict[str, Any], rel: str, baseline: dict[str, dict[st
 
 def preview_free(source_text: Any, dest_text: Any, guard: Any = None) -> dict[str, Any]:
     """自由上传的清单（只读不改）：起点里的每个 Excel 传到终点同样的位置，先看终点那份能不能覆盖"""
-    src, dst = _clean_root(source_text, "起点文件夹"), _clean_root(dest_text, "终点文件夹")
+    # 起点可以贴多行（文件夹或 Excel 文件，用户 2026-11-12）：起点取共同上级，对应终点；只传贴的这些
+    lines = [line for line in source_text.splitlines() if line.strip()] if isinstance(source_text, str) else []
+    picks: list[str] = []
+    if len(lines) > 1 or (lines and Path(lines[0].strip().strip('"').strip("'")).expanduser().is_file()):
+        from core import work_task
+        src, picks, _ = work_task.parse_shared(source_text, label="起点")
+    else:
+        src = _clean_root(source_text, "起点文件夹")
+    dst = _clean_root(dest_text, "终点文件夹")
     if src == dst or _inside(src, dst) or _inside(dst, src):
-        raise ValueError("起点和终点不能是同一个文件夹，也不能互相包含")
+        raise ValueError("起点和终点不能是同一个文件夹，也不能互相包含" + ("（起点 = 这些路径共同的上级：" + str(src) + "）" if picks else ""))
     found = scan_folder(src)
+    if picks:
+        from core.work_task import in_picks
+        found["excel"] = {rel: info for rel, info in found["excel"].items() if in_picks(rel, picks)}
     if not found["excel"]:
         raise ValueError(f"起点里没有 Excel 文件：{src}")
     manifests = _find_manifests(src)
@@ -1605,6 +1616,7 @@ def preview_free(source_text: Any, dest_text: Any, guard: Any = None) -> dict[st
                "有清单": sum(f["guard"] == "manifest" for f in files)}
     result = {"id": uuid.uuid4().hex[:12], "kind": "free_upload", "label": f"{src.name} → {dst.name}", "guard": _guard_mode(guard),
               "source_root": str(src), "dest_root": str(dst), "files": files, "added": added, "extra": extra,
+              "picks": picks, "source_text": "\n".join(line.strip() for line in lines) if picks else str(src),
               "notes": notes, "errors": found["errors"] + after["errors"], "summary": summary,
               "manifests": [str(folder / MANIFEST_NAME) for folder, _ in manifests]}
     relay_task = _free_relay_task(src, dst)

@@ -13,7 +13,7 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from core import autofix, batch, bl_links, clean_chain, debug_log, distribute, file_problem, work_task, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review, pdf_bundle, font_fix, image_restore
+from core import autofix, batch, bl_links, clean_chain, debug_log, distribute, file_problem, work_task, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review, pdf_bundle, font_fix, image_restore, pick_copy
 from core import upload_manager, workbook_scope
 from core.reference_folders import ReferenceFolders
 from core.common import (
@@ -211,6 +211,8 @@ class WebHandler(upload_manager.Handler):
             self._serve_static_file("image_restore.html")
         elif parsed.path == "/api/image_restore":
             self._send_json(image_restore.status())
+        elif parsed.path == "/pick-copy":
+            self._serve_static_file("pick_copy.html")
         elif parsed.path == "/pdf-bundle":
             self._serve_static_file("pdf_bundle.html")
         elif parsed.path == "/api/pdf_bundle":
@@ -610,6 +612,13 @@ class WebHandler(upload_manager.Handler):
             if not isinstance(name, str) or not name:
                 raise ValueError("需要有效的文件名")
             self._send_json({"ok": True, **image_restore.open_pdf(name)})
+        elif self.path == "/api/pick_copy/preview":
+            self._send_json({"ok": True, **pick_copy.preview(payload.get("paths"), payload.get("dest"))})
+        elif self.path == "/api/pick_copy/run":
+            self._send_json({"ok": True, **pick_copy.run(payload.get("paths"), payload.get("dest"), payload.get("overwrite") is True)})
+        elif self.path == "/api/pick_copy/open":
+            pick_copy.open_dest(payload.get("dest"))
+            self._send_json({"ok": True})
         elif self.path == "/api/pdf_bundle/run":
             folder = _require_folder(payload)
             pdf_bundle.start(folder, payload.get("options"))

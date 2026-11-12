@@ -647,7 +647,7 @@
       : `<p class="dist-meta">🧾 起点是任务「${esc(relayTask.name)}」的处理文件夹，传完会在终点写拿取版本.json，记下每份当初从共享拿的版本。</p>`;
     const unknownLine = applied && (data.manifest_unknown || []).length
       ? `<p class="link-error">⚠️ 这几份找不到当初从共享拿的版本，拿取版本.json 里没记：${data.manifest_unknown.map(esc).join('、')}</p>` : '';
-    return `<p class="dist-meta">起点：${esc(data.source_root)}<br>终点：${esc(data.dest_root)}</p><div class="dist-summary">${chipsHtml}</div>`
+    return `<p class="dist-meta">起点：${esc(data.source_root)}${(data.picks || []).length ? `（贴的 ${data.picks.length} 处的共同上级，只传贴的这些）` : ''}<br>终点：${esc(data.dest_root)}</p><div class="dist-summary">${chipsHtml}</div>`
       + manifestLine + unknownLine
       + (notes ? `<div class="dist-alert"><ul>${notes}</ul></div>` : '')
       + `<div class="link-table-wrap"><table class="link-table"><thead><tr><th>文件</th><th>做法</th><th>${applied ? '结果' : '说明'}</th><th>怎么核对的</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`
@@ -866,7 +866,7 @@
       if (!inScope(latest.preview)) latest.preview = null;
       if (!inScope(latest.applied)) latest.applied = null;
       if (freeMode && loading && isFree(latest.preview)) {  // 刷新页面：接着用还没执行的清单
-        $('distFreeSource').value = latest.preview.source_root;
+        $('distFreeSource').value = latest.preview.source_text || latest.preview.source_root;
         $('distFreeDest').value = latest.preview.dest_root;
         needsFreePreview = false;
       }
@@ -1091,7 +1091,8 @@
   $('distFreeStart').addEventListener('click', startFree);
   for (const id of ['distFreeSource', 'distFreeDest']) {
     $(id).addEventListener('input', () => { needsFreePreview = true; controls(); });
-    $(id).addEventListener('keydown', event => { if (event.key === 'Enter') makeFreePreview(); });
+    // 起点是多行框：回车换行，Ctrl+Enter 才生成清单
+    $(id).addEventListener('keydown', event => { if (event.key === 'Enter' && (id !== 'distFreeSource' || event.ctrlKey || event.metaKey)) makeFreePreview(); });
   }
   $('distPreview').addEventListener('click', () => makePreview('preview'));
   $('distFetch').addEventListener('click', () => makePreview('fetch'));
