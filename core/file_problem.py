@@ -120,6 +120,17 @@ def begin(name: str) -> None:
         _clear_locked()
 
 
+def save_run() -> dict[str, Any]:
+    """边导边看：批量任务中途让调整页面的修改先做（它会用自己的任务名 begin），做完用 restore_run 放回来"""
+    with _COND:
+        return dict(_run)
+
+
+def restore_run(saved: dict[str, Any]) -> None:
+    with _COND:
+        _run.update(saved)
+
+
 def finish() -> None:
     with _COND:
         _run.update(task="", auto_skip=False)

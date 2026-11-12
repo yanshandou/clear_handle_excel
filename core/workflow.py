@@ -3793,6 +3793,91 @@ def _quick_task_file(kind: str, options: dict[str, Any], get_excel: Callable[[],
 PDF_SAVE_EVERY = 10.0  # 批量导出 PDF 时工作台记录最多每隔这么多秒存一次
 
 
+# ───────── 边导边看（流水线，用户 2026-11-12 定为全项目规则）─────────
+# 导出 PDF 一份份往后做，导好的文件马上能在调整页面看、改。调整页面对导好的文件点「统一修改 / 删除标红 /
+# 重新生成」时不用等全部导完：排进来，导出这边做完手上这一份就停一下，让它先做（还是同一时间只有一处在用 Excel），
+# 做完接着导下一份。后台空着时照旧自己占任务槽直接做。
+_SIDE = threading.Condition()
+_SIDE_STATE: dict[str, int] = {"waiting": 0, "granted": 0, "running": 0}
+
+
+def export_job_running() -> dict[str, Any] | None:
+    """正在跑的批量导出 PDF 任务（调用方持有 STATE_LOCK），没有返回 None"""
+    job = STATE.get("job") or {}
+    if STATE.get("busy") and job.get("kind") == "export_pdf" and job.get("status") == "running" and "workbooks" in job:
+        return job
+    return None
+
+
+@contextmanager
+def side_turn(name: str, on_wait: Callable[[str], None] | None = None) -> Iterator[None]:
+    """调整页面的修改线程用：导出在跑就排队等导出让出来；导出没在跑、后台空着就自己占任务槽（maintenance=name）。
+    on_wait(说明) 等的时候隔一会儿调一次，给网页显示在等什么"""
+    owned = False
+    with _SIDE:
+        _SIDE_STATE["waiting"] += 1
+    try:
+        while True:
+            with STATE_LOCK, _SIDE:
+                if _SIDE_STATE["granted"]:
+                    _SIDE_STATE["granted"] -= 1
+                    _SIDE_STATE["running"] += 1
+                    break
+                exporting = export_job_running() is not None
+                if not exporting and not STATE["busy"]:
+                    STATE["busy"] = True
+                    STATE["maintenance"] = name
+                    owned = True
+                    _SIDE_STATE["running"] += 1
+                    break
+            if on_wait is not None:
+                on_wait("等正在导出的这一份导完就开始（导出先停一下，让你的修改先做）" if exporting
+                        else "等后台别的任务做完就开始")
+            with _SIDE:
+                _SIDE.wait(0.5)
+    finally:
+        with _SIDE:
+            _SIDE_STATE["waiting"] -= 1
+    debug_log.event("▶️ 边导边看：开始插队的修改", 名称=name, 占任务槽=owned)
+    try:
+        yield
+    finally:
+        with STATE_LOCK, _SIDE:
+            _SIDE_STATE["running"] -= 1
+            if owned and STATE.get("maintenance") == name:
+                STATE["busy"] = False
+                STATE.pop("maintenance", None)
+            _SIDE.notify_all()
+
+
+def let_side_work_run(watchdog: ExcelWatchdog) -> None:
+    """批量导出在两份文件之间调：有排队的调整页面修改就一件件让它们先做完（导出的后台 Excel 先闲着），再接着导"""
+    with _SIDE:
+        if not _SIDE_STATE["waiting"]:
+            return
+    saved = file_problem.save_run()
+    watchdog.file(None)  # 进度框的「跳过这一份」这时候管插队的那件事
+    log_msg("⏸ 先做调整页面上点的修改（已经导好的文件），做完接着导")
+    started = time.perf_counter()
+    count = 0
+    try:
+        while True:
+            with _SIDE:
+                if not _SIDE_STATE["waiting"]:
+                    break
+                _SIDE_STATE["granted"] = 1
+                _SIDE.notify_all()
+                while _SIDE_STATE["granted"] or _SIDE_STATE["running"]:
+                    _SIDE.wait(1)
+                    watchdog.progress()  # 等的时候别被当成卡住
+                count += 1
+    finally:
+        file_problem.restore_run(saved)
+        watchdog.progress()
+    debug_log.event("⏯ 边导边看：插队的修改做完，接着导", 件数=count, 秒=time.perf_counter() - started)
+    log_msg("▶️ 调整页面上的修改做完了，接着导出")
+
+
 def quick_task_workflow(kind: str) -> None:
     """主页单项批处理：以 Excel 文件为检查点，续跑时跳过已完成的文件。"""
     task_name = QUICK_TASK_NAMES[kind]
@@ -3803,6 +3888,8 @@ def quick_task_workflow(kind: str) -> None:
     if initialized:
         folder = Path(options["folder"])
         workbooks = [Path(path) for path in job["workbooks"]]
+        with STATE_LOCK:
+            job["failed"] = []  # 继续上次任务：上次出错的这次重做，做之前不能打开
     else:
         folder, workbooks = list_workbooks(options["folder"])
         only_files = options.get("files")
@@ -3817,6 +3904,7 @@ def quick_task_workflow(kind: str) -> None:
                 options["pdf_folder"] = str(folder / pdf_store.DIR_NAME)
             job["workbooks"] = [str(path) for path in workbooks]
             job["exported"] = []
+            job["failed"] = []
             _persist_state()
         init_execution_batch(
             task_name=task_name,
@@ -3864,6 +3952,7 @@ def quick_task_workflow(kind: str) -> None:
             for wb_path in workbooks:
                 if str(wb_path) in job["completed"]:
                     continue
+                let_side_work_run(watchdog)  # 调整页面对导好的文件点的修改：先做，再导下一份
                 wb_label = workbook_rel_name(wb_path, folder)
                 if watchdog.stop_requested is True:  # 进度框点了「结束整个任务」：剩下的不做，任务停成「可继续」
                     log_msg(f"⏹ 你点了结束整个任务：从 {wb_label} 起后面的没做，可以点「继续上次任务」接着做")
@@ -3920,12 +4009,16 @@ def quick_task_workflow(kind: str) -> None:
                         except Exception:
                             pass
                         excel = None
+                    with STATE_LOCK:
+                        job.setdefault("failed", []).append(str(wb_path))  # 这次不再碰：可以先打开修
                     continue
                 with STATE_LOCK:
                     job["completed"].append(str(wb_path))
                     job["exported"].extend(str(path) for path in exported)
                     _persist_state()
                 flush_deferred(PDF_SAVE_EVERY)
+            if watchdog.stop_requested is not True:
+                let_side_work_run(watchdog)  # 最后一份导完时还在排队的修改：趁还占着任务槽做掉
     finally:
         try:
             if excel is not None:

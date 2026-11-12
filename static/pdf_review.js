@@ -220,8 +220,10 @@ async function load() {
     try { localStorage.setItem(FOLDER_KEY, folder); } catch (_) {}
     allPdfs = data.pdfs;
     deleted = new Set();
+    exporting = data.exporting || null;
     loadMarks();
     applyCategory();
+    setExporting(data.exporting);
     refreshStale();
   } catch (e) {
     $('prStatus').textContent = `读取失败：${e.message}`;
@@ -259,14 +261,25 @@ function renderDocs() {
   if (!pdfs.length) {
     box.innerHTML = allPdfs.length
       ? '<p class="pr-empty">这一类没有表了。点上面的「全部」看所有的表。</p>'
-      : '<p class="pr-empty">这个文件夹里没有 PDF。先在主页「调整页面」里点「导出 PDF」，导完点「调整页面」回来。</p>';
+      : exporting
+        ? '<p class="pr-empty">⏳ 正在导出 PDF，第一份导好就会出现在这里，不用等全部导完。</p>'
+        : '<p class="pr-empty">这个文件夹里没有 PDF。先在主页「调整页面」里点「导出 PDF」，导完点「调整页面」回来。</p>';
     pageEls = [];
     $('prBar').classList.toggle('hidden', !allPdfs.length);
     renderTrack();
     updateStatus();
     return;
   }
-  box.innerHTML = pdfs.map((doc, d) => {
+  box.innerHTML = pdfs.map((doc, d) => docHtml(doc, d)).join('');
+  $('prBar').classList.remove('hidden');
+  pageEls = [...box.querySelectorAll('.pr-page')];
+  pdfs.forEach((_, d) => paintMark(d));
+  paintRegen();
+  renderTrack();
+  updateStatus();
+}
+
+function docHtml(doc, d) {
     const excel = doc.wb_name
       ? `<span class="pr-doc-excel">📗 ${excelLinkHtml(`${escapeHtml(doc.wb_name)} › ${escapeHtml(doc.sheet)}`, excelTarget(doc))}`
         + `${doc.guessed ? '<span class="pr-doc-note" title="导出记录里没有这份 PDF，按「Excel 文件名_表名.pdf」找到的">按文件名对应</span>' : ''}</span>`
@@ -299,12 +312,62 @@ function renderDocs() {
       </header>
       ${doc.error ? `<p class="pr-doc-warn">${escapeHtml(doc.error)}</p>` : `${noteBox}<div class="pr-pages">${pages}</div>`}
     </article>`;
-  }).join('');
-  $('prBar').classList.remove('hidden');
-  pageEls = [...box.querySelectorAll('.pr-page')];
-  pdfs.forEach((_, d) => paintMark(d));
+}
+
+/* ---------- 边导边看：导出 PDF 还在跑，导好一份就接在最下面 ---------- */
+// 用户 2026-11-12 定：程序一份份往后导，导好的先给人看、先改，不用等全部导完。
+// 新导好的只往最下面加，上面已经在看的不重画、不挪位置；导完了停止轮询。
+let exporting = null;   // {total, done, current, hidden}
+let exportTimer = 0;
+const EXPORT_POLL_MS = 4000;
+
+function setExporting(info) {
+  exporting = info || null;
+  clearTimeout(exportTimer);
+  if (exporting) exportTimer = setTimeout(pollExport, EXPORT_POLL_MS);
+  updateStatus();
+}
+
+async function pollExport() {
+  if (!folder) return;
+  let data;
+  try {
+    data = await api(`/api/pdf_review?folder=${encodeURIComponent(folder)}`);
+  } catch (_) {
+    exportTimer = setTimeout(pollExport, EXPORT_POLL_MS);
+    return;
+  }
+  if (data.folder !== folder) return;
+  const known = new Set(allPdfs.map(doc => doc.pdf));
+  const fresh = data.pdfs.filter(doc => !known.has(doc.pdf));
+  if (fresh.length) appendDocs(fresh);
+  const wasExporting = Boolean(exporting);
+  setExporting(data.exporting);
+  if (wasExporting && !data.exporting) toast(`全部导完了，一共 ${allPdfs.length} 份 PDF`);
+}
+
+function appendDocs(fresh) {
+  const sameList = pdfs === allPdfs;
+  const start = pdfs.length;
+  allPdfs.push(...fresh);
+  loadMarks(); // 新导好的末页只多一点的也自动标黄（建议取整）
+  const cat = catOf(category);
+  const shown = category === 'all' ? fresh : fresh.filter(doc => doc.wb_path && !doc.error && cat.test(doc));
+  if (!sameList) pdfs.push(...shown);
+  if (!start) {
+    applyCategory(); // 原来一份都没有：整个列表第一次画
+    return;
+  }
+  if (shown.length) {
+    const box = $('prDocs');
+    box.insertAdjacentHTML('beforeend', shown.map((doc, i) => docHtml(doc, start + i)).join(''));
+    pageEls = [...box.querySelectorAll('.pr-page')];
+    renderTrack();
+  }
+  pdfs.forEach((_, d) => paintMark(d)); // 自动标黄可能落在新的表上
   paintRegen();
-  renderTrack();
+  renderCats();
+  updateProcessButton();
   updateStatus();
 }
 
@@ -313,7 +376,11 @@ function renderDocs() {
 function updateStatus() {
   const pages = pdfs.reduce((n, doc) => n + doc.pages.length, 0);
   const which = category === 'all' ? '' : `「${catOf(category).label}」`;
-  if (allPdfs.length) $('prStatus').textContent = `${which}共 ${pdfs.length} 份 PDF、${pages} 页${which ? `（全部 ${allPdfs.length} 份）` : ''}`;
+  const going = exporting
+    ? `　⏳ 正在导出：已导好 ${exporting.done} / ${exporting.total} 份 Excel，导好的先列出来，后面的导好会接在最下面${exporting.current ? `（正在导 ${exporting.current}）` : ''}`
+    : '';
+  if (allPdfs.length) $('prStatus').textContent = `${which}共 ${pdfs.length} 份 PDF、${pages} 页${which ? `（全部 ${allPdfs.length} 份）` : ''}${going}`;
+  else if (exporting) $('prStatus').textContent = going.trim();
   $('prSummary').innerHTML = `${escapeHtml(which)}共 <b>${pdfs.length}</b> 份 · ${pages} 页`;
 }
 
@@ -1155,6 +1222,8 @@ async function reloadKeeping(pdf, wbPath) {
     return;
   }
   allPdfs = data.pdfs;
+  exporting = data.exporting || null;
+  setExporting(data.exporting);
   deleted = new Set([...deleted].filter(p => allPdfs.some(x => x.pdf === p)));
   loadMarks(); // 重新生成的 PDF 修改时间变了，它的标记自动不算了（末页只多一点的重新自动标黄）
   applyCategory();

@@ -471,12 +471,27 @@ def _stopping(job: dict) -> bool:
     return bool(job.get("pause_requested"))
 
 
+# 主页单项任务里「做完一份就不再碰」的：做完的文件可以先打开、先在调整页面改（精简 Sheet 做完还要自动检查，先不放）
+STREAM_QUICK_TASKS = {"export_pdf", "normalize_view"}
+
+
 def open_block_reason(job: dict, path: Path) -> str:
     """后台任务在跑时，网页上点这份文件能不能在 Excel 打开：能打开返回空字符串，不能就返回原因（页面上直接显示）。
 
     还没轮到、正在处理的文件要等：用户在 Excel 里开着，后台轮到它时会因为文件被占用跳过。
     已经做完、后面不再碰的文件，和不在这次任务里的文件，可以打开。调用方持有 STATE_LOCK。"""
     kind = job.get("kind")
+    if kind in STREAM_QUICK_TASKS and "workbooks" in job:
+        # 导出 PDF / 视图标准化：一份份往后做，做完（或出错跳过）的这次不会再碰，可以先打开（边导边看，用户 2026-11-12 定）
+        target = path.resolve()
+        mine = [p for p in job["workbooks"] if Path(p).resolve() == target]
+        done = set(job.get("completed", [])) | set(job.get("failed", []))
+        if not mine or all(p in done for p in mine):
+            return ""
+        pending = [p for p in job["workbooks"] if p not in done]
+        if pending and pending[0] in mine:
+            return "后台正在处理这份文件，处理完才能打开"
+        return "还没轮到这份文件，处理完才能打开"
     if kind not in {"batch_scan", "batch_recheck"} or "workbooks" not in job:
         # 提交、清除标色、精简 Sheet、导出 PDF 等任务：每份文件做什么不好判断，照旧等它结束
         return "后台任务正在处理文件，结束后才能打开"

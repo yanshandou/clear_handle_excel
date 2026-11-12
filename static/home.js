@@ -22,6 +22,11 @@ const TASKS = {
         '统一放在所选文件夹下的「PDFS」文件夹（保留子文件夹），一张表一份',
         '开始前删掉 PDFS 里对应 Excel 已经不在了的 PDF，以及以前和 Excel 放在一起的「Excel 名_表名.pdf」旧 PDF；「批量导出同名 PDF」生成的 aaa.pdf 不删',
       ] },
+      { title: '➡️ 边导边看', items: [
+        '不用等全部导完：导出一开始按钮就变成「📐 先看导好的」，导好的那几份先在调整页面看、先改，后面的导好会接在最下面',
+        '导好的 Excel 可以先打开；还没轮到的、正在导的那份要等导完',
+        '在调整页面点「统一修改 / 删除标红 / 重新生成」：导出这边做完手上这一份就停一下，先改你点的，改完接着导（同一时间只有一处在用 Excel）',
+      ] },
       { title: '➡️ 导完以后', items: [
         '按钮变成「📐 调整页面」，点了进调整页面',
         '末页只多一点（两页以上、最后一页印了不到 20%）的表在调整页面上自动标黄，建议向下取整；横竖、取整都在网页上点，程序去改 Excel',
@@ -209,7 +214,12 @@ function renderDialog() {
   document.getElementById('taskRunBox').classList.toggle('hidden', phase !== 'running' && phase !== 'done');
   hint.textContent = '';
 
-  if (starting || phase === 'running') {
+  if (phase === 'running' && activeKind === 'export_pdf' && !starting) {
+    // 边导边看（用户 2026-11-12 定）：导好的先进调整页面看、先改，后面的接着在后台导
+    btn.disabled = false;
+    btn.textContent = '📐 先看导好的';
+    hint.textContent = '导好的 PDF 已经可以在调整页面看、改了；后面的在后台接着导，导好会接在最下面';
+  } else if (starting || phase === 'running') {
     btn.disabled = true;
     btn.textContent = '⏳ 正在执行...';
     hint.textContent = '可以关闭此窗口，任务会在后台继续';
@@ -222,7 +232,7 @@ function renderDialog() {
     btn.textContent = task.runLabel;
   }
   // 调整页面窗口：导出 PDF 是蓝色，导完的「调整页面」是绿色，一眼分得出是哪一步
-  const viewing = activeKind === 'export_pdf' && phase === 'done' && !canResumeActiveTask();
+  const viewing = activeKind === 'export_pdf' && ((phase === 'done' && !canResumeActiveTask()) || (phase === 'running' && !starting));
   btn.classList.toggle('btn-success', activeKind === 'export_pdf' && !viewing);
   btn.classList.toggle('btn-primary', activeKind !== 'export_pdf' || viewing);
   if (busyOther && phase === 'form' && !starting) {
@@ -280,7 +290,7 @@ function onPrimaryAction() {
   if (!activeKind || starting || document.getElementById('taskPrimaryBtn').disabled) return;
   if (phase === 'done' && canResumeActiveTask()) {
     resumeTask();
-  } else if (phase === 'done' && activeKind === 'export_pdf') {
+  } else if ((phase === 'done' || phase === 'running') && activeKind === 'export_pdf') {
     openPdfReview();
   } else if (phase === 'done') {
     phase = 'form';
