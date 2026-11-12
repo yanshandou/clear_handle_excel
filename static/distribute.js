@@ -307,7 +307,7 @@
           : file.uploaded_current === true ? '当前版本已上传'
           : file.uploaded_current === false ? '本地有新版本待上传'
           : file.uploaded ? '当前版本待核对' : '待上传';
-        return `<tr><td><input type="checkbox" aria-label="选择 ${esc(file.rel)}" value="${esc(file.rel)}"></td><td>${fileLink(file.rel, task.work, file.rel)}${file.uploaded_current === true && !file.review ? '' : diffLink(task.work, task.shared, file.rel)}</td><td>${status}</td><td>${upload || '—'}</td></tr>`;
+        return `<tr><td><input type="checkbox" aria-label="选择 ${esc(file.rel)}" value="${esc(file.rel)}"></td><td>${fileLink(file.rel, task.work, file.rel)}${file.uploaded_current === true && !file.review ? '' : diffLink(task.work, task.shared, file.rel, file.rel, task.id)}</td><td>${status}</td><td>${upload || '—'}</td></tr>`;
       });
       $('distTaskFiles').innerHTML = (rows.length
         ? '<table class="link-table"><thead><tr><th>选择</th><th>处理文件</th><th>状态</th><th>上次上传</th></tr></thead><tbody>' + rows.join('') + '</tbody></table>'
@@ -360,9 +360,10 @@
     const sep = root.includes('\\') || /^[A-Za-z]:/.test(root) ? '\\' : '/';
     return root.replace(/[\\/]+$/, '') + sep + rel.split('/').join(sep);
   }
-  function diffLink(mineRoot, theirsRoot, rel, theirsRel = rel) {
+  // taskId 给了：对比页上多一个「上传这一份」按钮（用户 2026-11-12），只有当前任务上传的文件有
+  function diffLink(mineRoot, theirsRoot, rel, theirsRel = rel, taskId = '') {
     return ` <a class="dist-diff" target="_blank" rel="noopener" title="左右两栏看你这份和远程那份哪里不一样（文字、公式、字体、颜色、行高列宽、打印设置…）"`
-      + ` href="/excel-diff?theirs=${encodeURIComponent(joinPath(theirsRoot, theirsRel))}&mine=${encodeURIComponent(joinPath(mineRoot, rel))}">🔍 对比</a>`;
+      + ` href="/excel-diff?theirs=${encodeURIComponent(joinPath(theirsRoot, theirsRel))}&mine=${encodeURIComponent(joinPath(mineRoot, rel))}${taskId ? `&task=${encodeURIComponent(taskId)}&rel=${encodeURIComponent(rel)}` : ''}">🔍 对比</a>`;
   }
 
   function folderCard(folder, data, applied) {

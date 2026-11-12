@@ -675,7 +675,10 @@ def _guard_mode(value: Any) -> str:
     return "content" if value == "content" else "auto"
 
 
-def start_task_upload(task_id: Any, files: Any, reviewed: Any, pdf: Any = None, guard: Any = None) -> None:
+def start_task_upload(task_id: Any, files: Any, reviewed: Any, pdf: Any = None, guard: Any = None,
+                      confirmed: Any = None) -> None:
+    """confirmed = {文件: {"mine": 哈希, "theirs": 哈希}}：用户在 Excel 对比页看过这两个版本的差异后点了「上传这一份」
+    （用户 2026-11-12）。上传那一刻两边还是这两个版本，就不用再逐份确认一遍"""
     task = _upload_task(task_id)
     pdf_settings = _pdf_settings(pdf)
     if not isinstance(files, list) or not files:
@@ -691,6 +694,9 @@ def start_task_upload(task_id: Any, files: Any, reviewed: Any, pdf: Any = None, 
             raise ValueError(f"文件不存在或重复选择：{rel}")
         seen.add(_key(rel))
         items.append({"rel": rel, "reviewed": reviewed.get(rel)})
+        seen_diff = confirmed.get(rel) if isinstance(confirmed, dict) else None
+        if isinstance(seen_diff, dict) and isinstance(seen_diff.get("mine"), str) and isinstance(seen_diff.get("theirs"), str):
+            items[-1]["confirmed"] = {"mine": seen_diff["mine"], "theirs": seen_diff["theirs"]}
     from core import work_task
     start(upload={"kind": "task_upload", "task": task, "label": f"任务：{task['name']}",
                   "source_root": task["work"], "dest_root": str(work_task.upload_dest(task)),
@@ -754,11 +760,20 @@ def _check_task_file(task: dict[str, Any], item: dict[str, Any], local: Path, sh
     reason = _upload_review_reason(known, current, guard)
     if review and (not review["ready"] or current != review["sha256"]):
         reason = reason or "此前的共享版本复检尚未完成"
+    item["src_sha256"] = _digest(local)
+    seen_diff = item.pop("confirmed", None)
+    if reason and not review and seen_diff:
+        if seen_diff["theirs"] == current and seen_diff["mine"] == item["src_sha256"]:
+            debug_log.event("📤 上传：在对比页看过差异并确认，不再逐份确认", 文件=item["rel"], 原因=reason)
+            reason = ""
+            item["review_confirmed"] = True
+        else:
+            debug_log.event("📤 上传：对比页确认之后文件又变了，改回逐份确认", 文件=item["rel"],
+                            远程变了=seen_diff["theirs"] != current, 本地变了=seen_diff["mine"] != item["src_sha256"])
     if reason:
         item["review_reason"] = reason
     elif review and review["token"] != item["reviewed"]:
         item.update(status="review", error="请确认已在共享最新版上重新处理并复检")
-    item["src_sha256"] = _digest(local)
     return current
 
 

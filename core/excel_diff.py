@@ -119,41 +119,219 @@ def _style_of(cell: Any, cache: dict[tuple, dict[str, str]]) -> dict[str, str]:
     return found
 
 
-def _drawing_counts(path: Path) -> dict[str, int]:
-    """每张表的图片 / 图形个数（数 drawing XML 里的锚点；openpyxl 不读自选图形）"""
-    counts: dict[str, int] = {}
+_XDR = "{http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing}"
+_A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+_ANCHORS = ("twoCellAnchor", "oneCellAnchor", "absoluteAnchor")
+_OBJECT_KINDS = {"pic": "图片", "sp": "图形", "grpSp": "组合", "cxnSp": "连接线", "graphicFrame": "图表"}
+MAX_DRAWING_ROWS = 80    # 每张表最多列多少个不一样的图片 / 图形
+VIEW_BOX_ROWS = 30       # 效果图上给一个图片 / 图形最多多画多少行
+
+
+def _zip_join(base: str, target: str) -> str:
+    """base 这个零件里写的相对路径 target → 压缩包里的完整名字"""
+    full = target.lstrip("/") if target.startswith("/") else f"{base.rsplit('/', 1)[0]}/{target}"
+    out: list[str] = []
+    for piece in full.split("/"):
+        if piece == "..":
+            out and out.pop()
+        elif piece != ".":
+            out.append(piece)
+    return "/".join(out)
+
+
+def _rels(z: zipfile.ZipFile, part: str, names: set[str]) -> list[tuple[str, str, str]]:
+    """零件的关系表 [(Id, 类型, 目标的完整名字)]"""
+    rel_part = f"{part.rsplit('/', 1)[0]}/_rels/{part.rsplit('/', 1)[-1]}.rels"
+    if rel_part not in names:
+        return []
+    return [(rel.get("Id") or "", rel.get("Type") or "", _zip_join(part, rel.get("Target") or ""))
+            for rel in ElementTree.fromstring(z.read(rel_part)).findall(_PKG_REL) if rel.get("TargetMode") != "External"]
+
+
+def _local(element: Any) -> str:
+    return element.tag.rsplit("}", 1)[-1]
+
+
+def _unwrap(element: Any) -> list[Any]:
+    """mc:AlternateContent 包着的取 Choice（没有就 Fallback）里面的东西"""
+    out = []
+    for child in element:
+        if _local(child) == "AlternateContent":
+            inner = next((c for c in child if _local(c) == "Choice"), None)
+            if inner is None:
+                inner = next(iter(child), None)
+            out += _unwrap(inner) if inner is not None else []
+        else:
+            out.append(child)
+    return out
+
+
+def _cell_of(marker: Any) -> tuple[int, int] | None:
+    if marker is None:
+        return None
+    try:
+        return int(marker.findtext(f"{_XDR}row")) + 1, int(marker.findtext(f"{_XDR}col")) + 1
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_drawing(xml: bytes, media: Any) -> list[dict[str, Any]]:
+    """一张表的 drawing XML → 每个图片 / 图形一条。media(rId) → 这张图片文件的内容（没有返回 None）。
+    位置按挂在哪个格子（左上角～右下角），大小按文件里记的宽高（厘米，取 1 位小数）"""
+    import hashlib
+    out = []
+    for anchor in _unwrap(ElementTree.fromstring(xml)):
+        if _local(anchor) not in _ANCHORS:
+            continue
+        children = _unwrap(anchor)
+        obj = next((c for c in children if _local(c) in _OBJECT_KINDS), None)
+        if obj is None:
+            continue
+        kind = _OBJECT_KINDS[_local(obj)]
+        prop = next((e for e in obj.iter() if _local(e) == "cNvPr"), None)
+        if kind == "图形" and any(_local(e) == "cNvSpPr" and e.get("txBox") == "1" for e in obj.iter()):
+            kind = "文本框"
+        paragraphs = ["".join(t.text or "" for t in para.iter(f"{_A}t")) for para in obj.iter(f"{_A}p")]
+        text = "\n".join(p for p in paragraphs if p.strip())
+        images, image_bytes = [], 0
+        for blip in obj.iter(f"{_A}blip"):
+            data = media(blip.get(f"{_REL_NS}embed") or blip.get(f"{_REL_NS}link") or "")
+            if data is not None:
+                images.append(hashlib.md5(data).hexdigest())
+                image_bytes += len(data)
+        shapes = sorted(g.get("prst") or "" for g in obj.iter(f"{_A}prstGeom"))
+        start = _cell_of(next((c for c in children if _local(c) == "from"), None))
+        end = _cell_of(next((c for c in children if _local(c) == "to"), None))
+        ext = next((c for c in children if _local(c) == "ext"), None)  # oneCellAnchor / absoluteAnchor 的大小
+        if ext is None or _local(anchor) == "twoCellAnchor":
+            ext = next((e for e in obj.iter(f"{_A}ext") if e.get("cx") and e.get("cy")), ext)
+        size = None
+        if ext is not None:
+            try:
+                size = (round(int(ext.get("cx")) / 360000, 1), round(int(ext.get("cy")) / 360000, 1))
+            except (TypeError, ValueError):
+                size = None
+        out.append({"kind": kind, "name": (prop.get("name") if prop is not None else "") or "",
+                    "hidden": bool(prop is not None and prop.get("hidden") in ("1", "true")),
+                    "text": text, "images": sorted(images), "image_bytes": image_bytes, "shapes": shapes,
+                    "from": start, "to": end, "size": size})
+    return out
+
+
+def _drawings(path: Path) -> dict[str, list[dict[str, Any]]]:
+    """每张表的图片 / 图形（读 drawing XML；openpyxl 不读自选图形）"""
+    found: dict[str, list[dict[str, Any]]] = {}
     try:
         with zipfile.ZipFile(path) as z:
             names = set(z.namelist())
             book = ElementTree.fromstring(z.read("xl/workbook.xml"))
             ns = book.tag[: book.tag.index("}") + 1] if book.tag.startswith("{") else ""
-            rels = ElementTree.fromstring(z.read("xl/_rels/workbook.xml.rels"))
-            targets = {rel.get("Id"): rel.get("Target") for rel in rels.findall(_PKG_REL)}
+            targets = {rid: target for rid, _, target in _rels(z, "xl/workbook.xml", names)}
             for sheet in book.iter(f"{ns}sheet"):
-                target = targets.get(sheet.get(f"{_REL_NS}id")) or ""
-                part = target.lstrip("/") if target.startswith("/") else f"xl/{target}"
-                rel_part = f"{part.rsplit('/', 1)[0]}/_rels/{part.rsplit('/', 1)[-1]}.rels"
-                total = 0
-                if rel_part in names:
-                    for rel in ElementTree.fromstring(z.read(rel_part)).findall(_PKG_REL):
-                        if not (rel.get("Type") or "").endswith("/drawing"):
-                            continue
-                        drawing = rel.get("Target") or ""
-                        full = drawing.lstrip("/") if drawing.startswith("/") else str(
-                            Path(part).parent.joinpath(drawing).as_posix())
-                        parts, out = full.split("/"), []
-                        for piece in parts:  # 处理 ../
-                            if piece == "..":
-                                out and out.pop()
-                            elif piece != ".":
-                                out.append(piece)
-                        full = "/".join(out)
-                        if full in names:
-                            total += len(re.findall(rb"<(?:\w+:)?(?:twoCellAnchor|oneCellAnchor|absoluteAnchor)\b", z.read(full)))
-                counts[sheet.get("name") or ""] = total
+                part = targets.get(sheet.get(f"{_REL_NS}id") or "") or ""
+                items: list[dict[str, Any]] = []
+                for _, kind, drawing in _rels(z, part, names) if part else []:
+                    if not kind.endswith("/drawing") or drawing not in names:
+                        continue
+                    media = {rid: target for rid, _, target in _rels(z, drawing, names)}
+                    items += _parse_drawing(z.read(drawing), lambda rid: z.read(media[rid]) if media.get(rid) in names else None)
+                found[sheet.get("name") or ""] = items
     except Exception as err:
-        debug_log.event("⚠️ Excel 对比：读不了图片图形个数", 文件=str(path), 原因=str(err)[:80])
-    return counts
+        debug_log.event("⚠️ Excel 对比：读不了图片图形", 文件=str(path), 原因=str(err)[:80])
+    return found
+
+
+def _drawing_where(item: dict[str, Any]) -> str:
+    from openpyxl.utils.cell import get_column_letter
+    cell = lambda at: f"{get_column_letter(at[1])}{at[0]}"  # noqa: E731
+    if not item["from"]:
+        return "固定位置"
+    return f"{cell(item['from'])}～{cell(item['to'])}" if item["to"] else cell(item["from"])
+
+
+def _drawing_label(item: dict[str, Any]) -> str:
+    return f"{item['kind']}「{item['name']}」" if item["name"] else item["kind"]
+
+
+def _drawing_content(item: dict[str, Any]) -> tuple:
+    return item["kind"], tuple(item["images"]), item["text"], tuple(item["shapes"])
+
+
+def _drawing_full(item: dict[str, Any]) -> str:
+    parts = [f"在 {_drawing_where(item)}"]
+    if item["size"]:
+        parts.append(f"宽 {_num(item['size'][0])} × 高 {_num(item['size'][1])} 厘米")
+    if item["text"]:
+        parts.append(f"文字「{item['text']}」")
+    if item["hidden"]:
+        parts.append("隐藏")
+    return "，".join(parts)
+
+
+def _diff_drawings(old: list[dict[str, Any]], new: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """两边的图片 / 图形一个个配对，列出不一样的。配对顺序：完全一样 → 内容和名字一样（挪了 / 改了大小）
+    → 名字和位置一样（内容换了）→ 位置一样 → 内容一样 → 名字一样；剩下的算多了 / 少了"""
+    left, right = list(old), list(new)
+    pairs: list[tuple[dict[str, Any] | None, dict[str, Any] | None]] = []
+    keys = (lambda i: (_drawing_content(i), i["name"], i["from"], i["to"], i["size"], i["hidden"]),
+            lambda i: (_drawing_content(i), i["name"]),
+            lambda i: (i["kind"], i["name"], i["from"]),
+            lambda i: (i["kind"], i["from"], i["to"]),
+            lambda i: (_drawing_content(i),),
+            lambda i: (i["kind"], i["name"]) if i["name"] else None)
+    for level, key in enumerate(keys):
+        waiting: dict[Any, list[dict[str, Any]]] = {}
+        for item in left:
+            if key(item) is not None:
+                waiting.setdefault(key(item), []).append(item)
+        for item in list(right):
+            match = waiting.get(key(item)) if key(item) is not None else None
+            if match:
+                other = match.pop(0)
+                left.remove(other)
+                right.remove(item)
+                if level:
+                    pairs.append((other, item))
+    pairs += [(item, None) for item in left] + [(None, item) for item in right]
+    rows = []
+    for a, b in pairs:
+        if a is None or b is None:
+            item = a or b
+            rows.append({"what": f"{_drawing_label(item)}（{_drawing_where(item)}）", "changes": ["少了" if b is None else "多了"],
+                         "old": _drawing_full(a) if a else "", "new": _drawing_full(b) if b else "", "a": a, "b": b})
+            continue
+        va, vb, changes = [], [], []
+        if a["images"] != b["images"]:
+            changes.append("图片内容")
+            va.append(f"原来的图片（{max(1, a['image_bytes'] // 1024)} KB）")
+            vb.append(f"换成了另一张图片（{max(1, b['image_bytes'] // 1024)} KB）")
+        if a["text"] != b["text"]:
+            changes.append("文字")
+            va.append(f"文字「{a['text']}」")
+            vb.append(f"文字「{b['text']}」")
+        if (a["from"], a["to"]) != (b["from"], b["to"]):
+            changes.append("位置")
+            va.append(f"在 {_drawing_where(a)}")
+            vb.append(f"在 {_drawing_where(b)}")
+        if a["size"] != b["size"]:
+            changes.append("大小")
+            show = lambda size: f"宽 {_num(size[0])} × 高 {_num(size[1])} 厘米" if size else "没记大小"  # noqa: E731
+            va.append(show(a["size"]))
+            vb.append(show(b["size"]))
+        if a["hidden"] != b["hidden"]:
+            changes.append("显示隐藏")
+            va.append("隐藏" if a["hidden"] else "显示")
+            vb.append("隐藏" if b["hidden"] else "显示")
+        if a["kind"] != b["kind"] or a["shapes"] != b["shapes"]:
+            changes.append("形状")
+            va.append(a["kind"] + (f"（{'、'.join(s for s in a['shapes'] if s)}）" if any(a["shapes"]) else ""))
+            vb.append(b["kind"] + (f"（{'、'.join(s for s in b['shapes'] if s)}）" if any(b["shapes"]) else ""))
+        if a["name"] != b["name"] and not changes:
+            continue  # 只是名字不同（Excel 自动起的名），不算
+        rows.append({"what": f"{_drawing_label(b)}（{_drawing_where(b)}）", "changes": changes,
+                     "old": "，".join(va), "new": "，".join(vb), "a": a, "b": b})
+    rows.sort(key=lambda row: (row["b"] or row["a"])["from"] or (0, 0))
+    return rows
 
 
 def _num(value: Any) -> str:
@@ -188,7 +366,7 @@ def _load(path: Path) -> dict[str, Any]:
         raise ValueError(f"{path.name}：{err}") from err
     except Exception as err:
         raise ValueError(f"读不了 {path.name}（{type(err).__name__}: {err}）") from err
-    return {"book": book, "texts": texts, "drawings": _drawing_counts(path), "cache": {}, "css": {},
+    return {"book": book, "texts": texts, "drawings": _drawings(path), "cache": {}, "css": {},
             "theme": _theme_colors(path),
             "doomed": content_check.doomed_sheets(path, [s.title for s in book.worksheets])}
 
@@ -214,7 +392,7 @@ def _sheet_info(data: dict[str, Any], name: str) -> dict[str, Any]:
     return {"sheet": sheet, "texts": text["cells"], "rows": rows, "cols": cols,
             "merged": sorted(str(r) for r in sheet.merged_cells.ranges),
             "setup": _page_setup(sheet, text.get("area", "")),
-            "drawings": data["drawings"].get(name, 0), "tab": _color(tab),
+            "drawings": data["drawings"].get(name, []), "tab": _color(tab),
             "state": {"visible": "显示", "hidden": "隐藏", "veryHidden": "深度隐藏"}.get(sheet.sheet_state, sheet.sheet_state),
             "cf": sum(len(rules.rules) for rules in sheet.conditional_formatting)}
 
@@ -390,7 +568,8 @@ def _used_bounds(data: dict[str, Any], name: str) -> tuple[int, int]:
 
 
 def _view(name: str, old: dict[str, Any] | None, new: dict[str, Any] | None, marks: dict[str, list[str]],
-          row_marks: list[int], col_marks: list[str], merge_marks: list[str]) -> dict[str, Any] | None:
+          row_marks: list[int], col_marks: list[str], merge_marks: list[str],
+          boxes: dict[str, list] | None = None) -> dict[str, Any] | None:
     """效果图要的数据：只取有不同的行和上下 VIEW_CONTEXT 行；一边没有这张表时画另一边的开头几十行"""
     from openpyxl.utils.cell import column_index_from_string, get_column_letter, range_boundaries
     bounds = [_used_bounds(side, name) for side in (old, new) if side is not None]
@@ -403,6 +582,10 @@ def _view(name: str, old: dict[str, Any] | None, new: dict[str, Any] | None, mar
     for rng in merge_marks:
         left, top, right, bottom = range_boundaries(rng)
         hot.update(range(top, min(bottom, top + 50) + 1))
+    boxes = boxes or {"old": [], "new": []}
+    for top, left, bottom, right, *_ in boxes["old"] + boxes["new"]:  # 图片 / 图形不一样：把它占的那几行也画出来
+        hot.update(range(top, min(bottom, top + VIEW_BOX_ROWS) + 1))
+        last_row, last_col = max(last_row, min(bottom, top + VIEW_BOX_ROWS)), max(last_col, right)
     if old is None or new is None:
         hot = set(range(1, min(last_row, 40) + 1))
     if not hot and col_marks:
@@ -417,7 +600,7 @@ def _view(name: str, old: dict[str, Any] | None, new: dict[str, Any] | None, mar
     sides = {key: (_side_view(side, name, rows, last_col) if side is not None else None) for key, side in (("old", old), ("new", new))}
     return {"rows": rows, "cols": [get_column_letter(c) for c in range(1, last_col + 1)], **sides,
             "marks": marks if len(marks) <= 5000 else dict(list(marks.items())[:5000]), "marks_cut": max(0, len(marks) - 5000),
-            "row_marks": row_marks, "col_marks": col_marks, "rows_cut": cut, "cols_cut": cols_cut, "last_row": last_row}
+            "row_marks": row_marks, "col_marks": col_marks, "boxes": boxes, "rows_cut": cut, "cols_cut": cols_cut, "last_row": last_row}
 
 
 def _addr_key(addr: str) -> tuple[int, int, str]:
@@ -533,15 +716,28 @@ def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any], caches: tup
              and not (k == "纸张" and not (a["setup"][k] and b["setup"][k]))]  # 一边没写纸张 = 跟打印机默认，不算不同
     counts["打印设置"] = len(setup)
     whole += [{"kind": "打印设置", "what": k, "old": va, "new": vb} for k, va, vb in setup]
-    for kind, field, what, fmt in (("图片图形", "drawings", "图片 / 图形个数", lambda v: f"{v} 个"),
-                                   ("标签颜色", "tab", "标签颜色", lambda v: v or "没有"),
+    drawing_rows = _diff_drawings(a["drawings"], b["drawings"])
+    counts["图片图形"] = len(drawing_rows)
+    boxes: dict[str, list] = {"old": [], "new": []}
+    for row in drawing_rows:
+        for side, item in (("old", row["a"]), ("new", row["b"])):
+            if item and item["from"]:
+                end = item["to"] or item["from"]
+                boxes[side].append([item["from"][0], item["from"][1], max(end[0], item["from"][0]), max(end[1], item["from"][1]),
+                                    f"{_drawing_label(item)}：{'、'.join(row['changes'])}{'不一样' if row['a'] and row['b'] else ''}",
+                                    # 只记了左上角的（不随格子变大小）：按它自己的宽高画框
+                                    [round(v / 2.54 * 96) for v in item["size"]] if item["size"] and not item["to"] else None])
+    whole += [{"kind": "图片图形", "what": row["what"], "old": row["old"], "new": row["new"]} for row in drawing_rows[:MAX_DRAWING_ROWS]]
+    if len(drawing_rows) > MAX_DRAWING_ROWS:
+        whole.append({"kind": "图片图形", "what": f"还有 {len(drawing_rows) - MAX_DRAWING_ROWS} 个图片 / 图形不一样，太多没列", "old": "", "new": ""})
+    for kind, field, what, fmt in (("标签颜色", "tab", "标签颜色", lambda v: v or "没有"),
                                    ("显示隐藏", "state", "这张表", str),
                                    ("条件格式", "cf", "条件格式规则", lambda v: f"{v} 条")):
         counts[kind] = int(a[field] != b[field])
         if a[field] != b[field]:
             whole.append({"kind": kind, "what": what, "old": fmt(a[field]), "new": fmt(b[field])})
     counts = {k: v for k, v in counts.items() if v}
-    view = _view(name, old, new, marks, size_marks.get("rows", []), size_marks.get("cols", []), only_a + only_b) if counts else None
+    view = _view(name, old, new, marks, size_marks.get("rows", []), size_marks.get("cols", []), only_a + only_b, boxes) if counts else None
     return {"name": name, "status": "changed" if counts else "same", "counts": counts, "view": view,
             "text": text_rows, "text_more": max(0, len(changed) - MAX_TEXT_ROWS),
             "formulas": formulas[:MAX_TEXT_ROWS], "formulas_more": max(0, len(formulas) - MAX_TEXT_ROWS),

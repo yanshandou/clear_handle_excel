@@ -132,3 +132,62 @@ def test_view_only_draws_changed_rows_with_context(tmp_path):
     new_texts = {c[2] for c in view["new"]["cells"]}
     assert "旧" in old_texts and "新" in new_texts and "行1" not in old_texts
     assert not sheets["一样的表"].get("view")
+
+
+def _picture(path: Path, color: tuple[int, int, int]) -> Path:
+    from PIL import Image
+    Image.new("RGB", (120, 80), color).save(path)
+    return path
+
+
+def _picture_book(folder: Path, name: str, pictures: list[tuple[Path, str]]) -> Path:
+    from openpyxl.drawing.image import Image as SheetImage
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "画面"
+    for r in range(1, 60):
+        sheet.cell(r, 1, f"行{r}")
+    for picture, anchor in pictures:
+        sheet.add_image(SheetImage(str(picture)), anchor)
+    path = folder / name
+    workbook.save(path)
+    return path
+
+
+def test_pictures_replaced_moved_added_are_listed(tmp_path):
+    """图片换了一张、挪了位置、多了一张都要列出来；不是只比个数（用户 2026-11-12）"""
+    red, blue, green = (_picture(tmp_path / f"{n}.png", c) for n, c in
+                        (("red", (200, 0, 0)), ("blue", (0, 0, 200)), ("green", (0, 160, 0))))
+    old = _picture_book(tmp_path, "old.xlsx", [(red, "C3"), (blue, "C20")])
+    same = _picture_book(tmp_path, "same.xlsx", [(red, "C3"), (blue, "C20")])
+    new = _picture_book(tmp_path, "new.xlsx", [(green, "C3"), (blue, "C30"), (red, "H50")])
+    assert excel_diff.diff(same, old)["identical"]
+    sheet = excel_diff.diff(new, old)["sheets"][0]
+    rows = [row for row in sheet["whole"] if row["kind"] == "图片图形"]
+    assert sheet["counts"]["图片图形"] == 3 and len(rows) == 3
+    text = " | ".join(f"{row['what']} {row['old']} → {row['new']}" for row in rows)
+    assert "换成了另一张图片" in text and "在 C20" in text and "在 C30" in text
+    assert any(not row["old"] and "H50" in row["what"] for row in rows)  # 多出来的那张
+    boxes = sheet["view"]["boxes"]
+    assert len(boxes["old"]) == 2 and len(boxes["new"]) == 3
+    assert 30 in sheet["view"]["rows"] and 50 in sheet["view"]["rows"]
+
+
+def test_shape_text_and_size_changes_are_listed():
+    """图形 / 文本框里的字、大小变了要列出来；只是名字不同不算"""
+    def drawing(text: str, cx: int, name: str = "テキスト 1") -> bytes:
+        return (f'<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" '
+                f'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+                f'<xdr:twoCellAnchor><xdr:from><xdr:col>1</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>4</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>'
+                f'<xdr:to><xdr:col>5</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>8</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>'
+                f'<xdr:sp><xdr:nvSpPr><xdr:cNvPr id="2" name="{name}"/><xdr:cNvSpPr txBox="1"/></xdr:nvSpPr>'
+                f'<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="720000"/></a:xfrm><a:prstGeom prst="rect"/></xdr:spPr>'
+                f'<xdr:txBody><a:bodyPr/><a:p><a:r><a:t>{text}</a:t></a:r></a:p></xdr:txBody></xdr:sp><xdr:clientData/></xdr:twoCellAnchor>'
+                f'</xdr:wsDr>').encode("utf-8")
+    parse = lambda xml: excel_diff._parse_drawing(xml, lambda rid: None)  # noqa: E731
+    base = parse(drawing("旧い説明", 3600000))
+    assert base[0]["kind"] == "文本框" and base[0]["from"] == (5, 2) and base[0]["size"] == (10.0, 2.0)
+    assert excel_diff._diff_drawings(base, parse(drawing("旧い説明", 3600000, "テキスト 9"))) == []
+    rows = excel_diff._diff_drawings(base, parse(drawing("新しい説明", 1800000)))
+    assert len(rows) == 1 and rows[0]["changes"] == ["文字", "大小"]
+    assert "旧い説明" in rows[0]["old"] and "新しい説明" in rows[0]["new"] and "宽 5" in rows[0]["new"]
