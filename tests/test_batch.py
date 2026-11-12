@@ -1494,14 +1494,14 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(batch._problem(clip)["label"], "压线")
         self.assertEqual(batch._problem(clip)["missing"], "")
 
-    def test_low_risk_cards_hidden_until_shown(self):
-        # 用户 2026-11-10：被裁（字都在 PDF 里）默认不列；2026-11-12 起压线算红、不标色；真丢字（截断）照常列
+    def test_visible_flaws_all_listed_red(self):
+        # 用户 2026-11-12：PDF 上看得出的瑕疵都要改——压线、被裁、截断都算红，没有默认藏起来的
         from core import autofix
         from core.hidden_text import REASON_CLIPPED, REASON_MISSING, REASON_TRUNCATED
-        self.assertEqual(autofix.error_severity(["box_overflow"]), "yellow")
-        self.assertEqual(autofix.error_severity(["border_clip", "box_overflow"]), "red")
-        self.assertEqual(autofix.error_severity(["box_overflow", "text_missing"]), "gray")
-        self.assertEqual(autofix.error_severity(["border_clip", "text_truncated"]), "red")
+        self.assertEqual(autofix.LOW_RISK_ERROR_TYPES, ())
+        self.assertEqual(autofix.error_severity(["box_overflow"]), "red")
+        self.assertEqual(autofix.error_severity(["border_clip"]), "red")
+        self.assertEqual(autofix.error_severity(["text_missing"]), "gray")
         self.assertEqual(autofix.error_severity(["page_break_cut"]), "red")
         cut, cut_item = self.add_card("A5")
         cut_item.update(status="pending", hidden_reason=REASON_TRUNCATED)
@@ -1512,21 +1512,13 @@ class BatchTests(unittest.TestCase):
         for card in (cut, clipped, missing):
             card.update(color="yellow", manual=True, verified=False)
         snap = batch.snapshot()
-        self.assertEqual({c["cell_addr"]: c["severity"] for c in snap["cards"]}, {"A5": "red", "C5": "gray"})
-        self.assertEqual((snap["low_risk_hidden"], snap["show_low_risk"]), (1, False))
+        self.assertEqual({c["cell_addr"]: c["severity"] for c in snap["cards"]},
+                         {"A5": "red", "B5": "red", "C5": "gray"})
+        self.assertEqual(snap["low_risk_hidden"], 0)
         batch._data()["highlight_files"] = {self.path: {"fill": "#ffff00"}}
         with patch.object(batch, "_can_highlight", return_value=True):
-            self.assertEqual(batch._wanted_marks(self.path), {cut["id"], missing["id"]})
-            self.assertEqual(self.wf._problem_counts(self.path)["clip_unfixed"], 2)
-            batch.set_show_low_risk(True)
             self.assertEqual(batch._wanted_marks(self.path), {cut["id"], clipped["id"], missing["id"]})
             self.assertEqual(self.wf._problem_counts(self.path)["clip_unfixed"], 3)
-        snap = batch.snapshot()
-        self.assertEqual(len(snap["cards"]), 3)
-        self.assertEqual((snap["low_risk_hidden"], snap["show_low_risk"]), (0, True))
-        # 卡片记的问题类型会累积：以前截断、现在只剩压线的，按现在的检测结果算黄色
-        clipped["error_types"] = ["text_truncated", "box_overflow"]
-        self.assertEqual(batch._card_severity(clipped), "yellow")
 
     def test_recheck_ready_only_for_saved_and_closed_opened_files(self):
         # 打开过的文件改完保存、关掉 Excel 后才自动复检；没改过、还开着的不动
@@ -1543,7 +1535,7 @@ class BatchTests(unittest.TestCase):
             self.assertEqual(batch.snapshot()["recheck_ready"], [self.path])
 
     def test_page_view_renders_page_on_demand_with_problem_boxes(self):
-        # 看大图：打开时才画整页，这一页的问题格按等级给位置（比例），黄色默认不画
+        # 看大图：打开时才画整页，这一页的问题格按等级给位置（比例）
         from core.hidden_text import REASON_CLIPPED, REASON_TRUNCATED
         pdf = self.root / "S1.pdf"
         with batch.fitz.open() as doc:
@@ -1557,12 +1549,10 @@ class BatchTests(unittest.TestCase):
         view = batch.page_view(cut["id"])
         self.assertTrue(view["image"].startswith("data:image/png;base64,"))
         self.assertEqual((view["page"], view["pages"]), (1, 1))
-        self.assertEqual(len(view["boxes"]), 1)
+        self.assertEqual([b["addr"] for b in view["boxes"]], ["A5", "B5"])
         box = view["boxes"][0]
         self.assertEqual((box["current"], box["severity"], box["missing"]), (True, "red", "DEF"))
         self.assertEqual(box["rect"], [0.1, 0.1, 0.2, 0.125])
-        batch.set_show_low_risk(True)
-        self.assertEqual([b["addr"] for b in batch.page_view(cut["id"])["boxes"]], ["A5", "B5"])
         with self.assertRaisesRegex(ValueError, "不在列表里"):
             batch.page_view("nope")
 

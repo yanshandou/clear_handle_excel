@@ -149,11 +149,11 @@ CUT_ERROR_TYPES: tuple[str, ...] = (ERROR_TYPE_BORDER_CLIP, ERROR_TYPE_TEXT_TRUN
 
 
 # 按「字丢没丢」分级（用户 2026-11-10：PDF 给 AI 读，字小无所谓，Excel 里有的字 PDF 里不能丢）：
-# 黄 = 超出格子被裁：文字层里字都在，默认不用管（多半是作者故意隐藏列造成的）
-# 压线（边框横线穿过字，半截字）算红：用户 2026-11-12 看到最后一行被行底切掉一半没列出来，这就是要找的切字
+# 黄：现在没有了。用户 2026-11-12 定：「用户能在 PDF 中看到的瑕疵都要改」，压线（半截字）、超出格子被裁都算红；
+# 黄色这一档和「也列出来」开关的代码留着，以后真有只是不好看、不用改的类型再放进来
 # 灰 = PDF 里没对上文字：多是符号、格式造成的误报，扫一眼就行
 # 红 = 其余（只印出前半段、###、分页切开合并格）：真丢字，必须改
-LOW_RISK_ERROR_TYPES: tuple[str, ...] = (ERROR_TYPE_BOX_OVERFLOW,)
+LOW_RISK_ERROR_TYPES: tuple[str, ...] = ()
 NOTE_ERROR_TYPES: tuple[str, ...] = (ERROR_TYPE_TEXT_MISSING,)
 SEVERITY_RED, SEVERITY_GRAY, SEVERITY_YELLOW = "red", "gray", "yellow"
 
