@@ -126,11 +126,35 @@
 
   // 等待中：转圈 + 已经等了多久（用户 2026-11-12：什么提示都没有，看不出是卡住了还是在导）
   const waitingSince = new WeakMap();
-  function busy(box, text) {
+  const duration = seconds => seconds < 60 ? `约 ${Math.max(1, Math.round(seconds))} 秒` : `约 ${Math.round(seconds / 60)} 分钟`;
+  function busy(box, text, progress = null) {
     if (!waitingSince.has(box)) waitingSince.set(box, Date.now());
     const seconds = Math.round((Date.now() - waitingSince.get(box)) / 1000);
-    box.innerHTML = `<p class="xr-status xr-busy"><span class="xr-spinner" aria-hidden="true"></span>📄 真实效果：${esc(text)}`
-      + `${seconds >= 3 ? `<small class="xr-elapsed">已等 ${seconds} 秒</small>` : ''}</p>`;
+    const percent = progress ? Math.min(99, Math.floor(progress.percent)) : null;
+    box.innerHTML = `<div class="xr-wait"><p class="xr-status xr-busy"><span class="xr-spinner" aria-hidden="true"></span>`
+      + (percent !== null ? `<b class="xr-percent">${percent}%</b>` : '') + `📄 真实效果：${esc(text)}</p>`
+      + (progress ? `<div class="xr-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><span style="width:${percent}%"></span></div>` : '')
+      + `<small class="xr-elapsed">${progress ? `已导 ${progress.done} / ${progress.total} 张表 · ` : ''}已等 ${seconds} 秒`
+      + `${progress && progress.eta > 0 ? ` · 预计还要${duration(progress.eta)}` : ''}</small></div>`;
+  }
+  // 两边一共要导几张表、导了几张、还要多久（后台给每张表和打开 Excel 的实际平均用时）
+  function progressOf(keys, want) {
+    let total = 0, done = 0, eta = 0;
+    for (const side of ['mine', 'theirs']) {
+      const k = keys[side];
+      if (!k) continue;
+      const names = want[side];
+      const have = names.filter(name => k.sheets[name]).length;
+      const running = k.state === 'running' ? Math.min(k.done || 0, names.length - have) : 0;
+      total += names.length;
+      done += have + running;
+      if (k.state === 'running' || k.state === 'queued') {
+        const own = (names.length - have - running) * k.sheet_seconds + (k.state === 'queued' ? k.open_seconds : 0);
+        const before = (k.ahead_sheets || 0) * k.sheet_seconds + (k.ahead_files || 0) * k.open_seconds;
+        eta = Math.max(eta, own + before);  // 后导的那边，前面的活已经包括先导的那边
+      }
+    }
+    return total ? { total, done, percent: done / total * 100, eta } : null;
   }
 
   function block(details) {
@@ -296,7 +320,7 @@
           paint(box, name, info, keys.theirs?.key, keys.mine?.key, gen);
         } else {
           const k = [keys.theirs, keys.mine].find(item => item && item.state !== 'done');
-          busy(box, k && k.state === 'running' ? `后台 Excel 正在导出 PDF（${k.current || '准备中'}），每张表要几秒…` : `排队等后台 Excel 导出 PDF${k && k.queue > 1 ? `（前面还有 ${k.queue - 1} 份）` : ''}…`);
+          busy(box, k && k.state === 'running' ? `后台 Excel 正在导出 PDF（${k.current || '准备中'}）…` : `排队等后台 Excel 导出 PDF${k && k.queue > 1 ? `（前面还有 ${k.queue - 1} 份）` : ''}…`, progressOf(keys, want));
         }
       }
       if (painted.size === boxes.size) {
