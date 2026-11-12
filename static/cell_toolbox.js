@@ -74,7 +74,7 @@ function toolboxGroupBarHtml(group) {
 function toolboxCellHtml(card, showFile) {
   const jump = { file: card.wb_name, folder: batchState.folder, sheet: card.sheet_name, cell: (card.cell_addr || '').split(':')[0], blocked: openBlocked(card) };
   const where = `${esc(card.sheet_name)}!${esc(card.cell_addr)}`;
-  const image = toolboxImages.get(card.id);
+  const image = card.preview_url || toolboxImages.get(card.id);
   const shot = image ? `<img src="${esc(image)}" alt="${where} 的 PDF 截图" loading="lazy">`
     : `<span class="tb-shot-empty">${image === '' ? '没有截图' : '截图加载中…'}</span>`;
   const fix = card.cell_fix ? `<p class="tb-note" title="${esc(card.message || '')}">用过「${esc(card.cell_fix.label)}」还没过</p>` : '';
@@ -115,7 +115,9 @@ function toolboxRefreshPressed() {
 }
 
 async function toolboxLoadImages() {
-  const ids = [...$('learnDetail').querySelectorAll('[data-tb-card]')].map(el => el.dataset.tbCard).filter(id => !toolboxImages.has(id));
+  const ids = [...$('learnDetail').querySelectorAll('[data-tb-card]')]
+    .filter(el => !el.querySelector('[data-tb-shot] img'))
+    .map(el => el.dataset.tbCard).filter(id => !toolboxImages.has(id));
   if (!ids.length) return;
   for (const id of ids) toolboxImages.set(id, undefined);
   try {

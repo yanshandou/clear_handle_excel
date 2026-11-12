@@ -31,7 +31,7 @@ from core.excel_watchdog import ExcelWatchdog, idle_timeout
 from core.hidden_text import (
     collect_text_pieces, is_excel_error, locate_text, normalize_text,
 )
-from core.pdf_detector import crossing_horizontal_line, fitz, render_crop_base64
+from core.pdf_detector import crossing_horizontal_line, fitz, render_crop_base64, render_crop_png
 from core.reporter import finish_execution_batch, init_execution_batch, update_file_progress
 
 COLORS = ("blue", "green", "yellow")
@@ -166,11 +166,15 @@ def _mark_type(card: dict) -> str:
     return types[0] if len(types) == 1 else MULTI_TYPE
 
 
-def _mark_color(style: dict | None, card: dict) -> dict[str, int]:
-    """这一格的标记颜色（Excel 的 BGR 整数）。旧版记下的样式没有 types，也按默认的分色"""
+def _mark_palette(style: dict | None, card: dict) -> dict[str, str]:
     kind = _mark_type(card)
     types = (style or {}).get("types") or DEFAULT_TYPE_HIGHLIGHT
-    color = types.get(kind) or DEFAULT_TYPE_HIGHLIGHT[kind]
+    return types.get(kind) or DEFAULT_TYPE_HIGHLIGHT[kind]
+
+
+def _mark_color(style: dict | None, card: dict) -> dict[str, int]:
+    """这一格的标记颜色（Excel 的 BGR 整数）。旧版记下的样式没有 types，也按默认的分色"""
+    color = _mark_palette(style, card)
     return {"fill": _excel_color(color["fill"]), "font": _excel_color(color["font"])}
 
 
@@ -698,6 +702,11 @@ def snapshot(detail_paths: set[str] | None = None) -> dict:
                                         "wrap": card.get("cell_addr") in row.get("wrap", [])}
             result["severity"] = severity
             result["category"] = list(_card_category(result, items))
+            preview = next((it for it in items if _has_preview_location(it)), None)
+            if preview is not None:
+                style = _data().get("highlight_files", {}).get(card["wb_path"])
+                fill = _mark_palette(style, card)["fill"]
+                result["preview_url"] = f"/api/batch/card_preview/{card['id']}/{preview['id']}?v={fill[1:]}"
             result["cell_text"] = str(card.get("text") or "")[:60]  # 分类清单用，文件框收起时 text 不发
             result["adoptable"] = _adoptable(card)
             fix = (_data().get("cell_fixes") or {}).get(card["id"])
@@ -802,6 +811,49 @@ def page_view(card_id: Any) -> dict[str, Any]:
     return {"title": title, "page": page_index + 1, "pages": pages, "width": width, "height": height,
             "image": "data:image/png;base64," + base64.b64encode(png).decode("ascii"), "boxes": boxes,
             "low_risk_hidden": bool(hide)}
+
+
+_CARD_PREVIEW_LOCK = threading.Lock()  # 浏览器会并发请求多张缩略图，逐张渲染
+
+
+def _has_preview_location(item: dict) -> bool:
+    bbox = item.get("bbox")
+    return (item.get("status") not in wf.RESOLVED_STATUSES
+            and bool(item.get("pdf_path")) and item.get("page_index") is not None
+            and isinstance(bbox, (list, tuple)) and len(bbox) == 4)
+
+
+def card_preview(card_id: str, item_id: str) -> bytes | None:
+    """按需给检测区域加底色。原 PDF 已清理时，仍可显示存下来的截图。"""
+    with wf.STATE_LOCK:
+        card = _data()["cards"].get(card_id)
+        if card is None or card.get("dismissed"):
+            return None
+        item = wf.STATE["items"].get(item_id)
+        location = None
+        if item and _cell(item) == _cell(card) and _has_preview_location(item):
+            location = item["pdf_path"], int(item["page_index"]), tuple(item["bbox"])
+        style = _data().get("highlight_files", {}).get(card["wb_path"])
+        fill = _mark_palette(style, card)["fill"]
+        shots = dict(card.get("fix_images") or {})
+
+    if location is not None:
+        pdf_path, page_index, bbox = location
+        rgb = tuple(int(fill[i:i + 2], 16) / 255 for i in (1, 3, 5))
+        try:
+            with _CARD_PREVIEW_LOCK, fitz.open(pdf_path) as doc:
+                if 0 <= page_index < len(doc):
+                    return render_crop_png(doc[page_index], bbox, fill=rgb)
+        except (OSError, RuntimeError, ValueError):
+            pass  # 复检可能已替换 PDF；回退到保存的截图
+    for which in ("before", "after"):
+        path = fix_images.image_path(shots.get(which, ""))
+        if path is not None:
+            try:
+                return path.read_bytes()
+            except OSError:
+                continue
+    return None
 
 
 CARD_IMAGES_LIMIT = 200

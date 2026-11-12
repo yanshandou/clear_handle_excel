@@ -41,7 +41,7 @@
 </head>
 <body>
   <header class="app-header">
-    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">一页对比</h1><span class="subtitle">当前任务要上传的文件都在这一页对比 · 每份可以单独上传</span></div></a>
+    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">一页对比</h1><span class="subtitle">自动对比当前任务的文件 · 往下滚动查看 · 每份可以单独上传</span></div></a>
     <nav class="header-nav" aria-label="功能导航"><a href="/" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#home"></use></svg>主页</a><a href="/distribute" class="nav-link"><svg class="ui-icon" aria-hidden="true"><use href="/static/icons/garden-ui.svg#upload"></use></svg>上传</a></nav>
   </header>
   <main class="container clean-container">
@@ -49,7 +49,7 @@
       <h2 id="xaTitle">当前任务</h2>
       <p id="xaTask" class="toolbar-hint">正在读取当前任务…</p>
       <div class="xa-bar">
-        <button id="xaRunAll" class="btn btn-primary" type="button" disabled>▶ 全部对比</button>
+        <button id="xaRunAll" class="btn btn-primary" type="button" hidden>▶ 继续对比</button>
         <button id="xaPause" class="btn btn-outline" type="button" hidden>⏸ 暂停</button>
         <label><input id="xaShowAll" type="checkbox"> 也列出当前版本已经上传过的</label>
         <button id="xaReload" class="btn btn-outline btn-sm" type="button">刷新文件列表</button>
@@ -68,8 +68,8 @@
             <h3>🔍 怎么比</h3>
             <ul>
               <li>左边是共享里远程现在那份（旧），右边是你处理好的这份（新）。和单份的「Excel 对比」页是同一套：先逐格比（很快）；有不同的表再用后台 Excel 真导一次 PDF，两边每一页逐像素比，印出来不一样的地方左边盖红、右边盖绿（图片换了也看得出来）。</li><li>完全一样的文件不导 PDF；导过的按文件内容记下，文件没变再看不重导。</li>
-              <li>「▶ 全部对比」从上往下一份一份比，可以暂停。完全一样的自动收起；有不同的展开给你看。</li>
-              <li>点某一份的「🔍 对比」只比这一份；「收起」会把那份的结果从页面上拿掉，几百份也不会卡。</li>
+              <li>进页后自动逐份对比，有差异的 PDF 交给后台排队导出，下一份会继续对比。结果按列表顺序展开，往下滚动就能看；未发现差异的默认收起。</li>
+              <li>可以暂停提交剩余的文件，已经提交的 PDF 会继续导出。收起的结果可以再展开，无需重新对比。</li>
             </ul>
           </section>
           <section class="how-notes-group">

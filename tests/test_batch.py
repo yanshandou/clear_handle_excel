@@ -1565,6 +1565,37 @@ class BatchTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertEqual(first.split("?")[0], second.split("?")[0])
 
+    def test_card_preview_uses_workbook_colors_and_keeps_a_saved_fallback(self):
+        pdf = self.root / "S1.pdf"
+        with batch.fitz.open() as doc:
+            doc.new_page(width=200, height=200).insert_text((62, 92), "ABC")
+            doc.save(pdf)
+        card, item = self.add_card(color="yellow")
+        kind = batch.autofix.ERROR_TYPE_BOX_OVERFLOW
+        card["error_types"] = [kind]
+        item.update(status="pending", error_type=kind, pdf_path=str(pdf), bbox=[60, 80, 120, 100])
+        batch._data()["show_low_risk"] = True
+        batch._data()["highlight_files"] = {
+            self.path: batch.highlight_style({"types": {kind: {"fill": "#1649CC", "font": "#FFFFFF"}}}),
+        }
+
+        preview_url = batch.snapshot()["cards"][0]["preview_url"]
+        self.assertEqual(preview_url, f"/api/batch/card_preview/{card['id']}/{item['id']}?v=1649CC")
+        png = batch.card_preview(card["id"], item["id"])
+        picture = batch.fitz.Pixmap(png)
+        red, green, blue = picture.pixel(250, 127)
+        self.assertLess(red, green)
+        self.assertLess(green, blue)
+        self.assertEqual(picture.pixel(145, 127), (255, 0, 0))
+        self.assertEqual(picture.pixel(50, 127), (255, 255, 255))
+
+        with batch.fitz.open(pdf) as doc:
+            original = batch.render_crop_base64(doc[0], tuple(item["bbox"]))
+        batch._save_shot(card, "before", original)
+        pdf.unlink()
+        fallback = batch.fitz.Pixmap(batch.card_preview(card["id"], item["id"]))
+        self.assertEqual(fallback.pixel(250, 127), (255, 255, 255))
+
     def test_folder_switch_keeps_pictures_still_used_by_cards(self):
         card, _ = self.add_card()
         batch._save_shot(card, "before", "data:image/png;base64,YQ==")

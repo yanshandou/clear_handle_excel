@@ -150,26 +150,45 @@ def render_crop_base64(
     zoom: float = 2.5,
 ) -> str:
     """将 PDF 指定坐标区域放大截图（默认 2.5 倍高清放大镜）并转为 Base64 PNG，不污染原页面"""
+    png = render_crop_png(page, bbox, highlight=highlight, zoom=zoom)
+    return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+
+
+def render_crop_png(
+    page: fitz.Page,
+    bbox: tuple[float, float, float, float],
+    *,
+    highlight: bool = True,
+    zoom: float = 2.5,
+    fill: tuple[float, float, float] | None = None,
+) -> bytes:
     x0, y0, x1, y1 = bbox
     clip_rect = fitz.Rect(x0 - 85, y0 - 36, x1 + 85, y1 + 28) & page.rect
-    annot = None
+    annotations = []
     try:
         if highlight:
-            annot = page.add_rect_annot(fitz.Rect(x0 - 2, y0 - 2, x1 + 2, y1 + 2))
-            annot.set_colors(stroke=(1, 0, 0))
-            annot.set_border(width=1)
-            annot.update()
+            rect = fitz.Rect(x0 - 2, y0 - 2, x1 + 2, y1 + 2)
+            if fill is not None:
+                tint = page.add_rect_annot(rect)
+                annotations.append(tint)
+                tint.set_colors(stroke=fill, fill=fill)
+                tint.set_border(width=0)
+                tint.update(opacity=0.28)
+            outline = page.add_rect_annot(rect)
+            annotations.append(outline)
+            outline.set_colors(stroke=(1, 0, 0))
+            outline.set_border(width=1)
+            outline.update()
 
         pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip_rect, annots=True)
     finally:
-        if annot is not None:
+        for annot in reversed(annotations):
             try:
                 page.delete_annot(annot)
             except Exception:
                 pass
 
-    png_bytes = pix.tobytes("png")
-    return "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
+    return pix.tobytes("png")
 
 
 def render_page_overview(page: fitz.Page, zoom: float = 1.6) -> tuple[str, float, float]:

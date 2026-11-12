@@ -1,5 +1,5 @@
 // 一页对比（/excel-diff/all，用户 2026-11-12）里，每份文件的对比就是嵌进去的这个页面（带 embed=1）。
-// 这里只做三件事：藏掉页头和输入框、把高度告诉外面、对比完 / 出错 / 上传成功时告诉外面。不带 embed=1 时什么都不做。
+// 藏掉页头和输入框，把内容高度、对比和 PDF 进度、上传结果告诉外面。
 (function () {
   const params = new URLSearchParams(location.search);
   if (params.get('embed') !== '1' || window.parent === window) return;
@@ -11,6 +11,7 @@
     const data = event.detail || {};
     tell('done', { identical: !!data.identical, summary: data.summary || {} });
   });
+  window.addEventListener('xd:preview', event => tell('preview', { state: event.detail }));
   const watch = (id, test, event) => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -21,10 +22,12 @@
   watch('xdUploadStatus', text => text.startsWith('✓'), 'uploaded');
 
   let last = 0;
+  const main = document.querySelector('main');
   const size = () => {
-    const height = Math.ceil(document.documentElement.scrollHeight);
-    if (Math.abs(height - last) > 2) { last = height; tell('height', { height }); }
+    // scrollHeight 至少有 iframe 视口那么高，收起内容时它不会缩小。量实际内容高度。
+    const height = Math.ceil(main.getBoundingClientRect().bottom + window.scrollY);
+    if (height > 0 && height !== last) { last = height; tell('height', { height }); }
   };
-  new ResizeObserver(size).observe(document.body);
+  new ResizeObserver(size).observe(main);
   window.addEventListener('load', size);
 })();

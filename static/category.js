@@ -175,7 +175,7 @@ function renderCategories() {
   const cats = groupList();
   const current = groupCurrent(cats);
   renderLowRisk();
-  const key = JSON.stringify([categoryMode, batchState.opened_files, cats.map(c => [c.key, c.cards.map(x => [x.id, x.color, x.severity, x.finalized, x.cell_fix?.label, x.default_tool, (x.tools || []).join()])]), current?.key,
+  const key = JSON.stringify([categoryMode, batchState.opened_files, cats.map(c => [c.key, c.cards.map(x => [x.id, x.color, x.severity, x.finalized, x.cell_fix?.label, x.default_tool, (x.tools || []).join(), x.preview_url])]), current?.key,
     categoryBusyReason(), openChoosing, batchState.job?.kind, batchState.job?.closing,
     batchState.folder, excelLinkHtml.revision, batchState.open_blocked]);
   renderOpenNext();
@@ -313,6 +313,10 @@ for (const button of document.querySelectorAll('[data-learn-mode]')) button.addE
   try { localStorage.setItem(CATEGORY_MODE_KEY, categoryMode); } catch (_) {}
   renderCategories();
 });
+$('learnDetail').addEventListener('error', event => {
+  const shot = event.target.closest('[data-tb-shot]');
+  if (shot) shot.innerHTML = '<span class="tb-shot-empty">没有截图</span>';
+}, true);
 $('learnDetail').addEventListener('click', event => {
   if (toolboxHandleClick(event)) return;
   const id = event.target.closest('button')?.id;

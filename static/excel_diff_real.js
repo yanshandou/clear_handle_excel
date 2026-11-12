@@ -1,10 +1,11 @@
 // 对比的「真实效果」（用户 2026-11-12）：Excel 真导出来的 PDF 页面，两边逐像素比，不一样的地方左边盖红、右边盖绿。
 // 对比页（static/excel_diff.js）比完会发 xd:done；这里拿有不同的表，请后台导 PDF（core/excel_diff_pdf.py），
-// 导好后取页面图，在浏览器里逐像素比、画蒙版。完全一样的页默认收起来。
+// 默认标出明显差异，也可显示原始的细微像素差异。
 (function () {
   const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
-  const BLOCK = 6;        // 每 6×6 像素算一格，有一个像素不一样就整格盖色
-  const TOLERANCE = 48;   // 三个颜色通道差的和超过它才算不一样（避开抗锯齿的细微差别）
+  const BLOCK = 6;
+  const PIXEL_TOLERANCE = 48;
+  const VISIBLE_TOLERANCE = 72;
   let generation = 0;     // 重新对比时，上一轮还没做完的就不要了
 
   async function post(path, body) {
@@ -24,7 +25,63 @@
     });
   }
 
-  // 两张页面图比一比：返回两张画好蒙版的画布和不一样的格数。一边没有这一页时整页盖色
+  const colorDistance = (a, i, b, j) => Math.abs(a[i] - b[j]) + Math.abs(a[i + 1] - b[j + 1]) + Math.abs(a[i + 2] - b[j + 2]);
+
+  function detectDifferences(a, b, width, height) {
+    const cols = Math.ceil(width / BLOCK);
+    const blockCount = cols * Math.ceil(height / BLOCK);
+    const pixelHits = new Uint8Array(blockCount);
+    const visibleHits = new Uint8Array(blockCount);
+    const unmatched = new Uint8Array(width * height);
+    let pixelCount = 0, visibleCount = 0, hasUnmatched = false;
+    for (let y = 0; y < height; y++) {
+      const blockRow = Math.floor(y / BLOCK) * cols;
+      const top = Math.max(y - 1, 0), bottom = Math.min(y + 1, height - 1);
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4;
+        const distance = colorDistance(a, i, b, i);
+        if (distance <= PIXEL_TOLERANCE) continue;
+        const block = blockRow + Math.floor(x / BLOCK);
+        if (!pixelHits[block]) { pixelHits[block] = 1; pixelCount++; }
+        if (distance <= VISIBLE_TOLERANCE) continue;
+
+        // 双向在周围 1 像素内找相近颜色，容忍轻微偏移和抗锯齿差异。
+        let oldMatches = false, newMatches = false;
+        const left = Math.max(x - 1, 0), right = Math.min(x + 1, width - 1);
+        for (let ny = top; ny <= bottom && !(oldMatches && newMatches); ny++) {
+          const start = (ny * width + left) * 4, end = (ny * width + right) * 4;
+          for (let j = start; j <= end; j += 4) {
+            if (j === i) continue;
+            oldMatches ||= colorDistance(a, i, b, j) <= VISIBLE_TOLERANCE;
+            newMatches ||= colorDistance(b, i, a, j) <= VISIBLE_TOLERANCE;
+            if (oldMatches && newMatches) break;
+          }
+        }
+        if (!oldMatches || !newMatches) {
+          unmatched[i / 4] = 1;
+          hasUnmatched = true;
+        }
+      }
+    }
+    if (!hasUnmatched) return { cols, pixelHits, pixelCount, visibleHits, visibleCount };
+    for (let y = 0; y < height; y++) {
+      const blockRow = Math.floor(y / BLOCK) * cols;
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x;
+        if (!unmatched[i]) continue;
+        // 孤立噪点只在细微差异模式下显示。相邻证据可以跨过蒙版网格边界。
+        const left = x > 0, right = x + 1 < width;
+        const hasNeighbor = (left && unmatched[i - 1]) || (right && unmatched[i + 1])
+          || (y > 0 && (unmatched[i - width] || (left && unmatched[i - width - 1]) || (right && unmatched[i - width + 1])))
+          || (y + 1 < height && (unmatched[i + width] || (left && unmatched[i + width - 1]) || (right && unmatched[i + width + 1])));
+        if (!hasNeighbor) continue;
+        const block = blockRow + Math.floor(x / BLOCK);
+        if (!visibleHits[block]) { visibleHits[block] = 1; visibleCount++; }
+      }
+    }
+    return { cols, pixelHits, pixelCount, visibleHits, visibleCount };
+  }
+
   function compare(oldImg, newImg) {
     const width = Math.max(oldImg?.width || 0, newImg?.width || 0), height = Math.max(oldImg?.height || 0, newImg?.height || 0);
     const pixels = img => {
@@ -35,22 +92,8 @@
       if (img) g.drawImage(img, 0, 0);
       return g.getImageData(0, 0, width, height).data;
     };
-    const a = pixels(oldImg), b = pixels(newImg);
-    const cols = Math.ceil(width / BLOCK), rows = Math.ceil(height / BLOCK);
-    const hit = new Uint8Array(cols * rows);
-    let count = 0;
-    for (let y = 0; y < height; y++) {
-      const by = (y / BLOCK) | 0;
-      for (let x = 0; x < width; x++) {
-        const i = (y * width + x) * 4;
-        if (Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]) > TOLERANCE) {
-          const k = by * cols + ((x / BLOCK) | 0);
-          if (!hit[k]) { hit[k] = 1; count++; }
-          x = (((x / BLOCK) | 0) + 1) * BLOCK - 1;  // 这一格已经算不一样了，跳到下一格
-        }
-      }
-    }
-    const side = (img, color) => {
+    const diff = oldImg && newImg ? detectDifferences(pixels(oldImg), pixels(newImg), width, height) : null;
+    const side = img => {
       const c = document.createElement('canvas');
       c.width = width || 1; c.height = height || 1;
       const g = c.getContext('2d');
@@ -59,19 +102,26 @@
       if (img) g.drawImage(img, 0, 0);
       const mask = document.createElement('canvas');
       mask.width = c.width; mask.height = c.height;
-      const m = mask.getContext('2d');
-      m.fillStyle = color;
-      if (!img) m.fillRect(0, 0, c.width, c.height);
-      else for (let k = 0; k < hit.length; k++) {
-        if (!hit[k]) continue;
-        const x = (k % cols) * BLOCK, y = ((k / cols) | 0) * BLOCK;
-        m.fillRect(x - 2 * BLOCK, y - 2 * BLOCK, BLOCK * 5, BLOCK * 5);  // 往外扩两格，字的笔画连成一片，细小的改动也看得见
-      }
       mask.className = 'xr-mask';
       c.className = 'xr-base';
       return { base: c, mask };
     };
-    return { old: side(oldImg, '#e5303f'), new: side(newImg, '#1fae4b'), count: oldImg && newImg ? count : -1 };
+    const old = side(oldImg), current = side(newImg);
+    const draw = strict => {
+      const hits = diff && (strict ? diff.pixelHits : diff.visibleHits);
+      for (const [mask, color] of [[old.mask, '#e5303f'], [current.mask, '#1fae4b']]) {
+        const g = mask.getContext('2d');
+        g.clearRect(0, 0, width, height);
+        g.fillStyle = color;
+        if (!diff) { g.fillRect(0, 0, width, height); continue; }
+        for (let k = 0; k < hits.length; k++) {
+          if (!hits[k]) continue;
+          const x = (k % diff.cols) * BLOCK, y = Math.floor(k / diff.cols) * BLOCK;
+          g.fillRect(x - 2, y - 2, BLOCK + 4, BLOCK + 4);
+        }
+      }
+    };
+    return { old, new: current, draw, count: diff ? diff.visibleCount : -1, subtle: !!diff?.pixelCount };
   }
 
   function block(details) {
@@ -97,17 +147,24 @@
     if (o && n && oldPages !== newPages && oldPages && newPages) notes.push(`页数不一样：远程 ${oldPages} 页，你这份 ${newPages} 页`);
     box.innerHTML = `<div class="xr-head"><strong>📄 真实效果（Excel 导出的 PDF）</strong><span class="xr-status">正在逐页比…</span>`
       + `<label><input type="checkbox" class="xr-toggle" checked> 显示红绿蒙版</label>`
-      + `<button type="button" class="btn btn-outline btn-sm xr-all" hidden>显示完全一样的页</button></div>`
+      + `<label title="查看轻微偏移、抗锯齿和噪点等像素变化"><input type="checkbox" class="xr-strict"> 显示细微像素差异</label>`
+      + `<button type="button" class="btn btn-outline btn-sm xr-all" hidden>显示所有页</button></div>`
       + (notes.length ? `<p class="xr-warn">! ${esc(notes.join('；'))}</p>` : '')
       + '<div class="xr-pages"></div>';
     const pages = box.querySelector('.xr-pages');
+    const strict = box.querySelector('.xr-strict');
+    const masks = [];
     box.querySelector('.xr-toggle').addEventListener('change', event => box.classList.toggle('is-nomask', !event.target.checked));
+    strict.addEventListener('change', () => {
+      box.classList.toggle('is-strict', strict.checked);
+      for (const draw of masks) draw(strict.checked);
+    });
     box.querySelector('.xr-all').addEventListener('click', event => {
       const showing = box.classList.toggle('is-allpages');
-      event.target.textContent = showing ? '只看有不同的页' : '显示完全一样的页';
+      event.target.textContent = showing ? '收起无差异的页' : '显示所有页';
     });
     (async () => {
-      let differ = 0, same = 0, wholeShift = 0;
+      let differ = 0, same = 0, subtle = 0, unavailable = 0, wholeShift = 0;
       for (let p = 0; p < total; p++) {
         if (gen !== generation) return;
         const [oldImg, newImg] = await Promise.all([
@@ -115,10 +172,15 @@
           p < newPages ? loadImage(pageUrl(newKey, sheet, p)) : null,
         ]).catch(() => [null, null]);
         if (gen !== generation) return;
-        if (!oldImg && !newImg) continue;
+        if ((p < oldPages && !oldImg) || (p < newPages && !newImg)) { unavailable++; continue; }
         const result = compare(oldImg, newImg);
+        if (result.count || result.subtle) {
+          result.draw(strict.checked);
+          masks.push(result.draw);
+        }
         const row = document.createElement('div');
         row.className = 'xr-page' + (result.count === 0 ? ' is-same' : '');
+        if (result.count === 0 && result.subtle) row.classList.add('is-subtle');
         const cell = (side, label, cls) => {
           const wrap = document.createElement('div');
           wrap.className = 'xr-side ' + cls;
@@ -131,17 +193,24 @@
         };
         const title = document.createElement('div');
         title.className = 'xr-page-title';
-        title.textContent = `第 ${p + 1} 页` + (result.count === 0 ? '：完全一样' : result.count < 0 ? (oldImg ? '：你这份没有这一页' : '：远程没有这一页') : '');
+        title.textContent = `第 ${p + 1} 页` + (result.count === 0 ? (result.subtle ? ' · 仅有细微像素差异' : ' · 未发现差异')
+          : result.count < 0 ? (oldImg ? ' · 你这份没有这一页' : ' · 远程没有这一页') : '');
         row.append(title, cell(result.old, oldImg ? '− 远程（旧）' : '− 远程没有这一页', 'is-old'), cell(result.new, newImg ? '+ 你这份（新）' : '+ 你这份没有这一页', 'is-new'));
         pages.appendChild(row);
-        if (result.count === 0) same++; else differ++;
+        if (result.count !== 0) differ++;
+        else if (result.subtle) subtle++;
+        else same++;
         if (result.count > 0 && result.count > 0.4 * Math.ceil(result.old.base.width / BLOCK) * Math.ceil(result.old.base.height / BLOCK)) wholeShift++;
       }
       const status = box.querySelector('.xr-status');
-      status.textContent = differ ? `${differ} 页有不同${same ? `，${same} 页完全一样（收起来了）` : ''}。` : '每一页印出来都一样（不同之处印不出来，比如只改了不打印的地方）。';
-      if (wholeShift) status.textContent += ' 有的页大片都是红绿：多半是上面的行高 / 列宽变了，把下面挤动了，具体改了什么看下面的差异清单。';
-      box.querySelector('.xr-all').hidden = !same;
-      console.info('📄 真实效果对比', { 表: sheet, 有不同的页: differ, 一样的页: same });
+      status.textContent = [
+        differ ? `${differ} 页有明显差异` : total > unavailable ? '未发现明显的打印差异' : '',
+        subtle ? `${subtle} 页仅有细微像素差异` : '',
+        unavailable ? `${unavailable} 页预览加载失败` : '',
+      ].filter(Boolean).join('，') + '。';
+      if (wholeShift) status.textContent += ' 大片标色可能来自版式移动，具体改动可查下面的差异清单。';
+      box.querySelector('.xr-all').hidden = !(same || subtle);
+      console.info('📄 真实效果对比', { 表: sheet, 有明显差异的页: differ, 仅有细微差异的页: subtle, 未发现差异的页: same, 预览加载失败的页: unavailable });
     })();
   }
 
@@ -149,6 +218,9 @@
     const data = event.detail || {};
     const gen = ++generation;
     if (data.identical || !Array.isArray(data.sheets)) return;
+    const notify = state => {
+      if (gen === generation) window.dispatchEvent(new CustomEvent('xd:preview', { detail: state }));
+    };
     const want = { mine: [], theirs: [] };
     const boxes = new Map();
     for (const sheet of data.sheets) {
@@ -162,16 +234,19 @@
         boxes.set(sheet.name, box);
       }
     }
-    if (!boxes.size) return;
+    if (!boxes.size) { notify('skipped'); return; }
     let keys;
     try {
       const started = await post('/api/excel_diff/pdf', { mine: data.mine, theirs: data.theirs, sheets: want });
       keys = { mine: started.mine, theirs: started.theirs };
+      notify('queued');
     } catch (error) {
       for (const box of boxes.values()) box.innerHTML = `<p class="xr-warn">📄 真实效果做不了：${esc(error.message)}</p>`;
+      notify('failed');
       return;
     }
     const painted = new Set();
+    let hasPages = false, exportFailed = false, pollFailures = 0;
     for (;;) {
       if (gen !== generation) return;
       for (const [name, box] of boxes) {
@@ -182,17 +257,24 @@
           if (!want[side].includes(name)) continue;
           const k = keys[side];
           if (k.sheets[name]) info[side] = k.sheets[name];
-          else if (k.state === 'error') info[side] = { pages: 0, error: '导出 PDF 失败：' + (k.error || '') };
-          else if (k.state === 'done') info[side] = { pages: 0, error: '这张表的 PDF 缺失，请重新对比' };
-          else ready = false;
+          else if (k.state === 'error' || k.state === 'done') {
+            exportFailed = true;
+            info[side] = { pages: 0, error: k.state === 'error' ? '导出 PDF 失败：' + (k.error || '') : '这张表的 PDF 缺失，请重新对比' };
+          } else ready = false;
         }
-        if (ready) { painted.add(name); paint(box, name, info, keys.theirs?.key, keys.mine?.key, gen); }
-        else {
+        if (ready) {
+          painted.add(name);
+          hasPages ||= !!(info.theirs?.pages || info.mine?.pages);
+          paint(box, name, info, keys.theirs?.key, keys.mine?.key, gen);
+        } else {
           const k = [keys.theirs, keys.mine].find(item => item && item.state !== 'done');
           box.innerHTML = `<p class="xr-status">📄 真实效果：${k && k.state === 'running' ? `后台 Excel 正在导出 PDF（${esc(k.current || '准备中')}）…` : `排队等后台 Excel 导出 PDF${k && k.queue ? `（前面还有 ${k.queue - 1} 份）` : ''}…`}</p>`;
         }
       }
-      if (painted.size === boxes.size) return;
+      if (painted.size === boxes.size) {
+        notify(exportFailed ? 'failed' : hasPages ? 'done' : 'skipped');
+        return;
+      }
       await wait(1500);
       try {
         const query = {};
@@ -203,8 +285,16 @@
         }
         const { status } = await post('/api/excel_diff/pdf_status', { keys: query });
         for (const side of ['mine', 'theirs']) if (keys[side]) keys[side] = status[keys[side].key] || keys[side];
+        pollFailures = 0;
       } catch (error) {
         console.warn('📄 真实效果：问进度失败', error.message);
+        if (++pollFailures >= 3) {
+          for (const [name, box] of boxes) {
+            if (!painted.has(name)) box.innerHTML = `<p class="xr-warn">📄 取不到 PDF 导出进度：${esc(error.message)}</p>`;
+          }
+          notify('failed');
+          return;
+        }
       }
     }
   });

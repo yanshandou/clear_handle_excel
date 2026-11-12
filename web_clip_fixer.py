@@ -374,6 +374,13 @@ class WebHandler(upload_manager.Handler):
                              status=304 if unchanged else 200, etag=etag)
         elif parsed.path == "/api/batch/find_marks":
             self._send_json(mark_finder.status())
+        elif parsed.path.startswith("/api/batch/card_preview/"):
+            parts = parsed.path.removeprefix("/api/batch/card_preview/").split("/")
+            image = batch.card_preview(*parts) if len(parts) == 2 else None
+            if image is None:
+                self.send_error(404)
+                return
+            self._send_bytes(image, "image/png")
         elif parsed.path.startswith("/api/batch/image/"):
             name = unquote(parsed.path.removeprefix("/api/batch/image/"))
             path = fix_images.image_path(name)

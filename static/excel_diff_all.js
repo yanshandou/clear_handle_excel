@@ -1,12 +1,12 @@
 // 一页对比（用户 2026-11-12）：当前任务要上传的文件都列在这一页，每份嵌一个单份对比页（/excel-diff?embed=1），
-// 结果和「⬆ 没问题，上传这一份」都沿用单份页；这里只管列文件、排队一份一份比、收起、并排看已有的同名 PDF。
+// 自动逐份对比并提交预览 PDF，不等上一份导完；有差异的结果按列表顺序展开。
 (function () {
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
   let task = null, files = [];
-  const cards = new Map();   // rel → { el, state, frame, wait }
-  let queue = null;          // 「全部对比」排着的 rel；null = 没在跑
-  let paused = false;
+  const cards = new Map();
+  let queue = null;          // 尚未开始逐格检查的文件；PDF 由后台 Excel 另行排队
+  let paused = false, loading = false;
 
   function joinPath(root, rel) {
     const sep = root.includes('\\') || /^[A-Za-z]:/.test(root) ? '\\' : '/';
@@ -27,7 +27,7 @@
   }
 
   function stateText(card) {
-    return { idle: '还没比', running: '正在比…', same: '✓ 未发现差异', diff: '有不同', err: '! 比不了', up: '✓ 已上传' }[card.state] || '';
+    return { idle: '等待对比', running: '正在对比…', same: '✓ 未发现差异', diff: '有不同', err: '! 比不了', up: '✓ 已上传' }[card.state] || '';
   }
   function setState(rel, state, note = '') {
     const card = cards.get(rel);
@@ -41,14 +41,19 @@
   function counts() {
     const all = [...cards.values()];
     const n = s => all.filter(c => c.state === s).length;
-    $('xaCount').textContent = `共 ${all.length} 份 · 比完 ${n('same') + n('diff') + n('err') + n('up')}（未发现差异 ${n('same')}、有不同 ${n('diff')}、比不了 ${n('err')}、已上传 ${n('up')}）`;
+    const pdf = s => all.filter(c => c.preview === s).length;
+    const checked = all.length - n('idle') - n('running');
+    const progress = [pdf('queued') ? `${pdf('queued')} 份正在准备` : '', pdf('done') ? `${pdf('done')} 份已导好` : '',
+      pdf('failed') ? `${pdf('failed')} 份导出有错误` : ''].filter(Boolean);
+    $('xaCount').textContent = `逐格对比 ${checked} / ${all.length} 份（未发现差异 ${n('same')}、有不同 ${n('diff')}、比不了 ${n('err')}、已上传 ${n('up')}）`
+      + (progress.length ? ' · 预览 PDF：' + progress.join('，') : '');
   }
 
   function cardHtml(file) {
     const status = file.review ? (file.review.ready ? '待重新处理' : '同步未完成') : file.uploaded_current === true ? '当前版本已上传'
       : file.uploaded_current === false ? '本地有新版本待上传' : file.uploaded ? '当前版本待核对' : '待上传';
     return `<div class="xa-head"><span class="xa-name">${window.excelLinkHtml ? window.excelLinkHtml(esc(file.rel), { folder: task.work, file: file.rel }) : esc(file.rel)}<small>${esc(status)}</small></span>`
-      + `<span class="xa-state">还没比</span>`
+      + `<span class="xa-state">等待对比</span>`
       + `<button type="button" class="btn btn-outline btn-sm" data-act="diff">🔍 对比</button>`
       + `<button type="button" class="btn btn-outline btn-sm" data-act="pdf">📕 并排看 PDF</button>`
       + `<a class="btn btn-outline btn-sm" target="_blank" rel="noopener" href="${esc(diffUrl(file.rel))}">↗ 单独打开</a></div>`
@@ -56,12 +61,11 @@
   }
 
   function render() {
-    for (const card of cards.values()) card.wait?.(null);
+    for (const card of cards.values()) card.wait?.();
     cards.clear();
     const shown = $('xaShowAll').checked ? files : files.filter(needsLook);
     if (!shown.length) {
       $('xaList').innerHTML = `<p>${files.length ? '这个任务的文件当前版本都已经上传过了，没有要对比的。勾上面的「也列出当前版本已经上传过的」可以全部列出来。' : '处理文件夹里还没有 Excel 文件。'}</p>`;
-      $('xaRunAll').disabled = true;
       counts();
       return;
     }
@@ -73,45 +77,49 @@
       el.dataset.rel = file.rel;
       el.innerHTML = cardHtml(file);
       list.appendChild(el);
-      cards.set(file.rel, { el, state: 'idle', frame: null, wait: null });
+      cards.set(file.rel, { el, state: 'idle', frame: null, open: false, wait: null, preview: null });
     }
     $('xaList').replaceChildren(list);
-    $('xaRunAll').disabled = false;
     counts();
   }
 
   function body(card) { return card.el.querySelector('.xa-body'); }
   function syncOpen(card) {
-    const open = !!card.frame || !card.el.querySelector('.xa-pdfs').hidden;
+    const open = card.open || !card.el.querySelector('.xa-pdfs').hidden;
     body(card).hidden = !open;
+    if (card.frame) card.frame.hidden = !card.open;
     card.el.classList.toggle('is-open', open);
-    card.el.querySelector('[data-act="diff"]').textContent = card.frame ? '收起对比' : '🔍 对比';
+    const button = card.el.querySelector('[data-act="diff"]');
+    button.textContent = card.state === 'err' ? '重新对比' : card.open ? '收起对比' : card.frame ? '展开对比' : '🔍 对比';
+    button.setAttribute('aria-expanded', String(card.open));
+    button.disabled = !card.frame && !!queue;
   }
 
-  // 比一份：嵌进单份对比页，等它说比完 / 出错。返回 Promise，结果是 done / error / null（被收起）
+  function syncControls() {
+    $('xaShowAll').disabled = $('xaReload').disabled = loading || !!queue;
+    $('xaRunAll').hidden = !!queue || ![...cards.values()].some(c => c.state === 'idle');
+    $('xaRunAll').disabled = loading || !!queue;
+    $('xaPause').hidden = !queue;
+    for (const card of cards.values()) syncOpen(card);
+  }
+
+  // 等这份逐格检查并提交 PDF 请求后，就开始下一份；不等 PDF 导出。
   function compare(rel) {
     const card = cards.get(rel);
-    if (!card) return Promise.resolve(null);
-    if (card.frame) return Promise.resolve('done');
+    const ready = new Promise(resolve => { card.wait = () => { card.wait = null; resolve(); }; });
     const frame = document.createElement('iframe');
     frame.className = 'xa-diff';
     frame.title = '对比：' + rel;
     frame.src = diffUrl(rel) + '&embed=1';
-    body(card).appendChild(frame);
+    card.frame?.remove();
     card.frame = frame;
-    syncOpen(card);
+    card.open = true;
+    card.preview = null;
     setState(rel, 'running');
-    console.info('🔍 一页对比：开始', { 文件: rel });
-    return new Promise(resolve => { card.wait = result => { card.wait = null; resolve(result); }; });
-  }
-  function collapse(rel) {
-    const card = cards.get(rel);
-    if (!card || !card.frame) return;
-    card.frame.remove();
-    card.frame = null;
-    if (card.state === 'running') setState(rel, 'idle');
-    card.wait?.(null);
     syncOpen(card);
+    body(card).appendChild(frame);
+    console.info('🔍 一页对比：开始', { 文件: rel });
+    return ready;
   }
 
   window.addEventListener('message', event => {
@@ -119,18 +127,27 @@
     const card = [...cards.values()].find(c => c.frame && c.frame.contentWindow === event.source);
     if (!card) return;
     const rel = card.el.dataset.rel, msg = event.data;
-    if (msg.event === 'height') card.frame.style.height = `${Math.min(Math.max(msg.height, 120), 20000)}px`;
+    if (msg.event === 'height' && Number.isFinite(msg.height)) card.frame.style.height = `${Math.max(msg.height, 120)}px`;
     else if (msg.event === 'done') {
       const s = msg.summary || {};
       const note = msg.identical ? '' : [s['有不同的表'] ? `${s['有不同的表']} 张表有改动` : '', s['只有远程有'] ? `${s['只有远程有']} 张只有远程有` : '',
         s['只有你这份有'] ? `${s['只有你这份有']} 张只有你这份有` : ''].filter(Boolean).join('，');
       if (card.state !== 'up') setState(rel, msg.identical ? 'same' : 'diff', note);
+      if (msg.identical) {
+        card.open = false;
+        card.wait?.();
+      }
+      syncOpen(card);
       console.info('🔍 一页对比：比完', { 文件: rel, 完全一样: msg.identical });
-      card.wait?.('done');
+    } else if (msg.event === 'preview') {
+      card.preview = msg.state;
+      counts();
+      card.wait?.();
     } else if (msg.event === 'error') {
       setState(rel, 'err', msg.text || '');
+      syncOpen(card);
       console.warn('🔍 一页对比：比不了', { 文件: rel, 原因: msg.text });
-      card.wait?.('error');
+      card.wait?.();
     } else if (msg.event === 'uploaded') {
       setState(rel, 'up');
       console.info('🔍 一页对比：已上传', { 文件: rel });
@@ -138,25 +155,21 @@
   });
 
   async function runAll() {
-    if (queue) return;
+    if (queue || loading) return;
     paused = false;
     queue = [...cards.entries()].filter(([, c]) => c.state === 'idle').map(([rel]) => rel);
-    $('xaRunAll').disabled = true;
-    $('xaPause').hidden = false;
+    if (!queue.length) { queue = null; syncControls(); return; }
+    $('xaPause').disabled = false;
     $('xaPause').textContent = '⏸ 暂停';
+    syncControls();
     console.info('🔍 一页对比：全部对比', { 份数: queue.length });
     while (queue.length && !paused) {
       const rel = queue.shift();
       if (!cards.has(rel) || cards.get(rel).state !== 'idle') continue;
-      const result = await compare(rel);
-      if (result === 'done' && cards.get(rel)?.state === 'same') collapse(rel);  // 完全一样的收起来，状态留着
+      await compare(rel);
     }
-    const stopped = paused && queue.length;
     queue = null;
-    $('xaPause').hidden = true;
-    $('xaRunAll').disabled = !cards.size;
-    $('xaRunAll').textContent = stopped ? '▶ 接着比剩下的' : '▶ 全部对比';
-    if (!stopped) window.gameFx?.celebrate?.();
+    syncControls();
   }
 
   async function togglePdf(rel) {
@@ -189,27 +202,39 @@
     const rel = button.closest('.xa-card').dataset.rel;
     if (button.dataset.act === 'pdf') { togglePdf(rel); return; }
     const card = cards.get(rel);
-    if (card.frame) collapse(rel);
-    else {
-      if (card.state !== 'up') card.state = 'idle';
-      compare(rel);
-    }
+    if (!card.frame || card.state === 'err') { compare(rel); syncControls(); return; }
+    card.open = !card.open;
+    syncOpen(card);
   });
   $('xaRunAll').addEventListener('click', runAll);
-  $('xaPause').addEventListener('click', () => { paused = true; $('xaPause').textContent = '等这一份比完就停…'; });
-  $('xaShowAll').addEventListener('change', () => { if (!queue) render(); else $('xaShowAll').checked = !$('xaShowAll').checked; });
-  $('xaReload').addEventListener('click', () => { if (!queue) loadFiles(); });
+  $('xaPause').addEventListener('click', () => {
+    paused = true;
+    $('xaPause').disabled = true;
+    $('xaPause').textContent = '等这一份提交后暂停…';
+  });
+  $('xaShowAll').addEventListener('change', () => { render(); runAll(); });
+  $('xaReload').addEventListener('click', loadFiles);
 
   async function loadFiles() {
+    if (queue || loading) return;
+    loading = true;
+    syncControls();
     $('xaError').textContent = '';
+    cards.clear();
+    counts();
     $('xaList').innerHTML = '<p>正在读取文件…</p>';
     try {
       files = (await post('/api/distribute/task_files', { task_id: task.id })).files || [];
       render();
     } catch (error) {
+      files = [];
       $('xaError').textContent = error.message;
       $('xaList').innerHTML = '';
+    } finally {
+      loading = false;
+      syncControls();
     }
+    runAll();
   }
 
   async function start() {
@@ -225,7 +250,6 @@
     $('xaTitle').textContent = '当前任务：' + task.name;
     $('xaTask').textContent = `左 = 共享 ${task.shared}　右 = 处理文件夹 ${task.work}`;
     await loadFiles();
-    if (new URLSearchParams(location.search).get('run') === '1' && cards.size) runAll();
   }
   start();
 })();
