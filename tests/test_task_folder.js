@@ -6,15 +6,17 @@ const source = fs.readFileSync(require('node:path').join(__dirname, '../static/t
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const task = { id:'one', name:'任务一', work:'C:/task/work', reference:'C:/task/reference' };
 
-function page({work = '', reference = '', data = {ok:true, current:'one', tasks:[task]}, paths, deferred = false, fail = false} = {}) {
+function page({work = '', reference = '', data = {ok:true, current:'one', tasks:[task]}, paths, deferred = false, fail = false, bare = false} = {}) {
   const elements = new Map();
   function element(value = '') {
     return { value, readOnly:true, placeholder:'原提示', classList:{remove(){}}, parentElement:null,
       closest(){return null;}, events:[], dispatchEvent(event){this.events.push(event.type);},
       insertAdjacentElement(where, node){elements.set(node.id,node);} };
   }
-  elements.set('taskFolderInput', element(work));
-  elements.set('repairOldFolder', element(reference));
+  if (!bare) {
+    elements.set('taskFolderInput', element(work));
+    elements.set('repairOldFolder', element(reference));
+  }
   const requests = [];
   const window = {};
   const context = vm.createContext({ window, document:{getElementById:id => elements.get(id),
@@ -55,6 +57,22 @@ test('a saved batch displays editable source paths on separate lines', async () 
   const input = p.elements.get('taskFolderInput');
   assert.equal(input.value, paths.join('\n'));
   assert.equal(input.readOnly, false);
+});
+
+test('pages without task inputs can still turn a saved batch into its source paths', async () => {
+  const scope = `C:\\data\\批量路径\\${'a'.repeat(24)}`;
+  const paths = ['C:\\chosen\\one.xlsx', 'C:\\chosen\\two.xlsx'];
+  const p = page({bare:true, paths});
+  const input = { value: scope };
+  p.window.WorkbookPaths.show(input, scope);
+  await settle();
+  assert.equal(input.value, paths.join('\n'));
+
+  const edited = { value: scope };
+  p.window.WorkbookPaths.show(edited, scope);
+  edited.value = 'D:\\typed';
+  await settle();
+  assert.equal(edited.value, 'D:\\typed');
 });
 
 test('no task is required, and saved paths and placeholders are preserved', async () => {

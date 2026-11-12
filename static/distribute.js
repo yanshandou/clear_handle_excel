@@ -84,9 +84,12 @@
   $('distSource').value = load(KEYS.source);
   $('distDest').value = load(KEYS.dest);
   $('distPlan').value = load(KEYS.plan);
-  // 起点默认填当前在处理的路径（各处理页共用的 lastFolder，可能是多行；用户 2026-11-12），没有才用上次填的
-  $('distFreeSource').value = load('clear_handle_excel.lastFolder') || load(KEYS.freeSource);
+  // 起点默认填当前在处理的路径（各处理页共用的 lastFolder；用户 2026-11-12），没有才用上次填的
+  const lastFolder = load('clear_handle_excel.lastFolder');
+  $('distFreeSource').value = lastFolder || load(KEYS.freeSource);
   $('distFreeDest').value = load(KEYS.freeDest);
+  // 处理页填的不是单个文件夹时，lastFolder 是程序数据里的「批量路径」目录：换回当时填的那几行（static/task_folder.js）
+  if (lastFolder) window.WorkbookPaths?.show($('distFreeSource'), lastFolder);
 
   // ───── 导出同名 PDF 并一起上传（用户 2026-11-10）：导出设置沿用「批量导出同名 PDF」页（同一份 localStorage） ─────
   const PDF_ON = 'clear_handle_excel.uploadWithPdf';

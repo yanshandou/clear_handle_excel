@@ -7,8 +7,11 @@
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) || '{}');
     // 默认填当前在处理的路径（各处理页共用的 lastFolder；用户 2026-11-12），没有才用上次贴的
-    $('pickPaths').value = localStorage.getItem('clear_handle_excel.lastFolder') || saved.paths || '';
+    const lastFolder = localStorage.getItem('clear_handle_excel.lastFolder');
+    $('pickPaths').value = lastFolder || saved.paths || '';
     $('pickDest').value = saved.dest || '';
+    // 处理页填的不是单个文件夹时，lastFolder 是程序数据里的「批量路径」目录：换回当时填的那几行（static/task_folder.js）
+    if (lastFolder) window.WorkbookPaths?.show($('pickPaths'), lastFolder);
   } catch (_) {}
 
   const input = () => ({ paths: $('pickPaths').value, dest: $('pickDest').value.trim() });

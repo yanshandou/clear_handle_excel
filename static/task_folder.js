@@ -5,7 +5,6 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[ch]));
   const inputs = ids => ids.map(id => document.getElementById(id)).filter(Boolean);
   const work = inputs(WORK_IDS), refs = inputs(REF_IDS), all = [...work, ...refs];
-  if (!all.length) return;
   const selections = new Map(), shown = new WeakMap();
   function show(input, folder) {
     const previous = shown.get(input);
@@ -34,6 +33,8 @@
     });
   }
   window.WorkbookPaths = { show };
+  // 没有任务路径框的页面（起点 → 终点 上传、挑文件复制）只用上面的 WorkbookPaths
+  if (!all.length) return;
   for (const input of work) show(input, input.value);
   for (const input of all) {
     input.readOnly = false;

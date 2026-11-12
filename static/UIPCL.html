@@ -1,0 +1,1282 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="arcade">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>PCL · 单体测试检查台</title>
+<style>
+:root {
+  color-scheme:light;
+  --ink:#191815;
+  --muted:#5d574b;
+  --paper:#fdf9e9;
+  --stock:#f2ecda;
+  --yellow:#ffda26;
+  --line:#d1c9b1;
+  --green:#236348;
+  --red:#9e3223;
+  --shadow:4px 4px 0 var(--ink);
+  --mono:Consolas,"Microsoft YaHei",monospace;
+  --display:Impact,"Arial Black","Microsoft YaHei",sans-serif;
+  --checks:conic-gradient(var(--ink) 25%,transparent 0 50%,var(--ink) 0 75%,transparent 0) 0 0/18px 18px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body {
+  margin:0;
+  min-height:100vh;
+  color:var(--ink);
+  font:14px/1.55 "Microsoft YaHei","Noto Sans SC","Noto Sans JP",Meiryo,system-ui,sans-serif;
+  background:radial-gradient(#1a181315 .8px,transparent .85px) 0 0/5px 5px,var(--stock);
+}
+button,input,textarea,select{font:inherit}
+button{cursor:pointer}
+button:disabled{opacity:.5;cursor:not-allowed}
+:focus-visible{outline:2px solid #17558d;outline-offset:2px}
+.app{max-width:1512px;margin:auto;padding:22px 30px 35px}
+.panel,.masthead{min-width:0;background:var(--paper);border:2px solid var(--ink);box-shadow:var(--shadow)}
+
+.masthead{position:relative;overflow:hidden;background:var(--yellow)}
+.masthead-strip {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:6px 18px;
+  background:var(--ink);
+  color:var(--yellow);
+  font:700 11px/1.35 var(--mono);
+  letter-spacing:.12em;
+}
+.theme-switch{display:flex;gap:5px;flex:none}
+.theme-switch button {
+  padding:3px 8px;
+  border:1px solid #857850;
+  background:transparent;
+  color:var(--paper);
+  font:700 11px/1.4 var(--mono);
+  white-space:nowrap;
+}
+.theme-switch button:hover,.theme-switch button[aria-pressed="true"]{border-color:var(--yellow);background:var(--yellow);color:var(--ink)}
+.theme-switch button:focus-visible{outline-color:var(--yellow);outline-offset:1px}
+.toprow{position:relative;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:19px 30px}
+.toprow:before {
+  content:"";
+  position:absolute;
+  right:0;
+  inset-block:0;
+  width:57%;
+  background:radial-gradient(var(--ink) 1px,transparent 1.2px) 0 0/6px 6px;
+  mask-image:linear-gradient(110deg,transparent 12%,#000 90%);
+  opacity:.18;
+  pointer-events:none;
+}
+.hero-copy,.arcade-rig{position:relative}
+.eyebrow{display:inline-block;padding:4px 8px;background:var(--ink);color:var(--yellow);font:700 11px/1.3 var(--mono);letter-spacing:.12em}
+.hero-type {
+  display:block;
+  margin:6px 0 8px;
+  color:var(--paper);
+  font:900 clamp(52px,8vw,108px)/.98 var(--display);
+  letter-spacing:.015em;
+  white-space:nowrap;
+  -webkit-text-stroke:2px var(--ink);
+  text-shadow:4px 4px 0 var(--ink),7px 7px 0 var(--ink);
+  transform:skewX(-7deg);
+  transform-origin:left bottom;
+}
+.masthead h1{margin:0 0 4px;font-size:clamp(20px,3vw,35px);line-height:1.25;letter-spacing:.035em}
+.masthead p{margin:0;font-size:12px;font-weight:750}
+.arcade-rig{width:clamp(215px,28vw,332px);flex:none;isolation:isolate}
+.arcade-rig svg{display:block;width:100%;height:auto}
+.arcade-rig .hero-reactor,.hero-copy .hero-neon-text{display:none}
+.header-progress{position:absolute;inset:34% 32% auto 16%;color:var(--yellow);text-align:center}
+.header-progress strong{display:block;font:900 clamp(22px,3.4vw,43px)/1 var(--display);letter-spacing:.04em;white-space:nowrap}
+.header-progress small{display:block;margin-top:2px;color:var(--paper);font:700 clamp(8px,1vw,11px)/1.1 var(--mono);letter-spacing:.08em}
+.hero-base{height:12px;border-top:2px solid var(--ink);background:var(--checks),var(--yellow)}
+
+.source-review{margin-top:18px;padding:0 16px 12px}
+.source-review>summary{margin:0 -16px;padding:10px 16px;background:var(--ink);color:var(--yellow);cursor:pointer;font-size:15px;font-weight:900}
+.source-review:not([open]){padding-bottom:0}
+.source-review>summary::marker{color:var(--yellow)}
+.source-review>summary:focus-visible{outline-offset:-4px;outline-color:var(--yellow)}
+.source-index{display:inline-block;margin-inline:4px 8px;padding:1px 5px;border:1px solid currentColor;font:700 11px/1.3 var(--mono);vertical-align:1px}
+.source-review>p,.source-toolbar,.source-status{font-size:12px;color:var(--muted)}
+.source-review>p{margin:9px 0}
+.source-toolbar,.source-actions{display:flex;align-items:center;flex-wrap:wrap;gap:7px 13px;margin:8px 0}
+.source-toolbar label{display:inline-flex;align-items:center;flex-wrap:wrap;gap:6px;font-weight:750}
+.source-toolbar input,.source-toolbar select,.source-input,.notearea,.search{max-width:100%;border:1px solid var(--ink);background:#fffef5;color:var(--ink);border-radius:0}
+.source-toolbar input,.source-toolbar select{padding:5px 7px}
+.source-toolbar input{width:13em}
+.source-input,.notearea{display:block;width:100%;padding:8px 10px;resize:vertical}
+.source-input{min-height:85px;font:12px/1.45 var(--mono);border-width:2px;box-shadow:inset 0 3px 0 #1a18130c}
+.source-actions{margin-bottom:0}
+.source-actions .btn{background:var(--yellow)}
+.source-draft-status{font-size:12px;color:var(--red)}
+.source-draft-status:empty{display:none}
+.source-files{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));align-items:start;gap:8px}
+.source-card-heading{margin:12px 0 6px;font-size:13px}
+.source-file{min-width:0;padding:8px 10px;border:1px solid var(--ink);border-left:5px solid var(--yellow);background:#fffef5}
+.source-card-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.source-card-title{margin:0;font-size:14px;overflow-wrap:anywhere}
+.source-card-meta{margin:2px 0;color:var(--muted);font:12px/1.4 var(--mono)}
+.source-card-preview{margin-top:4px;font-size:12px}
+.source-card-preview summary{cursor:pointer}
+.source-card-preview pre{margin:6px 0 0;padding:8px;max-height:15em;overflow:auto;background:var(--ink);color:var(--paper);font:12px/1.5 var(--mono)}
+.source-results{display:grid;gap:8px;max-height:320px;overflow:auto}
+.source-result{padding:8px 10px;border:1px solid var(--ink);border-left-width:5px;background:#fffef5;font-size:12px}
+.source-result.warn{border-left-color:var(--red)}
+.source-result.unknown{border-left-color:#b88400}
+.source-result.confirmed{border-left-color:var(--green)}
+.source-result.skipped{border-left-color:#898171}
+.source-result-status{display:inline-block;margin-right:8px;padding:1px 4px;background:var(--stock);border:1px solid currentColor;font-size:11px;font-weight:800}
+.source-result.warn .source-result-status,.source-tag{color:var(--red)}
+.source-result.confirmed .source-result-status{color:var(--green)}
+.source-result.unknown .source-result-status{background:var(--yellow)}
+.source-result p{margin:4px 0}
+.source-result .source-file-name{margin-top:8px;font-weight:800;overflow-wrap:anywhere}
+.source-result ul{margin:4px 0 0;padding-left:1.4em}
+.source-result code{font-family:var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.source-link{border:0;background:none;color:var(--ink);font:inherit;font-weight:800;text-align:left;padding:0;text-decoration:underline}
+
+.workspace{display:grid;grid-template-columns:180px minmax(0,1.25fr) minmax(295px,1fr);gap:16px;margin-top:17px;align-items:start}
+.sidebar,.right-panel{position:sticky;top:12px}
+.sidebar{padding:13px 11px}
+.side-kicker,.section-eyebrow,.detail-no,.counter,.filter-title{font:800 11px/1.3 var(--mono);letter-spacing:.065em;text-transform:uppercase}
+.side-kicker,.section-eyebrow{display:inline-block;padding:3px 6px;background:var(--ink);color:var(--yellow)}
+.side-heading{font-size:20px;line-height:1.2;margin:7px 0 10px}
+.dial{--p:0%;width:115px;aspect-ratio:1;margin:2px auto 8px;display:grid;place-items:center;border:2px solid var(--ink);border-radius:50%;background:conic-gradient(var(--yellow) 0 var(--p),var(--ink) var(--p) 100%)}
+.dial-center{width:78%;aspect-ratio:1;display:grid;place-content:center;justify-items:center;border:2px solid var(--ink);border-radius:50%;background:var(--paper)}
+.dial-number{font:900 31px/1 var(--display)}
+.dial-label{font-size:10px;font-weight:800;margin-top:4px}
+.progress-count{text-align:center;font-size:12px;font-weight:700}
+.side-rule{height:8px;margin:10px 0;background:var(--checks)}
+.filter-title{margin-bottom:7px}
+.filter-list{display:grid;gap:4px}
+.filter-btn{min-width:0;width:100%;display:flex;align-items:center;justify-content:space-between;gap:4px;padding:5px 6px;border:1px solid transparent;background:transparent;color:var(--ink);text-align:left;font-size:12px}
+.filter-btn:hover,.filter-btn.active{border-color:var(--ink);background:var(--yellow)}
+.filter-btn.active{font-weight:850;box-shadow:2px 2px 0 var(--ink)}
+.ftext{display:flex;align-items:center;gap:6px}
+.fcount{padding:0 4px;background:var(--ink);color:var(--paper);font:700 10px/1.5 var(--mono)}
+.mark{width:7px;height:7px;flex:none;border:1px solid var(--ink);background:var(--yellow)}
+.filter-btn.active .mark{background:var(--ink)}
+.sidebar-footer{margin:12px 2px 0;color:var(--muted);font-size:11px}
+
+.desk-head,.detail-head{padding:13px 14px;border-bottom:2px solid var(--ink);background:var(--yellow)}
+.desk-heading-line,.detail-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.desk-heading-line h2,.detail-head h2{font-size:22px;line-height:1.25;margin:5px 0 3px;font-weight:900}
+.desk-caption,.detail-desc{font-size:11px;font-weight:750}
+.counter{white-space:nowrap}
+.toolbar{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}
+.search-wrap{position:relative;flex:1;min-width:170px}
+.search-wrap svg{position:absolute;left:8px;top:50%;transform:translateY(-50%);pointer-events:none}
+.search{width:100%;height:34px;padding:5px 8px 5px 30px}
+.segmented{display:flex;padding:2px;background:var(--paper);border:1px solid var(--ink)}
+.segment{padding:3px 8px;border:0;background:transparent;color:var(--ink);font-size:11px;white-space:nowrap}
+.segment.active{background:var(--ink);color:var(--yellow);font-weight:800}
+.task-list{display:grid;gap:6px;max-height:clamp(340px,64vh,780px);min-height:180px;padding:9px;overflow:auto;scrollbar-color:var(--ink) var(--stock)}
+.task{display:flex;align-items:flex-start;gap:8px;min-height:76px;padding:9px;border:1px solid var(--ink);background:#fffef5;cursor:pointer}
+.task:hover,.task.selected{background:#fff1ad}
+.task.selected{box-shadow:inset 4px 0 0 var(--ink)}
+.task.is-done:not(.selected){background:#eeeadd}
+.task-number{min-width:22px;padding:1px 2px;background:var(--ink);color:var(--yellow);font:800 12px/1.5 var(--mono);text-align:center}
+.check-control{width:22px;height:22px;flex:0 0 22px;display:grid;place-items:center;border:1px solid var(--ink);background:var(--paper);color:transparent;padding:0}
+.check-control:hover{background:var(--yellow)}
+.is-done .check-control{background:var(--ink);color:var(--yellow)}
+.task-content{min-width:0;flex:1}
+.task-title{margin:0 0 4px;font-size:14px;line-height:1.35;font-weight:850}
+.task-sub{margin:0 0 6px;color:var(--muted);font-size:11.5px;line-height:1.5}
+.task-footer{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap}
+.tagline{display:flex;align-items:center;flex-wrap:wrap;gap:4px}
+.tech-tag{padding:2px 4px;border:1px solid var(--ink);background:var(--stock);color:var(--ink);font:700 9px/1.25 var(--mono)}
+.task-state,.source-tag{font-size:10px;font-weight:750;white-space:nowrap}
+.is-done .task-state{color:var(--green)}
+.empty{padding:30px 10px;text-align:center;color:var(--muted)}
+.empty h3{font-size:16px;color:var(--ink)}
+.utilities{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:6px;padding:8px 9px;border-top:1px solid var(--ink);background:var(--stock)}
+
+.right-panel{display:flex;flex-direction:column;max-height:calc(100vh - 26px);min-height:390px}
+.detail-no{padding:3px 5px;background:var(--ink);color:var(--yellow)}
+.detail-badge{padding:2px 7px;border:1px solid var(--ink);background:var(--paper);font-size:11px;font-weight:800;white-space:nowrap}
+.detail-badge.done{background:var(--ink);color:var(--yellow)}
+.detail-desc{margin:4px 0 0}
+.detail-body{min-height:0;overflow:auto;padding:0 14px 12px;scrollbar-color:var(--ink) var(--stock)}
+.detail-section{margin-top:14px}
+.detail-section h3{margin:0 0 6px;padding-left:6px;border-left:5px solid var(--yellow);font-size:13px;line-height:1.45;font-weight:900}
+.jp-original,.caution{padding:8px 10px;border:1px solid var(--ink);background:var(--stock);font-size:12px;line-height:1.65}
+.jp-original{white-space:pre-wrap;font-family:"Noto Sans JP",Meiryo,sans-serif}
+.detail-copy{margin:0;font-size:13px;line-height:1.75}
+.verify-list{list-style:none;padding:0;margin:0;display:grid;gap:6px}
+.verify-list li{display:flex;align-items:flex-start;gap:7px;font-size:12px}
+.step-num{width:19px;flex:0 0 19px;background:var(--ink);color:var(--yellow);font:800 11px/19px var(--mono);text-align:center}
+.keyword-row{display:flex;flex-wrap:wrap;gap:5px}
+.keyword{padding:4px 6px;border:1px solid var(--ink);background:var(--paper);color:var(--ink);font:700 11px/1.35 var(--mono);overflow-wrap:anywhere}
+.keyword:hover,.btn:hover,.utility-btn:hover{background:var(--yellow)}
+.codewrap{position:relative;margin-top:8px;border:1px solid var(--ink);background:var(--ink);color:var(--paper)}
+.code-label{min-height:28px;padding:6px 55px 5px 8px;border-bottom:1px solid #5b5546;color:var(--yellow);font:700 10px/1.4 var(--mono)}
+.codecopy{position:absolute;top:4px;right:5px;padding:1px 5px;border:1px solid var(--yellow);background:transparent;color:var(--yellow);font-size:10px}
+.codewrap pre{margin:0;padding:8px;font:12px/1.55 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.focus-tip{font-size:11px;color:var(--muted);margin-top:6px}
+.caution{background:#fff1ad;border-left:4px solid var(--ink)}
+.notearea{min-height:67px;font-size:12px}
+.detail-bottom{display:flex;align-items:center;gap:6px;padding:9px 13px;border-top:2px solid var(--ink);background:var(--stock)}
+.btn,.utility-btn{padding:5px 8px;border:1px solid var(--ink);background:var(--paper);color:var(--ink);font-size:11px;font-weight:800;white-space:nowrap}
+.btn{padding:6px 10px;box-shadow:2px 2px 0 var(--ink)}
+.btn:active:not(:disabled){transform:translate(2px,2px);box-shadow:none}
+.btn-primary{flex:1;background:var(--yellow)}
+.btn-primary.done{background:var(--ink);color:var(--yellow)}
+.utility-btn.danger{color:var(--red)}
+.bottomline{display:flex;justify-content:space-between;gap:7px 14px;flex-wrap:wrap;margin-top:16px;padding:6px 9px;background:var(--ink);color:var(--paper);font-size:10px}
+.status-toast{position:fixed;bottom:20px;left:50%;transform:translate(-50%,20px);opacity:0;max-width:90vw;padding:8px 12px;border:2px solid var(--ink);box-shadow:var(--shadow);background:var(--yellow);font-weight:800;pointer-events:none;z-index:20;transition:opacity .18s,transform .18s}
+.status-toast.show{opacity:1;transform:translate(-50%,0)}
+.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+
+@media(max-width:1080px) {
+  .app{padding-inline:17px}
+  .workspace{grid-template-columns:165px minmax(0,1fr)}
+  .sidebar{grid-row:span 2}
+  .right-panel{grid-column:2;position:relative;top:auto;max-height:none;min-height:0}
+  .detail-body{max-height:620px}
+}
+@media(max-width:750px) {
+  .app{padding:10px 10px 24px}
+  .masthead-strip{padding:5px 9px;font-size:9px}
+  .masthead-strip>span:nth-child(2){display:none}
+  .toprow{gap:8px;padding:11px 12px 14px}
+  .hero-type{font-size:clamp(33px,8.9vw,66px);-webkit-text-stroke:1px var(--ink);text-shadow:3px 3px 0 var(--ink)}
+  .eyebrow{font-size:9px}
+  .masthead p{font-size:10px}
+  .arcade-rig{width:clamp(122px,31vw,218px)}
+  .header-progress strong{font-size:clamp(17px,4.5vw,30px)}
+  .header-progress small{font-size:clamp(5px,1.3vw,8px)}
+  .workspace{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
+  .right-panel{grid-column:1}
+  .sidebar{position:relative;top:auto;grid-row:auto;display:grid;grid-template-columns:80px minmax(0,1fr);align-items:center;gap:4px 10px}
+  .side-kicker,.side-heading,.sidebar-footer{grid-column:1/-1;justify-self:start}
+  .side-heading,.sidebar-footer{margin:0}
+  .dial{width:72px;margin:0}
+  .dial-number{font-size:21px}
+  .dial-label{font-size:8px;margin:1px 0}
+  .progress-count{grid-column:1;font-size:10px}
+  .side-rule,.filter-title{display:none}
+  .filter-list{grid-column:2;grid-row:3/5;display:flex;overflow:auto;padding:4px}
+  .filter-btn{width:auto;min-width:max-content;border-color:var(--ink);background:var(--paper)}
+  .filter-btn .fcount{display:none}
+  .task-list{max-height:55vh}
+  .source-review{padding-inline:10px}
+  .source-review>summary{margin-inline:-10px;padding-inline:10px}
+}
+@media(max-width:385px) {
+  .masthead-strip .strip-edition{display:none}
+  .masthead h1{font-size:17px}
+  .toprow{padding-inline:9px}
+  .hero-type{font-size:clamp(25px,8.3vw,32px)}
+  .arcade-rig{width:105px}
+  .header-progress strong{font-size:15px}
+  .search-wrap{flex-basis:100%}
+}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;transition:none!important}}
+@media screen {
+  html[data-theme="neon"] {
+    color-scheme:dark;
+    --paper:#1c2630;
+    --stock:#131b25;
+    --muted:#b2bfce;
+    --yellow:#aaf37d;
+    --green:#9de5b4;
+    --red:#ff9ba7;
+    --text:#f3f5fa;
+    --metal:#586476;
+    --well:#101721;
+    --shadow:0 4px 0 #080b10,0 10px 24px #080a1166;
+    --checks:repeating-linear-gradient(115deg,#aaf37d 0 4px,#263e33 4px 12px);
+  }
+  html[data-theme="neon"] body {
+    color:var(--text);
+    background:
+      radial-gradient(ellipse at 12% 6%,#41384c 0,transparent 45%),
+      radial-gradient(ellipse at 87% 8%,#233b3b 0,transparent 39%),
+      linear-gradient(160deg,#242835,#111822 58%,#141720);
+  }
+  html[data-theme="neon"] :focus-visible{outline-color:var(--yellow)}
+  html[data-theme="neon"] .panel,
+  html[data-theme="neon"] .masthead {
+    border:2px solid var(--metal);
+    border-radius:4px 16px;
+    box-shadow:inset 0 0 0 2px #0b1018,var(--shadow);
+  }
+  html[data-theme="neon"] .masthead{background:#1b252e}
+  html[data-theme="neon"] .masthead-strip {
+    background:linear-gradient(#3c4451,#222a37 50%,#151c26 51%);
+    border-bottom:1px solid var(--metal);
+    color:#d6dfe8;
+  }
+  html[data-theme="neon"] .theme-switch button {
+    border-color:#915864;
+    border-radius:2px 7px;
+    color:#ffe7ec;
+    background:#4d2936;
+  }
+  html[data-theme="neon"] .theme-switch button:hover,
+  html[data-theme="neon"] .theme-switch button[aria-pressed="true"] {
+    border-color:var(--yellow);
+    color:#142419;
+    background:var(--yellow);
+    box-shadow:0 0 10px #aaf37d59;
+  }
+  html[data-theme="neon"] .toprow {
+    background:
+      radial-gradient(ellipse at 75% 58%,#426b5252,transparent 45%),
+      linear-gradient(120deg,#23212f,#18262d 65%,#111921);
+  }
+  html[data-theme="neon"] .toprow:before {
+    width:100%;
+    background:repeating-linear-gradient(0deg,#93b5d5 0 1px,transparent 1px 5px);
+    mask-image:linear-gradient(90deg,#000,transparent 83%);
+    opacity:.09;
+  }
+  html[data-theme="neon"] .eyebrow,
+  html[data-theme="neon"] .side-kicker,
+  html[data-theme="neon"] .section-eyebrow,
+  html[data-theme="neon"] .detail-no {
+    border:1px solid #54765c;
+    border-radius:2px 6px;
+    background:#14231e;
+    color:var(--yellow);
+  }
+  html[data-theme="neon"] .hero-copy .hero-neon-text,
+  html[data-theme="neon"] .arcade-rig .hero-reactor{display:block}
+  html[data-theme="neon"] .hero-arcade-text,
+  html[data-theme="neon"] .arcade-rig .hero-arcade{display:none}
+  html[data-theme="neon"] .hero-type {
+    color:#efffed;
+    letter-spacing:.04em;
+    transform:none;
+    -webkit-text-stroke:1px #162619;
+    text-shadow:3px 3px 0 #12241b,0 0 24px #aaf37d70;
+  }
+  html[data-theme="neon"] .masthead p{color:var(--muted)}
+  html[data-theme="neon"] .header-progress{inset:74% 21% auto 21%;text-shadow:0 0 10px #aaf37d55}
+  html[data-theme="neon"] .header-progress strong{font-size:clamp(17px,2.6vw,34px)}
+  html[data-theme="neon"] .header-progress small{color:#d5e6de;font-size:clamp(6px,.75vw,9px)}
+  html[data-theme="neon"] .hero-base{height:8px;border-color:#7b927e;background:var(--checks)}
+  html[data-theme="neon"] .source-review>summary,
+  html[data-theme="neon"] .desk-head,
+  html[data-theme="neon"] .detail-head {
+    border-bottom:1px solid var(--metal);
+    color:var(--text);
+    background:linear-gradient(120deg,#283d39,#202835 68%);
+  }
+  html[data-theme="neon"] .source-review>summary{color:var(--yellow)}
+  html[data-theme="neon"] .source-input,
+  html[data-theme="neon"] .source-toolbar input,
+  html[data-theme="neon"] .source-toolbar select,
+  html[data-theme="neon"] .notearea,
+  html[data-theme="neon"] .search {
+    border-color:var(--metal);
+    border-radius:2px 6px;
+    color:var(--text);
+    background:var(--well);
+  }
+  html[data-theme="neon"] ::placeholder{color:#9baabd}
+  html[data-theme="neon"] .source-file,
+  html[data-theme="neon"] .source-result,
+  html[data-theme="neon"] .task {
+    border-color:var(--metal);
+    border-radius:3px 9px;
+    background:linear-gradient(135deg,#26313d,#1a242e);
+  }
+  html[data-theme="neon"] .source-file{border-left-color:var(--yellow)}
+  html[data-theme="neon"] .source-result.warn{border-left-color:var(--red)}
+  html[data-theme="neon"] .source-result.unknown{border-left-color:#ffd38a}
+  html[data-theme="neon"] .source-result.confirmed{border-left-color:var(--green)}
+  html[data-theme="neon"] .source-result.unknown .source-result-status{background:#4f3b26;color:#ffe1a8}
+  html[data-theme="neon"] .source-link,
+  html[data-theme="neon"] .empty h3,
+  html[data-theme="neon"] .segment,
+  html[data-theme="neon"] .filter-btn{color:var(--text)}
+  html[data-theme="neon"] .source-card-preview pre,
+  html[data-theme="neon"] .codewrap{background:var(--well);color:#e0edee}
+  html[data-theme="neon"] .dial {
+    border-color:var(--metal);
+    background:conic-gradient(var(--yellow) 0 var(--p),#324150 var(--p) 100%);
+    box-shadow:0 0 12px #aaf37d21;
+  }
+  html[data-theme="neon"] .dial-center{border-color:#526373}
+  html[data-theme="neon"] .dial-number{color:var(--yellow)}
+  html[data-theme="neon"] .filter-btn:hover,
+  html[data-theme="neon"] .filter-btn.active,
+  html[data-theme="neon"] .segment.active {
+    border-color:#79ad69;
+    background:#304b35;
+    color:#e2ffd6;
+    box-shadow:none;
+  }
+  html[data-theme="neon"] .fcount,
+  html[data-theme="neon"] .task-number,
+  html[data-theme="neon"] .step-num{background:#111a22;color:var(--yellow)}
+  html[data-theme="neon"] .task.is-done:not(.selected){background:#1b2d2b}
+  html[data-theme="neon"] .task:hover,
+  html[data-theme="neon"] .task.selected{border-color:#8fc778;background:#263b32}
+  html[data-theme="neon"] .task.selected{box-shadow:inset 3px 0 0 var(--yellow)}
+  html[data-theme="neon"] .check-control,
+  html[data-theme="neon"] .segmented,
+  html[data-theme="neon"] .jp-original,
+  html[data-theme="neon"] .detail-badge,
+  html[data-theme="neon"] .tech-tag,
+  html[data-theme="neon"] .detail-bottom,
+  html[data-theme="neon"] .utilities{border-color:var(--metal)}
+  html[data-theme="neon"] .check-control:hover{background:#354b3a}
+  html[data-theme="neon"] .check-control[aria-pressed="true"],
+  html[data-theme="neon"] .detail-badge.done{background:#263e32;color:var(--yellow);border-color:#73a581}
+  html[data-theme="neon"] .tech-tag{color:#cddbea}
+  html[data-theme="neon"] .task-list,
+  html[data-theme="neon"] .detail-body{scrollbar-color:#7b8d9c var(--stock)}
+  html[data-theme="neon"] .caution{background:#302934;border-color:#b67c90}
+  html[data-theme="neon"] .btn,
+  html[data-theme="neon"] .utility-btn,
+  html[data-theme="neon"] .keyword {
+    border-color:#a46877;
+    border-radius:2px 8px;
+    color:#ffe8ee;
+    background:linear-gradient(#5a3444,#3b2534);
+    box-shadow:inset 0 0 0 1px #291c26,0 2px 0 #0c1017;
+  }
+  html[data-theme="neon"] .source-actions .btn,
+  html[data-theme="neon"] .btn-primary {
+    border-color:#a3da85;
+    color:#efffe8;
+    background:linear-gradient(#447747,#2a4d35);
+    box-shadow:inset 0 0 0 1px #142b20,0 2px 0 #0c1017;
+  }
+  html[data-theme="neon"] .btn:hover,
+  html[data-theme="neon"] .utility-btn:hover,
+  html[data-theme="neon"] .keyword:hover{filter:brightness(1.2)}
+  html[data-theme="neon"] .bottomline{background:var(--well);color:var(--muted);border:1px solid var(--metal)}
+  html[data-theme="neon"] .status-toast{background:var(--yellow);color:#15261b;border-color:#34583e}
+}
+@media screen and (max-width:750px) {
+  html[data-theme="neon"] .header-progress strong{font-size:clamp(13px,3vw,22px)}
+  html[data-theme="neon"] .header-progress small{font-size:clamp(5px,1.25vw,8px)}
+}
+@media screen and (max-width:385px) {
+  html[data-theme="neon"] .header-progress strong{font-size:11px}
+  html[data-theme="neon"] .header-progress small{margin-top:1px}
+}
+@media print{
+  body,.panel,.masthead,.desk-head,.task,.task.selected{background:white;color:black;box-shadow:none}
+  .app{padding:0;max-width:none}
+  .masthead-strip,.arcade-rig,.hero-type,.hero-base,.source-review,.sidebar,.toolbar,.utilities,.right-panel,.bottomline,.source-tag,.status-toast{display:none!important}
+  .workspace,.task-list{display:block}
+  .task-list{max-height:none;overflow:visible}
+  .task{break-inside:avoid;margin-bottom:5px}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="masthead">
+    <div class="masthead-strip">
+      <span aria-hidden="true">◈ PCL / QA SYSTEM</span><span aria-hidden="true">UNIT TEST FIELD GUIDE</span><span class="strip-edition" aria-hidden="true">VOL. 01 &nbsp; JP / CN</span>
+      <div class="theme-switch" role="group" aria-label="页面主题">
+        <button type="button" data-theme-choice="arcade" aria-pressed="true" aria-label="主题 1 · 黄黑街机" title="黄黑街机">主题 1</button>
+        <button type="button" data-theme-choice="neon" aria-pressed="false" aria-label="主题 2 · 霓虹机甲" title="霓虹机甲">主题 2</button>
+      </div>
+    </div>
+    <div class="toprow">
+      <div class="hero-copy">
+        <div class="eyebrow">ARCADE QA &nbsp; / &nbsp; STATION 01</div>
+        <span class="hero-type hero-arcade-text" aria-hidden="true">PCL CHECK!</span>
+        <span class="hero-type hero-neon-text" aria-hidden="true">PCL CORE</span>
+        <h1>单体测试 · 检查台</h1>
+        <p>日文标准 · 中文检查步骤 · 源码自动校验</p>
+      </div>
+      <div class="arcade-rig">
+        <svg class="hero-arcade" viewBox="0 0 350 240" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <pattern id="arcade-dots" width="6" height="6" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.1" fill="#191815" opacity=".45"/></pattern>
+            <pattern id="arcade-scanlines" width="4" height="4" patternUnits="userSpaceOnUse"><path d="M0 0H4" stroke="#ffda26" opacity=".22"/></pattern>
+          </defs>
+          <path fill="#191815" opacity=".17" d="M45 215h241l52 10-49 13H31l-21-13z"/>
+          <g stroke="#191815" stroke-width="4" stroke-linejoin="round">
+            <path fill="#191815" d="m269 18 45 23v124l-10 43-37 18H31l-6-11 14-52-8-129 13-16z"/>
+            <path fill="#b9b39e" d="m265 14 44 24v124l-12 41-38 17-19-54z"/>
+            <path fill="url(#arcade-dots)" stroke="none" d="m265 14 44 24v124l-12 41-38 17-19-54z"/>
+            <path fill="#fdf9e9" d="M33 16h231l-5 148H42L30 60z"/>
+            <path fill="#191815" d="M36 20h224l-3 34H34z"/>
+            <path fill="#6e6a60" d="M35 54h223l-4 107H42z"/>
+            <path fill="#3b3934" d="M48 63h195l3 87H44z"/>
+            <path fill="#171712" d="M59 72h173l4 68H53z"/>
+            <path fill="url(#arcade-scanlines)" stroke="none" d="M59 72h173l4 68H53z"/>
+            <path fill="#ffda26" d="M41 160h215l10 31-7 25H25l-5-25z"/>
+            <path fill="#c4bdab" d="M20 191h246l-7 25H25z"/>
+            <path fill="#191815" d="M121 199h52v9h-52z"/>
+          </g>
+          <path fill="#ffda26" d="M56 30h21v12H56zm27 0h6v12h-6zm105 0h53v12h-53z"/>
+          <text x="99" y="41" fill="#fdf9e9" font-size="13" font-family="monospace" font-weight="bold">QA MODE</text>
+          <path fill="none" stroke="#ffda26" stroke-width="2" d="M64 84v-6h8m147 0h8v6m-166 44v6h8m152 0h8v-6"/>
+          <g stroke="#191815" stroke-width="3">
+            <ellipse cx="78" cy="181" rx="19" ry="6" fill="#a49c88"/>
+            <path d="m77 181-3-22" stroke-width="6"/>
+            <circle cx="74" cy="153" r="10" fill="#fdf9e9"/>
+            <ellipse cx="184" cy="181" rx="10" ry="6" fill="#fdf9e9"/>
+            <ellipse cx="214" cy="174" rx="10" ry="6" fill="#fdf9e9"/>
+            <path d="M277 122v29m7-33v29m7-33v29"/>
+          </g>
+          <path fill="#191815" d="m316 71 13-10-3 12 12-3-16 17 2-12zm-6 24 10-4-5 9zM5 67l17 6v6L6 76z"/>
+        </svg>
+        <svg class="hero-reactor" viewBox="0 0 350 240" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <radialGradient id="reactor-halo"><stop stop-color="#aaf37d" stop-opacity=".34"/><stop offset="1" stop-color="#aaf37d" stop-opacity="0"/></radialGradient>
+            <linearGradient id="reactor-metal" x2=".3" y2="1"><stop stop-color="#64717c"/><stop offset=".55" stop-color="#343b49"/><stop offset="1" stop-color="#1d2630"/></linearGradient>
+            <linearGradient id="reactor-glass" x2="1" y2="1"><stop stop-color="#ccffa0"/><stop offset="1" stop-color="#68ba68"/></linearGradient>
+          </defs>
+          <g fill="#101820" opacity=".78">
+            <path d="M0 159V51l13-10h20V17h3v24h15l11 11v107zm60 0V87l18-13h9V53h3v21h15l10 13v72zm193 0V77l13-15h16V31h3v31h12l9 12v85zm57 0V42l12-15h9V2h3v25h10l6 15v117z"/>
+          </g>
+          <g fill="none" stroke-width="2" opacity=".62">
+            <path stroke="#ef8499" d="M8 63h32m-32 9h23m286-12V45l6-7h16m-15 61h19m-17 7h17"/>
+            <path stroke="#9de47a" d="M17 96v25h21V95H17m54 3h22v17h-8m179-20h25v38h-16m-4 7h16"/>
+          </g>
+          <ellipse cx="176" cy="93" rx="119" ry="94" fill="url(#reactor-halo)"/>
+          <g stroke="#0d1219" stroke-width="3" stroke-linejoin="round">
+            <path d="M82 137h186l23 16v17l-18 14H77l-18-14v-17z" fill="url(#reactor-metal)"/>
+            <path d="M60 153h230l-18 16H79z" fill="#29343b"/>
+            <path d="M89 136l16-12h139l17 12v16l-16 11H105l-16-11z" fill="#515c69"/>
+            <ellipse cx="175" cy="134" rx="76" ry="19" fill="#111b23"/>
+            <ellipse cx="175" cy="134" rx="59" ry="12" fill="#213a30" stroke="#92d477" stroke-width="2"/>
+            <path d="m121 44 54-24 54 24-54 25z" fill="url(#reactor-metal)"/>
+            <path d="m121 44 54 25v57l-54-24z" fill="#384752"/>
+            <path d="m175 69 54-25v58l-54 24z" fill="#25343c"/>
+            <path d="m143 44 32-14 32 14-32 15z" fill="#18222a"/>
+            <path d="m131 60 34 15v34l-34-15zm55 15 33-15v34l-33 15z" fill="url(#reactor-glass)"/>
+          </g>
+          <g fill="none" stroke="#254c3a" stroke-width="2.5">
+            <path d="m131 74 34 15m-22-24v35m12-17v23m31-15 33-16m-18 12v15m8-35v14"/>
+          </g>
+          <path d="m69 103 24-13-4 12 9 2-15 16-2-9-10 3zm212 0-24-13 4 12-9 2 15 16 2-9 10 3z" fill="#aaf37d"/>
+          <g stroke="#0a1118" stroke-width="3" stroke-linejoin="round">
+            <path d="M61 171h228l14 13v32l-14 15H61l-14-15v-32z" fill="url(#reactor-metal)"/>
+            <path d="M71 176h208l14 13v22l-14 14H71l-14-14v-22z" fill="#111c24"/>
+          </g>
+          <path d="M81 184h188m-188 33h188" stroke="#557969" opacity=".55"/>
+          <circle cx="62" cy="185" r="3" fill="#f5869b"/><circle cx="288" cy="217" r="3" fill="#aaf37d"/>
+        </svg>
+        <div class="header-progress"><strong id="headerCount">0 / 22</strong><small>ITEMS VERIFIED</small></div>
+      </div>
+    </div>
+    <div class="hero-base" aria-hidden="true"></div>
+  </header>
+  <details class="panel source-review" open>
+    <summary><span class="source-index" aria-hidden="true">IN</span>粘贴代码 · 自动校验</summary>
+    <p>每次粘贴一个文件，添加为卡片后自动校验。结果按文件和行号显示。</p>
+    <form id="sourceForm">
+      <div class="source-toolbar">
+        <label>文件名（可选） <input id="sourceName" type="text" maxlength="180" spellcheck="false" autocomplete="off" placeholder="例如 order.twig"/></label>
+        <label>代码类型 <select id="sourceType"><option value="auto">自动识别</option><option value="twig">Twig / JavaScript</option><option value="php">PHP</option><option value="sql">SQL</option></select></label>
+      </div>
+      <label for="sourceCode" class="visually-hidden">要校验的代码</label>
+      <textarea id="sourceCode" class="source-input" rows="5" maxlength="200001" spellcheck="false" autocomplete="off" placeholder="把一个文件的代码粘贴到这里…"></textarea>
+      <div class="source-actions">
+        <button type="submit" class="btn" id="addSource" disabled>＋ 添加为卡片</button>
+        <span class="source-draft-status" id="sourceDraftStatus" role="status"></span>
+      </div>
+    </form>
+    <section id="sourceCardSection" aria-labelledby="sourceCardHeading" hidden>
+      <h3 class="source-card-heading" id="sourceCardHeading">代码卡片</h3>
+      <div class="source-files" id="sourceFiles"></div>
+    </section>
+    <p class="source-status" id="sourceStatus" role="status">添加代码卡片后自动校验 10 项静态规则。</p>
+    <div class="source-results" id="sourceResults"></div>
+  </details>
+  <main class="workspace">
+    <aside class="panel sidebar" aria-label="检查进度与分类">
+      <div class="side-kicker">Review progress</div><h2 class="side-heading">检查进度</h2>
+      <div class="dial" id="dial"><div class="dial-center"><strong class="dial-number" id="pct">0%</strong><span class="dial-label">完成率</span></div></div>
+      <div class="progress-count" id="progressCount">已完成 <b>0</b> / 22 项</div>
+      <div class="side-rule"></div><div class="filter-title">技术领域 / SCOPE</div>
+      <nav class="filter-list" id="categoryList"></nav>
+      <p class="sidebar-footer">点击项目查看原文和检查方法。点击方框即可标记完成。<br/><span id="storageState">状态自动保存在此浏览器。</span></p>
+    </aside>
+    <section class="panel desk-panel" aria-label="单体测试项目列表">
+      <div class="desk-head">
+        <div class="section-eyebrow">01 / Test items</div>
+        <div class="desk-heading-line"><div><h2>检查项目</h2><div class="desk-caption">共 22 项 · 严格对应提供的日文 Checklist</div></div><span class="counter" id="resultsCounter">显示 22 项</span></div>
+        <div class="toolbar">
+          <label class="search-wrap"><span class="visually-hidden">搜索测试项目</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input id="searchInput" class="search" placeholder="搜索中文、日文或代码关键词…" autocomplete="off"/></label>
+          <div class="segmented" role="group" aria-label="完成状态过滤"><button class="segment active" data-status="all" aria-pressed="true">全部</button><button class="segment" data-status="pending" aria-pressed="false">未完成</button><button class="segment" data-status="done" aria-pressed="false">已完成</button></div>
+        </div>
+      </div>
+      <div class="task-list" id="taskList"></div>
+      <div class="utilities"><button class="utility-btn" id="exportBtn" title="导出检查进度、备注和项目名称">导出 JSON</button><button class="utility-btn" id="csvBtn" title="可用于 Excel 的 UTF-8 CSV">导出 CSV</button><button class="utility-btn" id="importBtn">导入记录</button><button class="utility-btn danger" id="resetBtn">清空进度</button><input type="file" id="importFile" accept="application/json,.json" class="visually-hidden"/></div>
+    </section>
+    <section class="panel right-panel" id="detailPanel" aria-label="项目检查说明">
+      <div class="detail-head"><div class="detail-top"><span class="detail-no" id="detailNo">CHECK / 001</span><span class="detail-badge" id="detailBadge">待检查</span></div><h2 id="detailTitle">DB 保存后重新加载画面</h2><p class="detail-desc" id="detailDesc"></p></div>
+      <div class="detail-body" id="detailBody">
+        <div class="detail-section"><h3>日文原始检查要求</h3><div class="jp-original" id="original"></div></div>
+        <div class="detail-section"><h3>中文解释 · 要做什么</h3><p class="detail-copy" id="meaning"></p></div>
+        <div class="detail-section"><h3>测试步骤 · 如何确认</h3><ol class="verify-list" id="steps"></ol></div>
+        <div class="detail-section"><h3>重点目标代码 · 搜索关键词</h3><div class="keyword-row" id="keywords"></div><div id="snippetContainer"></div><p class="focus-tip">点击关键词可复制，用 VS Code 全局搜索；示例仅供定位，不代表项目中的真实实现。</p></div>
+        <div class="detail-section"><h3>易漏点 / 注意事项</h3><div class="caution" id="caution"></div></div>
+        <div class="detail-section"><h3>检查备注</h3><label for="notes" class="visually-hidden">当前检查项备注</label><textarea id="notes" class="notearea" placeholder="例如：已检查 TBXXX.twig 的 dataLoad()，保存后所有字段回显一致；附测试数据或问题单号…"></textarea></div>
+      </div>
+      <div class="detail-bottom"><button class="btn btn-primary" id="detailToggle">✓ 标记为已完成</button><button class="btn" id="nextBtn" title="跳到下一项">下一项 →</button></div>
+    </section>
+  </main>
+  <footer class="bottomline"><span>◈ PCL QUALITY DESK · 22 项按原始顺序整理；包含手动测试、代码检查和环境核对。</span><span id="lastSaved">尚无检查记录</span></footer>
+</div>
+<div id="toast" class="status-toast" role="status" aria-live="polite"></div>
+<script>
+'use strict';
+// 已按用户提供的原文逐项人工整理；代码片段仅是示意定位，不代表项目源码。
+const ITEMS = [
+{ id:'T01', title:'DB 保存后重新加载并回显全部字段', tags:['twig'], jp:'DB登録後に画面を再表示（dataLoad）(全項目の再表示が出来る事)していること', meaning:'数据库新增或更新成功以后，必须调用画面再加载逻辑（通常为 dataLoad），从最新数据重新填充整个画面，并确保所有字段都正确回显。不能只更新部分 UI 就视为通过。',steps:['先填写包含文本、下拉框、日期、复选框等不同类型字段的测试数据。','执行新增或更新，确认数据库保存成功。','确认调用 dataLoad 或等效的重新获取数据逻辑；重新显示后逐项比对保存值。','尝试页面重新打开，核对是否仍与 DB 一致。'],keys:['dataLoad','save','insert','update','setValues','reload'],code:'// 保存成功的回调附近重点查找\nawait saveData(payload);\ndataLoad(); // 或项目规定的等效刷新逻辑',note:'重点检查隐藏字段、下拉选中值、编辑状态、异步请求顺序；这里只是定位示例，不要求代码逐字一致。'},
+{ id:'T02',title:'初始化函数必须彻底复原画面状态',tags:['twig'],jp:'初期化用functionを流すことで、値や表示が必ず初期化される作りになっていること',meaning:'执行画面的初始化函数时，输入值、组件显示/隐藏、可用/不可用、选中状态等必须恢复至规格规定的初始状态，不应残留上一次操作的数据。',steps:['先手动修改各类值，切换标签、选择行并改变控件显示状态。','调用初始化函数，或执行会触发初始化的操作。','核对输入内容、隐藏显示、按钮状态、列表选择和校验提示均恢复初始状态。'],keys:['init','initialize','reset','clear','setValues','show(','hide(','enable(','disable('],code:'function initForm() {\n  $$ ("form").clear();\n  // 检查：选择状态、隐藏控件和按钮状态是否也复原\n}',note:'函数名不一定是 init。应根据设计书检查“应当保留”的默认值，不要把清空所有内容误认为正确初始化。'},
+{ id:'T03',title:'数值列必须使用整数排序',tags:['twig','webix'],jp:'一覧数値列のソートが「sort:"int"」となっていること',meaning:'Webix 数据表中的数值列需按整数大小排序，而非当作字符串按字典序排序。比如 2 应排在 10 之前。',steps:['定位目标 datatable 的 columns 定义。','核对所有数值列使用 sort:"int"（按项目约定）。','用 2、10、100 等数据测试升序/降序，确认结果。'],keys:['datatable','columns','sort: "int"','sort:"int"'],code:'{ id: "quantity", header: "件数", sort: "int" }',note:'要区分数字列和字符串编码列，带前导零的编号不一定应按整数处理。'},
+{ id:'T04',title:'可拖拽排序的列表禁止列排序',tags:['twig','webix'],jp:'ドラッグドロップが可能な一覧は、列ソートが不可であること',meaning:'支持拖动调整行顺序的列表，不允许再通过列标题进行排序，以免“拖拽顺序”和“列排序”产生冲突。',steps:['找到存在行拖拽功能的 datatable。','检查所有列是否没有开启用户可用的排序。','运行画面：拖拽行后点击列标题，确认没有触发排序或破坏行序。'],keys:['drag','sort','columns','onAfterDrop','datatable'],code:'// 对可拖动列表检查 columns 是否配置了 sort\n{ view: "datatable", drag: "order", columns: [\n  { id: "name", header: "名称" }\n] }',note:'程序调用的初始化排序、数据查询 ORDER BY 与“用户点击列标题排序”需分开判断。'},
+{ id:'T05',title:'保存行选中状态的列表要有隐藏 id 列',tags:['php','twig'],jp:'一覧にて行選択状態を保存する場合に、隠し列「id」があること',meaning:'如果列表需要在刷新或重新取得数据后恢复之前选中的行，要保留能唯一定位该行的 id（通常为隐藏列），并核对 PHP 传入的字段。',steps:['确认该列表确实需要保存/恢复选中行。','检查 Twig 的 datatable 配置是否存在隐藏 id 列，以及 PHP 数据有无对应唯一值。','选择某行→刷新/重新绑定数据→核对仍选中同一条记录。'],keys:['id','hidden: true','select','getSelectedId','datatable'],code:'columns: [\n  { id: "id", hidden: true },\n  { id: "name", header: "名称" }\n]',note:'不要仅凭 Webix 内部自动生成的 item.id 就判定满足原表要求；需确认项目所指的隐藏 id 列。'},
+{ id:'T06',title:'使用代码主数据时记录 Code Master ID',tags:['docs'],jp:'コードマスタを使用する場合は、概要書の備考欄にコードマスタIDの記載があること',meaning:'画面使用了代码主数据（コードマスタ）时，必须在对应概要书的备注栏写清所用的代码主数据 ID，方便追踪选项来源和维护。',steps:['定位画面中通过代码主数据生成的下拉选项、显示文本等。','从实现或接口定义中确认对应代码主数据 ID。','打开概要书，核对目标条目的「備考」栏是否记录该 ID。'],keys:['コードマスタ','コードマスタID','備考','codeMaster','masterId'],code:'// 查找代码主数据读取的位置\n// 然后对照「概要書 → 備考欄 → コードマスタID」',note:'这是文档一致性检查，不是单纯在源码中存在 ID 就通过。'},
+{ id:'T07',title:'Debug 模式不得出现重复 ID 警告',tags:['twig'],jp:'Debugモードで画面を表示する。その際に、IDが重複している旨のメッセージが左下に出ないこと',meaning:'在 Debug 模式下打开目标画面，确认左下角不会弹出 ID 重复相关的警告；需要检查动态组件创建时使用的 ID 是否唯一。',steps:['启用项目规定的 Debug 模式。','打开目标画面并执行可能创建子画面/弹窗的操作。','观察左下角是否出现重复 ID 提示，同时检查浏览器控制台信息。'],keys:['id:','$$(','webix.ui','debug','destructor','onShow'],code:'// 重点排查重复创建时固定不变的组件 id\n{ view: "text", id: "customer_name" }',note:'页面首次显示没有警告并不够，重复打开弹窗、切换页面和回到主页面后也要检查。'},
+{ id:'T08',title:'PHP foreach 不直接整体赋值 value',tags:['php'],jp:'foreach内にて、valueをそのまま変数に格納していないこと（項目を一個一個明記すること）',meaning:'在 foreach 处理 DB 或接口返回数组时，不要不加筛选地把整条 value 赋给输出变量；应逐个明确指定需要的字段，提高接口字段可控性。',steps:['全局检索 foreach，重点查看响应数据加工、列表数据组装位置。','检查循环体是否把整行 $value 直接赋值或追加给结果数组。','确认按照规定逐个列明输出字段，不带入无用或敏感字段。'],keys:['foreach','=> $value','$result[] = $value','array_map','return $rows'],code:'// 避免：$result[] = $value;\nforeach ($rows as $value) {\n    $result[] = [\n        \'id\' => $value[\'id\'],\n        \'name\' => $value[\'name\']\n    ];\n}',note:'本检查针对“直接把 value 整体塞入结果”；foreach ($rows as $value) 这种循环变量本身并非违规。'},
+{ id:'T09',title:'form 内非 datatable 控件禁止动态宽度设置',tags:['webix'],jp:'form内のdatatableを除く項目にwidthが変動する設定をしていないこと(minWidth,maxWidth等)',meaning:'Webix form 中，除 datatable 外，不要对表单项配置会让宽度动态变化的属性，如 minWidth、maxWidth 等；按项目要求固定控制布局。',steps:['找到 view:"form" 及其 elements/rows/cols 中的控件。','排除 datatable 后检查 minWidth、maxWidth、自动伸缩相关配置。','调整窗口尺寸，确认控件布局没有不符合规格的变化。'],keys:['view: "form"','minWidth','maxWidth','width','elements','responsive'],code:'// form 内除 datatable 外重点检索\n{ view: "text", name: "title", minWidth: 120 }\n// ↑ 属于需要核对/整改的写法',note:'原要求明确排除了 datatable；不要误删 datatable 合法的宽度控制。'},
+{ id:'T10',title:'label 等组件禁止 autowidth:true',tags:['webix'],jp:'label等のautowidth:trueは使用禁止（このプロパティは英数字にのみ作用する）',meaning:'label 等组件不应使用 autowidth:true（或项目对应的 autoWidth 写法），因为该属性按原规范只对英数字有适用性，日文/中文布局可能异常。',steps:['全局检索 autowidth / autoWidth 配置。','重点检查 label 和标签相关组件。','确认没有违规使用；必要时以明确宽度或项目约定的布局方式替代。'],keys:['autowidth','autoWidth','view: "label"','labelWidth'],code:'// 禁止的示意写法\n{ view: "label", label: "利用者名", autowidth: true }',note:'项目规范使用的是 autowidth:true；注意大小写差异，避免遗漏实际源码中的写法。'},
+{ id:'T11',title:'可拖动的 datatable 必须使用 drag:"order"',tags:['webix'],jp:'ドラッグ&ドロップを可とするdatatableは「drag:"order"」となっていること（「drag:true」は使用しない）',meaning:'如果 Webix datatable 允许行拖拽，drag 配置必须是 "order"，不能使用 drag:true；这样语义是调整行顺序而非任意拖放。',steps:['全局搜索 datatable 的 drag 配置。','逐一核对有行拖拽需求的列表使用 drag:"order"。','实测拖拽顺序，并核对保存/重新加载后顺序是否符合设计要求。'],keys:['drag: "order"','drag:"order"','drag: true','datatable'],code:'{ view: "datatable", drag: "order" }\n// 避免：{ view: "datatable", drag: true }',note:'同时和第 04 项一起确认列排序禁用。'},
+{ id:'T12',title:'最大字符数：保存并回显不能截断',tags:['webix'],jp:'最大文字数チェックは、以下の手順で行うこと。\n①確認する項目に最大文字数で入力する。\n②登録処理後、画面を再表示し、文字切れしていないこと。（登録時と完全一致）',meaning:'对存在最大输入长度限制的字段，输入恰好达到上限的文本，保存后重新显示画面，确保数据一字不差，没有因为 UI、DB、编码或接口而截断。',steps:['根据设计书查明字段最大允许字符数 N。','输入恰好 N 个字符的文本并保存。','重新打开/调用 dataLoad，逐字确认与输入内容完全一致。','对项目适用的日文、中文、emoji 等多字节字符另行取样。'],keys:['maxlength','maxLength','max:','varchar','mb_strlen','dataLoad'],code:'// 输入长度限制和 DB 字段长度应对齐\n{ view: "text", name: "title", attributes: { maxlength: 20 } }',note:'“字符数”“UTF-8 字节数”“数据库字段长度”的度量方式可能不同。不要只看没有报错，还要比对回显的完整内容。'},
+{ id:'T13',title:'最小字符数：空值和下限输入要正常处理',tags:['webix'],jp:'最小文字数チェックは、以下の手順で行うこと。\n①確認する項目に空、必須項目は最小文字数で入力する。\n②登録処理後、画面を再表示し、エラーが発生せず、登録時と完全一致すること。',meaning:'测试可选字段为空，以及必填字段恰好达到允许的最小字符数。完成登记后再次加载画面，确认没有异常且保存值完全一致。',steps:['根据设计书区分必填字段和非必填字段。','非必填字段输入空值；必填字段输入恰好满足最小长度的内容。','保存并重新显示，确认没有错误并且字段值与登记时一致。'],keys:['minLength','minlength','required','validate','rules','NOT NULL','dataLoad'],code:'// 结合设计书确认：必填 / 最小长度 / 空值处理\n{ view: "text", required: true, name: "code" }',note:'不要把“必填字段输入空值”作为此条正向通过用例；原文要求其输入最小字符数。'},
+{ id:'T14',title:'Twig 统一使用双引号（标签内除外）',tags:['twig'],jp:'「\'」を使っていないこと。(「\"」で統一すること) ※タグ内は除く',meaning:'按照项目约定，Twig 模板中的相关代码字符串统一使用双引号，不使用单引号；原要求特别说明“标签内除外”。',steps:['在变更过的 Twig 文件中查找单引号字符。','排除 HTML 标签内部及规范列明的例外。','检查 JS 字符串、组件配置等是否需要改成双引号。'],keys:['.twig','\'','"','view:','id:'],code:'// Twig / JS 配置示例\n{ view: "text", id: "user_name" }\n// HTML 标签内的引号按原文为例外',note:'自动替换所有单引号容易破坏 HTML 属性、Twig 语法或字符串转义；务必区分上下文。'},
+{ id:'T15',title:'PHP 统一使用单引号',tags:['php'],jp:'「\"」を使っていないこと。(「\'」で統一すること)',meaning:'根据项目 PHP 代码风格，字符串优先且按检查项要求统一使用单引号，避免新增双引号字符串。',steps:['在本次修改过的 PHP 文件中定位双引号字符串。','确认是否可用单引号替代，处理单引号转义和不需要插值的字符串。','复核 PHP 语法和原本的字符串实际内容没有改变。'],keys:['.php','"','\'','sprintf','foreach'],code:'// 按项目规范\n$message = \'登録完了\';\n// 不使用：$message = "登録完了";',note:'PHP 单/双引号的变量插值和转义规则不同，不能盲目批量替换导致行为变化。'},
+{ id:'T16',title:'变更必须落在 Redmine 票据指定环境',tags:['php','twig','release'],jp:'Redmineチケットのリリースバージョンに対して、正しい環境(dev,mainte)に変更が適用されていること',meaning:'核对 Redmine Ticket 的 Release Version 与代码实际提交/部署的分支或环境一致，确保变更进入正确的 dev 或 mainte，既不遗漏也不误入其他维护线。',steps:['查看目标 Redmine Ticket 的リリースバージョン。','确认相应 dev/mainte 分支、提交和差异文件。','在有权限的前提下核对实际环境应用状态，并记录证据。'],keys:['Redmine','リリースバージョン','dev','mainte','git branch','git log','git diff'],code:'git branch --show-current\ngit log --oneline -n 5\ngit diff origin/dev -- path/to/file',note:'Git 分支上存在修改不等于已经部署。需要明确当前代码、合并状态与目标环境的关系。'},
+{ id:'T17',title:'include 子画面 ID 时必须传 sub_torihiki_id',tags:['twig'],jp:'子画面IDをincludeする時、必ずsub_torihiki_idを設定すること',meaning:'Twig 中 include 子画面 ID 或包含子画面模板时，必须同时设置 sub_torihiki_id，避免子画面业务上下文缺失。',steps:['检索 include 及相关子画面嵌入位置。','确认每处子画面 ID 的 include 都传入/设置 sub_torihiki_id。','实测子画面打开、保存和切换时该值正确。'],keys:['include','sub_torihiki_id','child','子画面ID'],code:'{% include "child.twig" with {\n  "sub_torihiki_id": sub_torihiki_id\n} %}',note:'上面是 Twig 风格的示意，不一定是项目既有的 include 格式；以实际模板接口为准。'},
+{ id:'T18',title:'validate 中必须执行表单校验并返回 false',tags:['twig'],jp:'validate functionの中に、必ずif(!$$("form").validate()){\n  webix.message(CONST.MSG.VL10001);\n  return false;\n}を入れること。',meaning:'目标画面的 validate function 必须调用表单的 validate()；如果校验失败，显示统一提示 CONST.MSG.VL10001，并立即 return false，阻止后续登记。',steps:['找到当前画面的 validate function。','确认存在项目规定的表单校验、统一错误消息和 return false。','留空必填项或输入不合法值，点击登记，确认显示消息且请求未继续执行。'],keys:['function validate','$("form")','$$("form")','validate()','CONST.MSG.VL10001','return false'],code:'if (!$$("form").validate()) {\n  webix.message(CONST.MSG.VL10001);\n  return false;\n}',note:'注意 form 的实际 ID 是否确实为 "form"；检查提示信息和早退分支均能执行。'},
+{ id:'T19',title:'跨 Tab 取数据需设置第二参数 true',tags:['twig'],jp:'tabviewについて、選択中のタブ以外のデータも取りたい場合は、getItemやgetItemAllの第二引数にtrueをセットしていること。',meaning:'在 tabview 中，如果业务逻辑需要读取当前未选中 Tab 的数据，调用 getItem 或 getItemAll 时必须把第二个参数设为 true，以便包含非活动标签页。',steps:['检索各 tabview 中的 getItem / getItemAll 调用。','判断是否需要取得非选中 Tab 的数据。','对需要跨 Tab 的调用确认第二实参为 true。','在其他 Tab 填入数据后切回当前 Tab 执行保存/取值并核对。'],keys:['tabview','getItem(','getItemAll(','true'],code:'// 需要读取未激活 Tab 的数据时\ngetItem(itemId, true);\ngetItemAll(tabId, true);',note:'getItem/getItemAll 可能是项目封装 API，而不是 Webix 原生通用接口；应查看项目定义确认参数含义。'},
+{ id:'T20',title:'列表图标列必须指定排序项',tags:['twig','webix'],jp:'一覧アイコン列のソート項目が指定されていること',meaning:'列表中以图标呈现状态的列，需要显式指定对应的排序项或排序逻辑，确保排序依据为图标代表的业务值，而不是单纯 HTML 或显示模板。',steps:['定位 datatable 中模板输出图标的列。','确认其配置有明确的排序字段/排序规则。','用不同图标状态的数据进行升序降序测试。'],keys:['icon','template','sort','columns','datatable'],code:'{\n  id: "status",\n  template: statusIconTemplate,\n  sort: "string" // 需对应真实业务字段/规则\n}',note:'原文只要求指定“排序项”，不是所有项目都统一 sort:"string"；若此列表允许行拖拽，还需一并遵守第 04 项。'},
+{ id:'T21',title:'检查代码覆盖率 100% 与分支遗漏',tags:['quality'],jp:'カバレージ100%を確認する事。AIツール（コーディングの読み合わせ、またはAIツールを活用し、分岐に漏れがないことを確認する）\n※消化は机上または打鍵で確認する',meaning:'需要确认测试覆盖率达到项目要求的 100%，同时通过代码走查或 AI 辅助检查遗漏的业务分支；每个检查点可以通过机上评审或实际操作确认。',steps:['确认本次变更的受测范围及项目覆盖率计算口径。','运行适用的测试并查看覆盖率报告（如 PHPUnit/Xdebug）；确认要求范围达到 100%。','逐条走查 if/elseif、异常、边界、空值等分支，必要时使用 AI 辅助审阅。','记录人工走查或实际按键测试的证据和未覆盖的原因。'],keys:['PHPUnit','Xdebug','coverage','if','elseif','else','try','catch'],code:'// PHPUnit 常见示意，具体命令以项目配置为准\nvendor/bin/phpunit --coverage-html coverage',note:'行覆盖率 100% 不自动等于分支覆盖率 100%；不能只让 AI 口头判断就标记通过。需用可核验的测试/走查证据。'},
+{ id:'T22',title:'DB 查询只获取实际使用的字段',tags:['quality','php'],jp:'DB取得時、使用するカラムのみ取得していること',meaning:'数据库查询应只 SELECT 真正需要的列，避免 SELECT * 或无用字段，减少数据传输、暴露和后续耦合。',steps:['搜索本次变更涉及的 SQL 和查询构造器。','核对 SELECT 列是否与 PHP/Twig 真正使用的字段一致。','剔除无用字段，检查关联查询和别名字段不会缺失。','运行功能测试确认删除无用列后仍能正确输出。'],keys:['SELECT *','select(','->select(','PDO','query(','fetchAll'],code:'-- 不建议：SELECT * FROM users\nSELECT id, display_name, status\nFROM users\nWHERE deleted = 0;',note:'有些查询需要关联字段作过滤或排序，未输出不代表无用；应区分读取列和 WHERE/ORDER BY 所依赖的列。'}
+];
+const CATS=[{id:'all',name:'全部项目'},{id:'twig',name:'Twig / 画面'},{id:'php',name:'PHP / 后端'},{id:'webix',name:'Webix / 组件'},{id:'docs',name:'概要书 / 文档'},{id:'release',name:'发布环境'},{id:'quality',name:'质量 / DB'}];
+const LABELS={twig:'TWIG',php:'PHP',webix:'WEBIX',docs:'DOCS',release:'RELEASE',quality:'QUALITY'};
+const KEY='pcl-qa-checklist-v1';
+const THEME_KEY='pcl-qa-theme';
+let store={done:{},notes:{},updated:null};
+let activeCategory='all',activeStatus='all',query='',selected='T01';
+let storageOkay=true;
+const $=id=>document.getElementById(id);
+
+function setupTheme() {
+  const buttons = document.querySelectorAll('[data-theme-choice]');
+  function apply(theme) {
+    document.documentElement.dataset.theme = theme;
+    for (const button of buttons) {
+      button.setAttribute('aria-pressed', String(button.dataset.themeChoice === theme));
+    }
+  }
+
+  let initial = 'arcade';
+  try {
+    if (localStorage.getItem(THEME_KEY) === 'neon') initial = 'neon';
+  } catch {
+    // The default theme is available even if browser storage is blocked.
+  }
+  apply(initial);
+  for (const button of buttons) {
+    button.addEventListener('click', () => {
+      const theme = button.dataset.themeChoice;
+      apply(theme);
+      try {
+        localStorage.setItem(THEME_KEY, theme);
+      } catch {
+        // Keep the selection for the current page.
+      }
+    });
+  }
+}
+function safeLoad(){try{const raw=localStorage.getItem(KEY);if(raw){const obj=JSON.parse(raw);if(obj&&typeof obj==='object'){store.done=obj.done&&typeof obj.done==='object'?obj.done:{};store.notes=obj.notes&&typeof obj.notes==='object'?obj.notes:{};store.updated=obj.updated||null;}}}catch(e){storageOkay=false;$('storageState').textContent='此浏览器禁止本地存储，请用导出 JSON 保存进度。';}}
+function persist(){store.updated=new Date().toISOString();try{localStorage.setItem(KEY,JSON.stringify(store));storageOkay=true;}catch(e){storageOkay=false;$('storageState').textContent='本地存储不可用，请及时导出 JSON。';}renderProgress();renderFooter();}
+function escapeText(s){return String(s??'');}
+function doneCount(){return ITEMS.reduce((n,x)=>n+(store.done[x.id]===true?1:0),0)}
+function filtered(){return ITEMS.filter(x=>(activeCategory==='all'||x.tags.includes(activeCategory))&&(activeStatus==='all'||(activeStatus==='done'?!!store.done[x.id]:!store.done[x.id]))&&(!query||[x.title,x.jp,x.meaning,x.id,x.tags.join(' '),x.keys.join(' ')].join(' ').toLowerCase().includes(query)));}
+function renderProgress(){const n=doneCount(),pct=Math.round(n/ITEMS.length*100);$('pct').textContent=pct+'%';$('dial').style.setProperty('--p',pct+'%');$('progressCount').innerHTML='已完成 <b>'+n+'</b> / '+ITEMS.length+' 项';$('headerCount').textContent=n+' / '+ITEMS.length;}
+function renderFooter(){const d=store.updated?new Date(store.updated):null;$('lastSaved').textContent=d&&!isNaN(d)?'上次记录：'+d.toLocaleString('zh-CN',{hour12:false}):'尚无检查记录';}
+function renderCategories(){const nav=$('categoryList');nav.replaceChildren();for(const cat of CATS){const count=cat.id==='all'?ITEMS.length:ITEMS.filter(x=>x.tags.includes(cat.id)).length;const btn=document.createElement('button');btn.className='filter-btn'+(activeCategory===cat.id?' active':'');btn.type='button';btn.setAttribute('aria-pressed',String(activeCategory===cat.id));const left=document.createElement('span');left.className='ftext';const mark=document.createElement('i');mark.className='mark';mark.setAttribute('aria-hidden','true');const label=document.createElement('span');label.textContent=cat.name;left.append(mark,label);const right=document.createElement('span');right.className='fcount';right.textContent=count;btn.append(left,right);btn.addEventListener('click',()=>{activeCategory=cat.id;renderCategories();renderList();});nav.append(btn);}}
+function toggle(id){store.done[id]=!store.done[id];persist();renderList();renderDetail();toast(store.done[id]?'已标记完成 · '+id:'已恢复为待检查 · '+id)}
+function choose(id){if(selected===id)return;selected=id;renderList();renderDetail();if(innerWidth<=1080){$('detailPanel').scrollIntoView({behavior:'smooth',block:'start'});}}
+function renderList(){const subset=filtered(),root=$('taskList');root.replaceChildren();$('resultsCounter').textContent='显示 '+subset.length+' / '+ITEMS.length+' 项';if(!subset.length){const empty=document.createElement('div');empty.className='empty';empty.innerHTML='<h3>没有匹配的检查项目</h3><p>试试切换分类、完成状态或搜索关键词。</p>';root.append(empty);return;}for(let i=0;i<subset.length;i++){const item=subset[i],isDone=!!store.done[item.id];const card=document.createElement('article');card.className='task'+(isDone?' is-done':'')+(selected===item.id?' selected':'');card.setAttribute('tabindex','0');card.setAttribute('role','button');card.setAttribute('aria-label',item.id+' '+item.title+'，查看详情');card.addEventListener('click',()=>choose(item.id));card.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose(item.id);}});
+const num=document.createElement('span');num.className='task-number';num.textContent=item.id.slice(1).padStart(2,'0');const cb=document.createElement('button');cb.className='check-control';cb.type='button';cb.setAttribute('aria-label',isDone?'取消完成 '+item.title:'标记完成 '+item.title);cb.setAttribute('aria-pressed',String(isDone));cb.innerHTML='<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4 4L19 6"/></svg>';cb.addEventListener('click',e=>{e.stopPropagation();toggle(item.id);});const content=document.createElement('div');content.className='task-content';const title=document.createElement('h3');title.className='task-title';title.textContent=item.title;const sub=document.createElement('p');sub.className='task-sub';sub.textContent=item.meaning.length>85?item.meaning.slice(0,82)+'…':item.meaning;const foot=document.createElement('div');foot.className='task-footer';const tags=document.createElement('div');tags.className='tagline';item.tags.forEach(tag=>{const chip=document.createElement('span');chip.className='tech-tag';chip.textContent=LABELS[tag];tags.append(chip);});const state=document.createElement('span');state.className='task-state';state.textContent=isDone?'✓ 已完成':'○ 待检查';if(sourceWarnings.has(item.id)){const alert=document.createElement('span');alert.className='source-tag';alert.textContent='源码有疑点';tags.append(alert);}foot.append(tags,state);content.append(title,sub,foot);card.append(num,cb,content);root.append(card);}}
+function renderDetail(){const x=ITEMS.find(x=>x.id===selected)||ITEMS[0],isDone=!!store.done[x.id];$('detailNo').textContent='CHECK / '+x.id.slice(1).padStart(3,'0');$('detailTitle').textContent=x.title;$('detailDesc').textContent=x.tags.map(t=>LABELS[t]).join('  ·  ');$('detailBadge').textContent=isDone?'✓ 已完成':'待检查';$('detailBadge').className='detail-badge'+(isDone?' done':'');$('original').textContent=x.jp;$('meaning').textContent=x.meaning;$('caution').textContent=x.note;const steps=$('steps');steps.replaceChildren();x.steps.forEach((s,i)=>{const li=document.createElement('li'),no=document.createElement('span'),txt=document.createElement('span');no.className='step-num';no.textContent=i+1;txt.textContent=s;li.append(no,txt);steps.append(li);});const keywords=$('keywords');keywords.replaceChildren();x.keys.forEach(k=>{const b=document.createElement('button');b.type='button';b.className='keyword';b.textContent=k;b.title='复制搜索关键词';b.addEventListener('click',()=>copyText(k));keywords.append(b);});const snippet=$('snippetContainer');snippet.replaceChildren();if(x.code){const wrap=document.createElement('div');wrap.className='codewrap';const head=document.createElement('div');head.className='code-label';head.textContent='定位示例 / SEARCH REFERENCE';const copy=document.createElement('button');copy.type='button';copy.className='codecopy';copy.textContent='复制';copy.addEventListener('click',()=>copyText(x.code));const pre=document.createElement('pre');pre.textContent=x.code;wrap.append(head,copy,pre);snippet.append(wrap);}$('notes').value=store.notes[x.id]||'';const btn=$('detailToggle');btn.textContent=isDone?'✓ 已完成 · 点击撤销':'✓ 标记为已完成';btn.className='btn btn-primary'+(isDone?' done':'');$('nextBtn').disabled=ITEMS.indexOf(x)===ITEMS.length-1;}
+function renderAll(){renderProgress();renderCategories();renderList();renderDetail();renderFooter();}
+let toastTimer;function toast(message){const el=$('toast');el.textContent=message;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),1900);}
+async function copyText(str){try{if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(str);}else{const tmp=document.createElement('textarea');tmp.value=str;tmp.style.position='fixed';tmp.style.opacity='0';document.body.append(tmp);tmp.select();if(!document.execCommand('copy'))throw Error('copy');tmp.remove();}toast('已复制到剪贴板');}catch(e){toast('复制失败：请手动选中并复制');}}
+function download(name,mime,content){const blob=new Blob([content],{type:mime}),url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);}
+function buildExport(){return {format:'pcl-qa-checklist',version:1,exportedAt:new Date().toISOString(),items:ITEMS.map(x=>({id:x.id,title:x.title,japanese:x.jp,done:!!store.done[x.id],note:store.notes[x.id]||''}))};}
+function csvCell(v){return '"'+String(v??'').replaceAll('"','""')+'"';}
+
+const SOURCE_RULES = {
+  T04: '拖拽表格的列开启了排序。',
+  T07: '多个 Webix 组件声明了相同的静态 ID，请在 Debug 模式确认它们是否同时存在。',
+  T08: 'foreach 的循环变量被整行赋值，请确认输出是否应逐字段组装。',
+  T09: 'form 中的非 datatable 控件设置了 minWidth 或 maxWidth。',
+  T10: '组件配置使用了 autowidth: true。',
+  T11: '启用拖拽的 datatable 没有使用 drag: "order"。',
+  T14: '发现单引号字符串，请核对 Twig 的引号规范。',
+  T15: '发现双引号字符串，修改前请确认插值和转义。',
+  T18: 'validate 中未识别到表单校验失败后提示 VL10001 并返回 false 的标准写法。',
+  T22: '发现通配符取列，请核对实际需要的字段。'
+};
+const SOURCE_TYPES = {twig:'Twig / JavaScript', php:'PHP', sql:'SQL'};
+const SOURCE_STATUS = {warn:'发现疑点', unknown:'信息不足', confirmed:'静态符合', skipped:'此配置不适用'};
+const SOURCE_LIMIT = 200000;
+let sourceFindings = [];
+let sourceWarnings = new Set();
+
+function sourceType(code, filename = '') {
+  if (/\.php$/i.test(filename)) return 'php';
+  if (/\.sql$/i.test(filename)) return 'sql';
+  if (/\.(?:twig|[cm]?js)$/i.test(filename)) return 'twig';
+  if (/<\?(?:php\b|=)/i.test(code)) return 'php';
+  const start = code.replace(/^(?:\s+|--[^\n]*|\/\*[\s\S]*?\*\/)+/, '');
+  if (/^(?:select|with|insert|update|delete)\s/i.test(start)) return 'sql';
+  if (/^(?:namespace\s|use\s+[\w\\]+;|\$[a-z_]|(?:public\s+|protected\s+|private\s+)?function\s+\w+\s*\(\s*\$|foreach\s*\()/i.test(start)) return 'php';
+  return 'twig';
+}
+
+function sourceTokens(code, type, offset = 0, start = 0) {
+  const quoted = /"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\])*`/.source;
+  const comments = {
+    twig: String.raw`\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|(?![\s\S]))|\{#[\s\S]*?(?:#\}|(?![\s\S]))`,
+    php: String.raw`\/\/[^\n]*?(?=\?>|$)|\/\*[\s\S]*?(?:\*\/|(?![\s\S]))|\#(?!\[)[^\n]*?(?=\?>|$)`,
+    sql: String.raw`--[^\n]*|\/\*[\s\S]*?(?:\*\/|(?![\s\S]))|\#[^\n]*`
+  };
+  const heredoc = type === 'php'
+    ? String.raw`<<<[ \t]*["']?([a-z_]\w*)["']?[^\n]*\n[\s\S]*?^[ \t]*\1\b|`
+    : '';
+  const pattern = new RegExp(heredoc + comments[type] + '|' + quoted +
+    String.raw`|\$*[a-z_][\w$]*|\$+|\d+|=>|->|===|==|!==|!=|\?>|\.{3}|[^\s]`, 'gim');
+  pattern.lastIndex = start;
+  const regexLiteral = /\/(?:\\[^\n]|\[(?:\\[^\n]|[^\]\\\n])*\]|[^\/\\[\n])+\/[a-z]*/iy;
+  const tokens = [];
+  let match;
+  while ((match = pattern.exec(code))) {
+    let value = match[0];
+    if (match[1] || /^(?:\/\/|\/\*|\{#|--|#(?!\[))/.test(value)) continue;
+    const previous = tokens.at(-1)?.value;
+    if (type === 'twig' && value === '/' &&
+        (!previous || /^(?:[=(:,;[!{?]|return|=>)$/.test(previous))) {
+      regexLiteral.lastIndex = match.index;
+      const literal = regexLiteral.exec(code);
+      if (literal) {
+        pattern.lastIndex = regexLiteral.lastIndex;
+        value = literal[0];
+      }
+    }
+    tokens.push({
+      value, index: offset + match.index,
+      quote: /^["'`]/.test(value) && value.length > 1 ? value[0] : '',
+      end: -1
+    });
+    if (type === 'php' && start > 0 && value === '?>') break;
+  }
+  const brackets = [];
+  for (const [i, token] of tokens.entries()) {
+    if (['{', '[', '('].includes(token.value)) brackets.push(i);
+    const opener = {'}':'{', ']':'[', ')':'('}[token.value];
+    if (opener && tokens[brackets.at(-1)]?.value === opener) tokens[brackets.pop()].end = i;
+  }
+  return tokens;
+}
+
+function sourceSections(code, type) {
+  if (type === 'php') {
+    const opening = /<\?(?:php\b|=)/gi;
+    const sections = [];
+    while (opening.exec(code)) {
+      const tokens = sourceTokens(code, type, 0, opening.lastIndex);
+      const last = tokens.at(-1);
+      if (last?.value === '?>') tokens.pop();
+      sections.push(tokens);
+      if (last?.value !== '?>') break;
+      opening.lastIndex = last.index + 2;
+    }
+    return sections.length ? sections : [sourceTokens(code, type)];
+  }
+  if (type !== 'twig' || !/^\s*<(?:!doctype|!--|\/?[a-z][\w:-]*(?=[\s/>]))/im.test(code)) {
+    return [sourceTokens(code, type)];
+  }
+  // Scan script contents and Twig expressions. HTML text and tag attributes are exempt.
+  const regions = /<!--[^]*?(?:-->|$)|\{#[^]*?(?:#\}|$)|<script\b(?:[^"'<>]|"[^"]*"|'[^']*')*>([^]*?)(?:<\/script\s*>|$)|<\/?[a-z](?:[^"'<>]|"[^"]*"|'[^']*')*>|(\{\{[^]*?\}\}|\{%[^]*?%\})/gi;
+  return [...code.matchAll(regions)].flatMap(match => {
+    const body = match[1] ?? match[2];
+    if (!body) return [];
+    const start = match[1] === undefined ? 0 : match[0].match(/^<script\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/i)[0].length;
+    return [sourceTokens(body, type, match.index + start)];
+  });
+}
+
+function* sourceEntries(tokens, start, end) {
+  for (let i = start; i < end; i++) {
+    yield i;
+    if (tokens[i].end > i) i = tokens[i].end;
+  }
+}
+
+function sourceLiteral(token) {
+  if (!token) return '';
+  return token.quote ? token.value.slice(1, -1) : token.value;
+}
+
+function sourceObjects(tokens) {
+  const objects = new Map();
+  for (const [i, token] of tokens.entries()) {
+    if (token.value !== '{' || token.end < 0) continue;
+    const props = new Map();
+    for (const j of sourceEntries(tokens, i + 1, token.end)) {
+      if ((j === i + 1 || tokens[j - 1].value === ',') && tokens[j + 1]?.value === ':') {
+        props.set(sourceLiteral(tokens[j]), tokens[j + 2]);
+      }
+    }
+    if (props.size) objects.set(token, props);
+  }
+  return objects;
+}
+
+function* sourceMembers(tokens, start, end) {
+  for (const i of sourceEntries(tokens, start, end)) {
+    if (tokens[i].value !== ',') continue;
+    if (start < i) yield {start, end:i};
+    start = i + 1;
+  }
+  if (start < end) yield {start, end};
+}
+
+const UNKNOWN_PROPERTY = Symbol('unknown property');
+
+function readSourceProperties(tokens, start, end) {
+  const props = new Map();
+  let hasUnknownKeys = false;
+  for (const member of sourceMembers(tokens, start, end)) {
+    const key = tokens[member.start];
+    const next = tokens[member.start + 1];
+    if (/^[a-z_$][\w$]*$/i.test(key.value) || /^["'][^\\{}]*["']$/.test(key.value)) {
+      const hasValue = member.start + 2 < member.end && next?.value === ':';
+      const body = next?.value === '(' && next.end >= 0 ? tokens[next.end + 1] : null;
+      const method = body?.value === '{' && body.end === member.end - 1;
+      if (hasValue || member.start + 1 === member.end || method) {
+        let value = UNKNOWN_PROPERTY;
+        if (hasValue) value = {start:member.start + 2, end:member.end};
+        if (method) value = {...member, method:true};
+        props.set(sourceLiteral(key), value);
+        continue;
+      }
+    }
+    // A spread or computed key may replace any preceding property.
+    props.clear();
+    hasUnknownKeys = true;
+  }
+  return key => props.get(key) ?? (hasUnknownKeys ? UNKNOWN_PROPERTY : null);
+}
+
+function sourceStaticValue(tokens, range) {
+  if (!range || range === UNKNOWN_PROPERTY || range.end !== range.start + 1) return undefined;
+  const {value} = tokens[range.start];
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  if (value === 'null') return null;
+  if (/^\d+$/.test(value)) return Number(value);
+  if (/^(?:"[^"\\{}]*"|'[^'\\{}]*')$/.test(value)) return sourceLiteral(tokens[range.start]);
+  return undefined;
+}
+
+function sourceSortEnabled(tokens, range) {
+  if (range.method) return true;
+  const value = sourceStaticValue(tokens, range);
+  if (value !== undefined) return Boolean(value);
+  if (range === UNKNOWN_PROPERTY) return undefined;
+  let start = range.start;
+  if (tokens[start].value === 'async' && start + 1 < range.end && tokens[start + 1].value !== '=>') start++;
+  const first = tokens[start];
+  if (first.value === 'function') {
+    const params = [...sourceEntries(tokens, start + 1, range.end)].find(i => tokens[i].value === '(');
+    const body = params === undefined ? null : tokens[tokens[params].end + 1];
+    return body?.value === '{' && body.end === range.end - 1 ? true : undefined;
+  }
+  const parameterEnd = first.value === '(' ? first.end : /^[a-z_$][\w$]*$/i.test(first.value) ? start : -1;
+  if (parameterEnd >= start && parameterEnd + 1 < range.end && tokens[parameterEnd + 1].value === '=>') return true;
+  return undefined;
+}
+
+function checkDragSorting(tokens, object, report) {
+  const props = readSourceProperties(tokens, object + 1, tokens[object].end);
+  const view = sourceStaticValue(tokens, props('view'));
+  const drag = props('drag');
+  const dragValue = drag === null ? false : sourceStaticValue(tokens, drag);
+  const index = tokens[object].index;
+  if (view !== 'datatable' || dragValue === undefined) {
+    const message = '表格类型或 drag 来自动态配置，需核对最终生效的配置。';
+    report('T04', index, 'unknown', message);
+    report('T11', index, 'unknown', message);
+    return;
+  }
+  if (!dragValue) {
+    const message = '此 datatable 的静态配置未开启拖拽。';
+    report('T04', index, 'skipped', message);
+    report('T11', index, 'skipped', message);
+    return;
+  }
+  if (dragValue === 'order') {
+    report('T11', tokens[drag.start].index, 'confirmed', '此 datatable 使用了 drag: "order"。');
+  } else {
+    report('T11', tokens[drag.start].index);
+  }
+
+  const columns = props('columns');
+  const array = columns && tokens[columns.start];
+  const hasInlineColumns = array?.value === '[' && array.end === columns.end - 1;
+  const entries = hasInlineColumns ? [...sourceMembers(tokens, columns.start + 1, array.end)] : [];
+  let unresolved = entries.length === 0;
+  let enabled = false;
+  for (const column of entries) {
+    const token = tokens[column.start];
+    if (token.value !== '{' || token.end !== column.end - 1) {
+      unresolved = true;
+      continue;
+    }
+    const sort = readSourceProperties(tokens, column.start + 1, token.end)('sort');
+    if (sort === null) continue;
+    const sorting = sourceSortEnabled(tokens, sort);
+    if (sorting === undefined) {
+      unresolved = true;
+    } else if (sorting) {
+      report('T04', tokens[sort.start].index);
+      enabled = true;
+    }
+  }
+  if (enabled) return;
+  if (unresolved) {
+    report('T04', index, 'unknown', '有列定义或 sort 值无法从此处确认，需核对最终生效的列配置。');
+  } else {
+    report('T04', index, 'confirmed', '此拖拽表格的内联列配置均未开启列排序。');
+  }
+}
+
+function checkTwigSource(tokens, report, componentIds) {
+  for (const token of tokens) {
+    if (token.quote === "'") report('T14', token.index);
+  }
+  const objects = sourceObjects(tokens);
+  const positions = new Map(tokens.map((token, i) => [token, i]));
+  let formEnd = -1;
+  for (const [object, props] of objects) {
+    const view = props.get('view');
+    const viewName = view?.quote ? sourceLiteral(view) : '';
+    const id = props.get('id');
+    if (viewName && id?.quote && id.quote !== '`') {
+      const name = sourceLiteral(id);
+      if (name && !/\{[{%]/.test(name)) {
+        if (componentIds.has(name)) {
+          const first = componentIds.get(name);
+          first.report('T07', first.index);
+          report('T07', id.index);
+        } else {
+          componentIds.set(name, {report, index:id.index});
+        }
+      }
+    }
+    if (viewName === 'form') formEnd = Math.max(formEnd, object.end);
+    if (viewName && viewName !== 'form' && viewName !== 'datatable' && positions.get(object) < formEnd) {
+      const width = props.get('minWidth') || props.get('maxWidth');
+      if (width) report('T09', width.index);
+    }
+    for (const [name, value] of props) {
+      if (name.toLowerCase() === 'autowidth' && value?.value === 'true') report('T10', value.index);
+    }
+    if (viewName === 'datatable') checkDragSorting(tokens, positions.get(object), report);
+  }
+  for (const [i, token] of tokens.entries()) {
+    if (token.value !== 'validate') continue;
+    let paramsIndex = i + 1;
+    if ([':', '='].includes(tokens[paramsIndex]?.value)) {
+      paramsIndex++;
+      if (['async', 'function'].includes(tokens[paramsIndex]?.value)) paramsIndex++;
+      if (tokens[paramsIndex]?.value === 'function') paramsIndex++;
+    }
+    const params = tokens[paramsIndex];
+    if (params?.value !== '(' || params.end < 0) continue;
+    const bodyIndex = params.end + (tokens[params.end + 1]?.value === '=>' ? 2 : 1);
+    const body = tokens[bodyIndex];
+    if (body?.value !== '{' || body.end < 0) continue;
+    const standard = /^if \( ! \$\$ \( (?:"form"|'form') \) \. validate \( \) \) \{ webix \. message \( CONST \. MSG \. VL10001 \)(?: ;)? return false(?: ;)? \}/;
+    const hasGuard = [...sourceEntries(tokens, bodyIndex + 1, body.end)].some(j =>
+      tokens[j].value === 'if' && standard.test(tokens.slice(j, Math.min(j + 30, body.end)).map(t => t.value).join(' '))
+    );
+    if (!hasGuard) report('T18', token.index);
+  }
+}
+
+function checkPhpSource(tokens, report) {
+  for (const [i, token] of tokens.entries()) {
+    if (token.quote === '"') report('T15', token.index);
+    if (/^["']$/.test(token.quote) && /^\s*(?:select|with)\s/i.test(sourceLiteral(token))) {
+      checkSqlSource(sourceTokens(sourceLiteral(token), 'sql', token.index + 1), report);
+    }
+    if (token.value.toLowerCase() === 'select' && tokens[i - 1]?.value === '->' &&
+        tokens[i + 1]?.value === '(' && tokens[i + 2]?.quote &&
+        /^(?:[\w.]+\.)?\*$/.test(sourceLiteral(tokens[i + 2]).trim())) report('T22', tokens[i + 2].index);
+
+    const params = tokens[i + 1];
+    if (token.value.toLowerCase() !== 'foreach' || params?.value !== '(' || params.end < 0) continue;
+    const header = [...sourceEntries(tokens, i + 2, params.end)];
+    const as = header.find(j => tokens[j].value.toLowerCase() === 'as');
+    if (as === undefined) continue;
+    const row = tokens[params.end - 1].value;
+    if (!/^\$\w+$/.test(row)) continue;
+    const body = tokens[params.end + 1];
+    if (!body) continue;
+    const start = params.end + 1;
+    let end = body.end;
+    if (body.value === ':') {
+      let depth = 1;
+      for (let j = start + 1; j < tokens.length; j++) {
+        const word = tokens[j].value.toLowerCase();
+        if (word === 'foreach' && tokens[tokens[j + 1]?.end + 1]?.value === ':') depth++;
+        if (word === 'endforeach' && --depth === 0) { end = j; break; }
+      }
+    } else if (body.value !== '{') {
+      for (const j of sourceEntries(tokens, start, tokens.length)) {
+        if (tokens[j].value === ';') { end = j + 1; break; }
+        if (tokens[j].value === '}') break;
+      }
+    }
+    for (let j = start + 1; j < end; j++) {
+      if (tokens[j].value === '=' && tokens[j + 1]?.value === row && tokens[j + 2]?.value === ';' &&
+          /^(?:\$\w+|\])$/.test(tokens[j - 1].value)) report('T08', tokens[j].index);
+    }
+  }
+}
+
+function checkSqlSource(tokens, report) {
+  for (const [i, token] of tokens.entries()) {
+    if (token.value.toLowerCase() !== 'select') continue;
+    let start = i + 1;
+    if (/^(?:distinct|all)$/i.test(tokens[start]?.value)) start++;
+    let column = [];
+    for (const j of sourceEntries(tokens, start, tokens.length)) {
+      const part = tokens[j];
+      const stop = /^(?:from|into|select|\)|;)$/i.test(part.value);
+      if (stop || part.value === ',') {
+        reportWildcard(column, report);
+        column = [];
+        if (stop) break;
+      } else {
+        column.push(part);
+      }
+    }
+    reportWildcard(column, report);
+  }
+}
+
+function reportWildcard(column, report) {
+  const last = column.at(-1);
+  if (last?.value !== '*') return;
+  const qualifier = column.slice(0, -1);
+  if (qualifier.length % 2 === 0 && qualifier.every((token, i) =>
+    i % 2 ? token.value === '.' : token.quote || /^\w+$/.test(token.value))) report('T22', last.index);
+}
+
+function collectSourceHits({code, type}, componentIds) {
+  const hits = new Map();
+  const report = (id, index, status = 'warn', message = SOURCE_RULES[id]) => {
+    const key = id + ':' + status + ':' + message;
+    if (!hits.has(key)) hits.set(key, {id, status, message, positions:new Set()});
+    hits.get(key).positions.add(index);
+  };
+  for (const tokens of sourceSections(code, type)) {
+    if (type === 'twig') checkTwigSource(tokens, report, componentIds);
+    if (type === 'php') checkPhpSource(tokens, report);
+    if (type === 'sql') checkSqlSource(tokens, report);
+  }
+  return hits;
+}
+
+function sourceExcerpts(code, hits) {
+  const lines = code.split('\n');
+  const findings = new Map();
+  const sorted = [...hits].flatMap(([key, {positions}]) => [...positions].map(index => ({key, index})))
+    .sort((a, b) => a.index - b.index);
+  let line = 0, start = 0;
+  for (const {key, index} of sorted) {
+    while (line < lines.length - 1 && index >= start + lines[line].length + 1) {
+      start += lines[line].length + 1;
+      line++;
+    }
+    if (!findings.has(key)) findings.set(key, new Map());
+    const excerptStart = Math.max(0, index - start - 65);
+    const excerpt = lines[line].slice(excerptStart, excerptStart + 180).trim();
+    findings.get(key).set(line + 1, (excerptStart ? '…' : '') + excerpt +
+      (lines[line].length > excerptStart + 180 ? '…' : ''));
+  }
+  return findings;
+}
+
+function checkSources(files) {
+  const componentIds = new Map();
+  // A duplicate component ID can add a hit to an earlier file.
+  const allHits = files.map(file => collectSourceHits(file, componentIds));
+  const findings = new Map();
+  for (const [i, file] of files.entries()) {
+    const hits = allHits[i];
+    for (const [key, lines] of sourceExcerpts(file.code, hits)) {
+      const {id, status, message} = hits.get(key);
+      if (!findings.has(key)) findings.set(key, {id, status, message, files:[]});
+      findings.get(key).files.push({name:file.name, lines});
+    }
+  }
+  const statusOrder = Object.keys(SOURCE_STATUS);
+  return [...findings.values()].sort((a, b) =>
+    statusOrder.indexOf(a.status) - statusOrder.indexOf(b.status) || a.id.localeCompare(b.id));
+}
+
+function renderSourceFindings() {
+  const root = $('sourceResults');
+  root.replaceChildren();
+  for (const finding of sourceFindings) {
+    const item = ITEMS.find(item => item.id === finding.id);
+    const card = document.createElement('article');
+    card.className = 'source-result ' + finding.status;
+    const status = document.createElement('span');
+    status.className = 'source-result-status';
+    status.textContent = SOURCE_STATUS[finding.status];
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'source-link';
+    button.textContent = item.id + ' · ' + item.title;
+    button.addEventListener('click', () => {
+      choose(item.id);
+      $('detailPanel').scrollIntoView({block:'nearest'});
+    });
+    const message = document.createElement('p');
+    message.textContent = finding.message;
+    card.append(status, button, message);
+    for (const {name, lines} of finding.files) {
+      const filename = document.createElement('p');
+      filename.className = 'source-file-name';
+      filename.textContent = name;
+      const list = document.createElement('ul');
+      for (const [line, excerpt] of [...lines].slice(0, 5)) {
+        const li = document.createElement('li');
+        const code = document.createElement('code');
+        code.textContent = excerpt;
+        li.append('第 ' + line + ' 行 · ', code);
+        list.append(li);
+      }
+      if (lines.size > 5) {
+        const more = document.createElement('li');
+        more.textContent = '另有 ' + (lines.size - 5) + ' 行相关配置';
+        list.append(more);
+      }
+      card.append(filename, list);
+    }
+    root.append(card);
+  }
+}
+
+const sourceFiles = [];
+let nextSourceNumber = 1;
+
+function scanSources() {
+  sourceFindings = checkSources(sourceFiles);
+  sourceWarnings = new Set(sourceFindings.filter(finding => finding.status === 'warn').map(finding => finding.id));
+  $('sourceCardSection').hidden = sourceFiles.length === 0;
+  let summary = '添加代码卡片后自动校验 10 项静态规则。';
+  if (sourceFiles.length) {
+    summary = '已扫描 ' + sourceFiles.length + ' 个文件。';
+    summary += sourceWarnings.size
+      ? sourceWarnings.size + ' 个检查项有疑点。'
+      : '当前静态规则未发现疑点。';
+    if (sourceFindings.some(finding => finding.status === 'unknown')) summary += '有配置需要补充确认。';
+    if (sourceFindings.length) summary += '下方结论仅适用于列出的代码位置。';
+  }
+  $('sourceStatus').textContent = summary;
+  renderSourceFindings();
+  renderList();
+}
+
+function updateSourceDraft() {
+  const code = $('sourceCode').value;
+  const tooLong = code.length > SOURCE_LIMIT;
+  $('addSource').disabled = tooLong || !code.trim();
+  $('sourceDraftStatus').textContent = tooLong ? '超过 20 万字符，请分段添加。' : '';
+}
+
+function appendSourceCard(file) {
+  const card = document.createElement('article');
+  card.className = 'source-file';
+  const header = document.createElement('div');
+  header.className = 'source-card-header';
+  const info = document.createElement('div');
+  const title = document.createElement('h4');
+  title.className = 'source-card-title';
+  title.textContent = file.name;
+  const meta = document.createElement('p');
+  meta.className = 'source-card-meta';
+  meta.textContent = SOURCE_TYPES[file.type] + ' · ' + file.code.split('\n').length + ' 行';
+  info.append(title, meta);
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'btn';
+  remove.textContent = '删除';
+  remove.setAttribute('aria-label', '删除代码卡片 · ' + file.name);
+  remove.addEventListener('click', () => {
+    const neighbor = card.nextElementSibling || card.previousElementSibling;
+    sourceFiles.splice(sourceFiles.indexOf(file), 1);
+    card.remove();
+    scanSources();
+    (neighbor?.querySelector('button') || $('sourceCode')).focus();
+  });
+  header.append(info, remove);
+  const preview = document.createElement('details');
+  preview.className = 'source-card-preview';
+  const summary = document.createElement('summary');
+  summary.textContent = '查看代码';
+  const code = document.createElement('pre');
+  code.tabIndex = 0;
+  code.textContent = file.code;
+  preview.append(summary, code);
+  card.append(header, preview);
+  $('sourceFiles').append(card);
+}
+
+$('sourceCode').addEventListener('input', updateSourceDraft);
+$('sourceForm').addEventListener('submit', event => {
+  event.preventDefault();
+  const code = $('sourceCode').value;
+  if (!code.trim() || code.length > SOURCE_LIMIT) return;
+  const filename = $('sourceName').value.trim();
+  const requestedType = $('sourceType').value;
+  const file = {
+    code,
+    name:filename || '文件 ' + nextSourceNumber,
+    type:requestedType === 'auto' ? sourceType(code, filename) : requestedType
+  };
+  nextSourceNumber++;
+  sourceFiles.push(file);
+  appendSourceCard(file);
+  $('sourceCode').value = '';
+  $('sourceName').value = '';
+  $('sourceType').value = 'auto';
+  updateSourceDraft();
+  scanSources();
+  $('sourceCode').focus();
+});
+updateSourceDraft();
+
+$('detailToggle').addEventListener('click',()=>toggle(selected));$('nextBtn').addEventListener('click',()=>{const index=ITEMS.findIndex(x=>x.id===selected);if(index<ITEMS.length-1){selected=ITEMS[index+1].id;renderList();renderDetail();$('detailBody').scrollTop=0;}});
+$('notes').addEventListener('input',e=>{store.notes[selected]=e.target.value;persist();});
+$('searchInput').addEventListener('input',e=>{query=e.target.value.trim().toLowerCase();renderList();});
+document.querySelectorAll('[data-status]').forEach(btn=>btn.addEventListener('click',()=>{activeStatus=btn.dataset.status;document.querySelectorAll('[data-status]').forEach(b=>{const on=b===btn;b.classList.toggle('active',on);b.setAttribute('aria-pressed',String(on));});renderList();}));
+$('exportBtn').addEventListener('click',()=>{download('PCL_单体测试进度_'+new Date().toISOString().slice(0,10)+'.json','application/json;charset=utf-8',JSON.stringify(buildExport(),null,2));toast('已导出 JSON 记录');});
+$('csvBtn').addEventListener('click',()=>{const lines=[['编号','分类','日文原文','中文检查项','完成','检查备注'].map(csvCell).join(',')];ITEMS.forEach(x=>lines.push([x.id,x.tags.map(t=>LABELS[t]).join('/'),x.jp,x.title,store.done[x.id]?'完成':'未完成',store.notes[x.id]||''].map(csvCell).join(',')));download('PCL_单体测试清单_'+new Date().toISOString().slice(0,10)+'.csv','text/csv;charset=utf-8','\ufeff'+lines.join('\r\n'));toast('已导出可用 Excel 打开的 CSV');});
+$('importBtn').addEventListener('click',()=>$('importFile').click());$('importFile').addEventListener('change',async e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;try{const obj=JSON.parse(await file.text());if(obj.format!=='pcl-qa-checklist'||obj.version!==1||!Array.isArray(obj.items))throw Error('文件格式不正确');if(!confirm('导入将覆盖当前 22 项完成状态和检查备注，继续吗？'))return;const valid=new Set(ITEMS.map(x=>x.id)),done={},notes={};obj.items.forEach(x=>{if(valid.has(x.id)){done[x.id]=x.done===true;notes[x.id]=typeof x.note==='string'?x.note:'';}});store.done=done;store.notes=notes;persist();renderAll();toast('导入成功');}catch(err){toast('导入失败：'+(err?.message||'请检查文件'));}});
+$('resetBtn').addEventListener('click',()=>{if(!confirm('将清空全部 22 项的完成标记和备注。建议先导出备份。确认清空吗？'))return;store.done={};store.notes={};persist();renderAll();toast('已清空检查进度');});
+setupTheme();safeLoad();renderAll();
+</script>
+</body>
+</html>
