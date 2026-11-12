@@ -110,6 +110,17 @@
     .xr-frame .xr-mask { position: absolute; inset: 0; pointer-events: none; opacity: .32; } /* 实心色块整体调透明：重叠处不会越叠越深、盖住字 */
     .xr-real.is-nomask .xr-mask { display: none; }
     .xv-sketch > summary { cursor: pointer; font-weight: 700; margin: 6px 0; }
+    /* 「上传这一份」贴在窗口底部（用户 2026-11-12：差异很长时不用滑回顶部才能传）；嵌在一页对比里时不悬浮，按钮在外面卡片的吸顶标题上 */
+    html:not(.xd-embed) #xdUploadPanel:not([hidden]) { position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 60;
+      width: min(1180px, calc(100% - 32px)); margin: 0; padding: 10px 18px; box-sizing: border-box;
+      display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 16px;
+      border: 3px solid #1a7f37; border-radius: 16px; box-shadow: 0 8px 28px rgba(15, 23, 42, .28); }
+    html:not(.xd-embed) #xdUploadPanel > h2 { grid-column: 1; margin: 0; font-size: 17px; overflow-wrap: anywhere; }
+    html:not(.xd-embed) #xdUploadPanel > .toolbar-hint { grid-column: 1; margin: 0; font-size: 12px; }
+    html:not(.xd-embed) #xdUploadPanel > .link-actions { grid-column: 2; grid-row: 1 / span 2; margin: 0; }
+    html:not(.xd-embed) #xdUploadPanel > #xdUploadStatus, html:not(.xd-embed) #xdUploadPanel > #xdUploadError { grid-column: 1 / -1; margin: 2px 0 0; }
+    html:not(.xd-embed) #xdUploadPanel > p:empty { display: none; }
+    html:not(.xd-embed) body:has(#xdUploadPanel:not([hidden])) main { padding-bottom: 150px; }
     /* 嵌在一页对比里（static/excel_diff_embed.js）：只留状态、上传这一份和结果 */
     .xd-embed body { background: #fff; min-height: 0; }
     .xd-embed .app-header, .xd-embed #xdInputPanel > h2, .xd-embed .xd-fields, .xd-embed #xdInputPanel .link-actions,

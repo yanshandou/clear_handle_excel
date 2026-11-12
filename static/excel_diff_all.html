@@ -15,7 +15,7 @@
     .xa-card { border: 2px solid #c9cfdb; border-radius: 12px; background: #fff; }
     .xa-card.is-same { border-color: #1a7f37; } .xa-card.is-diff { border-color: #b7791f; }
     .xa-card.is-err { border-color: #cf222e; } .xa-card.is-up { border-color: #2563eb; }
-    .xa-head { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+    .xa-head { position: sticky; top: var(--xa-sticky-top, 0px); z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
       padding: 10px 14px; background: #f6f7fb; border-radius: 10px 10px 0 0; }
     .xa-card:not(.is-open) .xa-head { border-radius: 10px; }
     .xa-name { flex: 1 1 360px; min-width: 0; font-weight: 800; overflow-wrap: anywhere; color: #111827; }
