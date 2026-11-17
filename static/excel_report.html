@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Excel 对比报告 - 开发百宝箱</title>
+  <link rel="icon" type="image/png" href="/static/images/dev-toolbox-logo.png">
+  <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/repair.css"><script src="/static/game_fx.js"></script>
+  <style>
+    .xp-sides { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 14px; align-items: stretch; }
+    .xp-side { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border: 3px dashed; border-radius: 16px; transition: background-color .15s; }
+    .xp-side.is-a { border-color: #cf222e; background: #fff4f3; } .xp-side.is-b { border-color: #1a7f37; background: #f0fff4; }
+    .xp-side.is-drop { border-style: solid; background: #fff8d6; }
+    .xp-side h3 { margin: 0; font-size: 17px; }
+    .xp-side.is-a h3 { color: #82071e; } .xp-side.is-b h3 { color: #14532d; }
+    .xp-side input[type=text] { width: 100%; min-width: 0; }
+    .xp-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+    .xp-chosen { font-weight: 700; color: #1f2937; overflow-wrap: anywhere; }
+    .xp-chosen:empty { display: none; }
+    .xp-swap { align-self: center; }
+    .xp-busy { display: flex; align-items: center; gap: 12px; max-width: 760px; }
+    .xp-busy[hidden] { display: none; }
+    .xp-spinner { width: 22px; height: 22px; flex: none; border: 3px solid #c9cfdb; border-top-color: #2563eb; border-radius: 50%; animation: xp-spin .8s linear infinite; }
+    .xp-busy-text { flex: 1; min-width: 0; }
+    .xp-percent { font-size: 18px; font-weight: 800; color: #1d4ed8; }
+    .xp-bar { height: 8px; margin: 6px 0 4px; border-radius: 999px; background: #e5e7eb; overflow: hidden; }
+    .xp-bar span { display: block; height: 100%; width: 0; background: #2563eb; border-radius: 999px; transition: width .4s ease; }
+    @keyframes xp-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .xp-spinner { animation-duration: 2.4s; } }
+    .xp-verdict { margin: 4px 0 10px; padding: 12px 16px; border-radius: 12px; font-weight: 800; font-size: 17px; border: 2px solid; }
+    .xp-verdict.is-same { background: #e4f5ea; border-color: #1a7f37; color: #14532d; }
+    .xp-verdict.is-diff { background: #fff3d6; border-color: #b7791f; color: #5c3b00; }
+    .xp-saved { overflow-wrap: anywhere; }
+    .xp-frame { width: 100%; height: 78vh; min-height: 520px; border: 2px solid #c7cfdb; border-radius: 12px; background: #eef1f6; }
+  </style>
+  <link rel="stylesheet" href="/static/theme-casual.css">
+  <script src="/static/tools.js?v=1"></script>
+  <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/how_notes.css">
+</head>
+<body>
+  <header class="app-header">
+    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">Excel 对比报告</h1><span class="subtitle">任选两份 Excel · 找出所有不同 · 生成一个 HTML 报告</span></div></a>
+    <nav class="header-nav" aria-label="功能导航"><a href="/" class="nav-link"><span class="ui-icon harbor-icon icon-home" aria-hidden="true"></span>主页</a></nav>
+  </header>
+  <main class="container clean-container">
+    <section class="panel">
+      <h2>选两份要对比的 Excel</h2>
+      <details class="how-notes">
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">只读两份文件，不开 Excel、不改文件；报告是一个 .html，双击就能看，可以直接发给别人</span><span class="how-notes-toggle"></span></summary>
+        <div class="how-notes-body">
+          <section class="how-notes-group">
+            <h3>📋 怎么选</h3>
+            <ul>
+              <li>每边填完整路径（可以粘贴「复制为路径」带引号的），或点「选择文件」，或直接把文件拖到框里。</li>
+              <li>A 当旧版（左边、红色 −），B 当新版（右边、绿色 +），点 ⇄ 可以对调。</li>
+              <li>支持 .xlsx / .xlsm / .xltx / .xltm；旧的 .xls 要先在 Excel 里另存为 .xlsx。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>🔍 比哪些</h3>
+            <ul>
+              <li>表：多了 / 少了哪张表、表的顺序。</li>
+              <li>每个格子：文字、公式、公式结果、批注、超链接、字体、字的颜色、填充色、边框、对齐、数字格式、保护。</li>
+              <li>整张表：行高列宽、隐藏行列、合并、冻结窗格、打印设置、页眉页脚、图片图形、标签颜色、显示隐藏、条件格式、数据验证、自动筛选、工作表保护。</li>
+              <li>工作簿：定义的名称、工作簿保护。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group is-wide">
+            <h3>📄 报告</h3>
+            <ul>
+              <li>左右两栏效果图（不一样的格子盖红 / 绿色块）+ 逐条差异清单，清单一条不省略；可以按类型筛、搜索。</li>
+              <li>报告另存一份在程序数据的 excel_reports 文件夹里。</li>
+            </ul>
+          </section>
+        </div>
+      </details>
+      <div class="xp-sides">
+        <div class="xp-side is-a" data-side="a">
+          <h3>− 文件 A（旧，左边）</h3>
+          <input id="xpPathA" type="text" aria-label="文件 A 的完整路径" spellcheck="false" autocomplete="off" placeholder="文件 A 的完整路径，或把文件拖到这个框里">
+          <div class="xp-pick"><button class="btn" type="button" data-pick="a">📁 选择文件</button><span class="xp-chosen" id="xpChosenA"></span></div>
+          <input id="xpFileA" type="file" accept=".xlsx,.xlsm,.xltx,.xltm" hidden>
+        </div>
+        <button id="xpSwap" class="btn xp-swap" type="button" title="A 和 B 对调">⇄</button>
+        <div class="xp-side is-b" data-side="b">
+          <h3>+ 文件 B（新，右边）</h3>
+          <input id="xpPathB" type="text" aria-label="文件 B 的完整路径" spellcheck="false" autocomplete="off" placeholder="文件 B 的完整路径，或把文件拖到这个框里">
+          <div class="xp-pick"><button class="btn" type="button" data-pick="b">📁 选择文件</button><span class="xp-chosen" id="xpChosenB"></span></div>
+          <input id="xpFileB" type="file" accept=".xlsx,.xlsm,.xltx,.xltm" hidden>
+        </div>
+      </div>
+      <div class="link-actions">
+        <button id="xpRun" class="btn btn-primary" type="button">📊 生成对比报告</button>
+      </div>
+      <div id="xpBusy" class="xp-busy" role="status" aria-live="polite" hidden>
+        <span class="xp-spinner" aria-hidden="true"></span>
+        <span class="xp-percent" id="xpPercent">0%</span>
+        <div class="xp-busy-text"><div id="xpStage">正在准备…</div><div class="xp-bar"><span id="xpBar"></span></div><small id="xpEta"></small></div>
+      </div>
+      <p id="xpError" class="batch-error" role="alert"></p>
+    </section>
+    <section class="panel" id="xpResultPanel" hidden>
+      <h2>对比报告</h2>
+      <div id="xpVerdict"></div>
+      <div class="link-actions">
+        <button id="xpDownload" class="btn btn-primary" type="button">💾 下载报告（.html）</button>
+        <button id="xpOpen" class="btn" type="button">🗗 在新窗口打开</button>
+      </div>
+      <p class="toolbar-hint xp-saved" id="xpSaved"></p>
+      <iframe id="xpFrame" class="xp-frame" title="对比报告预览" sandbox="allow-scripts allow-same-origin"></iframe>
+    </section>
+    <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
+  </main>
+  <script src="/static/dialog.js"></script>
+  <script src="/static/eta.js"></script><script src="/static/excel_report.js"></script><script src="/static/debug_log.js"></script>
+</body>
+</html>
