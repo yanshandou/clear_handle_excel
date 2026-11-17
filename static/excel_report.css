@@ -109,4 +109,10 @@ body { margin: 0; padding: 20px 24px 40px; font: 14px/1.55 'Meiryo', 'Yu Gothic 
 .xr-jump em { font-style: normal; font-weight: 700; color: #1f2937; }
 /* 不要水平滚动：.xv-fit 用 zoom 缩到一栏宽（static/excel_report_view.js fit） */
 .xv-pane { overflow-x: hidden; overflow-y: auto; }
-.xr-zoom { margin-left: 10px; font-weight: 400; color: #3b4658; }
+.xv-pane.is-wide { overflow-x: auto; }  /* 自己放大到超过一栏宽时才有左右滚动 */
+.xr-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin: 0 0 6px; }
+.xr-bar .xr-jump { margin: 0; }
+.xr-zoombar { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.xr-zoombar button { font: inherit; font-size: 13px; font-weight: 700; min-width: 32px; padding: 4px 10px; border-radius: 8px; border: 1.5px solid #8a94a6; background: #f3f5f9; color: #1f2937; cursor: pointer; }
+.xr-zoombar button.is-on { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
+.xr-zoom-pct { min-width: 3.4em; text-align: center; font-size: 14px; color: #1f2937; }

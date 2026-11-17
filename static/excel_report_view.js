@@ -103,8 +103,11 @@
       '斜纹 = 这边的行 / 列比对面小', view.cols_cut ? `右边还有 ${view.cols_cut} 列没画` : '', view.marks_cut ? '不一样的格子太多，图上只标了一部分' : '']
       .filter(Boolean).join('；');
     const scope = view.whole ? `整张表 ${view.rows.length} 行${view.cols_cut ? `、前 ${view.cols.length} 列` : ''}` : '表太大，只画有不同的行和上下 3 行';
-    const jumps = count ? `<span class="xr-jump"><button type="button" data-step="-1">⬆ 上一处不同</button><button type="button" data-step="1">⬇ 下一处不同</button><em></em></span>` : '';
-    return `<details class="xv-sketch" open><summary>🧩 效果图（按格子画的样子，${scope}）<small class="xr-zoom"></small></summary>${jumps}`
+    const jumps = `<div class="xr-bar">${count ? `<span class="xr-jump"><button type="button" data-step="-1">⬆ 上一处不同</button><button type="button" data-step="1">⬇ 下一处不同</button><em></em></span>` : ''}`
+      + `<span class="xr-zoombar" role="group" aria-label="缩放"><button type="button" data-zoom="out" title="缩小">－</button><b class="xr-zoom-pct">100%</b>`
+      + `<button type="button" data-zoom="in" title="放大（放不下就出现左右滚动）">＋</button><button type="button" data-zoom="fit" title="缩到正好一栏宽，没有左右滚动">适合宽度</button>`
+      + `<button type="button" data-zoom="100" title="原样大小">100%</button></span></div>`;
+    return `<details class="xv-sketch" open><summary>🧩 效果图（按格子画的样子，${scope}）</summary>${jumps}`
       + `<div class="xv-titles"><strong class="is-old">− 文件 A（旧）</strong><strong class="is-new">+ 文件 B（新）</strong></div>`
       + `<div class="xv-wrap">${paneHtml(view, 'old')}${paneHtml(view, 'new')}</div>`
       + `<p class="xr-hint">${note}。图片图形本身画不出来，只标位置。两边一起滚动；点下面清单里的一行，图上会跳到那个位置。</p></details>`;
@@ -204,6 +207,8 @@
       if (step) { stepMark(step.closest('.xv-sketch'), Number(step.dataset.step)); return; }
       const line = event.target.closest('tr[data-jump]');
       if (line) { jumpTo(line.closest('.xd-sheet'), line.dataset.jump); return; }
+      const zoomBtn = event.target.closest('button[data-zoom]');
+      if (zoomBtn) { setZoom(zoomBtn.closest('.xv-sketch'), zoomBtn.dataset.zoom); return; }
       const tool = event.target.closest('button[data-act]');
       if (!tool) return;
       const act = tool.dataset.act;
@@ -294,17 +299,41 @@
     jumpTo(sketch.closest('.xd-sheet'), list[at].addr);
   }
 
-  // 不要水平滚动（用户 2026-11-17）：整张表等比例缩到正好一栏宽，只留垂直滚动
-  function fit(root) {
-    root.querySelectorAll('.xv-pane:not(.xv-empty)').forEach(pane => {
-      const inner = pane.querySelector('.xv-fit');
-      if (!inner || !pane.clientWidth) return;
-      const zoom = Math.min(1, (pane.clientWidth - 2) / Number(inner.dataset.w || 1));
-      inner.style.zoom = zoom;
+  // 不要水平滚动（用户 2026-11-17）：默认整张表等比例缩到正好一栏宽；可以用 ＋ － 自己调，放大后出现左右滚动（仍左右联动）
+  const STEPS = [0.1, 0.15, 0.2, 0.25, 0.33, 0.4, 0.5, 0.6, 0.75, 0.9, 1, 1.25, 1.5, 2];
+  function fitZoom(pane) {
+    const inner = pane.querySelector('.xv-fit');
+    return Math.min(1, (pane.clientWidth - 2) / Number(inner.dataset.w || 1));
+  }
+  function applyZoom(sketch) {
+    const panes = [...sketch.querySelectorAll('.xv-pane:not(.xv-empty)')];
+    if (!panes.length || !panes[0].clientWidth) return;
+    const mode = sketch.dataset.zoomMode || 'fit';
+    const zoom = mode === 'fit' ? fitZoom(panes[0]) : Number(mode);
+    panes.forEach(pane => {
+      pane.querySelector('.xv-fit').style.zoom = zoom;
       pane.dataset.zoom = zoom;
-      const sketch = pane.closest('.xv-sketch'), label = sketch && sketch.querySelector('.xr-zoom');
-      if (label) label.textContent = zoom < 0.999 ? `缩到 ${Math.round(zoom * 100)}% 放进一栏宽` : '';
+      pane.classList.toggle('is-wide', zoom > fitZoom(pane) + 0.001);
     });
+    const pct = sketch.querySelector('.xr-zoom-pct');
+    if (pct) pct.textContent = `${Math.round(zoom * 100)}%`;
+    sketch.querySelectorAll('button[data-zoom]').forEach(b => b.classList.toggle('is-on', b.dataset.zoom === mode || (b.dataset.zoom === '100' && mode === '1')));
+  }
+  function setZoom(sketch, how) {
+    const pane = sketch.querySelector('.xv-pane:not(.xv-empty)');
+    if (!pane) return;
+    const now = Number(pane.dataset.zoom || 1);
+    let mode = how === 'fit' ? 'fit' : how === '100' ? '1' : null;
+    if (!mode) {
+      const next = how === 'in' ? STEPS.find(z => z > now + 0.001) : [...STEPS].reverse().find(z => z < now - 0.001);
+      mode = String(next ?? now);
+    }
+    sketch.dataset.zoomMode = mode;
+    applyZoom(sketch);
+  }
+  function fit(root) {
+    const list = root.matches && root.matches('.xv-sketch') ? [root] : root.querySelectorAll('.xv-sketch');
+    list.forEach(applyZoom);
   }
   let fitTimer = 0;
   window.addEventListener('resize', () => { clearTimeout(fitTimer); fitTimer = setTimeout(() => fit(document), 150); });
