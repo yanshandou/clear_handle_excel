@@ -11,9 +11,9 @@
     const color = (kind === '字的颜色' || kind === '填充色' || kind === '标签颜色') && /^#[0-9A-F]{6}(?=$| )/.exec(text);
     return (color ? `<span class="xd-swatch" style="background:${color[0]}"></span>` : '') + esc(text);
   }
-  function row(kind, whereHtml, oldText, newText) {
+  function row(kind, whereHtml, oldText, newText, jump = '') {
     const oldEmpty = oldText === '' || oldText == null, newEmpty = newText === '' || newText == null;
-    return `<tr data-kind="${esc(kind)}"><td>${whereHtml}</td><td class="xd-kind">${esc(kind)}</td>`
+    return `<tr data-kind="${esc(kind)}"${jump ? ` data-jump="${esc(jump)}" title="点一下，效果图跳到这里"` : ''}><td>${whereHtml}</td><td class="xd-kind">${esc(kind)}</td>`
       + `<td class="${oldEmpty ? 'xd-none' : 'xd-old'}">${value(oldText, kind)}</td><td class="${newEmpty ? 'xd-none' : 'xd-new'}">${value(newText, kind)}</td></tr>`;
   }
   function table(rows) {
@@ -75,7 +75,7 @@
       const c = colIndex(m[1]), r = Number(m[2]), ri = rowAt.get(r);
       if (ri === undefined || c > view.cols.length) continue;
       const box = boxes.get(r + ':' + c) || { x: colX[c - 1], y: rowY[ri], w: side.col_px[c - 1] || colW[c - 1], h: side.row_px[ri] || rowH[ri] };
-      parts.push(`<b class="xv-mark is-${tone}" style="left:${box.x}px;top:${box.y}px;width:${Math.max(box.w, 6)}px;height:${Math.max(box.h, 6)}px" title="${esc(addr)}：${esc(kinds.join('、'))}不一样"></b>`);
+      parts.push(`<b class="xv-mark is-${tone}" data-addr="${esc(addr)}" style="left:${box.x}px;top:${box.y}px;width:${Math.max(box.w, 6)}px;height:${Math.max(box.h, 6)}px" title="${esc(addr)}：${esc(kinds.join('、'))}不一样"></b>`);
     }
     for (const [top, left, bottom, right, label, own] of (view.boxes || {})[sideKey] || []) {
       const shown = view.rows.map((r, i) => (r >= top && r <= bottom ? i : -1)).filter(i => i >= 0);
@@ -86,8 +86,8 @@
       const bh = Math.max(own ? Math.min(own[1], height - by) : rowY[last] + rowH[last] - by, 18);
       parts.push(`<b class="xv-shape is-${tone}" style="left:${bx}px;top:${by}px;width:${bw}px;height:${bh}px" title="${esc(label)}"><span>🖼 ${esc(label)}</span></b>`);
     }
-    const colHead = view.cols.map((name, i) => colW[i] ? `<span class="${colMarks.has(name) ? 'is-' + tone : ''}" style="left:${colX[i]}px;width:${colW[i]}px"${colMarks.has(name) ? ` title="${name} 列的列宽不一样"` : ''}>${name}</span>` : '').join('');
-    const rowHead = view.rows.map((r, i) => rowH[i] ? `<span class="${rowMarks.has(r) ? 'is-' + tone : ''}" style="top:${rowY[i]}px;height:${rowH[i]}px"${rowMarks.has(r) ? ` title="第 ${r} 行的行高不一样"` : ''}>${r}</span>` : '').join('');
+    const colHead = view.cols.map((name, i) => colW[i] ? `<span data-c="${name}" class="${colMarks.has(name) ? 'is-' + tone : ''}" style="left:${colX[i]}px;width:${colW[i]}px"${colMarks.has(name) ? ` title="${name} 列的列宽不一样"` : ''}>${name}</span>` : '').join('');
+    const rowHead = view.rows.map((r, i) => rowH[i] ? `<span data-r="${r}" class="${rowMarks.has(r) ? 'is-' + tone : ''}" style="top:${rowY[i]}px;height:${rowH[i]}px"${rowMarks.has(r) ? ` title="第 ${r} 行的行高不一样"` : ''}>${r}</span>` : '').join('');
     return `<div class="xv-pane is-${tone}">`
       + `<div class="xv-colhead" style="width:${width + HEAD_W}px;height:${HEAD_H}px"><em style="width:${HEAD_W}px"></em><div style="left:${HEAD_W}px">${colHead}</div></div>`
       + `<div class="xv-row" style="width:${width + HEAD_W}px"><div class="xv-rowhead" style="width:${HEAD_W}px;height:${height}px">${rowHead}</div>`
@@ -102,28 +102,33 @@
       view.row_marks.length ? '行号带颜色 = 行高不一样' : '', view.col_marks.length ? '列标带颜色 = 列宽不一样' : '',
       '斜纹 = 这边的行 / 列比对面小', view.cols_cut ? `右边还有 ${view.cols_cut} 列没画` : '', view.marks_cut ? '不一样的格子太多，图上只标了一部分' : '']
       .filter(Boolean).join('；');
-    return `<details class="xv-sketch" open><summary>🧩 效果图（按格子画的样子，只画有不同的行和上下 3 行）</summary>`
+    const scope = view.whole ? `整张表 ${view.rows.length} 行${view.cols_cut ? `、前 ${view.cols.length} 列` : ''}` : '表太大，只画有不同的行和上下 3 行';
+    const jumps = count ? `<span class="xr-jump"><button type="button" data-step="-1">⬆ 上一处不同</button><button type="button" data-step="1">⬇ 下一处不同</button><em></em></span>` : '';
+    return `<details class="xv-sketch" open><summary>🧩 效果图（按格子画的样子，${scope}）</summary>${jumps}`
       + `<div class="xv-titles"><strong class="is-old">− 文件 A（旧）</strong><strong class="is-new">+ 文件 B（新）</strong></div>`
       + `<div class="xv-wrap">${paneHtml(view, 'old')}${paneHtml(view, 'new')}</div>`
-      + `<p class="xr-hint">${note}。图片图形本身画不出来，只标位置。两边一起滚动。</p></details>`;
+      + `<p class="xr-hint">${note}。图片图形本身画不出来，只标位置。两边一起滚动；点下面清单里的一行，图上会跳到那个位置。</p></details>`;
   }
 
   function sheetRows(sheet) {
     const rows = [];
     const more = (kind, count, text) => count ? rows.push(`<tr data-kind="${esc(kind)}"><td colspan="4" class="xd-more">${esc(text)}</td></tr>`) : 0;
-    for (const item of sheet.text) rows.push(row('文字', esc(item.cell), item.old, item.new));
+    for (const item of sheet.text) rows.push(row('文字', esc(item.cell), item.old, item.new, item.cell));
     more('文字', sheet.text_more, `文字还有 ${sheet.text_more} 格不一样，没有全列出来`);
-    for (const item of sheet.formulas) rows.push(row('公式', esc(item.cell), item.old, item.new));
+    for (const item of sheet.formulas) rows.push(row('公式', esc(item.cell), item.old, item.new, item.cell));
     more('公式', sheet.formulas_more, `公式还有 ${sheet.formulas_more} 格不一样，没有全列出来`);
-    for (const item of sheet.cache || []) rows.push(row('公式缓存', esc(item.cell), item.old, item.new));
+    for (const item of sheet.cache || []) rows.push(row('公式缓存', esc(item.cell), item.old, item.new, item.cell));
     more('公式缓存', sheet.cache_more, `还有 ${sheet.cache_more} 格的公式结果不同，没有全列出来`);
-    for (const item of sheet.notes || []) rows.push(row(item.kind, esc(item.cell), item.old, item.new));
+    for (const item of sheet.notes || []) rows.push(row(item.kind, esc(item.cell), item.old, item.new, item.cell));
     for (const group of sheet.styles) {
       if (group.more) { more(group.kind, 1, `${group.kind}还有 ${group.more} 种改法（共 ${group.count} 格），没有全列出来`); continue; }
       const cells = group.cells.map(esc).join('、') + (group.count > group.cells.length ? ` 等 ${group.count} 格` : group.count > 1 ? `（共 ${group.count} 格）` : '');
-      rows.push(row(group.kind, cells, group.old, group.new));
+      rows.push(row(group.kind, cells, group.old, group.new, group.cells[0] || ''));
     }
-    for (const item of sheet.whole) rows.push(row(item.kind, esc(item.what), item.old, item.new));
+    for (const item of sheet.whole) {
+      const m = /第 (\d+) 行/.exec(item.what) || /^([A-Z]+) 列/.exec(item.what) || /^([A-Z]+\d+)(?::|$)/.exec(item.what);
+      rows.push(row(item.kind, esc(item.what), item.old, item.new, m ? (/^\d+$/.test(m[1]) ? `R${m[1]}` : /\d/.test(m[1]) ? m[1] : `C${m[1]}`) : ''));
+    }
     return rows;
   }
 
@@ -194,6 +199,10 @@
         root.querySelectorAll('tr[data-kind]').forEach(tr => { if (tr.dataset.kind === kind) tr.classList.toggle('xd-off', off.has(kind)); });
         return;
       }
+      const step = event.target.closest('button[data-step]');
+      if (step) { stepMark(step.closest('.xv-sketch'), Number(step.dataset.step)); return; }
+      const line = event.target.closest('tr[data-jump]');
+      if (line) { jumpTo(line.closest('.xd-sheet'), line.dataset.jump); return; }
       const tool = event.target.closest('button[data-act]');
       if (!tool) return;
       const act = tool.dataset.act;
@@ -224,6 +233,63 @@
       });
       root.querySelector('#xrSearchCount').textContent = word ? `匹配 ${shown} / ${total} 行` : '';
     });
+  }
+
+  // ───── 定位：清单点一行 / 上一处下一处 → 两边效果图滚到那里并闪一下 ─────
+  function place(pane, jump) {
+    let m = /^R(\d+)$/.exec(jump);
+    const rowSpan = r => pane.querySelector(`.xv-rowhead span[data-r="${r}"]`);
+    const colSpan = c => pane.querySelector(`.xv-colhead span[data-c="${c}"]`);
+    if (m) { const el = rowSpan(m[1]); return el && { top: el.offsetTop, height: el.offsetHeight, left: 0, width: 0 }; }
+    m = /^C([A-Z]+)$/.exec(jump);
+    if (m) { const el = colSpan(m[1]); return el && { top: 0, height: 0, left: el.offsetLeft, width: el.offsetWidth }; }
+    m = /^([A-Z]+)(\d+)$/.exec(jump);
+    if (!m) return null;
+    const mark = pane.querySelector(`.xv-mark[data-addr="${jump}"]`);
+    if (mark) return { top: mark.offsetTop, height: mark.offsetHeight, left: mark.offsetLeft, width: mark.offsetWidth };
+    const r = rowSpan(m[2]), c = colSpan(m[1]);
+    return r && c ? { top: r.offsetTop, height: r.offsetHeight, left: c.offsetLeft, width: c.offsetWidth } : null;
+  }
+  function jumpTo(sheetBox, jump) {
+    const sketch = sheetBox && sheetBox.querySelector('.xv-sketch');
+    if (!sketch) return false;
+    sketch.open = true;
+    const panes = [...sketch.querySelectorAll('.xv-pane:not(.xv-empty)')];
+    let found = false;
+    panes.forEach((pane, i) => {
+      const at = place(pane, jump);
+      if (!at) return;
+      found = true;
+      if (i === 0 || !panes[0] || !place(panes[0], jump)) {
+        pane.scrollTo({ top: Math.max(0, at.top + 22 - pane.clientHeight / 3), left: Math.max(0, at.left + 46 - 120) });
+      }
+      const canvas = pane.querySelector('.xv-canvas');
+      const flash = document.createElement('i');
+      flash.className = 'xv-flash';
+      flash.style.cssText = at.width && at.height ? `left:${at.left}px;top:${at.top}px;width:${at.width}px;height:${at.height}px`
+        : at.width ? `left:${at.left}px;top:0;width:${at.width}px;height:100%` : `left:0;top:${at.top}px;width:100%;height:${at.height}px`;
+      canvas.appendChild(flash);
+      setTimeout(() => flash.remove(), 2200);
+    });
+    if (found) sketch.scrollIntoView({ block: 'nearest' });
+    return found;
+  }
+  function stepMark(sketch, dir) {
+    const pane = sketch.querySelector('.xv-pane:not(.xv-empty)');
+    if (!pane) return;
+    const seen = new Set(), list = [];
+    sketch.querySelectorAll('.xv-mark[data-addr]').forEach(el => {
+      if (seen.has(el.dataset.addr)) return;
+      seen.add(el.dataset.addr);
+      list.push({ addr: el.dataset.addr, top: el.offsetTop, left: el.offsetLeft });
+    });
+    list.sort((a, b) => a.top - b.top || a.left - b.left);
+    if (!list.length) return;
+    let at = Number(sketch.dataset.at ?? -1) + dir;
+    at = (at + list.length) % list.length;
+    sketch.dataset.at = at;
+    sketch.querySelector('.xr-jump em').textContent = `第 ${at + 1} / ${list.length} 处：${list[at].addr}`;
+    jumpTo(sketch.closest('.xd-sheet'), list[at].addr);
   }
 
   window.ExcelReport = { render };

@@ -34,7 +34,7 @@ MAX_GROUP_CELLS = 12     # 每组样式举几个格子
 # 「Excel 对比报告」（用户 2026-11-17）要列出所有不同：清单不截断，效果图放宽
 _LIMITS = {False: {"text": 400, "groups": 60, "group_cells": 12, "drawings": 80, "view_rows": 300, "view_cols": 60, "marks": 5000},
            True: {"text": 10 ** 9, "groups": 10 ** 9, "group_cells": 10 ** 9, "drawings": 10 ** 9,
-                  "view_rows": 1500, "view_cols": 120, "marks": 100000}}
+                  "view_rows": 3000, "view_cols": 120, "marks": 100000}}
 _REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 _PKG_REL = "{http://schemas.openxmlformats.org/package/2006/relationships}Relationship"
 _BORDER_WORDS = {"thin": "细", "medium": "中", "thick": "粗", "hair": "极细", "dotted": "点", "dashed": "虚",
@@ -508,6 +508,7 @@ def _sheet_info(data: dict[str, Any], name: str) -> dict[str, Any]:
 VIEW_CONTEXT = 3       # 不一样的行上下各带几行
 VIEW_MAX_ROWS = 300    # 每张表最多画多少行
 VIEW_MAX_COLS = 60     # 每张表最多画多少列
+VIEW_WHOLE_ROWS = 3000  # 报告：表不超过这么多行就整张画出来，超过了才只画有不同的行和上下几行
 _THEME_SLOTS = ("lt1", "dk1", "lt2", "dk2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink")
 _DRAWING_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 _BORDER_CSS = {"thin": "1px solid", "medium": "2px solid", "thick": "3px solid", "double": "3px double", "hair": "1px dotted",
@@ -694,13 +695,17 @@ def _view(name: str, old: dict[str, Any] | None, new: dict[str, Any] | None, mar
     for top, left, bottom, right, *_ in boxes["old"] + boxes["new"]:  # 图片 / 图形不一样：把它占的那几行也画出来
         hot.update(range(top, min(bottom, top + VIEW_BOX_ROWS) + 1))
         last_row, last_col = max(last_row, min(bottom, top + VIEW_BOX_ROWS)), max(last_col, right)
-    if old is None or new is None:
+    whole = full and last_row and last_col and max(last_row, max(hot, default=0)) <= VIEW_WHOLE_ROWS
+    if whole:  # 报告（用户 2026-11-17）：画整张表，靠垂直滚动条看，才知道不同在表的哪个位置
+        last_row = max(last_row, max(hot, default=0))
+        hot = set(range(1, last_row + 1))
+    elif old is None or new is None:
         hot = set(range(1, min(last_row, 40) + 1))
     if not hot and col_marks:
         hot = set(range(1, min(last_row, 10) + 1))  # 只有列宽不同：画开头几行看个大概
     if not hot or not last_row or not last_col:
         return None
-    context = 0 if old is None or new is None else VIEW_CONTEXT
+    context = 0 if whole or old is None or new is None else VIEW_CONTEXT
     wanted = sorted({r for h in hot for r in range(max(1, h - context), min(max(last_row, h), h + context) + 1)})
     max_rows = _LIMITS[full]["view_rows"] if full else VIEW_MAX_ROWS
     max_cols = _LIMITS[full]["view_cols"] if full else VIEW_MAX_COLS
@@ -708,7 +713,7 @@ def _view(name: str, old: dict[str, Any] | None, new: dict[str, Any] | None, mar
     cols_cut = max(0, last_col - max_cols)
     last_col = min(last_col, max_cols)
     sides = {key: (_side_view(side, name, rows, last_col) if side is not None else None) for key, side in (("old", old), ("new", new))}
-    return {"rows": rows, "cols": [get_column_letter(c) for c in range(1, last_col + 1)], **sides,
+    return {"rows": rows, "cols": [get_column_letter(c) for c in range(1, last_col + 1)], **sides, "whole": bool(whole),
             "marks": marks if len(marks) <= _LIMITS[full]["marks"] else dict(list(marks.items())[:_LIMITS[full]["marks"]]),
             "marks_cut": max(0, len(marks) - _LIMITS[full]["marks"]),
             "row_marks": row_marks, "col_marks": col_marks, "boxes": boxes, "rows_cut": cut, "cols_cut": cols_cut, "last_row": last_row}

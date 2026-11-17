@@ -98,3 +98,12 @@ body { margin: 0; padding: 20px 24px 40px; font: 14px/1.55 'Meiryo', 'Yu Gothic 
 }
 .xv-sketch > summary { cursor: pointer; font-weight: 700; margin: 6px 0; }
 .xd-chip { font-family: inherit; }
+/* 报告：效果图整张表，靠滚动条看；清单点一行跳到图上 */
+.xv-pane { max-height: 70vh; }
+.xd-table tr[data-jump] { cursor: pointer; }
+.xd-table tr[data-jump]:hover td { outline: 2px solid #2563eb; outline-offset: -2px; }
+.xv-flash { position: absolute; z-index: 6; box-sizing: border-box; border: 3px solid #2563eb; background: rgba(37, 99, 235, .18); pointer-events: none; animation: xv-flash .55s ease-in-out 4; }
+@keyframes xv-flash { 50% { opacity: .15; } }
+.xr-jump { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 6px; }
+.xr-jump button { font: inherit; font-size: 13px; font-weight: 700; padding: 4px 12px; border-radius: 8px; border: 1.5px solid #2563eb; background: #eff4ff; color: #1d3f8f; cursor: pointer; }
+.xr-jump em { font-style: normal; font-weight: 700; color: #1f2937; }
