@@ -107,3 +107,6 @@ body { margin: 0; padding: 20px 24px 40px; font: 14px/1.55 'Meiryo', 'Yu Gothic 
 .xr-jump { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 6px; }
 .xr-jump button { font: inherit; font-size: 13px; font-weight: 700; padding: 4px 12px; border-radius: 8px; border: 1.5px solid #2563eb; background: #eff4ff; color: #1d3f8f; cursor: pointer; }
 .xr-jump em { font-style: normal; font-weight: 700; color: #1f2937; }
+/* 不要水平滚动：.xv-fit 用 zoom 缩到一栏宽（static/excel_report_view.js fit） */
+.xv-pane { overflow-x: hidden; overflow-y: auto; }
+.xr-zoom { margin-left: 10px; font-weight: 400; color: #3b4658; }

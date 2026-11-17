@@ -88,10 +88,10 @@
     }
     const colHead = view.cols.map((name, i) => colW[i] ? `<span data-c="${name}" class="${colMarks.has(name) ? 'is-' + tone : ''}" style="left:${colX[i]}px;width:${colW[i]}px"${colMarks.has(name) ? ` title="${name} 列的列宽不一样"` : ''}>${name}</span>` : '').join('');
     const rowHead = view.rows.map((r, i) => rowH[i] ? `<span data-r="${r}" class="${rowMarks.has(r) ? 'is-' + tone : ''}" style="top:${rowY[i]}px;height:${rowH[i]}px"${rowMarks.has(r) ? ` title="第 ${r} 行的行高不一样"` : ''}>${r}</span>` : '').join('');
-    return `<div class="xv-pane is-${tone}">`
+    return `<div class="xv-pane is-${tone}"><div class="xv-fit" data-w="${width + HEAD_W}">`
       + `<div class="xv-colhead" style="width:${width + HEAD_W}px;height:${HEAD_H}px"><em style="width:${HEAD_W}px"></em><div style="left:${HEAD_W}px">${colHead}</div></div>`
       + `<div class="xv-row" style="width:${width + HEAD_W}px"><div class="xv-rowhead" style="width:${HEAD_W}px;height:${height}px">${rowHead}</div>`
-      + `<div class="xv-canvas" style="width:${width}px;height:${height}px">${parts.join('')}</div></div></div>`;
+      + `<div class="xv-canvas" style="width:${width}px;height:${height}px">${parts.join('')}</div></div></div></div>`;
   }
   function viewHtml(sheet) {
     const view = sheet.view;
@@ -104,7 +104,7 @@
       .filter(Boolean).join('；');
     const scope = view.whole ? `整张表 ${view.rows.length} 行${view.cols_cut ? `、前 ${view.cols.length} 列` : ''}` : '表太大，只画有不同的行和上下 3 行';
     const jumps = count ? `<span class="xr-jump"><button type="button" data-step="-1">⬆ 上一处不同</button><button type="button" data-step="1">⬇ 下一处不同</button><em></em></span>` : '';
-    return `<details class="xv-sketch" open><summary>🧩 效果图（按格子画的样子，${scope}）</summary>${jumps}`
+    return `<details class="xv-sketch" open><summary>🧩 效果图（按格子画的样子，${scope}）<small class="xr-zoom"></small></summary>${jumps}`
       + `<div class="xv-titles"><strong class="is-old">− 文件 A（旧）</strong><strong class="is-new">+ 文件 B（新）</strong></div>`
       + `<div class="xv-wrap">${paneHtml(view, 'old')}${paneHtml(view, 'new')}</div>`
       + `<p class="xr-hint">${note}。图片图形本身画不出来，只标位置。两边一起滚动；点下面清单里的一行，图上会跳到那个位置。</p></details>`;
@@ -187,6 +187,7 @@
       + `行高、列宽、隐藏行列、合并单元格、冻结窗格、打印设置（打印区域、方向、缩放、纸张、页边距、打印标题）、页眉页脚、图片图形、标签颜色、表的显示隐藏、条件格式、数据验证、自动筛选、工作表保护、定义的名称、工作簿保护。</p>`
       + `</main></div>`;
     bind(root);
+    fit(root);
   }
 
   function bind(root) {
@@ -261,7 +262,8 @@
       if (!at) return;
       found = true;
       if (i === 0 || !panes[0] || !place(panes[0], jump)) {
-        pane.scrollTo({ top: Math.max(0, at.top + 22 - pane.clientHeight / 3), left: Math.max(0, at.left + 46 - 120) });
+        const zoom = Number(pane.dataset.zoom || 1);
+        pane.scrollTo({ top: Math.max(0, (at.top + 22) * zoom - pane.clientHeight / 3), left: Math.max(0, (at.left + 46 - 120) * zoom) });
       }
       const canvas = pane.querySelector('.xv-canvas');
       const flash = document.createElement('i');
@@ -292,7 +294,23 @@
     jumpTo(sketch.closest('.xd-sheet'), list[at].addr);
   }
 
-  window.ExcelReport = { render };
+  // 不要水平滚动（用户 2026-11-17）：整张表等比例缩到正好一栏宽，只留垂直滚动
+  function fit(root) {
+    root.querySelectorAll('.xv-pane:not(.xv-empty)').forEach(pane => {
+      const inner = pane.querySelector('.xv-fit');
+      if (!inner || !pane.clientWidth) return;
+      const zoom = Math.min(1, (pane.clientWidth - 2) / Number(inner.dataset.w || 1));
+      inner.style.zoom = zoom;
+      pane.dataset.zoom = zoom;
+      const sketch = pane.closest('.xv-sketch'), label = sketch && sketch.querySelector('.xr-zoom');
+      if (label) label.textContent = zoom < 0.999 ? `缩到 ${Math.round(zoom * 100)}% 放进一栏宽` : '';
+    });
+  }
+  let fitTimer = 0;
+  window.addEventListener('resize', () => { clearTimeout(fitTimer); fitTimer = setTimeout(() => fit(document), 150); });
+  document.addEventListener('toggle', event => { if (event.target.matches && event.target.matches('details')) fit(event.target); }, true);
+
+  window.ExcelReport = { render, fit };
   const holder = document.getElementById('xr-data');
   if (holder) {
     try {
