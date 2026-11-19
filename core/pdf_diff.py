@@ -86,6 +86,38 @@ def store(name: str, body: bytes) -> dict[str, Any]:
             "sha256": hashlib.sha256(body).hexdigest()[:12]}
 
 
+_path_ids: dict[tuple, dict[str, Any]] = {}  # (路径, 修改时间, 大小) → store 的结果：同一份在批量里出现好几次只读一次
+
+
+def store_path(text: Any) -> dict[str, Any]:
+    """批量对比：按本机路径读一份 PDF（贴进来的路径可带引号），文件没变过就用上次存的那份。"""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("路径是空的")
+    raw = text.strip().strip('"').strip("'").strip()
+    path = Path(raw).expanduser()
+    if path.suffix.lower() != ".pdf":
+        raise ValueError(f"不是 PDF：{raw}")
+    try:
+        info = path.stat()
+    except OSError:
+        raise ValueError(f"找不到这份 PDF：{raw}") from None
+    if not path.is_file():
+        raise ValueError(f"不是文件：{raw}")
+    key = (str(path.resolve()), info.st_mtime_ns, info.st_size)
+    with _lock:
+        cached = _path_ids.get(key)
+    if cached and (_folder() / f"{cached['id']}.pdf").is_file():
+        return cached
+    try:
+        body = path.read_bytes()
+    except OSError as err:
+        raise ValueError(f"读不了 {raw}：{err}") from None
+    stored = {**store(path.name, body), "path": str(path)}
+    with _lock:
+        _path_ids[key] = stored
+    return stored
+
+
 def file_bytes(file_id: Any) -> bytes:
     return _path(file_id).read_bytes()
 
