@@ -85,7 +85,7 @@
     tr.pd-fold button:hover { background: #e0e7ff; }
     tr.is-current td.pd-no { box-shadow: inset 4px 0 0 #4338ca; }
     /* 批量对比：贴路径，每组一张卡片 */
-    .pd-batch-text { width: 100%; box-sizing: border-box; min-height: 130px; padding: 10px 12px; border: 2px solid #c7cfdb; border-radius: 12px; font: 13.5px/1.6 Consolas, 'MS Gothic', monospace; color: #111827; background: #fff; resize: vertical; }
+    .pd-batch-text { width: 100%; box-sizing: border-box; min-height: 260px; padding: 10px 12px; border: 2px solid #c7cfdb; border-radius: 12px; font: 13.5px/1.6 Consolas, 'MS Gothic', monospace; color: #111827; background: #fff; resize: vertical; }
     .pd-batch-sum { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 10px 0 6px; font-weight: 800; color: #1f2937; }
     .pd-batch-sum .is-same { color: #14532d; } .pd-batch-sum .is-diff { color: #5c3b00; } .pd-batch-sum .is-bad { color: #b42318; }
     .pd-batch-tools { display: flex; gap: 8px; margin: 4px 0 8px; }
@@ -213,7 +213,7 @@
             <h3>⚠️ 要注意</h3>
             <ul>
               <li>是按页对齐比的：前面多了或少了一行，后面整页内容往下挪，这一页会大片圈框；前面多了一页，后面每页都对不上。</li>
-              <li>A + B 和 C 的分页要一样（比如 C 就是 A、B 直接合起来的）才能一页对一页；页码印在页面上时，页码那里会被圈出来。</li>
+              <li>A + B 和 C 的分页要一样（比如 C 就是 A、B 直接合起来的）才能一页对一页；页面上下边上的页码不一样不算不同。</li>
             </ul>
           </section>
         </div>
@@ -227,13 +227,21 @@
     </section>
     <section class="panel" id="pdBatchPanel">
       <h2>批量对比：贴路径</h2>
-      <p class="toolbar-hint">一行一组：左边几份用 <b>+</b> 连起来，<b>=</b> 后面是右边。路径带不带引号都行；同一行后面的文件和前面在同一个文件夹时，可以只写文件名。</p>
-      <textarea id="pdBatchText" class="pd-batch-text" spellcheck="false" aria-label="要比的几组 PDF 路径" placeholder="例如&#10;C:\资料\A.pdf + C:\资料\B.pdf = C:\资料\C.pdf&#10;C:\资料\C.pdf + D.pdf = E.pdf&#10;&#10;# 开头是 # 的行不管"></textarea>
+      <p class="toolbar-hint">每组先写一行 <b>-&gt;</b>，下面每行一份<b>左边</b>的 PDF（按顺序接起来）；再写一行 <b>&lt;-</b>，下面每行一份<b>右边</b>的 PDF。一组接一组往下写。路径带不带引号都行；和上一份在同一个文件夹时可以只写文件名。</p>
+      <textarea id="pdBatchText" class="pd-batch-text" spellcheck="false" aria-label="要比的几组 PDF 路径" placeholder="例如&#10;-&gt;&#10;C:\x\123.pdf&#10;C:\x\456.pdf&#10;&lt;-&#10;C:\x\123456.pdf&#10;-&gt;&#10;C:\x\ABC.pdf&#10;C:\x\DEF.pdf&#10;&lt;-&#10;C:\x\ABCDEF.pdf"></textarea>
       <details class="how-notes">
-        <summary>📖 还能怎么写 <span class="how-notes-tip">也认 JSON；空行和 # 开头的行不管</span><span class="how-notes-toggle"></span></summary>
+        <summary>📖 还能怎么写 <span class="how-notes-tip">也认一行一组的「A + B = C」和 JSON；空行和 # 开头的行不管</span><span class="how-notes-toggle"></span></summary>
         <div class="how-notes-body">
           <section class="how-notes-group">
-            <h3>✍️ 一行一组</h3>
+            <h3>➡️ 分块写（推荐）</h3>
+            <ul>
+              <li><code>-&gt;</code> 开始新的一组，下面每行一份左边的 PDF；<code>&lt;-</code> 下面每行一份右边的 PDF。右边也可以写好几份，按顺序接起来。</li>
+              <li>箭头也可以写成 <code>→</code> <code>←</code>。一组还没写 <code>-&gt;</code> 就直接写 <code>&lt;-</code> 也行，那一组的左边会报「没有路径」。</li>
+              <li>只写文件名（不带文件夹）时，用上一份的文件夹。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>✍️ 一行一组（旧写法，照样能用）</h3>
             <ul>
               <li><code>A.pdf + B.pdf = C.pdf</code>：左边 A 接 B，右边 C。右边也可以写好几份：<code>A.pdf = B.pdf + C.pdf</code>。</li>
               <li>文件名里本身有 <code>+</code> 或 <code>=</code> 也没关系：只有紧跟在「.pdf」后面、或者前后有空格的 <code>+</code> <code>=</code> 才算分隔。</li>
