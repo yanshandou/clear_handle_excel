@@ -561,7 +561,46 @@
     }
     const groups = [];
     let lastDir = '';
-    text.split(/\r?\n/).forEach((raw, i) => {
+    const fill = list => list.map(p => {
+      const full = isDir(p) || !lastDir ? p : `${lastDir}${lastDir.includes('\\') ? '\\' : '/'}${p}`;
+      if (isDir(full)) lastDir = dirOf(full);
+      return full;
+    });
+    // 分块写法（用户 2026-11-19）：「->」下面每行一份左边，「<-」下面每行一份右边，一组接一组
+    const lines = text.split(/\r?\n/);
+    const arrow = raw => {
+      const t = raw.trim().replace(/&gt;/gi, '>').replace(/&lt;/gi, '<').replace(/\s+/g, '');
+      if (/^(->|－＞|→|=>)$/.test(t)) return 'left';
+      if (/^(<-|＜－|←|<=)$/.test(t)) return 'right';
+      return '';
+    };
+    if (lines.some(arrow)) {
+      let g = null, side = '';
+      const finish = () => {
+        if (g && (!g.left.length || !g.right.length)) g.error = g.left.length ? '「<-」下面没有右边的 PDF 路径' : '「->」下面没有左边的 PDF 路径';
+      };
+      lines.forEach((raw, i) => {
+        const line = raw.trim();
+        if (!line || line.startsWith('#')) return;
+        const mark = arrow(line);
+        if (mark === 'left' || (mark === 'right' && (!g || side === 'right'))) {
+          finish();
+          g = { line: i + 1, left: [], right: [] };
+          groups.push(g);
+          side = mark;
+          return;
+        }
+        if (mark === 'right') { side = 'right'; return; }
+        if (!g) {
+          groups.push({ line: i + 1, left: [], right: [], text: line, error: '这一行前面没有「->」，不知道是哪一边' });
+          return;
+        }
+        g[side].push(...fill([unquote(line)].filter(Boolean)));
+      });
+      finish();
+      return groups;
+    }
+    lines.forEach((raw, i) => {
       const line = raw.trim();
       if (!line || line.startsWith('#')) return;
       const parts = line.split(/(?<=\.pdf["'”」]?)\s*=\s*|\s+=\s+/i);
@@ -569,11 +608,6 @@
         groups.push({ line: i + 1, left: [], right: [], text: line, error: parts.length < 2 ? '这一行没有「=」，分不出左右' : '这一行有好几个「=」，分不出左右' });
         return;
       }
-      const fill = list => list.map(p => {
-        const full = isDir(p) || !lastDir ? p : `${lastDir}${lastDir.includes('\\') ? '\\' : '/'}${p}`;
-        if (isDir(full)) lastDir = dirOf(full);
-        return full;
-      });
       const left = fill(splitSide(parts[0])), right = fill(splitSide(parts[1]));
       const g = { line: i + 1, left, right };
       if (!left.length || !right.length) g.error = '左边或右边没有 PDF 路径';
