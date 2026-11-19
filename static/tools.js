@@ -28,7 +28,8 @@
     { id: 'pick', size: 'small', title: '挑文件复制', sub: '贴路径，保留目录只复制这些', url: '/pick-copy', icon: 'map', tone: 'pink' },
     { id: 'json', size: 'small', title: '按 JSON 复制 Excel', sub: '按上传记录复制、建目录', url: '/distribute?mode=json', icon: 'layers', tone: 'pink' },
     { id: 'pcl', size: 'small', title: 'PCL 单体测试检查', sub: '22 项清单 · 源码校验 · 覆盖率 · 测试报告', url: '/pcl', icon: 'check', tone: 'yellow' },
-    { id: 'report', size: 'wide', title: 'Excel 对比报告', sub: '任选两份 Excel · 找出所有不同 · 生成 HTML 报告', url: '/excel-report', icon: 'search', tone: 'blue' },
+    { id: 'report', size: 'small', title: 'Excel 对比报告', sub: '任选两份 Excel · 生成 HTML 报告', url: '/excel-report', icon: 'search', tone: 'blue' },
+    { id: 'pdfdiff', size: 'small', title: 'PDF 对比', sub: '拖进来左右对比 · 每边可接好几份', url: '/pdf-diff', icon: 'document', tone: 'teal' },
     { id: 'finish', size: 'small', title: '完成任务', sub: '收尾检查：都传回共享了没有', url: '/finish?start=1', pages: ['/finish'], icon: 'finish', tone: 'yellow', linkId: 'workTaskFinish' },
   ];
   const byId = Object.fromEntries(TOOLS.map(t => [t.id, t]));

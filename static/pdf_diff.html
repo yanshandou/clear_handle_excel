@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PDF 对比 - 开发百宝箱</title>
+  <link rel="icon" type="image/png" href="/static/images/dev-toolbox-logo.png">
+  <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/repair.css"><script src="/static/game_fx.js"></script>
+  <style>
+    /* 放文件：左右两个拖放框（左红右绿，和 Excel 对比一样：左旧右新） */
+    .pd-sides { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 14px; align-items: stretch; }
+    .pd-side { display: flex; flex-direction: column; min-height: 230px; padding: 12px 14px; border: 3px dashed; border-radius: 16px; background: #fff; transition: background-color .15s, border-color .15s; }
+    .pd-side.is-old { border-color: #cf222e; } .pd-side.is-new { border-color: #1a7f37; }
+    .pd-side.is-over.is-old { background: #ffebe9; border-style: solid; } .pd-side.is-over.is-new { background: #e6ffec; border-style: solid; }
+    .pd-side-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+    .pd-side-head h3 { margin: 0; font-size: 18px; }
+    .pd-side.is-old h3 { color: #82071e; } .pd-side.is-new h3 { color: #14532d; }
+    .pd-sum { font-size: 13px; font-weight: 700; color: #374151; }
+    .pd-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+    .pd-item { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px 8px; border: 2px solid #c7cfdb; border-radius: 10px; background: #f8fafc; cursor: grab; }
+    .pd-item.is-dragging { opacity: .45; }
+    .pd-item.is-drop-before { box-shadow: 0 -4px 0 #2563eb; }
+    .pd-item.is-busy { cursor: default; color: #374151; }
+    .pd-item.is-error { border-color: #b42318; background: #fef3f2; }
+    .pd-letter { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; font: 800 14px/1 Arial, sans-serif; color: #fff; }
+    .pd-side.is-old .pd-letter { background: #b91c1c; } .pd-side.is-new .pd-letter { background: #15803d; }
+    .pd-name { min-width: 0; overflow-wrap: anywhere; font-weight: 700; color: #111827; }
+    .pd-name small { display: block; font-weight: 400; color: #374151; }
+    .pd-name small.is-error { color: #b42318; font-weight: 700; }
+    .pd-btns { display: flex; gap: 4px; }
+    .pd-btns button { width: 30px; height: 30px; padding: 0; border: 1.5px solid #8a94a6; border-radius: 8px; background: #fff; color: #1f2937; font-weight: 800; cursor: pointer; }
+    .pd-btns button:disabled { opacity: .35; cursor: default; }
+    .pd-btns button:not(:disabled):hover { background: #eef2ff; border-color: #4338ca; }
+    .pd-drop { flex: 1; display: grid; place-items: center; gap: 6px; margin-top: 8px; min-height: 92px; padding: 10px; border-radius: 12px; background: #f3f5f9; color: #374151; text-align: center; font-weight: 700; }
+    .pd-drop b { font-size: 16px; color: #1f2937; }
+    .pd-plus { display: grid; align-content: center; justify-items: center; gap: 8px; }
+    .pd-plus .pd-vs { font: 900 20px/1 Arial, sans-serif; color: #4c1d95; }
+    .pd-options { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 22px; margin: 14px 0 4px; }
+    .pd-options label { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; color: #1f2937; }
+    .pd-busy { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; color: #1f2937; }
+    .pd-spinner { width: 18px; height: 18px; flex: none; border: 3px solid #c9cfdb; border-top-color: #2563eb; border-radius: 50%; animation: pd-spin .8s linear infinite; }
+    @keyframes pd-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .pd-spinner { animation-duration: 2.4s; } }
+    .pd-stale { color: #7a4b00; font-weight: 700; }
+
+    /* 结果：Git 式左右两栏 */
+    .pd-verdict { margin: 4px 0 10px; padding: 12px 16px; border-radius: 12px; font-weight: 800; font-size: 17px; border: 2px solid; }
+    .pd-verdict.is-same { background: #e4f5ea; border-color: #1a7f37; color: #14532d; }
+    .pd-verdict.is-diff { background: #fff3d6; border-color: #b7791f; color: #5c3b00; }
+    .pd-verdict small { display: block; margin-top: 4px; font-size: 13px; font-weight: 600; color: #374151; }
+    .pd-warn { margin: 0 0 10px; padding: 8px 12px; border-radius: 10px; background: #fff3d6; color: #5c3b00; font-weight: 700; }
+    .pd-bar { position: sticky; top: 0; z-index: 6; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 8px 10px; margin: 0 0 8px; border: 2px solid #c7cfdb; border-radius: 12px; background: #fff; }
+    .pd-bar .pd-pos { font-weight: 800; color: #1f2937; min-width: 7em; }
+    .pd-bar label { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; color: #1f2937; }
+    .pd-chip { font-size: 13px; font-weight: 700; padding: 3px 10px; border-radius: 999px; border: 1.5px solid; }
+    .pd-chip.is-mod { background: #fff3d6; border-color: #b7791f; color: #5c3b00; }
+    .pd-chip.is-del { background: #ffebe9; border-color: #cf222e; color: #82071e; }
+    .pd-chip.is-add { background: #e6ffec; border-color: #1a7f37; color: #14532d; }
+    .pd-heads { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0; }
+    .pd-heads div { padding: 6px 12px; font-weight: 800; overflow-wrap: anywhere; }
+    .pd-heads .is-old { background: #ffebe9; color: #82071e; border-radius: 10px 0 0 0; border: 2px solid #cf222e; border-bottom: 0; }
+    .pd-heads .is-new { background: #e6ffec; color: #14532d; border-radius: 0 10px 0 0; border: 2px solid #1a7f37; border-bottom: 0; border-left: 0; }
+    .pd-hl { display: inline-grid; place-items: center; width: 20px; height: 20px; margin: 0 5px 0 2px; border-radius: 50%; font: 800 12px/1 Arial, sans-serif; color: #fff; vertical-align: 1px; }
+    .pd-heads .is-old .pd-hl { background: #b91c1c; } .pd-heads .is-new .pd-hl { background: #15803d; }
+    .pd-table { width: 100%; border-collapse: collapse; table-layout: fixed; border: 2px solid #c7cfdb; background: #fff;
+      font: 13.5px/1.55 Consolas, 'MS Gothic', 'Yu Gothic', 'Meiryo', monospace; color: #111827; }
+    .pd-table col.c-no { width: 92px; }
+    .pd-table td { padding: 1px 8px; vertical-align: top; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .pd-table td.pd-no { padding: 1px 6px; text-align: right; color: #374151; background: #f6f8fa; border-right: 1px solid #d0d7de; user-select: none; font-size: 12px; white-space: nowrap; }
+    .pd-table td.pd-txt + td.pd-no { border-left: 2px solid #c7cfdb; }
+    .pd-src { display: inline-block; margin-right: 4px; padding: 0 5px; border-radius: 6px; font: 700 11px/1.6 Arial, sans-serif; color: #fff; text-decoration: none; cursor: pointer; }
+    .pd-src.is-old { background: #b91c1c; } .pd-src.is-new { background: #15803d; }
+    .pd-src:hover, .pd-src:focus-visible { outline: 2px solid #1f2937; }
+    tr.pd-page td { border-top: 1px dashed #9aa4b2; }
+    td.is-del { background: #ffebe9; } td.is-add { background: #e6ffec; }
+    td.pd-no.is-del { background: #ffd7d5; color: #82071e; } td.pd-no.is-add { background: #ccffd8; color: #14532d; }
+    td.is-empty { background: repeating-linear-gradient(45deg, #f3f5f9 0 6px, #e8ecf1 6px 12px); }
+    td.is-del mark { background: #ff9c94; color: #111827; border-radius: 2px; }
+    td.is-add mark { background: #72e08f; color: #111827; border-radius: 2px; }
+    td.is-del.pd-txt::before { content: "−"; display: inline-block; width: 1.1em; margin-left: -.2em; color: #82071e; font-weight: 800; }
+    td.is-add.pd-txt::before { content: "+"; display: inline-block; width: 1.1em; margin-left: -.2em; color: #14532d; font-weight: 800; }
+    td.pd-txt:not(.is-del):not(.is-add):not(.is-empty)::before { content: ""; display: inline-block; width: 1.1em; margin-left: -.2em; }
+    tr.pd-fold td { padding: 4px 10px; background: #eef2ff; color: #1e1b4b; font: 700 13px/1.4 sans-serif; text-align: center; border-block: 1px solid #c7d2fe; }
+    tr.pd-fold button { margin-left: 10px; padding: 2px 12px; border: 1.5px solid #4338ca; border-radius: 999px; background: #fff; color: #312e81; font-weight: 700; cursor: pointer; }
+    tr.pd-fold button:hover { background: #e0e7ff; }
+    tr.is-current td.pd-no { box-shadow: inset 4px 0 0 #4338ca; }
+    .pd-empty-result { padding: 24px; text-align: center; color: #374151; font-weight: 700; }
+  </style>
+  <link rel="stylesheet" href="/static/theme-casual.css">
+  <script src="/static/tools.js?v=2"></script>
+  <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/how_notes.css">
+</head>
+<body>
+  <header class="app-header">
+    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">PDF 对比</h1><span class="subtitle">左右两栏看两边的 PDF 文字哪里不同 · 每边可以放好几份，按顺序接起来比</span></div></a>
+    <nav class="header-nav" aria-label="功能导航"><a href="/" class="nav-link"><span class="ui-icon harbor-icon icon-home" aria-hidden="true"></span>主页</a><a href="/excel-diff" class="nav-link"><span class="ui-icon harbor-icon icon-search" aria-hidden="true"></span>Excel 对比</a></nav>
+  </header>
+  <main class="container clean-container">
+    <section class="panel">
+      <h2>把 PDF 拖到左边和右边</h2>
+      <div class="pd-sides">
+        <div class="pd-side is-old" id="pdLeft" data-side="left">
+          <div class="pd-side-head"><h3>左边（旧）</h3><span class="pd-sum" id="pdLeftSum"></span></div>
+          <ol class="pd-list" id="pdLeftList" aria-label="左边的 PDF"></ol>
+          <div class="pd-drop"><div><b>把 PDF 拖到这里</b><br>可以一次拖好几份，按放进来的顺序接起来</div>
+            <button type="button" class="btn btn-outline btn-sm" data-pick="left">📂 选择文件</button></div>
+        </div>
+        <div class="pd-plus" aria-hidden="true"><span class="pd-vs">VS</span></div>
+        <div class="pd-side is-new" id="pdRight" data-side="right">
+          <div class="pd-side-head"><h3>右边（新）</h3><span class="pd-sum" id="pdRightSum"></span></div>
+          <ol class="pd-list" id="pdRightList" aria-label="右边的 PDF"></ol>
+          <div class="pd-drop"><div><b>把 PDF 拖到这里</b><br>可以一次拖好几份，按放进来的顺序接起来</div>
+            <button type="button" class="btn btn-outline btn-sm" data-pick="right">📂 选择文件</button></div>
+        </div>
+      </div>
+      <input id="pdFileInput" type="file" accept=".pdf,application/pdf" multiple hidden>
+      <div class="pd-options">
+        <label><input id="pdIgnoreSpace" type="checkbox" checked> 不管空格（空格多一个少一个不算不同）</label>
+        <label><input id="pdIgnoreHeader" type="checkbox" checked> 不比页眉页脚（每页重复的标题、页码；A+B 和 C 的分页本来就不一样）</label>
+      </div>
+      <div class="link-actions">
+        <button id="pdRun" class="btn btn-primary" type="button" disabled>🔍 开始对比</button>
+        <button id="pdSwap" class="btn btn-outline" type="button">⇄ 左右互换</button>
+        <button id="pdClear" class="btn btn-outline" type="button">🗑 全部清空</button>
+      </div>
+      <details class="how-notes">
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">把两边的 PDF 各自接起来，抽出文字逐行比，像 Git 一样左右对照；原文件不动</span><span class="how-notes-toggle"></span></summary>
+        <div class="how-notes-body">
+          <section class="how-notes-group">
+            <h3>📥 放文件</h3>
+            <ul>
+              <li>把 PDF 拖到左边或右边的框里，也可以点「选择文件」。一次可以拖好几份。</li>
+              <li>每边的几份<b>按列表里的顺序接起来</b>再比。例：A + B 应该等于 C，就把 A、B 拖到左边，C 拖到右边。</li>
+              <li>顺序不对可以按 ↑ ↓，或者直接拖着列表里的文件换位置；拖到另一边就换到另一边。✕ 是拿掉这一份。</li>
+              <li>文件会先复制一份给程序读，原文件不动；复制的那份放在程序数据的 pdf_diff 文件夹，过一天自动删掉。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>🔍 怎么比</h3>
+            <ul>
+              <li>只比<b>文字</b>：每页把同一高度的字连成一行（Excel 导出的 PDF，一行就是表里的一行），两边所有行接起来以后逐行比。</li>
+              <li>改了的行，具体哪几个字不同再用深色标出来。</li>
+              <li>「不管空格」：空格、全角空格多一个少一个都不算不同。</li>
+              <li>「不比页眉页脚」：每页最上面、最下面两行里，只有页码的行（「3」「- 3 -」「3 / 12」「Page 3」「3ページ」这类），和左右两边一半以上的页都在这个位置重复出现的行（标题、公司名、每页重复的表头）不比。接起来以后分页、页码本来就对不上。</li>
+              <li>页和页之间不算内容：A 的最后一页和 B 的第一页接起来，只要文字一样，分页位置不同也不算不同。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>👀 怎么看</h3>
+            <ul>
+              <li>左边红色是左边有、右边没有（或被改掉）的行，右边绿色是右边新的行；改了的行左右对齐。</li>
+              <li>行号旁边的小标签（如 <b>A 3</b>）是这一行在哪份文件的第几页；点它在浏览器里打开那份 PDF 的那一页。</li>
+              <li>一样的行默认折起来，只留不同处上下各 3 行；点「展开」看全部，或者取消勾选「只看不同」。</li>
+              <li>「▲ 上一处 / ▼ 下一处」在不同处之间跳。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group is-warn">
+            <h3>⚠️ 比不了的</h3>
+            <ul>
+              <li>图片、线条、颜色、字体大小不比；扫描出来的 PDF（整页是图片）抽不到文字，比不了。</li>
+              <li>同一行里的字是按左右位置接起来的，表格里换了行的格子可能被拆到上下两行。</li>
+            </ul>
+          </section>
+        </div>
+      </details>
+      <p id="pdStatus" role="status" aria-live="polite"></p>
+      <p id="pdError" class="batch-error" role="alert"></p>
+    </section>
+    <section class="panel" id="pdResultPanel">
+      <h2>对比结果</h2>
+      <div id="pdResult"><p class="pd-empty-result">左右两边都放好 PDF 后点「🔍 开始对比」。</p></div>
+    </section>
+    <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
+  </main>
+  <script src="/static/dialog.js"></script>
+  <script src="/static/pdf_diff.js"></script><script src="/static/debug_log.js"></script>
+</body>
+</html>
