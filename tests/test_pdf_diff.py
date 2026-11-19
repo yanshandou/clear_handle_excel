@@ -121,6 +121,17 @@ class PdfDiffTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 pdf_diff.page_png(file_id, bad)
 
+    def test_page_number_boxes(self):
+        """页码的位置（比图时涂掉）：只找页面上下边上的「2 / 5」，正文里的数字不算"""
+        file_id = self.store("A.pdf", [rows(1, 5), ["a", "b", "5", "x", "y"]])
+        pages = pdf_diff.page_number_boxes(file_id)
+        self.assertEqual(len(pages), 2)
+        for boxes in pages:
+            self.assertEqual(len(boxes), 1, pages)
+            x0, y0, x1, y1 = boxes[0]
+            self.assertGreater(y0, 0.9)  # 页脚
+            self.assertTrue(0.4 < x0 < x1 < 0.6)
+
     def test_old_uploads_cleaned(self):
         old = self.store("old.pdf", [["a"]])
         path = Path(self.tmp.name) / "pdf_diff" / f"{old}.pdf"
