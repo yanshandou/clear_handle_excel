@@ -179,7 +179,15 @@
       + verdict + (kinds.length ? `<p class="toolbar-hint">下面的数字是不一样的格子 / 处数。点类型可以先不看这一类（比如只想看文字）。</p>` : '')
       + `<div class="xd-chips">${chips}</div>`
       + (kinds.length ? `<p class="xd-search"><input id="xdSearch" type="search" spellcheck="false" autocomplete="off" placeholder="🔍 在差异里搜：格子（B5）、文字、字体名、颜色…" aria-label="在差异里搜索"><span id="xdSearchCount"></span></p>` : '')
-      + sheets;
+      + bookHtml(data) + sheets;
+  }
+  // 工作簿级的不同（定义的名称、工作簿保护）
+  function bookHtml(data) {
+    const items = data.book || [];
+    if (!items.length) return '';
+    return `<details class="xd-sheet is-changed" open><summary>📘 整个工作簿</summary><div class="xd-body"><table class="xd-table"><colgroup><col class="c-where"><col class="c-kind"><col><col></colgroup>`
+      + `<thead><tr><th>名称</th><th>类型</th><th>− 远程现在这份（旧）</th><th>+ 你要上传的这份（新）</th></tr></thead>`
+      + `<tbody>${items.map(item => row(item.kind, esc(item.what), item.old, item.new)).join('')}</tbody></table></div></details>`;
   }
 
   $('xdResult').addEventListener('click', event => {

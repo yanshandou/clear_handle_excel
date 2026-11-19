@@ -125,6 +125,15 @@ def _references(payload: dict, *, optional: bool = False) -> str | ReferenceFold
     return "" if optional and not value else _require_folder({"folder": value}, "reference")
 
 
+def excel_report_files_summary(payload: dict) -> str:
+    """对比报告的请求里可能带着整份 Excel，日志只写是哪两份"""
+    parts = []
+    for key in ("a", "b"):
+        side = payload.get(key) if isinstance(payload.get(key), dict) else {}
+        parts.append(f"{key}={side.get('path') or ('上传 ' + str(side.get('name') or '?'))}")
+    return " ".join(parts)
+
+
 class WebHandler(upload_manager.Handler):
     def log_message(self, format: str, *args: object) -> None:
         del format, args  # 保持终端清爽
@@ -219,6 +228,27 @@ class WebHandler(upload_manager.Handler):
                 self._send_bytes(image, "image/png", cacheable=True)  # 地址带内容哈希，内容不会变
         elif parsed.path == "/excel-diff/all":  # 一页对比当前任务的文件（用户 2026-11-12）
             self._serve_static_file("excel_diff_all.html")
+        elif parsed.path == "/excel-report":  # 任选两份 Excel 生成对比报告（用户 2026-11-17）
+            self._serve_static_file("excel_report.html")
+        elif parsed.path == "/api/excel_report/status":
+            from core import excel_report
+            self._send_json({"ok": True, **excel_report.status()})
+        elif parsed.path == "/api/excel_report/download":  # 下载存好的报告（文件名带日文 / 中文，用 filename* 写）
+            from core import excel_report
+            from urllib.parse import quote
+            try:
+                target = excel_report.saved_report((parse_qs(parsed.query).get("name") or [""])[0])
+                body = target.read_bytes()
+            except (ValueError, OSError) as err:
+                self._send_json({"ok": False, "error": str(err)}, status=404)
+            else:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Disposition", f"attachment; filename=\"excel_diff_report.html\"; filename*=UTF-8''{quote(target.name)}")
+                self.end_headers()
+                self.wfile.write(body)
         elif parsed.path == "/api/distribute/diff_pdf":  # 一页对比里并排看的同名 PDF（只给已有的）
             query = parse_qs(parsed.query)
             pick = lambda key: (query.get(key) or [""])[0]
@@ -482,7 +512,9 @@ class WebHandler(upload_manager.Handler):
                 raise ValueError("请求内容不是有效的 JSON（文件可能已损坏）") from None
             if not isinstance(payload, dict):
                 raise ValueError("请求内容必须为 JSON 对象")
-            if not self.path.startswith("/api/pcl/") and self.path != "/api/excel_diff/pdf_status":  # 检查台边打字边自动保存、对比页问进度，不记进调试日志
+            if self.path == "/api/excel_report":  # 带着整份上传的 Excel（base64），只记文件名
+                debug_log.event("🖱️ 网页操作", 路径=self.path, 参数=excel_report_files_summary(payload))
+            elif not self.path.startswith("/api/pcl/") and self.path != "/api/excel_diff/pdf_status":  # 检查台边打字边自动保存、对比页问进度，不记进调试日志
                 debug_log.event("🖱️ 网页操作", 路径=self.path, 参数=debug_log.summary(payload)[:600])
             self._handle_post(payload)
         except ConnectionError:
@@ -570,6 +602,10 @@ class WebHandler(upload_manager.Handler):
                 except OSError:
                     sha[key] = ""
             self._send_json({"ok": True, **excel_diff.diff(mine.strip(), theirs.strip()), "sha256": sha})
+            return
+        if self.path == "/api/excel_report":  # 任选两份 Excel 生成对比报告（用户 2026-11-17）：只读，别的任务在跑也能做
+            from core import excel_report
+            self._send_json({"ok": True, **excel_report.build_from_request(payload.get("a"), payload.get("b"))})
             return
         if self.path == "/api/excel_diff/pdf":  # 对比的「真实效果」：两边要哪些表的 PDF（core/excel_diff_pdf.py），只读旁路
             from core import excel_diff_pdf

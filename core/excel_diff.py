@@ -22,13 +22,19 @@ from core import content_check, debug_log
 
 CELL_KINDS = ("文字", "公式", "公式缓存", "批注", "超链接", "字体", "字的颜色", "填充色", "边框", "对齐", "数字格式", "保护")
 STYLE_KINDS = ("字体", "字的颜色", "填充色", "边框", "对齐", "数字格式", "保护")
-SHEET_KINDS = ("行高", "列宽", "合并单元格", "冻结窗格", "打印设置", "图片图形", "标签颜色", "显示隐藏", "条件格式")
+SHEET_KINDS = ("行高", "列宽", "合并单元格", "冻结窗格", "打印设置", "页眉页脚", "图片图形", "标签颜色", "显示隐藏", "条件格式",
+               "数据验证", "自动筛选", "工作表保护")
+BOOK_KINDS = ("定义的名称", "工作簿保护")
 # 主题色表缺失时使用槽位名。
 _THEME_NAMES = {0: "背景色", 1: "正文色", 2: "辅助背景色", 3: "辅助正文色", 4: "强调色1", 5: "强调色2",
                 6: "强调色3", 7: "强调色4", 8: "强调色5", 9: "强调色6"}
 MAX_TEXT_ROWS = 400      # 每张表最多列多少个文字 / 公式不一样的格子
 MAX_STYLE_GROUPS = 60    # 每张表每类样式最多列多少组
 MAX_GROUP_CELLS = 12     # 每组样式举几个格子
+# 「Excel 对比报告」（用户 2026-11-17）要列出所有不同：清单不截断，效果图放宽
+_LIMITS = {False: {"text": 400, "groups": 60, "group_cells": 12, "drawings": 80, "view_rows": 300, "view_cols": 60, "marks": 5000},
+           True: {"text": 10 ** 9, "groups": 10 ** 9, "group_cells": 10 ** 9, "drawings": 10 ** 9,
+                  "view_rows": 3000, "view_cols": 120, "marks": 100000}}
 _REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 _PKG_REL = "{http://schemas.openxmlformats.org/package/2006/relationships}Relationship"
 _BORDER_WORDS = {"thin": "细", "medium": "中", "thick": "粗", "hair": "极细", "dotted": "点", "dashed": "虚",
@@ -364,8 +370,68 @@ def _page_setup(sheet: Any, area: str) -> dict[str, str]:
                f"{'自动' if setup.fitToHeight == 0 else (setup.fitToHeight if setup.fitToHeight is not None else 1)} 页"
     else:
         zoom = f"{setup.scale or 100}%"
-    return {"打印区域": area, "方向": "横向" if setup.orientation == "landscape" else "纵向",  # 没写就是纵向
-            "缩放": zoom, "纸张": str(setup.paperSize or "")}
+    result = {"打印区域": area, "方向": "横向" if setup.orientation == "landscape" else "纵向",  # 没写就是纵向
+              "缩放": zoom, "纸张": str(setup.paperSize or "")}
+    margins = sheet.page_margins
+    if margins is not None:
+        cm = lambda v: f"{round(float(v) * 2.54, 2):g}" if v is not None else "默认"  # noqa: E731  英寸 → 厘米
+        result["页边距（厘米）"] = (f"上 {cm(margins.top)} 下 {cm(margins.bottom)} 左 {cm(margins.left)} 右 {cm(margins.right)}"
+                              f" 页眉 {cm(margins.header)} 页脚 {cm(margins.footer)}")
+    titles = " ".join(part for part in (str(sheet.print_title_rows or ""), str(sheet.print_title_cols or "")) if part)
+    result["打印标题"] = titles
+    options = sheet.print_options
+    if options is not None:
+        result["居中打印"] = "、".join(w for on, w in ((options.horizontalCentered, "水平"), (options.verticalCentered, "垂直")) if on)
+        result["打印网格线"] = "是" if options.gridLines else ""
+    return result
+
+
+def _header_footer(sheet: Any) -> dict[str, str]:
+    result = {}
+    for label, attr in (("页眉", "oddHeader"), ("页脚", "oddFooter"), ("首页页眉", "firstHeader"), ("首页页脚", "firstFooter"),
+                        ("偶数页页眉", "evenHeader"), ("偶数页页脚", "evenFooter")):
+        part = getattr(sheet, attr, None)
+        if part is None:
+            continue
+        for side, word in (("left", "左"), ("center", "中"), ("right", "右")):
+            text = getattr(getattr(part, side, None), "text", None) or ""
+            if text:
+                result[f"{label}（{word}）"] = text
+    return result
+
+
+def _validations(sheet: Any) -> dict[str, str]:
+    result = {}
+    for dv in getattr(sheet.data_validations, "dataValidation", None) or []:
+        words = [dv.type or "任意值", dv.operator or ""]
+        words += [f for f in (dv.formula1, dv.formula2) if f]
+        if dv.allow_blank is False:
+            words.append("不允许空")
+        if dv.error:
+            words.append(f"出错提示：{dv.error}")
+        if dv.prompt:
+            words.append(f"输入提示：{dv.prompt}")
+        result[" ".join(str(r) for r in sorted(dv.sqref.ranges, key=str))] = " ".join(str(w) for w in words if w)
+    return result
+
+
+def _book_info(book: Any) -> dict[str, dict[str, str]]:
+    names = {}
+    try:
+        for name, item in book.defined_names.items():
+            names[name] = str(item.attr_text or "")
+    except Exception:
+        pass
+    for sheet in book.worksheets:
+        try:
+            for name, item in sheet.defined_names.items():
+                names[f"{name}（只在 {sheet.title} 里）"] = str(item.attr_text or "")
+        except Exception:
+            pass
+    security = getattr(book, "security", None)
+    locked = "、".join(w for on, w in ((getattr(security, "lockStructure", False), "结构"),
+                                       (getattr(security, "lockWindows", False), "窗口")) if on) if security else ""
+    return {"定义的名称": names, "工作簿保护": {"工作簿": f"锁定{locked}" if locked else "未保护"}}
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -433,13 +499,16 @@ def _sheet_info(data: dict[str, Any], name: str) -> dict[str, Any]:
             "setup": _page_setup(sheet, text.get("area", "") if sheet.print_area else "未设置"),
             "drawings": data["drawings"].get(name, []), "tab": _color(tab, data["theme"]),
             "state": {"visible": "显示", "hidden": "隐藏", "veryHidden": "深度隐藏"}.get(sheet.sheet_state, sheet.sheet_state),
-            "cf": _conditional_rules(sheet)}
+            "cf": _conditional_rules(sheet), "hf": _header_footer(sheet), "dv": _validations(sheet),
+            "filter": str(sheet.auto_filter.ref or "") if sheet.auto_filter is not None else "",
+            "protect": "已保护" if sheet.protection is not None and sheet.protection.sheet else "未保护"}
 
 
 # ───────── 效果图（用户 2026-11-11）：左右各画一张表的样子，不一样的格子盖半透明色块；只画有不同的行和上下几行 ─────────
 VIEW_CONTEXT = 3       # 不一样的行上下各带几行
 VIEW_MAX_ROWS = 300    # 每张表最多画多少行
 VIEW_MAX_COLS = 60     # 每张表最多画多少列
+VIEW_WHOLE_ROWS = 3000  # 报告：表不超过这么多行就整张画出来，超过了才只画有不同的行和上下几行
 _THEME_SLOTS = ("lt1", "dk1", "lt2", "dk2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink")
 _DRAWING_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 _BORDER_CSS = {"thin": "1px solid", "medium": "2px solid", "thick": "3px solid", "double": "3px double", "hair": "1px dotted",
@@ -609,7 +678,7 @@ def _used_bounds(data: dict[str, Any], name: str) -> tuple[int, int]:
 
 def _view(name: str, old: dict[str, Any] | None, new: dict[str, Any] | None, marks: dict[str, list[str]],
           row_marks: list[int], col_marks: list[str], merge_marks: list[str],
-          boxes: dict[str, list] | None = None) -> dict[str, Any] | None:
+          boxes: dict[str, list] | None = None, full: bool = False) -> dict[str, Any] | None:
     """效果图要的数据：只取有不同的行和上下 VIEW_CONTEXT 行；一边没有这张表时画另一边的开头几十行"""
     from openpyxl.utils.cell import column_index_from_string, get_column_letter, range_boundaries
     bounds = [_used_bounds(side, name) for side in (old, new) if side is not None]
@@ -626,20 +695,27 @@ def _view(name: str, old: dict[str, Any] | None, new: dict[str, Any] | None, mar
     for top, left, bottom, right, *_ in boxes["old"] + boxes["new"]:  # 图片 / 图形不一样：把它占的那几行也画出来
         hot.update(range(top, min(bottom, top + VIEW_BOX_ROWS) + 1))
         last_row, last_col = max(last_row, min(bottom, top + VIEW_BOX_ROWS)), max(last_col, right)
-    if old is None or new is None:
+    whole = full and last_row and last_col and max(last_row, max(hot, default=0)) <= VIEW_WHOLE_ROWS
+    if whole:  # 报告（用户 2026-11-17）：画整张表，靠垂直滚动条看，才知道不同在表的哪个位置
+        last_row = max(last_row, max(hot, default=0))
+        hot = set(range(1, last_row + 1))
+    elif old is None or new is None:
         hot = set(range(1, min(last_row, 40) + 1))
     if not hot and col_marks:
         hot = set(range(1, min(last_row, 10) + 1))  # 只有列宽不同：画开头几行看个大概
     if not hot or not last_row or not last_col:
         return None
-    context = 0 if old is None or new is None else VIEW_CONTEXT
+    context = 0 if whole or old is None or new is None else VIEW_CONTEXT
     wanted = sorted({r for h in hot for r in range(max(1, h - context), min(max(last_row, h), h + context) + 1)})
-    rows, cut = wanted[:VIEW_MAX_ROWS], max(0, len(wanted) - VIEW_MAX_ROWS)
-    cols_cut = max(0, last_col - VIEW_MAX_COLS)
-    last_col = min(last_col, VIEW_MAX_COLS)
+    max_rows = _LIMITS[full]["view_rows"] if full else VIEW_MAX_ROWS
+    max_cols = _LIMITS[full]["view_cols"] if full else VIEW_MAX_COLS
+    rows, cut = wanted[:max_rows], max(0, len(wanted) - max_rows)
+    cols_cut = max(0, last_col - max_cols)
+    last_col = min(last_col, max_cols)
     sides = {key: (_side_view(side, name, rows, last_col) if side is not None else None) for key, side in (("old", old), ("new", new))}
-    return {"rows": rows, "cols": [get_column_letter(c) for c in range(1, last_col + 1)], **sides,
-            "marks": marks if len(marks) <= 5000 else dict(list(marks.items())[:5000]), "marks_cut": max(0, len(marks) - 5000),
+    return {"rows": rows, "cols": [get_column_letter(c) for c in range(1, last_col + 1)], **sides, "whole": bool(whole),
+            "marks": marks if len(marks) <= _LIMITS[full]["marks"] else dict(list(marks.items())[:_LIMITS[full]["marks"]]),
+            "marks_cut": max(0, len(marks) - _LIMITS[full]["marks"]),
             "row_marks": row_marks, "col_marks": col_marks, "boxes": boxes, "rows_cut": cut, "cols_cut": cols_cut, "last_row": last_row}
 
 
@@ -667,9 +743,12 @@ def _hyperlink(cell: Any) -> str:
     return str(link.target or (f"#{link.location}" if link.location else "") or "")
 
 
-def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
-    """old = 远程（左），new = 要上传的（右）"""
+def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any], full: bool = False) -> dict[str, Any]:
+    """old = 远程（左），new = 要上传的（右）；full = 报告用，清单一条不截"""
     a, b = _sheet_info(old, name), _sheet_info(new, name)
+    limit = _LIMITS[full]
+    MAX_TEXT_ROWS, MAX_STYLE_GROUPS, MAX_GROUP_CELLS, MAX_DRAWING_ROWS = (  # noqa: N806  同名局部变量盖住模块常量
+        limit["text"], limit["groups"], limit["group_cells"], limit["drawings"])
     counts: dict[str, int] = {}
     # ── 文字 ──
     ta, tb = a["texts"], b["texts"]
@@ -797,29 +876,47 @@ def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any]) -> dict[str
     for region in ranges[:MAX_STYLE_GROUPS]:
         whole.append({"kind": "条件格式", "what": f"{region} 的规则有变化",
                       "old": describe(a["cf"].get(region, [])), "new": describe(b["cf"].get(region, []))})
+    for kind, field in (("页眉页脚", "hf"), ("数据验证", "dv")):
+        keys = sorted(k for k in a[field].keys() | b[field].keys() if a[field].get(k, "") != b[field].get(k, ""))
+        counts[kind] = len(keys)
+        whole += [{"kind": kind, "what": k, "old": a[field].get(k, ""), "new": b[field].get(k, "")} for k in keys[:MAX_STYLE_GROUPS]]
+    for kind, field, what in (("自动筛选", "filter", "筛选范围"), ("工作表保护", "protect", "这张表")):
+        counts[kind] = int(a[field] != b[field])
+        if a[field] != b[field]:
+            whole.append({"kind": kind, "what": what, "old": a[field], "new": b[field]})
     counts = {k: v for k, v in counts.items() if v}
-    view = _view(name, old, new, marks, size_marks.get("rows", []), size_marks.get("cols", []), only_a + only_b, boxes) if counts else None
+    view = _view(name, old, new, marks, size_marks.get("rows", []), size_marks.get("cols", []), only_a + only_b, boxes,
+                 full=full) if counts else None
     return {"name": name, "status": "changed" if counts else "same", "counts": counts, "view": view,
             "text": text_rows[:MAX_TEXT_ROWS], "text_more": max(0, len(text_rows) - MAX_TEXT_ROWS),
             "cache": cache_rows[:MAX_TEXT_ROWS], "cache_more": max(0, len(cache_rows) - MAX_TEXT_ROWS),
             "formulas": formulas[:MAX_TEXT_ROWS], "formulas_more": max(0, len(formulas) - MAX_TEXT_ROWS),
             "notes": (notes["批注"] + notes["超链接"])[:MAX_TEXT_ROWS],
+            "notes_more": max(0, len(notes["批注"]) + len(notes["超链接"]) - MAX_TEXT_ROWS),
             "styles": styles, "whole": whole}
 
 
-def diff(mine: Path | str, theirs: Path | str) -> dict[str, Any]:
-    """mine = 你要上传的这份（右 / 新），theirs = 远程现在这份（左 / 旧）"""
+def diff(mine: Path | str, theirs: Path | str, full: bool = False, progress: Any = None) -> dict[str, Any]:
+    """mine = 你要上传的这份（右 / 新），theirs = 远程现在这份（左 / 旧）
+    full = 报告用（core/excel_report.py）：清单一条不截；progress(阶段文字, 做完几张, 共几张) 报进度"""
     mine, theirs = Path(mine), Path(theirs)
-    with debug_log.side_task("excel_diff", {"mine": str(mine), "theirs": str(theirs)}):
-        new = _load(mine)
+    tell = progress or (lambda *_: None)
+    with debug_log.side_task("excel_diff", {"mine": str(mine), "theirs": str(theirs), "full": full}):
+        tell(f"正在读 {theirs.name}", 0, 0)
         old = None
+        new = None
         try:
             old = _load(theirs)
+            tell(f"正在读 {mine.name}", 0, 0)
+            new = _load(mine)
             names_new = [s.title for s in new["book"].worksheets]
             names_old = [s.title for s in old["book"].worksheets]
             sheets = []
-            for name in names_old + [n for n in names_new if n not in names_old]:
-                doomed = old["doomed"].get(name) or new["doomed"].get(name) or ""
+            all_names = names_old + [n for n in names_new if n not in names_old]
+            for done, name in enumerate(all_names):
+                tell(f"正在比「{name}」", done, len(all_names))
+                # 报告（full）比任意两份文件，不管精简会不会删
+                doomed = "" if full else (old["doomed"].get(name) or new["doomed"].get(name) or "")
                 if name not in names_new:
                     sheets.append({"name": name, "status": "only_old", "doomed": doomed, "counts": {},
                                    "view": None if doomed else _view(name, old, None, {}, [], [], [])})
@@ -827,19 +924,27 @@ def diff(mine: Path | str, theirs: Path | str) -> dict[str, Any]:
                     sheets.append({"name": name, "status": "only_new", "doomed": doomed, "counts": {},
                                    "view": None if doomed else _view(name, None, new, {}, [], [], [])})
                 else:
-                    entry = _diff_sheet(name, old, new)
+                    entry = _diff_sheet(name, old, new, full=full)
                     entry["doomed"] = doomed
                     sheets.append(entry)
             order_changed = [n for n in names_old if n in names_new] != [n for n in names_new if n in names_old]
+            info_old, info_new = _book_info(old["book"]), _book_info(new["book"])
+            book_rows = []
+            for kind in BOOK_KINDS:
+                da, db = info_old[kind], info_new[kind]
+                book_rows += [{"kind": kind, "what": k, "old": da.get(k, ""), "new": db.get(k, "")}
+                              for k in sorted(da.keys() | db.keys()) if da.get(k, "") != db.get(k, "")]
         finally:
-            new["book"].close()
-            if old is not None:
-                old["book"].close()
+            for side in (new, old):
+                if side is not None:
+                    side["book"].close()
         real = [s for s in sheets if not (s["doomed"] and s["status"] in ("only_old", "only_new"))]
         totals: dict[str, int] = {}
         for sheet in sheets:
             for kind, count in sheet["counts"].items():
                 totals[kind] = totals.get(kind, 0) + count
+        for row in book_rows:
+            totals[row["kind"]] = totals.get(row["kind"], 0) + 1
         summary = {"表": len(sheets), "一样的表": sum(s["status"] == "same" for s in sheets),
                    "有不同的表": sum(s["status"] == "changed" for s in sheets),
                    "只有远程有": sum(s["status"] == "only_old" for s in real),
@@ -850,4 +955,5 @@ def diff(mine: Path | str, theirs: Path | str) -> dict[str, Any]:
                         **{k: v for k, v in summary.items() if k != "各类"},
                         各类="、".join(f"{k}{v}" for k, v in totals.items()) or "-")
         return {"mine": str(mine), "theirs": str(theirs), "identical": identical, "summary": summary, "sheets": sheets,
-                "kinds": {"cell": list(CELL_KINDS), "sheet": list(SHEET_KINDS)}}
+                "book": book_rows, "names": {"old": names_old, "new": names_new},
+                "kinds": {"cell": list(CELL_KINDS), "sheet": list(SHEET_KINDS), "book": list(BOOK_KINDS)}}
