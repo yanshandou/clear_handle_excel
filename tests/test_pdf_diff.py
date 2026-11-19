@@ -113,6 +113,13 @@ class PdfDiffTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             pdf_diff.store_path(str(pdf.with_suffix(".txt")))
 
+    def test_page_png(self):
+        file_id = self.store("A.pdf", [rows(1, 5), rows(6, 5)])
+        self.assertTrue(pdf_diff.page_png(file_id, "2").startswith(b"\x89PNG"))
+        for bad in ("0", "3", "x"):
+            with self.assertRaises(ValueError):
+                pdf_diff.page_png(file_id, bad)
+
     def test_old_uploads_cleaned(self):
         old = self.store("old.pdf", [["a"]])
         path = Path(self.tmp.name) / "pdf_diff" / f"{old}.pdf"
