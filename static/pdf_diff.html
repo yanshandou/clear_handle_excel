@@ -124,10 +124,27 @@
     .pd-frame img { display: block; width: 100%; height: auto; user-select: none; }
     .pd-frame.is-missing { display: grid; place-items: center; border-style: dashed; border-color: #8a94a6; background: repeating-linear-gradient(45deg, #f3f5f9 0 10px, #e8ecf1 10px 20px); cursor: default; line-height: 1.4; }
     .pd-frame.is-missing span { padding: 6px 14px; border-radius: 999px; background: #fff; font-weight: 800; color: #374151; }
-    .pd-box { position: absolute; box-sizing: border-box; border: 3px solid; border-radius: 4px; pointer-events: none; }
-    .pd-frame.is-old .pd-box { border-color: #e5303f; background: rgba(229, 48, 63, .18); }
-    .pd-frame.is-new .pd-box { border-color: #1fae4b; background: rgba(31, 174, 75, .18); }
-    .pd-box.is-whole { inset: 0; border-width: 0; }
+    /* 框带发光（用户 2026-11-19）；鼠标移上去更亮，并弹出放大图 */
+    .pd-box { position: absolute; box-sizing: border-box; border: 3px solid; border-radius: 4px; cursor: zoom-in; transition: box-shadow .15s; }
+    .pd-frame.is-old .pd-box { border-color: #ff3347; background: rgba(229, 48, 63, .16);
+      box-shadow: 0 0 6px 2px rgba(255, 51, 71, .85), 0 0 18px 6px rgba(255, 51, 71, .45), inset 0 0 8px rgba(255, 51, 71, .5); }
+    .pd-frame.is-new .pd-box { border-color: #19c654; background: rgba(31, 174, 75, .16);
+      box-shadow: 0 0 6px 2px rgba(25, 198, 84, .85), 0 0 18px 6px rgba(25, 198, 84, .45), inset 0 0 8px rgba(25, 198, 84, .5); }
+    .pd-frame.is-old .pd-box:hover { box-shadow: 0 0 8px 3px rgba(255, 51, 71, 1), 0 0 28px 10px rgba(255, 51, 71, .6), inset 0 0 10px rgba(255, 51, 71, .6); }
+    .pd-frame.is-new .pd-box:hover { box-shadow: 0 0 8px 3px rgba(25, 198, 84, 1), 0 0 28px 10px rgba(25, 198, 84, .6), inset 0 0 10px rgba(25, 198, 84, .6); }
+    .pd-box.is-whole { inset: 0; border-width: 0; box-shadow: none !important; cursor: inherit; pointer-events: none; }
+    @media (prefers-reduced-motion: reduce) { .pd-box { transition: none; } }
+    .pd-zoom { position: fixed; z-index: 200; display: grid; grid-template-columns: repeat(2, auto); gap: 6px 10px; max-width: calc(100vw - 16px); padding: 10px; border: 2px solid #1f2937; border-radius: 12px; background: #fff; box-shadow: 0 12px 36px rgba(15, 23, 42, .35); pointer-events: none; }
+    .pd-zoom[hidden] { display: none; }
+    .pd-zoom-side b { display: block; margin-bottom: 4px; font-size: 13px; }
+    .pd-zoom-side.is-old b { color: #82071e; } .pd-zoom-side.is-new b { color: #14532d; }
+    .pd-zoom-crop { position: relative; overflow: hidden; border: 3px solid; border-radius: 6px; background: #fff; }
+    .pd-zoom-side.is-old .pd-zoom-crop { border-color: #cf222e; } .pd-zoom-side.is-new .pd-zoom-crop { border-color: #1a7f37; }
+    .pd-zoom-crop img { position: absolute; max-width: none; height: auto; image-rendering: auto; }
+    .pd-zoom-crop.is-missing { display: grid; place-items: center; background: repeating-linear-gradient(45deg, #f3f5f9 0 10px, #e8ecf1 10px 20px); font-weight: 800; color: #374151; }
+    .pd-zoom-mark { position: absolute; box-sizing: border-box; border: 2px dashed; border-radius: 3px; }
+    .pd-zoom-side.is-old .pd-zoom-mark { border-color: #e5303f; } .pd-zoom-side.is-new .pd-zoom-mark { border-color: #1fae4b; }
+    .pd-zoom-tip { grid-column: 1 / -1; margin: 0; font-size: 12px; font-weight: 700; color: #374151; }
     .pd-hl.pd-hl-old { background: #b91c1c; } .pd-hl.pd-hl-new { background: #15803d; }
     .pd-pg-title .pd-hl { color: #fff; }
     .pd-empty-result { padding: 24px; text-align: center; color: #374151; font-weight: 700; }
@@ -192,6 +209,7 @@
             <ul>
               <li>默认只显示不一样的页；勾选「一样的页也显示」可以看全部。</li>
               <li>「▲ 上一处 / ▼ 下一处」在不一样的页之间跳。</li>
+              <li>红绿框带发光；鼠标移到框上，旁边弹出左右两边这一块的放大图（左右同一块区域，方便对照），移开就收起。</li>
               <li>每页上面写着这一页是哪份文件的第几页（A、B、C 是放进来时定的字母）；点图片在浏览器里打开那份 PDF 的那一页。</li>
               <li>比完一页显示一页，不用等全部比完。</li>
             </ul>

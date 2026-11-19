@@ -304,7 +304,7 @@
     if (!page) return `<div class="pd-frame ${cls} is-missing" style="aspect-ratio:${pair.width} / ${pair.height}"><span>${side === 'left' ? '左边' : '右边'}没有这一页</span></div>`;
     const boxes = pair.kind === 'left' || pair.kind === 'right'
       ? '<span class="pd-box is-whole"></span>'
-      : pair.boxes.map(b => `<span class="pd-box" style="left:${(b.x * 100).toFixed(2)}%;top:${(b.y * 100).toFixed(2)}%;width:${(b.w * 100).toFixed(2)}%;height:${(b.h * 100).toFixed(2)}%"></span>`).join('');
+      : pair.boxes.map(b => `<span class="pd-box" data-b="${b.x},${b.y},${b.w},${b.h}" style="left:${(b.x * 100).toFixed(2)}%;top:${(b.y * 100).toFixed(2)}%;width:${(b.w * 100).toFixed(2)}%;height:${(b.h * 100).toFixed(2)}%"></span>`).join('');
     return `<a class="pd-frame ${cls}" href="${fileUrl(page.id, page.p)}" target="_blank" rel="noopener" title="${esc(page.name)} 第 ${page.p} 页（点了在浏览器里打开这一页）" style="aspect-ratio:${pair.width} / ${pair.height}">`
       + `<img src="${pageUrl(page.id, page.p)}" alt="${esc(page.name)} 第 ${page.p} 页" loading="lazy" draggable="false">${boxes}</a>`;
   }
@@ -313,7 +313,7 @@
     const where = page => (page ? `<span class="pd-hl ${page === L ? 'pd-hl-old' : 'pd-hl-new'}">${esc(page.letter)}</span>第 ${page.p} 页` : '—');
     const state = pair.kind === 'same' ? '一样' : pair.kind === 'diff' ? `${pair.boxes.length} 处不同`
       : pair.kind === 'left' ? '只有左边有' : '只有右边有';
-    return `<div class="pd-pg is-${pair.kind}" data-index="${index}">
+    return `<div class="pd-pg is-${pair.kind}" data-index="${index}" data-w="${pair.width}" data-h="${pair.height}">
         <div class="pd-pg-title"><b>第 ${index + 1} 页</b><span>左：${where(L)}</span><span>右：${where(R)}</span><span class="pd-pg-state">${state}</span></div>
         <div class="pd-pg-cols">${frameHtml('left', L, pair)}${frameHtml('right', R, pair)}</div></div>`;
   }
@@ -373,6 +373,60 @@
     log('逐页对比完成', stats);
     return stats;
   }
+
+  // ---------- 鼠标移到红绿框上：弹出左右两边这一块的放大图（用户 2026-11-19） ----------
+  // 浮在鼠标旁边（position: fixed），不挪页面；左右用同一块区域，方便对照
+  const ZOOM_MAX = 4, ZOOM_BOX_W = 520, ZOOM_BOX_H = 380;
+  const zoomPop = document.createElement('div');
+  zoomPop.className = 'pd-zoom';
+  zoomPop.hidden = true;
+  zoomPop.setAttribute('aria-hidden', 'true');
+  document.body.append(zoomPop);
+  let zoomBox = null;
+
+  function showZoom(boxEl) {
+    const pg = boxEl.closest('.pd-pg');
+    if (!pg) return;
+    const W = +pg.dataset.w, H = +pg.dataset.h;
+    const [bx, by, bw, bh] = boxEl.dataset.b.split(',').map(Number);
+    // 框外面再留一点，看得到上下文
+    const margin = Math.max(bw * W, bh * H) * 0.35 + 12;
+    const X = Math.max(bx * W - margin, 0), Y = Math.max(by * H - margin, 0);
+    const RW = Math.min(bx * W + bw * W + margin, W) - X, RH = Math.min(by * H + bh * H + margin, H) - Y;
+    const k = Math.max(1, Math.min(ZOOM_MAX, ZOOM_BOX_W / RW, ZOOM_BOX_H / RH));
+    const side = (frame, cls, label) => {
+      const img = frame && frame.querySelector('img');
+      const mark = `<span class="pd-zoom-mark" style="left:${(bx * W - X) * k}px;top:${(by * H - Y) * k}px;width:${bw * W * k}px;height:${bh * H * k}px"></span>`;
+      const body = img
+        ? `<div class="pd-zoom-crop" style="width:${RW * k}px;height:${RH * k}px"><img src="${img.getAttribute('src')}&sharp=1" alt="" style="width:${W * k}px;left:${-X * k}px;top:${-Y * k}px">${mark}</div>`
+        : `<div class="pd-zoom-crop is-missing" style="width:${RW * k}px;height:${RH * k}px"><span>没有这一页</span></div>`;
+      return `<div class="pd-zoom-side ${cls}"><b>${label}</b>${body}</div>`;
+    };
+    zoomPop.innerHTML = side(pg.querySelector('.pd-frame.is-old:not(.is-missing)'), 'is-old', '左边')
+      + side(pg.querySelector('.pd-frame.is-new:not(.is-missing)'), 'is-new', '右边')
+      + `<p class="pd-zoom-tip">放大 ${k.toFixed(1)} 倍</p>`;
+    zoomPop.hidden = false;
+  }
+
+  function placeZoom(event) {
+    const gap = 18, rect = zoomPop.getBoundingClientRect();
+    let x = event.clientX + gap, y = event.clientY + gap;
+    if (x + rect.width > innerWidth - 8) x = event.clientX - gap - rect.width;
+    if (y + rect.height > innerHeight - 8) y = innerHeight - 8 - rect.height;
+    zoomPop.style.left = `${Math.max(8, x)}px`;
+    zoomPop.style.top = `${Math.max(8, y)}px`;
+  }
+
+  document.addEventListener('mouseover', event => {
+    const boxEl = event.target.closest && event.target.closest('.pd-box[data-b]');
+    if (boxEl === zoomBox) return;
+    zoomBox = boxEl;
+    if (!boxEl) { zoomPop.hidden = true; return; }
+    showZoom(boxEl);
+    placeZoom(event);
+  });
+  document.addEventListener('mousemove', event => { if (zoomBox) placeZoom(event); });
+  document.addEventListener('scroll', () => { zoomBox = null; zoomPop.hidden = true; }, { passive: true });
 
   async function run() {
     if (running) return;

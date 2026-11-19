@@ -232,7 +232,8 @@ class WebHandler(upload_manager.Handler):
             from core import pdf_diff
             query = parse_qs(parsed.query)
             try:
-                image = pdf_diff.page_png((query.get("id") or [""])[0], (query.get("p") or [""])[0])
+                image = pdf_diff.page_png((query.get("id") or [""])[0], (query.get("p") or [""])[0],
+                                          sharp=(query.get("sharp") or [""])[0] == "1")
             except (ValueError, OSError) as err:
                 self._send_json({"ok": False, "error": str(err)}, status=404)
             else:

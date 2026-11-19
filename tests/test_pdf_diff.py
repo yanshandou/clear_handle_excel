@@ -116,6 +116,7 @@ class PdfDiffTest(unittest.TestCase):
     def test_page_png(self):
         file_id = self.store("A.pdf", [rows(1, 5), rows(6, 5)])
         self.assertTrue(pdf_diff.page_png(file_id, "2").startswith(b"\x89PNG"))
+        self.assertGreater(len(pdf_diff.page_png(file_id, "2", sharp=True)), len(pdf_diff.page_png(file_id, "2")))
         for bad in ("0", "3", "x"):
             with self.assertRaises(ValueError):
                 pdf_diff.page_png(file_id, bad)
