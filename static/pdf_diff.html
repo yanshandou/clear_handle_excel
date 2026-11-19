@@ -84,6 +84,29 @@
     tr.pd-fold button { margin-left: 10px; padding: 2px 12px; border: 1.5px solid #4338ca; border-radius: 999px; background: #fff; color: #312e81; font-weight: 700; cursor: pointer; }
     tr.pd-fold button:hover { background: #e0e7ff; }
     tr.is-current td.pd-no { box-shadow: inset 4px 0 0 #4338ca; }
+    /* 批量对比：贴路径，每组一张卡片 */
+    .pd-batch-text { width: 100%; box-sizing: border-box; min-height: 130px; padding: 10px 12px; border: 2px solid #c7cfdb; border-radius: 12px; font: 13.5px/1.6 Consolas, 'MS Gothic', monospace; color: #111827; background: #fff; resize: vertical; }
+    .pd-batch-sum { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 10px 0 6px; font-weight: 800; color: #1f2937; }
+    .pd-batch-sum .is-same { color: #14532d; } .pd-batch-sum .is-diff { color: #5c3b00; } .pd-batch-sum .is-bad { color: #b42318; }
+    .pd-batch-tools { display: flex; gap: 8px; margin: 4px 0 8px; }
+    .pd-group { margin: 8px 0; border: 2px solid #c7cfdb; border-radius: 12px; background: #fff; }
+    .pd-group > summary { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; list-style: none; }
+    .pd-group > summary::-webkit-details-marker { display: none; }
+    .pd-group > summary::before { content: none; }
+    .pd-group[open] > summary { border-bottom: 2px solid #c7cfdb; }
+    .pd-gno { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: #4338ca; color: #fff; font: 800 14px/1 Arial, sans-serif; }
+    .pd-gname { min-width: 0; overflow-wrap: anywhere; font-weight: 700; color: #111827; }
+    .pd-gname .pd-eq { margin: 0 6px; color: #4c1d95; font-weight: 900; }
+    .pd-gname small { display: block; font-weight: 400; color: #374151; }
+    .pd-gstate { padding: 4px 12px; border-radius: 999px; border: 1.5px solid #8a94a6; font-weight: 800; font-size: 14px; white-space: nowrap; background: #f3f5f9; color: #374151; }
+    .pd-group.is-same .pd-gstate { background: #e4f5ea; border-color: #1a7f37; color: #14532d; }
+    .pd-group.is-diff .pd-gstate { background: #fff3d6; border-color: #b7791f; color: #5c3b00; }
+    .pd-group.is-bad .pd-gstate { background: #fef3f2; border-color: #b42318; color: #912018; }
+    .pd-group.is-diff { border-color: #d9a441; } .pd-group.is-bad { border-color: #e8a29b; }
+    .pd-gbody { padding: 10px 14px 14px; }
+    .pd-gbody .pd-error { margin: 0; color: #b42318; font-weight: 700; overflow-wrap: anywhere; }
+    .pd-desc { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: #374151; }
+    .pd-jump { margin-left: 14px; font-size: 15px; font-weight: 700; color: #1d4ed8; }
     .pd-empty-result { padding: 24px; text-align: center; color: #374151; font-weight: 700; }
   </style>
   <link rel="stylesheet" href="/static/theme-casual.css">
@@ -98,7 +121,7 @@
   </header>
   <main class="container clean-container">
     <section class="panel">
-      <h2>把 PDF 拖到左边和右边</h2>
+      <h2>把 PDF 拖到左边和右边 <a class="pd-jump" href="#pdBatchPanel">要一次比好几组？贴路径批量对比 ↓</a></h2>
       <div class="pd-sides">
         <div class="pd-side is-old" id="pdLeft" data-side="left">
           <div class="pd-side-head"><h3>左边（旧）</h3><span class="pd-sum" id="pdLeftSum"></span></div>
@@ -171,9 +194,52 @@
       <h2>对比结果</h2>
       <div id="pdResult"><p class="pd-empty-result">左右两边都放好 PDF 后点「🔍 开始对比」。</p></div>
     </section>
+    <section class="panel" id="pdBatchPanel">
+      <h2>批量对比：贴路径</h2>
+      <p class="toolbar-hint">一行一组：左边几份用 <b>+</b> 连起来，<b>=</b> 后面是右边。路径带不带引号都行；同一行后面的文件和前面在同一个文件夹时，可以只写文件名。上面的「不管空格」「不比页眉页脚」也用在这里。</p>
+      <textarea id="pdBatchText" class="pd-batch-text" spellcheck="false" aria-label="要比的几组 PDF 路径" placeholder="例如&#10;C:\资料\A.pdf + C:\资料\B.pdf = C:\资料\C.pdf&#10;C:\资料\C.pdf + D.pdf = E.pdf&#10;&#10;# 开头是 # 的行不管"></textarea>
+      <details class="how-notes">
+        <summary>📖 还能怎么写 <span class="how-notes-tip">也认 JSON；空行和 # 开头的行不管</span><span class="how-notes-toggle"></span></summary>
+        <div class="how-notes-body">
+          <section class="how-notes-group">
+            <h3>✍️ 一行一组</h3>
+            <ul>
+              <li><code>A.pdf + B.pdf = C.pdf</code>：左边 A 接 B，右边 C。右边也可以写好几份：<code>A.pdf = B.pdf + C.pdf</code>。</li>
+              <li>文件名里本身有 <code>+</code> 或 <code>=</code> 也没关系：只有紧跟在「.pdf」后面、或者前后有空格的 <code>+</code> <code>=</code> 才算分隔。</li>
+              <li>只写文件名（不带文件夹）时，用同一行前面那份的文件夹；一行的第一份也只写文件名时，用上一行最后那份的文件夹。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>🧾 JSON</h3>
+            <ul>
+              <li><code>[{"left": ["C:\\x\\A.pdf", "C:\\x\\B.pdf"], "right": ["C:\\x\\C.pdf"]}]</code></li>
+              <li>也可以写成 <code>[[["A.pdf", "B.pdf"], ["C.pdf"]], …]</code>，一边只有一份时可以直接写字符串。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>👀 结果</h3>
+            <ul>
+              <li>一组一组按顺序比，比完一组马上出一张卡片，不用等全部做完；同一份 PDF 在几组里出现只读一次。</li>
+              <li>卡片上写一样、有几处不同、或者出错的原因；点卡片展开，和上面一样左右对照看。</li>
+              <li>只读，原文件不动；别的任务在跑也能用。</li>
+            </ul>
+          </section>
+        </div>
+      </details>
+      <div class="link-actions"><button id="pdBatchRun" class="btn btn-primary" type="button">📋 批量对比</button></div>
+      <p id="pdBatchStatus" role="status" aria-live="polite"></p>
+      <div id="pdBatchTrack" class="progress-track progress-track-sm" hidden><div id="pdBatchFill" class="progress-fill" style="width:0%"></div></div>
+      <p id="pdBatchError" class="batch-error" role="alert"></p>
+      <div id="pdBatchSum" class="pd-batch-sum" hidden></div>
+      <div id="pdBatchTools" class="pd-batch-tools" hidden>
+        <button type="button" class="btn btn-outline btn-sm" id="pdOpenDiff">展开有不同的</button>
+        <button type="button" class="btn btn-outline btn-sm" id="pdCloseAll">全部收起</button>
+      </div>
+      <div id="pdBatchResults"></div>
+    </section>
     <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
   </main>
-  <script src="/static/dialog.js"></script>
+  <script src="/static/dialog.js"></script><script src="/static/eta.js"></script>
   <script src="/static/pdf_diff.js"></script><script src="/static/debug_log.js"></script>
 </body>
 </html>

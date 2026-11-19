@@ -102,6 +102,17 @@ class PdfDiffTest(unittest.TestCase):
         with self.assertRaises(ValueError):  # 过期被清掉的
             pdf_diff.diff(["0" * 32], ["1" * 32])
 
+    def test_store_path_reuses_unchanged_file(self):
+        pdf = Path(self.tmp.name) / "A 前半.pdf"
+        pdf.write_bytes(make_pdf([rows(1, 5)]))
+        first = pdf_diff.store_path(f'"{pdf}"')  # 贴进来的路径带引号也行
+        self.assertEqual(first["pages"], 1)
+        self.assertEqual(pdf_diff.store_path(str(pdf))["id"], first["id"])
+        with self.assertRaises(ValueError):
+            pdf_diff.store_path(str(pdf.with_name("没有.pdf")))
+        with self.assertRaises(ValueError):
+            pdf_diff.store_path(str(pdf.with_suffix(".txt")))
+
     def test_old_uploads_cleaned(self):
         old = self.store("old.pdf", [["a"]])
         path = Path(self.tmp.name) / "pdf_diff" / f"{old}.pdf"

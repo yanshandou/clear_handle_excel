@@ -637,6 +637,10 @@ class WebHandler(upload_manager.Handler):
                     sha[key] = ""
             self._send_json({"ok": True, **excel_diff.diff(mine.strip(), theirs.strip()), "sha256": sha})
             return
+        if self.path == "/api/pdf_diff/path":  # PDF 批量对比：按贴进来的本机路径读一份
+            from core import pdf_diff
+            self._send_json({"ok": True, **pdf_diff.store_path(payload.get("path"))})
+            return
         if self.path == "/api/pdf_diff":  # PDF 左右对比：只读，别的任务在跑也能用
             from core import pdf_diff
             self._send_json({"ok": True, **pdf_diff.diff(payload.get("left"), payload.get("right"), payload.get("options"))})
