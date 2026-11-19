@@ -118,6 +118,21 @@ def store_path(text: Any) -> dict[str, Any]:
     return stored
 
 
+PAGE_ZOOM = 1.5  # 页面图放大倍数（约 108 dpi）：网页上逐像素比，小字也看得清
+
+
+def page_png(file_id: Any, page: Any) -> bytes:
+    """传上来的那份 PDF 第 page 页（从 1 数）的图，网页上两边逐像素比、画红绿框"""
+    try:
+        number = int(page)
+    except (TypeError, ValueError):
+        raise ValueError("页码不对") from None
+    with fitz.open(_path(file_id)) as doc:
+        if not 1 <= number <= doc.page_count:
+            raise ValueError("页码不对")
+        return doc[number - 1].get_pixmap(matrix=fitz.Matrix(PAGE_ZOOM, PAGE_ZOOM), alpha=False).tobytes("png")
+
+
 def file_bytes(file_id: Any) -> bytes:
     return _path(file_id).read_bytes()
 

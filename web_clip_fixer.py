@@ -228,6 +228,15 @@ class WebHandler(upload_manager.Handler):
                 self._send_bytes(image, "image/png", cacheable=True)  # 地址带内容哈希，内容不会变
         elif parsed.path == "/pdf-diff":  # PDF 左右对比（用户 2026-11-19）
             self._serve_static_file("pdf_diff.html")
+        elif parsed.path == "/api/pdf_diff/page":  # PDF 对比：某一页的图（两边逐像素比、画红绿框）
+            from core import pdf_diff
+            query = parse_qs(parsed.query)
+            try:
+                image = pdf_diff.page_png((query.get("id") or [""])[0], (query.get("p") or [""])[0])
+            except (ValueError, OSError) as err:
+                self._send_json({"ok": False, "error": str(err)}, status=404)
+            else:
+                self._send_bytes(image, "image/png", cacheable=True)  # 编号对应的内容不会变
         elif parsed.path == "/api/pdf_diff/file":  # 对比页点「第几页」在浏览器里打开传上来的那份 PDF
             from core import pdf_diff
             try:

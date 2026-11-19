@@ -1,7 +1,6 @@
 // PDF 左右对比（用户 2026-11-19）：左右各放几份 PDF，按顺序接起来，像 Git 一样逐行比文字。
 // 后端 core/pdf_diff.py：POST /api/pdf_diff/upload 存文件（正文就是 PDF），POST /api/pdf_diff 比，GET /api/pdf_diff/file?id= 打开。
 (() => {
-  const CONTEXT = 3;  // 折起一样的行时，不同处上下各留几行
   const $ = id => document.getElementById(id);
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const log = (...args) => console.info('[PDF对比]', ...args);
@@ -184,7 +183,196 @@
   window.addEventListener('dragover', event => { if (!event.target.closest('.pd-side')) event.preventDefault(); });
   window.addEventListener('drop', event => { if (!event.target.closest('.pd-side')) event.preventDefault(); });
 
-  // ---------- 对比 ----------
+  // ---------- 逐页看原图对比（用户 2026-11-19：两边就是两张图，不一样的地方用红绿框圈出来） ----------
+  // 两边的页按顺序接起来，第 1 页对第 1 页、第 2 页对第 2 页……；每对在网页上逐像素比，
+  // 不一样的地方连成一块块，左边画红框、右边画绿框。一边多出来的页整页盖色。
+  const BLOCK = 6;            // 6 像素一格判断有没有不同
+  const PIXEL_TOL = 48;       // 颜色差这么多以内算一样（抗锯齿、压缩噪点）
+  const VISIBLE_TOL = 72;     // 超过这个、而且周围 1 像素内也找不到相近颜色，才算看得出的不同
+  const GROW = 3;             // 相隔 3 格以内的不同处并成一个框
+  const views = new WeakMap(); // 结果框 → {hunkIndex}
+  let generation = 0;          // 重新对比时，上一次还没比完的就不要了
+
+  const pageUrl = (id, p) => `/api/pdf_diff/page?id=${encodeURIComponent(id)}&p=${p}`;
+  const fileUrl = (id, p) => `/api/pdf_diff/file?id=${encodeURIComponent(id)}#page=${p}`;
+  function loadImage(url) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('页面图取不到（文件可能过期了，请重新放进来）'));
+      img.src = url;
+    });
+  }
+
+  // 一边所有的页：[{id, name, letter, p}]
+  const pageList = files => files.flatMap(f => Array.from({ length: f.pages }, (_, i) => ({ id: f.id, name: f.name, letter: f.letter, p: i + 1 })));
+
+  const dist = (a, i, b, j) => Math.abs(a[i] - b[j]) + Math.abs(a[i + 1] - b[j + 1]) + Math.abs(a[i + 2] - b[j + 2]);
+
+  // 看得出的不同在哪些格（和 Excel 对比「真实效果」同一个判断法：容忍 1 像素偏移和抗锯齿）
+  function detect(a, b, width, height) {
+    const cols = Math.ceil(width / BLOCK), rows = Math.ceil(height / BLOCK);
+    const unmatched = new Uint8Array(width * height);
+    let any = false;
+    for (let y = 0; y < height; y++) {
+      const top = Math.max(y - 1, 0), bottom = Math.min(y + 1, height - 1);
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4;
+        const d = dist(a, i, b, i);
+        if (d <= VISIBLE_TOL) continue;
+        let oldOk = false, newOk = false;
+        const left = Math.max(x - 1, 0), right = Math.min(x + 1, width - 1);
+        for (let ny = top; ny <= bottom && !(oldOk && newOk); ny++) {
+          for (let j = (ny * width + left) * 4, end = (ny * width + right) * 4; j <= end; j += 4) {
+            if (j === i) continue;
+            oldOk ||= dist(a, i, b, j) <= VISIBLE_TOL;
+            newOk ||= dist(b, i, a, j) <= VISIBLE_TOL;
+            if (oldOk && newOk) break;
+          }
+        }
+        if (!oldOk || !newOk) { unmatched[i / 4] = 1; any = true; }
+      }
+    }
+    const hits = new Uint8Array(cols * rows);
+    if (!any) return { cols, rows, hits, count: 0 };
+    let count = 0;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x;
+        if (!unmatched[i]) continue;
+        // 孤立的一个点（噪点）不算
+        const l = x > 0, r = x + 1 < width;
+        const near = (l && unmatched[i - 1]) || (r && unmatched[i + 1])
+          || (y > 0 && (unmatched[i - width] || (l && unmatched[i - width - 1]) || (r && unmatched[i - width + 1])))
+          || (y + 1 < height && (unmatched[i + width] || (l && unmatched[i + width - 1]) || (r && unmatched[i + width + 1])));
+        if (!near) continue;
+        const k = Math.floor(y / BLOCK) * cols + Math.floor(x / BLOCK);
+        if (!hits[k]) { hits[k] = 1; count++; }
+      }
+    }
+    return { cols, rows, hits, count };
+  }
+
+  // 有不同的格连成一块块（隔 GROW 格以内算一块），每块一个框；坐标是占整页的比例
+  function boxesOf({ cols, rows, hits }, width, height) {
+    const seen = new Uint8Array(cols * rows), boxes = [];
+    for (let k = 0; k < hits.length; k++) {
+      if (!hits[k] || seen[k]) continue;
+      let x0 = k % cols, x1 = x0, y0 = Math.floor(k / cols), y1 = y0;
+      const stack = [k];
+      seen[k] = 1;
+      while (stack.length) {
+        const c = stack.pop(), cx = c % cols, cy = Math.floor(c / cols);
+        if (cx < x0) x0 = cx; if (cx > x1) x1 = cx; if (cy < y0) y0 = cy; if (cy > y1) y1 = cy;
+        for (let ny = Math.max(cy - GROW, 0); ny <= Math.min(cy + GROW, rows - 1); ny++) {
+          for (let nx = Math.max(cx - GROW, 0); nx <= Math.min(cx + GROW, cols - 1); nx++) {
+            const n = ny * cols + nx;
+            if (hits[n] && !seen[n]) { seen[n] = 1; stack.push(n); }
+          }
+        }
+      }
+      const pad = 4;
+      const left = Math.max(x0 * BLOCK - pad, 0), top = Math.max(y0 * BLOCK - pad, 0);
+      const right = Math.min((x1 + 1) * BLOCK + pad, width), bottom = Math.min((y1 + 1) * BLOCK + pad, height);
+      boxes.push({ x: left / width, y: top / height, w: (right - left) / width, h: (bottom - top) / height });
+    }
+    return boxes;
+  }
+
+  // 比一对页：两张图缩放到同样宽，逐像素比
+  async function comparePair(L, R) {
+    const [a, b] = await Promise.all([L ? loadImage(pageUrl(L.id, L.p)) : null, R ? loadImage(pageUrl(R.id, R.p)) : null]);
+    const width = Math.max(a ? a.naturalWidth : 0, b ? b.naturalWidth : 0);
+    const scaled = img => (img ? Math.round(img.naturalHeight * width / img.naturalWidth) : 0);
+    const height = Math.max(scaled(a), scaled(b));
+    if (!a || !b) return { kind: a ? 'left' : 'right', width, height, boxes: [] };
+    const pixels = img => {
+      const c = document.createElement('canvas');
+      c.width = width; c.height = height;
+      const g = c.getContext('2d', { willReadFrequently: true });
+      g.fillStyle = '#fff'; g.fillRect(0, 0, width, height);
+      g.drawImage(img, 0, 0, width, scaled(img));
+      return g.getImageData(0, 0, width, height).data;
+    };
+    const found = detect(pixels(a), pixels(b), width, height);
+    const boxes = found.count ? boxesOf(found, width, height) : [];
+    return { kind: boxes.length ? 'diff' : 'same', width, height, boxes };
+  }
+
+  function frameHtml(side, page, pair) {
+    const cls = side === 'left' ? 'is-old' : 'is-new';
+    if (!page) return `<div class="pd-frame ${cls} is-missing" style="aspect-ratio:${pair.width} / ${pair.height}"><span>${side === 'left' ? '左边' : '右边'}没有这一页</span></div>`;
+    const boxes = pair.kind === 'left' || pair.kind === 'right'
+      ? '<span class="pd-box is-whole"></span>'
+      : pair.boxes.map(b => `<span class="pd-box" style="left:${(b.x * 100).toFixed(2)}%;top:${(b.y * 100).toFixed(2)}%;width:${(b.w * 100).toFixed(2)}%;height:${(b.h * 100).toFixed(2)}%"></span>`).join('');
+    return `<a class="pd-frame ${cls}" href="${fileUrl(page.id, page.p)}" target="_blank" rel="noopener" title="${esc(page.name)} 第 ${page.p} 页（点了在浏览器里打开这一页）" style="aspect-ratio:${pair.width} / ${pair.height}">`
+      + `<img src="${pageUrl(page.id, page.p)}" alt="${esc(page.name)} 第 ${page.p} 页" loading="lazy" draggable="false">${boxes}</a>`;
+  }
+
+  function pairHtml(index, L, R, pair) {
+    const where = page => (page ? `<span class="pd-hl ${page === L ? 'pd-hl-old' : 'pd-hl-new'}">${esc(page.letter)}</span>第 ${page.p} 页` : '—');
+    const state = pair.kind === 'same' ? '一样' : pair.kind === 'diff' ? `${pair.boxes.length} 处不同`
+      : pair.kind === 'left' ? '只有左边有' : '只有右边有';
+    return `<div class="pd-pg is-${pair.kind}" data-index="${index}">
+        <div class="pd-pg-title"><b>第 ${index + 1} 页</b><span>左：${where(L)}</span><span>右：${where(R)}</span><span class="pd-pg-state">${state}</span></div>
+        <div class="pd-pg-cols">${frameHtml('left', L, pair)}${frameHtml('right', R, pair)}</div></div>`;
+  }
+
+  // 把一次对比画进 box：先出框架，一页一页比完一页加一页
+  async function compareInto(box, snapshot, { compact = false, onProgress = null } = {}) {
+    const gen = compact ? 0 : ++generation;  // 批量的每组各比各的，不和上面拖放的抢
+    box.classList.add('pd-view');
+    box.classList.remove('show-same');
+    views.set(box, { hunkIndex: -1, gen });
+    const left = pageList(snapshot.left), right = pageList(snapshot.right);
+    const total = Math.max(left.length, right.length);
+    const names = side => snapshot[side].map(f => `<span class="pd-hl ${side === 'left' ? 'pd-hl-old' : 'pd-hl-new'}">${esc(f.letter)}</span>${esc(f.name)}`).join(' + ');
+    box.innerHTML = `<div class="pd-verdict-slot"></div>
+      <div class="pd-bar">
+        <button type="button" class="btn btn-outline btn-sm" data-nav="-1" disabled>▲ 上一处</button>
+        <button type="button" class="btn btn-outline btn-sm" data-nav="1" disabled>▼ 下一处</button>
+        <span class="pd-pos">正在比…</span>
+        <label><input type="checkbox" class="pd-same-toggle"> 一样的页也显示 <span class="pd-same-count"></span></label>
+        <span class="pd-chips"></span>
+      </div>
+      <div class="pd-heads"><div class="is-old">左边：${names('left')}（${left.length} 页）</div><div class="is-new">右边：${names('right')}（${right.length} 页）</div></div>
+      <div class="pd-pages"></div>
+      <p class="pd-empty-result pd-all-same" hidden>每一页都一样。勾选上面的「一样的页也显示」可以看原图。</p>`;
+    const pagesBox = box.querySelector('.pd-pages');
+    const stats = { total, same: 0, diff: 0, onlyLeft: 0, onlyRight: 0, boxes: 0 };
+    const paintStats = done => {
+      const differ = stats.diff + stats.onlyLeft + stats.onlyRight;
+      box.querySelector('.pd-same-count').textContent = `（${stats.same} 页）`;
+      box.querySelector('.pd-chips').innerHTML = [
+        stats.diff ? `<span class="pd-chip is-mod">${stats.diff} 页有不同</span>` : '',
+        stats.onlyLeft ? `<span class="pd-chip is-del">左边多 ${stats.onlyLeft} 页</span>` : '',
+        stats.onlyRight ? `<span class="pd-chip is-add">右边多 ${stats.onlyRight} 页</span>` : '',
+      ].join('');
+      box.querySelectorAll('[data-nav]').forEach(b => { b.disabled = !differ; });
+      if (!done) { box.querySelector('.pd-pos').textContent = `正在比第 ${Math.min(stats.same + differ + 1, total)} / ${total} 页`; return; }
+      box.querySelector('.pd-pos').textContent = differ ? `共 ${differ} 页不一样` : '没有不同';
+      box.querySelector('.pd-all-same').hidden = differ > 0 || !total;
+      const desc = `共 ${total} 页：一样 ${stats.same} 页${stats.diff ? `，有不同 ${stats.diff} 页（${stats.boxes} 处）` : ''}${stats.onlyLeft ? `，左边多 ${stats.onlyLeft} 页` : ''}${stats.onlyRight ? `，右边多 ${stats.onlyRight} 页` : ''}`;
+      box.querySelector('.pd-verdict-slot').innerHTML = compact ? `<p class="pd-desc">${esc(desc)}</p>`
+        : `<div class="pd-verdict ${differ ? 'is-diff' : 'is-same'}">${differ ? `有 ${differ} 页不一样` : '✓ 两边每一页看起来都一样'}<small>${esc(desc)}</small></div>`;
+    };
+    paintStats(false);
+    for (let i = 0; i < total; i++) {
+      if (!compact && gen !== generation) return null;  // 上面拖放的又重新比了
+      if (onProgress) onProgress(i + 1, total);
+      const L = left[i] || null, R = right[i] || null;
+      const pair = await comparePair(L, R);
+      if (pair.kind === 'same') stats.same += 1;
+      else if (pair.kind === 'diff') { stats.diff += 1; stats.boxes += pair.boxes.length; }
+      else if (pair.kind === 'left') stats.onlyLeft += 1;
+      else stats.onlyRight += 1;
+      pagesBox.insertAdjacentHTML('beforeend', pairHtml(i, L, R, pair));
+      paintStats(false);
+    }
+    paintStats(true);
+    log('逐页对比完成', stats);
+    return stats;
+  }
 
   async function run() {
     if (running) return;
@@ -192,219 +380,60 @@
     if (!left.length || !right.length) return;
     running = true;
     $('pdError').textContent = '';
-    const started = Date.now();
-    $('pdStatus').innerHTML = '<span class="pd-busy"><span class="pd-spinner" aria-hidden="true"></span><span id="pdElapsed">正在抽文字、逐行对比…</span></span>';
-    const timer = setInterval(() => {
-      const el = $('pdElapsed');
-      if (el) el.textContent = `正在抽文字、逐行对比… 已用 ${Math.round((Date.now() - started) / 1000)} 秒`;
-    }, 1000);
-    renderSides();
     const snapshot = { left: left.map(f => ({ ...f })), right: right.map(f => ({ ...f })) };
     const sig = signature();
+    result = snapshot;
+    resultSig = sig;
+    renderSides();
     log('开始对比', snapshot.left.map(f => f.name), 'vs', snapshot.right.map(f => f.name));
+    const box = $('pdResult');
     try {
-      const res = await fetch('/api/pdf_diff', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          left: left.map(f => f.id), right: right.map(f => f.id),
-          options: { ignore_space: $('pdIgnoreSpace').checked, ignore_header: $('pdIgnoreHeader').checked },
-        }),
+      await compareInto(box, snapshot, {
+        onProgress: (i, n) => {
+          $('pdStatus').innerHTML = `<span class="pd-busy"><span class="pd-spinner" aria-hidden="true"></span>正在比第 ${i} / ${n} 页…</span>`;
+        },
       });
-      const data = await res.json().catch(() => ({ ok: false, error: `服务器没回应（${res.status}）` }));
-      if (!data.ok) throw new Error(data.error || '对比失败');
-      result = { ...data, snapshot };
-      resultSig = sig;
-      log('对比完成', data.stats);
       $('pdStatus').textContent = '';
-      renderResult();
     } catch (err) {
       $('pdStatus').textContent = '';
       $('pdError').textContent = `对比失败：${err.message || err}`;
       log('对比失败', err);
     } finally {
-      clearInterval(timer);
       running = false;
       renderSides();
     }
   }
 
-  // ---------- 显示一次对比结果（上面拖放的一次、下面批量的每一组，都用这一套） ----------
-  // 每个结果框 .pd-view 记着自己的结果：views.get(box) = {res, hunkIndex}
-  const views = new WeakMap();
-
-  // ops → 一行一行：{t: 'eq'|'mod'|'del'|'add'|'fold', l, r, hunk}
-  function buildRows(res, foldSame) {
-    const rows = [];
-    let hunk = -1;
-    const ops = res.ops;
-    ops.forEach((op, opIndex) => {
-      const [tag, i1, i2, j1, j2] = op;
-      if (tag === 'e') {
-        const n = i2 - i1;
-        const keepHead = opIndex === 0 ? 0 : CONTEXT;
-        const keepTail = opIndex === ops.length - 1 ? 0 : CONTEXT;
-        if (foldSame && n > keepHead + keepTail + 1) {
-          for (let k = 0; k < keepHead; k += 1) rows.push({ t: 'eq', l: i1 + k, r: j1 + k });
-          rows.push({ t: 'fold', i1: i1 + keepHead, j1: j1 + keepHead, n: n - keepHead - keepTail });
-          for (let k = n - keepTail; k < n; k += 1) rows.push({ t: 'eq', l: i1 + k, r: j1 + k });
-        } else {
-          for (let k = 0; k < n; k += 1) rows.push({ t: 'eq', l: i1 + k, r: j1 + k });
-        }
-        return;
-      }
-      hunk += 1;
-      const start = rows.length;
-      if (tag === 'r') {
-        const pairs = Math.min(i2 - i1, j2 - j1);
-        for (let k = 0; k < pairs; k += 1) rows.push({ t: 'mod', l: i1 + k, r: j1 + k, hunk });
-        for (let k = i1 + pairs; k < i2; k += 1) rows.push({ t: 'del', l: k, r: null, hunk });
-        for (let k = j1 + pairs; k < j2; k += 1) rows.push({ t: 'add', l: null, r: k, hunk });
-      } else if (tag === 'd') {
-        for (let k = i1; k < i2; k += 1) rows.push({ t: 'del', l: k, r: null, hunk });
-      } else if (tag === 'i') {
-        for (let k = j1; k < j2; k += 1) rows.push({ t: 'add', l: null, r: k, hunk });
-      }
-      rows[start].hunkStart = true;
-    });
-    return rows;
-  }
-
-  function marked(text, ranges) {
-    if (!ranges || !ranges.length) return esc(text);
-    let out = '', pos = 0;
-    ranges.forEach(([a, b]) => { out += esc(text.slice(pos, a)) + `<mark>${esc(text.slice(a, b))}</mark>`; pos = b; });
-    return out + esc(text.slice(pos));
-  }
-
-  const letterOfSnapshot = (res, side, fileIndex) => esc(res.snapshot[side][fileIndex].letter);
-
-  // 行号格：行号 + 这一行在哪份文件第几页（换页的第一行才显示小标签）
-  function noCell(res, side, index, cls, showSrc) {
-    if (index === null || index === undefined) return `<td class="pd-no ${cls}"></td>`;
-    const line = res[side][index];
-    const file = res.snapshot[side][line.f];
-    const letter = letterOfSnapshot(res, side, line.f);
-    const tag = showSrc
-      ? `<a class="pd-src is-${side === 'left' ? 'old' : 'new'}" href="/api/pdf_diff/file?id=${file.id}#page=${line.p}" target="_blank" rel="noopener" title="${esc(file.name)} 第 ${line.p} 页（点了在浏览器里打开这一页）">${letter} ${line.p}</a>`
-      : '';
-    return `<td class="pd-no ${cls}" title="${esc(file.name)} 第 ${line.p} 页">${tag}${index + 1}</td>`;
-  }
-
-  function rowHtml(res, row, prevPage) {
-    if (row.t === 'fold') {
-      return `<tr class="pd-fold" data-i="${row.i1}" data-j="${row.j1}" data-n="${row.n}"><td colspan="4">⋯ 一样的 ${row.n} 行 ⋯<button type="button" data-unfold>展开</button></td></tr>`;
-    }
-    const L = row.l !== null ? res.left[row.l] : null;
-    const R = row.r !== null ? res.right[row.r] : null;
-    const lPage = L ? `${L.f}:${L.p}` : null, rPage = R ? `${R.f}:${R.p}` : null;
-    const lNew = L && lPage !== prevPage.left, rNew = R && rPage !== prevPage.right;
-    if (L) prevPage.left = lPage;
-    if (R) prevPage.right = rPage;
-    const lCls = row.t === 'mod' || row.t === 'del' ? 'is-del' : row.t === 'add' ? 'is-empty' : '';
-    const rCls = row.t === 'mod' || row.t === 'add' ? 'is-add' : row.t === 'del' ? 'is-empty' : '';
-    const chars = row.t === 'mod' ? res.chars[`${row.l}:${row.r}`] : null;
-    const attrs = [
-      row.hunkStart ? `data-hunk="${row.hunk}"` : '',
-      (lNew || rNew) ? 'class="pd-page"' : '',
-    ].filter(Boolean).join(' ');
-    return `<tr ${attrs}>${noCell(res, 'left', row.l, lCls, lNew)}<td class="pd-txt ${lCls}">${L ? marked(L.s, chars && chars[0]) : ''}</td>`
-      + `${noCell(res, 'right', row.r, rCls, rNew)}<td class="pd-txt ${rCls}">${R ? marked(R.s, chars && chars[1]) : ''}</td></tr>`;
-  }
-
-  const rowsHtml = (res, rows, prevPage) => rows.map(row => rowHtml(res, row, prevPage)).join('');
-
-  function verdictText(res) {
-    return res.stats.same ? '✓ 两边的文字完全一样' : `有 ${res.stats.hunks} 处不同`;
-  }
-
-  // 把一次结果画进 box（box 带 .pd-view）；compact：批量卡片里不再重复大标题
-  function renderView(box, res, compact = false) {
-    box.classList.add('pd-view');
-    const state = views.get(box) || {};
-    views.set(box, { ...state, res, hunkIndex: -1, compact });
-    const { stats, snapshot, files, dropped } = res;
-    const names = side => snapshot[side].map((f, i) => `<span class="pd-hl">${letterOfSnapshot(res, side, i)}</span>${esc(f.name)}`).join(' + ');
-    const pages = side => files[side].reduce((n, f) => n + f.pages, 0);
-    const desc = `左边 ${snapshot.left.length} 份 ${pages('left')} 页 ${res.left.length} 行 · 右边 ${snapshot.right.length} 份 ${pages('right')} 页 ${res.right.length} 行`
-      + (dropped.left || dropped.right ? ` · 没比的页眉页脚：左 ${dropped.left}、右 ${dropped.right}` : '');
-    const warns = ['left', 'right'].flatMap(side => files[side].map((f, i) => (f.pages && !f.lines
-      ? `${sideName(side)}的 ${letterOfSnapshot(res, side, i)} ${snapshot[side][i].name} 一个字都没抽到（可能是扫描件或整页图片），这份比不了文字。` : null)).filter(Boolean));
-    const verdict = compact ? `<p class="pd-desc">${esc(desc)}</p>`
-      : `<div class="pd-verdict ${stats.same ? 'is-same' : 'is-diff'}">${verdictText(res)}<small>${esc(desc)}</small></div>`;
-    const chips = stats.same ? '' : [
-      stats.changed ? `<span class="pd-chip is-mod">改了 ${stats.changed} 行</span>` : '',
-      stats.removed ? `<span class="pd-chip is-del">左边多 ${stats.removed} 行</span>` : '',
-      stats.added ? `<span class="pd-chip is-add">右边多 ${stats.added} 行</span>` : '',
-    ].join('');
-    const fold = box.dataset.fold !== '0';
-    const bar = `<div class="pd-bar">
-        <button type="button" class="btn btn-outline btn-sm" data-nav="-1" ${stats.same ? 'disabled' : ''}>▲ 上一处</button>
-        <button type="button" class="btn btn-outline btn-sm" data-nav="1" ${stats.same ? 'disabled' : ''}>▼ 下一处</button>
-        <span class="pd-pos">${stats.same ? '没有不同' : `共 ${stats.hunks} 处`}</span>
-        <label><input type="checkbox" class="pd-fold-toggle" ${fold ? 'checked' : ''}> 只看不同（一样的行折起来）</label>
-        ${chips}
-      </div>`;
-    const rows = buildRows(res, fold);
-    const prevPage = { left: null, right: null };
-    box.innerHTML = verdict + warns.map(w => `<p class="pd-warn">⚠️ ${esc(w)}</p>`).join('') + bar
-      + `<div class="pd-heads"><div class="is-old">左边：${names('left')}</div><div class="is-new">右边：${names('right')}</div></div>`
-      + `<table class="pd-table"><colgroup><col class="c-no"><col><col class="c-no"><col></colgroup><tbody class="pd-rows">${
-        rows.length ? rowsHtml(res, rows, prevPage) : '<tr><td colspan="4" class="pd-empty-result">两边都没有抽到文字。</td></tr>'}</tbody></table>`;
-  }
-
   function renderResult() {
     const box = $('pdResult');
-    if (!result) { box.classList.remove('pd-view'); box.innerHTML = '<p class="pd-empty-result">左右两边都放好 PDF 后点「🔍 开始对比」。</p>'; return; }
-    renderView(box, result);
+    box.classList.remove('pd-view');
+    box.innerHTML = '<p class="pd-empty-result">左右两边都放好 PDF 后点「🔍 开始对比」。</p>';
   }
 
-  function unfold(box, tr) {
-    const { res } = views.get(box);
-    const i1 = +tr.dataset.i, j1 = +tr.dataset.j, n = +tr.dataset.n;
-    const rows = [];
-    for (let k = 0; k < n; k += 1) rows.push({ t: 'eq', l: i1 + k, r: j1 + k });
-    // 接着上一行的页：上一行是哪页，用来决定要不要显示换页标签
-    const prevPage = { left: null, right: null };
-    if (i1 > 0) { const p = res.left[i1 - 1]; prevPage.left = `${p.f}:${p.p}`; }
-    if (j1 > 0) { const p = res.right[j1 - 1]; prevPage.right = `${p.f}:${p.p}`; }
-    tr.insertAdjacentHTML('afterend', rowsHtml(res, rows, prevPage));
-    tr.remove();
-  }
-
+  // 上一处 / 下一处：在不一样的页之间跳（只在点按钮时滚动）
   function navigate(box, step) {
     const state = views.get(box);
-    const starts = [...box.querySelectorAll('.pd-rows tr[data-hunk]')];
-    if (!starts.length) return;
+    const targets = [...box.querySelectorAll('.pd-pg:not(.is-same)')];
+    if (!targets.length) return;
     const i = state.hunkIndex;
-    state.hunkIndex = i < 0 ? (step > 0 ? 0 : starts.length - 1) : (i + step + starts.length) % starts.length;
-    box.querySelectorAll('.pd-rows tr.is-current').forEach(tr => tr.classList.remove('is-current'));
-    const target = starts[state.hunkIndex];
+    state.hunkIndex = i < 0 ? (step > 0 ? 0 : targets.length - 1) : (i + step + targets.length) % targets.length;
+    box.querySelectorAll('.pd-pg.is-current').forEach(el => el.classList.remove('is-current'));
+    const target = targets[state.hunkIndex];
     target.classList.add('is-current');
-    target.scrollIntoView({ block: 'center' });  // 只在点按钮时滚过去
-    box.querySelector('.pd-pos').textContent = `第 ${state.hunkIndex + 1} / ${starts.length} 处`;
+    target.scrollIntoView({ block: 'start' });
+    box.querySelector('.pd-pos').textContent = `第 ${state.hunkIndex + 1} / ${targets.length} 页不一样`;
   }
 
   document.addEventListener('click', event => {
-    const box = event.target.closest('.pd-view');
-    if (!box || !views.get(box)) return;
-    const unfoldBtn = event.target.closest('[data-unfold]');
-    if (unfoldBtn) { unfold(box, unfoldBtn.closest('tr')); return; }
     const nav = event.target.closest('[data-nav]');
-    if (nav) navigate(box, +nav.dataset.nav);
+    const box = nav && nav.closest('.pd-view');
+    if (box && views.get(box)) navigate(box, +nav.dataset.nav);
   });
   document.addEventListener('change', event => {
-    if (!event.target.classList.contains('pd-fold-toggle')) return;
+    if (!event.target.classList.contains('pd-same-toggle')) return;
     const box = event.target.closest('.pd-view');
-    const state = box && views.get(box);
-    if (!state) return;
-    box.dataset.fold = event.target.checked ? '1' : '0';
-    renderView(box, state.res, state.compact);
+    if (box) box.classList.toggle('show-same', event.target.checked);
   });
-
-  // 选项变了：已经比过就按新选项重比一次（文件已经在程序那边，很快）
-  ['pdIgnoreSpace', 'pdIgnoreHeader'].forEach(id => $(id).addEventListener('change', () => {
-    if (result && signature() === resultSig) run();
-  }));
 
   $('pdRun').addEventListener('click', run);
   $('pdSwap').addEventListener('click', () => {
@@ -483,7 +512,6 @@
   }
 
   let batchRunning = false;
-  const batchViews = new Map();  // 卡片 → 结果（第一次展开时才画，几十组也不卡）
 
   function groupName(g) {
     if (!g.left.length && !g.right.length) return esc(g.text || '');
@@ -523,7 +551,6 @@
     if (!groups.length) { $('pdBatchError').textContent = '还没有贴路径：一行一组，例如 C:\\资料\\A.pdf + C:\\资料\\B.pdf = C:\\资料\\C.pdf'; return; }
     batchRunning = true;
     $('pdBatchRun').disabled = true;
-    batchViews.clear();
     const results = $('pdBatchResults');
     results.innerHTML = groups.map((g, i) => `<details class="pd-group is-wait" data-g="${i}">
         <summary><span class="pd-gno">${i + 1}</span><span class="pd-gname">${groupName(g)}<small>第 ${g.line} 行</small></span><span class="pd-gstate">等待中</span></summary>
@@ -534,7 +561,6 @@
     const stored = new Map();  // 路径 → 存好的文件（同一份在几组里出现只读一次）
     const letters = new Map(); // 路径 → 字母，整批里同一份文件字母一样
     const letterFor = p => { if (!letters.has(p)) letters.set(p, nextBatchLetter(letters.size)); return letters.get(p); };
-    const options = { ignore_space: $('pdIgnoreSpace').checked, ignore_header: $('pdIgnoreHeader').checked };
     const track = $('pdBatchTrack'), fill = $('pdBatchFill');
     track.hidden = false;
     const progress = done => {
@@ -559,17 +585,14 @@
             files[side].push({ ...info, letter: letterFor(p), status: 'ok' });
           }
         }
-        setGroup(card, 'is-busy', '正在对比…');
-        const data = await postJson('/api/pdf_diff', { left: files.left.map(f => f.id), right: files.right.map(f => f.id), options });
-        const res = { ...data, snapshot: files };
-        batchViews.set(card, res);
-        const pages = side => data.files[side].reduce((n, f) => n + f.pages, 0);
-        const noText = ['left', 'right'].some(side => data.files[side].some(f => f.pages && !f.lines));
-        const small = `第 ${g.line} 行 · 左 ${pages('left')} 页、右 ${pages('right')} 页${noText ? ' · ⚠️ 有文件抽不到文字' : ''}`;
-        if (data.stats.same) { counts.same += 1; setGroup(card, 'is-same', '✓ 一样', small); }
-        else { counts.diff += 1; setGroup(card, 'is-diff', `有 ${data.stats.hunks} 处不同`, small); }
-        if (card.open) renderView(card.querySelector('.pd-gbody'), res, true);
-        log('第', i + 1, '组', data.stats);
+        const body = card.querySelector('.pd-gbody');
+        const stats = await compareInto(body, files, { compact: true, onProgress: (n, total) => setGroup(card, 'is-busy', `正在比第 ${n} / ${total} 页`) });
+        const differ = stats.diff + stats.onlyLeft + stats.onlyRight;
+        const pages = side => files[side].reduce((n, f) => n + f.pages, 0);
+        const small = `第 ${g.line} 行 · 左 ${pages('left')} 页、右 ${pages('right')} 页`;
+        if (!differ) { counts.same += 1; setGroup(card, 'is-same', '✓ 一样', small); }
+        else { counts.diff += 1; setGroup(card, 'is-diff', `${differ} 页不一样`, small); }
+        log('第', i + 1, '组', stats);
       } catch (err) {
         counts.bad += 1;
         // 读不了的那份下次重新读
@@ -596,14 +619,6 @@
     return out;
   }
 
-  // 第一次展开时才画
-  $('pdBatchResults').addEventListener('toggle', event => {
-    const card = event.target;
-    if (!card.classList || !card.classList.contains('pd-group') || !card.open) return;
-    const body = card.querySelector('.pd-gbody');
-    const res = batchViews.get(card);
-    if (res && !views.get(body)) renderView(body, res, true);
-  }, true);
   $('pdBatchRun').addEventListener('click', runBatch);
   $('pdOpenDiff').addEventListener('click', () => {
     document.querySelectorAll('.pd-group.is-diff, .pd-group.is-bad').forEach(card => { card.open = true; });

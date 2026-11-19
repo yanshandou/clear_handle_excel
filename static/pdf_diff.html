@@ -107,6 +107,29 @@
     .pd-gbody .pd-error { margin: 0; color: #b42318; font-weight: 700; overflow-wrap: anywhere; }
     .pd-desc { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: #374151; }
     .pd-jump { margin-left: 14px; font-size: 15px; font-weight: 700; color: #1d4ed8; }
+    /* 逐页原图：左右两张图，不同处红绿框 */
+    .pd-pages { display: flex; flex-direction: column; gap: 16px; margin-top: 10px; }
+    .pd-view:not(.show-same) .pd-pg.is-same { display: none; }
+    .pd-pg { padding: 10px; border: 2px solid #c7cfdb; border-radius: 12px; background: #f8fafc; scroll-margin-top: 70px; }
+    .pd-pg.is-diff, .pd-pg.is-left, .pd-pg.is-right { border-color: #d9a441; background: #fffaf0; }
+    .pd-pg.is-current { box-shadow: 0 0 0 4px #4338ca; }
+    .pd-pg-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin-bottom: 8px; font-weight: 700; color: #1f2937; }
+    .pd-pg-title b { font-size: 16px; color: #111827; }
+    .pd-pg-state { margin-left: auto; padding: 2px 12px; border-radius: 999px; border: 1.5px solid #8a94a6; background: #fff; font-size: 13px; }
+    .pd-pg.is-same .pd-pg-state { border-color: #1a7f37; color: #14532d; background: #e4f5ea; }
+    .pd-pg.is-diff .pd-pg-state, .pd-pg.is-left .pd-pg-state, .pd-pg.is-right .pd-pg-state { border-color: #b7791f; color: #5c3b00; background: #fff3d6; }
+    .pd-pg-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+    .pd-frame { position: relative; display: block; overflow: hidden; border: 3px solid; border-radius: 6px; background: #fff; line-height: 0; cursor: zoom-in; }
+    .pd-frame.is-old { border-color: #cf222e; } .pd-frame.is-new { border-color: #1a7f37; }
+    .pd-frame img { display: block; width: 100%; height: auto; user-select: none; }
+    .pd-frame.is-missing { display: grid; place-items: center; border-style: dashed; border-color: #8a94a6; background: repeating-linear-gradient(45deg, #f3f5f9 0 10px, #e8ecf1 10px 20px); cursor: default; line-height: 1.4; }
+    .pd-frame.is-missing span { padding: 6px 14px; border-radius: 999px; background: #fff; font-weight: 800; color: #374151; }
+    .pd-box { position: absolute; box-sizing: border-box; border: 3px solid; border-radius: 4px; pointer-events: none; }
+    .pd-frame.is-old .pd-box { border-color: #e5303f; background: rgba(229, 48, 63, .18); }
+    .pd-frame.is-new .pd-box { border-color: #1fae4b; background: rgba(31, 174, 75, .18); }
+    .pd-box.is-whole { inset: 0; border-width: 0; }
+    .pd-hl.pd-hl-old { background: #b91c1c; } .pd-hl.pd-hl-new { background: #15803d; }
+    .pd-pg-title .pd-hl { color: #fff; }
     .pd-empty-result { padding: 24px; text-align: center; color: #374151; font-weight: 700; }
   </style>
   <link rel="stylesheet" href="/static/theme-casual.css">
@@ -116,7 +139,7 @@
 </head>
 <body>
   <header class="app-header">
-    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">PDF 对比</h1><span class="subtitle">左右两栏看两边的 PDF 文字哪里不同 · 每边可以放好几份，按顺序接起来比</span></div></a>
+    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">PDF 对比</h1><span class="subtitle">两边逐页放原图，不一样的地方圈红绿框 · 每边可以放好几份，按顺序接起来比</span></div></a>
     <nav class="header-nav" aria-label="功能导航"><a href="/" class="nav-link"><span class="ui-icon harbor-icon icon-home" aria-hidden="true"></span>主页</a><a href="/excel-diff" class="nav-link"><span class="ui-icon harbor-icon icon-search" aria-hidden="true"></span>Excel 对比</a></nav>
   </header>
   <main class="container clean-container">
@@ -138,17 +161,13 @@
         </div>
       </div>
       <input id="pdFileInput" type="file" accept=".pdf,application/pdf" multiple hidden>
-      <div class="pd-options">
-        <label><input id="pdIgnoreSpace" type="checkbox" checked> 不管空格（空格多一个少一个不算不同）</label>
-        <label><input id="pdIgnoreHeader" type="checkbox" checked> 不比页眉页脚（每页重复的标题、页码；A+B 和 C 的分页本来就不一样）</label>
-      </div>
       <div class="link-actions">
         <button id="pdRun" class="btn btn-primary" type="button" disabled>🔍 开始对比</button>
         <button id="pdSwap" class="btn btn-outline" type="button">⇄ 左右互换</button>
         <button id="pdClear" class="btn btn-outline" type="button">🗑 全部清空</button>
       </div>
       <details class="how-notes">
-        <summary>📖 程序会怎么做 <span class="how-notes-tip">把两边的 PDF 各自接起来，抽出文字逐行比，像 Git 一样左右对照；原文件不动</span><span class="how-notes-toggle"></span></summary>
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">两边的页按顺序一页对一页放原图，逐像素比，不一样的地方左边圈红、右边圈绿；原文件不动</span><span class="how-notes-toggle"></span></summary>
         <div class="how-notes-body">
           <section class="how-notes-group">
             <h3>📥 放文件</h3>
@@ -162,27 +181,26 @@
           <section class="how-notes-group">
             <h3>🔍 怎么比</h3>
             <ul>
-              <li>只比<b>文字</b>：每页把同一高度的字连成一行（Excel 导出的 PDF，一行就是表里的一行），两边所有行接起来以后逐行比。</li>
-              <li>改了的行，具体哪几个字不同再用深色标出来。</li>
-              <li>「不管空格」：空格、全角空格多一个少一个都不算不同。</li>
-              <li>「不比页眉页脚」：每页最上面、最下面两行里，只有页码的行（「3」「- 3 -」「3 / 12」「Page 3」「3ページ」这类），和左右两边一半以上的页都在这个位置重复出现的行（标题、公司名、每页重复的表头）不比。接起来以后分页、页码本来就对不上。</li>
-              <li>页和页之间不算内容：A 的最后一页和 B 的第一页接起来，只要文字一样，分页位置不同也不算不同。</li>
+              <li>两边的页接起来以后<b>一页对一页</b>：左边第 1 页对右边第 1 页，第 2 页对第 2 页……（A 有 2 页、B 有 2 页，接起来左边第 3 页就是 B 的第 1 页）。</li>
+              <li>每一对页都变成图片，缩放到一样宽，逐个像素比颜色。抗锯齿、压缩噪点这种肉眼看不出的差别、错开 1 像素以内的不算。</li>
+              <li>不一样的地方连成一块块（离得近的并成一块），每块画一个框：左边红框、右边绿框。</li>
+              <li>一边页数多出来的页，整页盖红（只有左边有）或盖绿（只有右边有）。</li>
             </ul>
           </section>
           <section class="how-notes-group">
             <h3>👀 怎么看</h3>
             <ul>
-              <li>左边红色是左边有、右边没有（或被改掉）的行，右边绿色是右边新的行；改了的行左右对齐。</li>
-              <li>行号旁边的小标签（如 <b>A 3</b>）是这一行在哪份文件的第几页；点它在浏览器里打开那份 PDF 的那一页。</li>
-              <li>一样的行默认折起来，只留不同处上下各 3 行；点「展开」看全部，或者取消勾选「只看不同」。</li>
-              <li>「▲ 上一处 / ▼ 下一处」在不同处之间跳。</li>
+              <li>默认只显示不一样的页；勾选「一样的页也显示」可以看全部。</li>
+              <li>「▲ 上一处 / ▼ 下一处」在不一样的页之间跳。</li>
+              <li>每页上面写着这一页是哪份文件的第几页（A、B、C 是放进来时定的字母）；点图片在浏览器里打开那份 PDF 的那一页。</li>
+              <li>比完一页显示一页，不用等全部比完。</li>
             </ul>
           </section>
           <section class="how-notes-group is-warn">
-            <h3>⚠️ 比不了的</h3>
+            <h3>⚠️ 要注意</h3>
             <ul>
-              <li>图片、线条、颜色、字体大小不比；扫描出来的 PDF（整页是图片）抽不到文字，比不了。</li>
-              <li>同一行里的字是按左右位置接起来的，表格里换了行的格子可能被拆到上下两行。</li>
+              <li>是按页对齐比的：前面多了或少了一行，后面整页内容往下挪，这一页会大片圈框；前面多了一页，后面每页都对不上。</li>
+              <li>A + B 和 C 的分页要一样（比如 C 就是 A、B 直接合起来的）才能一页对一页；页码印在页面上时，页码那里会被圈出来。</li>
             </ul>
           </section>
         </div>
@@ -196,7 +214,7 @@
     </section>
     <section class="panel" id="pdBatchPanel">
       <h2>批量对比：贴路径</h2>
-      <p class="toolbar-hint">一行一组：左边几份用 <b>+</b> 连起来，<b>=</b> 后面是右边。路径带不带引号都行；同一行后面的文件和前面在同一个文件夹时，可以只写文件名。上面的「不管空格」「不比页眉页脚」也用在这里。</p>
+      <p class="toolbar-hint">一行一组：左边几份用 <b>+</b> 连起来，<b>=</b> 后面是右边。路径带不带引号都行；同一行后面的文件和前面在同一个文件夹时，可以只写文件名。</p>
       <textarea id="pdBatchText" class="pd-batch-text" spellcheck="false" aria-label="要比的几组 PDF 路径" placeholder="例如&#10;C:\资料\A.pdf + C:\资料\B.pdf = C:\资料\C.pdf&#10;C:\资料\C.pdf + D.pdf = E.pdf&#10;&#10;# 开头是 # 的行不管"></textarea>
       <details class="how-notes">
         <summary>📖 还能怎么写 <span class="how-notes-tip">也认 JSON；空行和 # 开头的行不管</span><span class="how-notes-toggle"></span></summary>
@@ -220,7 +238,7 @@
             <h3>👀 结果</h3>
             <ul>
               <li>一组一组按顺序比，比完一组马上出一张卡片，不用等全部做完；同一份 PDF 在几组里出现只读一次。</li>
-              <li>卡片上写一样、有几处不同、或者出错的原因；点卡片展开，和上面一样左右对照看。</li>
+              <li>卡片上写一样、有几页不一样、或者出错的原因；点卡片展开，和上面一样逐页看原图和红绿框。</li>
               <li>只读，原文件不动；别的任务在跑也能用。</li>
             </ul>
           </section>
