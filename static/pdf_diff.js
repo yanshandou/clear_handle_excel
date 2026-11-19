@@ -194,6 +194,17 @@
   let generation = 0;          // 重新对比时，上一次还没比完的就不要了
 
   const pageUrl = (id, p) => `/api/pdf_diff/page?id=${encodeURIComponent(id)}&p=${p}`;
+  // 每页页码在哪（A+B 和 C 比，页码本来就不一样，用户 2026-11-19 说不要圈）；每份文件只取一次
+  const pageNoCache = new Map();
+  function pageNoBoxes(item) {
+    if (!item) return Promise.resolve([]);
+    if (!pageNoCache.has(item.id)) {
+      pageNoCache.set(item.id, fetch(`/api/pdf_diff/pageno?id=${encodeURIComponent(item.id)}`)
+        .then(r => r.json()).then(d => (d && d.ok ? d.pages : []))
+        .catch(err => { log('页码位置取不到，页码照样比', item.name, err); return []; }));
+    }
+    return pageNoCache.get(item.id).then(pages => pages[item.p - 1] || []);
+  }
   const fileUrl = (id, p) => `/api/pdf_diff/file?id=${encodeURIComponent(id)}#page=${p}`;
   function loadImage(url) {
     return new Promise((resolve, reject) => {
@@ -281,7 +292,8 @@
 
   // 比一对页：两张图缩放到同样宽，逐像素比
   async function comparePair(L, R) {
-    const [a, b] = await Promise.all([L ? loadImage(pageUrl(L.id, L.p)) : null, R ? loadImage(pageUrl(R.id, R.p)) : null]);
+    const [a, b, noL, noR] = await Promise.all([L ? loadImage(pageUrl(L.id, L.p)) : null, R ? loadImage(pageUrl(R.id, R.p)) : null,
+      pageNoBoxes(L), pageNoBoxes(R)]);
     const width = Math.max(a ? a.naturalWidth : 0, b ? b.naturalWidth : 0);
     const scaled = img => (img ? Math.round(img.naturalHeight * width / img.naturalWidth) : 0);
     const height = Math.max(scaled(a), scaled(b));
@@ -292,6 +304,11 @@
       const g = c.getContext('2d', { willReadFrequently: true });
       g.fillStyle = '#fff'; g.fillRect(0, 0, width, height);
       g.drawImage(img, 0, 0, width, scaled(img));
+      // 两边页码的位置都涂白再比，页码不一样不算不同
+      const pad = 4;
+      [[noL, scaled(a)], [noR, scaled(b)]].forEach(([list, h]) => list.forEach(([x0, y0, x1, y1]) => {
+        g.fillRect(x0 * width - pad, y0 * h - pad, (x1 - x0) * width + 2 * pad, (y1 - y0) * h + 2 * pad);
+      }));
       return g.getImageData(0, 0, width, height).data;
     };
     const found = detect(pixels(a), pixels(b), width, height);

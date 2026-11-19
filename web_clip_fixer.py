@@ -238,6 +238,14 @@ class WebHandler(upload_manager.Handler):
                 self._send_json({"ok": False, "error": str(err)}, status=404)
             else:
                 self._send_bytes(image, "image/png", cacheable=True)  # 编号对应的内容不会变
+        elif parsed.path == "/api/pdf_diff/pageno":  # PDF 对比：每页页码在哪，比图时不圈页码
+            from core import pdf_diff
+            try:
+                boxes = pdf_diff.page_number_boxes((parse_qs(parsed.query).get("id") or [""])[0])
+            except (ValueError, OSError) as err:
+                self._send_json({"ok": False, "error": str(err)}, status=404)
+            else:
+                self._send_json({"ok": True, "pages": boxes})
         elif parsed.path == "/api/pdf_diff/file":  # 对比页点「第几页」在浏览器里打开传上来的那份 PDF
             from core import pdf_diff
             try:

@@ -142,8 +142,9 @@ def file_bytes(file_id: Any) -> bytes:
 
 # ---------- 抽文字 ----------
 
-def _page_lines(page: Any) -> list[str]:
-    """把一页的字按高度连成行：同一高度（上下重叠一半以上）的词算一行，从左到右接起来；隔得远的中间放两个空格。"""
+def _page_rows(page: Any) -> list[list[tuple[str, tuple[float, float, float, float]]]]:
+    """把一页的字按高度连成行：同一高度（上下重叠一半以上）的词算一行，从左到右排。
+    每行再按大空隔切成几段，返回 [[(这段字, (x0, y0, x1, y1)), ...], ...]（PDF 坐标）。"""
     words = page.get_text("words")
     if not words:
         return []
@@ -157,20 +158,49 @@ def _page_lines(page: Any) -> list[str]:
             continue
         rows.append([w])
         row_mid, row_height = mid, height
-    lines = []
+    result = []
     for row in rows:
         row.sort(key=lambda w: w[0])
-        parts, right = [], None
+        segments: list[list[tuple]] = []
+        right = None
         for w in row:
-            if right is not None:
-                gap = w[0] - right
-                parts.append("  " if gap > (w[3] - w[1]) * 1.2 else " ")
-            parts.append(w[4])
+            if right is None or w[0] - right > (w[3] - w[1]) * 1.2:
+                segments.append([])
+            segments[-1].append(w)
             right = w[2]
-        text = "".join(parts).replace("\xad", "-").strip()
-        if text:
-            lines.append(text)
-    return lines
+        parts = []
+        for seg in segments:
+            text = " ".join(w[4] for w in seg).replace("\xad", "-").strip()
+            if text:
+                parts.append((text, (min(w[0] for w in seg), min(w[1] for w in seg),
+                                     max(w[2] for w in seg), max(w[3] for w in seg))))
+        if parts:
+            result.append(parts)
+    return result
+
+
+def _page_lines(page: Any) -> list[str]:
+    """一页的每行字；同一行隔得远的两段中间放两个空格。"""
+    return ["  ".join(text for text, _ in row) for row in _page_rows(page)]
+
+
+def page_number_boxes(file_id: Any) -> list[list[list[float]]]:
+    """每页页码在哪（用户 2026-11-19：A+B 和 C 比，页码本来就不一样，不要圈）。
+    只看每页最上面 / 最下面 EDGE_LINES 行（而且在页面上下 15% 以内）里单独成段、像页码的字（「2／5」「- 3 -」「Page 3」「3ページ」）；
+    返回每页一组 [x0, y0, x1, y1]，是占整页宽高的比例。"""
+    result = []
+    with fitz.open(_path(file_id)) as doc:
+        for page in doc:
+            width, height = page.rect.width or 1.0, page.rect.height or 1.0
+            rows = _page_rows(page)
+            edge = rows[:EDGE_LINES] + rows[EDGE_LINES:][-EDGE_LINES:]
+            boxes = []
+            for row in edge:
+                for text, (x0, y0, x1, y1) in row:
+                    if _is_page_no(text) and (y1 / height < 0.15 or y0 / height > 0.85):  # 还得真在页面上下边上
+                        boxes.append([round(x0 / width, 5), round(y0 / height, 5), round(x1 / width, 5), round(y1 / height, 5)])
+            result.append(boxes)
+    return result
 
 
 def _read(file_id: str) -> list[dict[str, Any]]:
