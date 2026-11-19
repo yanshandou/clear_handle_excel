@@ -87,7 +87,7 @@
    第 1-2 行：精简(2×2) | 调整页面(2×1) + 查看切字(2×1) | 上传(2×2)
    第 3 行：精简与上传顺便自动做的 6 项小工具
    第 4 行：独立专项修复、导出、复制与 PCL 检查 6 项
-   第 5 行：新任务·拿文件(左 3 列) | 完成任务·收尾检查(右 3 列) 首尾呼应 */
+   第 5 行：新任务·拿文件 | PDF 对比 | 完成任务·收尾检查，各 2 列 */
 .tile[data-tool='clean']  { grid-area: 1 / 1 / 3 / 3; }
 .tile[data-tool='adjust'] { grid-area: 1 / 3 / 2 / 5; }
 .tile[data-tool='cells']  { grid-area: 2 / 3 / 3 / 5; }
@@ -107,8 +107,9 @@
 .tile[data-tool='json']   { grid-area: 4 / 5; }
 .tile[data-tool='pcl']    { grid-area: 4 / 6; }
 
-.tile[data-tool='new']    { grid-area: 5 / 1 / 6 / 4; }
-.tile[data-tool='finish'] { grid-area: 5 / 4 / 6 / 7; }
+.tile[data-tool='new']    { grid-area: 5 / 1 / 6 / 3; }
+.tile[data-tool='pdfdiff'] { grid-area: 5 / 3 / 6 / 5; }
+.tile[data-tool='finish'] { grid-area: 5 / 5 / 6 / 7; }
 
 /* 热带海岛六种立体玩具釉色：浅滩青绿、晴空蓝、沙滩金、帆船海蓝、珊瑚粉、海岛椰林 */
 .tile {
@@ -292,6 +293,7 @@
 
 /* 首尾双门户卡（新任务·拿文件 / 完成任务）：宽屏与平板采用横向大徽章布局 */
 .tile[data-tool='new'] .tile-link,
+.tile[data-tool='pdfdiff'] .tile-link,
 .tile[data-tool='finish'] .tile-link {
   flex-direction: row;
   align-items: center;
@@ -300,16 +302,19 @@
   padding: 16px 24px 20px;
 }
 .tile[data-tool='new'] .tile-icon,
+.tile[data-tool='pdfdiff'] .tile-icon,
 .tile[data-tool='finish'] .tile-icon {
   width: 88px;
   height: 88px;
   margin: 0;
 }
 .tile[data-tool='new'] .tile-title,
+.tile[data-tool='pdfdiff'] .tile-title,
 .tile[data-tool='finish'] .tile-title {
   font-size: 20px;
 }
 .tile[data-tool='new'] .tile-sub,
+.tile[data-tool='pdfdiff'] .tile-sub,
 .tile[data-tool='finish'] .tile-sub {
   font-size: 13.5px;
 }
@@ -490,6 +495,7 @@
   .tile-grid .tile-big .tile-text { max-width: calc(100% - 114px); }
   .tile-grid .tile-wide,
   .tile-grid .tile[data-tool='new'],
+  .tile-grid .tile[data-tool='pdfdiff'],
   .tile-grid .tile[data-tool='finish'] { grid-column: span 2; }
 }
 
@@ -508,10 +514,12 @@
     gap: 11px;
   }
   .tile-grid .tile[data-tool='new'],
+  .tile-grid .tile[data-tool='pdfdiff'],
   .tile-grid .tile[data-tool='finish'] { grid-column: auto; }
 
   .tile-small .tile-link,
   .tile[data-tool='new'] .tile-link,
+  .tile[data-tool='pdfdiff'] .tile-link,
   .tile[data-tool='finish'] .tile-link {
     position: relative;
     flex-direction: column;
@@ -522,14 +530,17 @@
   }
   .tile-small .tile-icon,
   .tile[data-tool='new'] .tile-icon,
+  .tile[data-tool='pdfdiff'] .tile-icon,
   .tile[data-tool='finish'] .tile-icon {
     width: 44px;
     height: 44px;
     margin: 0;
   }
   .tile[data-tool='new'] .tile-title,
+  .tile[data-tool='pdfdiff'] .tile-title,
   .tile[data-tool='finish'] .tile-title { font-size: 15.5px; }
   .tile[data-tool='new'] .tile-sub,
+  .tile[data-tool='pdfdiff'] .tile-sub,
   .tile[data-tool='finish'] .tile-sub { font-size: 12px; }
 
   .tile-big .tile-link { padding: 18px 16px 86px; }

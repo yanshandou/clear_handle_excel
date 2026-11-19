@@ -217,6 +217,16 @@ class WebHandler(upload_manager.Handler):
                 self._send_json({"ok": False, "error": str(err)}, status=404)
             else:
                 self._send_bytes(image, "image/png", cacheable=True)  # 地址带内容哈希，内容不会变
+        elif parsed.path == "/pdf-diff":  # PDF 左右对比（用户 2026-11-19）
+            self._serve_static_file("pdf_diff.html")
+        elif parsed.path == "/api/pdf_diff/file":  # 对比页点「第几页」在浏览器里打开传上来的那份 PDF
+            from core import pdf_diff
+            try:
+                body = pdf_diff.file_bytes((parse_qs(parsed.query).get("id") or [""])[0])
+            except (ValueError, OSError) as err:
+                self._send_json({"ok": False, "error": str(err)}, status=404)
+            else:
+                self._send_bytes(body, "application/pdf", cacheable=True)  # 编号对应的内容不会变
         elif parsed.path == "/excel-diff/all":  # 一页对比当前任务的文件（用户 2026-11-12）
             self._serve_static_file("excel_diff_all.html")
         elif parsed.path == "/api/distribute/diff_pdf":  # 一页对比里并排看的同名 PDF（只给已有的）
@@ -474,6 +484,9 @@ class WebHandler(upload_manager.Handler):
         if urlparse(self.path).path.startswith("/api/upload-manager/"):
             upload_manager.Handler.do_POST(self)
             return
+        if urlparse(self.path).path == "/api/pdf_diff/upload":  # PDF 对比：网页拖进来的文件，正文就是 PDF 本身
+            self._handle_pdf_diff_upload()
+            return
         try:
             length = int(self.headers.get("Content-Length", 0))
             try:
@@ -499,6 +512,27 @@ class WebHandler(upload_manager.Handler):
         except OSError as err:
             log_msg(f"❌ 操作失败: {err}")
             self._send_json({"ok": False, "error": f"操作失败: {err}"}, status=500)
+        except Exception as err:
+            debug_log.exception(err, f"POST {self.path}")
+            self._send_json({"ok": False, "error": f"程序出错：{err}（详细信息已写进调试日志）"}, status=500)
+
+    def _handle_pdf_diff_upload(self) -> None:
+        from core import pdf_diff
+        name = unquote(self.headers.get("X-File-Name", "") or "")
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0:
+                raise ValueError(f"{name or '这份文件'} 是空文件")
+            if length > pdf_diff.MAX_BYTES:
+                raise ValueError(f"{name or '这份文件'} 超过 300 MB，太大了")
+            body = self.rfile.read(length)
+            debug_log.event("🖱️ 网页操作", 路径=self.path, 文件=name, 大小=length)
+            self._send_json({"ok": True, **pdf_diff.store(name, body)})
+        except ConnectionError:
+            self._log_client_disconnect()
+        except ValueError as err:
+            debug_log.event("🚫 网页操作被拒绝", 路径=self.path, 原因=err)
+            self._send_json({"ok": False, "error": str(err)}, status=400)
         except Exception as err:
             debug_log.exception(err, f"POST {self.path}")
             self._send_json({"ok": False, "error": f"程序出错：{err}（详细信息已写进调试日志）"}, status=500)
@@ -570,6 +604,10 @@ class WebHandler(upload_manager.Handler):
                 except OSError:
                     sha[key] = ""
             self._send_json({"ok": True, **excel_diff.diff(mine.strip(), theirs.strip()), "sha256": sha})
+            return
+        if self.path == "/api/pdf_diff":  # PDF 左右对比：只读，别的任务在跑也能用
+            from core import pdf_diff
+            self._send_json({"ok": True, **pdf_diff.diff(payload.get("left"), payload.get("right"), payload.get("options"))})
             return
         if self.path == "/api/excel_diff/pdf":  # 对比的「真实效果」：两边要哪些表的 PDF（core/excel_diff_pdf.py），只读旁路
             from core import excel_diff_pdf

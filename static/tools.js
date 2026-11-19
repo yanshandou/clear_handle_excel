@@ -28,6 +28,7 @@
     { id: 'pick', size: 'small', title: '挑文件复制', sub: '贴路径，保留目录只复制这些', url: '/pick-copy', icon: 'map', tone: 'pink' },
     { id: 'json', size: 'small', title: '按 JSON 复制 Excel', sub: '按上传记录复制、建目录', url: '/distribute?mode=json', icon: 'layers', tone: 'pink' },
     { id: 'pcl', size: 'small', title: 'PCL 单体测试检查', sub: '22 项清单 · 源码校验 · 覆盖率 · 测试报告', url: '/pcl', icon: 'check', tone: 'yellow' },
+    { id: 'pdfdiff', size: 'small', title: 'PDF 对比', sub: '拖进来左右对比 · 每边可接好几份', url: '/pdf-diff', icon: 'search', tone: 'blue' },
     { id: 'finish', size: 'small', title: '完成任务', sub: '收尾检查：都传回共享了没有', url: '/finish?start=1', pages: ['/finish'], icon: 'finish', tone: 'yellow', linkId: 'workTaskFinish' },
   ];
   const byId = Object.fromEntries(TOOLS.map(t => [t.id, t]));
