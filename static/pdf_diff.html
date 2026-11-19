@@ -124,16 +124,11 @@
     .pd-frame img { display: block; width: 100%; height: auto; user-select: none; }
     .pd-frame.is-missing { display: grid; place-items: center; border-style: dashed; border-color: #8a94a6; background: repeating-linear-gradient(45deg, #f3f5f9 0 10px, #e8ecf1 10px 20px); cursor: default; line-height: 1.4; }
     .pd-frame.is-missing span { padding: 6px 14px; border-radius: 999px; background: #fff; font-weight: 800; color: #374151; }
-    /* 框带发光（用户 2026-11-19）；鼠标移上去更亮，并弹出放大图 */
-    .pd-box { position: absolute; box-sizing: border-box; border: 3px solid; border-radius: 4px; cursor: zoom-in; transition: box-shadow .15s; }
-    .pd-frame.is-old .pd-box { border-color: #ff3347; background: rgba(229, 48, 63, .16);
-      box-shadow: 0 0 6px 2px rgba(255, 51, 71, .85), 0 0 18px 6px rgba(255, 51, 71, .45), inset 0 0 8px rgba(255, 51, 71, .5); }
-    .pd-frame.is-new .pd-box { border-color: #19c654; background: rgba(31, 174, 75, .16);
-      box-shadow: 0 0 6px 2px rgba(25, 198, 84, .85), 0 0 18px 6px rgba(25, 198, 84, .45), inset 0 0 8px rgba(25, 198, 84, .5); }
-    .pd-frame.is-old .pd-box:hover { box-shadow: 0 0 8px 3px rgba(255, 51, 71, 1), 0 0 28px 10px rgba(255, 51, 71, .6), inset 0 0 10px rgba(255, 51, 71, .6); }
-    .pd-frame.is-new .pd-box:hover { box-shadow: 0 0 8px 3px rgba(25, 198, 84, 1), 0 0 28px 10px rgba(25, 198, 84, .6), inset 0 0 10px rgba(25, 198, 84, .6); }
-    .pd-box.is-whole { inset: 0; border-width: 0; box-shadow: none !important; cursor: inherit; pointer-events: none; }
-    @media (prefers-reduced-motion: reduce) { .pd-box { transition: none; } }
+    /* 不一样的地方只盖一块半透明蒙版（用户 2026-11-19：不要边框、发光、跑马灯，约 80% 透明）；鼠标移上去稍深一点，并弹出放大图 */
+    .pd-frame.is-old { --pd-c: 255, 40, 60; } .pd-frame.is-new { --pd-c: 20, 190, 80; }
+    .pd-box { position: absolute; box-sizing: border-box; border-radius: 2px; cursor: zoom-in; background: rgba(var(--pd-c), .22); }
+    .pd-box:hover { background: rgba(var(--pd-c), .32); }
+    .pd-box.is-whole { inset: 0; cursor: inherit; pointer-events: none; }
     .pd-zoom { position: fixed; z-index: 200; display: grid; grid-template-columns: repeat(2, auto); gap: 6px 10px; max-width: calc(100vw - 16px); padding: 10px; border: 2px solid #1f2937; border-radius: 12px; background: #fff; box-shadow: 0 12px 36px rgba(15, 23, 42, .35); pointer-events: none; }
     .pd-zoom[hidden] { display: none; }
     .pd-zoom-side b { display: block; margin-bottom: 4px; font-size: 13px; }
