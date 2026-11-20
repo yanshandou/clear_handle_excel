@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ticket - 开发百宝箱</title>
+  <link rel="icon" type="image/png" href="/static/images/dev-toolbox-logo.png">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/theme-casual.css">
+  <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/ticket.css">
+  <script defer src="/static/tools.js?v=5"></script>
+  <script defer src="/static/ticket.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <a href="/" class="header-brand">
+      <div class="header-logo-badge" aria-hidden="true"></div>
+      <div class="header-title"><h1 class="header-title-text">Ticket</h1></div>
+    </a>
+    <nav class="header-nav" aria-label="功能导航">
+      <a href="/" class="nav-link"><span class="ui-icon harbor-icon icon-home" aria-hidden="true"></span>返回首页</a>
+    </nav>
+  </header>
+
+  <main class="container ticket-page">
+    <form id="ticketForm" autocomplete="off">
+      <div class="ticket-layout">
+        <section class="panel ticket-source" aria-labelledby="ticketSourceHeading">
+          <h2 id="ticketSourceHeading"><label for="ticketSource">粘贴任务文本</label></h2>
+          <p id="ticketSourceHelp">从任务页面复制文本，粘贴后自动填入表单。也可以直接手动填写。</p>
+          <textarea id="ticketSource" rows="10" maxlength="24000" spellcheck="false" aria-describedby="ticketSourceHelp" placeholder="可粘贴 task #编号、任务标题和日文任务详情"></textarea>
+          <p id="ticketRecognition" class="ticket-note" role="status"></p>
+        </section>
+
+        <section class="panel ticket-details" aria-labelledby="ticketDetailsHeading">
+          <h2 id="ticketDetailsHeading">任务信息</h2>
+          <fieldset id="ticketFields" class="ticket-fields" aria-labelledby="ticketDetailsHeading">
+            <label class="ticket-wide">任务标题 <small>必填</small><input type="text" name="title" maxlength="500" required></label>
+            <label>任务编号<input type="text" name="ticket_id" maxlength="24" inputmode="numeric" placeholder="例如 55345"></label>
+            <label>画面 / 报表 ID<input type="text" name="screen_id" maxlength="500"></label>
+            <label class="ticket-wide">关联案件<textarea name="parent" rows="2" maxlength="500"></textarea></label>
+            <label>状态<input type="text" name="status" maxlength="500"></label>
+            <label>优先级<input type="text" name="priority" maxlength="500"></label>
+            <label>负责人<input type="text" name="assignee" maxlength="500"></label>
+            <label>进度<input type="text" name="progress" maxlength="500" placeholder="例如 0%"></label>
+            <label>开始日期<input type="text" name="start_date" maxlength="500" placeholder="YYYY/MM/DD"></label>
+            <label>截止日期<input type="text" name="due_date" maxlength="500" placeholder="YYYY/MM/DD"></label>
+            <label>预计工时<input type="text" name="estimated_hours" maxlength="500" inputmode="decimal"></label>
+            <label>实际工时<input type="text" name="actual_hours" maxlength="500" inputmode="decimal"></label>
+            <label class="ticket-wide">目标版本<input type="text" name="version" maxlength="500"></label>
+            <label class="ticket-wide">创建 / 更新记录<input type="text" name="activity" maxlength="500"></label>
+          </fieldset>
+          <div class="ticket-actions">
+            <button type="submit" class="btn btn-primary" id="ticketCreate">确认创建</button>
+            <button type="reset" class="btn btn-outline" id="ticketReset">清空表单</button>
+          </div>
+          <p class="ticket-note">在 Windows 桌面创建文件夹，并将已填信息保存为 Ticket.txt。</p>
+          <p class="ticket-result" id="ticketResult" role="status"></p>
+          <p class="ticket-error" id="ticketError" role="alert"></p>
+        </section>
+      </div>
+    </form>
+  </main>
+</body>
+</html>

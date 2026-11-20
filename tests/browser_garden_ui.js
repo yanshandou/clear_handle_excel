@@ -150,6 +150,55 @@ async function main() {
     const before = await evaluate("JSON.stringify(document.querySelector('#flowList .app[data-tool=clean]').getBoundingClientRect())");
     await until("!document.querySelector('#flowList .app[data-tool=clean]').classList.contains('is-back')");
     assert.equal(await evaluate("JSON.stringify(document.querySelector('#flowList .app[data-tool=clean]').getBoundingClientRect())"), before, 'flash does not move the icon');
+    await click('#toolboxFolder');
+    await click('#toolboxBody .app[data-tool=ticket]');
+    await until("location.pathname === '/ticket' && document.readyState === 'complete'");
+    const ticketText = `機能追加 - 案件 #55022: 介舟ファミリーのタブレット対応／計画書の電子サイン対応（正式版）
+
+TBSNG0000_手書きサイン
+（開発）金 星（社） が9日前に追加. 約4時間前に更新.
+
+ステータス:\t進行中\t開始日:\t2026/11/20
+優先度:\t通常\t期日:\t2026/12/03
+担当者:\t（開発）白 家綾（現）\t進捗率:\t
+0%
+
+対象バージョン:\t介舟ファミリークラウド総合 - V440
+画面／帳票ID:\tTBSNG0000\t実績工数:\t1.00
+予定工数:\t9.00`;
+    const setTicketValue = (selector, value) => evaluate(`(() => {
+      const input = document.querySelector(${JSON.stringify(selector)});
+      input.value = ${JSON.stringify(value)};
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    const ticketFields = () => evaluate("Object.fromEntries(new FormData(document.querySelector('#ticketForm')))");
+    await setTicketValue('#ticketSource', ticketText);
+    assert.deepEqual(await ticketFields(), {
+      title: 'TBSNG0000_手書きサイン', ticket_id: '', screen_id: 'TBSNG0000', parent: ticketText.split('\n')[0],
+      status: '進行中', priority: '通常', assignee: '（開発）白 家綾（現）', progress: '0%', start_date: '2026/11/20',
+      due_date: '2026/12/03', estimated_hours: '9.00', actual_hours: '1.00', version: '介舟ファミリークラウド総合 - V440',
+      activity: '（開発）金 星（社） が9日前に追加. 約4時間前に更新.',
+    });
+    await setTicketValue('#ticketForm [name="assignee"]', '手動入力');
+    await setTicketValue('#ticketSource', `task #55345\n${ticketText}`);
+    assert.equal((await ticketFields()).ticket_id, '55345');
+    assert.equal((await ticketFields()).assignee, '手動入力');
+    await capture('ticket-filled');
+    await evaluate(`window.fetch = async (url, options) => {
+      if (url !== '/api/ticket/create' || options.method !== 'POST') throw new Error('Unexpected Ticket request');
+      window.savedTicket = JSON.parse(options.body);
+      return Response.json({ok: true, filename: 'Ticket.txt', folder: 'Desktop/Ticket #55345'});
+    }`);
+    await click('#ticketCreate');
+    await until("document.querySelector('#ticketResult').textContent.includes('Desktop/Ticket #55345')");
+    assert.equal(await evaluate('window.savedTicket.assignee'), '手動入力');
+    await click('#ticketReset');
+    assert.ok(Object.values(await ticketFields()).every(value => value === ''));
+    await setTicketValue('#ticketForm [name="title"]', '手動入力だけ');
+    await click('#ticketCreate');
+    await until("window.savedTicket.title === '手動入力だけ' && document.querySelector('#ticketResult').textContent.includes('Ticket.txt')");
+    assert.equal(await evaluate('window.savedTicket.ticket_id'), '');
+    await navigate('/');
     for (const width of [1024, 1280, 1920]) { // 只做电脑版（pc-only）
       await resize(width, 900);
       await evaluate('scrollTo({top:0, behavior:"instant"})');
@@ -157,7 +206,7 @@ async function main() {
       assert.equal(await evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `no overflow at ${width}`);
     }
     const routes = ['/clean', '/workbench', '/records', '/history', '/pdf-review', '/analysis', '/repair-colors',
-      '/excel-diff', '/distribute', '/distribute/start', '/distribute?mode=json', '/distribute/manage'];
+      '/excel-diff', '/distribute', '/distribute/start', '/distribute?mode=json', '/ticket', '/distribute/manage'];
     await resize(1440);
     for (const route of routes) {
       await navigate(route);

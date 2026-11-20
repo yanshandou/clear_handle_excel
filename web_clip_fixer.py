@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 from core import autofix, batch, bl_links, clean_chain, debug_log, distribute, file_problem, work_task, fix_images, mark_finder, scan_analysis, link_repair, repair_compare, hidden_repair, pdf_review, pdf_bundle, font_fix, image_restore, pick_copy
-from core import pcl_check, upload_manager, workbook_scope
+from core import pcl_check, ticket, upload_manager, workbook_scope
 from core.reference_folders import ReferenceFolders
 from core.common import (
     STATIC_DIR,
@@ -298,6 +298,8 @@ class WebHandler(upload_manager.Handler):
             self._send_json(image_restore.status())
         elif parsed.path == "/pick-copy":
             self._serve_static_file("pick_copy.html")
+        elif parsed.path == "/ticket":
+            self._serve_static_file("ticket.html")
         elif parsed.path == "/set-icons":  # 设置图标（用户 2026-11-20）：PNG → .ico 图标库，套到 Windows 文件夹
             self._serve_static_file("icon_library.html")
         elif parsed.path == "/api/icons":
@@ -567,6 +569,8 @@ class WebHandler(upload_manager.Handler):
             self._handle_icon_upload()
             return
         try:
+            if self.path == "/api/ticket/create" and self.headers.get_content_type() != "application/json":
+                raise ValueError("创建 Ticket 时请发送 JSON 表单")
             length = int(self.headers.get("Content-Length", 0))
             try:
                 payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
@@ -576,6 +580,8 @@ class WebHandler(upload_manager.Handler):
                 raise ValueError("请求内容必须为 JSON 对象")
             if self.path in ("/api/excel_report", "/api/excel_report/sheets"):  # 带着整份上传的 Excel（base64），只记文件名
                 debug_log.event("🖱️ 网页操作", 路径=self.path, 参数=excel_report_files_summary(payload))
+            elif self.path == "/api/ticket/create":
+                debug_log.event("🖱️ 网页操作", 路径=self.path)
             elif not self.path.startswith("/api/pcl/") and self.path != "/api/excel_diff/pdf_status":  # 检查台边打字边自动保存、对比页问进度，不记进调试日志
                 debug_log.event("🖱️ 网页操作", 路径=self.path, 参数=debug_log.summary(payload)[:600])
             self._handle_post(payload)
@@ -879,6 +885,8 @@ class WebHandler(upload_manager.Handler):
         elif self.path == "/api/pick_copy/open":
             pick_copy.open_dest(payload.get("dest"))
             self._send_json({"ok": True})
+        elif self.path == "/api/ticket/create":
+            self._send_json({"ok": True, **ticket.create(payload)})
         elif self.path == "/api/pdf_bundle/run":
             folder = _require_folder(payload)
             pdf_bundle.start(folder, payload.get("options"))

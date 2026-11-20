@@ -40,17 +40,17 @@ Use case: ui-mockup. Input images are visual references for style and palette. O
 
 ## 海下背景 undersea.webp（2026-11-20）
 
-首页横幅（bg.png，海面上）保持不动；水面以下由 `undersea.webp` 竖向无缝平铺补全，
-左右留白处露出珊瑚礁，整页读作一张连续的海（参考用户提供的竖向海上海下构图）。
+用内置 ImageGen 生成 1536×1024 的海底图，再按原尺寸转为 WebP。`.home-undersea` 用同一张图铺满海下区域，纵向延展水域，按视口缩放底部礁石和珊瑚所在的边角。图的顶部淡入与横幅共享的水色，两层背景共用白色柔光。
 
-- 出图：1536×1024，风格参考 bg.png、构图参考用户图；两侧礁石群 + 中部开阔水域（气泡、小鱼群）。
-  第一版珊瑚顶到上下边缘无法平铺，重生成时强制「上下 18% 全宽纯海水」，第二版通过。
-- 后处理：取顶行水色 W=rgb(26,251,253) 为接缝色；顶 10% / 底 8% 强制为纯 W，
-  10–17% 与 84–92% 用 smoothstep 混回原图，首末行像素完全相同 → repeat-y 无缝。
-- 接法：`.home-stage`（position:relative）包住横幅 + `.home-undersea` + 工作台；
-  undersea `inset:0; z-index:0`，`background-position-y: clamp(184px,24vw,316px)`（= 横幅高度）
-  使贴图第 0 行正好落在横幅底边；横幅 `::after` 68px 渐隐收尾到同一 W，接缝无色差。
-  深度渐变 ::before 前 30% 保持全透明以免污染接缝；::after 为缓慢摆动的上帝光，
-  prefers-reduced-motion 时静止；undersea `overflow:hidden` 防止光束平移造成横向溢出。
-- 验证：headless Edge 1440/1024/390/320 截图，接缝与平铺缝目视无色差、无横向溢出、
-  无控制台报错与失败请求；tests/browser_garden_ui.js 全过。
+<details>
+<summary>生成提示词</summary>
+
+```text
+Use case: stylized-concept. Create a single original landscape 3:2 raster illustration designed as the UNDERWATER half of a responsive website background. Match a cheerful sunny 3D cartoon tropical island and toy sailboat homepage: rounded miniature rocks, soft rendered surfaces, luminous aquatic blues, dreamy warm daylight, clean stylized game environment, no photorealism.
+
+Composition for a resizable website image: the top two thirds across the entire width is quiet open water ONLY, a seamless soft gradient from a light powder-ocean blue (#57b7e4) across the full top edge to a clear medium ocean blue (#267fb7) at about two thirds height. A soft diffuse glow is fine, but that part of the image must have no recognizable objects, rays with obvious contours, bubbles, silhouettes, marks, lines or patterns, because this water-only zone will stretch vertically as the website grows. No ocean surface or horizon: we are already just beneath the surface.
+
+The bottom third is a wide continuous underwater seabed stretching edge to edge, with low rounded reef rocks and tiny pastel peach and lavender coral fronds only in the outermost left 12% and right 12%. Delicate small coral sprigs, each no more than roughly 4% of the canvas width, and restrained contrast so a sailboat in the existing homepage banner looks substantially larger and remains the visual focus. Cropped reefs extend out of the left and right canvas edges, with natural slight asymmetry, in front of smooth distant blue rock forms. The central 76% is serene and open throughout, with only a subdued blue sandy floor and soft, subtle caustic ripples near the very bottom. Let the low flanking reefs fade smoothly into the open water above, with no seam between the water and floor. A few fine details on the bottom edge, appealing polished 3D storybook rendering. Full bleed without framing. No giant foreground objects, no characters, no boats, no fish, no lettering, no UI, no borders, no logos, no watermark, no repeating pattern.
+```
+
+</details>

@@ -3,75 +3,59 @@
    2026-11-20 起是手机桌面式：一样大的 3D 图标收在「工具箱」文件夹里，下面是自己拼的流程。
    悬停、按下、拖放和返回高亮只改光影，绝不改变图标位置与尺寸。
    ========================================== */
-.home-seascape {
-  position: relative;
-  z-index: 1;
-  height: clamp(184px, 24vw, 316px);
-  background: #7cc9ff url('/static/images/bg.png') center 58% / cover no-repeat;
-  overflow: hidden;
+.home-body {
+  min-height: 100vh;
+  background: #216da4;
 }
-.home-seascape::before {
+.home-stage {
+  --home-banner-height: clamp(184px, 24vw, 316px);
+  --home-waterline: #57b7e4;
+  position: relative;
+  isolation: isolate;
+  min-height: 100vh;
+  padding-bottom: clamp(84px, 7vw, 112px);
+}
+/* 海面和海下共用一层白色柔光，工作台在柔光上方。 */
+.home-stage::after {
   content: '';
   position: absolute;
-  inset: 0 0 auto 0;
-  height: 36px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.32) 0%, rgba(255, 255, 255, 0) 100%);
+  inset: 0;
+  z-index: 1;
   pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.26), rgba(255, 255, 255, 0.10) 74px);
+}
+.home-seascape {
+  position: relative;
+  height: var(--home-banner-height);
+  background: #7cc9ff url('/static/images/bg.png') center 58% / cover no-repeat;
+  overflow: hidden;
 }
 .home-seascape::after {
   content: '';
   position: absolute;
-  inset: auto 0 0 0;
-  height: 68px;
-  /* 收尾色 = undersea.webp 顶行水色 rgb(26,251,253)，保证海面→海下接缝无色差 */
-  background: linear-gradient(180deg, rgba(26, 251, 253, 0) 0%, rgba(26, 251, 253, 0.62) 52%, rgb(26, 251, 253) 100%);
+  inset: auto 0 0;
+  height: 54px;
   pointer-events: none;
+  background: linear-gradient(180deg, transparent, var(--home-waterline));
 }
-
-/* 海下背景：从横幅底边一直铺到页面底，左右留白处露出珊瑚礁，整页是一张连续的海 */
-.home-body {
-  position: relative;
-  min-height: 100vh;
-  background: rgb(26, 251, 253);
-}
-.home-stage {
-  position: relative;
-  min-height: 100vh;
-  padding-bottom: 52px;
-}
+/* 画面在海面下方淡入，海水随内容向下延展。 */
 .home-undersea {
   position: absolute;
-  inset: 0;
-  z-index: 0;
+  inset: var(--home-banner-height) 0 0;
   pointer-events: none;
-  overflow: hidden;
-  /* 正偏移让贴图第 0 行（纯水平接缝色）正好落在横幅底边，往下无缝平铺 */
-  background: url('/static/images/harbor/undersea.webp') center clamp(184px, 24vw, 316px) / 100% auto repeat-y;
-}
-.home-undersea::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(180deg, rgba(26, 251, 253, 0) 0%, rgba(26, 251, 253, 0) 30%, rgba(16, 120, 190, 0.1) 55%, rgba(9, 70, 140, 0.24) 100%);
+  background:
+    radial-gradient(ellipse 58% 185px at 50% 185px, rgba(166, 223, 249, 0.22), transparent),
+    linear-gradient(180deg, var(--home-waterline), #388fc5 clamp(170px, 26vh, 280px), #216da4);
 }
 .home-undersea::after {
   content: '';
   position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: min(78vh, 820px);
-  background: repeating-linear-gradient(100deg, rgba(255, 255, 255, 0.12) 0 26px, rgba(255, 255, 255, 0) 26px 96px);
-  -webkit-mask-image: linear-gradient(180deg, #000 0%, rgba(0, 0, 0, 0.35) 55%, transparent 100%);
-  mask-image: linear-gradient(180deg, #000 0%, rgba(0, 0, 0, 0.35) 55%, transparent 100%);
-  animation: undersea-rays 11s ease-in-out infinite alternate;
-}
-@keyframes undersea-rays {
-  from { opacity: 0.55; transform: translateX(0); }
-  to { opacity: 0.95; transform: translateX(46px); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .home-undersea::after { animation: none; opacity: 0.7; }
+  inset: 0;
+  border: solid transparent;
+  /* 按原图比例保留底部 34% 和两侧 15%，限制超宽屏上的珊瑚大小。 */
+  border-width: 0 min(15vw, 234px) min(22.6667vw, 354px);
+  border-image: url('/static/images/harbor/undersea.webp?v=3') 0 15% 34% 15% fill stretch;
+  mask-image: linear-gradient(180deg, transparent, #000 155px);
 }
 
 .home-workspace {

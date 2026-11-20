@@ -25,6 +25,7 @@
     { id: 'colors', group: 'upload', size: 'small', title: '修复颜色', sub: '对照参考恢复残留底色', url: '/repair-colors', ops: 'colors', icon: 'palette', tone: 'purple', inc: 'upload' },
     { id: 'view', group: 'upload', size: 'small', title: '视图标准化', sub: 'A1 · 100% · 停在第一张表', url: '/?task=normalize_view', action: "openTask('normalize_view')", task: 'normalize_view', ops: 'view', icon: 'view', tone: 'purple', inc: 'upload' },
     { id: 'new', group: 'task', size: 'small', title: '新任务 · 拿文件', sub: '填共享路径，从共享拿文件', url: '/distribute/start', icon: 'new', tone: 'lime', linkId: 'workTaskNew' },
+    { id: 'ticket', group: 'task', size: 'small', title: 'Ticket', sub: '粘贴任务详情，创建桌面文件夹', url: '/ticket', icon: 'document', tone: 'yellow' },
     { id: 'images', group: 'fix', size: 'small', title: '修复图片', sub: '截图变形 · 红框错位', url: '/fix-images', icon: 'imgfix', tone: 'teal' },
     { id: 'widths', group: 'fix', size: 'small', title: '修复列宽', sub: '按参考恢复被改过的列宽', url: '/fix-images?tool=widths', icon: 'widths', tone: 'teal' },
     { id: 'bundle', group: 'fix', size: 'small', title: '批量导出同名 PDF', sub: 'aaa.xlsx 旁边生成 aaa.pdf', url: '/pdf-bundle', icon: 'pdfstack', tone: 'blue' },
