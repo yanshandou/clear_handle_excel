@@ -24,6 +24,7 @@ body { margin: 0; padding: 20px 24px 40px; font: 14px/1.55 'Meiryo', 'Yu Gothic 
 .xd-file { padding: 12px 14px; border: 2px solid; border-radius: 12px; overflow-wrap: anywhere; font-weight: 700; }
 .xd-file strong { display: block; margin-bottom: 4px; }
 .xd-file small { display: block; font-weight: 400; color: #3b4658; }
+.xd-pair-sheet { display: inline-block; margin: 2px 0 0 10px; padding: 1px 10px; border-radius: 999px; background: #fff; border: 1px solid currentColor; color: #1f2937; font-size: .92em; }
 .xd-file.is-old { background: #ffebe9; border-color: #cf222e; }
 .xd-file.is-new { background: #e6ffec; border-color: #1a7f37; }
 .xd-search { display: flex; align-items: center; gap: 12px; margin: 10px 0 2px; }

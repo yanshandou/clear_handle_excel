@@ -158,8 +158,9 @@
     const sorted = [...sheets].sort((a, b) => (order[a.sheet.status] - order[b.sheet.status]) || a.index - b.index);
     const onlyOld = data.sheets.filter(x => x.status === 'only_old').length, onlyNew = data.sheets.filter(x => x.status === 'only_new').length;
     const changed = data.sheets.filter(x => x.status === 'changed').length, same = data.sheets.filter(x => x.status === 'same').length;
+    const pair = data.pair || null;  // 挑两张表对比（用户 2026-11-19）：{a: 左表名, b: 右表名}
     const verdict = data.identical
-      ? '<div class="xd-verdict is-same">✓ 两份文件在检查的项目里没有不同</div>'
+      ? `<div class="xd-verdict is-same">✓ ${pair ? '这两张表' : '两份文件'}在检查的项目里没有不同</div>`
       : `<div class="xd-verdict is-diff">有不同：${[changed ? `${changed} 张表里有改动` : '', onlyOld ? `${onlyOld} 张表只有文件 A 有` : '',
         onlyNew ? `${onlyNew} 张表只有文件 B 有` : '', s['表的顺序变了'] ? '表的顺序变了' : '', (data.book || []).length ? `工作簿设置有 ${(data.book || []).length} 处不同` : '']
         .filter(Boolean).join('，')}</div>`;
@@ -176,8 +177,9 @@
     const orderRow = s['表的顺序变了'] ? [row('表的顺序', '所有表', names.old.join(' → '), names.new.join(' → '))] : [];
     const bookRows = orderRow.concat((data.book || []).map(item => row(item.kind, esc(item.what), item.old, item.new)));
     root.innerHTML = `<header class="xr-head"><h1>Excel 对比报告</h1>`
-      + `<div class="xd-files"><div class="xd-file is-old"><strong>− 文件 A（旧）</strong>${esc(fileName(data.theirs))}<small>${esc(data.label_a || data.theirs)}</small></div>`
-      + `<div class="xd-file is-new"><strong>+ 文件 B（新）</strong>${esc(fileName(data.mine))}<small>${esc(data.label_b || data.mine)}</small></div></div></header>`
+      + `<div class="xd-files"><div class="xd-file is-old"><strong>− 文件 A（旧）</strong>${esc(fileName(data.theirs))}${pair ? `<span class="xd-pair-sheet">表：${esc(pair.a)}</span>` : ''}<small>${esc(data.label_a || data.theirs)}</small></div>`
+      + `<div class="xd-file is-new"><strong>+ 文件 B（新）</strong>${esc(fileName(data.mine))}${pair ? `<span class="xd-pair-sheet">表：${esc(pair.b)}</span>` : ''}<small>${esc(data.label_b || data.mine)}</small></div></div>`
+      + (pair ? `<p class="xr-hint">只比左右挑的这两张表（按同一个格子位置一一对比），不比别的表和工作簿设置。</p>` : '') + `</header>`
       + verdict
       + `<div class="xr-layout"><nav class="xr-toc" aria-label="表"><h2>表（${data.sheets.length}）</h2><ul>${toc}</ul>`
       + `<p class="xr-tools"><button type="button" data-act="open">全部展开</button><button type="button" data-act="close">全部收起</button><button type="button" data-act="same">藏起没有不同的表</button></p></nav>`
