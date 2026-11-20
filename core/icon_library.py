@@ -432,8 +432,9 @@ def _make_system_folder(folder: Path, on: bool) -> None:
     if sys.platform != "win32":
         return
     import ctypes
-    shell32 = ctypes.windll.shell32
-    (shell32.PathMakeSystemFolderW if on else shell32.PathUnmakeSystemFolderW)(str(folder))
+    # PathMakeSystemFolderW / PathUnmakeSystemFolderW 是 shlwapi 的导出，shell32 里没有
+    shlwapi = ctypes.windll.shlwapi
+    (shlwapi.PathMakeSystemFolderW if on else shlwapi.PathUnmakeSystemFolderW)(str(folder))
 
 
 def _notify(folder: Path) -> None:

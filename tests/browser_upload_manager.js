@@ -146,7 +146,8 @@ server.serve_forever()
     fs.writeFileSync(path.join(task.work, 'a.xlsx'), 'my old edit');
 
     await navigate(base + '/');
-    await until(() => evaluate(`document.getElementById('workTaskUploadLink').pathname === '/distribute'`), 'Step 9 did not link to current-task upload');
+    // 2026-11-20 起主页是桌面式工具箱：上传入口是流程/工具箱里的 upload 图标，不再有 workTaskUploadLink
+    await until(() => evaluate(`document.querySelector('#flowList .app[data-tool="upload"]').pathname === '/distribute'`), 'Step 9 did not link to current-task upload');
     await navigate(base + '/distribute');
     await until(() => evaluate(`document.querySelectorAll('#distTaskFiles input').length === 2`), 'Task files did not load');
     await evaluate(`document.querySelector('#distTaskFiles input[value="a.xlsx"]').click();`);

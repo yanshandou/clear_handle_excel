@@ -443,9 +443,9 @@ input[type='checkbox']:not(.hidden):not(.batch-file-checkbox):checked::before {
 
 .task-dialog-icon.harbor-icon {
   background-color: transparent;
-  background-image: url('/static/images/harbor/icons.webp');
+  background-image: var(--icon-image, url('/static/images/harbor/icons.webp'));
   background-position: var(--icon-x, 0%) var(--icon-y, 0%);
-  background-size: 500% 500%;
+  background-size: var(--icon-size, 500% 500%);
   background-repeat: no-repeat;
   border: 0;
   box-shadow: none;

@@ -245,7 +245,10 @@
 .harbor-icon {
   display: inline-block;
   flex: none;
-  background: url('/static/images/harbor/icons.webp') var(--icon-x, 0%) var(--icon-y, 0%) / 500% 500% no-repeat;
+  background-image: var(--icon-image, url('/static/images/harbor/icons.webp'));
+  background-position: var(--icon-x, 0%) var(--icon-y, 0%);
+  background-size: var(--icon-size, 500% 500%);
+  background-repeat: no-repeat;
 }
 .icon-home { --icon-x: 0%; --icon-y: 0%; }
 .icon-grid { --icon-x: 25%; --icon-y: 0%; }
@@ -272,6 +275,19 @@
 .icon-finish { --icon-x: 50%; --icon-y: 100%; }
 .icon-map { --icon-x: 75%; --icon-y: 100%; }
 .icon-compass { --icon-x: 100%; --icon-y: 100%; }
+
+/* 工具专属图标：一个工具一张图，不再共用精灵图（static/images/harbor/tools/，256×256 透明底） */
+.icon-bl { --icon-image: url('/static/images/harbor/tools/bl.png'); --icon-size: contain; --icon-x: 50%; --icon-y: 50%; }
+.icon-reflink { --icon-image: url('/static/images/harbor/tools/reflink.png'); --icon-size: contain; --icon-x: 50%; --icon-y: 50%; }
+.icon-widths { --icon-image: url('/static/images/harbor/tools/widths.png'); --icon-size: contain; --icon-x: 50%; --icon-y: 50%; }
+.icon-pdfstack { --icon-image: url('/static/images/harbor/tools/pdfstack.png'); --icon-size: contain; --icon-x: 50%; --icon-y: 50%; }
+.icon-pdfdiff { --icon-image: url('/static/images/harbor/tools/pdfdiff.png'); --icon-size: contain; --icon-x: 50%; --icon-y: 50%; }
+.icon-report { --icon-image: url('/static/images/harbor/tools/report.png'); --icon-size: contain; --icon-x: 50%; --icon-y: 50%; }
+.icon-json { --icon-image: url('/static/images/harbor/tools/json.png'); --icon-size: contain; --icon-x: 50%; --icon-y: 50%; }
+.icon-pick { --icon-image: url('/static/images/harbor/tools/pick.png'); --icon-size: contain; --icon-x: 50%; --icon-y: 50%; }
+.icon-view { --icon-image: url('/static/images/harbor/tools/view.png'); --icon-size: contain; --icon-x: 50%; --icon-y: 50%; }
+.icon-appicon { --icon-image: url('/static/images/harbor/tools/appicon.png'); --icon-size: contain; --icon-x: 50%; --icon-y: 50%; }
+.icon-imgfix { --icon-image: url('/static/images/harbor/tools/imgfix.png'); --icon-size: contain; --icon-x: 50%; --icon-y: 50%; }
 
 .distribution-header .today {
   display: inline-flex;

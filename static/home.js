@@ -36,7 +36,7 @@ const TASKS = {
   },
   normalize_view: {
     title: '视图标准化',
-    icon: 'target',
+    icon: 'view',
     theme: 'feature-mint',
     sub: '所有可见工作表开启分页预览、定位到 A1、缩放设为 100% 后保存',
     tip: '每张可见表切到分页预览、选中 A1、缩放 100%，保存时停在第一张可见表',
