@@ -3,61 +3,211 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Ticket - 开发百宝箱</title>
+  <title>Ticket · 任务登机牌 - 开发百宝箱</title>
   <link rel="icon" type="image/png" href="/static/images/dev-toolbox-logo.png">
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/theme.css">
   <link rel="stylesheet" href="/static/theme-casual.css">
   <link rel="stylesheet" href="/static/theme-cartoon.css">
-  <link rel="stylesheet" href="/static/ticket.css">
+  <link rel="stylesheet" href="/static/ticket.css?v=3">
   <script defer src="/static/tools.js?v=5"></script>
-  <script defer src="/static/ticket.js"></script>
+  <script defer src="/static/ticket.js?v=3"></script>
 </head>
-<body>
+<body class="ticket-body">
   <header class="app-header">
     <a href="/" class="header-brand">
       <div class="header-logo-badge" aria-hidden="true"></div>
-      <div class="header-title"><h1 class="header-title-text">Ticket</h1></div>
+      <div class="header-title">
+        <h1 class="header-title-text">Ticket · 任务登机牌</h1>
+        <span class="subtitle">海港值机柜台 · HARBOR CHECK-IN</span>
+      </div>
     </a>
     <nav class="header-nav" aria-label="功能导航">
+      <span class="ticket-header-count" id="headerCount" title="自动识别到的字段数">识别 0 / 14</span>
       <a href="/" class="nav-link"><span class="ui-icon harbor-icon icon-home" aria-hidden="true"></span>返回首页</a>
     </nav>
   </header>
 
   <main class="container ticket-page">
+    <section class="ticket-masthead" aria-label="值机柜台">
+      <div class="masthead-copy">
+        <span class="eyebrow">海港值机柜台 · CHECK-IN</span>
+        <h2>把任务文本，换成一张登机牌</h2>
+        <p>从 Redmine 任务页复制文本粘贴进来，自动识别填进票面；也可以直接手动填写。确认出票后，在 Windows 桌面创建任务文件夹。</p>
+        <div class="depart-board" role="status" aria-live="polite">
+          <span class="board-label">已识别</span>
+          <strong id="boardCount">0 / 14</strong>
+          <span class="board-ticks" id="boardTicks" aria-hidden="true"></span>
+        </div>
+      </div>
+      <div class="masthead-hero" aria-hidden="true">
+        <img src="/static/images/ticket/hero-machine.png" alt="">
+      </div>
+    </section>
+
     <form id="ticketForm" autocomplete="off">
       <div class="ticket-layout">
-        <section class="panel ticket-source" aria-labelledby="ticketSourceHeading">
-          <h2 id="ticketSourceHeading"><label for="ticketSource">粘贴任务文本</label></h2>
-          <p id="ticketSourceHelp">从任务页面复制文本，粘贴后自动填入表单。也可以直接手动填写。</p>
-          <textarea id="ticketSource" rows="10" maxlength="24000" spellcheck="false" aria-describedby="ticketSourceHelp" placeholder="可粘贴 task #编号、任务标题和日文任务详情"></textarea>
-          <p id="ticketRecognition" class="ticket-note" role="status"></p>
+        <div class="scan-col">
+        <section class="panel scan-panel" aria-labelledby="ticketSourceHeading">
+          <header class="panel-head">
+            <span class="step-badge" aria-hidden="true">1</span>
+            <div>
+              <h2 id="ticketSourceHeading"><label for="ticketSource">粘贴任务文本</label></h2>
+              <p id="ticketSourceHelp">粘贴后自动识别；识别到的字段会亮灯，点灯可以跳到票面对应位置。</p>
+            </div>
+          </header>
+          <div class="scanner-bed" id="scannerBed">
+            <textarea id="ticketSource" rows="12" maxlength="24000" spellcheck="false" aria-describedby="ticketSourceHelp" placeholder="可粘贴 task #编号、任务标题和日文任务详情&#10;例如：ステータス: 進行中　開始日: 2026/11/20"></textarea>
+            <span class="scan-beam" aria-hidden="true"></span>
+            <span class="scanner-corner tl" aria-hidden="true"></span>
+            <span class="scanner-corner tr" aria-hidden="true"></span>
+            <span class="scanner-corner bl" aria-hidden="true"></span>
+            <span class="scanner-corner br" aria-hidden="true"></span>
+          </div>
+          <div class="chip-row" id="ticketChips" aria-label="识别结果"></div>
+          <div class="scan-actions">
+            <button type="button" class="btn btn-outline btn-sm" id="ticketSample">载入示例</button>
+            <button type="button" class="btn btn-outline btn-sm" id="ticketClearSource">清空文本</button>
+            <p id="ticketRecognition" class="ticket-note" role="status"></p>
+          </div>
         </section>
 
-        <section class="panel ticket-details" aria-labelledby="ticketDetailsHeading">
-          <h2 id="ticketDetailsHeading">任务信息</h2>
-          <fieldset id="ticketFields" class="ticket-fields" aria-labelledby="ticketDetailsHeading">
-            <label class="ticket-wide">任务标题 <small>必填</small><input type="text" name="title" maxlength="500" required></label>
-            <label>任务编号<input type="text" name="ticket_id" maxlength="24" inputmode="numeric" placeholder="例如 55345"></label>
-            <label>画面 / 报表 ID<input type="text" name="screen_id" maxlength="500"></label>
-            <label class="ticket-wide">关联案件<textarea name="parent" rows="2" maxlength="500"></textarea></label>
-            <label>状态<input type="text" name="status" maxlength="500"></label>
-            <label>优先级<input type="text" name="priority" maxlength="500"></label>
-            <label>负责人<input type="text" name="assignee" maxlength="500"></label>
-            <label>进度<input type="text" name="progress" maxlength="500" placeholder="例如 0%"></label>
-            <label>开始日期<input type="text" name="start_date" maxlength="500" placeholder="YYYY/MM/DD"></label>
-            <label>截止日期<input type="text" name="due_date" maxlength="500" placeholder="YYYY/MM/DD"></label>
-            <label>预计工时<input type="text" name="estimated_hours" maxlength="500" inputmode="decimal"></label>
-            <label>实际工时<input type="text" name="actual_hours" maxlength="500" inputmode="decimal"></label>
-            <label class="ticket-wide">目标版本<input type="text" name="version" maxlength="500"></label>
-            <label class="ticket-wide">创建 / 更新记录<input type="text" name="activity" maxlength="500"></label>
-          </fieldset>
-          <div class="ticket-actions">
-            <button type="submit" class="btn btn-primary" id="ticketCreate">确认创建</button>
+        <aside class="checkin-guide" aria-label="值机流程">
+          <h3>值机三步</h3>
+          <ol>
+            <li><b>粘贴</b><span>在 Redmine 任务页全选复制，贴进上面的扫描台。</span></li>
+            <li><b>核对</b><span>亮灯字段已自动填好；手动改过的标「手动」，再粘贴不会覆盖。</span></li>
+            <li><b>出票</b><span>确认后在桌面生成「Ticket #编号 - 标题」文件夹，票面存为 Ticket.txt。</span></li>
+          </ol>
+          <p class="guide-kbd"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> 快速出票</p>
+        </aside>
+        </div>
+
+        <section class="pass-wrap" aria-labelledby="ticketDetailsHeading">
+          <div class="panel-head pass-head-out">
+            <span class="step-badge" aria-hidden="true">2</span>
+            <div>
+              <h2 id="ticketDetailsHeading">核对票面 · 手动可改</h2>
+              <p>自动填好的字段带「自动」小标；改过的字段标「手动」，再粘贴不会覆盖。</p>
+            </div>
+          </div>
+
+          <div class="boarding-pass" id="boardingPass">
+            <div class="pass-band">
+              <div class="pass-brand">
+                <span class="pass-air">HARBOR AIR · 开发航路</span>
+                <span class="pass-class">TASK BOARDING PASS</span>
+              </div>
+              <div class="pass-no">
+                <label for="ticketNo">NO.</label>
+                <input id="ticketNo" type="text" name="ticket_id" maxlength="24" inputmode="numeric" placeholder="55345" aria-label="任务编号">
+              </div>
+              <div class="pass-stamp st-idle" id="passStamp"><span id="passStampText">待填写</span></div>
+            </div>
+
+            <div class="pass-title">
+              <label for="ticketTitle">任务标题 <small>TASK TITLE · 必填</small></label>
+              <input id="ticketTitle" type="text" name="title" maxlength="500" required placeholder="例如 TBSNG0000_手書きサイン">
+              <span class="auto-tag" hidden></span>
+            </div>
+
+            <div class="pass-perf" aria-hidden="true"><i class="notch left"></i><i class="notch right"></i></div>
+
+            <fieldset class="pass-grid" id="ticketFields">
+              <legend class="sr-only">任务信息</legend>
+              <div class="pass-field wide">
+                <label for="fParent">关联案件 <small>PARENT</small></label>
+                <textarea id="fParent" name="parent" rows="2" maxlength="500"></textarea>
+                <span class="auto-tag" hidden></span>
+              </div>
+              <div class="pass-field">
+                <label for="fAssignee">负责人 <small>ASSIGNEE</small></label>
+                <input id="fAssignee" type="text" name="assignee" maxlength="500">
+                <span class="auto-tag" hidden></span>
+              </div>
+              <div class="pass-field">
+                <label for="fPriority">优先级 <small>PRIORITY</small></label>
+                <input id="fPriority" type="text" name="priority" maxlength="500">
+                <span class="auto-tag" hidden></span>
+              </div>
+              <div class="pass-field">
+                <label for="fStart">开始日期 <small>FROM</small></label>
+                <input id="fStart" type="text" name="start_date" maxlength="500" placeholder="YYYY/MM/DD">
+                <span class="auto-tag" hidden></span>
+              </div>
+              <div class="pass-field">
+                <label for="fDue">截止日期 <small>TO</small></label>
+                <input id="fDue" type="text" name="due_date" maxlength="500" placeholder="YYYY/MM/DD">
+                <span class="auto-tag" hidden></span>
+              </div>
+              <div class="pass-field">
+                <label for="fScreen">画面 / 报表 ID <small>SCREEN</small></label>
+                <input id="fScreen" type="text" name="screen_id" maxlength="500">
+                <span class="auto-tag" hidden></span>
+              </div>
+              <div class="pass-field">
+                <label for="fStatus">状态 <small>STATUS</small></label>
+                <input id="fStatus" type="text" name="status" maxlength="500">
+                <span class="auto-tag" hidden></span>
+              </div>
+              <div class="pass-field wide">
+                <label for="fVersion">目标版本 <small>VERSION</small></label>
+                <input id="fVersion" type="text" name="version" maxlength="500">
+                <span class="auto-tag" hidden></span>
+              </div>
+              <div class="pass-field wide">
+                <label for="fActivity">创建 / 更新记录 <small>ACTIVITY</small></label>
+                <input id="fActivity" type="text" name="activity" maxlength="500">
+                <span class="auto-tag" hidden></span>
+              </div>
+            </fieldset>
+
+            <div class="pass-perf" aria-hidden="true"><i class="notch left"></i><i class="notch right"></i></div>
+
+            <div class="pass-stub">
+              <div class="stub-progress">
+                <label for="fProgress">进度 <small>PROGRESS</small></label>
+                <div class="stub-progress-row">
+                  <div class="progress-track progress-track-sm"><div class="progress-fill" id="stubFill" style="width:0%"></div></div>
+                  <input id="fProgress" type="text" name="progress" maxlength="500" inputmode="numeric" placeholder="0%" aria-label="进度">
+                </div>
+                <span class="auto-tag" hidden></span>
+              </div>
+              <div class="stub-hours">
+                <div class="pass-field">
+                  <label for="fEst">预计工时 <small>EST</small></label>
+                  <input id="fEst" type="text" name="estimated_hours" maxlength="500" inputmode="decimal" placeholder="9.00">
+                  <span class="auto-tag" hidden></span>
+                </div>
+                <div class="pass-field">
+                  <label for="fAct">实际工时 <small>SPENT</small></label>
+                  <input id="fAct" type="text" name="actual_hours" maxlength="500" inputmode="decimal" placeholder="1.00">
+                  <span class="auto-tag" hidden></span>
+                </div>
+              </div>
+              <div class="stub-code">
+                <div class="barcode" id="stubBarcode" aria-hidden="true"></div>
+                <span class="stub-dest">DEST · WINDOWS 桌面</span>
+              </div>
+            </div>
+
+            <div class="created-stamp" id="createdStamp" aria-hidden="true"><span>已出票 · CREATED</span></div>
+          </div>
+
+          <div class="pass-actions">
+            <button type="submit" class="btn btn-primary btn-lg" id="ticketCreate">确认创建 · 出票</button>
             <button type="reset" class="btn btn-outline" id="ticketReset">清空表单</button>
           </div>
-          <p class="ticket-note">在 Windows 桌面创建文件夹，并将已填信息保存为 Ticket.txt。</p>
-          <p class="ticket-result" id="ticketResult" role="status"></p>
+          <p class="ticket-note">出票后在 Windows 桌面创建文件夹，并把票面信息保存为 Ticket.txt。</p>
+
+          <div class="ticket-success" id="ticketSuccess" hidden>
+            <strong>出票成功，文件夹已放在桌面。</strong>
+            <code id="successFolder"></code>
+            <div class="success-actions">
+              <button type="button" class="btn btn-success btn-sm" id="openFolderBtn">打开文件夹</button>
+              <button type="button" class="btn btn-outline btn-sm" id="againBtn">再建一张</button>
+            </div>
+          </div>
           <p class="ticket-error" id="ticketError" role="alert"></p>
         </section>
       </div>

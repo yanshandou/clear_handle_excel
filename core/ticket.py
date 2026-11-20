@@ -95,3 +95,19 @@ def create(payload: dict) -> dict[str, str]:
             break
 
     return {"folder": str(folder), "filename": INFO_FILE}
+
+
+def open_folder(payload: dict) -> dict:
+    import os
+
+    target = payload.get("folder", "")
+    if not isinstance(target, str) or not target:
+        raise ValueError("没有可以打开的文件夹")
+    folder = Path(target).resolve()
+    desktop = _desktop()
+    if folder != desktop and desktop not in folder.parents:
+        raise ValueError("只能打开桌面上创建的 Ticket 文件夹")
+    if not folder.is_dir():
+        raise ValueError("文件夹不存在，可能已被移动或删除")
+    os.startfile(folder)
+    return {}

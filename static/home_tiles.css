@@ -590,3 +590,266 @@ body.is-app-dragging, body.is-app-dragging * { cursor: grabbing !important; user
   overflow-wrap: anywhere;
 }
 body.is-app-dragging .flow-remove { opacity: 0 !important; }
+
+/* ==========================================
+   2026-11-21 视觉升级：大白板拆成云朵面板组
+   薄荷横幅（我的桌面）→ 沙滩行李牌（当前任务）→ 白云码头（工具箱 dock）→ 航线卡（流程）。
+   只改外观与层次，不改 home_tiles.js / home.js 的结构和行为。
+   ========================================== */
+.home-workspace {
+  gap: 18px;
+  margin-top: -56px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+
+/* 薄荷横幅：和 PCL 检查台同一种主横幅 */
+.home-workspace .home-tools-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 22px;
+  padding: 16px 22px;
+  border: 2.5px solid #ffffff;
+  border-radius: 26px;
+  background:
+    radial-gradient(110% 90% at 18% 0%, rgba(255, 255, 255, 0.68) 0%, rgba(255, 255, 255, 0) 65%),
+    linear-gradient(180deg, #d7fcf3 0%, #a5f0df 100%);
+  box-shadow:
+    inset 0 2.5px 0 #ffffff,
+    inset 0 -5px 0 #6fd8c3,
+    0 0 0 1.5px #7be0cb,
+    0 16px 36px -10px rgba(12, 118, 128, 0.20);
+  animation: home-rise 0.5s ease both;
+}
+.home-heading-copy { display: grid; gap: 4px; min-width: 0; }
+.home-eyebrow {
+  justify-self: start;
+  padding: 3px 12px;
+  border: 1.5px solid #e0a629;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #ffefa8 0%, #ffd057 100%);
+  color: #573604;
+  font: 700 11.5px/1.5 var(--garden-font);
+  letter-spacing: 0.8px;
+  box-shadow: inset 0 1.5px 0 #ffffff;
+}
+.home-workspace .home-tools-heading h2 {
+  margin: 0;
+  color: #0b414a;
+  text-shadow: 0 1.5px 0 rgba(255, 255, 255, 0.72);
+}
+.home-workspace .home-tools-heading h2::before {
+  width: 10px;
+  height: 22px;
+  border: 2px solid #ffffff;
+  background: linear-gradient(180deg, #ffd463 0%, #ff9d3b 100%);
+  box-shadow: 0 2px 6px rgba(224, 138, 24, 0.30);
+}
+.home-hero-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.home-workspace .home-tools-heading .route-done-note { margin: 2px 0 0; color: #0e6378; }
+
+/* 最近任务条：白云面板 */
+.home-workspace .home-strip {
+  margin: 0;
+  padding: 14px 18px;
+  border: 2.5px solid #ffffff;
+  border-radius: 22px;
+  background: linear-gradient(180deg, #ffffff 0%, #f4fbff 100%);
+  box-shadow: var(--garden-panel-shadow);
+  animation: home-rise 0.5s 0.06s ease both;
+}
+
+/* 当前任务：沙滩行李牌 */
+.home-workspace .work-task-bar {
+  margin: 0;
+  padding: 10px 16px;
+  border: 2px solid #ffffff;
+  border-radius: 18px;
+  background:
+    radial-gradient(90% 130% at 88% 0%, rgba(255, 255, 255, 0.7) 0%, rgba(255, 255, 255, 0) 60%),
+    linear-gradient(180deg, #fffdf0 0%, #ffe8a3 100%);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.85), 0 0 0 1.5px #edd082, 0 10px 20px -12px rgba(204, 142, 18, 0.45);
+  color: #664408;
+  font-weight: 600;
+  animation: home-rise 0.5s 0.1s ease both;
+}
+.home-workspace .work-task-title strong { color: #7a4a00; }
+.home-workspace .work-task-more summary { color: #8a5a00; font-weight: 700; }
+.home-workspace .work-task-hint, .home-workspace .work-task-note { color: #7a5a17; }
+.home-workspace .work-task-paths dt { color: #664408; }
+.home-workspace .work-task-paths dd { color: #7a5a17; }
+.home-workspace .work-task-switch { color: #664408; }
+.home-workspace .wt-pick-btn {
+  border: 1.5px solid #e0c47c;
+  background: rgba(255, 255, 255, 0.92);
+  color: #664408;
+  box-shadow: inset 0 1.5px 0 #ffffff, inset 0 -2px 0 #ead9a8;
+}
+.home-workspace .wt-pick-btn:hover:not(:disabled) { background: #ffffff; }
+.home-workspace .wt-pick-list {
+  width: min(640px, 92vw);
+  border: 2.5px solid #ffffff;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: var(--garden-dialog-shadow);
+}
+.home-workspace .wt-pick-list li { color: #113a5c; }
+.home-workspace .wt-pick-list li:hover, .home-workspace .wt-pick-list li:focus {
+  background: #fff6d9;
+  box-shadow: inset 0 0 0 2px #e0a629;
+}
+.home-workspace .work-task-single {
+  border: 1.5px solid #e0c47c;
+  background: rgba(255, 255, 255, 0.92);
+  color: #664408;
+  box-shadow: inset 0 1.5px 0 #ffffff, inset 0 -2px 0 #ead9a8;
+}
+.home-workspace .work-task-single:hover { background: #ffffff; }
+.home-workspace .work-task-bar.single .work-task-single {
+  border-color: #b52a20;
+  background: linear-gradient(180deg, #ff806e 0%, #dc4338 100%);
+  color: #ffffff;
+  box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.4), inset 0 -2.5px 0 #961e16;
+}
+.home-workspace .work-task-bar.single .work-task-title strong { color: #961e16; }
+
+/* 码头 dock：白云面板 + 沙滩指示牌 */
+.desk-dock {
+  padding: 18px 22px 16px;
+  border: 2.5px solid #ffffff;
+  border-radius: 26px;
+  background: linear-gradient(180deg, #ffffff 0%, #eef9ff 100%);
+  box-shadow: var(--garden-panel-shadow);
+  animation: home-rise 0.5s 0.14s ease both;
+}
+.desk-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  max-width: 350px;
+  padding: 10px 14px;
+  border: 1.5px solid #edd087;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fff6d9 0%, #ffefc2 100%);
+  color: #664408;
+  font-size: 12.5px;
+  box-shadow: inset 0 1.5px 0 #ffffff;
+}
+.desk-tip .ui-icon { margin-top: 2px; color: #8a5a00; }
+.desk-tip b { color: #7a4a00; }
+
+/* 流程：航线卡 */
+.flow-card {
+  border: 2.5px solid #ffffff;
+  border-radius: 24px;
+  background: linear-gradient(180deg, #ffffff 0%, #f2fbff 100%);
+  box-shadow: var(--garden-panel-shadow);
+  animation: home-rise 0.5s 0.18s ease both;
+}
+.flow-list .flow-card:nth-child(2) { animation-delay: 0.24s; }
+.flow-list .flow-card:nth-child(3) { animation-delay: 0.3s; }
+.flow-badge {
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ff8a76 0%, #f0604a 100%);
+  box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.5), 0 3px 8px rgba(224, 90, 66, 0.35);
+}
+.flow-count {
+  border: 1px solid #7fe0d4;
+  background: #defbf6;
+  color: #0b8a8f;
+}
+.flow-rail {
+  border-radius: 18px;
+  background-color: rgba(226, 244, 252, 0.6);
+  background-image: repeating-linear-gradient(90deg, rgba(42, 162, 255, 0.20) 0 12px, rgba(42, 162, 255, 0) 12px 24px);
+  background-size: 100% 3px;
+  background-position: 0 47px;
+  background-repeat: no-repeat;
+}
+.flow-arrow { margin-top: 28px; color: #ff7866; font-size: 26px; }
+.flow-slot {
+  border: 2px dashed #7bc3f0;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #1d6690;
+}
+.flow-none {
+  border: 2.5px dashed #9fd2ec;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #285f80;
+}
+
+/* 工具箱弹层：薄荷顶 band + 分组胶囊标题 */
+.toolbox-head {
+  margin: -22px -28px 10px;
+  padding: 14px 24px;
+  border-bottom: 2px solid #7be0cb;
+  border-radius: 31px 31px 0 0;
+  background:
+    radial-gradient(110% 90% at 18% 0%, rgba(255, 255, 255, 0.68) 0%, rgba(255, 255, 255, 0) 65%),
+    linear-gradient(180deg, #d7fcf3 0%, #a5f0df 100%);
+}
+.toolbox-head h2 { color: #0b414a; text-shadow: 0 1.5px 0 rgba(255, 255, 255, 0.72); }
+.toolbox-hint { color: #195963; }
+.toolbox-close { background: rgba(255, 255, 255, 0.85); box-shadow: 0 0 0 1.5px #7be0cb; }
+.toolbox-close:hover { background: #ffffff; }
+.toolbox-group h3 {
+  display: inline-block;
+  margin: 18px 0 10px;
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #2ca0f8 0%, #0f67d6 100%);
+  color: #ffffff;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.45), 0 2px 6px rgba(13, 95, 205, 0.25);
+}
+
+/* 海面波光：水线上一条慢慢漂移的碎光 */
+.home-seascape::before {
+  content: '';
+  position: absolute;
+  inset: auto 0 0;
+  height: 54px;
+  pointer-events: none;
+  opacity: 0.45;
+  background: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.30) 0 26px, transparent 26px 64px);
+  -webkit-mask-image: linear-gradient(180deg, transparent, #000);
+  mask-image: linear-gradient(180deg, transparent, #000);
+  animation: home-water-drift 9s linear infinite;
+}
+@keyframes home-water-drift { to { background-position: 128px 0; } }
+
+/* 海岛色滚动条 */
+.toolbox-sheet::-webkit-scrollbar, .wt-pick-list::-webkit-scrollbar, .log-box::-webkit-scrollbar { width: 10px; height: 10px; }
+.toolbox-sheet::-webkit-scrollbar-track, .wt-pick-list::-webkit-scrollbar-track, .log-box::-webkit-scrollbar-track { background: #e3f5fc; border-radius: 999px; }
+.toolbox-sheet::-webkit-scrollbar-thumb, .wt-pick-list::-webkit-scrollbar-thumb, .log-box::-webkit-scrollbar-thumb {
+  border: 2.5px solid #e3f5fc;
+  border-radius: 999px;
+  background: #7bc3f0;
+}
+.toolbox-sheet::-webkit-scrollbar-thumb:hover, .wt-pick-list::-webkit-scrollbar-thumb:hover, .log-box::-webkit-scrollbar-thumb:hover { background: #4ea6e0; }
+
+@keyframes home-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (max-width: 700px) {
+  .home-workspace { margin-top: -34px; gap: 14px; }
+  .home-workspace .home-tools-heading { padding: 14px 16px; }
+  .home-hero-actions { width: 100%; }
+  .desk-tip { margin-left: 0; max-width: none; }
+  .home-workspace .work-task-bar { padding: 10px 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .home-workspace .home-tools-heading, .home-workspace .home-strip, .home-workspace .work-task-bar,
+  .desk-dock, .flow-card { animation: none; }
+  .home-seascape::before { animation: none; }
+}

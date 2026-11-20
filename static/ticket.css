@@ -1,67 +1,657 @@
-.ticket-page {
-  max-width: 1160px;
-  padding: clamp(16px, 3vw, 32px);
+/* ==========================================
+   Ticket · 任务登机牌：海港值机柜台
+   左：扫描台（粘贴识别）；右：登机牌票面（可编辑表单）+ 出票反馈。
+   沿用全站海岛玩具风（garden-shell 变量），只作用于 .ticket-body。
+   ========================================== */
+.ticket-body {
+  min-height: 100vh;
+  background-color: #dff5fc;
+  background-image:
+    radial-gradient(720px 340px at 6% -6%, rgba(255, 250, 224, 0.9) 0%, rgba(255, 250, 224, 0) 70%),
+    radial-gradient(760px 360px at 96% 108%, rgba(164, 244, 232, 0.5) 0%, rgba(164, 244, 232, 0) 72%),
+    linear-gradient(180deg, #c6ebff 0%, #dff5fc 44%, #e6fbf8 100%);
+  background-attachment: fixed;
+  color: var(--garden-ink, #113a5c);
+  font-family: var(--garden-font, "Fredoka", "Microsoft YaHei", sans-serif);
 }
 
+.ticket-page {
+  max-width: 1280px;
+  padding: clamp(16px, 2.6vw, 30px) clamp(14px, 2.6vw, 32px) 56px;
+}
+/* styles.css 的全局 input[type="text"] 带 flex:1 + min-width:300px，会撑爆票面窄栏 */
+.ticket-body input[type="text"] { flex: none; min-width: 0; }
+
+.ticket-header-count {
+  padding: 6px 13px;
+  border: 1.5px solid #edd087;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #fff6d9 0%, #ffe9ad 100%);
+  color: #664408;
+  font: 700 12.5px/1.3 var(--garden-font);
+  box-shadow: inset 0 1.5px 0 #ffffff;
+  white-space: nowrap;
+}
+
+/* ---------- 值机柜台横幅 ---------- */
+.ticket-masthead {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: clamp(14px, 3vw, 40px);
+  margin-bottom: clamp(16px, 2.2vw, 26px);
+  padding: clamp(18px, 2.6vw, 30px) clamp(18px, 2.8vw, 34px);
+  border: 2.5px solid #ffffff;
+  border-radius: 28px;
+  background:
+    radial-gradient(110% 90% at 18% 0%, rgba(255, 255, 255, 0.68) 0%, rgba(255, 255, 255, 0) 65%),
+    linear-gradient(180deg, #d7fcf3 0%, #a5f0df 100%);
+  box-shadow:
+    inset 0 2.5px 0 #ffffff,
+    inset 0 -5px 0 #6fd8c3,
+    0 0 0 1.5px #7be0cb,
+    0 16px 36px -10px rgba(12, 118, 128, 0.20);
+  overflow: hidden;
+  animation: ticket-rise 0.5s ease both;
+}
+.masthead-copy { flex: 1 1 auto; min-width: 0; }
+.ticket-masthead .eyebrow {
+  display: inline-block;
+  padding: 4px 13px;
+  border: 1.5px solid #e0a629;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #ffefa8 0%, #ffd057 100%);
+  color: #573604;
+  font: 700 12px/1.4 var(--garden-font);
+  letter-spacing: 0.6px;
+  box-shadow: inset 0 1.5px 0 #ffffff;
+}
+.ticket-masthead h2 {
+  margin: 10px 0 6px;
+  color: #0b414a;
+  font-size: clamp(23px, 2.6vw, 32px);
+  font-weight: 800;
+  line-height: 1.25;
+  text-shadow: 0 1.5px 0 rgba(255, 255, 255, 0.72);
+}
+.ticket-masthead p {
+  margin: 0;
+  max-width: 56ch;
+  color: #195963;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.65;
+}
+.depart-board {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 8px 16px;
+  border: 2px solid #ffffff;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #0f2d49 0%, #143a5e 100%);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.45), 0 0 0 1.5px #7be0cb, 0 6px 14px -4px rgba(12, 118, 128, 0.35);
+}
+.board-label {
+  color: #8fd8ea;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+.depart-board strong {
+  color: #ffe38c;
+  font: 700 22px/1 var(--garden-font);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 10px rgba(255, 227, 140, 0.55);
+}
+.board-ticks { display: inline-flex; gap: 4px; }
+.board-ticks i {
+  width: 7px;
+  height: 16px;
+  border-radius: 3px;
+  background: #23507a;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.4);
+  transition: background 0.25s ease, box-shadow 0.25s ease;
+}
+.board-ticks i.on {
+  background: linear-gradient(180deg, #7ef0c0 0%, #2cc98a 100%);
+  box-shadow: 0 0 8px rgba(64, 224, 160, 0.75);
+}
+.masthead-hero { flex: 0 0 clamp(180px, 24vw, 300px); }
+.masthead-hero img {
+  display: block;
+  width: 100%;
+  height: auto;
+  filter: drop-shadow(0 12px 20px rgba(10, 74, 112, 0.22));
+  animation: ticket-hero-bob 5.5s ease-in-out infinite;
+}
+@keyframes ticket-hero-bob {
+  0%, 100% { transform: translateY(0) rotate(-0.4deg); }
+  50% { transform: translateY(-7px) rotate(0.5deg); }
+}
+
+/* ---------- 两栏 ---------- */
 .ticket-layout {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
-  gap: clamp(16px, 2vw, 24px);
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: clamp(16px, 2.2vw, 26px);
   align-items: start;
 }
+.ticket-layout .panel { min-width: 0; margin: 0; }
+.scan-col { display: grid; gap: 16px; align-content: start; min-width: 0; }
 
-.ticket-layout .panel {
-  min-width: 0;
+/* ---------- 值机三步小卡 ---------- */
+.checkin-guide {
+  padding: 16px 18px 14px;
+  border: 2.5px solid #ffffff;
+  border-radius: 22px;
+  background: linear-gradient(180deg, #ffffff 0%, #eefaff 100%);
+  box-shadow: inset 0 2px 0 #ffffff, 0 0 0 1.5px #bfe3f3, 0 10px 22px -12px rgba(12, 118, 128, 0.25);
+  animation: ticket-rise 0.5s 0.16s ease both;
+}
+.checkin-guide h3 {
+  margin: 0 0 10px;
+  color: #0b414a;
+  font: 800 14px/1.4 var(--garden-font);
+  letter-spacing: 0.4px;
+}
+.checkin-guide ol {
+  display: grid;
+  gap: 9px;
   margin: 0;
-  padding: clamp(14px, 2vw, 24px);
+  padding: 0;
+  list-style: none;
+  counter-reset: guide;
+}
+.checkin-guide li {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 9px;
+  counter-increment: guide;
+}
+.checkin-guide li::before {
+  content: counter(guide);
+  align-self: center;
+  display: grid;
+  place-items: center;
+  width: 21px;
+  height: 21px;
+  border: 1.5px solid #ffffff;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #35d4c0 0%, #0fa8b8 100%);
+  color: #ffffff;
+  font: 800 11.5px/1 var(--garden-font);
+  box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.55), 0 2px 5px rgba(15, 168, 184, 0.35);
+}
+.checkin-guide li b { color: #1d4f91; font-size: 13px; font-weight: 800; white-space: nowrap; }
+.checkin-guide li span { color: #466c8c; font-size: 12.5px; font-weight: 600; line-height: 1.6; }
+.guide-kbd {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1.5px dashed #bfe3f3;
+  color: #466c8c;
+  font-size: 12px;
+  font-weight: 700;
+}
+.guide-kbd kbd {
+  padding: 2px 7px;
+  border: 1.5px solid #b7d4fb;
+  border-bottom-width: 3px;
+  border-radius: 7px;
+  background: #e3eeff;
+  color: #1d4f91;
+  font: 700 11px/1.4 ui-monospace, Consolas, monospace;
 }
 
-.ticket-layout h2 { margin: 0 0 12px; }
+.panel-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.panel-head h2 { margin: 0; font-size: 19px; font-weight: 800; color: #0f3a5d; }
+.panel-head h2 label { cursor: text; }
+.panel-head p { margin: 3px 0 0; color: #466c8c; font-size: 12.5px; font-weight: 600; line-height: 1.55; }
+.step-badge {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  margin-top: 2px;
+  border: 2px solid #ffffff;
+  border-radius: 11px;
+  background: linear-gradient(180deg, #2ca0f8 0%, #0f67d6 100%);
+  color: #ffffff;
+  font: 800 15px/1 var(--garden-font);
+  box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.5), 0 3px 8px rgba(13, 95, 205, 0.3);
+}
 
-.ticket-source textarea,
-.ticket-fields input[type="text"],
-.ticket-fields textarea {
+/* ---------- 扫描台 ---------- */
+.scan-panel {
+  padding: clamp(16px, 2vw, 22px);
+  border: 2.5px solid #ffffff;
+  border-radius: 26px;
+  background: linear-gradient(180deg, #ffffff 0%, #f4fbff 100%);
+  box-shadow: var(--garden-panel-shadow);
+  animation: ticket-rise 0.5s 0.08s ease both;
+}
+.scanner-bed {
+  position: relative;
+  border: 2px solid #a8d6ec;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #f2fbff 0%, #e8f6fd 100%);
+  box-shadow: inset 0 3px 8px rgba(14, 86, 134, 0.10);
+  overflow: hidden;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.scanner-bed:focus-within {
+  border-color: #2aa2ff;
+  box-shadow: inset 0 3px 8px rgba(14, 86, 134, 0.08), 0 0 0 3px rgba(42, 162, 255, 0.22);
+}
+.scanner-bed textarea {
+  display: block;
   box-sizing: border-box;
   width: 100%;
-  min-width: 0;
-  padding: 8px 11px;
-  font-size: 14px;
-}
-
-.ticket-source textarea {
-  display: block;
-  min-height: 9rem;
-  margin-top: 12px;
+  min-height: 15rem;
+  margin: 0;
+  padding: 14px 16px;
+  border: 0;
+  background: transparent;
+  color: #113a5c;
+  font: 600 13.5px/1.7 ui-monospace, Consolas, "Yu Gothic UI", monospace;
   resize: vertical;
+  outline: none;
+}
+.scanner-bed textarea::placeholder { color: #7d9cb5; font-weight: 500; }
+.scan-beam {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 34%;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(42, 222, 200, 0.16) 35%, rgba(42, 222, 200, 0.42) 50%, rgba(42, 222, 200, 0.16) 65%, transparent 100%);
+}
+.scanner-bed.is-scanning .scan-beam { animation: ticket-scan 0.7s ease-out 1; }
+@keyframes ticket-scan {
+  0% { opacity: 1; transform: translateX(-110%); }
+  100% { opacity: 0; transform: translateX(320%); }
+}
+.scanner-corner {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border: 3px solid #1ecbc5;
+  pointer-events: none;
+  opacity: 0.85;
+}
+.scanner-corner.tl { top: 7px; left: 7px; border-right: 0; border-bottom: 0; border-radius: 6px 0 0 0; }
+.scanner-corner.tr { top: 7px; right: 7px; border-left: 0; border-bottom: 0; border-radius: 0 6px 0 0; }
+.scanner-corner.bl { bottom: 7px; left: 7px; border-right: 0; border-top: 0; border-radius: 0 0 0 6px; }
+.scanner-corner.br { bottom: 7px; right: 7px; border-left: 0; border-top: 0; border-radius: 0 0 6px 0; }
+
+.chip-row { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
+.chip {
+  padding: 4px 11px;
+  border: 1.5px solid #c3e4f3;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #567187;
+  font: 700 12px/1.4 var(--garden-font);
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+.chip:hover { border-color: #7bc3f0; background: #eaf8fd; color: #0d5388; }
+.chip.is-on {
+  border-color: #2bc4b8;
+  background: linear-gradient(180deg, #a2f8ee 0%, #52e4d6 100%);
+  color: #083e4a;
+  box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.8), inset 0 -2px 0 #22b8ad;
+}
+.chip.is-on::before { content: '✓ '; font-weight: 900; }
+.scan-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 14px; }
+.scan-actions .ticket-note { margin: 0; flex: 1 1 100%; }
+
+/* ---------- 登机牌 ---------- */
+.pass-wrap { min-width: 0; animation: ticket-rise 0.5s 0.16s ease both; }
+.pass-head-out { padding: 0 4px; }
+.boarding-pass {
+  position: relative;
+  border: 2.5px solid #ffffff;
+  border-radius: 24px;
+  background: #ffffff;
+  box-shadow:
+    inset 0 2px 0 #ffffff,
+    0 0 0 1.5px #b9e1f3,
+    0 18px 38px -14px rgba(10, 86, 138, 0.28),
+    0 6px 14px rgba(10, 86, 138, 0.08);
+  overflow: hidden;
+}
+.pass-band {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+  padding: 14px 20px;
+  background:
+    radial-gradient(120% 130% at 12% 0%, rgba(255, 255, 255, 0.30) 0%, rgba(255, 255, 255, 0) 55%),
+    linear-gradient(180deg, #2aa2ff 0%, #0d63d6 100%);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.4);
+  color: #ffffff;
+}
+.pass-brand { display: grid; gap: 2px; margin-right: auto; }
+.pass-air { font: 800 16px/1.3 var(--garden-font); letter-spacing: 0.4px; text-shadow: 0 1px 1px rgba(6, 42, 98, 0.45); }
+.pass-class { font: 700 10.5px/1.3 var(--garden-font); letter-spacing: 2.2px; color: #cfe8ff; }
+.pass-no { display: inline-flex; align-items: baseline; gap: 7px; }
+.pass-no label { font: 800 13px/1 var(--garden-font); letter-spacing: 1px; color: #cfe8ff; }
+.pass-no input {
+  width: 8.5ch;
+  padding: 3px 8px;
+  border: 1.5px solid rgba(255, 255, 255, 0.55);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+  font: 700 21px/1.2 var(--garden-font);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 1px;
+  outline: none;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.pass-no input::placeholder { color: rgba(255, 255, 255, 0.55); }
+.pass-no input:focus { background: rgba(255, 255, 255, 0.26); border-color: #ffffff; }
+.pass-stamp {
+  padding: 5px 13px;
+  border: 2.5px solid currentColor;
+  border-radius: 10px;
+  font: 800 13px/1.3 var(--garden-font);
+  letter-spacing: 1px;
+  transform: rotate(-4deg);
+  box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.35);
+  opacity: 0.95;
+}
+.pass-stamp.st-idle { color: #dcecff; background: rgba(255, 255, 255, 0.10); }
+.pass-stamp.st-doing { color: #fff6d9; background: rgba(255, 209, 92, 0.22); }
+.pass-stamp.st-done { color: #e3faec; background: rgba(52, 199, 110, 0.28); }
+.pass-stamp.st-new { color: #ffebe7; background: rgba(255, 120, 102, 0.26); }
+
+.pass-title { position: relative; padding: 16px 20px 6px; }
+.pass-title label, .pass-field label, .stub-progress label {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  color: #466c8c;
+  font: 800 12px/1.4 var(--garden-font);
+  letter-spacing: 0.4px;
+}
+.pass-title label small, .pass-field label small, .stub-progress label small {
+  color: #93a0c2;
+  font: 700 10px/1.4 var(--garden-font);
+  letter-spacing: 1.4px;
+}
+.pass-title input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 5px;
+  padding: 9px 13px;
+  border: 1.5px solid #a8d6ec;
+  border-radius: 13px;
+  background: #f4fbff;
+  color: #0f3a5d;
+  font: 800 17px/1.4 var(--garden-font);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.pass-title input:focus, .pass-field input:focus, .pass-field textarea:focus, .stub-progress input:focus {
+  border-color: #2aa2ff;
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(42, 162, 255, 0.20);
 }
 
-.ticket-fields {
+.pass-perf {
+  position: relative;
+  height: 0;
+  margin: 12px 0;
+  border-top: 2.5px dashed #b8d9ea;
+}
+.pass-perf .notch {
+  position: absolute;
+  top: -11px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #dff5fc;
+  box-shadow: inset 0 2px 4px rgba(14, 86, 134, 0.18), 0 0 0 2.5px #ffffff;
+}
+.pass-perf .notch.left { left: -12px; }
+.pass-perf .notch.right { right: -12px; }
+
+.pass-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px 16px;
-  min-width: 0;
   margin: 0;
+  padding: 4px 20px 8px;
+  border: 0;
+}
+.pass-field { position: relative; min-width: 0; }
+.pass-field.wide { grid-column: 1 / -1; }
+.pass-field input, .pass-field textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 4px;
+  padding: 7px 11px;
+  border: 1.5px solid #cfe6f4;
+  border-radius: 11px;
+  background: #f7fcff;
+  color: #113a5c;
+  font: 600 13.5px/1.5 var(--garden-font);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.pass-field textarea { resize: vertical; min-height: 3.4em; }
+.auto-tag {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font: 800 10px/1.6 var(--garden-font);
+  letter-spacing: 0.6px;
+  pointer-events: none;
+}
+.auto-tag.is-auto {
+  border: 1px solid #2bc4b8;
+  background: #defbf6;
+  color: #0b8a8f;
+}
+.auto-tag.is-manual {
+  border: 1px solid #edd087;
+  background: #fff6d9;
+  color: #664408;
+}
+.pass-field.just-filled input, .pass-field.just-filled textarea,
+.pass-title.just-filled input, .stub-progress.just-filled input {
+  animation: ticket-fill-pulse 0.8s ease 1;
+}
+@keyframes ticket-fill-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(30, 203, 197, 0.55); border-color: #1ecbc5; }
+  100% { box-shadow: 0 0 0 12px rgba(30, 203, 197, 0); }
+}
+
+/* ---------- 票根 ---------- */
+.pass-stub {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 4fr) minmax(0, 3fr);
+  gap: 14px 18px;
+  align-items: end;
+  padding: 14px 20px 18px;
+  background:
+    radial-gradient(90% 120% at 85% 0%, rgba(255, 255, 255, 0.7) 0%, rgba(255, 255, 255, 0) 60%),
+    linear-gradient(180deg, #fff6d9 0%, #ffe9ad 100%);
+  border-top: 2px solid #edd082;
+}
+.stub-progress { position: relative; min-width: 0; }
+.stub-progress-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.stub-progress .progress-track { flex: 1 1 auto; min-width: 0; }
+.stub-progress input {
+  flex: none;
+  width: 6.5ch;
+  padding: 4px 8px;
+  border: 1.5px solid #e0c47c;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.85);
+  color: #664408;
+  font: 800 14px/1.3 var(--garden-font);
+  text-align: center;
+  outline: none;
+}
+.stub-hours { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.stub-hours .pass-field input {
+  background: rgba(255, 255, 255, 0.85);
+  border-color: #e0c47c;
+  color: #664408;
+  font-weight: 800;
+  font-size: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.stub-hours .pass-field label { color: #7a5a17; }
+.stub-hours .pass-field label small { display: none; }  /* 窄栏里小标会被「自动」角标盖住 */
+.stub-code { display: grid; gap: 6px; justify-items: center; }
+.barcode {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  height: 42px;
+  width: 100%;
+  max-width: 150px;
+}
+.barcode i { background: #143a5e; border-radius: 1px; }
+.stub-dest {
+  color: #7a5a17;
+  font: 800 10.5px/1.4 var(--garden-font);
+  letter-spacing: 1.6px;
+  white-space: nowrap;
+}
+
+.created-stamp {
+  position: absolute;
+  z-index: 5;
+  top: 38%;
+  left: 50%;
+  padding: 10px 26px;
+  border: 4px double #cf3b30;
+  border-radius: 14px;
+  color: #cf3b30;
+  background: rgba(255, 255, 255, 0.72);
+  font: 900 26px/1.3 var(--garden-font);
+  letter-spacing: 3px;
+  transform: translate(-50%, -50%) rotate(-12deg) scale(2.2);
+  opacity: 0;
+  pointer-events: none;
+  backdrop-filter: blur(1px);
+}
+.boarding-pass.is-created .created-stamp { animation: ticket-stamp-slam 0.55s cubic-bezier(0.2, 1.4, 0.4, 1) 1 forwards; }
+@keyframes ticket-stamp-slam {
+  0% { opacity: 0; transform: translate(-50%, -50%) rotate(-12deg) scale(2.2); }
+  60% { opacity: 1; transform: translate(-50%, -50%) rotate(-12deg) scale(0.94); }
+  100% { opacity: 0.92; transform: translate(-50%, -50%) rotate(-12deg) scale(1); }
+}
+
+/* ---------- 出票动作与反馈 ---------- */
+.pass-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
+.btn-lg { padding: 12px 26px; font-size: 16px; border-radius: 17px; }
+.ticket-note { margin: 10px 0 0; color: #466c8c; font-size: 12.5px; font-weight: 600; line-height: 1.6; }
+.ticket-note:empty { margin: 0; }
+.ticket-success {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 14px 18px;
+  border: 2px solid #ffffff;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #e3faec 0%, #c9f3d8 100%);
+  box-shadow: inset 0 2px 0 #ffffff, 0 0 0 1.5px #8fdcae, 0 8px 18px -8px rgba(24, 138, 70, 0.35);
+  color: #14532d;
+  animation: ticket-rise 0.35s ease both;
+}
+.ticket-success strong { font-size: 15px; font-weight: 800; }
+.ticket-success[hidden] { display: none; }  /* display:grid 会顶掉 hidden 属性 */
+.ticket-success code {
+  padding: 6px 10px;
+  border: 1.5px solid #a8e3c7;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.8);
+  color: #0f5132;
+  font: 600 12.5px/1.5 ui-monospace, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+.success-actions { display: flex; flex-wrap: wrap; gap: 9px; }
+.ticket-error {
+  margin: 12px 0 0;
+  padding: 10px 14px;
+  border: 2px solid #ffffff;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #ffebe7 0%, #ffd9d2 100%);
+  box-shadow: 0 0 0 1.5px #f0a090;
+  color: #961e16;
+  font-size: 13.5px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.ticket-error:empty { display: none; }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
   padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
   border: 0;
 }
 
-.ticket-fields label { min-width: 0; font-weight: 700; }
-.ticket-fields small { font-size: .8em; font-weight: 500; }
-.ticket-fields input, .ticket-fields textarea { display: block; margin-top: 4px; }
-.ticket-fields textarea { min-height: 0; resize: vertical; }
-.ticket-wide { grid-column: 1 / -1; }
-
-.ticket-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
-.ticket-note { margin: 10px 0 0; font-size: 13px; }
-.ticket-result, .ticket-error { margin: 10px 0 0; overflow-wrap: anywhere; white-space: pre-line; }
-.ticket-result:empty, .ticket-error:empty, .ticket-note:empty { margin: 0; }
-.ticket-result:not(:empty) { padding: 10px 12px; border: 1px solid #94d5b1; border-radius: 8px; background: #edf9f1; color: #14532d; }
-.ticket-error { color: #a42117; }
-
-@media (max-width: 760px) {
-  .ticket-layout { grid-template-columns: minmax(0, 1fr); }
+@keyframes ticket-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
 }
 
-@media (max-width: 380px) {
-  .ticket-fields { grid-template-columns: minmax(0, 1fr); }
+/* ---------- 滚动条（海岛色） ---------- */
+.ticket-body ::-webkit-scrollbar { width: 10px; height: 10px; }
+.ticket-body ::-webkit-scrollbar-track { background: #e3f5fc; border-radius: 999px; }
+.ticket-body ::-webkit-scrollbar-thumb {
+  border: 2.5px solid #e3f5fc;
+  border-radius: 999px;
+  background: #7bc3f0;
+}
+.ticket-body ::-webkit-scrollbar-thumb:hover { background: #4ea6e0; }
+
+/* ---------- 窄屏 ---------- */
+@media (max-width: 980px) {
+  .ticket-layout { grid-template-columns: minmax(0, 1fr); }
+  .masthead-hero { flex-basis: 190px; }
+}
+@media (max-width: 700px) {
+  .ticket-masthead { flex-direction: column-reverse; align-items: stretch; text-align: left; }
+  .masthead-hero { flex-basis: auto; max-width: 220px; margin: 0 auto; }
+  .pass-stub { grid-template-columns: minmax(0, 1fr); }
+  .stub-code { justify-items: start; }
+  .pass-grid { grid-template-columns: minmax(0, 1fr); }
+  .pass-band { padding: 12px 16px; }
+  .pass-title, .pass-grid, .pass-stub { padding-inline: 16px; }
+  .created-stamp { font-size: 20px; padding: 8px 18px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ticket-masthead, .scan-panel, .pass-wrap, .ticket-success { animation: none; }
+  .masthead-hero img { animation: none; }
+  .scanner-bed.is-scanning .scan-beam { animation: none; }
+  .boarding-pass.is-created .created-stamp { animation: none; opacity: 0.92; transform: translate(-50%, -50%) rotate(-12deg); }
+  .pass-field.just-filled input, .pass-field.just-filled textarea,
+  .pass-title.just-filled input, .stub-progress.just-filled input { animation: none; }
 }

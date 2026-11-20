@@ -569,7 +569,7 @@ class WebHandler(upload_manager.Handler):
             self._handle_icon_upload()
             return
         try:
-            if self.path == "/api/ticket/create" and self.headers.get_content_type() != "application/json":
+            if self.path in ("/api/ticket/create", "/api/ticket/open") and self.headers.get_content_type() != "application/json":
                 raise ValueError("创建 Ticket 时请发送 JSON 表单")
             length = int(self.headers.get("Content-Length", 0))
             try:
@@ -887,6 +887,8 @@ class WebHandler(upload_manager.Handler):
             self._send_json({"ok": True})
         elif self.path == "/api/ticket/create":
             self._send_json({"ok": True, **ticket.create(payload)})
+        elif self.path == "/api/ticket/open":
+            self._send_json({"ok": True, **ticket.open_folder(payload)})
         elif self.path == "/api/pdf_bundle/run":
             folder = _require_folder(payload)
             pdf_bundle.start(folder, payload.get("options"))

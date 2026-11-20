@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/static/home_route.css?v=3"><link rel="stylesheet" href="/static/work_task.css?v=6"><link rel="stylesheet" href="/static/theme-casual.css"><script src="/static/game_fx.js"></script>
   <link rel="stylesheet" href="/static/theme-cartoon.css">
   <link rel="stylesheet" href="/static/how_notes.css">
-  <link rel="stylesheet" href="/static/home_tiles.css?v=8">
+  <link rel="stylesheet" href="/static/home_tiles.css?v=10">
 </head>
 <body class="home-body">
   <header class="app-header">
@@ -39,7 +39,11 @@
   <div class="home-undersea" aria-hidden="true"></div>
   <main class="container home-container home-workspace">
     <section class="home-tools-heading" aria-label="工具与进度备份">
-      <div><h2>我的桌面</h2><p id="routeDoneNote" class="route-done-note hidden"></p></div>
+      <div class="home-heading-copy">
+        <span class="home-eyebrow">HARBOR DESK · 海港桌面</span>
+        <h2>我的桌面</h2>
+        <p id="routeDoneNote" class="route-done-note hidden"></p>
+      </div>
       <div class="home-hero-actions">
         <button type="button" class="btn btn-outline btn-sm" id="exportProgressBtn" onclick="exportProgress()"
           title="把扫描结果、人工判断、续跑点和执行记录保存为备份文件">
@@ -110,7 +114,7 @@
           <span class="app-name">新建流程</span>
           <span class="folder-count">自己拼一条</span>
         </button>
-        <p class="desk-tip">点开 <b>工具箱</b>，按住图标拖进流程；流程里拖动调顺序，点名字改名。</p>
+        <p class="desk-tip"><span class="ui-icon harbor-icon icon-compass" aria-hidden="true"></span><span>点开 <b>工具箱</b>，按住图标拖进流程；流程里拖动调顺序，点名字改名。</span></p>
       </div>
       <div class="flow-list" id="flowList"></div>
     </section>
@@ -182,7 +186,7 @@
   </div>
 
   <script src="/static/eta.js"></script><script src="/static/job_panel.js"></script><script src="/static/dialog.js"></script>
-  <script src="/static/tools.js?v=5"></script><script src="/static/home_tiles.js?v=4"></script>
+  <script src="/static/tools.js?v=5"></script><script src="/static/home_tiles.js?v=5"></script>
   <script src="/static/home.js"></script>
   <script src="/static/work_task.js?v=8"></script>
   <script src="/static/debug_log.js"></script>

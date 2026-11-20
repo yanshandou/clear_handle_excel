@@ -355,7 +355,11 @@
 
   // ---------- 从哪一页回来的：图标闪几下 ----------
   const SCROLL_KEY = 'clear_handle_excel.homeScroll';
-  window.addEventListener('pagehide', () => { try { sessionStorage.setItem(SCROLL_KEY, String(window.scrollY)); } catch (_) {} });
+  window.addEventListener('pagehide', () => {
+    try { sessionStorage.setItem(SCROLL_KEY, String(window.scrollY)); } catch (_) {}
+    closeToolbox(); // 离开时收起，bfcache 恢复回来才不会带着展开的工具箱
+  });
+  window.addEventListener('pageshow', ev => { if (ev.persisted) closeToolbox(); });
 
   function flashEl(el) {
     el.classList.remove('is-back');
