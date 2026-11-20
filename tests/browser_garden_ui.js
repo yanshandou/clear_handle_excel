@@ -89,7 +89,8 @@ async function main() {
     await cdp('Network.enable');
     await resize(1440);
     await navigate('/');
-    await until("window.Tools && document.querySelectorAll('#tileGrid .tile').length === Tools.TOOLS.length");
+    await evaluate("localStorage.removeItem('clear_handle_excel.flows'), location.reload(), true");
+    await until("document.readyState === 'complete' && window.Tools && document.querySelectorAll('#toolboxBody .app').length === Tools.TOOLS.length");
     await evaluate(`Promise.all(['/static/images/harbor/icons.webp', '/static/images/bg.png', '/static/images/ship-logo.png', '/static/images/dev-toolbox-logo.png'].map(src => {
       const image = new Image();
       image.src = src;
@@ -99,13 +100,33 @@ async function main() {
     assert.match(await evaluate("getComputedStyle(document.querySelector('.header-logo-badge')).backgroundImage"), /\/static\/images\/ship-logo\.png/);
     assert.equal(await evaluate(`document.querySelector('link[rel="icon"]').getAttribute('href')`), '/static/images/dev-toolbox-logo.png');
     assert.equal(await evaluate("document.querySelector('.header-title-text').textContent"), '开发百宝箱');
-    assert.equal(await evaluate("document.querySelectorAll('#tileGrid .tile-big').length"), 2);
-    assert.equal(await evaluate("document.querySelectorAll('#tileGrid .harbor-icon').length === Tools.TOOLS.length"), true);
-    assert.match(await evaluate("getComputedStyle(document.querySelector('[data-tool=clean]')).borderImageSource"), /harbor\/mint\.webp/);
-    assert.equal(await evaluate("document.querySelectorAll('.flow-bar, .flow-page-bar').length"), 0, 'workflow rail is gone');
+    // 工具箱：所有工具一样大的图标，点开展开；默认有一条流程
+    assert.equal(await evaluate("document.querySelectorAll('#toolboxBody .harbor-icon').length === Tools.TOOLS.length"), true);
+    assert.equal(await evaluate("document.querySelector('#toolboxPop').hidden"), true);
+    assert.equal(await evaluate("document.querySelectorAll('#flowList .flow-card').length"), 1);
     await capture('home-desktop');
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'desktop has no horizontal overflow');
-    await click('[data-tool="adjust"] .tile-link');
+    await click('#toolboxFolder');
+    await until("!document.querySelector('#toolboxPop').hidden");
+    await capture('home-toolbox');
+    // 从工具箱拖「修复图片」进流程第 1 步前面
+    const dragTo = async (fromSel, toSel, dx = -8) => {
+      const p = await evaluate(`(() => { const a = document.querySelector(${JSON.stringify(fromSel)}).getBoundingClientRect();
+        const b = document.querySelector(${JSON.stringify(toSel)}).getBoundingClientRect();
+        return {x1: a.x + a.width / 2, y1: a.y + a.height / 2, x2: b.x + ${dx}, y2: b.y + b.height / 2}; })()`);
+      await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1, x: p.x1, y: p.y1 });
+      for (let i = 1; i <= 8; i++) await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', button: 'left', buttons: 1, x: p.x1 + (p.x2 - p.x1) * i / 8, y: p.y1 + (p.y2 - p.y1) * i / 8 });
+      await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1, x: p.x2, y: p.y2 });
+    };
+    await dragTo('#toolboxBody .app[data-tool=images] .app-icon', '#flowList .flow-step[data-index="0"] .app-icon');
+    await until("HomeTiles.flows()[0].steps[0] === 'images'");
+    assert.equal(await evaluate("location.pathname"), '/', 'dropping does not open the tool');
+    assert.match(await evaluate("localStorage.getItem('clear_handle_excel.flows')"), /"images"/);
+    await click('#toolboxClose');
+    await until("document.querySelector('#toolboxPop').hidden");
+    await click('#flowList .flow-step[data-index="0"] .flow-remove');
+    await until("HomeTiles.flows()[0].steps[0] !== 'images'");
+    await click('#flowList .app[data-tool="adjust"]');
     await until("document.querySelector('#taskDialog').open");
     await capture('task-dialog');
     assert.ok(await evaluate("document.querySelector('#taskDialogTitle').textContent.includes('调整页面')"));
@@ -117,28 +138,23 @@ async function main() {
     await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await until("!document.querySelector('#taskDialog').open");
-    await until("document.querySelector('[data-tool=adjust]').classList.contains('is-back')");
-    const chainBefore = await evaluate("document.querySelector('[data-chain=hidden]').checked");
-    await click('[data-chain=hidden]');
-    assert.equal(await evaluate("Tools.chainOptions().hidden"), !chainBefore);
-    await click('[data-chain=hidden]');
-    // 从某一页回首页：那张卡片边框闪几下后消失，网址里的 from 去掉，卡片不挪位置
+    await until("document.querySelector('#flowList .app[data-tool=adjust]').classList.contains('is-back')");
+    // 从某一页回首页：流程里的图标闪几下后消失，网址里的 from 去掉，图标不挪位置
     await navigate('/clean');
     assert.equal(await evaluate("document.querySelector('.header-nav a.nav-link').getAttribute('href')"), '/?from=clean');
     await navigate('/workbench');
     assert.equal(await evaluate("document.querySelector('.nav-next').textContent.trim()"), '🏠 返回首页');
     assert.equal(await evaluate("document.querySelector('.nav-next').getAttribute('href')"), '/?from=cells');
     await cdp('Page.navigate', { url: base + '/?from=clean' });
-    await until("location.pathname + location.search === '/' && document.querySelector('[data-tool=clean]')?.classList.contains('is-back')");
-    const before = await evaluate("JSON.stringify(document.querySelector('[data-tool=clean]').getBoundingClientRect())");
-    await until("!document.querySelector('[data-tool=clean]').classList.contains('is-back')");
-    assert.equal(await evaluate("JSON.stringify(document.querySelector('[data-tool=clean]').getBoundingClientRect())"), before, 'flash does not move the tile');
-    for (const width of [320, 390, 768, 1024]) {
+    await until("location.pathname + location.search === '/' && document.querySelector('#flowList .app[data-tool=clean]')?.classList.contains('is-back')");
+    const before = await evaluate("JSON.stringify(document.querySelector('#flowList .app[data-tool=clean]').getBoundingClientRect())");
+    await until("!document.querySelector('#flowList .app[data-tool=clean]').classList.contains('is-back')");
+    assert.equal(await evaluate("JSON.stringify(document.querySelector('#flowList .app[data-tool=clean]').getBoundingClientRect())"), before, 'flash does not move the icon');
+    for (const width of [1024, 1280, 1920]) { // 只做电脑版（pc-only）
       await resize(width, 900);
       await evaluate('scrollTo({top:0, behavior:"instant"})');
       await capture(`home-${width}`);
       assert.equal(await evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `no overflow at ${width}`);
-      assert.equal(await evaluate("getComputedStyle(document.querySelector('#tileGrid')).display"), 'grid');
     }
     const routes = ['/clean', '/workbench', '/records', '/history', '/pdf-review', '/analysis', '/repair-colors',
       '/excel-diff', '/distribute', '/distribute/start', '/distribute?mode=json', '/distribute/manage'];
