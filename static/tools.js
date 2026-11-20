@@ -4,6 +4,7 @@
 // - size：旧的大小卡片用的，现在不用了
 // - 没有「本次流程 / 下一步」了：每一页做完只有「返回首页」，回到主页时那一页对应的卡片边框闪几下（static/home_tiles.js）
 // - inc：这项已经被哪张大卡顺便做了（同一份 Excel 只开存一次，见 excel_workbook_io_optimization_analysis.md），小卡上写「已含在…里」
+// - 工具图标可以在「设置图标」页换成图标库里的图（存在程序数据\\图标库\\index.json 的 tools，主页 home_tiles.js 读 /api/icons 套上）
 // - ops：执行记录里的种类（core/operation_history.py），用来在卡片右上角打 ✓；没有记录的工具不打 ✓
 (function () {
   const FOLDER_KEY = 'clear_handle_excel.lastFolder';
@@ -32,6 +33,7 @@
     { id: 'pcl', group: 'check', size: 'small', title: 'PCL 单体测试检查', sub: '22 项清单 · 源码校验 · 覆盖率 · 测试报告', url: '/pcl', icon: 'check', tone: 'yellow' },
     { id: 'report', group: 'check', size: 'small', title: 'Excel 对比报告', sub: '任选两份 Excel · 生成 HTML 报告', url: '/excel-report', icon: 'search', tone: 'blue' },
     { id: 'pdfdiff', group: 'check', size: 'small', title: 'PDF 对比', sub: '拖进来左右对比 · 每边可接好几份', url: '/pdf-diff', icon: 'document', tone: 'teal' },
+    { id: 'icons', group: 'misc', size: 'small', title: '设置图标', sub: '透明 PNG 生成图标 · 图标库 · 套到文件夹', url: '/set-icons', icon: 'palette', tone: 'pink' },
     { id: 'finish', group: 'task', size: 'small', title: '完成任务', sub: '收尾检查：都传回共享了没有', url: '/finish?start=1', pages: ['/finish'], icon: 'finish', tone: 'yellow', linkId: 'workTaskFinish' },
   ];
   const byId = Object.fromEntries(TOOLS.map(t => [t.id, t]));
@@ -44,6 +46,7 @@
     { id: 'upload', title: '上传时会顺便做' },
     { id: 'fix', title: '修复 · 导出 · 复制' },
     { id: 'check', title: '检查 · 对比' },
+    { id: 'misc', title: '其他小工具' },
   ];
 
   // 精简后顺便做的几项：和精简页的勾选框共用（static/clean.js）；隐藏页默认不做，其他默认做

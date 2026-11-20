@@ -298,6 +298,29 @@ class WebHandler(upload_manager.Handler):
             self._send_json(image_restore.status())
         elif parsed.path == "/pick-copy":
             self._serve_static_file("pick_copy.html")
+        elif parsed.path == "/set-icons":  # 设置图标（用户 2026-11-20）：PNG → .ico 图标库，套到 Windows 文件夹
+            self._serve_static_file("icon_library.html")
+        elif parsed.path == "/api/icons":
+            from core import icon_library
+            self._send_json({"ok": True, **icon_library.listing()})
+        elif parsed.path == "/api/icons/file":  # 图标库里的预览 PNG / .ico 下载（带版本号的地址可以缓存）
+            from core import icon_library
+            from urllib.parse import quote
+            query = parse_qs(parsed.query)
+            kind = (query.get("kind") or ["png"])[0]
+            try:
+                body, name = icon_library.icon_file((query.get("id") or [""])[0], kind)
+            except (ValueError, OSError) as err:
+                self._send_json({"ok": False, "error": str(err)}, status=404)
+            else:
+                self.send_response(200)
+                self.send_header("Content-Type", "image/x-icon" if kind == "ico" else "image/png")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "private, max-age=86400" if (query.get("v") or [""])[0] else "no-store")
+                if kind == "ico":
+                    self.send_header("Content-Disposition", f"attachment; filename=\"icon.ico\"; filename*=UTF-8''{quote(name + '.ico')}")
+                self.end_headers()
+                self.wfile.write(body)
         elif parsed.path in {"/pcl", "/UIPCL.html"}:
             self._serve_static_file("UIPCL.html")
         elif parsed.path.startswith("/api/pcl/"):
@@ -540,6 +563,9 @@ class WebHandler(upload_manager.Handler):
         if urlparse(self.path).path == "/api/pdf_diff/upload":  # PDF 对比：网页拖进来的文件，正文就是 PDF 本身
             self._handle_pdf_diff_upload()
             return
+        if urlparse(self.path).path == "/api/icons/upload":  # 设置图标：拖进来的 PNG，正文就是图片本身
+            self._handle_icon_upload()
+            return
         try:
             length = int(self.headers.get("Content-Length", 0))
             try:
@@ -583,6 +609,34 @@ class WebHandler(upload_manager.Handler):
             body = self.rfile.read(length)
             debug_log.event("🖱️ 网页操作", 路径=self.path, 文件=name, 大小=length)
             self._send_json({"ok": True, **pdf_diff.store(name, body)})
+        except ConnectionError:
+            self._log_client_disconnect()
+        except ValueError as err:
+            debug_log.event("🚫 网页操作被拒绝", 路径=self.path, 原因=err)
+            self._send_json({"ok": False, "error": str(err)}, status=400)
+        except Exception as err:
+            debug_log.exception(err, f"POST {self.path}")
+            self._send_json({"ok": False, "error": f"程序出错：{err}（详细信息已写进调试日志）"}, status=500)
+
+    def _handle_icon_upload(self) -> None:
+        from core import icon_library
+        name = unquote(self.headers.get("X-File-Name", "") or "")
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0:
+                raise ValueError(f"{name or '这张图片'} 是空文件")
+            if length > icon_library.MAX_BYTES:
+                raise ValueError(f"{name or '这张图片'} 超过 30 MB，太大了")
+            body = self.rfile.read(length)
+            replace_id = self.headers.get("X-Icon-Replace", "") or ""
+            category = unquote(self.headers.get("X-Icon-Category", "") or "")
+            trim = self.headers.get("X-Icon-Trim", "1") != "0"
+            debug_log.event("🖱️ 网页操作", 路径=self.path, 文件=name, 大小=length, 替换=replace_id or "否", 分类=category)
+            if replace_id:
+                result = icon_library.replace(replace_id, name, body, trim)
+            else:
+                result = icon_library.add(name, body, category, trim)
+            self._send_json({"ok": True, **result})
         except ConnectionError:
             self._log_client_disconnect()
         except ValueError as err:
@@ -659,6 +713,27 @@ class WebHandler(upload_manager.Handler):
                 except OSError:
                     sha[key] = ""
             self._send_json({"ok": True, **excel_diff.diff(mine.strip(), theirs.strip()), "sha256": sha})
+            return
+        if self.path.startswith("/api/icons/"):  # 设置图标：和 Excel 任务无关，别的任务在跑也能用
+            from core import icon_library
+            action = self.path.removeprefix("/api/icons/")
+            if action == "update":
+                result = icon_library.update(str(payload.get("id") or ""), payload.get("name"), payload.get("category"))
+            elif action == "category":
+                result = icon_library.rename_category(payload.get("old"), payload.get("new"))
+            elif action == "delete":
+                result = icon_library.delete(str(payload.get("id") or ""))
+            elif action == "apply":
+                result = icon_library.apply(str(payload.get("id") or ""), payload.get("folders"))
+            elif action == "restore":
+                result = icon_library.restore(payload.get("folders"))
+            elif action == "tool":
+                result = icon_library.set_tool_icon(str(payload.get("tool") or ""), payload.get("id") or None)
+            elif action == "open_dir":
+                result = icon_library.open_library()
+            else:
+                raise ValueError("不认识的图标操作")
+            self._send_json({"ok": True, **result})
             return
         if self.path == "/api/pdf_diff/path":  # PDF 批量对比：按贴进来的本机路径读一份
             from core import pdf_diff
