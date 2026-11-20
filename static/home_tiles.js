@@ -60,13 +60,28 @@
       : `<a href="${esc(t.url)}" ${common}>${inner}</a>`;
   }
 
+  // ---------- 换过的工具图标（设置图标页，存在程序数据\图标库） ----------
+  // 用一段样式盖掉那个工具的精灵图，流程重画、工具箱展开都不用再管；图片和原来一样大，不会挤动别的图标
+  fetch('/api/icons', { cache: 'no-store' }).then(r => r.json()).then(data => {
+    if (!data || !data.ok) return;
+    const icons = Object.fromEntries((data.icons || []).map(i => [i.id, i]));
+    const rules = Object.entries(data.tools || {}).filter(([tool, id]) => T.byId[tool] && icons[id]).map(([tool, id]) =>
+      `[data-tool="${tool}"] .harbor-icon, .folder-mini[data-tool="${tool}"] .harbor-icon { background: url('/api/icons/file?id=${id}&kind=png&v=${icons[id].version}') center / contain no-repeat; }`);
+    if (!rules.length) return;
+    const style = document.createElement('style');
+    style.id = 'customToolIcons';
+    style.textContent = rules.join('\n');
+    document.head.appendChild(style);
+    log('换过图标的工具', Object.keys(data.tools).join(', '));
+  }).catch(e => console.warn('[工具箱] 读不了图标库，工具图标用默认的', e));
+
   // ---------- 工具箱文件夹 ----------
   const folderBtn = document.getElementById('toolboxFolder');
   const pop = document.getElementById('toolboxPop');
   const popBody = document.getElementById('toolboxBody');
 
   folderBtn.querySelector('.folder-preview').innerHTML = T.TOOLS.slice(0, 9)
-    .map(t => `<span class="folder-mini tone-${t.tone}"><span class="harbor-icon icon-${t.icon}"></span></span>`).join('');
+    .map(t => `<span class="folder-mini tone-${t.tone}" data-tool="${t.id}"><span class="harbor-icon icon-${t.icon}"></span></span>`).join('');
   folderBtn.querySelector('.folder-count').textContent = `${T.TOOLS.length} 个工具`;
 
   popBody.innerHTML = T.GROUPS.map(g => {

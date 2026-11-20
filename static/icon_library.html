@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>设置图标 - 开发百宝箱</title>
+  <link rel="icon" type="image/png" href="/static/images/dev-toolbox-logo.png">
+  <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/repair.css"><script src="/static/game_fx.js"></script>
+  <style>
+    /* 透明底的格子背景：看得出图标哪里是透明的 */
+    .ic-checker { background-color: #fff; background-image: linear-gradient(45deg, #e3e7ef 25%, transparent 25%, transparent 75%, #e3e7ef 75%), linear-gradient(45deg, #e3e7ef 25%, transparent 25%, transparent 75%, #e3e7ef 75%); background-size: 16px 16px; background-position: 0 0, 8px 8px; }
+
+    .ic-add { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: stretch; }
+    .ic-drop { display: grid; place-items: center; align-content: center; gap: 6px; min-height: 150px; padding: 14px; border: 3px dashed #7c5cd6; border-radius: 16px; background: #f6f3ff; color: #2e1f66; text-align: center; font-weight: 700; cursor: pointer; transition: background-color .15s, border-color .15s; }
+    .ic-drop b { font-size: 18px; }
+    .ic-drop small { font-weight: 600; color: #3f3a52; }
+    .ic-drop.is-over { background: #e7ddff; border-style: solid; border-color: #5b3cc4; }
+    .ic-add-opts { display: flex; flex-direction: column; gap: 10px; justify-content: center; }
+    .ic-add-opts label { display: flex; flex-direction: column; gap: 4px; font-weight: 700; color: #1f2937; }
+    .ic-add-opts label.ic-inline { flex-direction: row; align-items: center; gap: 8px; }
+    .ic-add-opts input[type=text] { width: 100%; }
+    .ic-status { min-height: 1.5em; margin: 10px 0 0; font-weight: 700; color: #1f2937; }
+    .ic-status .is-warn { color: #7a4b00; } .ic-status .is-bad { color: #b42318; } .ic-status .is-ok { color: #14633c; }
+
+    /* 图标库：左边网格，右边固定的详情（选图标只换颜色和右边内容，页面不挪） */
+    .ic-lib { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 16px; align-items: start; }
+    .ic-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 10px; }
+    .ic-toolbar input[type=search] { width: 260px; }
+    .ic-cats { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; min-height: 34px; }
+    .ic-cat { padding: 5px 12px; border: 2px solid #b9b0d9; border-radius: 999px; background: #fff; color: #2e1f66; font-weight: 800; font-size: 13px; cursor: pointer; }
+    .ic-cat small { margin-left: 4px; color: #4b5563; font-weight: 700; }
+    .ic-cat.is-on { background: #5b3cc4; border-color: #5b3cc4; color: #fff; }
+    .ic-cat.is-on small { color: #f3efff; }
+    .ic-cat-tools { display: flex; align-items: center; gap: 6px; }
+    .ic-cat-tools input { width: 150px; }
+    .ic-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; min-height: 160px; align-content: start; }
+    .ic-card { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 6px 8px; border: 2.5px solid #d4cfe6; border-radius: 14px; background: #fff; cursor: pointer; text-align: center; font: inherit; color: inherit; }
+    .ic-card:hover { border-color: #8f7ad8; }
+    .ic-card.is-selected { border-color: #5b3cc4; background: #efe9ff; box-shadow: 0 0 0 2px #5b3cc4 inset; }
+    .ic-card .ic-thumb { width: 72px; height: 72px; border-radius: 10px; display: grid; place-items: center; }
+    .ic-card .ic-thumb img { width: 64px; height: 64px; }
+    .ic-card .ic-name { max-width: 100%; font-weight: 800; font-size: 13px; color: #111827; overflow-wrap: anywhere; line-height: 1.25; }
+    .ic-card .ic-sub { font-size: 12px; color: #4b5563; font-weight: 600; }
+    .ic-card .ic-badge { font-size: 11px; font-weight: 800; color: #14532d; background: #dcfce7; border-radius: 999px; padding: 1px 7px; }
+    .ic-empty { grid-column: 1 / -1; padding: 30px 10px; text-align: center; color: #374151; font-weight: 700; }
+
+    .ic-detail { position: sticky; top: 12px; display: flex; flex-direction: column; gap: 12px; min-height: 560px; padding: 14px; border: 2.5px solid #c9c1e6; border-radius: 16px; background: #fff; }
+    .ic-detail-empty { margin: auto; text-align: center; color: #374151; font-weight: 700; }
+    .ic-preview { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 12px; align-items: center; }
+    .ic-big { width: 140px; height: 140px; border-radius: 14px; display: grid; place-items: center; border: 2px solid #d4cfe6; }
+    .ic-big img { width: 128px; height: 128px; }
+    .ic-big.is-over { outline: 3px dashed #5b3cc4; outline-offset: 3px; }
+    .ic-sizes { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+    .ic-sizes figure { margin: 0; display: grid; justify-items: center; gap: 2px; font-size: 11px; font-weight: 700; color: #4b5563; }
+    .ic-sizes .ic-s { display: grid; place-items: center; padding: 3px; border-radius: 6px; }
+    .ic-meta { font-size: 12px; color: #374151; line-height: 1.5; overflow-wrap: anywhere; }
+    .ic-meta .is-warn { color: #7a4b00; font-weight: 700; }
+    .ic-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+    .ic-detail input, .ic-detail textarea, .ic-detail select, .ic-add-opts input { box-sizing: border-box; min-width: 0; max-width: 100%; }
+    .ic-detail { min-width: 0; box-sizing: border-box; }
+    .ic-fields label { display: flex; flex-direction: column; gap: 3px; font-weight: 700; font-size: 13px; color: #1f2937; }
+    .ic-fields input { width: 100%; }
+    .ic-row { display: flex; flex-wrap: wrap; gap: 6px; }
+    .ic-row .btn { padding: 6px 12px; font-size: 13px; }
+    .ic-sec { border-top: 2px dashed #ddd6f3; padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+    .ic-sec h3 { margin: 0; font-size: 15px; color: #2e1f66; }
+    .ic-sec textarea { width: 100%; min-height: 5.2em; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+    .ic-sec select { flex: 1; min-width: 0; }
+    .ic-results { margin: 0; padding: 0; list-style: none; font-size: 13px; max-height: 9em; overflow: auto; }
+    .ic-results li { padding: 2px 0; overflow-wrap: anywhere; }
+    .ic-results .is-ok::before { content: "✓ "; color: #14633c; font-weight: 800; }
+    .ic-results .is-bad { color: #b42318; } .ic-results .is-bad::before { content: "! "; font-weight: 800; }
+    .ic-folders { margin: 0; padding: 0; list-style: none; font-size: 12.5px; max-height: 8em; overflow: auto; }
+    .ic-folders li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; padding: 2px 0; font-family: ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
+    .ic-folders button { padding: 2px 8px; font-size: 12px; border: 1.5px solid #8a94a6; border-radius: 8px; background: #fff; cursor: pointer; }
+    .ic-hint { font-size: 12.5px; color: #4b5563; font-weight: 600; margin: 0; }
+  </style>
+  <link rel="stylesheet" href="/static/theme-casual.css">
+  <script src="/static/tools.js?v=2"></script>
+  <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/how_notes.css">
+</head>
+<body>
+  <header class="app-header">
+    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">设置图标</h1><span class="subtitle">透明 PNG → Windows 图标 · 图标库 · 套到文件夹</span></div></a>
+    <nav class="header-nav" aria-label="功能导航"><a href="/" class="nav-link"><span class="ui-icon harbor-icon icon-home" aria-hidden="true"></span>主页</a></nav>
+  </header>
+  <main class="container clean-container">
+    <section class="panel">
+      <h2>加图标</h2>
+      <details class="how-notes">
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">PNG 生成多尺寸 .ico 存进图标库；套到文件夹 = 复制一份图标进去 + 写 desktop.ini</span><span class="how-notes-toggle"></span></summary>
+        <div class="how-notes-body">
+          <section class="how-notes-group">
+            <h3>🖼️ 生成图标</h3>
+            <ul>
+              <li>拖进来的图片（最好是透明底 PNG）缩成 16 / 20 / 24 / 32 / 40 / 48 / 64 / 96 / 128 / 256 共 10 个尺寸，合成一个 .ico。</li>
+              <li>不是正方形的图居中放，四周留透明。勾了「自动裁掉透明边」会先把四周空白的透明部分裁掉，图标显得大一些。</li>
+              <li>原图原样留一份。图片小于 128 像素时大图标会糊，会提醒你。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>📁 套到 Windows 文件夹</h3>
+            <ul>
+              <li>把 .ico 复制进那个文件夹（隐藏文件），写 desktop.ini 的 IconResource，desktop.ini 设成隐藏 + 系统，文件夹设成只读（Windows 要这样才认），再通知资源管理器刷新。</li>
+              <li>desktop.ini 里原来的别的设置都留着，只改图标那一行。</li>
+              <li>文件夹里是复制件：以后删掉图标库里的图标，文件夹的图标也不会坏。替换图标图片时，套过它的文件夹一起换成新图。</li>
+              <li>资源管理器有图标缓存，看不到变化时按 F5 或过一会再看。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group is-wide">
+            <h3>💾 存在哪里</h3>
+            <ul>
+              <li>图标库在 <b>桌面\handle-excel\程序数据\图标库</b>，换新版本（重新下载 ZIP）不会丢。</li>
+              <li>「工具箱图标」可以把主页工具箱里某个工具的图标换成图标库里的图，恢复默认就回到原来的图。</li>
+            </ul>
+          </section>
+        </div>
+      </details>
+      <div class="ic-add">
+        <div id="icDrop" class="ic-drop" role="button" tabindex="0" aria-label="拖进 PNG 或点这里选图片">
+          <b>把透明底 PNG 拖到这里</b>
+          <span>可以一次拖好几张，每张变成一个图标</span>
+          <small>或者点这里选图片</small>
+        </div>
+        <input id="icFile" type="file" accept="image/png,image/*" multiple hidden>
+        <input id="icReplaceFile" type="file" accept="image/png,image/*" hidden>
+        <div class="ic-add-opts">
+          <label for="icNewCategory">新图标放进哪个分类 <input id="icNewCategory" type="text" list="icCategoryList" placeholder="不填就是「未分类」" maxlength="30" autocomplete="off"></label>
+          <label class="ic-inline"><input id="icTrim" type="checkbox" checked> 自动裁掉透明边</label>
+          <button id="icOpenDir" class="btn" type="button">📂 打开图标库文件夹</button>
+        </div>
+      </div>
+      <p id="icStatus" class="ic-status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="panel">
+      <h2>图标库 <small id="icCount" class="toolbar-hint"></small></h2>
+      <div class="ic-lib">
+        <div>
+          <div class="ic-toolbar">
+            <input id="icSearch" type="search" placeholder="🔍 搜名字 / 分类 / 原文件名" autocomplete="off">
+            <span class="ic-cat-tools">
+              <input id="icCatRename" type="text" placeholder="先点一个分类" maxlength="30" disabled>
+              <button id="icCatRenameBtn" class="btn" type="button" disabled>✎ 分类改名</button>
+            </span>
+          </div>
+          <div id="icCats" class="ic-cats"></div>
+          <div id="icGrid" class="ic-grid"><p class="ic-empty">正在读图标库…</p></div>
+        </div>
+        <aside id="icDetail" class="ic-detail" aria-live="polite"><p class="ic-detail-empty">点左边一个图标，在这里改名、分类、替换、删除，或套到文件夹。</p></aside>
+      </div>
+      <datalist id="icCategoryList"></datalist>
+    </section>
+    <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
+  </main>
+  <script src="/static/dialog.js"></script>
+  <script src="/static/icon_library.js"></script><script src="/static/debug_log.js"></script>
+</body>
+</html>
