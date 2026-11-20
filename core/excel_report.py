@@ -5,6 +5,7 @@
 - 报告是单个 .html：样式 static/excel_report.css、画法 static/excel_report_view.js、对比数据（JSON）都塞在文件里，
   发给别人双击就能看，不用连本程序、不用联网。报告里不写日期时间。
 - 生成的报告另存一份在 程序数据/excel_reports/，网页上可以直接下载。
+- 挑两张表来比（用户 2026-11-19）：左右各挑一张表（可以是同一份文件的 Sheet1 vs Sheet2），走 excel_diff.diff_sheets。
 """
 from __future__ import annotations
 
@@ -45,8 +46,13 @@ def _safe_name(text: str) -> str:
     return re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", text).strip(" .")[:60] or "Excel"
 
 
-def file_name(name_a: str, name_b: str) -> str:
-    return f"Excel对比报告_{_safe_name(Path(name_a).stem)}_vs_{_safe_name(Path(name_b).stem)}.html"
+def file_name(name_a: str, name_b: str, sheet_a: str = "", sheet_b: str = "") -> str:
+    left, right = _safe_name(Path(name_a).stem), _safe_name(Path(name_b).stem)
+    if sheet_a or sheet_b:  # 挑两张表：文件名带上表名，同一份文件就只写一次文件名
+        if left == right:
+            return f"Excel对比报告_{left}_{_safe_name(sheet_a)}_vs_{_safe_name(sheet_b)}.html"
+        left, right = f"{left}_{_safe_name(sheet_a)}", f"{right}_{_safe_name(sheet_b)}"
+    return f"Excel对比报告_{left}_vs_{right}.html"
 
 
 def render_html(result: dict[str, Any]) -> str:
@@ -57,6 +63,8 @@ def render_html(result: dict[str, Any]) -> str:
     data = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
     data = data.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     title = f"Excel 对比报告 - {Path(result['theirs']).name} vs {Path(result['mine']).name}"
+    if result.get("pair"):
+        title = f"Excel 对比报告 - {Path(result['theirs']).name}「{result['pair']['a']}」 vs {Path(result['mine']).name}「{result['pair']['b']}」"
     return ("<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"UTF-8\">\n"
             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
             f"<title>{html.escape(title)}</title>\n<style>\n{css}\n</style>\n</head>\n<body>\n"
@@ -66,8 +74,11 @@ def render_html(result: dict[str, Any]) -> str:
 
 
 def build(path_a: Path | str, path_b: Path | str, label_a: str = "", label_b: str = "",
-          save: bool = True) -> dict[str, Any]:
-    """path_a = 文件 A（左 / 旧），path_b = 文件 B（右 / 新）。label_* = 报告上显示的路径（上传的文件写原来的文件名）"""
+          save: bool = True, sheet_a: str = "", sheet_b: str = "") -> dict[str, Any]:
+    """path_a = 文件 A（左 / 旧），path_b = 文件 B（右 / 新）。label_* = 报告上显示的路径（上传的文件写原来的文件名）
+    sheet_a / sheet_b 都给了 = 只比这两张表（可以同一份文件、表名不同）；都不给 = 整份按同名的表一一对上比"""
+    if bool(sheet_a) != bool(sheet_b):
+        raise ValueError("挑两张表对比时，左右都要选一张表")
     path_a, path_b = Path(path_a), Path(path_b)
     with _lock:
         if _state["running"]:
@@ -75,12 +86,16 @@ def build(path_a: Path | str, path_b: Path | str, label_a: str = "", label_b: st
         _state.update(running=True, stage="开始", done=0, total=0, started=time.monotonic())
     started = time.monotonic()
     try:
-        with debug_log.side_task("excel_report", {"A": label_a or str(path_a), "B": label_b or str(path_b)}):
-            result = excel_diff.diff(path_b, path_a, full=True, progress=_progress)
+        with debug_log.side_task("excel_report", {"A": label_a or str(path_a), "B": label_b or str(path_b),
+                                                  "表A": sheet_a or "-", "表B": sheet_b or "-"}):
+            if sheet_a:
+                result = excel_diff.diff_sheets(path_a, sheet_a, path_b, sheet_b, full=True, progress=_progress)
+            else:
+                result = excel_diff.diff(path_b, path_a, full=True, progress=_progress)
             result["label_a"], result["label_b"] = label_a or str(path_a), label_b or str(path_b)
             _progress("正在生成报告", len(result["sheets"]), len(result["sheets"]))
             page = render_html(result)
-            name = file_name(Path(result["label_a"]).name, Path(result["label_b"]).name)
+            name = file_name(Path(result["label_a"]).name, Path(result["label_b"]).name, sheet_a, sheet_b)
             saved = ""
             if save:
                 folder = reports_dir()
@@ -89,12 +104,13 @@ def build(path_a: Path | str, path_b: Path | str, label_a: str = "", label_b: st
                 target.write_text(page, encoding="utf-8")
                 saved = str(target)
             totals = result["summary"]["各类"]
-            debug_log.event("📊 对比报告生成", A=result["label_a"], B=result["label_b"], 完全一样=result["identical"],
+            debug_log.event("📊 对比报告生成", A=result["label_a"], B=result["label_b"], 表A=sheet_a or "-", 表B=sheet_b or "-",
+                            完全一样=result["identical"],
                             表=len(result["sheets"]), 各类="、".join(f"{k}{v}" for k, v in totals.items()) or "-",
                             大小KB=round(len(page.encode("utf-8")) / 1024), 存到=saved or "-",
                             用时秒=round(time.monotonic() - started, 1))
             sheets = result["sheets"]
-            return {"html": page, "filename": name, "saved": saved, "identical": result["identical"],
+            return {"html": page, "filename": name, "saved": saved, "identical": result["identical"], "pair": result.get("pair"),
                     "totals": totals, "order_changed": result["summary"]["表的顺序变了"], "book": len(result.get("book", [])),
                     "sheets": {key: sum(s["status"] == key for s in sheets) for key in ("changed", "only_old", "only_new", "same")}}
     finally:
@@ -114,38 +130,54 @@ def saved_report(name: str) -> Path:
     return target
 
 
-def build_from_request(side_a: Any, side_b: Any) -> dict[str, Any]:
-    """网页来的请求：每边要么是 {path: 完整路径}，要么是 {name: 文件名, data: base64}（在网页上选 / 拖进来的文件）"""
+def _side_file(key: str, side: Any, temp: list[Path]) -> tuple[Path, str]:
+    """网页来的一边：{path: 完整路径} 或 {name: 文件名, data: base64}；后者写到临时文件夹（temp[0]，没有就新建）"""
     import base64
-    import shutil
     import tempfile
-    temp = None
+    if not isinstance(side, dict):
+        raise ValueError(f"请先选文件 {key}")
+    path = str(side.get("path") or "").strip().strip('"')
+    if path:
+        return Path(path), path
+    name, data = str(side.get("name") or "").strip(), side.get("data")
+    if not name or not isinstance(data, str) or not data:
+        raise ValueError(f"请先选文件 {key}（填完整路径，或点「选择文件」）")
+    if len(data) > MAX_UPLOAD_MB * 1024 * 1024 * 4 // 3:
+        raise ValueError(f"文件 {key} 太大（超过 {MAX_UPLOAD_MB} MB），请改填完整路径")
+    if not temp:
+        temp.append(Path(tempfile.mkdtemp(prefix="excel_report_")))
+    target = temp[0] / key / Path(name).name  # 两边同名也不会互相盖住
+    target.parent.mkdir(parents=True, exist_ok=True)
     try:
-        paths, labels = [], []
-        for key, side in (("A", side_a), ("B", side_b)):
-            if not isinstance(side, dict):
-                raise ValueError(f"请先选文件 {key}")
-            path = str(side.get("path") or "").strip().strip('"')
-            if path:
-                paths.append(Path(path))
-                labels.append(path)
-                continue
-            name, data = str(side.get("name") or "").strip(), side.get("data")
-            if not name or not isinstance(data, str) or not data:
-                raise ValueError(f"请先选文件 {key}（填完整路径，或点「选择文件」）")
-            if len(data) > MAX_UPLOAD_MB * 1024 * 1024 * 4 // 3:
-                raise ValueError(f"文件 {key} 太大（超过 {MAX_UPLOAD_MB} MB），请改填完整路径")
-            if temp is None:
-                temp = Path(tempfile.mkdtemp(prefix="excel_report_"))
-            target = temp / key / Path(name).name  # 两边同名也不会互相盖住
-            target.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                target.write_bytes(base64.b64decode(data, validate=True))
-            except ValueError as err:
-                raise ValueError(f"文件 {key} 传过来坏了，请重新选一次（{err}）") from err
-            paths.append(target)
-            labels.append(f"{name}（在网页上选的文件）")
-        return build(paths[0], paths[1], labels[0], labels[1])
+        target.write_bytes(base64.b64decode(data, validate=True))
+    except ValueError as err:
+        raise ValueError(f"文件 {key} 传过来坏了，请重新选一次（{err}）") from err
+    return target, f"{name}（在网页上选的文件）"
+
+
+def _cleanup(temp: list[Path]) -> None:
+    import shutil
+    for folder in temp:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def sheets_from_request(side: Any) -> dict[str, Any]:
+    """「挑两张表对比」的下拉框：列出这一边文件里的表"""
+    temp: list[Path] = []
+    try:
+        path, label = _side_file("", side, temp)
+        return {"sheets": excel_diff.sheet_names(path), "label": label}
     finally:
-        if temp is not None:
-            shutil.rmtree(temp, ignore_errors=True)
+        _cleanup(temp)
+
+
+def build_from_request(side_a: Any, side_b: Any, sheet_a: Any = "", sheet_b: Any = "") -> dict[str, Any]:
+    """网页来的请求：每边要么是 {path: 完整路径}，要么是 {name: 文件名, data: base64}（在网页上选 / 拖进来的文件）
+    sheet_a / sheet_b = 挑两张表对比时左右选的表名（整份对比时不传）"""
+    temp: list[Path] = []
+    try:
+        path_a, label_a = _side_file("A", side_a, temp)
+        path_b, label_b = _side_file("B", side_b, temp)
+        return build(path_a, path_b, label_a, label_b, sheet_a=str(sheet_a or ""), sheet_b=str(sheet_b or ""))
+    finally:
+        _cleanup(temp)

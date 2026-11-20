@@ -128,9 +128,14 @@ def _references(payload: dict, *, optional: bool = False) -> str | ReferenceFold
 def excel_report_files_summary(payload: dict) -> str:
     """对比报告的请求里可能带着整份 Excel，日志只写是哪两份"""
     parts = []
-    for key in ("a", "b"):
+    for key in ("a", "b", "side"):
+        if key == "side" and not isinstance(payload.get(key), dict):
+            continue
         side = payload.get(key) if isinstance(payload.get(key), dict) else {}
         parts.append(f"{key}={side.get('path') or ('上传 ' + str(side.get('name') or '?'))}")
+    for key in ("sheet_a", "sheet_b"):
+        if payload.get(key):
+            parts.append(f"{key}={payload.get(key)}")
     return " ".join(parts)
 
 
@@ -543,7 +548,7 @@ class WebHandler(upload_manager.Handler):
                 raise ValueError("请求内容不是有效的 JSON（文件可能已损坏）") from None
             if not isinstance(payload, dict):
                 raise ValueError("请求内容必须为 JSON 对象")
-            if self.path == "/api/excel_report":  # 带着整份上传的 Excel（base64），只记文件名
+            if self.path in ("/api/excel_report", "/api/excel_report/sheets"):  # 带着整份上传的 Excel（base64），只记文件名
                 debug_log.event("🖱️ 网页操作", 路径=self.path, 参数=excel_report_files_summary(payload))
             elif not self.path.startswith("/api/pcl/") and self.path != "/api/excel_diff/pdf_status":  # 检查台边打字边自动保存、对比页问进度，不记进调试日志
                 debug_log.event("🖱️ 网页操作", 路径=self.path, 参数=debug_log.summary(payload)[:600])
@@ -665,7 +670,12 @@ class WebHandler(upload_manager.Handler):
             return
         if self.path == "/api/excel_report":  # 任选两份 Excel 生成对比报告（用户 2026-11-17）：只读，别的任务在跑也能做
             from core import excel_report
-            self._send_json({"ok": True, **excel_report.build_from_request(payload.get("a"), payload.get("b"))})
+            self._send_json({"ok": True, **excel_report.build_from_request(payload.get("a"), payload.get("b"),
+                                                                           payload.get("sheet_a"), payload.get("sheet_b"))})
+            return
+        if self.path == "/api/excel_report/sheets":  # 挑两张表对比（用户 2026-11-19）：列出一边文件里的表
+            from core import excel_report
+            self._send_json({"ok": True, **excel_report.sheets_from_request(payload.get("side"))})
             return
         if self.path == "/api/excel_diff/pdf":  # 对比的「真实效果」：两边要哪些表的 PDF（core/excel_diff_pdf.py），只读旁路
             from core import excel_diff_pdf

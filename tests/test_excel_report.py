@@ -74,5 +74,65 @@ class ExcelReportTests(unittest.TestCase):
         self.assertTrue(excel_report.build(self.a, self.a, save=False)["identical"])
 
 
+class SheetPairTests(unittest.TestCase):
+    """挑两张表对比（用户 2026-11-19）：同一份文件的 Sheet1 vs Sheet2，表名不同也能比"""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / "一份.xlsx"
+        wb = Workbook()
+        first = wb.active
+        first.title = "Sheet1"
+        second = wb.create_sheet("Sheet2")
+        twin = wb.create_sheet("コピー")
+        hidden = wb.create_sheet("隠し")
+        hidden.sheet_state = "hidden"
+        for r in range(1, 6):
+            first.cell(r, 1, f"行{r}")
+            twin.cell(r, 1, f"行{r}")
+            second.cell(r, 1, f"行{r}" if r != 3 else "変更")
+        second["B2"] = "追加"
+        second.column_dimensions["A"].width = 30
+        wb.save(self.path)
+
+    def test_lists_sheets_with_state(self):
+        names = excel_diff.sheet_names(self.path)
+        self.assertEqual([n["name"] for n in names], ["Sheet1", "Sheet2", "コピー", "隠し"])
+        self.assertEqual(names[3]["state"], "隐藏")
+        side = {"name": "x.xlsx", "data": base64.b64encode(self.path.read_bytes()).decode()}
+        self.assertEqual(len(excel_report.sheets_from_request(side)["sheets"]), 4)
+
+    def test_same_file_two_sheets(self):
+        result = excel_diff.diff_sheets(self.path, "Sheet1", self.path, "Sheet2")
+        self.assertFalse(result["identical"])
+        self.assertEqual(result["pair"], {"a": "Sheet1", "b": "Sheet2"})
+        sheet = result["sheets"][0]
+        self.assertEqual(sheet["name"], "Sheet1 ↔ Sheet2")
+        self.assertEqual({(r["cell"], r["kind"]) for r in sheet["text"]}, {("A3", "mod"), ("B2", "add")})
+        self.assertIn("列宽", sheet["counts"])
+        self.assertEqual(result["book"], [])
+        # 效果图左右各画自己那张表
+        cells_old = {(c[0], c[1]): c[2] for c in sheet["view"]["old"]["cells"]}
+        cells_new = {(c[0], c[1]): c[2] for c in sheet["view"]["new"]["cells"]}
+        self.assertEqual(cells_old[(3, 1)], "行3")
+        self.assertEqual(cells_new[(3, 1)], "変更")
+
+    def test_identical_sheets_with_different_names(self):
+        self.assertTrue(excel_diff.diff_sheets(self.path, "Sheet1", self.path, "コピー")["identical"])
+
+    def test_report_and_errors(self):
+        result = excel_report.build(self.path, self.path, save=False, sheet_a="Sheet1", sheet_b="Sheet2")
+        self.assertEqual(result["pair"], {"a": "Sheet1", "b": "Sheet2"})
+        self.assertEqual(result["filename"], "Excel对比报告_一份_Sheet1_vs_Sheet2.html")
+        self.assertIn("「Sheet1」 vs", result["html"])
+        with self.assertRaises(ValueError):
+            excel_report.build(self.path, self.path, save=False, sheet_a="Sheet1", sheet_b="ない")
+        with self.assertRaises(ValueError):
+            excel_report.build(self.path, self.path, save=False, sheet_a="Sheet1")
+        req = excel_report.build_from_request({"path": str(self.path)}, {"path": f'"{self.path}"'}, "Sheet1", "Sheet2")
+        self.assertFalse(req["identical"])
+
+
 if __name__ == "__main__":
     unittest.main()

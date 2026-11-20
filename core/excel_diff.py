@@ -678,10 +678,12 @@ def _used_bounds(data: dict[str, Any], name: str) -> tuple[int, int]:
 
 def _view(name: str, old: dict[str, Any] | None, new: dict[str, Any] | None, marks: dict[str, list[str]],
           row_marks: list[int], col_marks: list[str], merge_marks: list[str],
-          boxes: dict[str, list] | None = None, full: bool = False) -> dict[str, Any] | None:
-    """效果图要的数据：只取有不同的行和上下 VIEW_CONTEXT 行；一边没有这张表时画另一边的开头几十行"""
+          boxes: dict[str, list] | None = None, full: bool = False, name_new: str | None = None) -> dict[str, Any] | None:
+    """效果图要的数据：只取有不同的行和上下 VIEW_CONTEXT 行；一边没有这张表时画另一边的开头几十行
+    name_new = 右边那张表的名字（挑两张不同名的表来比时用，用户 2026-11-19）；不给就和左边同名"""
     from openpyxl.utils.cell import column_index_from_string, get_column_letter, range_boundaries
-    bounds = [_used_bounds(side, name) for side in (old, new) if side is not None]
+    names = {"old": name, "new": name_new or name}
+    bounds = [_used_bounds(side, names[key]) for key, side in (("old", old), ("new", new)) if side is not None]
     last_row, last_col = max(b[0] for b in bounds), max(b[1] for b in bounds)
     hot: set[int] = set(row_marks)
     for addr in marks:
@@ -712,7 +714,7 @@ def _view(name: str, old: dict[str, Any] | None, new: dict[str, Any] | None, mar
     rows, cut = wanted[:max_rows], max(0, len(wanted) - max_rows)
     cols_cut = max(0, last_col - max_cols)
     last_col = min(last_col, max_cols)
-    sides = {key: (_side_view(side, name, rows, last_col) if side is not None else None) for key, side in (("old", old), ("new", new))}
+    sides = {key: (_side_view(side, names[key], rows, last_col) if side is not None else None) for key, side in (("old", old), ("new", new))}
     return {"rows": rows, "cols": [get_column_letter(c) for c in range(1, last_col + 1)], **sides, "whole": bool(whole),
             "marks": marks if len(marks) <= _LIMITS[full]["marks"] else dict(list(marks.items())[:_LIMITS[full]["marks"]]),
             "marks_cut": max(0, len(marks) - _LIMITS[full]["marks"]),
@@ -743,9 +745,11 @@ def _hyperlink(cell: Any) -> str:
     return str(link.target or (f"#{link.location}" if link.location else "") or "")
 
 
-def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any], full: bool = False) -> dict[str, Any]:
-    """old = 远程（左），new = 要上传的（右）；full = 报告用，清单一条不截"""
-    a, b = _sheet_info(old, name), _sheet_info(new, name)
+def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any], full: bool = False,
+                name_new: str | None = None) -> dict[str, Any]:
+    """old = 远程（左），new = 要上传的（右）；full = 报告用，清单一条不截
+    name_new = 右边那张表的名字（挑两张不同名的表来比，用户 2026-11-19）；不给就和左边同名"""
+    a, b = _sheet_info(old, name), _sheet_info(new, name_new or name)
     limit = _LIMITS[full]
     MAX_TEXT_ROWS, MAX_STYLE_GROUPS, MAX_GROUP_CELLS, MAX_DRAWING_ROWS = (  # noqa: N806  同名局部变量盖住模块常量
         limit["text"], limit["groups"], limit["group_cells"], limit["drawings"])
@@ -886,7 +890,7 @@ def _diff_sheet(name: str, old: dict[str, Any], new: dict[str, Any], full: bool 
             whole.append({"kind": kind, "what": what, "old": a[field], "new": b[field]})
     counts = {k: v for k, v in counts.items() if v}
     view = _view(name, old, new, marks, size_marks.get("rows", []), size_marks.get("cols", []), only_a + only_b, boxes,
-                 full=full) if counts else None
+                 full=full, name_new=name_new) if counts else None
     return {"name": name, "status": "changed" if counts else "same", "counts": counts, "view": view,
             "text": text_rows[:MAX_TEXT_ROWS], "text_more": max(0, len(text_rows) - MAX_TEXT_ROWS),
             "cache": cache_rows[:MAX_TEXT_ROWS], "cache_more": max(0, len(cache_rows) - MAX_TEXT_ROWS),
@@ -956,4 +960,64 @@ def diff(mine: Path | str, theirs: Path | str, full: bool = False, progress: Any
                         各类="、".join(f"{k}{v}" for k, v in totals.items()) or "-")
         return {"mine": str(mine), "theirs": str(theirs), "identical": identical, "summary": summary, "sheets": sheets,
                 "book": book_rows, "names": {"old": names_old, "new": names_new},
+                "kinds": {"cell": list(CELL_KINDS), "sheet": list(SHEET_KINDS), "book": list(BOOK_KINDS)}}
+
+
+def sheet_names(path: Path | str) -> list[dict[str, str]]:
+    """列出一份 Excel 里的表（名字 + 显示 / 隐藏），只读 workbook.xml，不开整份，给「挑两张表对比」的下拉框用"""
+    path = Path(path)
+    if not path.name.lower().endswith(content_check.READABLE_SUFFIXES):
+        raise ValueError(f"{path.suffix or '这种'}格式没法对比，只支持 .xlsx / .xlsm / .xltx / .xltm：{path.name}")
+    if not path.is_file():
+        raise ValueError(f"找不到文件：{path}")
+    try:
+        with zipfile.ZipFile(path) as z:
+            root = ElementTree.fromstring(z.read("xl/workbook.xml"))
+    except Exception as err:
+        raise ValueError(f"读不了 {path.name}（{type(err).__name__}: {err}）") from err
+    result = []
+    for node in root.iter():
+        if _local(node) == "sheet" and node.get("name"):
+            state = node.get("state") or "visible"
+            result.append({"name": node.get("name"), "state": {"hidden": "隐藏", "veryHidden": "深度隐藏"}.get(state, "")})
+    debug_log.event("🔍 列出表", 文件=str(path), 表=len(result))
+    return result
+
+
+def diff_sheets(path_a: Path | str, sheet_a: str, path_b: Path | str, sheet_b: str, full: bool = True,
+                progress: Any = None) -> dict[str, Any]:
+    """挑两张表来比（用户 2026-11-19）：path_a 里的 sheet_a（左 / 旧） vs path_b 里的 sheet_b（右 / 新）。
+    两边可以是同一份文件（比如 Sheet1 vs Sheet2），表名可以不同。只比这两张表，不比工作簿级设置。
+    返回的格式和 diff() 一样（sheets 只有一条），另外多一个 pair = {"a": 左表名, "b": 右表名}"""
+    path_a, path_b = Path(path_a), Path(path_b)
+    tell = progress or (lambda *_: None)
+    same_file = path_a.resolve() == path_b.resolve()
+    with debug_log.side_task("excel_diff_sheets", {"A": f"{path_a} [{sheet_a}]", "B": f"{path_b} [{sheet_b}]", "同一份": same_file}):
+        old = new = None
+        try:
+            tell(f"正在读 {path_a.name}", 0, 0)
+            old = _load(path_a)
+            if same_file:
+                new = old  # 同一份文件只读一次
+            else:
+                tell(f"正在读 {path_b.name}", 0, 0)
+                new = _load(path_b)
+            for side, path, sheet in ((old, path_a, sheet_a), (new, path_b, sheet_b)):
+                if sheet not in side["book"].sheetnames:
+                    raise ValueError(f"{path.name} 里没有叫「{sheet}」的表（可能表名改了，请重新选一次）")
+            label = sheet_a if sheet_a == sheet_b else f"{sheet_a} ↔ {sheet_b}"
+            tell(f"正在比「{label}」", 0, 1)
+            entry = _diff_sheet(sheet_a, old, new, full=full, name_new=sheet_b)
+            entry["name"], entry["doomed"] = label, ""
+        finally:
+            for side in {id(s): s for s in (old, new) if s is not None}.values():
+                side["book"].close()
+        totals = dict(entry["counts"])
+        summary = {"表": 1, "一样的表": int(entry["status"] == "same"), "有不同的表": int(entry["status"] == "changed"),
+                   "只有远程有": 0, "只有你这份有": 0, "精简会删不算": 0, "表的顺序变了": False, "各类": totals}
+        identical = not totals
+        debug_log.event("🔍 两张表对比", A=f"{path_a} [{sheet_a}]", B=f"{path_b} [{sheet_b}]", 同一份文件=same_file,
+                        完全一样=identical, 各类="、".join(f"{k}{v}" for k, v in totals.items()) or "-")
+        return {"mine": str(path_b), "theirs": str(path_a), "identical": identical, "summary": summary, "sheets": [entry],
+                "book": [], "names": {"old": [sheet_a], "new": [sheet_b]}, "pair": {"a": sheet_a, "b": sheet_b},
                 "kinds": {"cell": list(CELL_KINDS), "sheet": list(SHEET_KINDS), "book": list(BOOK_KINDS)}}
