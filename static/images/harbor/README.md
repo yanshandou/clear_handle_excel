@@ -37,3 +37,20 @@ shadow outside the silhouette, crisp and readable at small size.
 ## PCL 检查台
 
 Use case: ui-mockup. Input images are visual references for style and palette. One isolated game prop on transparent alpha: front-facing bright blue and turquoise harbor inspection console with rounded toy shapes, cobalt blue shell matching the sailboat, curved creamy white trim, little sand-gold dials on the right, subtle miniature life ring or ship wheel. A large completely blank dark navy screen for live overlay text, left of center (spanning x=15% to 72%, y=25% to 75%). Style must closely match the bright sunny, smooth, stylized 3D tropical island cartoon toy CGI of the references. Gentle soft rim lighting, clean materials, no paper texture, nothing behind it, no floor, no thick cast shadow, no words, no text, no numbers. 4:3 landscape.
+
+## 海下背景 undersea.webp（2026-11-20）
+
+首页横幅（bg.png，海面上）保持不动；水面以下由 `undersea.webp` 竖向无缝平铺补全，
+左右留白处露出珊瑚礁，整页读作一张连续的海（参考用户提供的竖向海上海下构图）。
+
+- 出图：1536×1024，风格参考 bg.png、构图参考用户图；两侧礁石群 + 中部开阔水域（气泡、小鱼群）。
+  第一版珊瑚顶到上下边缘无法平铺，重生成时强制「上下 18% 全宽纯海水」，第二版通过。
+- 后处理：取顶行水色 W=rgb(26,251,253) 为接缝色；顶 10% / 底 8% 强制为纯 W，
+  10–17% 与 84–92% 用 smoothstep 混回原图，首末行像素完全相同 → repeat-y 无缝。
+- 接法：`.home-stage`（position:relative）包住横幅 + `.home-undersea` + 工作台；
+  undersea `inset:0; z-index:0`，`background-position-y: clamp(184px,24vw,316px)`（= 横幅高度）
+  使贴图第 0 行正好落在横幅底边；横幅 `::after` 68px 渐隐收尾到同一 W，接缝无色差。
+  深度渐变 ::before 前 30% 保持全透明以免污染接缝；::after 为缓慢摆动的上帝光，
+  prefers-reduced-motion 时静止；undersea `overflow:hidden` 防止光束平移造成横向溢出。
+- 验证：headless Edge 1440/1024/390/320 截图，接缝与平铺缝目视无色差、无横向溢出、
+  无控制台报错与失败请求；tests/browser_garden_ui.js 全过。

@@ -10,9 +10,9 @@
   <link rel="stylesheet" href="/static/home_route.css?v=3"><link rel="stylesheet" href="/static/work_task.css?v=6"><link rel="stylesheet" href="/static/theme-casual.css"><script src="/static/game_fx.js"></script>
   <link rel="stylesheet" href="/static/theme-cartoon.css">
   <link rel="stylesheet" href="/static/how_notes.css">
-  <link rel="stylesheet" href="/static/home_tiles.css?v=4">
+  <link rel="stylesheet" href="/static/home_tiles.css?v=5">
 </head>
-<body>
+<body class="home-body">
   <header class="app-header">
     <a href="/" class="header-brand" title="返回主页">
       <div class="header-logo-badge" aria-hidden="true"></div>
@@ -34,7 +34,9 @@
     </nav>
   </header>
 
+  <div class="home-stage">
   <div class="home-seascape" aria-hidden="true"></div>
+  <div class="home-undersea" aria-hidden="true"></div>
   <main class="container home-container home-workspace">
     <section class="home-tools-heading" aria-label="工具与进度备份">
       <div><h2>我的桌面</h2><p id="routeDoneNote" class="route-done-note hidden"></p></div>
@@ -113,6 +115,7 @@
       <div class="flow-list" id="flowList"></div>
     </section>
   </main>
+  </div>
 
   <!-- 单项功能对话框：填写文件夹 → 执行 → 查看结果（精简 Sheet 在独立页面 /clean） -->
   <dialog id="taskDialog" class="task-dialog" aria-labelledby="taskDialogTitle">

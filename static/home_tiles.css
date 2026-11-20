@@ -5,6 +5,7 @@
    ========================================== */
 .home-seascape {
   position: relative;
+  z-index: 1;
   height: clamp(184px, 24vw, 316px);
   background: #7cc9ff url('/static/images/bg.png') center 58% / cover no-repeat;
   overflow: hidden;
@@ -22,8 +23,55 @@
   position: absolute;
   inset: auto 0 0 0;
   height: 68px;
-  background: linear-gradient(180deg, rgba(223, 247, 253, 0) 0%, rgba(223, 247, 253, 0.88) 100%);
+  /* 收尾色 = undersea.webp 顶行水色 rgb(26,251,253)，保证海面→海下接缝无色差 */
+  background: linear-gradient(180deg, rgba(26, 251, 253, 0) 0%, rgba(26, 251, 253, 0.62) 52%, rgb(26, 251, 253) 100%);
   pointer-events: none;
+}
+
+/* 海下背景：从横幅底边一直铺到页面底，左右留白处露出珊瑚礁，整页是一张连续的海 */
+.home-body {
+  position: relative;
+  min-height: 100vh;
+  background: rgb(26, 251, 253);
+}
+.home-stage {
+  position: relative;
+  min-height: 100vh;
+  padding-bottom: 52px;
+}
+.home-undersea {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  /* 正偏移让贴图第 0 行（纯水平接缝色）正好落在横幅底边，往下无缝平铺 */
+  background: url('/static/images/harbor/undersea.webp') center clamp(184px, 24vw, 316px) / 100% auto repeat-y;
+}
+.home-undersea::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(26, 251, 253, 0) 0%, rgba(26, 251, 253, 0) 30%, rgba(16, 120, 190, 0.1) 55%, rgba(9, 70, 140, 0.24) 100%);
+}
+.home-undersea::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: min(78vh, 820px);
+  background: repeating-linear-gradient(100deg, rgba(255, 255, 255, 0.12) 0 26px, rgba(255, 255, 255, 0) 26px 96px);
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, rgba(0, 0, 0, 0.35) 55%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 0%, rgba(0, 0, 0, 0.35) 55%, transparent 100%);
+  animation: undersea-rays 11s ease-in-out infinite alternate;
+}
+@keyframes undersea-rays {
+  from { opacity: 0.55; transform: translateX(0); }
+  to { opacity: 0.95; transform: translateX(46px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .home-undersea::after { animation: none; opacity: 0.7; }
 }
 
 .home-workspace {
@@ -34,7 +82,7 @@
   flex-direction: column;
   gap: 16px;
   width: min(1380px, calc(100% - 2 * clamp(10px, 2.8vw, 44px)));
-  margin: -46px auto 52px;
+  margin: -46px auto 0;
   padding: clamp(16px, 2.4vw, 32px);
   border: 3px solid #ffffff;
   border-radius: 32px;
