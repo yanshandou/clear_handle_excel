@@ -159,6 +159,7 @@ function renderCards() {
   });
 
   const clipsMeta = document.getElementById('meta_clips');
+  if (!clipsMeta) return; // 2026-11-20 起主页是小图标，没有状态文字了
   const clips = overview.clips;
   if (overview.busy && overview.job && CLIP_JOB_KINDS.has(overview.job.kind)) {
     clipsMeta.textContent = `⏳ 进行中 ${pct}%`;
@@ -485,20 +486,13 @@ function lastFolder() {
   }
 }
 
-async function refreshDoneMarks() {
-  const folder = lastFolder();
-  let done = {};
-  if (folder) {
-    try {
-      const res = await fetch('/api/operation-history?folder=' + encodeURIComponent(folder));
-      if (res.ok) done = (await res.json()).done || {};
-    } catch (e) {
-      return; // 读不到就保持原样，不影响使用
-    }
-  }
-  document.querySelectorAll('.tile[data-ops]').forEach(stop => {
+// 图标右上角的 ✓ / !：主页流程重画后也要再画一次（static/home_tiles.js 会调 paintDoneMarks）
+let lastDone = {};
+function paintDoneMarks() {
+  const done = lastDone;
+  document.querySelectorAll('.app[data-ops]').forEach(stop => {
     const entries = stop.dataset.ops.split(' ').map(k => done[k]).filter(Boolean);
-    const mark = stop.querySelector('.tile-done');
+    const mark = stop.querySelector('.app-done');
     if (!mark) return;
     if (!entries.length) {
       mark.classList.add('hidden');
@@ -518,6 +512,22 @@ async function refreshDoneMarks() {
     mark.setAttribute('aria-label', label);
     stop.classList.add('is-done');
   });
+}
+window.paintDoneMarks = paintDoneMarks;
+
+async function refreshDoneMarks() {
+  const folder = lastFolder();
+  let done = {};
+  if (folder) {
+    try {
+      const res = await fetch('/api/operation-history?folder=' + encodeURIComponent(folder));
+      if (res.ok) done = (await res.json()).done || {};
+    } catch (e) {
+      return; // 读不到就保持原样，不影响使用
+    }
+  }
+  lastDone = done;
+  paintDoneMarks();
   const note = document.getElementById('routeDoneNote');
   note.classList.toggle('hidden', !folder);
   note.textContent = folder ? `✓ 表示在「${folder}」里已经做过` : '';

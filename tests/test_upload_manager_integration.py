@@ -66,8 +66,9 @@ class UploadManagerIntegrationTests(unittest.TestCase):
         self.assertIn(b'id="manager-task-upload" class="button primary" href="/distribute"', page)
         status, home = self.request('GET', '/')
         self.assertEqual(status, 200)
-        # 2026-11-11 起主页是一张卡片页，卡片由 static/home_tiles.js 按 static/tools.js 的清单画
-        self.assertIn(b'id="tileGrid"', home)
+        # 2026-11-20 起主页是手机桌面式工具箱 + 流程，由 static/home_tiles.js 按 static/tools.js 的清单画
+        self.assertIn(b'id="homeDesk"', home)
+        self.assertIn(b'id="toolboxPop"', home)
         tools = self.request('GET', '/static/tools.js')[1]
         self.assertIn(b"url: '/distribute'", tools)
         self.assertIn(b"linkId: 'workTaskUploadLink'", tools)
