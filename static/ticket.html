@@ -9,9 +9,9 @@
   <link rel="stylesheet" href="/static/theme.css">
   <link rel="stylesheet" href="/static/theme-casual.css">
   <link rel="stylesheet" href="/static/theme-cartoon.css">
-  <link rel="stylesheet" href="/static/ticket.css?v=4">
+  <link rel="stylesheet" href="/static/ticket.css?v=9">
   <script defer src="/static/tools.js?v=5"></script>
-  <script defer src="/static/ticket.js?v=4"></script>
+  <script defer src="/static/ticket.js?v=6"></script>
 </head>
 <body class="ticket-body">
   <header class="app-header">
@@ -130,14 +130,24 @@
                 <input id="fPriority" type="text" name="priority" maxlength="500">
                 <span class="auto-tag" hidden></span>
               </div>
-              <div class="pass-field">
+              <div class="pass-field date-field">
                 <label for="fStart">开始日期 <small>FROM</small></label>
-                <input id="fStart" type="text" name="start_date" maxlength="500" placeholder="YYYY/MM/DD">
+                <div class="date-control">
+                  <input id="fStart" type="text" name="start_date" maxlength="500" placeholder="YYYY/MM/DD">
+                  <button type="button" class="date-trigger" data-for="fStart" aria-haspopup="dialog" aria-expanded="false" aria-label="选择开始日期" title="选择开始日期">
+                    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="14" rx="3.5"/><path d="M2.5 8.2h15M6.5 2v3M13.5 2v3M5 12.7c1.67-1.4 3.33-1.4 5 0s3.33 1.4 5 0"/></svg>
+                  </button>
+                </div>
                 <span class="auto-tag" hidden></span>
               </div>
-              <div class="pass-field">
+              <div class="pass-field date-field">
                 <label for="fDue">截止日期 <small>TO</small></label>
-                <input id="fDue" type="text" name="due_date" maxlength="500" placeholder="YYYY/MM/DD">
+                <div class="date-control">
+                  <input id="fDue" type="text" name="due_date" maxlength="500" placeholder="YYYY/MM/DD">
+                  <button type="button" class="date-trigger" data-for="fDue" aria-haspopup="dialog" aria-expanded="false" aria-label="选择截止日期" title="选择截止日期">
+                    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="14" rx="3.5"/><path d="M2.5 8.2h15M6.5 2v3M13.5 2v3M5 12.7c1.67-1.4 3.33-1.4 5 0s3.33 1.4 5 0"/></svg>
+                  </button>
+                </div>
                 <span class="auto-tag" hidden></span>
               </div>
               <div class="pass-field">

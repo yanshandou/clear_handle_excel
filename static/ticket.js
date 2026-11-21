@@ -223,6 +223,7 @@ TBSNG0000_手書きサイン
   });
 
   form.addEventListener('reset', () => {
+    closeDatePop();
     manual.clear();
     requestAnimationFrame(() => {
       for (const el of fields) setTag(el, '');
@@ -240,6 +241,238 @@ TBSNG0000_手書きサイン
   });
 
   document.getElementById('againBtn').addEventListener('click', () => form.reset());
+
+  // ---------- 船票风日历 ----------
+  const DATE_CAPTIONS = { fStart: '启航 · FROM', fDue: '到港 · TO' };
+  const dateTriggers = [...form.querySelectorAll('.date-trigger')];
+  const pad2 = n => String(n).padStart(2, '0');
+  const isoOf = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  const chev = (dir, double) => {
+    const l = double ? 'M8 3 3 8l5 5M13 3 8 8l5 5' : 'M10 3 5 8l5 5';
+    const r = double ? 'M3 3l5 5-5 5M8 3l5 5-5 5' : 'M6 3l5 5-5 5';
+    return `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${dir < 0 ? l : r}"/></svg>`;
+  };
+  const datePop = document.createElement('div');
+  datePop.className = 'date-pop';
+  datePop.setAttribute('role', 'dialog');
+  datePop.setAttribute('aria-modal', 'true');
+  datePop.setAttribute('aria-label', '选择日期');
+  datePop.hidden = true;
+  datePop.innerHTML = `
+    <div class="date-pop-band">
+      <button type="button" class="date-nav" data-step="-12" aria-label="上一年" title="上一年">${chev(-1, true)}</button>
+      <button type="button" class="date-nav" data-step="-1" aria-label="上个月" title="上个月">${chev(-1)}</button>
+      <div class="date-pop-title"><b data-role="month"></b><small data-role="caption"></small></div>
+      <button type="button" class="date-nav" data-step="1" aria-label="下个月" title="下个月">${chev(1)}</button>
+      <button type="button" class="date-nav" data-step="12" aria-label="下一年" title="下一年">${chev(1, true)}</button>
+    </div>
+    <div class="date-paper">
+      <div class="date-week" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span class="wk-sat">六</span><span class="wk-sun">日</span></div>
+      <div class="date-grid" data-role="grid" role="group" aria-label="日期"></div>
+    </div>
+    <div class="date-pop-perf" aria-hidden="true"><i class="notch left"></i><i class="notch right"></i></div>
+    <div class="date-pop-foot">
+      <span class="date-readout is-empty" data-role="readout">未选择</span>
+      <button type="button" class="date-quick is-today" data-role="today">今天</button>
+      <button type="button" class="date-quick is-clear" data-role="clear">清除</button>
+    </div>
+    <i class="date-pop-arrow" aria-hidden="true"></i>`;
+  document.body.appendChild(datePop);
+  const popMonth = datePop.querySelector('[data-role="month"]');
+  const popCaption = datePop.querySelector('[data-role="caption"]');
+  const popGrid = datePop.querySelector('[data-role="grid"]');
+  const popReadout = datePop.querySelector('[data-role="readout"]');
+  const popArrow = datePop.querySelector('.date-pop-arrow');
+  let dateInput = null, viewY = 0, viewM = 0, placeQueued = false;
+
+  function parseDate(value) {
+    const m = value.normalize('NFKC').trim().match(/^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?$/);
+    if (!m) return null;
+    const [y, mo, d] = [+m[1], +m[2], +m[3]];
+    const dt = new Date(y, mo - 1, d);
+    return dt.getFullYear() === y && dt.getMonth() === mo - 1 && dt.getDate() === d ? dt : null;
+  }
+
+  function renderDatePop() {
+    popMonth.textContent = `${viewY}年${viewM + 1}月`;
+    popCaption.textContent = DATE_CAPTIONS[dateInput.id];
+    const selected = parseDate(dateInput.value);
+    const selIso = selected ? isoOf(selected) : '';
+    const todayIso = isoOf(new Date());
+    const offset = (new Date(viewY, viewM, 1).getDay() + 6) % 7;
+    let html = '';
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(viewY, viewM, 1 - offset + i);
+      const dIso = isoOf(d);
+      const dow = (d.getDay() + 6) % 7;
+      const cls = ['date-day'];
+      if (d.getMonth() !== viewM) cls.push('is-out');
+      if (dow === 5) cls.push('is-sat');
+      if (dow === 6) cls.push('is-sun');
+      if (dIso === todayIso) cls.push('is-today');
+      if (dIso === selIso) cls.push('is-sel');
+      html += `<button type="button" class="${cls.join(' ')}" data-date="${dIso}" tabindex="-1" aria-pressed="${dIso === selIso}" aria-label="${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日" style="animation-delay:${Math.floor(i / 7) * 26}ms">${d.getDate()}</button>`;
+    }
+    popGrid.innerHTML = html;
+    (popGrid.querySelector('.is-sel') || popGrid.querySelector('.is-today:not(.is-out)') || popGrid.querySelector('.date-day:not(.is-out)')).tabIndex = 0;
+    popReadout.textContent = selected ? `${selected.getFullYear()}/${pad2(selected.getMonth() + 1)}/${pad2(selected.getDate())}` : '未选择';
+    popReadout.classList.toggle('is-empty', !selected);
+  }
+
+  function placeDatePop() {
+    const anchor = dateInput.closest('.date-control').getBoundingClientRect();
+    const w = datePop.offsetWidth, h = datePop.offsetHeight;
+    const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+    const left = Math.min(Math.max(8, anchor.left), Math.max(8, vw - w - 8));
+    let top = anchor.bottom + 10;
+    const above = top + h > vh - 8 && anchor.top - h - 10 > 8;
+    if (above) top = anchor.top - h - 10;
+    datePop.style.left = `${left}px`;
+    datePop.style.top = `${Math.min(Math.max(8, top), Math.max(8, vh - h - 8))}px`;
+    datePop.classList.toggle('is-above', above);
+    popArrow.style.left = `${Math.min(Math.max(anchor.left + anchor.width / 2 - left, 24), w - 24)}px`;
+  }
+
+  function openDatePop(input) {
+    dateInput = input;
+    const base = parseDate(input.value) || new Date();
+    viewY = base.getFullYear();
+    viewM = base.getMonth();
+    renderDatePop();
+    datePop.hidden = false;
+    freshGrid();
+    placeDatePop();
+    dateTriggers.forEach(btn => {
+      const on = btn.dataset.for === input.id;
+      btn.setAttribute('aria-expanded', String(on));
+      btn.closest('.date-control').classList.toggle('is-open', on);
+    });
+    popGrid.querySelector('[tabindex="0"]').focus({ preventScroll: true });
+  }
+
+  function closeDatePop(refocus = false) {
+    if (datePop.hidden) return;
+    const input = dateInput;
+    datePop.hidden = true;
+    dateInput = null;
+    dateTriggers.forEach(btn => {
+      btn.setAttribute('aria-expanded', 'false');
+      btn.closest('.date-control').classList.remove('is-open');
+    });
+    if (refocus && input) dateTriggers.find(btn => btn.dataset.for === input.id)?.focus({ preventScroll: true });
+  }
+
+  function pickDate(dIso) {
+    const [y, m, d] = dIso.split('-');
+    dateInput.value = `${y}/${m}/${d}`;
+    dateInput.dispatchEvent(new Event('input', { bubbles: true }));
+    pulse(dateInput);
+    const input = dateInput;
+    closeDatePop();
+    input.focus({ preventScroll: true });
+  }
+
+  function stepMonth(step) {
+    const total = viewY * 12 + viewM + step;
+    viewY = Math.floor(total / 12);
+    viewM = total - viewY * 12;
+    renderDatePop();
+    freshGrid();
+  }
+
+  let freshTimer = 0;
+  function freshGrid() {
+    popGrid.classList.remove('is-fresh');
+    void popGrid.offsetWidth;
+    popGrid.classList.add('is-fresh');
+    clearTimeout(freshTimer);
+    freshTimer = setTimeout(() => popGrid.classList.remove('is-fresh'), 520);
+  }
+
+  dateTriggers.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const input = document.getElementById(btn.dataset.for);
+      if (!datePop.hidden && dateInput === input) closeDatePop(true);
+      else openDatePop(input);
+    });
+    document.getElementById(btn.dataset.for).addEventListener('keydown', event => {
+      if (event.key === 'ArrowDown' && datePop.hidden) {
+        event.preventDefault();
+        openDatePop(event.currentTarget);
+      }
+    });
+  });
+
+  datePop.addEventListener('click', event => {
+    const nav = event.target.closest('.date-nav');
+    if (nav) { stepMonth(+nav.dataset.step); return; }
+    const day = event.target.closest('.date-day');
+    if (day) { pickDate(day.dataset.date); return; }
+    if (event.target.closest('[data-role="today"]')) { pickDate(isoOf(new Date())); return; }
+    if (event.target.closest('[data-role="clear"]')) {
+      dateInput.value = '';
+      dateInput.dispatchEvent(new Event('input', { bubbles: true }));
+      renderDatePop();
+    }
+  });
+
+  datePop.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { event.preventDefault(); closeDatePop(true); return; }
+    if (event.key === 'Tab') {
+      const list = [...datePop.querySelectorAll('button')].filter(btn => btn.tabIndex !== -1);
+      const first = list[0], last = list[list.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      return;
+    }
+    if (event.key === 'PageUp' || event.key === 'PageDown') {
+      event.preventDefault();
+      stepMonth(event.key === 'PageUp' ? -1 : 1);
+      popGrid.querySelector('[tabindex="0"]').focus();
+      return;
+    }
+    const moves = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 };
+    const day = event.target.closest('.date-day');
+    if (!day || !(event.key in moves)) return;
+    event.preventDefault();
+    const d = parseDate(day.dataset.date);
+    d.setDate(d.getDate() + moves[event.key]);
+    if (d.getFullYear() !== viewY || d.getMonth() !== viewM) {
+      viewY = d.getFullYear();
+      viewM = d.getMonth();
+      renderDatePop();
+    }
+    const target = popGrid.querySelector(`[data-date="${isoOf(d)}"]`);
+    if (target) {
+      popGrid.querySelector('[tabindex="0"]').tabIndex = -1;
+      target.tabIndex = 0;
+      target.focus();
+    }
+  });
+
+  document.addEventListener('pointerdown', event => {
+    if (datePop.hidden) return;
+    if (datePop.contains(event.target) || event.target.closest('.date-trigger') || event.target === dateInput) return;
+    closeDatePop();
+  });
+
+  form.addEventListener('input', event => {
+    if (datePop.hidden || event.target !== dateInput) return;
+    const d = parseDate(dateInput.value);
+    if (d) { viewY = d.getFullYear(); viewM = d.getMonth(); }
+    renderDatePop();
+  });
+
+  function queuePlace() {
+    if (placeQueued || datePop.hidden) return;
+    placeQueued = true;
+    requestAnimationFrame(() => {
+      placeQueued = false;
+      if (!datePop.hidden) placeDatePop();
+    });
+  }
+  window.addEventListener('scroll', queuePlace, true);
+  window.addEventListener('resize', queuePlace);
 
   document.getElementById('openFolderBtn').addEventListener('click', async () => {
     if (!lastFolder) return;
@@ -262,6 +495,8 @@ TBSNG0000_手書きサイン
     for (const key of Object.keys(values)) values[key] = values[key].replace(/[\t\r\n]+/g, ' ').trim();
     create.disabled = reset.disabled = source.disabled = true;
     for (const el of fields) el.disabled = true;
+    dateTriggers.forEach(btn => { btn.disabled = true; });
+    closeDatePop();
     error.textContent = '';
     success.hidden = true;
     pass.classList.remove('is-created');
@@ -282,6 +517,7 @@ TBSNG0000_手書きサイン
     } finally {
       create.disabled = reset.disabled = source.disabled = false;
       for (const el of fields) el.disabled = false;
+      dateTriggers.forEach(btn => { btn.disabled = false; });
     }
   });
 
