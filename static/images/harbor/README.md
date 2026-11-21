@@ -15,7 +15,7 @@ Use case: ui-mockup. Input images are reference for style and palette, not layou
 
 主页工具箱里一个工具一张图，不再共用精灵图：原来「排查 BL / 修复引用」共用链条、「调整页面 / 修复列宽」共用尺子、
 「批量 PDF / PDF 对比」共用纸张、「修复颜色 / 设置图标」共用调色板，另有几个图标和工具功能不贴切。
-现 11 个工具各有专属图，存 `tools/<名字>.png`（256 × 256 透明底），CSS 在 `garden-shell.css` 用
+现 12 个工具各有专属图，存 `tools/<名字>.png`（256 × 256 透明底），CSS 在 `garden-shell.css` 用
 `--icon-image / --icon-size / --icon-x / --icon-y` 变量盖掉精灵图（`theme-cartoon.css` 的对话框头同样走变量）。
 生成时以本目录 `icons.webp` 作风格参考；出图是白底，按「贴近背景色的连通域」抠掉背景（含图标内部镂空），
 裁切留 7% 边距后缩到 256；appicon / pdfstack 底部多画的投影按低饱和度区域单独清掉（精灵图原图无投影）。
@@ -25,7 +25,8 @@ widths=修复列宽（表格 + 蓝色横向双向箭头）、pdfstack=批量导�
 pdfdiff=PDF 对比（两张纸 + 蓝色对换箭头 + 红绿差异点）、report=Excel 对比报告（两张表格衬底 + 柱状图报告页）、
 json=按 JSON 复制 Excel（绿松石花括号括住表格）、pick=挑文件复制（金文件夹 + 带勾选中的文件）、
 view=视图标准化（显示器里表格首格沙金高亮 + 蓝色十字准星）、appicon=设置图标（蓝色圆角应用块 + 齿轮）、
-imgfix=修复图片（海岛相框 + 珊瑚红校正框 + 扳手）。
+imgfix=修复图片（海岛相框 + 珊瑚红校正框 + 扳手）、ticket=Ticket 出票（横向厚船票块：蓝票身 + 金帆船 +
+珊瑚红票根，凹沟大白点齿孔和上下缺口要明显；出图白底按冷白连通域抠背景，齿孔白点是设计的一部分不能抠）。
 
 通用提示词（每张单独出图，方形透明底）：Single game inventory icon: <主体描述>. Match exactly the soft
 bright stylized 3D tropical-island cartoon toy rendering of the reference sprite sheet: ocean cobalt blue,

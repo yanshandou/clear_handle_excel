@@ -62,7 +62,7 @@ SYSTEM_ICONS = (
     ("tools/bl.png", "断链警示"), ("tools/reflink.png", "链条扳手"), ("tools/widths.png", "列宽"),
     ("tools/pdfstack.png", "PDF 一叠"), ("tools/pdfdiff.png", "PDF 对比"), ("tools/report.png", "对比报告"),
     ("tools/json.png", "JSON 表格"), ("tools/pick.png", "挑文件"), ("tools/view.png", "视图"),
-    ("tools/appicon.png", "应用图标"), ("tools/imgfix.png", "修复图片"),
+    ("tools/appicon.png", "应用图标"), ("tools/imgfix.png", "修复图片"), ("tools/ticket.png", "船票"),
 )
 
 

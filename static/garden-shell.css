@@ -288,6 +288,7 @@
 .icon-view { --icon-image: url('/static/images/harbor/tools/view.png'); --icon-size: contain; --icon-x: 50%; --icon-y: 50%; }
 .icon-appicon { --icon-image: url('/static/images/harbor/tools/appicon.png'); --icon-size: contain; --icon-x: 50%; --icon-y: 50%; }
 .icon-imgfix { --icon-image: url('/static/images/harbor/tools/imgfix.png'); --icon-size: contain; --icon-x: 50%; --icon-y: 50%; }
+.icon-ticket { --icon-image: url('/static/images/harbor/tools/ticket.png'); --icon-size: contain; --icon-x: 50%; --icon-y: 50%; }
 
 .distribution-header .today {
   display: inline-flex;

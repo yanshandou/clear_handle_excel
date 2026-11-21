@@ -170,7 +170,7 @@ if _saved_state is not None:
     STATE.update(_saved_state)
     STATE["busy"] = False
     STATE.pop("maintenance", None)
-    if STATE["job"] and STATE["job"]["status"] == "running":
+    if STATE["job"] and STATE["job"].get("status") == "running":
         STATE["job"]["status"] = "interrupted"
         scan_analysis.finish(STATE["job"], interrupted=True)
 
