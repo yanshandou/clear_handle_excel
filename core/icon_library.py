@@ -36,10 +36,15 @@ MAX_BYTES = 30 * 1024 * 1024
 ICON_PREFIX = "_folder_icon_"   # 复制进文件夹的图标文件名前缀（后面跟 图标id_版本.ico）
 MAX_NAME = 60
 MAX_CATEGORY = 30
+_PIXEL_FINGERPRINT = "pixels_v1"
 
 LIB_DIR: Path | None = None   # 测试时改这里；平时用数据文件夹下的「图标库」
 _lock = threading.RLock()
-_fingerprint_cache: dict[str, tuple[int, int, str]] = {}
+_fingerprint_cache: dict[Path, dict] = {}
+
+
+class DuplicateIconError(ValueError):
+    """图片内容与图标库中的条目重复。"""
 
 
 def _log(message: str, **fields) -> None:
@@ -112,6 +117,7 @@ def _public(icon: dict) -> dict:
     return {
         "id": icon["id"], "name": icon.get("name") or "未命名", "category": icon.get("category") or "",
         "width": icon.get("width"), "height": icon.get("height"), "transparent": icon.get("transparent", True),
+        "render_width": icon.get("render_width"), "render_height": icon.get("render_height"),
         "created": icon.get("created"), "updated": icon.get("updated"), "version": icon.get("version", 1),
         "source": icon.get("source") or "", "folders": folders,
     }
@@ -143,13 +149,17 @@ def _fitz():
     return fitz
 
 
-def _load_png(body: bytes):
-    """读 PNG（JPG/BMP 等 PyMuPDF 认的也行），统一转成 RGBA"""
-    fitz = _fitz()
+def _validate_image_bytes(body: bytes) -> None:
     if not body:
         raise ValueError("这是空文件")
     if len(body) > MAX_BYTES:
         raise ValueError("图片超过 30 MB，太大了")
+
+
+def _load_png(body: bytes):
+    """读 PNG（JPG/BMP 等 PyMuPDF 认的也行），统一转成 RGBA"""
+    _validate_image_bytes(body)
+    fitz = _fitz()
     try:
         pix = fitz.Pixmap(body)
     except Exception as err:  # noqa: BLE001 — PyMuPDF 各版本报的错不一样
@@ -230,16 +240,40 @@ def _fingerprint(pix) -> str:
     return digest.hexdigest()
 
 
-def _icon_fingerprint(icon: dict) -> str:
-    path = _icons_dir() / f"{icon['id']}_orig.png"
+def _original_path(icon_id: str) -> Path:
+    return _icons_dir() / f"{icon_id}_orig.png"
+
+
+def _original_stamp(path: Path) -> list[int]:
     stat = path.stat()
-    key = str(path)
-    cached = _fingerprint_cache.get(key)
-    if cached and cached[:2] == (stat.st_mtime_ns, stat.st_size):
-        return cached[2]
-    value = _fingerprint(_load_png(path.read_bytes()))
-    _fingerprint_cache[key] = (stat.st_mtime_ns, stat.st_size, value)
-    return value
+    return [stat.st_mtime_ns, stat.st_size]
+
+
+def _record_fingerprints(icon: dict, original: str, pixels: str) -> None:
+    icon["fingerprints"] = {
+        "file": _original_stamp(_original_path(icon["id"])),
+        "original": original,
+        _PIXEL_FINGERPRINT: pixels,
+    }
+
+
+def _icon_fingerprint(icon: dict, kind: str) -> str:
+    """旧条目按需补算指纹。原文件变动时重新计算。"""
+    path = _original_path(icon["id"])
+    stamp = _original_stamp(path)
+    fingerprints = icon.get("fingerprints")
+    if not isinstance(fingerprints, dict) or fingerprints.get("file") != stamp:
+        fingerprints = _fingerprint_cache.get(path, {})
+    if fingerprints.get("file") != stamp:
+        fingerprints = {"file": stamp}
+    if not fingerprints.get(kind):
+        body = path.read_bytes()
+        fingerprints["original"] = hashlib.sha256(body).hexdigest()
+        if kind == _PIXEL_FINGERPRINT:
+            fingerprints[kind] = _fingerprint(_load_png(body))
+        _fingerprint_cache[path] = fingerprints
+    icon["fingerprints"] = fingerprints
+    return fingerprints[kind]
 
 
 def _duplicate_groups(data: dict) -> tuple[list[list[str]], list[str]]:
@@ -247,23 +281,22 @@ def _duplicate_groups(data: dict) -> tuple[list[list[str]], list[str]]:
     unchecked = []
     for icon in data["icons"]:
         try:
-            hashes.setdefault(_icon_fingerprint(icon), []).append(icon["id"])
+            hashes.setdefault(_icon_fingerprint(icon, _PIXEL_FINGERPRINT), []).append(icon["id"])
         except (OSError, ValueError):
             unchecked.append(icon["id"])
     return [ids for ids in hashes.values() if len(ids) > 1], unchecked
 
 
-def _check_duplicate(data: dict, pix, exclude_id: str = "") -> None:
-    fingerprint = _fingerprint(pix)
+def _check_duplicate(data: dict, fingerprint: str, kind: str, exclude_id: str = "") -> None:
     for icon in data["icons"]:
         if icon["id"] == exclude_id:
             continue
         try:
-            existing = _icon_fingerprint(icon)
+            existing = _icon_fingerprint(icon, kind)
         except (OSError, ValueError):
             continue
         if existing == fingerprint:
-            raise ValueError(f"图片与图标库里的「{icon.get('name') or '未命名'}」（{icon.get('category') or '未分类'}）重复，操作已取消")
+            raise DuplicateIconError(f"与图标库里的「{icon.get('name') or '未命名'}」（{icon.get('category') or '未分类'}）重复")
 
 
 def _bmp_entry(pix) -> bytes:
@@ -305,8 +338,7 @@ def build_ico(pix) -> bytes:
     return head + b"".join(entries) + b"".join(blobs)
 
 
-def _render(icon_id: str, body: bytes, trim: bool) -> dict:
-    pix = _load_png(body)
+def _render(icon_id: str, body: bytes, pix, trim: bool) -> dict:
     alpha = _alpha(pix)
     transparent = alpha.count(255) != len(alpha)
     width, height = pix.width, pix.height
@@ -317,9 +349,13 @@ def _render(icon_id: str, body: bytes, trim: bool) -> dict:
     ico = build_ico(pix)
     (folder / f"{icon_id}.ico").write_bytes(ico)
     (folder / f"{icon_id}.png").write_bytes(_square(pix, 256).tobytes("png"))
-    (folder / f"{icon_id}_orig.png").write_bytes(body)
-    return {"width": width, "height": height, "transparent": transparent, "trimmed": bool(trim and transparent),
-            "small": max(width, height) < 128, "ico_bytes": len(ico)}
+    _original_path(icon_id).write_bytes(body)
+    return {
+        "width": width, "height": height, "transparent": transparent,
+        "render_width": pix.width, "render_height": pix.height,
+        "trimmed": (pix.width, pix.height) != (width, height),
+        "small": max(pix.width, pix.height) < 128, "ico_bytes": len(ico),
+    }
 
 
 def _name_from_file(filename: str) -> str:
@@ -328,16 +364,22 @@ def _name_from_file(filename: str) -> str:
 
 
 def add(filename: str, body: bytes, category: str = "", trim: bool = True) -> dict:
-    icon_id = uuid.uuid4().hex[:12]
-    pix = _load_png(body)
+    _validate_image_bytes(body)
+    original = hashlib.sha256(body).hexdigest()
     with _lock:
         data = _load()
-        _check_duplicate(data, pix)
-        info = _render(icon_id, body, trim)
+        _check_duplicate(data, original, "original")
+        pix = _load_png(body)
+        pixels = _fingerprint(pix)
+        _check_duplicate(data, pixels, _PIXEL_FINGERPRINT)
+        icon_id = uuid.uuid4().hex[:12]
+        info = _render(icon_id, body, pix, trim)
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         icon = {"id": icon_id, "name": _name_from_file(filename), "category": _clean_text(category, MAX_CATEGORY),
                 "width": info["width"], "height": info["height"], "transparent": info["transparent"],
+                "render_width": info["render_width"], "render_height": info["render_height"],
                 "created": now, "updated": now, "version": 1, "source": Path(filename or "").name, "folders": []}
+        _record_fingerprints(icon, original, pixels)
         data["icons"].insert(0, icon)
         _save(data)
     _log("加进图标库", 名字=icon["name"], 分类=icon["category"] or "未分类", 尺寸=f"{info['width']}x{info['height']}",
@@ -350,16 +392,19 @@ def replace(icon_id: str, filename: str, body: bytes, trim: bool = True) -> dict
         data = _load()
         icon = _find(data, icon_id)
         pix = _load_png(body)
+        pixels = _fingerprint(pix)
         try:
-            unchanged = _fingerprint(pix) == _icon_fingerprint(icon)
+            unchanged = pixels == _icon_fingerprint(icon, _PIXEL_FINGERPRINT)
         except (OSError, ValueError):
             unchanged = False
         if not unchanged:
-            _check_duplicate(data, pix, exclude_id=icon_id)
-        info = _render(icon_id, body, trim)
+            _check_duplicate(data, pixels, _PIXEL_FINGERPRINT, exclude_id=icon_id)
+        info = _render(icon_id, body, pix, trim)
         icon.update(width=info["width"], height=info["height"], transparent=info["transparent"],
+                    render_width=info["render_width"], render_height=info["render_height"],
                     updated=time.strftime("%Y-%m-%d %H:%M:%S"), version=int(icon.get("version", 1)) + 1,
                     source=Path(filename or "").name)
+        _record_fingerprints(icon, hashlib.sha256(body).hexdigest(), pixels)
         _save(data)
         folders = list(icon.get("folders") or [])
     _log("替换图片", 名字=icon["name"], 新图=filename, 版本=icon["version"], 已套文件夹=len(folders))
@@ -383,7 +428,7 @@ def retrim(icon_id: str) -> dict:
     with _lock:
         icon = _find(_load(), icon_id)
         try:
-            body = (_icons_dir() / f"{icon_id}_orig.png").read_bytes()
+            body = _original_path(icon_id).read_bytes()
         except OSError as err:
             raise ValueError(f"找不到保存的原图，无法重新裁剪（{err}）") from None
         return replace(icon_id, icon.get("source") or "image.png", body, trim=True)

@@ -103,9 +103,10 @@
             <h3>🖼️ 生成图标</h3>
             <ul>
               <li>拖进来的图片（最好是透明底 PNG）缩成 16 / 20 / 24 / 32 / 40 / 48 / 64 / 96 / 128 / 256 共 10 个尺寸，合成一个 .ico。</li>
-              <li>不是正方形的图居中放，四周留透明。勾了「自动裁掉透明边」会忽略边缘几乎看不见的透明杂点，再裁掉空白，让图标显得大一些。</li>
+              <li>勾选「自动裁掉透明边」会去掉原图周围的透明留白，并忽略接近全透明的杂点。成品 .ico 是正方形，长方形图案会按比例居中，上下或左右会留白。</li>
+              <li>库里已有的图标可以点「重新裁剪」，用保存的原图重新生成。</li>
               <li>原图原样留一份。图片小于 128 像素时大图标会糊，会提醒你。</li>
-              <li>导入或替换时会比较裁掉透明边后的图片像素，遇到相同图片会提示并跳过；不同尺寸或细节不同的图片不会按相似度判断。</li>
+              <li>导入时先比对原文件指纹，文件内容相同就直接跳过。文件内容不同时，再比较裁掉透明边后的尺寸和像素。</li>
             </ul>
           </section>
           <section class="how-notes-group">
@@ -175,6 +176,6 @@
     <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
   </main>
   <script src="/static/dialog.js"></script>
-  <script src="/static/icon_library.js?v=2"></script><script src="/static/debug_log.js"></script>
+  <script src="/static/icon_library.js?v=3"></script><script src="/static/debug_log.js"></script>
 </body>
 </html>

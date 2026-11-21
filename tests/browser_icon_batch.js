@@ -38,6 +38,13 @@ const browser = process.env.EDGE_BIN || 'C:/Program Files (x86)/Microsoft/Edge/A
         }
         if (url === '/api/icons/update') { const p=JSON.parse(options.body); mockIcons.find(i=>i.id===p.id).category=p.category; return Response.json({ok:true}); }
         if (url === '/api/icons/delete') { const p=JSON.parse(options.body); window.mockIcons=mockIcons.filter(i=>i.id!==p.id); return Response.json({ok:true}); }
+        if (url === '/api/icons/upload') return Response.json({ok:false,code:'duplicate_icon',error:'与图标库里的 C 重复'}, {status:400});
+        if (url === '/api/icons/retrim') {
+          const icon = mockIcons.find(i => i.id === JSON.parse(options.body).id);
+          const info = {trimmed:true,render_width:200,render_height:100};
+          Object.assign(icon, info, {version:icon.version+1});
+          return Response.json({ok:true,icon,info});
+        }
         return realFetch(url, options);
       };
     ` });
@@ -61,6 +68,23 @@ const browser = process.env.EDGE_BIN || 'C:/Program Files (x86)/Microsoft/Edge/A
     await evalJS("window.appConfirm=async()=>true; document.querySelector('#icBatchDelete').click()");
     for (let i = 0; i < 100 && await evalJS('mockIcons.length') !== 1; i++) await pause(50);
     assert.equal(await evalJS('mockIcons.length'), 1);
-    console.log('Icon batch selection, move, confirmation and delete passed.');
+    for (let i = 0; i < 100 && !await evalJS("document.querySelector('#icBatchStatus').textContent.includes('已删除')"); i++) await pause(50);
+    await evalJS(`{
+      const input = document.querySelector('#icFile');
+      const files = new DataTransfer();
+      files.items.add(new File(['image'], 'copy.png', {type:'image/png'}));
+      input.files = files.files;
+      input.dispatchEvent(new Event('change'));
+    }`);
+    for (let i = 0; i < 100 && !await evalJS("document.querySelector('#icStatus').textContent.includes('已跳过')"); i++) await pause(50);
+    assert.match(await evalJS("document.querySelector('#icStatus').textContent"), /已跳过 1 张重复图片/);
+    assert.equal(await evalJS("document.querySelectorAll('.ic-card').length"), 1);
+    await evalJS("document.querySelector('#icBatchToggle').click(); document.querySelector('[data-id=cccccc]').click(); document.querySelector('#icRetrim').click()");
+    for (let i = 0; i < 100 && !await evalJS("document.querySelector('#icStatus').textContent.includes('裁剪后')"); i++) await pause(50);
+    const metadata = await evalJS("document.querySelector('.ic-meta').innerText");
+    assert.match(metadata, /裁剪后 200×100/);
+    assert.match(metadata, /方形图标上下留透明边/);
+    assert.match(await evalJS("document.querySelector('#icBig img').src"), /&v=2$/);
+    console.log('Icon batch management, duplicate upload and retrim passed.');
   } finally { if (socket) socket.close(); edge.kill(); server.kill(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

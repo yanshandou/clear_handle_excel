@@ -107,6 +107,11 @@
     $('icBatchToggle').disabled = busy;
   }
 
+  function setBusy(value) {
+    busy = value;
+    renderBatch();
+  }
+
   async function batchAction(remove) {
     if (busy || !checked.size) return;
     const icons = [...checked].map(byId).filter(Boolean);
@@ -120,8 +125,7 @@
         + (tools ? `\n使用这些图标的 ${tools} 个工具会恢复默认图标。` : ''), { okText: '删除', tone: 'danger' });
       if (!ok || busy) return;
     }
-    busy = true;
-    renderBatch();
+    setBusy(true);
     const failed = [];
     let done = 0;
     try {
@@ -137,7 +141,7 @@
       $('icBatchStatus').textContent = `${remove ? '已删除' : `已移入「${catLabel(target)}」`} ${done} 个${failed.length ? `；${failed.length} 个失败：${failed.join('；')}` : ''}`;
     } catch (e) {
       $('icBatchStatus').textContent = `已完成 ${done} 个，刷新图标库失败：${e.message}${failed.length ? `；失败：${failed.join('；')}` : ''}`;
-    } finally { busy = false; renderBatch(); }
+    } finally { setBusy(false); }
   }
 
   function select(id) {
@@ -169,7 +173,15 @@
     }
     const warn = [];
     if (icon.transparent === false) warn.push('<span class="is-warn">这张图没有透明背景，图标会带底色</span>');
-    if (Math.max(icon.width || 0, icon.height || 0) < 128) warn.push('<span class="is-warn">原图小于 128 像素，大图标会糊</span>');
+    const { render_width: renderWidth, render_height: renderHeight } = icon;
+    if (Math.max(renderWidth || icon.width || 0, renderHeight || icon.height || 0) < 128) {
+      warn.push('<span class="is-warn">用于生成图标的图片小于 128 像素，大图标可能模糊</span>');
+    }
+    const cropped = renderWidth && renderHeight && (renderWidth !== icon.width || renderHeight !== icon.height);
+    const cropDetails = cropped ? `<br>裁剪后 ${renderWidth}×${renderHeight}` : '';
+    const squareDetails = renderWidth && renderHeight && renderWidth !== renderHeight
+      ? `<br>方形图标${renderWidth > renderHeight ? '上下' : '左右'}留透明边`
+      : '';
     const usedTools = Object.entries(lib.tools || {}).filter(([, v]) => v === icon.id).map(([k]) => window.Tools?.byId[k]?.title || k);
     const folders = icon.folders || [];
     box.innerHTML = `
@@ -177,7 +189,7 @@
         <div class="ic-big ic-checker" id="icBig" title="把新 PNG 拖到这里 = 替换这个图标的图片"><img src="${pngUrl(icon)}" alt="${esc(icon.name)}"></div>
         <div>
           <div class="ic-sizes">${[48, 32, 24, 16].map(s => `<figure><span class="ic-s ic-checker"><img src="${pngUrl(icon)}" alt="" width="${s}" height="${s}"></span>${s}</figure>`).join('')}</div>
-          <p class="ic-meta">原图 ${icon.width}×${icon.height}${icon.source ? ` · ${esc(icon.source)}` : ''}<br>加入 ${esc(icon.created || '')}${icon.version > 1 ? ` · 换过 ${icon.version - 1} 次图` : ''}${warn.length ? '<br>' + warn.join('<br>') : ''}</p>
+          <p class="ic-meta">原图 ${icon.width}×${icon.height}${icon.source ? ` · ${esc(icon.source)}` : ''}${cropDetails}${squareDetails}<br>加入 ${esc(icon.created || '')}${warn.length ? '<br>' + warn.join('<br>') : ''}</p>
         </div>
       </div>
       <div class="ic-fields">
@@ -254,23 +266,23 @@
     else headers['X-Icon-Category'] = encodeURIComponent($('icNewCategory').value.trim());
     const response = await fetch('/api/icons/upload', { method: 'POST', headers, body: file });
     const result = await response.json().catch(() => ({}));
-    if (!response.ok || !result.ok) throw Error(result.error || '上传失败');
+    if (!response.ok || !result.ok) throw Object.assign(Error(result.error || '上传失败'), { code: result.code });
     return result;
   }
 
   function infoWarn(info) {
     const out = [];
     if (!info.transparent) out.push('没有透明背景');
-    if (info.small) out.push('图片小于 128 像素，大图标会糊');
+    if (info.small) out.push('用于生成图标的图片小于 128 像素，大图标可能模糊');
     return out;
   }
 
   async function addFiles(files) {
     files = [...files].filter(f => f && f.size);
     if (!files.length || busy) return;
-    busy = true;
+    setBusy(true);
     prefs.newCategory = $('icNewCategory').value.trim(); prefs.trim = $('icTrim').checked; savePrefs();
-    const done = [], bad = [], warns = [];
+    const done = [], skipped = [], bad = [], warns = [];
     try {
       for (const [n, file] of files.entries()) {
         status(`正在生成图标 ${n + 1} / ${files.length}：${esc(file.name)}…`);
@@ -281,26 +293,33 @@
           if (w.length) warns.push(`${file.name}：${w.join('、')}`);
           log('加进图标库', file.name, r.info);
         } catch (e) {
+          if (e.code === 'duplicate_icon') {
+            skipped.push(`${file.name}：${e.message}`);
+            continue;
+          }
           bad.push(`${file.name}：${e.message}`);
           console.warn('[设置图标] 加不进去', file.name, e);
         }
       }
       await reload('加图标后');
       if (done.length === 1) select(done[0].id);
-      status([done.length ? `<span class="is-ok">✓ 加进图标库 ${done.length} 个</span>` : '',
-        ...warns.map(w => `<br><span class="is-warn">! ${esc(w)}</span>`),
-        ...bad.map(b => `<br><span class="is-bad">! ${esc(b)}</span>`)].join(''));
+      const messages = [];
+      if (done.length) messages.push(`<span class="is-ok">✓ 加进图标库 ${done.length} 个</span>`);
+      if (skipped.length) messages.push(`<span class="is-warn">已跳过 ${skipped.length} 张重复图片</span>`);
+      messages.push(...skipped.concat(warns).map(w => `<span class="is-warn">${esc(w)}</span>`));
+      messages.push(...bad.map(b => `<span class="is-bad">! ${esc(b)}</span>`));
+      status(messages.join('<br>'));
     } catch (e) {
       status(`<span class="is-bad">! ${esc(e.message)}</span>`);
-    } finally { busy = false; }
+    } finally { setBusy(false); }
   }
 
   async function replaceImage(icon, file) {
     if (busy) return;
     const n = (icon.folders || []).length;
     const ok = await window.appConfirm(`用「${file.name}」替换「${icon.name}」的图片？${n ? `\n已经套了这个图标的 ${n} 个文件夹会一起换成新图。` : ''}`, { okText: '替换' });
-    if (!ok) return;
-    busy = true;
+    if (!ok || busy) return;
+    setBusy(true);
     status(`正在替换「${esc(icon.name)}」…`);
     try {
       const r = await upload(file, icon.id);
@@ -313,7 +332,7 @@
       log('替换', icon.name, r);
     } catch (e) {
       status(`<span class="is-bad">! ${esc(e.message)}</span>`);
-    } finally { busy = false; }
+    } finally { setBusy(false); }
   }
 
   async function removeIcon(icon) {
@@ -336,15 +355,17 @@
     const n = (icon.folders || []).length;
     const ok = await window.appConfirm(`用保存的原图重新裁剪「${icon.name}」？${n ? `\n已套用的 ${n} 个文件夹也会更新。` : ''}`, { okText: '重新裁剪' });
     if (!ok || busy) return;
-    busy = true;
+    setBusy(true);
     try {
       const r = await post('/api/icons/retrim', { id: icon.id });
       const failed = (r.folders || []).filter(f => !f.ok);
       await reload('重新裁剪后');
-      status(`<span class="is-ok">✓ 已重新裁剪「${esc(icon.name)}」</span>`
+      const { trimmed, render_width: width, render_height: height } = r.info;
+      const message = trimmed ? `「${esc(icon.name)}」裁剪后为 ${width}×${height}` : `「${esc(icon.name)}」没有可裁剪的透明边`;
+      status(`<span class="is-ok">✓ ${message}</span>`
         + failed.map(f => `<br><span class="is-bad">! ${esc(f.folder)}：${esc(f.error)}</span>`).join(''));
     } catch (e) { status(`<span class="is-bad">! ${esc(e.message)}</span>`); }
-    finally { busy = false; }
+    finally { setBusy(false); }
   }
 
   // ---------- 文件夹 ----------
@@ -356,7 +377,7 @@
     const folders = $('icFolders').value;
     if (!folders.trim()) { await window.appAlert('请先在框里填文件夹路径（每行一个）。'); return; }
     if (busy) return;
-    busy = true;
+    setBusy(true);
     try {
       const r = restore ? await post('/api/icons/restore', { folders }) : await post('/api/icons/apply', { id: icon.id, folders });
       const bad = r.results.length - r.ok_count;
@@ -367,7 +388,7 @@
       await reload(restore ? '恢复默认后' : '套用后');
     } catch (e) {
       status(`<span class="is-bad">! ${esc(e.message)}</span>`);
-    } finally { busy = false; }
+    } finally { setBusy(false); }
   }
 
   async function restoreOne(folder) {

@@ -32,13 +32,17 @@ class IconHttpTests(unittest.TestCase):
                 with self.assertRaises(HTTPError) as caught:
                     upload('other.png')
                 self.assertEqual(caught.exception.code, 400)
-                self.assertIn('重复', json.load(caught.exception)['error'])
+                duplicate = json.load(caught.exception)
+                self.assertEqual(duplicate['code'], 'duplicate_icon')
+                self.assertIn('重复', duplicate['error'])
                 caught.exception.close()
                 self.assertEqual(len(icon_library.listing()['icons']), 1)
                 request = Request(url + 'retrim', data=json.dumps({'id': first['icon']['id']}).encode(),
                                   headers={'Content-Type': 'application/json'}, method='POST')
                 result = json.load(urlopen(request, timeout=10))
                 self.assertEqual(result['icon']['version'], 2)
+                self.assertTrue(result['info']['trimmed'])
+                self.assertEqual((result['icon']['render_width'], result['icon']['render_height']), (100, 100))
                 output = icon_library._load_png((Path(temp) / 'icons' / (first['icon']['id'] + '.png')).read_bytes())
                 self.assertEqual(icon_library._content_box(output), (0, 0, 255, 255))
             finally:

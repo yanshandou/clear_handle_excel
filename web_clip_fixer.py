@@ -645,6 +645,9 @@ class WebHandler(upload_manager.Handler):
             self._send_json({"ok": True, **result})
         except ConnectionError:
             self._log_client_disconnect()
+        except icon_library.DuplicateIconError as err:
+            debug_log.event("🖼️ 跳过重复图标", 路径=self.path, 文件=name, 原因=err)
+            self._send_json({"ok": False, "code": "duplicate_icon", "error": str(err)}, status=400)
         except ValueError as err:
             debug_log.event("🚫 网页操作被拒绝", 路径=self.path, 原因=err)
             self._send_json({"ok": False, "error": str(err)}, status=400)

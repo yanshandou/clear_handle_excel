@@ -1,8 +1,10 @@
+import hashlib
 import struct
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from core import icon_library as L
 from core.pdf_detector import fitz
@@ -82,6 +84,25 @@ class IconLibraryTests(unittest.TestCase):
         self.assertEqual(L._content_box(pix), (3, 4, 3, 4))
         pix.clear_with()
         self.assertEqual(L._content_box(pix), (0, 0, 9, 9))
+
+    def test_retrim_removes_source_margin_and_keeps_rectangular_shape(self):
+        pix = L._load_png(png(300, 300, (50, 100, 250, 200)))
+        pix.set_pixel(1, 1, (1, 1, 1, 1))
+        original = pix.tobytes("png")
+        added = L.add("wide.png", original, trim=False)
+        self.assertFalse(added["info"]["trimmed"])
+        icon_id = added["icon"]["id"]
+
+        result = L.retrim(icon_id)
+        self.assertTrue(result["info"]["trimmed"])
+        icon = L.listing()["icons"][0]
+        self.assertEqual((icon["width"], icon["height"]), (300, 300))
+        self.assertEqual((icon["render_width"], icon["render_height"]), (200, 100))
+        preview, _ = L.icon_file(icon_id, "png")
+        ico, _ = L.icon_file(icon_id, "ico")
+        for data in (preview, dict(ico_sizes(ico))[256]):
+            self.assertEqual(L._content_box(L._load_png(data)), (0, 64, 255, 191))
+        self.assertEqual(L.icon_file(icon_id, "orig")[0], original)
 
     def test_not_transparent_and_small_are_reported(self):
         info = L.add("photo.png", png(60, 40, (0, 0, 60, 40), alpha=False))["info"]
@@ -182,14 +203,43 @@ class IconLibraryTests(unittest.TestCase):
         b = L.add("b.png", png(color=(50, 120, 250)))['icon']
         # 不同画布和文件名，但裁去透明边后像素相同。
         same = png(400, 300, (150, 100, 250, 200))
-        with self.assertRaisesRegex(ValueError, '重复'):
-            L.add('another.png', same, '其他')
+        with patch.dict(L._fingerprint_cache, clear=True), patch.object(L, '_load_png', wraps=L._load_png) as decode:
+            with self.assertRaisesRegex(L.DuplicateIconError, '重复'):
+                L.add('another.png', same, '其他')
+            decode.assert_called_once_with(same)
         with self.assertRaisesRegex(ValueError, '重复'):
             L.replace(b['id'], 'another.png', same)
         self.assertEqual(L.listing()['icons'][0]['id'], b['id'])
         self.assertEqual(L.listing()['icons'][0]['version'], 1)
         # 用自己的原图替换仍允许，可重新裁剪。
         self.assertEqual(L.replace(a['id'], 'a.png', same)['icon']['version'], 2)
+
+    def test_original_fingerprint_is_saved_and_short_circuits_decode(self):
+        original = png()
+        L.add('first.png', original)
+        fingerprints = L._load()['icons'][0]['fingerprints']
+        self.assertEqual(fingerprints['original'], hashlib.sha256(original).hexdigest())
+        self.assertIn(L._PIXEL_FINGERPRINT, fingerprints)
+
+        with patch.dict(L._fingerprint_cache, clear=True), patch.object(L, '_load_png') as decode, \
+                patch.object(Path, 'read_bytes') as read_original:
+            with self.assertRaises(L.DuplicateIconError):
+                L.add('renamed.png', original, trim=False)
+            decode.assert_not_called()
+            read_original.assert_not_called()
+        self.assertEqual(len(L.listing()['icons']), 1)
+
+    def test_legacy_original_short_circuits_decode(self):
+        original = png()
+        L.add('first.png', original)
+        data = L._load()
+        del data['icons'][0]['fingerprints']
+        L._save(data)
+
+        with patch.dict(L._fingerprint_cache, clear=True), patch.object(L, '_load_png') as decode:
+            with self.assertRaises(L.DuplicateIconError):
+                L.add('renamed.png', original)
+            decode.assert_not_called()
 
     def test_legacy_duplicates_and_missing_original_are_reported(self):
         a = L.add('a.png', png())['icon']
