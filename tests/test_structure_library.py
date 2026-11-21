@@ -156,6 +156,44 @@ class StructureLibraryTests(unittest.TestCase):
         again = structure_library.materialize(template["id"], self.target)
         self.assertEqual(again["problems"], [])
 
+    def test_dir_icon_is_saved_and_applied_when_building(self):
+        template = self.make_template(tree=[
+            {"kind": "dir", "name": "01_要件", "icon": "abc123", "children": [
+                {"kind": "dir", "name": "資料", "icon": "abc123", "children": []},
+            ]},
+            {"kind": "dir", "name": "02_設計", "children": []},
+        ])
+        self.assertEqual(template["tree"][0]["icon"], "abc123")
+        self.assertNotIn("icon", template["tree"][1])
+        calls = []
+
+        def fake_apply(icon_id, folders):
+            calls.append((icon_id, folders))
+            return {"results": [{"folder": f, "ok": True} for f in folders]}
+
+        with patch("core.icon_library.apply", side_effect=fake_apply):
+            result = structure_library.materialize(template["id"], self.target)
+        self.assertEqual(result["icons"], 2)
+        self.assertEqual(calls, [("abc123", [str(self.target / "01_要件"), str(self.target / "01_要件" / "資料")])])
+        self.assertEqual(result["problems"], [])
+
+    def test_dir_icon_failure_is_only_a_problem(self):
+        template = self.make_template(tree=[{"kind": "dir", "name": "01_要件", "icon": "abc123", "children": []}])
+        with patch("core.icon_library.apply", side_effect=ValueError("图标库里没有这个图标")):
+            result = structure_library.materialize(template["id"], self.target)
+        self.assertTrue((self.target / "01_要件").is_dir())
+        self.assertEqual(result["icons"], 0)
+        self.assertEqual(result["problems"], [{"path": "01_要件", "reason": "套图标失败：图标库里没有这个图标"}])
+
+    def test_dir_icon_rejects_bad_id_and_warns_when_missing(self):
+        template = self.make_template()
+        with self.assertRaisesRegex(ValueError, "图标编号不对"):
+            structure_library.save_tree(template["id"], [{"kind": "dir", "name": "a", "icon": "../x", "children": []}])
+        with patch("core.icon_library.listing", return_value={"icons": [{"id": "fff000"}]}):
+            saved = structure_library.save_tree(template["id"], [{"kind": "dir", "name": "a", "icon": "abc123", "children": []}])
+        self.assertEqual(len(saved["warnings"]), 1)
+        self.assertIn("图标已不在图标库", saved["warnings"][0]["reason"])
+
     def test_parse_overrides_rejects_bad_input(self):
         for raw in ({"exclude": "not-a-list"}, {"rename": {"id": ".."}},
                     {"rename": {"id": ""}}, {"rename": []}):

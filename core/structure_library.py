@@ -134,6 +134,11 @@ def _clean_tree(raw, label: str) -> list:
             seen.add(name)
             node = {"id": str(item.get("id") or uuid.uuid4().hex[:12]), "kind": kind, "name": name}
             if kind == "dir":
+                icon = str(item.get("icon") or "").strip()
+                if icon and not re.fullmatch(r"[0-9a-f]{6,32}", icon):
+                    raise ValueError(f"「{name}」的图标编号不对")
+                if icon:
+                    node["icon"] = icon   # 图标库里的图标 id：建目录时顺便套上（图标页只管图标本身）
                 node["children"] = clean(item.get("children") or [], depth + 1)
             else:
                 source = str(item.get("source") or "").strip()
@@ -148,10 +153,24 @@ def _clean_tree(raw, label: str) -> list:
     return clean(raw, 1)
 
 
+def _icon_ids() -> set[str] | None:
+    try:
+        from core import icon_library
+        return {icon["id"] for icon in icon_library.listing()["icons"]}
+    except Exception:  # noqa: BLE001 — 图标库读不了时不提醒图标问题
+        return None
+
+
 def _source_warnings(nodes: list) -> list[dict]:
     warnings = []
+    icons = None
     for node, _ in _walk(nodes):
-        if node["kind"] != "file":
+        if node["kind"] == "dir":
+            if node.get("icon"):
+                if icons is None:
+                    icons = _icon_ids() or set()
+                if icons and node["icon"] not in icons:
+                    warnings.append({"id": node["id"], "name": node["name"], "reason": f"「{node['name']}」的图标已不在图标库里，建目录时会用默认图标"})
             continue
         source = node.get("source") or ""
         if not source:
@@ -263,6 +282,26 @@ def parse_overrides(payload: dict) -> dict:
     return {"exclude": set(exclude), "rename": cleaned}
 
 
+def _apply_icons(icon_dirs: dict[str, list[tuple[str, Path]]], problems: list[dict]) -> int:
+    """模板里指定了图标的目录，建好后顺便套上；套不上只记问题。"""
+    if not icon_dirs:
+        return 0
+    from core import icon_library
+    done = 0
+    for icon_id, entries in icon_dirs.items():
+        try:
+            results = icon_library.apply(icon_id, [str(target) for _, target in entries])["results"]
+        except (OSError, ValueError) as err:
+            problems.extend({"path": path, "reason": f"套图标失败：{err}"} for path, _ in entries)
+            continue
+        for (path, _), res in zip(entries, results):
+            if res.get("ok"):
+                done += 1
+            else:
+                problems.append({"path": path, "reason": f"套图标失败：{res.get('error')}"})
+    return done
+
+
 def materialize(template_id: str, folder: Path, overrides: dict | None = None) -> dict:
     """在 Ticket 文件夹下按模板建目录、复制来源文件。问题只记清单，不中断其余部分。"""
     template_id = _check_id(template_id)
@@ -274,6 +313,7 @@ def materialize(template_id: str, folder: Path, overrides: dict | None = None) -
     dirs = files = 0
     problems: list[dict] = []
     items: list[dict] = []
+    icon_dirs: dict[str, list[tuple[str, Path]]] = {}
 
     def build(nodes: list, parent: Path, rel: str):
         nonlocal dirs, files
@@ -291,6 +331,8 @@ def materialize(template_id: str, folder: Path, overrides: dict | None = None) -
                     continue
                 dirs += 1
                 items.append({"kind": "dir", "path": path})
+                if node.get("icon"):
+                    icon_dirs.setdefault(node["icon"], []).append((path, target))
                 build(node["children"], target, path)
             else:
                 source = node.get("source") or ""
@@ -309,7 +351,8 @@ def materialize(template_id: str, folder: Path, overrides: dict | None = None) -
                 items.append({"kind": "file", "path": path})
 
     build(tree, folder, "")
-    result = {"template": template.get("name"), "dirs": dirs, "files": files,
+    icons = _apply_icons(icon_dirs, problems)
+    result = {"template": template.get("name"), "dirs": dirs, "files": files, "icons": icons,
               "problems": problems, "items": items}
-    _log("按模板组建", 模板=template.get("name"), 目录=dirs, 文件=files, 问题=len(problems), 文件夹=folder)
+    _log("按模板组建", 模板=template.get("name"), 目录=dirs, 文件=files, 图标=icons, 问题=len(problems), 文件夹=folder)
     return result

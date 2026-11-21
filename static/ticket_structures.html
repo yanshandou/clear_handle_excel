@@ -32,6 +32,20 @@
     .ts-node { padding: 3px 0; }
     .ts-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
     .ts-kind { font-size: 15px; }
+    .ts-icon { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0; border: 2px dashed #b9add9; border-radius: 9px; background: #fff; cursor: pointer; font-size: 18px; line-height: 1; }
+    .ts-icon:hover, .ts-icon:focus-visible { border-style: solid; border-color: #5b3cc4; background: #f4f0ff; }
+    .ts-icon img { width: 26px; height: 26px; object-fit: contain; }
+    .ts-icon.is-missing { border-color: #d97706; background: #fffbeb; }
+    .ts-icon-pop { position: fixed; z-index: 1000; width: min(440px, calc(100vw - 16px)); max-height: 360px; overflow: auto; padding: 10px; border: 2.5px solid #5b3cc4; border-radius: 14px; background: #fff; box-shadow: 0 10px 30px rgba(30, 16, 80, .28); }
+    .ts-icon-pop-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; }
+    .ts-icon-pop-head b { flex: 1; min-width: 0; color: #2e1f66; overflow-wrap: anywhere; }
+    .ts-icon-pop-head a { color: #3b2a8f; font-weight: 700; white-space: nowrap; }
+    .ts-icon-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 6px; }
+    .ts-icon-opt { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 0; padding: 6px 4px; border: 2px solid #ddd6f3; border-radius: 10px; background: #fff; cursor: pointer; font: inherit; font-size: 11.5px; font-weight: 700; color: #1f2937; }
+    .ts-icon-opt:hover, .ts-icon-opt:focus-visible { border-color: #8f7ad8; background: #f7f4ff; }
+    .ts-icon-opt.is-on { border-color: #5b3cc4; background: #efe9ff; box-shadow: 0 0 0 1px #5b3cc4 inset; }
+    .ts-icon-opt img, .ts-icon-default { width: 36px; height: 36px; object-fit: contain; font-size: 28px; line-height: 36px; text-align: center; }
+    .ts-icon-opt span:last-child { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .ts-row input[type=text] { box-sizing: border-box; min-width: 0; }
     .ts-name { width: 200px; font-weight: 700; }
     .ts-source { flex: 1; min-width: 220px; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
@@ -52,7 +66,7 @@
 </head>
 <body>
   <header class="app-header">
-    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">目录结构模板</h1><span class="subtitle">Ticket 文件夹 · 多套目录树 · 文件从指定来源复制</span></div></a>
+    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">目录结构模板</h1><span class="subtitle">Ticket 文件夹 · 多套目录树 · 目录可带图标 · 文件从指定来源复制</span></div></a>
     <nav class="header-nav" aria-label="功能导航"><a href="/ticket" class="nav-link">🎫 船票</a><a href="/" class="nav-link"><span class="ui-icon harbor-icon icon-home" aria-hidden="true"></span>主页</a></nav>
   </header>
   <main class="container clean-container">
@@ -65,6 +79,7 @@
             <h3>🗂️ 模板与目录树</h3>
             <ul>
               <li>可以建多套模板（比如「基本設計」「詳細設計」各一套），模板可以改名、删除。</li>
+              <li>每个目录前面的 📁 可以点开挑一个图标库里的图标，出票建这个目录时顺便套上（图标本身在「设置图标」页上传、分类、管理）。</li>
               <li>目录树里加目录、加文件；文件要填一个<b>来源路径</b>（本机或共享盘上的完整路径），出票时把那个文件复制过来。</li>
               <li>编辑完点「保存」才写进模板库；来源文件不存在的会标黄提醒，但不拦保存（共享盘可能暂时没连上）。</li>
             </ul>
@@ -106,6 +121,6 @@
     <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
   </main>
   <script src="/static/dialog.js"></script>
-  <script src="/static/ticket_structures.js?v=1"></script><script src="/static/debug_log.js"></script>
+  <script src="/static/ticket_structures.js?v=2"></script><script src="/static/debug_log.js"></script>
 </body>
 </html>

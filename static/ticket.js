@@ -170,6 +170,7 @@
   const manual = new Set();
   let lastFolder = '';
   let structureTemplates = [];
+  let libraryIcons = [];   // 图标库：模板目录带的图标在预览里显示出来
   const structureExclude = new Set();
   const structureRename = new Map();
 
@@ -209,11 +210,13 @@
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.error);
       const selected = iconGrid.querySelector('input:checked').value;
+      libraryIcons = data.icons || [];
       const options = data.icons.map(makeIconOption);
       iconGrid.replaceChildren(defaultIcon.closest('label'), ...options);
       const selectedRadio = [...iconGrid.querySelectorAll('input')].find(radio => radio.value === selected);
       (selectedRadio || defaultIcon).checked = true;
       const selectionRemoved = !selectedRadio;
+      renderStructurePreview();
       iconStatus.textContent = selectionRemoved ? '原先选择的图标已从图标库移除。'
         : options.length ? '' : '图标库为空，可先到图标库添加图标。';
     } catch {
@@ -254,8 +257,18 @@
         });
         const kind = document.createElement('span');
         kind.className = 'ticket-structure-kind';
-        kind.textContent = node.kind === 'dir' ? '📁' : '📄';
-        kind.setAttribute('aria-hidden', 'true');
+        const dirIcon = node.kind === 'dir' && node.icon ? libraryIcons.find(i => i.id === node.icon) : null;
+        if (dirIcon) {
+          const img = document.createElement('img');
+          img.className = 'ticket-structure-icon';
+          img.alt = '';
+          img.src = `/api/icons/file?${new URLSearchParams({ id: dirIcon.id, kind: 'png', v: dirIcon.version })}`;
+          kind.title = `建好后套上图标：${dirIcon.name}`;
+          kind.append(img);
+        } else {
+          kind.textContent = node.kind === 'dir' ? '📁' : '📄';
+          kind.setAttribute('aria-hidden', 'true');
+        }
         const name = document.createElement('input');
         name.type = 'text';
         name.className = 'ticket-structure-name';
@@ -799,7 +812,7 @@
         iconWarning.textContent = '传票已保存，服务未确认应用图标。请重启工具服务后保留当前票面和图标，再点一次「确认创建」。';
       }
       if (ticket.structure) {
-        structureApplied.textContent = `已按「${ticket.structure.template}」组建目录结构：${ticket.structure.dirs} 个目录、复制 ${ticket.structure.files} 个文件。`;
+        structureApplied.textContent = `已按「${ticket.structure.template}」组建目录结构：${ticket.structure.dirs} 个目录、复制 ${ticket.structure.files} 个文件${ticket.structure.icons ? `、给 ${ticket.structure.icons} 个目录套了图标` : ''}。`;
         structureApplied.hidden = false;
         for (const problem of ticket.structure.problems || []) {
           const li = document.createElement('li');

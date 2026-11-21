@@ -14,6 +14,8 @@
   let tree = [];
   let dirty = false;
   let warnings = new Map();
+  let icons = [];            // 图标库（只读）：目录节点挑图标用，管理图标去「设置图标」页
+  let iconPop = null;
 
   const newId = () => crypto.randomUUID().replace(/-/g, '').slice(0, 12);
   const current = () => templates.find(t => t.id === currentId);
@@ -67,7 +69,7 @@
       if (warnCount) {
         const badge = document.createElement('span');
         badge.className = 'ts-warn-badge';
-        badge.textContent = `${warnCount} 来源问题`;
+        badge.textContent = `${warnCount} 个问题`;
         button.append(badge);
       }
       button.addEventListener('click', () => selectTemplate(template.id));
@@ -105,6 +107,110 @@
     setStatus('');
   }
 
+  // ---------------------------------------------------------------- 目录图标
+
+  const iconById = id => icons.find(i => i.id === id);
+  const iconUrl = icon => `/api/icons/file?${new URLSearchParams({ id: icon.id, kind: 'png', v: icon.version })}`;
+
+  async function loadIcons() {
+    try {
+      icons = (await api('/api/icons')).icons || [];
+    } catch {
+      icons = [];
+    }
+  }
+
+  function closeIconPop() {
+    if (!iconPop) return;
+    iconPop.remove();
+    iconPop = null;
+  }
+
+  function iconButton(node) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'ts-icon';
+    const icon = node.icon ? iconById(node.icon) : null;
+    if (icon) {
+      const img = document.createElement('img');
+      img.src = iconUrl(icon);
+      img.alt = '';
+      button.append(img);
+      button.title = `文件夹图标：${icon.name}（点了换）`;
+    } else {
+      button.textContent = '📁';
+      button.title = node.icon ? '这个图标已不在图标库里，建目录时用默认图标（点了重新挑）' : '默认文件夹图标（点了挑一个图标，建目录时顺便套上）';
+      if (node.icon) button.classList.add('is-missing');
+    }
+    button.setAttribute('aria-label', `${node.name} 的文件夹图标`);
+    button.addEventListener('click', event => { event.stopPropagation(); openIconPop(button, node); });
+    return button;
+  }
+
+  function openIconPop(anchor, node) {
+    closeIconPop();
+    const pop = document.createElement('div');
+    pop.className = 'ts-icon-pop';
+    pop.setAttribute('role', 'dialog');
+    pop.setAttribute('aria-label', `给「${node.name}」挑图标`);
+    const head = document.createElement('div');
+    head.className = 'ts-icon-pop-head';
+    head.innerHTML = `<b></b><a href="/set-icons" target="_blank" rel="noopener">去图标库加图标</a>`;
+    head.querySelector('b').textContent = `「${node.name}」用哪个图标`;
+    const grid = document.createElement('div');
+    grid.className = 'ts-icon-grid';
+    const pick = id => {
+      if (id) node.icon = id; else delete node.icon;
+      markDirty();
+      closeIconPop();
+      renderEditor();
+    };
+    const option = (label, icon) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `ts-icon-opt${(node.icon || '') === (icon?.id || '') ? ' is-on' : ''}`;
+      btn.title = icon ? (icon.category ? `${icon.name}（${icon.category}）` : icon.name) : '不套图标，用 Windows 默认文件夹图标';
+      if (icon) {
+        const img = document.createElement('img');
+        img.src = iconUrl(icon);
+        img.alt = '';
+        img.loading = 'lazy';
+        btn.append(img);
+      } else {
+        const glyph = document.createElement('span');
+        glyph.className = 'ts-icon-default';
+        glyph.textContent = '📁';
+        btn.append(glyph);
+      }
+      const name = document.createElement('span');
+      name.textContent = label;
+      btn.append(name);
+      btn.addEventListener('click', () => pick(icon?.id || ''));
+      return btn;
+    };
+    grid.append(option('默认图标', null), ...icons.map(icon => option(icon.name, icon)));
+    pop.append(head, grid);
+    if (!icons.length) {
+      const empty = document.createElement('p');
+      empty.className = 'ts-hint';
+      empty.textContent = '图标库还是空的：先到「设置图标」页拖进 PNG。';
+      pop.append(empty);
+    }
+    document.body.append(pop);
+    const rect = anchor.getBoundingClientRect();
+    const width = pop.offsetWidth;
+    pop.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
+    const below = rect.bottom + 6;
+    pop.style.top = `${below + pop.offsetHeight > window.innerHeight - 8 ? Math.max(8, rect.top - pop.offsetHeight - 6) : below}px`;
+    iconPop = pop;
+    (pop.querySelector('.ts-icon-opt.is-on') || pop.querySelector('.ts-icon-opt'))?.focus();
+  }
+
+  document.addEventListener('click', event => { if (iconPop && !iconPop.contains(event.target)) closeIconPop(); });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') closeIconPop(); });
+  window.addEventListener('scroll', closeIconPop, true);
+  window.addEventListener('resize', closeIconPop);
+
   // ---------------------------------------------------------------- 树编辑
 
   function makeNode(kind) {
@@ -135,10 +241,15 @@
       item.dataset.nodeId = node.id;
       const row = document.createElement('div');
       row.className = 'ts-row';
-      const kind = document.createElement('span');
-      kind.className = 'ts-kind';
-      kind.textContent = node.kind === 'dir' ? '📁' : '📄';
-      kind.setAttribute('aria-hidden', 'true');
+      let kind;
+      if (node.kind === 'dir') {
+        kind = iconButton(node);
+      } else {
+        kind = document.createElement('span');
+        kind.className = 'ts-kind';
+        kind.textContent = '📄';
+        kind.setAttribute('aria-hidden', 'true');
+      }
       const name = document.createElement('input');
       name.type = 'text';
       name.className = 'ts-name';
@@ -246,7 +357,7 @@
     editor.append(warnList);
     const hint = document.createElement('p');
     hint.className = 'ts-hint';
-    hint.textContent = '文件节点填来源完整路径，出票时复制过来；改完点「保存」。删除只影响模板，不会动已建好的 Ticket 文件夹。';
+    hint.textContent = '点目录前面的 📁 挑图标，建目录时顺便套上；文件节点填来源完整路径，出票时复制过来；改完点「保存」。删除只影响模板，不会动已建好的 Ticket 文件夹。';
     editor.append(hint);
   }
 
@@ -262,7 +373,7 @@
       dirty = false;
       renderList();
       renderEditor();
-      setStatus(data.warnings.length ? `已保存，但有 ${data.warnings.length} 个来源问题（见下方黄字）。` : '已保存。',
+      setStatus(data.warnings.length ? `已保存，但有 ${data.warnings.length} 个问题（见下方黄字）。` : '已保存。',
         data.warnings.length ? 'warn' : 'ok');
     } catch (err) {
       setStatus(err.message, 'bad');
@@ -318,5 +429,14 @@
     if (dirty) event.preventDefault();
   });
 
-  load().catch(err => setStatus(err.message || '模板库加载失败。', 'bad'));
+  // 从图标库页加完图标回来，重新读一遍图标
+  const iconKey = () => icons.map(i => `${i.id}:${i.version}:${i.name}`).join('|');
+  window.addEventListener('focus', async () => {
+    if (iconPop) return;
+    const before = iconKey();
+    await loadIcons();
+    if (iconKey() !== before && current()) renderEditor();
+  });
+
+  loadIcons().then(load).catch(err => setStatus(err.message || '模板库加载失败。', 'bad'));
 })();

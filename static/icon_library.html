@@ -74,41 +74,12 @@
     .ic-sec h3 { margin: 0; font-size: 15px; color: #2e1f66; }
     .ic-sec textarea { width: 100%; min-height: 5.2em; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
     .ic-sec select { flex: 1; min-width: 0; }
-    .ic-results { margin: 0; padding: 0; list-style: none; font-size: 13px; max-height: 9em; overflow: auto; }
-    .ic-results li { padding: 2px 0; overflow-wrap: anywhere; }
-    .ic-results .is-ok::before { content: "✓ "; color: #14633c; font-weight: 800; }
-    .ic-results .is-bad { color: #b42318; } .ic-results .is-bad::before { content: "! "; font-weight: 800; }
     .ic-folders { margin: 0; padding: 0; list-style: none; font-size: 12.5px; max-height: 8em; overflow: auto; }
     .ic-folders li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; padding: 2px 0; font-family: ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
     .ic-folders button { padding: 2px 8px; font-size: 12px; border: 1.5px solid #8a94a6; border-radius: 8px; background: #fff; cursor: pointer; }
     .ic-hint { font-size: 12.5px; color: #4b5563; font-weight: 600; margin: 0; }
 
     /* 批量指定：一行一个文件夹，各挑各的图标 */
-    .ib-source { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; align-items: stretch; }
-    .ib-source textarea { width: 100%; min-height: 74px; box-sizing: border-box; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
-    .ib-source-side { display: flex; flex-direction: column; gap: 8px; justify-content: center; }
-    .ib-source-side label { display: flex; flex-direction: column; gap: 3px; font-weight: 700; font-size: 13px; color: #1f2937; }
-    .ib-source-side input { width: 100%; box-sizing: border-box; }
-    .ib-rows { margin: 12px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow: auto; }
-    .ib-row { display: grid; grid-template-columns: 46px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 6px 8px; border: 2px solid #d4cfe6; border-radius: 12px; background: #fff; }
-    .ib-row.is-ok { border-color: #14633c; }
-    .ib-row.is-bad { border-color: #b42318; }
-    .ib-slot { width: 46px; height: 46px; padding: 3px; border: 2px dashed #8f7ad8; border-radius: 10px; background: #f6f3ff; cursor: pointer; display: grid; place-items: center; color: #5b3cc4; font-weight: 800; }
-    .ib-slot img { width: 100%; height: 100%; }
-    .ib-slot.is-set { border-style: solid; border-color: #5b3cc4; background: #fff; }
-    .ib-path { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; overflow-wrap: anywhere; }
-    .ib-note { display: block; font-size: 12px; font-weight: 700; color: #14633c; }
-    .ib-row.is-bad .ib-note { color: #b42318; }
-    .ib-drop-row { border: 0; background: none; color: #b42318; font-weight: 800; cursor: pointer; padding: 4px 6px; }
-    .ib-empty { padding: 16px 10px; text-align: center; color: #374151; font-weight: 700; }
-    .ib-foot { display: flex; align-items: center; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
-    .ib-foot .ic-status { margin: 0; flex: 1; min-width: 200px; }
-    .ib-picker { position: fixed; z-index: 60; display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; width: min(420px, 92vw); max-height: 320px; overflow: auto; padding: 10px; border: 2.5px solid #5b3cc4; border-radius: 14px; background: #fff; box-shadow: 0 10px 30px rgba(46, 31, 102, .25); }
-    .ib-picker[hidden] { display: none; }
-    .ib-pick { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 4px; border: 2px solid #d4cfe6; border-radius: 10px; background: #fff; cursor: pointer; font: inherit; }
-    .ib-pick:hover { border-color: #5b3cc4; background: #efe9ff; }
-    .ib-pick img { width: 44px; height: 44px; }
-    .ib-pick span { max-width: 100%; font-size: 11.5px; font-weight: 700; overflow-wrap: anywhere; line-height: 1.2; }
   </style>
   <link rel="stylesheet" href="/static/theme-casual.css">
   <script src="/static/tools.js?v=2"></script>
@@ -117,14 +88,14 @@
 </head>
 <body>
   <header class="app-header">
-    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">设置图标</h1><span class="subtitle">透明 PNG → Windows 图标 · 图标库 · 套到文件夹</span></div></a>
+    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">设置图标</h1><span class="subtitle">透明 PNG → Windows 图标 · 图标库管理</span></div></a>
     <nav class="header-nav" aria-label="功能导航"><a href="/" class="nav-link"><span class="ui-icon harbor-icon icon-home" aria-hidden="true"></span>主页</a></nav>
   </header>
   <main class="container clean-container">
     <section class="panel">
       <h2>加图标</h2>
       <details class="how-notes">
-        <summary>📖 程序会怎么做 <span class="how-notes-tip">PNG 生成多尺寸 .ico 存进图标库；套到文件夹 = 复制一份图标进去 + 写 desktop.ini</span><span class="how-notes-toggle"></span></summary>
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">PNG 生成多尺寸 .ico 存进图标库；这一页只管图标，套到文件夹在建目录时指定</span><span class="how-notes-toggle"></span></summary>
         <div class="how-notes-body">
           <section class="how-notes-group">
             <h3>🖼️ 生成图标</h3>
@@ -137,12 +108,11 @@
             </ul>
           </section>
           <section class="how-notes-group">
-            <h3>📁 套到 Windows 文件夹</h3>
+            <h3>📁 文件夹图标在哪里设</h3>
             <ul>
-              <li>把 .ico 复制进那个文件夹（隐藏文件），写 desktop.ini 的 IconResource，desktop.ini 设成隐藏 + 系统，文件夹设成只读（Windows 要这样才认），再通知资源管理器刷新。</li>
-              <li>desktop.ini 里原来的别的设置都留着，只改图标那一行。</li>
-              <li>文件夹里是复制件：以后删掉图标库里的图标，文件夹的图标也不会坏。替换图标图片时，套过它的文件夹一起换成新图。</li>
-              <li>「批量指定文件夹图标」面板可以一次排多个文件夹（粘贴路径或列父目录的子文件夹），每行各挑一个图标，一起应用。</li>
+              <li>这一页只管图标本身：上传、分类、改名、替换、删除。</li>
+              <li>给文件夹指定图标，在建文件夹的地方顺便选：<a href="/ticket-structures">目录结构模板</a>里每个目录可以挑图标，<a href="/ticket">船票</a>页建 Ticket 文件夹时也能选。</li>
+              <li>套上去的是复制件：以后删掉图标库里的图标，文件夹的图标也不会坏。替换图标图片时，套过它的文件夹一起换成新图。</li>
               <li>资源管理器有图标缓存，看不到变化时按 F5 或过一会再看。</li>
             </ul>
           </section>
@@ -197,32 +167,13 @@
           <p id="icBatchStatus" class="ic-batch-status" role="status" aria-live="polite"></p>
           <div id="icGrid" class="ic-grid"><p class="ic-empty">正在读图标库…</p></div>
         </div>
-        <aside id="icDetail" class="ic-detail" aria-live="polite"><p class="ic-detail-empty">点左边一个图标，在这里改名、分类、替换、删除，或套到文件夹。</p></aside>
+        <aside id="icDetail" class="ic-detail" aria-live="polite"><p class="ic-detail-empty">点左边一个图标，在这里改名、分类、替换、删除。</p></aside>
       </div>
       <datalist id="icCategoryList"></datalist>
-    </section>
-    <section class="panel">
-      <h2>批量指定文件夹图标 <small>每个文件夹挑自己的图标</small></h2>
-      <div class="ib-source">
-        <textarea id="ibPaths" rows="3" spellcheck="false" placeholder="每行一个文件夹路径，可以直接粘贴「复制为路径」带引号的"></textarea>
-        <div class="ib-source-side">
-          <button id="ibFromPaths" class="btn" type="button">📋 从路径生成列表</button>
-          <label for="ibParent">父目录（列它的第一层子文件夹）<input id="ibParent" type="text" placeholder="例如 C:\Users\你\Desktop" autocomplete="off"></label>
-          <button id="ibListSub" class="btn" type="button">📂 列出子文件夹</button>
-          <button id="ibClear" class="btn" type="button">清空列表</button>
-        </div>
-      </div>
-      <p class="ic-hint">点行左边的图标槽，在弹出的网格里挑图标；没挑图标的行应用时跳过。子文件夹列表会带上文件夹现在用的图标。</p>
-      <ul id="ibRows" class="ib-rows"></ul>
-      <div class="ib-foot">
-        <button id="ibApply" class="btn btn-primary" type="button">应用到文件夹</button>
-        <p id="ibStatus" class="ic-status" role="status" aria-live="polite"></p>
-      </div>
-      <div id="ibPicker" class="ib-picker" hidden role="dialog" aria-label="挑一个图标"></div>
     </section>
     <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
   </main>
   <script src="/static/dialog.js"></script>
-  <script src="/static/icon_library.js?v=4"></script><script src="/static/debug_log.js"></script>
+  <script src="/static/icon_library.js?v=5"></script><script src="/static/debug_log.js"></script>
 </body>
 </html>

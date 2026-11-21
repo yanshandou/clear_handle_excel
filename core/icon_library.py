@@ -517,6 +517,7 @@ def open_library() -> dict:
 
 
 # ---------------------------------------------------------------- 套到 Windows 文件夹
+# 只给用到图标的地方调用（目录结构模板 / 船票建文件夹时），图标页本身不再套文件夹。
 
 def parse_folders(value) -> list[str]:
     if isinstance(value, list):
@@ -760,12 +761,3 @@ def restore(folders) -> dict:
             results.append({"folder": text, "ok": False, "error": str(err)})
         _log("恢复默认图标", 文件夹=text, 结果="成功" if results[-1]["ok"] else results[-1]["error"])
     return {"results": results, "ok_count": sum(1 for r in results if r["ok"])}
-
-
-def subfolders(parent) -> dict:
-    """父目录的第一层子文件夹，供批量指定图标逐行挑选；顺带带上每个文件夹现在用的图标"""
-    text = str(parent or "").strip().strip('"').strip("'").strip()
-    folder = _check_folder(text)
-    entries = sorted((p for p in folder.iterdir() if p.is_dir()), key=lambda p: p.name.lower())
-    rows = [{"path": str(p), "icon_id": _folder_icon_id(p)} for p in entries[:200]]
-    return {"dir": str(folder), "folders": rows, "total": len(entries)}
