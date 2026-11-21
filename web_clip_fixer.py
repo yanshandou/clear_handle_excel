@@ -1365,15 +1365,27 @@ def _line_buffered_console() -> None:
 
 def main() -> None:
     _line_buffered_console()
-    from core import operation_history
-    operation_history.interrupt_running()
     debug_log.install()
     port = 8765
+    try:
+        # Windows 上普通 ThreadingHTTPServer 允许第二个程序绑同一个端口，旧程序没关时网页请求可能还落到旧程序上
+        # （网页文件是新的、后台代码是旧的）。改成独占端口；先占端口再做别的，免得把旧程序正在跑的任务标成中断。
+        server = upload_manager.LocalHTTPServer(("127.0.0.1", port), WebHandler)
+    except OSError as err:
+        debug_log.event("🚫 端口被占用，没有启动", 端口=port, 原因=err)
+        console_print(f"❌ 端口 {port} 已经被占用：多半是之前开的程序还没关。请先关掉旧的黑色窗口（或在任务管理器里结束 python），再重新启动。")
+        console_print(f"   详细原因：{err}")
+        try:
+            input("按回车键退出...")
+        except EOFError:
+            pass
+        return
+    from core import operation_history
+    operation_history.interrupt_running()
     try:
         resync_report_from_state()
     except Exception:
         logging.exception("启动时刷新执行记录失败")
-    server = ThreadingHTTPServer(("127.0.0.1", port), WebHandler)
     url = f"http://127.0.0.1:{port}"
     console_print(f"🚀 Web 界面已启动: {url}")
     from core.data_dir import DATA_DIR
