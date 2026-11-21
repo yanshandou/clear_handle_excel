@@ -9,9 +9,9 @@
   <link rel="stylesheet" href="/static/theme.css">
   <link rel="stylesheet" href="/static/theme-casual.css">
   <link rel="stylesheet" href="/static/theme-cartoon.css">
-  <link rel="stylesheet" href="/static/ticket.css?v=11">
+  <link rel="stylesheet" href="/static/ticket.css?v=13">
   <script defer src="/static/tools.js?v=5"></script>
-  <script defer src="/static/ticket.js?v=13"></script>
+  <script defer src="/static/ticket.js?v=18"></script>
 </head>
 <body class="ticket-body">
   <header class="app-header">
@@ -219,6 +219,24 @@
             <div class="created-stamp" id="createdStamp" aria-hidden="true"><span>已出票 · CREATED</span></div>
           </div>
 
+          <fieldset class="ticket-icon" id="ticketIcon" aria-describedby="ticketIconStatus">
+            <legend>文件夹图标 <small>可选</small></legend>
+            <div class="ticket-icon-grid" id="ticketIconGrid">
+              <label class="ticket-icon-option">
+                <input type="radio" name="icon_id" value="" checked>
+                <span class="ticket-icon-tile">
+                  <svg class="ticket-icon-thumb ticket-icon-default" aria-hidden="true"><use href="/static/icons/garden-ui.svg#folder"></use></svg>
+                  <span class="ticket-icon-name">默认图标</span>
+                </span>
+              </label>
+            </div>
+            <div class="ticket-icon-library">
+              <a href="/set-icons" target="_blank" rel="noopener">打开图标库</a>
+              <button type="button" class="btn btn-outline btn-sm" id="ticketIconRefresh">刷新图标</button>
+              <p class="ticket-note" id="ticketIconStatus" role="status"></p>
+            </div>
+          </fieldset>
+
           <div class="pass-actions">
             <button type="submit" class="btn btn-primary btn-lg" id="ticketCreate">确认创建 · 出票</button>
             <button type="reset" class="btn btn-outline" id="ticketReset">清空表单</button>
@@ -228,10 +246,14 @@
           <div class="ticket-success" id="ticketSuccess" hidden>
             <strong>出票成功，文件夹已放在桌面。</strong>
             <code id="successFolder"></code>
+            <p class="ticket-note" id="ticketIconApplied" hidden>已应用所选文件夹图标。</p>
+            <p class="ticket-icon-warning" id="ticketIconWarning" role="status"></p>
             <div class="success-actions">
               <button type="button" class="btn btn-success btn-sm" id="openFolderBtn">打开文件夹</button>
               <button type="button" class="btn btn-outline btn-sm" id="againBtn">再建一张</button>
             </div>
+            <p class="ticket-note" id="ticketOpenStatus" role="status"></p>
+            <p class="ticket-error" id="ticketOpenError" role="alert"></p>
           </div>
           <p class="ticket-error" id="ticketError" role="alert"></p>
         </section>

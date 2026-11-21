@@ -1,9 +1,12 @@
+import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core import ticket
+from core import icon_library, ticket
+from core.pdf_detector import fitz
 
 
 class TicketTests(unittest.TestCase):
@@ -14,6 +17,16 @@ class TicketTests(unittest.TestCase):
         desktop_lookup = patch.object(ticket, "_desktop", return_value=self.desktop)
         desktop_lookup.start()
         self.addCleanup(desktop_lookup.stop)
+
+    def add_icon(self):
+        library = tempfile.TemporaryDirectory()
+        self.addCleanup(library.cleanup)
+        library_path = patch.object(icon_library, "LIB_DIR", Path(library.name))
+        library_path.start()
+        self.addCleanup(library_path.stop)
+        image = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 8, 8), 0)
+        image.clear_with(120)
+        return icon_library.add("传票.png", image.tobytes("png"))["icon"]
 
     def test_saves_confirmed_fields_as_readable_text(self):
         task = ticket.create({
@@ -48,6 +61,50 @@ class TicketTests(unittest.TestCase):
         with patch.object(Path, "open", side_effect=OSError("disk error")), self.assertRaises(OSError):
             ticket.create({"title": "Task"})
         self.assertEqual(list(self.desktop.iterdir()), [])
+
+    def test_applies_library_icon_to_the_ticket_folder(self):
+        icon = self.add_icon()
+        fields = {"title": "Task", "icon_id": icon["id"]}
+        saved = ticket.create(fields)
+        self.assertEqual(saved["icon_id"], icon["id"])
+        folder = Path(saved["folder"])
+        icon_copy = folder / f"{icon_library.ICON_PREFIX}{icon['id']}_{icon['version']}.ico"
+        ini = folder / "desktop.ini"
+        self.assertEqual(icon_copy.read_bytes(), icon_library.icon_file(icon["id"], "ico")[0])
+        self.assertIn(f"IconResource={icon_copy.name},0", ini.read_text())
+        self.assertNotIn("icon_id", (folder / "Ticket.txt").read_text(encoding="utf-8-sig"))
+        self.assertEqual(ticket.create(fields), saved)
+        self.assertEqual(icon_library.listing()["icons"][0]["folders"], [str(folder)])
+        if sys.platform == "win32":
+            hidden_system = stat.FILE_ATTRIBUTE_HIDDEN | stat.FILE_ATTRIBUTE_SYSTEM
+            for file in (ini, icon_copy):
+                self.assertEqual(file.stat().st_file_attributes & hidden_system, hidden_system)
+            self.assertTrue(folder.stat().st_file_attributes & (stat.FILE_ATTRIBUTE_READONLY | stat.FILE_ATTRIBUTE_SYSTEM))
+
+    def test_rejects_an_invalid_icon_before_creating_the_folder(self):
+        with self.assertRaisesRegex(ValueError, "图标编号"):
+            ticket.create({"title": "Task", "icon_id": "../icon.ico"})
+        self.assertEqual(list(self.desktop.iterdir()), [])
+
+    def test_reports_icon_failure_and_can_retry_without_duplicating_the_ticket(self):
+        icon = self.add_icon()
+        fields = {"title": "Task", "icon_id": icon["id"]}
+        with patch.object(icon_library, "_apply_one", side_effect=OSError("icon write failed")):
+            saved = ticket.create(fields)
+        self.assertEqual(saved["icon_error"], "icon write failed")
+        self.assertNotIn("icon_id", saved)
+        self.assertTrue((Path(saved["folder"]) / "Ticket.txt").is_file())
+        retried = ticket.create(fields)
+        self.assertNotIn("icon_error", retried)
+        self.assertEqual(retried["folder"], saved["folder"])
+        self.assertEqual(len(list(self.desktop.iterdir())), 1)
+
+    def test_open_reports_when_explorer_is_opened_without_foreground_focus(self):
+        folder = Path(ticket.create({"title": "Task"})["folder"])
+        with patch("os.startfile", create=True) as launch, patch.object(ticket, "_show_explorer_folder", return_value=False) as show:
+            self.assertEqual(ticket.open_folder({"folder": str(folder)}), {"foreground": False})
+        launch.assert_called_once_with(folder)
+        show.assert_called_once_with(folder)
 
 
 if __name__ == "__main__":

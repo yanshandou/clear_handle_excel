@@ -142,16 +142,75 @@
   const barcode = document.getElementById('stubBarcode');
   const create = document.getElementById('ticketCreate');
   const reset = document.getElementById('ticketReset');
+  const iconField = document.getElementById('ticketIcon');
+  const iconGrid = document.getElementById('ticketIconGrid');
+  const defaultIcon = iconGrid.querySelector('input');
+  const iconRefresh = document.getElementById('ticketIconRefresh');
+  const iconStatus = document.getElementById('ticketIconStatus');
+  const iconApplied = document.getElementById('ticketIconApplied');
+  const iconWarning = document.getElementById('ticketIconWarning');
   const success = document.getElementById('ticketSuccess');
   const successFolder = document.getElementById('successFolder');
+  const openFolder = document.getElementById('openFolderBtn');
+  const openStatus = document.getElementById('ticketOpenStatus');
+  const openError = document.getElementById('ticketOpenError');
   const error = document.getElementById('ticketError');
-  const fields = [...form.querySelectorAll('input[name], textarea[name]')].filter(el => el !== source);
+  const fields = [...form.querySelectorAll('input[name], textarea[name]')].filter(el => el !== source && !iconField.contains(el));
   const byName = Object.fromEntries(fields.map(el => [el.name, el]));
   const manual = new Set();
   let lastFolder = '';
 
   const wrapOf = el => el.closest('.pass-field, .pass-title, .stub-progress');
   const tagOf = el => wrapOf(el)?.querySelector('.auto-tag');
+
+  function makeIconOption(icon) {
+    const option = document.createElement('label');
+    option.className = 'ticket-icon-option';
+    option.title = icon.category ? `${icon.name}（${icon.category}）` : icon.name;
+
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'icon_id';
+    radio.value = icon.id;
+
+    const tile = document.createElement('span');
+    tile.className = 'ticket-icon-tile';
+    const thumb = document.createElement('img');
+    thumb.className = 'ticket-icon-thumb';
+    thumb.alt = '';
+    thumb.loading = 'lazy';
+    thumb.src = `/api/icons/file?${new URLSearchParams({ id: icon.id, kind: 'png', v: icon.version })}`;
+    const name = document.createElement('span');
+    name.className = 'ticket-icon-name';
+    name.textContent = icon.name;
+    tile.append(thumb, name);
+    option.append(radio, tile);
+    return option;
+  }
+
+  async function loadIcons() {
+    iconRefresh.disabled = true;
+    iconStatus.textContent = '正在加载图标…';
+    try {
+      const response = await fetch('/api/icons', { cache: 'no-store' });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error);
+      const selected = iconGrid.querySelector('input:checked').value;
+      const options = data.icons.map(makeIconOption);
+      iconGrid.replaceChildren(defaultIcon.closest('label'), ...options);
+      const selectedRadio = [...iconGrid.querySelectorAll('input')].find(radio => radio.value === selected);
+      (selectedRadio || defaultIcon).checked = true;
+      const selectionRemoved = !selectedRadio;
+      iconStatus.textContent = selectionRemoved ? '原先选择的图标已从图标库移除。'
+        : options.length ? '' : '图标库为空，可先到图标库添加图标。';
+    } catch {
+      iconStatus.textContent = '图标库加载失败，可点击「刷新图标」重试。';
+    } finally {
+      iconRefresh.disabled = false;
+    }
+  }
+
+  iconRefresh.addEventListener('click', loadIcons);
 
   boardTicks.innerHTML = CHIPS.map(() => '<i></i>').join('');
   const ticks = [...boardTicks.children];
@@ -254,7 +313,7 @@
 
   form.addEventListener('input', event => {
     const el = event.target;
-    if (!el.name || el === source) return;
+    if (!Object.hasOwn(byName, el.name)) return;
     manual.add(el.name);
     setTag(el, el.value.trim() ? 'manual' : '');
     if (el.name === 'assignee') updateAssigneeShort();
@@ -572,17 +631,24 @@
   window.addEventListener('scroll', queuePlace, true);
   window.addEventListener('resize', queuePlace);
 
-  document.getElementById('openFolderBtn').addEventListener('click', async () => {
-    if (!lastFolder) return;
-    error.textContent = '';
+  openFolder.addEventListener('click', async () => {
+    if (!lastFolder || openFolder.disabled) return;
+    openFolder.disabled = true;
+    openStatus.textContent = '';
+    openError.textContent = '';
     try {
       const response = await fetch('/api/ticket/open', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: lastFolder }),
       });
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.error || '打开文件夹失败。');
+      if (data.foreground === false) {
+        openStatus.textContent = '已请求打开文件夹。若窗口仍在后台，请从任务栏切换到资源管理器。';
+      }
     } catch (err) {
-      error.textContent = err.message || '打开文件夹失败。';
+      openError.textContent = err.message || '打开文件夹失败。';
+    } finally {
+      openFolder.disabled = false;
     }
   });
 
@@ -591,12 +657,15 @@
     if (create.disabled) return;
     const values = Object.fromEntries(new FormData(form));
     for (const key of Object.keys(values)) values[key] = values[key].replace(/[\t\r\n]+/g, ' ').trim();
-    create.disabled = reset.disabled = source.disabled = true;
+    if (!values.icon_id) delete values.icon_id;
+    create.disabled = reset.disabled = source.disabled = iconField.disabled = true;
     for (const el of fields) el.disabled = true;
     dateTriggers.forEach(btn => { btn.disabled = true; });
     hoursButtons.forEach(btn => { btn.disabled = true; });
     closeDatePop();
     error.textContent = '';
+    openStatus.textContent = '';
+    openError.textContent = '';
     success.hidden = true;
     pass.classList.remove('is-created');
     try {
@@ -607,6 +676,14 @@
       if (!response.ok || !ticket.ok) throw new Error(ticket.error || '创建失败，请重试。');
       lastFolder = ticket.folder;
       successFolder.textContent = ticket.folder;
+      const applied = Boolean(values.icon_id && ticket.icon_id === values.icon_id);
+      iconApplied.hidden = !applied;
+      iconWarning.textContent = '';
+      if (ticket.icon_error) {
+        iconWarning.textContent = `文件夹图标设置失败。${ticket.icon_error}`;
+      } else if (values.icon_id && !applied) {
+        iconWarning.textContent = '传票已保存，服务未确认应用图标。请重启工具服务后保留当前票面和图标，再点一次「确认创建」。';
+      }
       success.hidden = false;
       void pass.offsetWidth;
       pass.classList.add('is-created');
@@ -614,7 +691,7 @@
     } catch (err) {
       error.textContent = err.message || '创建失败，请重试。';
     } finally {
-      create.disabled = reset.disabled = source.disabled = false;
+      create.disabled = reset.disabled = source.disabled = iconField.disabled = false;
       for (const el of fields) el.disabled = false;
       dateTriggers.forEach(btn => { btn.disabled = false; });
       hoursButtons.forEach(btn => { btn.disabled = false; });
@@ -622,4 +699,5 @@
   });
 
   drawLive();
+  loadIcons();
 })();

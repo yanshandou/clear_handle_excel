@@ -3,6 +3,7 @@ import re
 import stat
 import sys
 import unicodedata
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -106,6 +107,30 @@ def console_print(text: str) -> None:
     except UnicodeEncodeError:
         encoding = getattr(sys.stdout, "encoding", None) or "ascii"
         print(text.encode(encoding, errors="backslashreplace").decode(encoding))
+
+
+def bring_window_to_front(hwnd: int) -> bool:
+    if sys.platform != "win32":
+        return False
+
+    import pywintypes
+    import win32api
+    import win32con
+    import win32gui
+
+    if win32gui.IsIconic(hwnd) or not win32gui.IsWindowVisible(hwnd):
+        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+    if win32gui.GetForegroundWindow() == hwnd:
+        return True
+    with suppress(pywintypes.error):
+        win32gui.SetForegroundWindow(hwnd)
+    if win32gui.GetForegroundWindow() != hwnd:
+        # 从浏览器点开时，先用 Alt 解除 Windows 的前台窗口限制。
+        win32api.keybd_event(win32con.VK_MENU, 0, 0, 0)
+        win32api.keybd_event(win32con.VK_MENU, 0, win32con.KEYEVENTF_KEYUP, 0)
+        with suppress(pywintypes.error):
+            win32gui.SetForegroundWindow(hwnd)
+    return win32gui.GetForegroundWindow() == hwnd
 
 
 def _is_valid_date(text: str) -> bool:

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from contextlib import suppress
 from itertools import count
 from pathlib import Path
 
-from core.common import sanitize_filename
+from core import icon_library
+from core.common import bring_window_to_front, sanitize_filename
 
 DETAILS = {
     "title": "任务标题",
@@ -65,6 +67,9 @@ def create(payload: dict) -> dict[str, str]:
     if number and not re.fullmatch(r"#?\s*[0-9]{1,20}", number):
         raise ValueError("任务编号请填写为 1 到 20 位数字")
     number = number.removeprefix("#").strip()
+    icon_id = _field(payload, "icon_id", "文件夹图标")
+    if icon_id:
+        icon_library.icon_file(icon_id, "ico")
 
     heading = f"Ticket #{number}" if number else "Ticket"
     lines = [heading, ""]
@@ -98,10 +103,42 @@ def create(payload: dict) -> dict[str, str]:
                 raise
             break
 
-    return {"folder": str(folder), "filename": INFO_FILE}
+        result = {"folder": str(folder), "filename": INFO_FILE}
+        if icon_id:
+            try:
+                [applied] = icon_library.apply(icon_id, [str(folder)])["results"]
+                if applied["ok"]:
+                    result["icon_id"] = icon_id
+                else:
+                    result["icon_error"] = applied["error"]
+            except (OSError, ValueError) as err:
+                result["icon_error"] = str(err)
+        return result
 
 
-def open_folder(payload: dict) -> dict:
+def _show_explorer_folder(folder: Path) -> bool:
+    import pythoncom
+    import pywintypes
+    from win32com.client import Dispatch
+
+    pythoncom.CoInitialize()
+    try:
+        shell = Dispatch("Shell.Application")
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            for window in shell.Windows():
+                with suppress(AttributeError, pywintypes.com_error, pywintypes.error):
+                    if Path(window.Document.Folder.Self.Path) == folder:
+                        return bring_window_to_front(int(window.HWND))
+            time.sleep(0.05)
+    except (pywintypes.com_error, pywintypes.error):
+        pass
+    finally:
+        pythoncom.CoUninitialize()
+    return False
+
+
+def open_folder(payload: dict) -> dict[str, bool]:
     import os
 
     target = payload.get("folder", "")
@@ -114,4 +151,4 @@ def open_folder(payload: dict) -> dict:
     if not folder.is_dir():
         raise ValueError("文件夹不存在，可能已被移动或删除")
     os.startfile(folder)
-    return {}
+    return {"foreground": _show_explorer_folder(folder)}

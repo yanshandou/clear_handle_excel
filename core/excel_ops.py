@@ -15,6 +15,7 @@ from core.common import (
     XL_PAGE_BREAK_PREVIEW,
     XL_SHEET_VISIBLE,
     XL_WORKSHEET,
+    bring_window_to_front,
     col_index_to_letters,
     find_backup_sheets,
     BLANK_MAX_CELLS,
@@ -113,19 +114,8 @@ def _find_or_open(excel: Any, workbook_path: Path) -> Any:
 
 def _bring_to_front(excel: Any) -> None:
     """把 Excel 窗口提到浏览器前面；系统不让抢前台时只在任务栏闪一下，不影响打开。"""
-    if sys.platform != "win32":
-        return
     try:
-        import ctypes
-
-        user32 = ctypes.WinDLL("user32")
-        hwnd = int(excel.Hwnd)
-        if user32.IsIconic(hwnd):
-            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-        # 先按一下 Alt，系统才允许后台进程把别的窗口切到前台
-        user32.keybd_event(0x12, 0, 0, 0)
-        user32.keybd_event(0x12, 0, 2, 0)  # KEYEVENTF_KEYUP
-        user32.SetForegroundWindow(hwnd)
+        bring_window_to_front(int(excel.Hwnd))
     except Exception:
         pass
 
