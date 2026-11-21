@@ -137,7 +137,7 @@ TBSNG0000_手書きサイン
   }
 
   function drawBarcode(seed) {
-    const text = seed || 'HARBOR AIR';
+    const text = seed || 'HARBOR LINE';
     const bars = [];
     for (let i = 0; i < 26; i++) {
       const code = text.charCodeAt(i % text.length);

@@ -1,6 +1,6 @@
 /* ==========================================
-   Ticket · 任务登机牌：海港值机柜台
-   左：扫描台（粘贴识别）；右：登机牌票面（可编辑表单）+ 出票反馈。
+   Ticket · 任务船票：海港售票柜台
+   左：扫描台（粘贴识别）；右：船票票面（可编辑表单）+ 出票反馈。
    沿用全站海岛玩具风（garden-shell 变量），只作用于 .ticket-body。
    ========================================== */
 .ticket-body {
@@ -33,7 +33,7 @@
   white-space: nowrap;
 }
 
-/* ---------- 值机柜台横幅 ---------- */
+/* ---------- 售票柜台横幅 ---------- */
 .ticket-masthead {
   position: relative;
   display: flex;
@@ -141,7 +141,7 @@
 .ticket-layout .panel { min-width: 0; margin: 0; }
 .scan-col { display: grid; gap: 16px; align-content: start; min-width: 0; }
 
-/* ---------- 值机三步小卡 ---------- */
+/* ---------- 出票三步小卡 ---------- */
 .checkin-guide {
   padding: 16px 18px 14px;
   border: 2.5px solid #ffffff;
@@ -314,7 +314,7 @@
 .scan-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 14px; }
 .scan-actions .ticket-note { margin: 0; flex: 1 1 100%; }
 
-/* ---------- 登机牌 ---------- */
+/* ---------- 船票 ---------- */
 .pass-wrap { min-width: 0; animation: ticket-rise 0.5s 0.16s ease both; }
 .pass-head-out { padding: 0 4px; }
 .boarding-pass {

@@ -3,23 +3,23 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Ticket · 任务登机牌 - 开发百宝箱</title>
+  <title>Ticket · 任务船票 - 开发百宝箱</title>
   <link rel="icon" type="image/png" href="/static/images/dev-toolbox-logo.png">
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/theme.css">
   <link rel="stylesheet" href="/static/theme-casual.css">
   <link rel="stylesheet" href="/static/theme-cartoon.css">
-  <link rel="stylesheet" href="/static/ticket.css?v=3">
+  <link rel="stylesheet" href="/static/ticket.css?v=4">
   <script defer src="/static/tools.js?v=5"></script>
-  <script defer src="/static/ticket.js?v=3"></script>
+  <script defer src="/static/ticket.js?v=4"></script>
 </head>
 <body class="ticket-body">
   <header class="app-header">
     <a href="/" class="header-brand">
       <div class="header-logo-badge" aria-hidden="true"></div>
       <div class="header-title">
-        <h1 class="header-title-text">Ticket · 任务登机牌</h1>
-        <span class="subtitle">海港值机柜台 · HARBOR CHECK-IN</span>
+        <h1 class="header-title-text">Ticket · 任务船票</h1>
+        <span class="subtitle">海港售票柜台 · HARBOR TICKETS</span>
       </div>
     </a>
     <nav class="header-nav" aria-label="功能导航">
@@ -29,10 +29,10 @@
   </header>
 
   <main class="container ticket-page">
-    <section class="ticket-masthead" aria-label="值机柜台">
+    <section class="ticket-masthead" aria-label="售票柜台">
       <div class="masthead-copy">
-        <span class="eyebrow">海港值机柜台 · CHECK-IN</span>
-        <h2>把任务文本，换成一张登机牌</h2>
+        <span class="eyebrow">海港售票柜台 · TICKETS</span>
+        <h2>把任务文本，换成一张船票</h2>
         <p>从 Redmine 任务页复制文本粘贴进来，自动识别填进票面；也可以直接手动填写。确认出票后，在 Windows 桌面创建任务文件夹。</p>
         <div class="depart-board" role="status" aria-live="polite">
           <span class="board-label">已识别</span>
@@ -72,8 +72,8 @@
           </div>
         </section>
 
-        <aside class="checkin-guide" aria-label="值机流程">
-          <h3>值机三步</h3>
+        <aside class="checkin-guide" aria-label="购票流程">
+          <h3>出票三步</h3>
           <ol>
             <li><b>粘贴</b><span>在 Redmine 任务页全选复制，贴进上面的扫描台。</span></li>
             <li><b>核对</b><span>亮灯字段已自动填好；手动改过的标「手动」，再粘贴不会覆盖。</span></li>
@@ -95,8 +95,8 @@
           <div class="boarding-pass" id="boardingPass">
             <div class="pass-band">
               <div class="pass-brand">
-                <span class="pass-air">HARBOR AIR · 开发航路</span>
-                <span class="pass-class">TASK BOARDING PASS</span>
+                <span class="pass-air">HARBOR LINE · 开发航线</span>
+                <span class="pass-class">TASK FERRY TICKET</span>
               </div>
               <div class="pass-no">
                 <label for="ticketNo">NO.</label>
