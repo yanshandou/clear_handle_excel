@@ -74,6 +74,8 @@
     .ic-sec h3 { margin: 0; font-size: 15px; color: #2e1f66; }
     .ic-sec textarea { width: 100%; min-height: 5.2em; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
     .ic-sec select { flex: 1; min-width: 0; }
+    .ic-system-note { margin: 4px 0 8px; padding: 8px 10px; border-radius: 10px; background: #eef6ff; border: 1.5px solid #9cc3ea; color: #173b59; font-size: 13px; font-weight: 600; }
+    .ic-card.is-system .ic-sub { color: #0b4f8a; font-weight: 800; }
     .ic-folders { margin: 0; padding: 0; list-style: none; font-size: 12.5px; max-height: 8em; overflow: auto; }
     .ic-folders li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; padding: 2px 0; font-family: ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
     .ic-folders button { padding: 2px 8px; font-size: 12px; border: 1.5px solid #8a94a6; border-radius: 8px; background: #fff; cursor: pointer; }
@@ -111,6 +113,7 @@
             <h3>📁 文件夹图标在哪里设</h3>
             <ul>
               <li>这一页只管图标本身：上传、分类、改名、替换、删除。</li>
+              <li>网站自带的图标放在固定分类「<b>系统图标</b>」里，随程序更新，只能用（套文件夹、换工具箱图标、下载 .ico），不能改名、替换或删除。自己上传的图标分类名随便起，只是不能叫「系统图标」。</li>
               <li>给文件夹指定图标，在建文件夹的地方顺便选：<a href="/ticket-structures">目录结构模板</a>里每个目录可以挑图标，<a href="/ticket">船票</a>页建 Ticket 文件夹时也能选。</li>
               <li>套上去的是复制件：以后删掉图标库里的图标，文件夹的图标也不会坏。替换图标图片时，套过它的文件夹一起换成新图。</li>
               <li>资源管理器有图标缓存，看不到变化时按 F5 或过一会再看。</li>
@@ -174,6 +177,6 @@
     <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
   </main>
   <script src="/static/dialog.js"></script>
-  <script src="/static/icon_library.js?v=5"></script><script src="/static/debug_log.js"></script>
+  <script src="/static/icon_library.js?v=6"></script><script src="/static/debug_log.js"></script>
 </body>
 </html>

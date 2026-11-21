@@ -43,6 +43,9 @@ class IconLibraryTests(unittest.TestCase):
         self.old = L.LIB_DIR
         L.LIB_DIR = self.root / "图标库"
         self.addCleanup(setattr, L, "LIB_DIR", self.old)
+        system = patch.object(L, "SYSTEM_ICONS", ())   # 系统图标另有测试，这里只看用户上传的
+        system.start()
+        self.addCleanup(system.stop)
 
     def test_png_becomes_multi_size_ico_with_transparency(self):
         result = L.add("蓝色方块.png", png(), "文件夹")
@@ -291,6 +294,59 @@ class IconLibraryTests(unittest.TestCase):
                          ["[.ShellClassInfo]", "IconResource=x.ico,0", "", "[ViewState]", "Mode=4"])
         self.assertEqual(L._set_icon_lines(["[.shellclassinfo]", "iconresource=a,0", "InfoTip=t"], None),
                          ["[.shellclassinfo]", "InfoTip=t"])
+
+
+class SystemIconTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        lib = patch.object(L, "LIB_DIR", Path(self.tmp.name) / "图标库")
+        lib.start()
+        self.addCleanup(lib.stop)
+        system = patch.object(L, "SYSTEM_ICONS", (("tools/bl.png", "断链警示"), ("sprite/folder.png", "文件夹")))
+        system.start()
+        self.addCleanup(system.stop)
+
+    def system(self):
+        return [i for i in L.listing()["icons"] if i["system"]]
+
+    def test_builtin_icons_are_added_once_as_system_category(self):
+        icons = self.system()
+        self.assertEqual([i["name"] for i in icons], ["断链警示", "文件夹"])
+        self.assertTrue(all(i["category"] == L.SYSTEM_CATEGORY for i in icons))
+        self.assertEqual(L.listing()["categories"][0], {"name": L.SYSTEM_CATEGORY, "count": 2})
+        self.assertTrue((L._icons_dir() / f"{icons[0]['id']}.ico").is_file())
+        with patch.object(L, "_render", side_effect=AssertionError("不该重新生成")):
+            self.assertEqual([i["id"] for i in self.system()], [i["id"] for i in icons])
+
+    def test_system_icons_cannot_be_changed_but_can_be_used(self):
+        icon = self.system()[0]
+        for call in (lambda: L.update(icon["id"], name="x"), lambda: L.delete(icon["id"]),
+                     lambda: L.retrim(icon["id"]), lambda: L.replace(icon["id"], "a.png", png())):
+            with self.assertRaisesRegex(ValueError, "系统图标"):
+                call()
+        L.set_tool_icon("clean", icon["id"])
+        self.assertEqual(L.listing()["tools"], {"clean": icon["id"]})
+        self.assertEqual(L.icon_file(icon["id"], "ico")[1], "断链警示")
+
+    def test_system_category_name_is_reserved_for_builtin_icons(self):
+        self.system()
+        with self.assertRaisesRegex(ValueError, "系统图标"):
+            L.add("a.png", png(), L.SYSTEM_CATEGORY)
+        user = L.add("a.png", png(), "我的")["icon"]
+        with self.assertRaisesRegex(ValueError, "系统图标"):
+            L.update(user["id"], category=L.SYSTEM_CATEGORY)
+        with self.assertRaisesRegex(ValueError, "固定分类"):
+            L.rename_category(L.SYSTEM_CATEGORY, "别的")
+        with self.assertRaisesRegex(ValueError, "系统图标"):
+            L.rename_category("我的", L.SYSTEM_CATEGORY)
+        L.rename_category("我的", "项目")
+        self.assertEqual({i["category"] for i in L.listing()["icons"]}, {L.SYSTEM_CATEGORY, "项目"})
+
+    def test_builtin_removed_from_code_leaves_the_library(self):
+        self.system()
+        with patch.object(L, "SYSTEM_ICONS", (("tools/bl.png", "断链警示"),)):
+            self.assertEqual([i["name"] for i in self.system()], ["断链警示"])
 
 
 if __name__ == "__main__":

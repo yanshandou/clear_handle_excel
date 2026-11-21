@@ -3,6 +3,7 @@ import json
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
@@ -14,6 +15,11 @@ from web_clip_fixer import WebHandler
 
 
 class IconHttpTests(unittest.TestCase):
+    def setUp(self):
+        system = patch.object(icon_library, "SYSTEM_ICONS", ())   # 系统图标另有测试，这里只看用户上传的
+        system.start()
+        self.addCleanup(system.stop)
+
     def test_duplicate_upload_and_retrim(self):
         with tempfile.TemporaryDirectory() as temp:
             previous = icon_library.LIB_DIR

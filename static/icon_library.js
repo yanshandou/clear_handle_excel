@@ -56,11 +56,12 @@
     const chips = [`<button type="button" class="ic-cat${category === null ? ' is-on' : ''}" data-cat="*">全部<small>${lib.icons.length}</small></button>`]
       .concat(lib.categories.map(c => `<button type="button" class="ic-cat${category === c.name ? ' is-on' : ''}" data-cat="${esc(c.name)}">${esc(catLabel(c.name))}<small>${c.count}</small></button>`));
     $('icCats').innerHTML = chips.join('');
-    $('icCategoryList').innerHTML = lib.categories.filter(c => c.name).map(c => `<option value="${esc(c.name)}">`).join('');
-    const canRename = category !== null && category !== '';
+    $('icCategoryList').innerHTML = lib.categories.filter(c => c.name && c.name !== (lib.system_category || '系统图标')).map(c => `<option value="${esc(c.name)}">`).join('');
+    const sysCat = lib.system_category || '系统图标';
+    const canRename = category !== null && category !== '' && category !== sysCat;
     $('icCatRename').disabled = $('icCatRenameBtn').disabled = !canRename;
     $('icCatRename').value = canRename ? category : '';
-    $('icCatRename').placeholder = canRename ? '新的分类名' : '先点一个分类';
+    $('icCatRename').placeholder = canRename ? '新的分类名' : category === sysCat ? '系统图标是固定分类' : '先点一个分类';
     $('icCount').textContent = `共 ${lib.icons.length} 个 · 存在 ${lib.dir || ''}`;
     const groups = lib.duplicates || [];
     $('icDuplicates').setAttribute('aria-pressed', String(duplicatesOnly));
@@ -84,8 +85,8 @@
     $('icGrid').innerHTML = list.map(i => {
       const used = (i.folders || []).length + Object.values(lib.tools || {}).filter(v => v === i.id).length;
       const duplicateGroup = (lib.duplicates || []).findIndex(group => group.includes(i.id));
-      return `<button type="button" class="ic-card${batchMode ? (checked.has(i.id) ? ' is-checked' : '') : (i.id === selected ? ' is-selected' : '')}" data-id="${i.id}" ${batchMode ? `aria-pressed="${checked.has(i.id)}"` : ''} title="${esc(i.name)}（${esc(catLabel(i.category))}）">
-        ${batchMode ? `<span class="ic-check" aria-hidden="true">${checked.has(i.id) ? '☑ 已选' : '☐ 选择'}</span>` : ''}
+      return `<button type="button" class="ic-card${i.system ? ' is-system' : ''}${batchMode ? (checked.has(i.id) ? ' is-checked' : '') : (i.id === selected ? ' is-selected' : '')}" data-id="${i.id}" ${batchMode ? `aria-pressed="${checked.has(i.id)}"` : ''} title="${esc(i.name)}（${esc(catLabel(i.category))}）">
+        ${batchMode ? `<span class="ic-check" aria-hidden="true">${i.system ? '系统图标不能批量改' : checked.has(i.id) ? '☑ 已选' : '☐ 选择'}</span>` : ''}
         <span class="ic-thumb ic-checker"><img src="${pngUrl(i)}" alt="" loading="lazy" width="64" height="64"></span>
         <span class="ic-name">${esc(i.name)}</span>
         <span class="ic-sub">${esc(catLabel(i.category))}</span>
@@ -172,7 +173,7 @@
     const warn = [];
     if (icon.transparent === false) warn.push('<span class="is-warn">这张图没有透明背景，图标会带底色</span>');
     const { render_width: renderWidth, render_height: renderHeight } = icon;
-    if (Math.max(renderWidth || icon.width || 0, renderHeight || icon.height || 0) < 128) {
+    if (!icon.system && Math.max(renderWidth || icon.width || 0, renderHeight || icon.height || 0) < 128) {
       warn.push('<span class="is-warn">用于生成图标的图片小于 128 像素，大图标可能模糊</span>');
     }
     const cropped = renderWidth && renderHeight && (renderWidth !== icon.width || renderHeight !== icon.height);
@@ -184,12 +185,17 @@
     const folders = icon.folders || [];
     box.innerHTML = `
       <div class="ic-preview">
-        <div class="ic-big ic-checker" id="icBig" title="把新 PNG 拖到这里 = 替换这个图标的图片"><img src="${pngUrl(icon)}" alt="${esc(icon.name)}"></div>
+        <div class="ic-big ic-checker" id="icBig"${icon.system ? '' : ' title="把新 PNG 拖到这里 = 替换这个图标的图片"'}><img src="${pngUrl(icon)}" alt="${esc(icon.name)}"></div>
         <div>
           <div class="ic-sizes">${[48, 32, 24, 16].map(s => `<figure><span class="ic-s ic-checker"><img src="${pngUrl(icon)}" alt="" width="${s}" height="${s}"></span>${s}</figure>`).join('')}</div>
           <p class="ic-meta">原图 ${icon.width}×${icon.height}${icon.source ? ` · ${esc(icon.source)}` : ''}${cropDetails}${squareDetails}<br>加入 ${esc(icon.created || '')}${warn.length ? '<br>' + warn.join('<br>') : ''}</p>
         </div>
       </div>
+      ${icon.system ? `
+      <p class="ic-system-note"><b>${esc(icon.name)}</b> · 系统图标：网站自带的，只能用，不能改名、改分类、替换或删除。</p>
+      <div class="ic-row">
+        <a class="btn" href="${icoUrl(icon)}" download>⬇ 下载 .ico</a>
+      </div>` : `
       <div class="ic-fields">
         <label>名字<input id="icName" type="text" value="${esc(icon.name)}" maxlength="60" autocomplete="off"></label>
         <label>分类<input id="icCategory" type="text" value="${esc(icon.category)}" list="icCategoryList" maxlength="30" placeholder="未分类" autocomplete="off"></label>
@@ -199,7 +205,7 @@
         <button id="icRetrim" class="btn" type="button">✂ 重新裁剪</button>
         <a class="btn" href="${icoUrl(icon)}" download>⬇ 下载 .ico</a>
         <button id="icDelete" class="btn btn-danger" type="button">🗑 删除</button>
-      </div>
+      </div>`}
       <div class="ic-sec">
         <h3>📁 用在这些文件夹（${folders.length} 个）</h3>
         <ul class="ic-folders">${folders.map(f => `<li><span>${esc(f)}</span></li>`).join('') || '<li><span>还没有</span></li>'}</ul>
@@ -219,6 +225,10 @@
   }
 
   function bindDetail(icon) {
+    $('icTool').addEventListener('change', e => { prefs.tool = e.target.value; savePrefs(); });
+    $('icToolSet').addEventListener('click', () => setTool(icon, true));
+    $('icToolReset').addEventListener('click', () => setTool(icon, false));
+    if (icon.system) return;   // 系统图标只能用：没有改名 / 替换 / 删除
     const saveField = async () => {
       const name = $('icName').value.trim(), cat = $('icCategory').value.trim();
       if (name === icon.name && cat === icon.category) return;
@@ -233,9 +243,6 @@
     $('icReplace').addEventListener('click', () => $('icReplaceFile').click());
     $('icRetrim').addEventListener('click', () => retrimIcon(icon));
     $('icDelete').addEventListener('click', () => removeIcon(icon));
-    $('icTool').addEventListener('change', e => { prefs.tool = e.target.value; savePrefs(); });
-    $('icToolSet').addEventListener('click', () => setTool(icon, true));
-    $('icToolReset').addEventListener('click', () => setTool(icon, false));
     const big = $('icBig');
     big.addEventListener('dragover', e => { if (hasFiles(e)) { e.preventDefault(); e.stopPropagation(); big.classList.add('is-over'); } });
     big.addEventListener('dragleave', () => big.classList.remove('is-over'));
@@ -391,6 +398,7 @@
     const card = e.target.closest('.ic-card');
     if (!card || busy) return;
     if (!batchMode) { select(card.dataset.id); return; }
+    if (byId(card.dataset.id)?.system) { $('icBatchStatus').textContent = '系统图标是网站自带的，不能批量移动或删除。'; return; }
     if (checked.has(card.dataset.id)) checked.delete(card.dataset.id); else checked.add(card.dataset.id);
     renderGrid(); renderBatch();
     document.querySelectorAll('.ic-card').forEach(next => { if (next.dataset.id === card.dataset.id) next.focus(); });
@@ -401,7 +409,7 @@
     $('icBatchStatus').textContent = '';
     renderBatch(); renderGrid();
   });
-  $('icBatchAll').addEventListener('click', () => { visible().forEach(i => checked.add(i.id)); renderGrid(); renderBatch(); });
+  $('icBatchAll').addEventListener('click', () => { visible().filter(i => !i.system).forEach(i => checked.add(i.id)); renderGrid(); renderBatch(); });
   $('icBatchClear').addEventListener('click', () => { checked.clear(); renderGrid(); renderBatch(); });
   $('icBatchMove').addEventListener('click', () => batchAction(false));
   $('icBatchDelete').addEventListener('click', () => batchAction(true));
