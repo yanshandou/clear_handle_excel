@@ -14,6 +14,9 @@
   let folderDraft = '';    // 套到文件夹的路径框：换选别的图标也留着
   let lastResults = null;  // { id, html }
   let busy = false;
+  let batchMode = false;
+  let duplicatesOnly = false;
+  const checked = new Set();
 
   const prefs = (() => { try { return JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (_) { return {}; } })();
   const savePrefs = () => { try { localStorage.setItem(KEY, JSON.stringify(prefs)); } catch (_) {} };
@@ -40,11 +43,13 @@
     const data = await response.json();
     if (!data.ok) throw Error(data.error || '读不了图标库');
     lib = data;
+    for (const id of checked) if (!byId(id)) checked.delete(id);
     if (selected && !byId(selected)) selected = '';
     if (category !== null && !lib.categories.some(c => c.name === category)) category = null;
     log('图标库', reason, `${lib.icons.length} 个图标`, lib.dir);
     renderCats();
     renderGrid();
+    renderBatch();
     renderDetail();
   }
 
@@ -59,11 +64,16 @@
     $('icCatRename').value = canRename ? category : '';
     $('icCatRename').placeholder = canRename ? '新的分类名' : '先点一个分类';
     $('icCount').textContent = `共 ${lib.icons.length} 个 · 存在 ${lib.dir || ''}`;
+    const groups = lib.duplicates || [];
+    $('icDuplicates').setAttribute('aria-pressed', String(duplicatesOnly));
+    $('icDuplicates').textContent = duplicatesOnly ? '显示全部图标' : '查看重复图标';
+    $('icDuplicateInfo').textContent = `${groups.length ? `发现 ${groups.length} 组重复` : '没有发现重复'}${lib.duplicate_unchecked?.length ? `；${lib.duplicate_unchecked.length} 个原图无法检查` : ''}`;
   }
 
   function visible() {
     const q = $('icSearch').value.trim().toLowerCase();
-    return lib.icons.filter(i => (category === null || i.category === category)
+    const duplicateIds = new Set((lib.duplicates || []).flat());
+    return lib.icons.filter(i => (!duplicatesOnly || duplicateIds.has(i.id)) && (category === null || i.category === category)
       && (!q || [i.name, i.category, i.source].some(v => String(v || '').toLowerCase().includes(q))));
   }
 
@@ -75,13 +85,59 @@
     }
     $('icGrid').innerHTML = list.map(i => {
       const used = (i.folders || []).length + Object.values(lib.tools || {}).filter(v => v === i.id).length;
-      return `<button type="button" class="ic-card${i.id === selected ? ' is-selected' : ''}" data-id="${i.id}" title="${esc(i.name)}（${esc(catLabel(i.category))}）">
+      const duplicateGroup = (lib.duplicates || []).findIndex(group => group.includes(i.id));
+      return `<button type="button" class="ic-card${batchMode ? (checked.has(i.id) ? ' is-checked' : '') : (i.id === selected ? ' is-selected' : '')}" data-id="${i.id}" ${batchMode ? `aria-pressed="${checked.has(i.id)}"` : ''} title="${esc(i.name)}（${esc(catLabel(i.category))}）">
+        ${batchMode ? `<span class="ic-check" aria-hidden="true">${checked.has(i.id) ? '☑ 已选' : '☐ 选择'}</span>` : ''}
         <span class="ic-thumb ic-checker"><img src="${pngUrl(i)}" alt="" loading="lazy" width="64" height="64"></span>
         <span class="ic-name">${esc(i.name)}</span>
         <span class="ic-sub">${esc(catLabel(i.category))}</span>
+        ${duplicateGroup >= 0 ? `<span class="ic-badge">重复组 ${duplicateGroup + 1}</span>` : ''}
         ${used ? `<span class="ic-badge">用在 ${used} 处</span>` : ''}
       </button>`;
     }).join('');
+  }
+
+  function renderBatch() {
+    $('icBatch').hidden = !batchMode;
+    $('icBatchToggle').setAttribute('aria-pressed', String(batchMode));
+    $('icBatchToggle').textContent = batchMode ? '完成批量管理' : '☑ 批量管理';
+    $('icBatchCount').textContent = `已选 ${checked.size} 个（跨分类保留）`;
+    $('icBatchMove').disabled = $('icBatchDelete').disabled = busy || !checked.size;
+    $('icBatchAll').disabled = $('icBatchClear').disabled = busy;
+    $('icBatchToggle').disabled = busy;
+  }
+
+  async function batchAction(remove) {
+    if (busy || !checked.size) return;
+    const icons = [...checked].map(byId).filter(Boolean);
+    const target = $('icBatchCategory').value.trim();
+    if (remove) {
+      const ids = new Set(icons.map(i => i.id));
+      const folders = icons.reduce((n, i) => n + (i.folders || []).length, 0);
+      const tools = Object.values(lib.tools || {}).filter(id => ids.has(id)).length;
+      const ok = await window.appConfirm(`删除选中的 ${icons.length} 个图标？`
+        + (folders ? `\n已套用图标的 ${folders} 处文件夹不受影响。` : '')
+        + (tools ? `\n使用这些图标的 ${tools} 个工具会恢复默认图标。` : ''), { okText: '删除', tone: 'danger' });
+      if (!ok || busy) return;
+    }
+    busy = true;
+    renderBatch();
+    const failed = [];
+    let done = 0;
+    try {
+      for (const icon of icons) {
+        $('icBatchStatus').textContent = `正在${remove ? '删除' : '移动'} ${done + failed.length + 1} / ${icons.length}：${icon.name}…`;
+        try {
+          await post(remove ? '/api/icons/delete' : '/api/icons/update', remove ? { id: icon.id } : { id: icon.id, category: target });
+          checked.delete(icon.id);
+          done++;
+        } catch (e) { failed.push(`${icon.name}：${e.message}`); }
+      }
+      await reload('批量操作后');
+      $('icBatchStatus').textContent = `${remove ? '已删除' : `已移入「${catLabel(target)}」`} ${done} 个${failed.length ? `；${failed.length} 个失败：${failed.join('；')}` : ''}`;
+    } catch (e) {
+      $('icBatchStatus').textContent = `已完成 ${done} 个，刷新图标库失败：${e.message}${failed.length ? `；失败：${failed.join('；')}` : ''}`;
+    } finally { busy = false; renderBatch(); }
   }
 
   function select(id) {
@@ -130,6 +186,7 @@
       </div>
       <div class="ic-row">
         <button id="icReplace" class="btn" type="button">🔁 替换图片</button>
+        <button id="icRetrim" class="btn" type="button">✂ 重新裁剪</button>
         <a class="btn" href="${icoUrl(icon)}" download>⬇ 下载 .ico</a>
         <button id="icDelete" class="btn btn-danger" type="button">🗑 删除</button>
       </div>
@@ -172,6 +229,7 @@
     $('icCategory').addEventListener('change', saveField);
     $('icFolders').addEventListener('input', e => { folderDraft = e.target.value; prefs.folders = folderDraft; savePrefs(); });
     $('icReplace').addEventListener('click', () => $('icReplaceFile').click());
+    $('icRetrim').addEventListener('click', () => retrimIcon(icon));
     $('icDelete').addEventListener('click', () => removeIcon(icon));
     $('icApply').addEventListener('click', () => applyFolders(icon, false));
     $('icRestore').addEventListener('click', () => applyFolders(icon, true));
@@ -273,6 +331,22 @@
     } catch (e) { status(`<span class="is-bad">! ${esc(e.message)}</span>`); }
   }
 
+  async function retrimIcon(icon) {
+    if (busy) return;
+    const n = (icon.folders || []).length;
+    const ok = await window.appConfirm(`用保存的原图重新裁剪「${icon.name}」？${n ? `\n已套用的 ${n} 个文件夹也会更新。` : ''}`, { okText: '重新裁剪' });
+    if (!ok || busy) return;
+    busy = true;
+    try {
+      const r = await post('/api/icons/retrim', { id: icon.id });
+      const failed = (r.folders || []).filter(f => !f.ok);
+      await reload('重新裁剪后');
+      status(`<span class="is-ok">✓ 已重新裁剪「${esc(icon.name)}」</span>`
+        + failed.map(f => `<br><span class="is-bad">! ${esc(f.folder)}：${esc(f.error)}</span>`).join(''));
+    } catch (e) { status(`<span class="is-bad">! ${esc(e.message)}</span>`); }
+    finally { busy = false; }
+  }
+
   // ---------- 文件夹 ----------
   function resultHtml(results) {
     return results.map(r => `<li class="${r.ok ? 'is-ok' : 'is-bad'}">${esc(r.folder)}${r.ok ? '' : `：${esc(r.error)}`}</li>`).join('');
@@ -339,7 +413,29 @@
     addFiles(e.dataTransfer.files);
   });
 
-  $('icGrid').addEventListener('click', e => { const card = e.target.closest('.ic-card'); if (card) select(card.dataset.id); });
+  $('icGrid').addEventListener('click', e => {
+    const card = e.target.closest('.ic-card');
+    if (!card || busy) return;
+    if (!batchMode) { select(card.dataset.id); return; }
+    if (checked.has(card.dataset.id)) checked.delete(card.dataset.id); else checked.add(card.dataset.id);
+    renderGrid(); renderBatch();
+    document.querySelectorAll('.ic-card').forEach(next => { if (next.dataset.id === card.dataset.id) next.focus(); });
+  });
+  $('icBatchToggle').addEventListener('click', () => {
+    batchMode = !batchMode;
+    if (!batchMode) checked.clear();
+    $('icBatchStatus').textContent = '';
+    renderBatch(); renderGrid();
+  });
+  $('icBatchAll').addEventListener('click', () => { visible().forEach(i => checked.add(i.id)); renderGrid(); renderBatch(); });
+  $('icBatchClear').addEventListener('click', () => { checked.clear(); renderGrid(); renderBatch(); });
+  $('icBatchMove').addEventListener('click', () => batchAction(false));
+  $('icBatchDelete').addEventListener('click', () => batchAction(true));
+  $('icDuplicates').addEventListener('click', () => {
+    duplicatesOnly = !duplicatesOnly;
+    if (duplicatesOnly) { category = null; $('icSearch').value = ''; }
+    renderCats(); renderGrid();
+  });
   $('icCats').addEventListener('click', e => {
     const chip = e.target.closest('.ic-cat');
     if (!chip) return;

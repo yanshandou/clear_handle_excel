@@ -9,9 +9,9 @@
   <link rel="stylesheet" href="/static/theme.css">
   <link rel="stylesheet" href="/static/theme-casual.css">
   <link rel="stylesheet" href="/static/theme-cartoon.css">
-  <link rel="stylesheet" href="/static/ticket.css?v=9">
+  <link rel="stylesheet" href="/static/ticket.css?v=11">
   <script defer src="/static/tools.js?v=5"></script>
-  <script defer src="/static/ticket.js?v=6"></script>
+  <script defer src="/static/ticket.js?v=13"></script>
 </head>
 <body class="ticket-body">
   <header class="app-header">
@@ -23,7 +23,7 @@
       </div>
     </a>
     <nav class="header-nav" aria-label="功能导航">
-      <span class="ticket-header-count" id="headerCount" title="自动识别到的字段数">识别 0 / 14</span>
+      <span class="ticket-header-count" id="headerCount" title="自动识别到的字段数">识别 0 / 17</span>
       <a href="/" class="nav-link"><span class="ui-icon harbor-icon icon-home" aria-hidden="true"></span>返回首页</a>
     </nav>
   </header>
@@ -33,10 +33,10 @@
       <div class="masthead-copy">
         <span class="eyebrow">海港售票柜台 · TICKETS</span>
         <h2>把任务文本，换成一张船票</h2>
-        <p>从 Redmine 任务页复制文本粘贴进来，自动识别填进票面；也可以直接手动填写。确认出票后，在 Windows 桌面创建任务文件夹。</p>
+        <p>粘贴 Redmine 任务页 HTML，自动识别填进票面；也可以直接手动填写。确认出票后，在 Windows 桌面创建任务文件夹。</p>
         <div class="depart-board" role="status" aria-live="polite">
           <span class="board-label">已识别</span>
-          <strong id="boardCount">0 / 14</strong>
+          <strong id="boardCount">0 / 17</strong>
           <span class="board-ticks" id="boardTicks" aria-hidden="true"></span>
         </div>
       </div>
@@ -52,12 +52,12 @@
           <header class="panel-head">
             <span class="step-badge" aria-hidden="true">1</span>
             <div>
-              <h2 id="ticketSourceHeading"><label for="ticketSource">粘贴任务文本</label></h2>
+              <h2 id="ticketSourceHeading"><label for="ticketSource">粘贴任务 HTML</label></h2>
               <p id="ticketSourceHelp">粘贴后自动识别；识别到的字段会亮灯，点灯可以跳到票面对应位置。</p>
             </div>
           </header>
           <div class="scanner-bed" id="scannerBed">
-            <textarea id="ticketSource" rows="12" maxlength="24000" spellcheck="false" aria-describedby="ticketSourceHelp" placeholder="可粘贴 task #编号、任务标题和日文任务详情&#10;例如：ステータス: 進行中　開始日: 2026/11/20"></textarea>
+            <textarea id="ticketSource" rows="12" maxlength="2000000" spellcheck="false" aria-describedby="ticketSourceHelp" placeholder="粘贴 Redmine 任务页面的 HTML 源码"></textarea>
             <span class="scan-beam" aria-hidden="true"></span>
             <span class="scanner-corner tl" aria-hidden="true"></span>
             <span class="scanner-corner tr" aria-hidden="true"></span>
@@ -67,7 +67,7 @@
           <div class="chip-row" id="ticketChips" aria-label="识别结果"></div>
           <div class="scan-actions">
             <button type="button" class="btn btn-outline btn-sm" id="ticketSample">载入示例</button>
-            <button type="button" class="btn btn-outline btn-sm" id="ticketClearSource">清空文本</button>
+            <button type="button" class="btn btn-outline btn-sm" id="ticketClearSource">清空内容</button>
             <p id="ticketRecognition" class="ticket-note" role="status"></p>
           </div>
         </section>
@@ -75,7 +75,7 @@
         <aside class="checkin-guide" aria-label="购票流程">
           <h3>出票三步</h3>
           <ol>
-            <li><b>粘贴</b><span>在 Redmine 任务页全选复制，贴进上面的扫描台。</span></li>
+            <li><b>粘贴</b><span>复制 Redmine 任务页的 HTML，贴进上面的扫描台。</span></li>
             <li><b>核对</b><span>亮灯字段已自动填好；手动改过的标「手动」，再粘贴不会覆盖。</span></li>
             <li><b>出票</b><span>确认后在桌面生成「Ticket #编号 - 标题」文件夹，票面存为 Ticket.txt。</span></li>
           </ol>
@@ -115,21 +115,35 @@
 
             <fieldset class="pass-grid" id="ticketFields">
               <legend class="sr-only">任务信息</legend>
-              <div class="pass-field wide">
-                <label for="fParent">关联案件 <small>PARENT</small></label>
-                <textarea id="fParent" name="parent" rows="2" maxlength="500"></textarea>
+              <div class="pass-section">所属项目 <small>PROJECT</small></div>
+              <div class="pass-field"><label for="fProject">所属项目</label><input id="fProject" name="project" type="text" maxlength="500" placeholder="例如 開発（UI）"><span class="auto-tag" hidden></span></div>
+              <div class="pass-field"><label for="fParentProject">上级项目名称</label><input id="fParentProject" name="parent_project" type="text" maxlength="500" placeholder="例如 介舟ファミリークラウド総合"><span class="auto-tag" hidden></span></div>
+              <div class="pass-section">关联案件 <small>PARENT ISSUE</small></div>
+              <div class="pass-field"><label for="fParent">案件编号</label><input id="fParent" name="parent" type="text" maxlength="500" placeholder="例如 55022"><span class="auto-tag" hidden></span></div>
+              <div class="pass-field"><label for="fParentCategory">案件分类</label><input id="fParentCategory" name="parent_category" type="text" maxlength="500" placeholder="例如 機能追加"><span class="auto-tag" hidden></span></div>
+              <div class="pass-field wide"><label for="fParentTitle">案件标题</label><textarea id="fParentTitle" name="parent_title" rows="2" maxlength="500" placeholder="例如 計画書の電子サイン対応"></textarea><span class="auto-tag" hidden></span></div>
+              <div class="pass-section">任务执行 <small>ASSIGNMENT</small></div>
+              <div class="pass-field">
+                <label for="fAssignee">负责人 <small>ASSIGNEE</small></label>
+                <input id="fAssignee" type="text" name="assignee" maxlength="500" placeholder="例如 （開発）白 家綾（現）">
                 <span class="auto-tag" hidden></span>
               </div>
               <div class="pass-field">
-                <label for="fAssignee">负责人 <small>ASSIGNEE</small></label>
-                <input id="fAssignee" type="text" name="assignee" maxlength="500">
+                <label for="fAssigneeShort">负责人简称 <small>SHORT NAME</small></label>
+                <input id="fAssigneeShort" type="text" name="assignee_short" maxlength="500" placeholder="例如 白">
                 <span class="auto-tag" hidden></span>
               </div>
               <div class="pass-field">
                 <label for="fPriority">优先级 <small>PRIORITY</small></label>
-                <input id="fPriority" type="text" name="priority" maxlength="500">
+                <input id="fPriority" type="text" name="priority" maxlength="500" placeholder="例如 通常">
                 <span class="auto-tag" hidden></span>
               </div>
+              <div class="pass-field">
+                <label for="fStatus">状态 <small>STATUS</small></label>
+                <input id="fStatus" type="text" name="status" maxlength="500" placeholder="例如 進行中">
+                <span class="auto-tag" hidden></span>
+              </div>
+              <div class="pass-section">任务排期 <small>SCHEDULE</small></div>
               <div class="pass-field date-field">
                 <label for="fStart">开始日期 <small>FROM</small></label>
                 <div class="date-control">
@@ -150,24 +164,15 @@
                 </div>
                 <span class="auto-tag" hidden></span>
               </div>
+              <div class="pass-section">任务信息 <small>DETAILS</small></div>
               <div class="pass-field">
                 <label for="fScreen">画面 / 报表 ID <small>SCREEN</small></label>
-                <input id="fScreen" type="text" name="screen_id" maxlength="500">
-                <span class="auto-tag" hidden></span>
-              </div>
-              <div class="pass-field">
-                <label for="fStatus">状态 <small>STATUS</small></label>
-                <input id="fStatus" type="text" name="status" maxlength="500">
+                <input id="fScreen" type="text" name="screen_id" maxlength="500" placeholder="例如 TBSNG0000">
                 <span class="auto-tag" hidden></span>
               </div>
               <div class="pass-field wide">
                 <label for="fVersion">目标版本 <small>VERSION</small></label>
-                <input id="fVersion" type="text" name="version" maxlength="500">
-                <span class="auto-tag" hidden></span>
-              </div>
-              <div class="pass-field wide">
-                <label for="fActivity">创建 / 更新记录 <small>ACTIVITY</small></label>
-                <input id="fActivity" type="text" name="activity" maxlength="500">
+                <input id="fVersion" type="text" name="version" maxlength="500" placeholder="例如 介舟ファミリークラウド総合 - V440">
                 <span class="auto-tag" hidden></span>
               </div>
             </fieldset>
@@ -179,19 +184,29 @@
                 <label for="fProgress">进度 <small>PROGRESS</small></label>
                 <div class="stub-progress-row">
                   <div class="progress-track progress-track-sm"><div class="progress-fill" id="stubFill" style="width:0%"></div></div>
-                  <input id="fProgress" type="text" name="progress" maxlength="500" inputmode="numeric" placeholder="0%" aria-label="进度">
+                  <input id="fProgress" type="text" name="progress" maxlength="500" inputmode="numeric" placeholder="0%" aria-label="进度" title="聚焦后滚动鼠标滚轮，可在 0%、50%、70%、100% 之间切换">
                 </div>
                 <span class="auto-tag" hidden></span>
               </div>
               <div class="stub-hours">
                 <div class="pass-field">
-                  <label for="fEst">预计工时 <small>EST</small></label>
-                  <input id="fEst" type="text" name="estimated_hours" maxlength="500" inputmode="decimal" placeholder="9.00">
+                  <label for="fEst">预计工数 <small>EST</small></label>
+                  <input id="fEst" type="text" name="estimated_hours" maxlength="500" inputmode="decimal" placeholder="9">
+                  <div class="hours-stepper" aria-label="调整预计工数">
+                    <button type="button" data-hours-for="fEst" data-hours-step="-1" aria-label="预计工数减少 1">−</button>
+                    <span>1</span>
+                    <button type="button" data-hours-for="fEst" data-hours-step="1" aria-label="预计工数增加 1">+</button>
+                  </div>
                   <span class="auto-tag" hidden></span>
                 </div>
                 <div class="pass-field">
-                  <label for="fAct">实际工时 <small>SPENT</small></label>
-                  <input id="fAct" type="text" name="actual_hours" maxlength="500" inputmode="decimal" placeholder="1.00">
+                  <label for="fAct">实际工数 <small>SPENT</small></label>
+                  <input id="fAct" type="text" name="actual_hours" maxlength="500" inputmode="decimal" placeholder="1">
+                  <div class="hours-stepper" aria-label="调整实际工数">
+                    <button type="button" data-hours-for="fAct" data-hours-step="-1" aria-label="实际工数减少 1">−</button>
+                    <span>1</span>
+                    <button type="button" data-hours-for="fAct" data-hours-step="1" aria-label="实际工数增加 1">+</button>
+                  </div>
                   <span class="auto-tag" hidden></span>
                 </div>
               </div>

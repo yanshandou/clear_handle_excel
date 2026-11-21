@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -38,6 +39,7 @@ MAX_CATEGORY = 30
 
 LIB_DIR: Path | None = None   # 测试时改这里；平时用数据文件夹下的「图标库」
 _lock = threading.RLock()
+_fingerprint_cache: dict[str, tuple[int, int, str]] = {}
 
 
 def _log(message: str, **fields) -> None:
@@ -118,6 +120,7 @@ def _public(icon: dict) -> dict:
 def listing() -> dict:
     with _lock:
         data = _load()
+        groups, unchecked = _duplicate_groups(data)
     icons = [_public(i) for i in data["icons"]]
     categories: dict[str, int] = {}
     for icon in icons:
@@ -128,6 +131,8 @@ def listing() -> dict:
         "tools": data["tools"],
         "dir": str(library_dir()),
         "windows": sys.platform == "win32",
+        "duplicates": groups,
+        "duplicate_unchecked": unchecked,
     }
 
 
@@ -165,12 +170,17 @@ def _alpha(pix) -> bytes:
 
 
 def _content_box(pix) -> tuple[int, int, int, int]:
-    """不透明部分的范围（x0, y0, x1, y1）；整张全透明时返回整张"""
+    """按可见像素找范围；忽略近乎透明的杂点，不改范围内的半透明像素。"""
     w, h = pix.width, pix.height
     alpha = _alpha(pix)
+    # 低于 8/255 的零星像素肉眼几乎不可见，却可能延伸到原图边缘。
+    # 只用于确定裁剪范围；如果整张图都很淡，则回退到非零 alpha，避免裁掉内容。
+    visible = alpha.translate(bytes(0 if i < 8 else 1 for i in range(256)))
+    if not visible.strip(b"\x00"):
+        visible = alpha
     x0, y0, x1, y1 = w, h, -1, -1
     for y in range(h):
-        row = alpha[y * w:(y + 1) * w]
+        row = visible[y * w:(y + 1) * w]
         left = w - len(row.lstrip(b"\x00"))
         if left == w:
             continue
@@ -210,6 +220,50 @@ def _square(pix, size: int):
     scaled.set_origin((size - sw) // 2, (size - sh) // 2)
     canvas.copy(scaled, scaled.irect)
     return canvas
+
+
+def _fingerprint(pix) -> str:
+    """比较裁掉透明边后的真实像素，不受文件名、PNG 元数据影响。"""
+    pix = _crop(pix, _content_box(pix))
+    digest = hashlib.sha256(struct.pack(">II", pix.width, pix.height))
+    digest.update(pix.samples)
+    return digest.hexdigest()
+
+
+def _icon_fingerprint(icon: dict) -> str:
+    path = _icons_dir() / f"{icon['id']}_orig.png"
+    stat = path.stat()
+    key = str(path)
+    cached = _fingerprint_cache.get(key)
+    if cached and cached[:2] == (stat.st_mtime_ns, stat.st_size):
+        return cached[2]
+    value = _fingerprint(_load_png(path.read_bytes()))
+    _fingerprint_cache[key] = (stat.st_mtime_ns, stat.st_size, value)
+    return value
+
+
+def _duplicate_groups(data: dict) -> tuple[list[list[str]], list[str]]:
+    hashes: dict[str, list[str]] = {}
+    unchecked = []
+    for icon in data["icons"]:
+        try:
+            hashes.setdefault(_icon_fingerprint(icon), []).append(icon["id"])
+        except (OSError, ValueError):
+            unchecked.append(icon["id"])
+    return [ids for ids in hashes.values() if len(ids) > 1], unchecked
+
+
+def _check_duplicate(data: dict, pix, exclude_id: str = "") -> None:
+    fingerprint = _fingerprint(pix)
+    for icon in data["icons"]:
+        if icon["id"] == exclude_id:
+            continue
+        try:
+            existing = _icon_fingerprint(icon)
+        except (OSError, ValueError):
+            continue
+        if existing == fingerprint:
+            raise ValueError(f"图片与图标库里的「{icon.get('name') or '未命名'}」（{icon.get('category') or '未分类'}）重复，操作已取消")
 
 
 def _bmp_entry(pix) -> bytes:
@@ -275,13 +329,15 @@ def _name_from_file(filename: str) -> str:
 
 def add(filename: str, body: bytes, category: str = "", trim: bool = True) -> dict:
     icon_id = uuid.uuid4().hex[:12]
-    info = _render(icon_id, body, trim)
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
-    icon = {"id": icon_id, "name": _name_from_file(filename), "category": _clean_text(category, MAX_CATEGORY),
-            "width": info["width"], "height": info["height"], "transparent": info["transparent"],
-            "created": now, "updated": now, "version": 1, "source": Path(filename or "").name, "folders": []}
+    pix = _load_png(body)
     with _lock:
         data = _load()
+        _check_duplicate(data, pix)
+        info = _render(icon_id, body, trim)
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        icon = {"id": icon_id, "name": _name_from_file(filename), "category": _clean_text(category, MAX_CATEGORY),
+                "width": info["width"], "height": info["height"], "transparent": info["transparent"],
+                "created": now, "updated": now, "version": 1, "source": Path(filename or "").name, "folders": []}
         data["icons"].insert(0, icon)
         _save(data)
     _log("加进图标库", 名字=icon["name"], 分类=icon["category"] or "未分类", 尺寸=f"{info['width']}x{info['height']}",
@@ -293,6 +349,13 @@ def replace(icon_id: str, filename: str, body: bytes, trim: bool = True) -> dict
     with _lock:
         data = _load()
         icon = _find(data, icon_id)
+        pix = _load_png(body)
+        try:
+            unchanged = _fingerprint(pix) == _icon_fingerprint(icon)
+        except (OSError, ValueError):
+            unchanged = False
+        if not unchanged:
+            _check_duplicate(data, pix, exclude_id=icon_id)
         info = _render(icon_id, body, trim)
         icon.update(width=info["width"], height=info["height"], transparent=info["transparent"],
                     updated=time.strftime("%Y-%m-%d %H:%M:%S"), version=int(icon.get("version", 1)) + 1,
@@ -313,6 +376,17 @@ def replace(icon_id: str, filename: str, body: bytes, trim: bool = True) -> dict
     if refreshed:
         _forget_stale(icon_id, refreshed)
     return {"icon": _public(icon), "info": info, "folders": refreshed}
+
+
+def retrim(icon_id: str) -> dict:
+    """用保存的原图重新裁边，并沿用替换图片时的文件夹刷新规则。"""
+    with _lock:
+        icon = _find(_load(), icon_id)
+        try:
+            body = (_icons_dir() / f"{icon_id}_orig.png").read_bytes()
+        except OSError as err:
+            raise ValueError(f"找不到保存的原图，无法重新裁剪（{err}）") from None
+        return replace(icon_id, icon.get("source") or "image.png", body, trim=True)
 
 
 def update(icon_id: str, name=None, category=None) -> dict:

@@ -3,6 +3,8 @@
     ticket_id: ['チケット番号', 'タスク番号', '任务编号', 'Ticket ID'],
     title: ['題名', '件名', '任务标题', 'Subject'],
     parent: ['親チケット', '親タスク', '关联案件', 'Parent task'],
+    project: ['所属项目'], parent_project: ['上级项目名称'],
+    parent_category: ['关联案件分类'], parent_title: ['关联案件标题'],
     status: ['ステータス', '状态', 'Status'],
     priority: ['優先度', '优先级', 'Priority'],
     assignee: ['担当者', '负责人', 'Assignee'],
@@ -13,7 +15,6 @@
     screen_id: ['画面/帳票ID', '画面/报表 ID', 'Screen ID'],
     estimated_hours: ['予定工数', '预计工时', 'Estimated time'],
     actual_hours: ['実績工数', '实际工时', 'Spent time'],
-    activity: ['创建 / 更新记录'],
   };
   const labelKey = label => label.toLowerCase().replace(/\s*[／/]\s*/g, '/');
   const fieldByLabel = new Map(Object.entries(aliases).flatMap(([key, labels]) => labels.map(label => [labelKey(label), key])));
@@ -37,7 +38,9 @@
         continue;
       }
       if (parentHeading.test(line)) {
-        ticket.parent ??= clean(line);
+        const parent = line.match(/^(.*?)\s*[-–—]\s*(?:案件|親チケット|親タスク|关联案件)\s*[#＃]\s*([0-9０-９]+)\s*[:：]\s*(.*)$/);
+        if (parent) { ticket.parent_category = clean(parent[1]); ticket.parent = parent[2].normalize('NFKC'); ticket.parent_title = clean(parent[3]); }
+        else ticket.parent ??= clean(line);
         continuation = '';
         continue;
       }
@@ -54,7 +57,7 @@
         continue;
       }
       if (activityLine.test(line)) {
-        ticket.activity ??= clean(line);
+        // 创建及更新文字不是票面字段。
       } else if (continuation && (continuation !== 'progress' || /^[0-9０-９]+\s*[%％]$/.test(line))) {
         ticket[continuation] = clean(line);
       } else if (!foundDetails && !/^[0-9０-９]+\s*[%％]$/.test(line)) {
@@ -65,26 +68,63 @@
     return ticket;
   }
 
-  const SAMPLE = `task #55345
-機能追加 - 案件 #55022: 介舟ファミリーのタブレット対応／計画書の電子サイン対応（正式版）
+  // Parse only the issue summary and selected project; never use history or edit options as current values.
+  function parseTicketHtml(source) {
+    // Remove active/resource-bearing content before parsing the detached document.
+    const safe = source.replace(/<(script|style|iframe|object|embed|link|img|source|video|audio)\b[^>]*>[\s\S]*?<\/\1\s*>|<(?:script|style|iframe|object|embed|link|img|source|video|audio)\b[^>]*\/?\s*>/gi, '')
+      .replace(/\s(?:src|srcset|poster|background)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+    const doc = new DOMParser().parseFromString(safe, 'text/html');
+    const result = {};
+    const put = (key, value) => { value = (value || '').replace(/\s+/g, ' ').trim(); if (value) result[key] = value; };
+    const issue = doc.querySelector('.issue.details');
+    const heading = doc.querySelector('#content > h2, h2');
+    const number = heading?.textContent.match(/(?:task|ticket|チケット|タスク)\s*#\s*(\d+)/i);
+    if (number) put('ticket_id', number[1]);
+    put('title', issue?.querySelector('.subject h3')?.textContent);
+    const parent = issue?.querySelector('.subject p');
+    const parentLink = parent?.querySelector('a.parent');
+    const parentNumber = parentLink?.textContent.match(/#\s*(\d+)/);
+    if (parentNumber) put('parent', parentNumber[1]);
+    if (parent && parentLink) {
+      const full = parent.textContent.replace(/\s+/g, ' ').trim();
+      const linkText = parentLink.textContent.replace(/\s+/g, ' ').trim();
+      const at = full.indexOf(linkText);
+      if (at >= 0) {
+        put('parent_category', full.slice(0, at).replace(/\s*[-–—]\s*$/, ''));
+        put('parent_title', full.slice(at + linkText.length).replace(/^\s*[:：]\s*/, ''));
+      }
+    }
+    const attrs = issue?.querySelector('table.attributes');
+    const classes = {status:'status', priority:'priority', 'assigned-to':'assignee', 'start-date':'start_date', 'due-date':'due_date', progress:'progress', 'fixed-version':'version', cf_13:'screen_id', cf_84:'estimated_hours', cf_85:'actual_hours'};
+    for (const [cls, key] of Object.entries(classes)) {
+      const cell = attrs?.querySelector(`td.${cls}`);
+      put(key, key === 'progress' ? cell?.querySelector('.percent')?.textContent : cell?.textContent);
+    }
+    const select = doc.querySelector('#issue_project_id');
+    const selected = select?.querySelector('option[selected]');
+    if (selected) {
+      const label = selected.textContent.replace(/\s+/g, ' ').trim();
+      put('project', label.replace(/^»\s*/, ''));
+      if (label.startsWith('»')) {
+        let previous = selected.previousElementSibling;
+        while (previous && (previous.tagName !== 'OPTION' || previous.textContent.trim().startsWith('»'))) previous = previous.previousElementSibling;
+        if (previous) put('parent_project', previous.textContent);
+      } else if (selected.parentElement?.tagName === 'OPTGROUP') put('parent_project', selected.parentElement.label);
+    }
+    return result;
+  }
 
-TBSNG0000_手書きサイン
-（開発）金 星（社） が [2026-11-11 15:00] 9日前に追加. [2026-11-20 19:41] 約4時間前に更新.
-
-ステータス:\t進行中\t開始日:\t2026-11-20
-優先度:\t通常\t期日:\t2026-12-03
-担当者:\t（開発）白 家綾（現）\t進捗率:\t
-0%
-
-対象バージョン:\t介舟ファミリークラウド総合 - V440\t\t
-画面／帳票ID:\tTBSNG0000\t実績工数:\t1.00
-予定工数:\t9.00`;
+  const SAMPLE = `<div id="content"><h2>task #55345</h2>
+<div class="issue details"><div class="subject"><p>機能追加 - <a class="parent">案件 #55022</a>: 介舟ファミリーのタブレット対応／計画書の電子サイン対応（正式版）</p><h3>TBSNG0000_手書きサイン</h3></div>
+<table class="attributes"><tr><td class="status">進行中</td><td class="start-date">2026/11/20</td><td class="priority">通常</td><td class="due-date">2026/12/03</td><td class="assigned-to">（開発）白 家綾（現）</td><td class="progress"><p class="percent">0%</p></td><td class="fixed-version">介舟ファミリークラウド総合 - V440</td><td class="cf_13">TBSNG0000</td><td class="cf_84">9.00</td><td class="cf_85">1.00</td></tr></table></div>
+<select id="issue_project_id"><option>介舟ファミリークラウド総合</option><option selected>» 開発（UI）</option></select></div>`;
 
   const CHIPS = [
-    ['ticket_id', '编号'], ['title', '标题'], ['parent', '案件'], ['status', '状态'],
-    ['priority', '优先级'], ['assignee', '负责人'], ['start_date', '开始'], ['due_date', '截止'],
+    ['ticket_id', '编号'], ['title', '标题'], ['project', '项目'], ['parent_project', '上级项目'],
+    ['parent', '案件编号'], ['parent_category', '案件分类'], ['parent_title', '案件标题'],
+    ['status', '状态'], ['priority', '优先级'], ['assignee', '负责人'], ['start_date', '开始'], ['due_date', '截止'],
     ['progress', '进度'], ['version', '版本'], ['screen_id', '画面ID'], ['estimated_hours', '预计'],
-    ['actual_hours', '实际'], ['activity', '记录'],
+    ['actual_hours', '实际'],
   ];
 
   const form = document.getElementById('ticketForm');
@@ -158,17 +198,37 @@ TBSNG0000_手書きサイン
     drawBarcode(byName.ticket_id.value.trim() || byName.title.value.trim());
   }
 
+  function assigneeShort(value) {
+    const name = value.normalize('NFKC').replace(/\([^()]*\)/g, '').replace(/\s+/g, '');
+    const names = { '吴振科': '吴', '吳振科': '吴', '白家绫': '白', '白家綾': '白', '张晓静': '静', '張曉靜': '静' };
+    return names[name] || '';
+  }
+
+  function updateAssigneeShort() {
+    if (manual.has('assignee_short')) return;
+    const el = byName.assignee_short;
+    const value = assigneeShort(byName.assignee.value);
+    if (el.value !== value) { el.value = value; if (value) pulse(el); }
+    setTag(el, value ? 'auto' : '');
+  }
+
+  function formatWholeHours(value) {
+    return value.replace(/^(\d+)\.0+$/, '$1');
+  }
+
   function recognize() {
-    const ticket = parseTicket(source.value);
+    const ticket = /<\s*(?:html|div|table|h2)\b/i.test(source.value) ? parseTicketHtml(source.value) : parseTicket(source.value);
     for (const el of fields) {
-      if (manual.has(el.name)) continue;
-      const value = ticket[el.name] ?? '';
+      if (manual.has(el.name) || el.name === 'assignee_short') continue;
+      const rawValue = ticket[el.name] ?? '';
+      const value = ['estimated_hours', 'actual_hours'].includes(el.name) ? formatWholeHours(rawValue) : rawValue;
       if (el.value !== value) {
         el.value = value;
         if (value) pulse(el);
       }
       setTag(el, value ? 'auto' : '');
     }
+    updateAssigneeShort();
     const keys = new Set(Object.keys(ticket));
     chips.forEach((chip, i) => {
       chip.classList.toggle('is-on', keys.has(chip.dataset.key));
@@ -197,8 +257,46 @@ TBSNG0000_手書きサイン
     if (!el.name || el === source) return;
     manual.add(el.name);
     setTag(el, el.value.trim() ? 'manual' : '');
+    if (el.name === 'assignee') updateAssigneeShort();
     drawLive();
   });
+
+  const hoursButtons = [...form.querySelectorAll('[data-hours-for]')];
+  function adjustHours(input, step) {
+    const raw = input.value.normalize('NFKC').trim();
+    if (raw && !/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(raw)) { input.focus(); input.select(); return; }
+    const digits = Math.min(10, Math.max(2, (raw.split('.')[1] || '').length));
+    const value = Math.max(0, Number(raw || 0) + step);
+    if (!Number.isFinite(value)) { input.focus(); input.select(); return; }
+    input.value = formatWholeHours(value.toFixed(digits));
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  hoursButtons.forEach(button => button.addEventListener('click', () => {
+    adjustHours(document.getElementById(button.dataset.hoursFor), Number(button.dataset.hoursStep));
+  }));
+  for (const id of ['fEst', 'fAct']) {
+    const input = document.getElementById(id);
+    input.addEventListener('blur', () => { input.value = formatWholeHours(input.value); });
+    input.addEventListener('wheel', event => {
+      if (document.activeElement !== input || input.disabled || !event.deltaY) return;
+      event.preventDefault();
+      adjustHours(input, event.deltaY < 0 ? 1 : -1);
+    }, { passive: false });
+  }
+
+  const progressInput = byName.progress;
+  const progressSteps = [0, 50, 70, 100];
+  progressInput.addEventListener('wheel', event => {
+    if (document.activeElement !== progressInput || progressInput.disabled || !event.deltaY) return;
+    event.preventDefault();
+    const match = progressInput.value.normalize('NFKC').trim().match(/^(\d{1,3})\s*%?$/);
+    const current = match ? Number(match[1]) : (event.deltaY < 0 ? -1 : 101);
+    const next = event.deltaY < 0
+      ? progressSteps.find(value => value > current) ?? 100
+      : [...progressSteps].reverse().find(value => value < current) ?? 0;
+    progressInput.value = `${next}%`;
+    progressInput.dispatchEvent(new Event('input', { bubbles: true }));
+  }, { passive: false });
 
   chipRow.addEventListener('click', event => {
     const chip = event.target.closest('.chip');
@@ -496,6 +594,7 @@ TBSNG0000_手書きサイン
     create.disabled = reset.disabled = source.disabled = true;
     for (const el of fields) el.disabled = true;
     dateTriggers.forEach(btn => { btn.disabled = true; });
+    hoursButtons.forEach(btn => { btn.disabled = true; });
     closeDatePop();
     error.textContent = '';
     success.hidden = true;
@@ -518,6 +617,7 @@ TBSNG0000_手書きサイン
       create.disabled = reset.disabled = source.disabled = false;
       for (const el of fields) el.disabled = false;
       dateTriggers.forEach(btn => { btn.disabled = false; });
+      hoursButtons.forEach(btn => { btn.disabled = false; });
     }
   });
 

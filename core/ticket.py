@@ -12,18 +12,22 @@ from core.common import sanitize_filename
 
 DETAILS = {
     "title": "任务标题",
-    "parent": "关联案件",
+    "project": "所属项目",
+    "parent_project": "上级项目名称",
+    "parent": "关联案件编号",
+    "parent_category": "关联案件分类",
+    "parent_title": "关联案件标题",
     "status": "状态",
     "priority": "优先级",
     "assignee": "负责人",
+    "assignee_short": "负责人简称",
     "start_date": "开始日期",
     "due_date": "截止日期",
     "progress": "进度",
     "version": "目标版本",
     "screen_id": "画面 / 报表 ID",
-    "estimated_hours": "预计工时",
-    "actual_hours": "实际工时",
-    "activity": "创建 / 更新记录",
+    "estimated_hours": "预计工数（人日）",
+    "actual_hours": "实际工数（人日）",
 }
 INFO_FILE = "Ticket.txt"
 _CREATE_LOCK = threading.Lock()

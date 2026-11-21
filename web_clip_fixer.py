@@ -729,6 +729,8 @@ class WebHandler(upload_manager.Handler):
                 result = icon_library.rename_category(payload.get("old"), payload.get("new"))
             elif action == "delete":
                 result = icon_library.delete(str(payload.get("id") or ""))
+            elif action == "retrim":
+                result = icon_library.retrim(str(payload.get("id") or ""))
             elif action == "apply":
                 result = icon_library.apply(str(payload.get("id") or ""), payload.get("folders"))
             elif action == "restore":

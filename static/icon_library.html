@@ -33,12 +33,20 @@
     .ic-cat.is-on small { color: #f3efff; }
     .ic-cat-tools { display: flex; align-items: center; gap: 6px; }
     .ic-cat-tools input { width: 150px; }
+    .ic-batch { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 10px; }
+    .ic-batch[hidden] { display: none; }
+    .ic-batch input { width: 150px; }
+    .ic-batch-count { font-weight: 700; color: #2e1f66; }
+    .ic-batch-status { margin: 0 0 10px; color: #374151; overflow-wrap: anywhere; }
+    .ic-batch-status:empty { display: none; }
     .ic-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; min-height: 160px; align-content: start; }
     .ic-card { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 6px 8px; border: 2.5px solid #d4cfe6; border-radius: 14px; background: #fff; cursor: pointer; text-align: center; font: inherit; color: inherit; }
     .ic-card:hover { border-color: #8f7ad8; }
     .ic-card.is-selected { border-color: #5b3cc4; background: #efe9ff; box-shadow: 0 0 0 2px #5b3cc4 inset; }
+    .ic-card.is-checked { border-color: #00877a; background: #e4faf5; box-shadow: 0 0 0 2px #00877a inset; }
+    .ic-check { align-self: flex-start; font-weight: 800; color: #00675d; }
     .ic-card .ic-thumb { width: 72px; height: 72px; border-radius: 10px; display: grid; place-items: center; }
-    .ic-card .ic-thumb img { width: 64px; height: 64px; }
+    .ic-card .ic-thumb img { width: 100%; height: 100%; }
     .ic-card .ic-name { max-width: 100%; font-weight: 800; font-size: 13px; color: #111827; overflow-wrap: anywhere; line-height: 1.25; }
     .ic-card .ic-sub { font-size: 12px; color: #4b5563; font-weight: 600; }
     .ic-card .ic-badge { font-size: 11px; font-weight: 800; color: #14532d; background: #dcfce7; border-radius: 999px; padding: 1px 7px; }
@@ -48,11 +56,11 @@
     .ic-detail-empty { margin: auto; text-align: center; color: #374151; font-weight: 700; }
     .ic-preview { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 12px; align-items: center; }
     .ic-big { width: 140px; height: 140px; border-radius: 14px; display: grid; place-items: center; border: 2px solid #d4cfe6; }
-    .ic-big img { width: 128px; height: 128px; }
+    .ic-big img { width: 100%; height: 100%; }
     .ic-big.is-over { outline: 3px dashed #5b3cc4; outline-offset: 3px; }
     .ic-sizes { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
     .ic-sizes figure { margin: 0; display: grid; justify-items: center; gap: 2px; font-size: 11px; font-weight: 700; color: #4b5563; }
-    .ic-sizes .ic-s { display: grid; place-items: center; padding: 3px; border-radius: 6px; }
+    .ic-sizes .ic-s { display: grid; place-items: center; border-radius: 6px; }
     .ic-meta { font-size: 12px; color: #374151; line-height: 1.5; overflow-wrap: anywhere; }
     .ic-meta .is-warn { color: #7a4b00; font-weight: 700; }
     .ic-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
@@ -95,8 +103,9 @@
             <h3>🖼️ 生成图标</h3>
             <ul>
               <li>拖进来的图片（最好是透明底 PNG）缩成 16 / 20 / 24 / 32 / 40 / 48 / 64 / 96 / 128 / 256 共 10 个尺寸，合成一个 .ico。</li>
-              <li>不是正方形的图居中放，四周留透明。勾了「自动裁掉透明边」会先把四周空白的透明部分裁掉，图标显得大一些。</li>
+              <li>不是正方形的图居中放，四周留透明。勾了「自动裁掉透明边」会忽略边缘几乎看不见的透明杂点，再裁掉空白，让图标显得大一些。</li>
               <li>原图原样留一份。图片小于 128 像素时大图标会糊，会提醒你。</li>
+              <li>导入或替换时会比较裁掉透明边后的图片像素，遇到相同图片会提示并跳过；不同尺寸或细节不同的图片不会按相似度判断。</li>
             </ul>
           </section>
           <section class="how-notes-group">
@@ -146,6 +155,17 @@
             </span>
           </div>
           <div id="icCats" class="ic-cats"></div>
+          <div class="ic-batch"><button id="icDuplicates" class="btn" type="button" aria-pressed="false">查看重复图标</button><span id="icDuplicateInfo" class="ic-batch-count" aria-live="polite"></span></div>
+          <div class="ic-batch"><button id="icBatchToggle" class="btn" type="button" aria-pressed="false">☑ 批量管理</button></div>
+          <div id="icBatch" class="ic-batch" hidden>
+            <button id="icBatchAll" class="btn" type="button">全选当前显示</button>
+            <button id="icBatchClear" class="btn" type="button">清空选择</button>
+            <span id="icBatchCount" class="ic-batch-count" aria-live="polite">已选 0 个</span>
+            <input id="icBatchCategory" type="text" list="icCategoryList" maxlength="30" placeholder="目标分类（留空为未分类）" aria-label="目标分类（留空为未分类）">
+            <button id="icBatchMove" class="btn" type="button" disabled>移入分类</button>
+            <button id="icBatchDelete" class="btn btn-danger" type="button" disabled>删除所选</button>
+          </div>
+          <p id="icBatchStatus" class="ic-batch-status" role="status" aria-live="polite"></p>
           <div id="icGrid" class="ic-grid"><p class="ic-empty">正在读图标库…</p></div>
         </div>
         <aside id="icDetail" class="ic-detail" aria-live="polite"><p class="ic-detail-empty">点左边一个图标，在这里改名、分类、替换、删除，或套到文件夹。</p></aside>
@@ -155,6 +175,6 @@
     <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
   </main>
   <script src="/static/dialog.js"></script>
-  <script src="/static/icon_library.js"></script><script src="/static/debug_log.js"></script>
+  <script src="/static/icon_library.js?v=2"></script><script src="/static/debug_log.js"></script>
 </body>
 </html>

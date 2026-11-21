@@ -1,5 +1,6 @@
 import struct
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 from pathlib import Path
 
@@ -65,6 +66,23 @@ class IconLibraryTests(unittest.TestCase):
         entries = dict(ico_sizes((L.LIB_DIR / "icons" / f"{icon['id']}.ico").read_bytes()))
         self.assertEqual(entries[16][40:44], b"\x00\x00\x00\x00")  # 左下角在透明边里
 
+    def test_trim_ignores_nearly_invisible_stray_pixels(self):
+        pix = L._load_png(png(20, 20, (5, 6, 15, 14)))
+        pix.set_pixel(0, 0, (1, 1, 1, 1))
+        pix.set_pixel(19, 19, (2, 2, 2, 2))
+        pix.set_pixel(5, 6, (4, 4, 4, 8))
+        self.assertEqual(L._content_box(pix), (5, 6, 14, 13))
+        cropped = L._crop(pix, L._content_box(pix))
+        self.assertEqual(cropped.pixel(0, 0)[3], 8)
+
+    def test_trim_preserves_entirely_faint_image(self):
+        pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 10, 10), 1)
+        pix.clear_with()
+        pix.set_pixel(3, 4, (1, 1, 1, 1))
+        self.assertEqual(L._content_box(pix), (3, 4, 3, 4))
+        pix.clear_with()
+        self.assertEqual(L._content_box(pix), (0, 0, 9, 9))
+
     def test_not_transparent_and_small_are_reported(self):
         info = L.add("photo.png", png(60, 40, (0, 0, 60, 40), alpha=False))["info"]
         self.assertFalse(info["transparent"])
@@ -78,7 +96,7 @@ class IconLibraryTests(unittest.TestCase):
 
     def test_update_category_search_list_and_rename_category(self):
         a = L.add("a.png", png(), "旧分类")["icon"]
-        L.add("b.png", png(), "")
+        L.add("b.png", png(color=(50, 120, 250)), "")
         L.update(a["id"], name="  新  名字 ", category="工作")
         data = L.listing()
         self.assertEqual({c["name"]: c["count"] for c in data["categories"]}, {"工作": 1, "": 1})
@@ -132,7 +150,7 @@ class IconLibraryTests(unittest.TestCase):
 
     def test_apply_reports_missing_folder_and_moves_record_between_icons(self):
         a = L.add("a.png", png())["icon"]
-        b = L.add("b.png", png())["icon"]
+        b = L.add("b.png", png(color=(50, 120, 250)))["icon"]
         folder = self.root / "f"
         folder.mkdir()
         r = L.apply(a["id"], f"{folder}\n{self.root / '没有'}\nrelative\\path")
@@ -158,6 +176,58 @@ class IconLibraryTests(unittest.TestCase):
         self.assertEqual(list((L.LIB_DIR / "icons").iterdir()), [])
         with self.assertRaises(ValueError):
             L.icon_file(icon["id"], "png")
+
+    def test_duplicate_pixels_are_rejected_on_add_and_replace(self):
+        a = L.add("a.png", png())['icon']
+        b = L.add("b.png", png(color=(50, 120, 250)))['icon']
+        # 不同画布和文件名，但裁去透明边后像素相同。
+        same = png(400, 300, (150, 100, 250, 200))
+        with self.assertRaisesRegex(ValueError, '重复'):
+            L.add('another.png', same, '其他')
+        with self.assertRaisesRegex(ValueError, '重复'):
+            L.replace(b['id'], 'another.png', same)
+        self.assertEqual(L.listing()['icons'][0]['id'], b['id'])
+        self.assertEqual(L.listing()['icons'][0]['version'], 1)
+        # 用自己的原图替换仍允许，可重新裁剪。
+        self.assertEqual(L.replace(a['id'], 'a.png', same)['icon']['version'], 2)
+
+    def test_legacy_duplicates_and_missing_original_are_reported(self):
+        a = L.add('a.png', png())['icon']
+        b = L.add('b.png', png(color=(50, 120, 250)))['icon']
+        c = L.add('c.png', png(color=(60, 120, 250)))['icon']
+        folder = L.LIB_DIR / 'icons'
+        (folder / f"{b['id']}_orig.png").write_bytes((folder / f"{a['id']}_orig.png").read_bytes())
+        (folder / f"{c['id']}_orig.png").unlink()
+        result = L.listing()
+        self.assertEqual(set(result['duplicates'][0]), {a['id'], b['id']})
+        self.assertEqual(result['duplicate_unchecked'], [c['id']])
+
+    def test_concurrent_duplicate_import_only_adds_one(self):
+        image = png()
+        def add_one(n):
+            try:
+                L.add(f'{n}.png', image)
+                return True
+            except ValueError:
+                return False
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(add_one, range(2)))
+        self.assertEqual(sorted(results), [False, True])
+        self.assertEqual(len(L.listing()['icons']), 1)
+
+    def test_retrim_works_with_preexisting_duplicate(self):
+        a = L.add('a.png', png(), trim=False)['icon']
+        b = L.add('b.png', png(color=(50, 120, 250)))['icon']
+        folder = L.LIB_DIR / 'icons'
+        original = (folder / f"{a['id']}_orig.png").read_bytes()
+        (folder / f"{b['id']}_orig.png").write_bytes(original)
+        before = L._load_png((folder / f"{a['id']}.png").read_bytes())
+        self.assertLess(L._content_box(before)[2] - L._content_box(before)[0], 200)
+        result = L.retrim(a['id'])
+        after = L._load_png((folder / f"{a['id']}.png").read_bytes())
+        self.assertEqual(L._content_box(after), (0, 0, 255, 255))
+        self.assertEqual(result['icon']['version'], 2)
+        self.assertEqual((folder / f"{a['id']}_orig.png").read_bytes(), original)
 
     def test_broken_index_is_backed_up(self):
         L.LIB_DIR.mkdir(parents=True)

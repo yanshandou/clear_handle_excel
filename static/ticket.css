@@ -942,3 +942,14 @@
   .date-pop-foot { padding: 10px 10px 11px; }
   .date-quick { padding: 6px 10px; }
 }
+.pass-section { grid-column: 1 / -1; margin-top: 8px; padding-bottom: 5px; border-bottom: 1px dashed #b8d9ea; color: #1476a9; font: 800 12px/1.4 var(--garden-font); }
+.pass-section small { margin-left: 6px; color: #93a0c2; font-size: 10px; letter-spacing: 1px; }
+
+.stub-hours .auto-tag { top: -16px; }
+
+.hours-stepper { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-top: 5px; }
+.hours-stepper button { flex: 1 1 0; min-width: 0; height: 28px; border: 1px solid #e0c47c; border-radius: 9px; background: #fffaf0; color: #795718; font: 800 18px/1 var(--garden-font); cursor: pointer; }
+.hours-stepper button:hover { background: #fff0bd; }
+.hours-stepper button:focus-visible { outline: 2px solid #0d63d6; outline-offset: 2px; }
+.hours-stepper button:disabled { opacity: .5; cursor: default; }
+.hours-stepper span { color: #806b38; font: 700 10px/1 var(--garden-font); font-variant-numeric: tabular-nums; }
