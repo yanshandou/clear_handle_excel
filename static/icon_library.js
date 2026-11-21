@@ -1,5 +1,6 @@
 // 设置图标（用户 2026-11-20 要）：拖进透明底 PNG → 生成 Windows 图标（.ico）存进图标库；
-// 图标库可以搜索、分类、改名、替换、删除；选中的图标可以套到 Windows 文件夹，或换掉主页工具箱里某个工具的图标。
+// 图标库可以搜索、分类、改名、替换、删除，或换掉主页工具箱里某个工具的图标。
+// 这一页只管图标本身：给文件夹套图标在用到的地方做（目录结构模板 /ticket-structures、船票 /ticket 建文件夹时顺便指定）。
 // 后端 core/icon_library.py；调试日志都以「[设置图标]」开头打在浏览器控制台。
 // 页面规矩：点图标只换颜色、右边详情框固定不挪，不自动滚动。
 (() => {
@@ -11,25 +12,15 @@
   let lib = { icons: [], categories: [], tools: {}, windows: true };
   let selected = '';
   let category = null;     // null = 全部，'' = 未分类
-  let folderDraft = '';    // 套到文件夹的路径框：换选别的图标也留着
-  let lastResults = null;  // { id, html }
   let busy = false;
   let batchMode = false;
   let duplicatesOnly = false;
-  let assignRows = [];   // 批量指定：{path, icon, state, message}
-  let pickerRow = null;  // 正在挑图标的那一行
   const checked = new Set();
 
   const prefs = (() => { try { return JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (_) { return {}; } })();
   const savePrefs = () => { try { localStorage.setItem(KEY, JSON.stringify(prefs)); } catch (_) {} };
   $('icNewCategory').value = prefs.newCategory || '';
   $('icTrim').checked = prefs.trim !== false;
-  folderDraft = prefs.folders || '';
-  assignRows = (Array.isArray(prefs.assignRows) ? prefs.assignRows : [])
-    .filter(r => r && typeof r.path === 'string' && r.path.trim())
-    .map(r => ({path: r.path, icon: typeof r.icon === 'string' ? r.icon : '', state: '', message: ''}));
-  $('ibParent').value = prefs.ibParent || '';
-  $('ibPaths').value = prefs.ibPaths || '';
 
   const pngUrl = icon => `/api/icons/file?id=${icon.id}&kind=png&v=${icon.version}`;
   const icoUrl = icon => `/api/icons/file?id=${icon.id}&kind=ico`;
@@ -52,14 +43,12 @@
     lib = data;
     for (const id of checked) if (!byId(id)) checked.delete(id);
     if (selected && !byId(selected)) selected = '';
-    for (const row of assignRows) if (row.icon && !byId(row.icon)) { row.icon = ''; row.state = ''; row.message = ''; }
     if (category !== null && !lib.categories.some(c => c.name === category)) category = null;
     log('图标库', reason, `${lib.icons.length} 个图标`, lib.dir);
     renderCats();
     renderGrid();
     renderBatch();
     renderDetail();
-    renderAssign();
   }
 
   // ---------- 分类 + 搜索 ----------
@@ -67,11 +56,12 @@
     const chips = [`<button type="button" class="ic-cat${category === null ? ' is-on' : ''}" data-cat="*">全部<small>${lib.icons.length}</small></button>`]
       .concat(lib.categories.map(c => `<button type="button" class="ic-cat${category === c.name ? ' is-on' : ''}" data-cat="${esc(c.name)}">${esc(catLabel(c.name))}<small>${c.count}</small></button>`));
     $('icCats').innerHTML = chips.join('');
-    $('icCategoryList').innerHTML = lib.categories.filter(c => c.name).map(c => `<option value="${esc(c.name)}">`).join('');
-    const canRename = category !== null && category !== '';
+    $('icCategoryList').innerHTML = lib.categories.filter(c => c.name && c.name !== (lib.system_category || '系统图标')).map(c => `<option value="${esc(c.name)}">`).join('');
+    const sysCat = lib.system_category || '系统图标';
+    const canRename = category !== null && category !== '' && category !== sysCat;
     $('icCatRename').disabled = $('icCatRenameBtn').disabled = !canRename;
     $('icCatRename').value = canRename ? category : '';
-    $('icCatRename').placeholder = canRename ? '新的分类名' : '先点一个分类';
+    $('icCatRename').placeholder = canRename ? '新的分类名' : category === sysCat ? '系统图标是固定分类' : '先点一个分类';
     $('icCount').textContent = `共 ${lib.icons.length} 个 · 存在 ${lib.dir || ''}`;
     const groups = lib.duplicates || [];
     $('icDuplicates').setAttribute('aria-pressed', String(duplicatesOnly));
@@ -95,8 +85,8 @@
     $('icGrid').innerHTML = list.map(i => {
       const used = (i.folders || []).length + Object.values(lib.tools || {}).filter(v => v === i.id).length;
       const duplicateGroup = (lib.duplicates || []).findIndex(group => group.includes(i.id));
-      return `<button type="button" class="ic-card${batchMode ? (checked.has(i.id) ? ' is-checked' : '') : (i.id === selected ? ' is-selected' : '')}" data-id="${i.id}" ${batchMode ? `aria-pressed="${checked.has(i.id)}"` : ''} title="${esc(i.name)}（${esc(catLabel(i.category))}）">
-        ${batchMode ? `<span class="ic-check" aria-hidden="true">${checked.has(i.id) ? '☑ 已选' : '☐ 选择'}</span>` : ''}
+      return `<button type="button" class="ic-card${i.system ? ' is-system' : ''}${batchMode ? (checked.has(i.id) ? ' is-checked' : '') : (i.id === selected ? ' is-selected' : '')}" data-id="${i.id}" ${batchMode ? `aria-pressed="${checked.has(i.id)}"` : ''} title="${esc(i.name)}（${esc(catLabel(i.category))}）">
+        ${batchMode ? `<span class="ic-check" aria-hidden="true">${i.system ? '系统图标不能批量改' : checked.has(i.id) ? '☑ 已选' : '☐ 选择'}</span>` : ''}
         <span class="ic-thumb ic-checker"><img src="${pngUrl(i)}" alt="" loading="lazy" width="64" height="64"></span>
         <span class="ic-name">${esc(i.name)}</span>
         <span class="ic-sub">${esc(catLabel(i.category))}</span>
@@ -119,7 +109,6 @@
   function setBusy(value) {
     busy = value;
     renderBatch();
-    renderAssign();
   }
 
   async function batchAction(remove) {
@@ -178,13 +167,13 @@
     const box = $('icDetail');
     const icon = byId(selected);
     if (!icon) {
-      box.innerHTML = '<p class="ic-detail-empty">点左边一个图标，在这里改名、分类、替换、删除，或套到文件夹。</p>';
+      box.innerHTML = '<p class="ic-detail-empty">点左边一个图标，在这里改名、分类、替换、删除。</p>';
       return;
     }
     const warn = [];
     if (icon.transparent === false) warn.push('<span class="is-warn">这张图没有透明背景，图标会带底色</span>');
     const { render_width: renderWidth, render_height: renderHeight } = icon;
-    if (Math.max(renderWidth || icon.width || 0, renderHeight || icon.height || 0) < 128) {
+    if (!icon.system && Math.max(renderWidth || icon.width || 0, renderHeight || icon.height || 0) < 128) {
       warn.push('<span class="is-warn">用于生成图标的图片小于 128 像素，大图标可能模糊</span>');
     }
     const cropped = renderWidth && renderHeight && (renderWidth !== icon.width || renderHeight !== icon.height);
@@ -196,12 +185,17 @@
     const folders = icon.folders || [];
     box.innerHTML = `
       <div class="ic-preview">
-        <div class="ic-big ic-checker" id="icBig" title="把新 PNG 拖到这里 = 替换这个图标的图片"><img src="${pngUrl(icon)}" alt="${esc(icon.name)}"></div>
+        <div class="ic-big ic-checker" id="icBig"${icon.system ? '' : ' title="把新 PNG 拖到这里 = 替换这个图标的图片"'}><img src="${pngUrl(icon)}" alt="${esc(icon.name)}"></div>
         <div>
           <div class="ic-sizes">${[48, 32, 24, 16].map(s => `<figure><span class="ic-s ic-checker"><img src="${pngUrl(icon)}" alt="" width="${s}" height="${s}"></span>${s}</figure>`).join('')}</div>
           <p class="ic-meta">原图 ${icon.width}×${icon.height}${icon.source ? ` · ${esc(icon.source)}` : ''}${cropDetails}${squareDetails}<br>加入 ${esc(icon.created || '')}${warn.length ? '<br>' + warn.join('<br>') : ''}</p>
         </div>
       </div>
+      ${icon.system ? `
+      <p class="ic-system-note"><b>${esc(icon.name)}</b> · 系统图标：网站自带的，只能用，不能改名、改分类、替换或删除。</p>
+      <div class="ic-row">
+        <a class="btn" href="${icoUrl(icon)}" download>⬇ 下载 .ico</a>
+      </div>` : `
       <div class="ic-fields">
         <label>名字<input id="icName" type="text" value="${esc(icon.name)}" maxlength="60" autocomplete="off"></label>
         <label>分类<input id="icCategory" type="text" value="${esc(icon.category)}" list="icCategoryList" maxlength="30" placeholder="未分类" autocomplete="off"></label>
@@ -211,18 +205,11 @@
         <button id="icRetrim" class="btn" type="button">✂ 重新裁剪</button>
         <a class="btn" href="${icoUrl(icon)}" download>⬇ 下载 .ico</a>
         <button id="icDelete" class="btn btn-danger" type="button">🗑 删除</button>
-      </div>
+      </div>`}
       <div class="ic-sec">
-        <h3>📁 套到 Windows 文件夹</h3>
-        <textarea id="icFolders" spellcheck="false" placeholder="每行一个文件夹路径，可以直接粘贴「复制为路径」带引号的">${esc(folderDraft)}</textarea>
-        <div class="ic-row">
-          <button id="icApply" class="btn btn-primary" type="button">📁 套用这个图标</button>
-          <button id="icRestore" class="btn" type="button">↩ 恢复默认图标</button>
-        </div>
-        ${lib.windows ? '' : '<p class="ic-hint">现在不是在 Windows 上运行：会写 desktop.ini，但看不到图标效果。</p>'}
-        <ul id="icResults" class="ic-results">${lastResults && lastResults.id === icon.id ? lastResults.html : ''}</ul>
-        <p class="ic-hint">已经套了这个图标的文件夹（${folders.length} 个）</p>
-        <ul class="ic-folders">${folders.map(f => `<li><span>${esc(f)}</span><button type="button" data-restore="${esc(f)}" title="这个文件夹恢复默认图标">↩</button></li>`).join('') || '<li><span>还没有</span></li>'}</ul>
+        <h3>📁 用在这些文件夹（${folders.length} 个）</h3>
+        <ul class="ic-folders">${folders.map(f => `<li><span>${esc(f)}</span></li>`).join('') || '<li><span>还没有</span></li>'}</ul>
+        <p class="ic-hint">替换图片时这些文件夹会一起换成新图。给文件夹指定图标请到「目录结构模板」或船票页建文件夹时选。</p>
       </div>
       <div class="ic-sec">
         <h3>🧰 工具箱图标</h3>
@@ -238,6 +225,10 @@
   }
 
   function bindDetail(icon) {
+    $('icTool').addEventListener('change', e => { prefs.tool = e.target.value; savePrefs(); });
+    $('icToolSet').addEventListener('click', () => setTool(icon, true));
+    $('icToolReset').addEventListener('click', () => setTool(icon, false));
+    if (icon.system) return;   // 系统图标只能用：没有改名 / 替换 / 删除
     const saveField = async () => {
       const name = $('icName').value.trim(), cat = $('icCategory').value.trim();
       if (name === icon.name && cat === icon.category) return;
@@ -249,16 +240,9 @@
     };
     $('icName').addEventListener('change', saveField);
     $('icCategory').addEventListener('change', saveField);
-    $('icFolders').addEventListener('input', e => { folderDraft = e.target.value; prefs.folders = folderDraft; savePrefs(); });
     $('icReplace').addEventListener('click', () => $('icReplaceFile').click());
     $('icRetrim').addEventListener('click', () => retrimIcon(icon));
     $('icDelete').addEventListener('click', () => removeIcon(icon));
-    $('icApply').addEventListener('click', () => applyFolders(icon, false));
-    $('icRestore').addEventListener('click', () => applyFolders(icon, true));
-    $('icTool').addEventListener('change', e => { prefs.tool = e.target.value; savePrefs(); });
-    $('icToolSet').addEventListener('click', () => setTool(icon, true));
-    $('icToolReset').addEventListener('click', () => setTool(icon, false));
-    document.querySelectorAll('[data-restore]').forEach(btn => btn.addEventListener('click', () => restoreOne(btn.dataset.restore)));
     const big = $('icBig');
     big.addEventListener('dragover', e => { if (hasFiles(e)) { e.preventDefault(); e.stopPropagation(); big.classList.add('is-over'); } });
     big.addEventListener('dragleave', () => big.classList.remove('is-over'));
@@ -378,40 +362,6 @@
     finally { setBusy(false); }
   }
 
-  // ---------- 文件夹 ----------
-  function resultHtml(results) {
-    return results.map(r => `<li class="${r.ok ? 'is-ok' : 'is-bad'}">${esc(r.folder)}${r.ok ? '' : `：${esc(r.error)}`}</li>`).join('');
-  }
-
-  async function applyFolders(icon, restore) {
-    const folders = $('icFolders').value;
-    if (!folders.trim()) { await window.appAlert('请先在框里填文件夹路径（每行一个）。'); return; }
-    if (busy) return;
-    setBusy(true);
-    try {
-      const r = restore ? await post('/api/icons/restore', { folders }) : await post('/api/icons/apply', { id: icon.id, folders });
-      const bad = r.results.length - r.ok_count;
-      lastResults = { id: icon.id, html: resultHtml(r.results) };
-      status(bad ? `<span class="is-warn">! ${restore ? '恢复默认' : '套用'}成功 ${r.ok_count} 个，${bad} 个没成功（见右边）</span>`
-        : `<span class="is-ok">✓ ${restore ? '已恢复默认图标' : `已把「${esc(icon.name)}」套到`} ${r.ok_count} 个文件夹${restore ? '' : '（看不到变化就在资源管理器按 F5）'}</span>`);
-      log(restore ? '恢复默认' : '套到文件夹', r);
-      await reload(restore ? '恢复默认后' : '套用后');
-    } catch (e) {
-      status(`<span class="is-bad">! ${esc(e.message)}</span>`);
-    } finally { setBusy(false); }
-  }
-
-  async function restoreOne(folder) {
-    const ok = await window.appConfirm(`把这个文件夹恢复成默认图标？\n${folder}`, { okText: '恢复默认' });
-    if (!ok) return;
-    try {
-      const r = await post('/api/icons/restore', { folders: [folder] });
-      const res = r.results[0];
-      status(res.ok ? `<span class="is-ok">✓ 已恢复默认图标</span>` : `<span class="is-bad">! ${esc(res.error)}</span>`);
-      await reload('单个恢复后');
-    } catch (e) { status(`<span class="is-bad">! ${esc(e.message)}</span>`); }
-  }
-
   // ---------- 工具箱 ----------
   async function setTool(icon, on) {
     const tool = $('icTool').value;
@@ -422,130 +372,6 @@
       await reload('工具箱图标');
     } catch (e) { status(`<span class="is-bad">! ${esc(e.message)}</span>`); }
   }
-
-  // ---------- 批量指定：每个文件夹挑自己的图标 ----------
-  const cleanPath = v => String(v ?? '').trim().replace(/^["']+|["']+$/g, '').trim();
-  const pathKey = p => p.toLowerCase();
-  const saveAssign = () => {
-    prefs.assignRows = assignRows.map(r => ({path: r.path, icon: r.icon}));
-    prefs.ibParent = $('ibParent').value;
-    prefs.ibPaths = $('ibPaths').value;
-    savePrefs();
-  };
-
-  function addAssignRows(entries) {
-    let added = 0;
-    for (const entry of entries) {
-      const path = cleanPath(entry.path);
-      if (!path) continue;
-      const row = assignRows.find(r => pathKey(r.path) === pathKey(path));
-      if (row) { if (!row.icon && entry.icon) row.icon = entry.icon; continue; }
-      if (assignRows.length >= 200) break;
-      assignRows.push({path, icon: entry.icon || '', state: '', message: ''});
-      added++;
-    }
-    renderAssign(); saveAssign();
-    return added;
-  }
-
-  function renderAssign() {
-    const chosen = assignRows.filter(r => r.icon && byId(r.icon)).length;
-    $('ibApply').disabled = busy || !chosen;
-    $('ibApply').textContent = chosen ? `应用到 ${chosen} 个文件夹` : '应用到文件夹';
-    $('ibRows').innerHTML = assignRows.length ? assignRows.map((r, n) => {
-      const icon = byId(r.icon);
-      const note = r.message ? `<span class="ib-note">${esc(r.message)}</span>` : r.state === 'ok' ? '<span class="ib-note">✓ 已应用</span>' : '';
-      return `<li class="ib-row${r.state ? ` is-${r.state}` : ''}">
-        <button type="button" class="ib-slot${icon ? ' is-set' : ''}" data-slot="${n}" title="给这个文件夹挑图标" aria-label="给 ${esc(r.path)} 挑图标">${icon ? `<img src="${pngUrl(icon)}" alt="${esc(icon.name)}">` : '+'}</button>
-        <div><span class="ib-path">${esc(r.path)}</span>${note}</div>
-        <button type="button" class="ib-drop-row" data-drop="${n}" title="移除这一行" aria-label="移除这一行">✕</button>
-      </li>`;
-    }).join('') : '<li class="ib-empty">列表还是空的：上面粘贴路径生成，或列一个父目录的子文件夹。</li>';
-  }
-
-  function openPicker(row, slot) {
-    pickerRow = row;
-    const picker = $('ibPicker');
-    picker.innerHTML = lib.icons.map(i => `<button type="button" class="ib-pick" data-pick="${i.id}"><img src="${pngUrl(i)}" alt=""><span>${esc(i.name)}</span></button>`).join('')
-      || '<p class="ib-empty">图标库还是空的</p>';
-    picker.hidden = false;
-    const rect = slot.getBoundingClientRect();
-    const width = picker.offsetWidth, height = picker.offsetHeight;
-    picker.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
-    picker.style.top = `${rect.bottom + 6 + height > window.innerHeight - 8 ? Math.max(8, rect.top - height - 6) : rect.bottom + 6}px`;
-  }
-  const closePicker = () => { $('ibPicker').hidden = true; pickerRow = null; };
-
-  $('ibRows').addEventListener('click', e => {
-    const slot = e.target.closest('[data-slot]');
-    if (slot) { openPicker(assignRows[+slot.dataset.slot], slot); return; }
-    const drop = e.target.closest('[data-drop]');
-    if (drop) { assignRows.splice(+drop.dataset.drop, 1); closePicker(); renderAssign(); saveAssign(); }
-  });
-  $('ibPicker').addEventListener('click', e => {
-    const tile = e.target.closest('[data-pick]');
-    if (!tile || !pickerRow) return;
-    pickerRow.icon = tile.dataset.pick; pickerRow.state = ''; pickerRow.message = '';
-    closePicker(); renderAssign(); saveAssign();
-  });
-  document.addEventListener('click', e => {
-    if (!$('ibPicker').hidden && !e.target.closest('#ibPicker') && !e.target.closest('[data-slot]')) closePicker();
-  });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') closePicker(); });
-  $('ibFromPaths').addEventListener('click', () => {
-    const added = addAssignRows($('ibPaths').value.split(/\r?\n/).map(path => ({path, icon: ''})));
-    $('ibStatus').innerHTML = added ? `<span class="is-ok">✓ 加进列表 ${added} 个文件夹</span>`
-      : '<span class="is-warn">没有新增文件夹（路径为空或和列表重复）</span>';
-  });
-  $('ibListSub').addEventListener('click', async () => {
-    const folder = $('ibParent').value.trim();
-    if (!folder) { await window.appAlert('请先填父目录路径。'); return; }
-    try {
-      const response = await fetch(`/api/icons/subfolders?folder=${encodeURIComponent(folder)}`, {cache: 'no-store'});
-      const r = await response.json().catch(() => ({}));
-      if (!response.ok || !r.ok) throw Error(r.error || '列不了子文件夹');
-      const added = addAssignRows(r.folders.map(f => ({path: f.path, icon: f.icon_id})));
-      $('ibStatus').innerHTML = `<span class="is-ok">✓ 列出 ${r.folders.length} 个子文件夹，新增 ${added} 个进列表</span>`
-        + (r.total > r.folders.length ? `<br><span class="is-warn">! 共 ${r.total} 个子文件夹，只列前 200 个</span>` : '');
-    } catch (e) { $('ibStatus').innerHTML = `<span class="is-bad">! ${esc(e.message)}</span>`; }
-  });
-  $('ibClear').addEventListener('click', () => { assignRows = []; closePicker(); renderAssign(); saveAssign(); $('ibStatus').textContent = ''; });
-  $('ibPaths').addEventListener('input', saveAssign);
-  $('ibParent').addEventListener('input', saveAssign);
-  $('ibApply').addEventListener('click', async () => {
-    const chosen = assignRows.filter(r => r.icon && byId(r.icon));
-    if (!chosen.length || busy) return;
-    setBusy(true);
-    const groups = new Map();
-    for (const row of chosen) { if (!groups.has(row.icon)) groups.set(row.icon, []); groups.get(row.icon).push(row.path); }
-    const results = new Map();
-    let done = 0;
-    try {
-      for (const [iconId, paths] of groups) {
-        $('ibStatus').textContent = `正在套「${byId(iconId).name}」：第 ${done + 1} / ${groups.size} 组（${paths.length} 个文件夹）…`;
-        try {
-          const r = await post('/api/icons/apply', {id: iconId, folders: paths});
-          for (const res of r.results) results.set(pathKey(res.folder), res);
-        } catch (e) { for (const p of paths) results.set(pathKey(p), {ok: false, error: e.message}); }
-        done++;
-      }
-      for (const row of assignRows) {
-        const res = results.get(pathKey(row.path));
-        if (!res) continue;
-        row.state = res.ok ? 'ok' : 'bad'; row.message = res.ok ? '' : res.error;
-      }
-      const ok = [...results.values()].filter(r => r.ok).length;
-      const bad = results.size - ok;
-      const skipped = assignRows.length - chosen.length;
-      $('ibStatus').innerHTML = (bad ? `<span class="is-warn">! 套成功 ${ok} 个文件夹，${bad} 个没成功（看行内说明）</span>`
-        : `<span class="is-ok">✓ 已给 ${ok} 个文件夹各指定图标（看不到变化就在资源管理器按 F5）</span>`)
-        + (skipped ? `<br><span class="is-warn">跳过 ${skipped} 行没挑图标的</span>` : '');
-      log('批量指定', [...groups.entries()], [...results.values()]);
-      await reload('批量指定后');
-    } catch (e) {
-      $('ibStatus').innerHTML = `<span class="is-bad">! ${esc(e.message)}</span>`;
-    } finally { setBusy(false); }
-  });
 
   // ---------- 拖放 / 事件 ----------
   const hasFiles = e => [...(e.dataTransfer?.types || [])].includes('Files');
@@ -572,6 +398,7 @@
     const card = e.target.closest('.ic-card');
     if (!card || busy) return;
     if (!batchMode) { select(card.dataset.id); return; }
+    if (byId(card.dataset.id)?.system) { $('icBatchStatus').textContent = '系统图标是网站自带的，不能批量移动或删除。'; return; }
     if (checked.has(card.dataset.id)) checked.delete(card.dataset.id); else checked.add(card.dataset.id);
     renderGrid(); renderBatch();
     document.querySelectorAll('.ic-card').forEach(next => { if (next.dataset.id === card.dataset.id) next.focus(); });
@@ -582,7 +409,7 @@
     $('icBatchStatus').textContent = '';
     renderBatch(); renderGrid();
   });
-  $('icBatchAll').addEventListener('click', () => { visible().forEach(i => checked.add(i.id)); renderGrid(); renderBatch(); });
+  $('icBatchAll').addEventListener('click', () => { visible().filter(i => !i.system).forEach(i => checked.add(i.id)); renderGrid(); renderBatch(); });
   $('icBatchClear').addEventListener('click', () => { checked.clear(); renderGrid(); renderBatch(); });
   $('icBatchMove').addEventListener('click', () => batchAction(false));
   $('icBatchDelete').addEventListener('click', () => batchAction(true));
@@ -617,7 +444,6 @@
 
   reload('打开页面').catch(e => {
     $('icGrid').innerHTML = `<p class="ic-empty">读不了图标库：${esc(e.message)}</p>`;
-    renderAssign();
     console.error('[设置图标] 读不了图标库', e);
   });
 })();

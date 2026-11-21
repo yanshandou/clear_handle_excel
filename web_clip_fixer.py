@@ -310,13 +310,6 @@ class WebHandler(upload_manager.Handler):
         elif parsed.path == "/api/icons":
             from core import icon_library
             self._send_json({"ok": True, **icon_library.listing()})
-        elif parsed.path == "/api/icons/subfolders":  # 批量指定图标：列父目录的第一层子文件夹
-            from core import icon_library
-            folder = parse_qs(parsed.query).get("folder", [""])[0]
-            try:
-                self._send_json({"ok": True, **icon_library.subfolders(folder)})
-            except (ValueError, OSError) as err:
-                self._send_json({"ok": False, "error": str(err)}, status=400)
         elif parsed.path == "/api/icons/file":  # 图标库里的预览 PNG / .ico 下载（带版本号的地址可以缓存）
             from core import icon_library
             from urllib.parse import quote
@@ -746,10 +739,6 @@ class WebHandler(upload_manager.Handler):
                 result = icon_library.delete(str(payload.get("id") or ""))
             elif action == "retrim":
                 result = icon_library.retrim(str(payload.get("id") or ""))
-            elif action == "apply":
-                result = icon_library.apply(str(payload.get("id") or ""), payload.get("folders"))
-            elif action == "restore":
-                result = icon_library.restore(payload.get("folders"))
             elif action == "tool":
                 result = icon_library.set_tool_icon(str(payload.get("tool") or ""), payload.get("id") or None)
             elif action == "open_dir":

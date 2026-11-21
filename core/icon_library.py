@@ -11,6 +11,9 @@
   写 desktop.ini 的 IconResource，desktop.ini 设隐藏 + 系统，文件夹设只读（Windows 认 desktop.ini 的条件），
   再通知资源管理器刷新。文件夹里的是复制件：以后删掉图标库里的图标，文件夹的图标也不会坏。
 - 替换图标图片时，已经套过这个图标的文件夹一起换成新图。
+- 系统图标（用户 2026-11-21 定）：网站自带的图标（static/images/harbor/sprite 和 tools）自动放进图标库，
+  分类固定叫「系统图标」，只能用、不能改名 / 改分类 / 替换 / 删除；「系统图标」这个分类名用户不能用，
+  用户上传的图标分类名自己定。
 """
 from __future__ import annotations
 
@@ -41,6 +44,26 @@ _PIXEL_FINGERPRINT = "pixels_v1"
 LIB_DIR: Path | None = None   # 测试时改这里；平时用数据文件夹下的「图标库」
 _lock = threading.RLock()
 _fingerprint_cache: dict[Path, dict] = {}
+
+
+SYSTEM_CATEGORY = "系统图标"
+_HARBOR = Path(__file__).resolve().parent.parent / "static" / "images" / "harbor"
+# 网站自带的图标：(文件, 名字)。主页精灵图按格子切成 sprite/<名字>.png，工具专属图在 tools/
+SYSTEM_ICONS = (
+    ("sprite/home.png", "主页"), ("sprite/grid.png", "表格"), ("sprite/search.png", "放大镜"),
+    ("sprite/chart.png", "柱状图"), ("sprite/folder.png", "文件夹"), ("sprite/layers.png", "文件叠"),
+    ("sprite/download.png", "下载"), ("sprite/upload.png", "上传"), ("sprite/settings.png", "齿轮"),
+    ("sprite/link.png", "链条"), ("sprite/eye.png", "眼睛"), ("sprite/palette.png", "调色板"),
+    ("sprite/target.png", "靶心"), ("sprite/document.png", "文档"), ("sprite/type.png", "字体"),
+    ("sprite/image.png", "图片"), ("sprite/check.png", "勾选清单"), ("sprite/clean.png", "清理表格"),
+    ("sprite/adjust.png", "尺子"), ("sprite/cells.png", "查格子"), ("sprite/crate.png", "上传货箱"),
+    ("sprite/new.png", "宝箱"), ("sprite/finish.png", "奖杯"), ("sprite/map.png", "地图"),
+    ("sprite/compass.png", "罗盘"),
+    ("tools/bl.png", "断链警示"), ("tools/reflink.png", "链条扳手"), ("tools/widths.png", "列宽"),
+    ("tools/pdfstack.png", "PDF 一叠"), ("tools/pdfdiff.png", "PDF 对比"), ("tools/report.png", "对比报告"),
+    ("tools/json.png", "JSON 表格"), ("tools/pick.png", "挑文件"), ("tools/view.png", "视图"),
+    ("tools/appicon.png", "应用图标"), ("tools/imgfix.png", "修复图片"),
+)
 
 
 class DuplicateIconError(ValueError):
@@ -119,13 +142,15 @@ def _public(icon: dict) -> dict:
         "width": icon.get("width"), "height": icon.get("height"), "transparent": icon.get("transparent", True),
         "render_width": icon.get("render_width"), "render_height": icon.get("render_height"),
         "created": icon.get("created"), "updated": icon.get("updated"), "version": icon.get("version", 1),
-        "source": icon.get("source") or "", "folders": folders,
+        "source": icon.get("source") or "", "folders": folders, "system": bool(icon.get("system")),
     }
 
 
 def listing() -> dict:
     with _lock:
         data = _load()
+        if _ensure_system(data):
+            _save(data)
         groups, unchecked = _duplicate_groups(data)
     icons = [_public(i) for i in data["icons"]]
     categories: dict[str, int] = {}
@@ -133,13 +158,73 @@ def listing() -> dict:
         categories[icon["category"]] = categories.get(icon["category"], 0) + 1
     return {
         "icons": icons,
-        "categories": [{"name": k, "count": v} for k, v in sorted(categories.items(), key=lambda kv: (kv[0] == "", kv[0]))],
+        "categories": [{"name": k, "count": v} for k, v in sorted(categories.items(), key=lambda kv: (kv[0] != SYSTEM_CATEGORY, kv[0] == "", kv[0]))],
+        "system_category": SYSTEM_CATEGORY,
         "tools": data["tools"],
         "dir": str(library_dir()),
         "windows": sys.platform == "win32",
         "duplicates": groups,
         "duplicate_unchecked": unchecked,
     }
+
+
+# ---------------------------------------------------------------- 系统图标
+
+def _system_id(rel: str) -> str:
+    return hashlib.sha1(f"system:{rel}".encode()).hexdigest()[:12]
+
+
+def _ensure_system(data: dict) -> bool:
+    """网站自带的图标补进图标库（缺的才生成 .ico，图片换了按文件大小/时间重出）；返回有没有改动。"""
+    wanted = {_system_id(rel): (rel, name) for rel, name in SYSTEM_ICONS}
+    have = {i["id"]: i for i in data["icons"] if i.get("system")}
+    changed = False
+    for icon_id in set(have) - set(wanted):   # 新版本里不再自带的，从库里拿掉（文件留着不碍事）
+        data["icons"] = [i for i in data["icons"] if i["id"] != icon_id]
+        changed = True
+    system_icons = []
+    for icon_id, (rel, name) in wanted.items():
+        path = _HARBOR / rel
+        icon = have.get(icon_id)
+        try:
+            stat = path.stat()
+            stamp = [stat.st_size, int(stat.st_mtime)]
+            ready = icon and icon.get("stamp") == stamp and (_icons_dir() / f"{icon_id}.ico").is_file()
+            if not ready:
+                body = path.read_bytes()
+                info = _render(icon_id, body, _load_png(body), trim=True)
+                now = time.strftime("%Y-%m-%d %H:%M:%S")
+                icon = {**(icon or {"created": now, "folders": [], "version": 0}),
+                        "id": icon_id, "width": info["width"], "height": info["height"], "transparent": info["transparent"],
+                        "render_width": info["render_width"], "render_height": info["render_height"],
+                        "updated": now, "source": rel, "stamp": stamp}
+                icon["version"] = int(icon.get("version", 0)) + 1
+                icon.pop("fingerprints", None)
+                changed = True
+        except (OSError, ValueError) as err:
+            _log("系统图标生成不了", 文件=rel, 原因=err)
+            if not icon:
+                continue
+        if icon.get("name") != name or icon.get("category") != SYSTEM_CATEGORY or not icon.get("system"):
+            icon.update(name=name, category=SYSTEM_CATEGORY, system=True)
+            changed = True
+        system_icons.append(icon)
+    if changed:
+        users = [i for i in data["icons"] if not i.get("system")]
+        data["icons"] = users + system_icons   # 系统图标排在用户图标后面
+        _log("系统图标已更新", 数量=len(system_icons))
+    return changed
+
+
+def _check_user_icon(icon: dict, action: str) -> None:
+    if icon.get("system"):
+        raise ValueError(f"「{icon.get('name')}」是系统图标，只能用，不能{action}")
+
+
+def _check_category(category: str) -> str:
+    if category == SYSTEM_CATEGORY:
+        raise ValueError(f"「{SYSTEM_CATEGORY}」是网站自带图标的分类，请给上传的图标起别的分类名")
+    return category
 
 
 # ---------------------------------------------------------------- PNG → ICO
@@ -365,6 +450,7 @@ def _name_from_file(filename: str) -> str:
 
 def add(filename: str, body: bytes, category: str = "", trim: bool = True) -> dict:
     _validate_image_bytes(body)
+    category = _check_category(_clean_text(category, MAX_CATEGORY))
     original = hashlib.sha256(body).hexdigest()
     with _lock:
         data = _load()
@@ -375,7 +461,7 @@ def add(filename: str, body: bytes, category: str = "", trim: bool = True) -> di
         icon_id = uuid.uuid4().hex[:12]
         info = _render(icon_id, body, pix, trim)
         now = time.strftime("%Y-%m-%d %H:%M:%S")
-        icon = {"id": icon_id, "name": _name_from_file(filename), "category": _clean_text(category, MAX_CATEGORY),
+        icon = {"id": icon_id, "name": _name_from_file(filename), "category": category,
                 "width": info["width"], "height": info["height"], "transparent": info["transparent"],
                 "render_width": info["render_width"], "render_height": info["render_height"],
                 "created": now, "updated": now, "version": 1, "source": Path(filename or "").name, "folders": []}
@@ -391,6 +477,7 @@ def replace(icon_id: str, filename: str, body: bytes, trim: bool = True) -> dict
     with _lock:
         data = _load()
         icon = _find(data, icon_id)
+        _check_user_icon(icon, "替换图片")
         pix = _load_png(body)
         pixels = _fingerprint(pix)
         try:
@@ -427,6 +514,7 @@ def retrim(icon_id: str) -> dict:
     """用保存的原图重新裁边，并沿用替换图片时的文件夹刷新规则。"""
     with _lock:
         icon = _find(_load(), icon_id)
+        _check_user_icon(icon, "重新裁剪")
         try:
             body = _original_path(icon_id).read_bytes()
         except OSError as err:
@@ -438,11 +526,12 @@ def update(icon_id: str, name=None, category=None) -> dict:
     with _lock:
         data = _load()
         icon = _find(data, icon_id)
+        _check_user_icon(icon, "改名字和分类")
         old = (icon.get("name"), icon.get("category"))
         if name is not None:
             icon["name"] = _clean_text(name, MAX_NAME) or icon.get("name") or "未命名"
         if category is not None:
-            icon["category"] = _clean_text(category, MAX_CATEGORY)
+            icon["category"] = _check_category(_clean_text(category, MAX_CATEGORY))
         _save(data)
     _log("改名字 / 分类", 原来=f"{old[0]} / {old[1] or '未分类'}", 现在=f"{icon['name']} / {icon['category'] or '未分类'}")
     return {"icon": _public(icon)}
@@ -450,11 +539,14 @@ def update(icon_id: str, name=None, category=None) -> dict:
 
 def rename_category(old: str, new: str) -> dict:
     old, new = _clean_text(old, MAX_CATEGORY), _clean_text(new, MAX_CATEGORY)
+    if old == SYSTEM_CATEGORY:
+        raise ValueError(f"「{SYSTEM_CATEGORY}」是固定分类，不能改名")
+    _check_category(new)
     with _lock:
         data = _load()
         count = 0
         for icon in data["icons"]:
-            if (icon.get("category") or "") == old:
+            if not icon.get("system") and (icon.get("category") or "") == old:
                 icon["category"] = new
                 count += 1
         _save(data)
@@ -466,6 +558,7 @@ def delete(icon_id: str) -> dict:
     with _lock:
         data = _load()
         icon = _find(data, icon_id)
+        _check_user_icon(icon, "删除")
         data["icons"] = [i for i in data["icons"] if i["id"] != icon_id]
         tools = [k for k, v in data["tools"].items() if v == icon_id]
         for key in tools:
@@ -517,6 +610,7 @@ def open_library() -> dict:
 
 
 # ---------------------------------------------------------------- 套到 Windows 文件夹
+# 只给用到图标的地方调用（目录结构模板 / 船票建文件夹时），图标页本身不再套文件夹。
 
 def parse_folders(value) -> list[str]:
     if isinstance(value, list):
@@ -760,12 +854,3 @@ def restore(folders) -> dict:
             results.append({"folder": text, "ok": False, "error": str(err)})
         _log("恢复默认图标", 文件夹=text, 结果="成功" if results[-1]["ok"] else results[-1]["error"])
     return {"results": results, "ok_count": sum(1 for r in results if r["ok"])}
-
-
-def subfolders(parent) -> dict:
-    """父目录的第一层子文件夹，供批量指定图标逐行挑选；顺带带上每个文件夹现在用的图标"""
-    text = str(parent or "").strip().strip('"').strip("'").strip()
-    folder = _check_folder(text)
-    entries = sorted((p for p in folder.iterdir() if p.is_dir()), key=lambda p: p.name.lower())
-    rows = [{"path": str(p), "icon_id": _folder_icon_id(p)} for p in entries[:200]]
-    return {"dir": str(folder), "folders": rows, "total": len(entries)}
