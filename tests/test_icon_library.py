@@ -183,6 +183,40 @@ class IconLibraryTests(unittest.TestCase):
         self.assertEqual(folders[b["id"]], [str(folder)])
         self.assertEqual(len(list(folder.glob("*.ico"))), 1)  # 换图标时旧的那份删掉
 
+    def test_subfolders_lists_dirs_sorted_with_current_icon(self):
+        icon = L.add("a.png", png())["icon"]
+        parent = self.root / "parent"
+        parent.mkdir()
+        for name in ("b_dir", "A_dir"):
+            (parent / name).mkdir()
+        (parent / "file.txt").write_text("x")
+        L.apply(icon["id"], str(parent / "A_dir"))
+        result = L.subfolders(f'"{parent}"')
+        self.assertEqual(result["dir"], str(parent))
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(result["folders"], [
+            {"path": str(parent / "A_dir"), "icon_id": icon["id"]},
+            {"path": str(parent / "b_dir"), "icon_id": ""},
+        ])
+
+    def test_subfolders_rejects_bad_parent_and_caps_at_200(self):
+        with self.assertRaisesRegex(ValueError, "完整路径"):
+            L.subfolders("relative\\path")
+        with self.assertRaisesRegex(ValueError, "找不到"):
+            L.subfolders(str(self.root / "没有"))
+        file = self.root / "f.txt"
+        file.write_text("x")
+        with self.assertRaisesRegex(ValueError, "不是文件夹"):
+            L.subfolders(str(file))
+        parent = self.root / "many"
+        parent.mkdir()
+        for n in range(201):
+            (parent / f"d{n:03d}").mkdir()
+        result = L.subfolders(str(parent))
+        self.assertEqual(result["total"], 201)
+        self.assertEqual(len(result["folders"]), 200)
+        self.assertEqual(result["folders"][0]["path"], str(parent / "d000"))
+
     def test_tool_icon_and_delete(self):
         icon = L.add("a.png", png())["icon"]
         L.set_tool_icon("clean", icon["id"])

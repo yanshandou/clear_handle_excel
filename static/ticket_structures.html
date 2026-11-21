@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>目录结构模板 - 开发百宝箱</title>
+  <link rel="icon" type="image/png" href="/static/images/dev-toolbox-logo.png">
+  <link rel="stylesheet" href="/static/styles.css"><link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/repair.css"><script src="/static/game_fx.js"></script>
+  <style>
+    .ts-lib { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 16px; align-items: start; }
+    .ts-side { display: flex; flex-direction: column; gap: 10px; }
+    .ts-new { display: flex; gap: 6px; }
+    .ts-new input { flex: 1; min-width: 0; }
+    .ts-list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+    .ts-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 12px; border: 2px solid #c9c1e6; border-radius: 12px; background: #fff; cursor: pointer; text-align: left; font: inherit; color: inherit; }
+    .ts-item:hover { border-color: #8f7ad8; }
+    .ts-item.is-on { border-color: #5b3cc4; background: #efe9ff; box-shadow: 0 0 0 2px #5b3cc4 inset; }
+    .ts-item-name { flex: 1; min-width: 0; font-weight: 800; overflow-wrap: anywhere; }
+    .ts-item small { color: #4b5563; font-weight: 700; white-space: nowrap; }
+    .ts-item .ts-warn-badge { color: #7a4b00; background: #fef3c7; border-radius: 999px; padding: 1px 7px; font-size: 11px; font-weight: 800; }
+    .ts-side-tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .ts-side-tools input { flex: 1; min-width: 120px; }
+    .ts-empty { color: #374151; font-weight: 700; padding: 12px 4px; }
+
+    .ts-editor { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 14px; border: 2.5px solid #c9c1e6; border-radius: 16px; background: #fff; }
+    .ts-editor-empty { margin: 30px auto; text-align: center; color: #374151; font-weight: 700; }
+    .ts-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .ts-toolbar .ts-title { font-weight: 800; color: #2e1f66; margin-right: auto; overflow-wrap: anywhere; }
+    .ts-dirty { font-size: 12px; font-weight: 800; color: #7a4b00; }
+    .ts-tree { margin: 0; padding: 0; list-style: none; }
+    .ts-tree .ts-tree { margin-left: 22px; border-left: 2px dashed #ddd6f3; padding-left: 10px; }
+    .ts-node { padding: 3px 0; }
+    .ts-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .ts-kind { font-size: 15px; }
+    .ts-row input[type=text] { box-sizing: border-box; min-width: 0; }
+    .ts-name { width: 200px; font-weight: 700; }
+    .ts-source { flex: 1; min-width: 220px; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+    .ts-row .btn { padding: 4px 10px; font-size: 12px; }
+    .ts-node.is-warn .ts-source { border-color: #d97706; background: #fffbeb; }
+    .ts-warnings { margin: 0; padding: 0; list-style: none; font-size: 13px; color: #7a4b00; font-weight: 600; }
+    .ts-warnings li { padding: 2px 0; overflow-wrap: anywhere; }
+    .ts-warnings:empty { display: none; }
+    .ts-status { min-height: 1.5em; margin: 0; font-weight: 700; color: #1f2937; }
+    .ts-status .is-warn { color: #7a4b00; } .ts-status .is-bad { color: #b42318; } .ts-status .is-ok { color: #14633c; }
+    .ts-hint { font-size: 12.5px; color: #4b5563; font-weight: 600; margin: 0; }
+    @media (max-width: 860px) { .ts-lib { grid-template-columns: 1fr; } }
+  </style>
+  <link rel="stylesheet" href="/static/theme-casual.css">
+  <script src="/static/tools.js?v=2"></script>
+  <link rel="stylesheet" href="/static/theme-cartoon.css">
+  <link rel="stylesheet" href="/static/how_notes.css">
+</head>
+<body>
+  <header class="app-header">
+    <a href="/" class="header-brand"><div class="header-logo-badge" aria-hidden="true"></div><div class="header-title"><h1 class="header-title-text">目录结构模板</h1><span class="subtitle">Ticket 文件夹 · 多套目录树 · 文件从指定来源复制</span></div></a>
+    <nav class="header-nav" aria-label="功能导航"><a href="/ticket" class="nav-link">🎫 船票</a><a href="/" class="nav-link"><span class="ui-icon harbor-icon icon-home" aria-hidden="true"></span>主页</a></nav>
+  </header>
+  <main class="container clean-container">
+    <section class="panel">
+      <h2>模板库</h2>
+      <details class="how-notes">
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">出票时选一套模板，按树建目录、从来源路径复制文件</span><span class="how-notes-toggle"></span></summary>
+        <div class="how-notes-body">
+          <section class="how-notes-group">
+            <h3>🗂️ 模板与目录树</h3>
+            <ul>
+              <li>可以建多套模板（比如「基本設計」「詳細設計」各一套），模板可以改名、删除。</li>
+              <li>目录树里加目录、加文件；文件要填一个<b>来源路径</b>（本机或共享盘上的完整路径），出票时把那个文件复制过来。</li>
+              <li>编辑完点「保存」才写进模板库；来源文件不存在的会标黄提醒，但不拦保存（共享盘可能暂时没连上）。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group">
+            <h3>🎫 出票时怎么用</h3>
+            <ul>
+              <li>船票页选一套模板，出票前还能预览这棵树：勾掉不要的目录文件、改个别名字，不用动模板本身。</li>
+              <li>目标里已经有的文件不会被覆盖；来源缺失、复制失败只记进问题清单，Ticket.txt 照常落盘。</li>
+            </ul>
+          </section>
+          <section class="how-notes-group is-wide">
+            <h3>💾 存在哪里</h3>
+            <ul>
+              <li>模板库在 <b>桌面\handle-excel\程序数据\目录结构</b>，换新版本（重新下载 ZIP）不会丢。</li>
+            </ul>
+          </section>
+        </div>
+      </details>
+      <div class="ts-lib">
+        <div class="ts-side">
+          <div class="ts-new">
+            <input id="tsNewName" type="text" maxlength="60" placeholder="新模板名，如：基本設計" autocomplete="off">
+            <button id="tsCreate" class="btn btn-primary" type="button">新建</button>
+          </div>
+          <ul id="tsList" class="ts-list"><li class="ts-empty">正在读模板库…</li></ul>
+          <div class="ts-side-tools">
+            <input id="tsRename" type="text" maxlength="60" placeholder="给选中模板改名" disabled>
+            <button id="tsRenameBtn" class="btn" type="button" disabled>改名</button>
+            <button id="tsDelete" class="btn btn-danger" type="button" disabled>删除</button>
+          </div>
+        </div>
+        <div id="tsEditor" class="ts-editor" aria-live="polite">
+          <p class="ts-editor-empty">先在左边新建或选一套模板，再在这里编目录树。</p>
+        </div>
+      </div>
+      <p id="tsStatus" class="ts-status" role="status" aria-live="polite"></p>
+    </section>
+    <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
+  </main>
+  <script src="/static/dialog.js"></script>
+  <script src="/static/ticket_structures.js?v=1"></script><script src="/static/debug_log.js"></script>
+</body>
+</html>

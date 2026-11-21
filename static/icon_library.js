@@ -16,6 +16,8 @@
   let busy = false;
   let batchMode = false;
   let duplicatesOnly = false;
+  let assignRows = [];   // 批量指定：{path, icon, state, message}
+  let pickerRow = null;  // 正在挑图标的那一行
   const checked = new Set();
 
   const prefs = (() => { try { return JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (_) { return {}; } })();
@@ -23,6 +25,11 @@
   $('icNewCategory').value = prefs.newCategory || '';
   $('icTrim').checked = prefs.trim !== false;
   folderDraft = prefs.folders || '';
+  assignRows = (Array.isArray(prefs.assignRows) ? prefs.assignRows : [])
+    .filter(r => r && typeof r.path === 'string' && r.path.trim())
+    .map(r => ({path: r.path, icon: typeof r.icon === 'string' ? r.icon : '', state: '', message: ''}));
+  $('ibParent').value = prefs.ibParent || '';
+  $('ibPaths').value = prefs.ibPaths || '';
 
   const pngUrl = icon => `/api/icons/file?id=${icon.id}&kind=png&v=${icon.version}`;
   const icoUrl = icon => `/api/icons/file?id=${icon.id}&kind=ico`;
@@ -45,12 +52,14 @@
     lib = data;
     for (const id of checked) if (!byId(id)) checked.delete(id);
     if (selected && !byId(selected)) selected = '';
+    for (const row of assignRows) if (row.icon && !byId(row.icon)) { row.icon = ''; row.state = ''; row.message = ''; }
     if (category !== null && !lib.categories.some(c => c.name === category)) category = null;
     log('图标库', reason, `${lib.icons.length} 个图标`, lib.dir);
     renderCats();
     renderGrid();
     renderBatch();
     renderDetail();
+    renderAssign();
   }
 
   // ---------- 分类 + 搜索 ----------
@@ -110,6 +119,7 @@
   function setBusy(value) {
     busy = value;
     renderBatch();
+    renderAssign();
   }
 
   async function batchAction(remove) {
@@ -413,6 +423,130 @@
     } catch (e) { status(`<span class="is-bad">! ${esc(e.message)}</span>`); }
   }
 
+  // ---------- 批量指定：每个文件夹挑自己的图标 ----------
+  const cleanPath = v => String(v ?? '').trim().replace(/^["']+|["']+$/g, '').trim();
+  const pathKey = p => p.toLowerCase();
+  const saveAssign = () => {
+    prefs.assignRows = assignRows.map(r => ({path: r.path, icon: r.icon}));
+    prefs.ibParent = $('ibParent').value;
+    prefs.ibPaths = $('ibPaths').value;
+    savePrefs();
+  };
+
+  function addAssignRows(entries) {
+    let added = 0;
+    for (const entry of entries) {
+      const path = cleanPath(entry.path);
+      if (!path) continue;
+      const row = assignRows.find(r => pathKey(r.path) === pathKey(path));
+      if (row) { if (!row.icon && entry.icon) row.icon = entry.icon; continue; }
+      if (assignRows.length >= 200) break;
+      assignRows.push({path, icon: entry.icon || '', state: '', message: ''});
+      added++;
+    }
+    renderAssign(); saveAssign();
+    return added;
+  }
+
+  function renderAssign() {
+    const chosen = assignRows.filter(r => r.icon && byId(r.icon)).length;
+    $('ibApply').disabled = busy || !chosen;
+    $('ibApply').textContent = chosen ? `应用到 ${chosen} 个文件夹` : '应用到文件夹';
+    $('ibRows').innerHTML = assignRows.length ? assignRows.map((r, n) => {
+      const icon = byId(r.icon);
+      const note = r.message ? `<span class="ib-note">${esc(r.message)}</span>` : r.state === 'ok' ? '<span class="ib-note">✓ 已应用</span>' : '';
+      return `<li class="ib-row${r.state ? ` is-${r.state}` : ''}">
+        <button type="button" class="ib-slot${icon ? ' is-set' : ''}" data-slot="${n}" title="给这个文件夹挑图标" aria-label="给 ${esc(r.path)} 挑图标">${icon ? `<img src="${pngUrl(icon)}" alt="${esc(icon.name)}">` : '+'}</button>
+        <div><span class="ib-path">${esc(r.path)}</span>${note}</div>
+        <button type="button" class="ib-drop-row" data-drop="${n}" title="移除这一行" aria-label="移除这一行">✕</button>
+      </li>`;
+    }).join('') : '<li class="ib-empty">列表还是空的：上面粘贴路径生成，或列一个父目录的子文件夹。</li>';
+  }
+
+  function openPicker(row, slot) {
+    pickerRow = row;
+    const picker = $('ibPicker');
+    picker.innerHTML = lib.icons.map(i => `<button type="button" class="ib-pick" data-pick="${i.id}"><img src="${pngUrl(i)}" alt=""><span>${esc(i.name)}</span></button>`).join('')
+      || '<p class="ib-empty">图标库还是空的</p>';
+    picker.hidden = false;
+    const rect = slot.getBoundingClientRect();
+    const width = picker.offsetWidth, height = picker.offsetHeight;
+    picker.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
+    picker.style.top = `${rect.bottom + 6 + height > window.innerHeight - 8 ? Math.max(8, rect.top - height - 6) : rect.bottom + 6}px`;
+  }
+  const closePicker = () => { $('ibPicker').hidden = true; pickerRow = null; };
+
+  $('ibRows').addEventListener('click', e => {
+    const slot = e.target.closest('[data-slot]');
+    if (slot) { openPicker(assignRows[+slot.dataset.slot], slot); return; }
+    const drop = e.target.closest('[data-drop]');
+    if (drop) { assignRows.splice(+drop.dataset.drop, 1); closePicker(); renderAssign(); saveAssign(); }
+  });
+  $('ibPicker').addEventListener('click', e => {
+    const tile = e.target.closest('[data-pick]');
+    if (!tile || !pickerRow) return;
+    pickerRow.icon = tile.dataset.pick; pickerRow.state = ''; pickerRow.message = '';
+    closePicker(); renderAssign(); saveAssign();
+  });
+  document.addEventListener('click', e => {
+    if (!$('ibPicker').hidden && !e.target.closest('#ibPicker') && !e.target.closest('[data-slot]')) closePicker();
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closePicker(); });
+  $('ibFromPaths').addEventListener('click', () => {
+    const added = addAssignRows($('ibPaths').value.split(/\r?\n/).map(path => ({path, icon: ''})));
+    $('ibStatus').innerHTML = added ? `<span class="is-ok">✓ 加进列表 ${added} 个文件夹</span>`
+      : '<span class="is-warn">没有新增文件夹（路径为空或和列表重复）</span>';
+  });
+  $('ibListSub').addEventListener('click', async () => {
+    const folder = $('ibParent').value.trim();
+    if (!folder) { await window.appAlert('请先填父目录路径。'); return; }
+    try {
+      const response = await fetch(`/api/icons/subfolders?folder=${encodeURIComponent(folder)}`, {cache: 'no-store'});
+      const r = await response.json().catch(() => ({}));
+      if (!response.ok || !r.ok) throw Error(r.error || '列不了子文件夹');
+      const added = addAssignRows(r.folders.map(f => ({path: f.path, icon: f.icon_id})));
+      $('ibStatus').innerHTML = `<span class="is-ok">✓ 列出 ${r.folders.length} 个子文件夹，新增 ${added} 个进列表</span>`
+        + (r.total > r.folders.length ? `<br><span class="is-warn">! 共 ${r.total} 个子文件夹，只列前 200 个</span>` : '');
+    } catch (e) { $('ibStatus').innerHTML = `<span class="is-bad">! ${esc(e.message)}</span>`; }
+  });
+  $('ibClear').addEventListener('click', () => { assignRows = []; closePicker(); renderAssign(); saveAssign(); $('ibStatus').textContent = ''; });
+  $('ibPaths').addEventListener('input', saveAssign);
+  $('ibParent').addEventListener('input', saveAssign);
+  $('ibApply').addEventListener('click', async () => {
+    const chosen = assignRows.filter(r => r.icon && byId(r.icon));
+    if (!chosen.length || busy) return;
+    setBusy(true);
+    const groups = new Map();
+    for (const row of chosen) { if (!groups.has(row.icon)) groups.set(row.icon, []); groups.get(row.icon).push(row.path); }
+    const results = new Map();
+    let done = 0;
+    try {
+      for (const [iconId, paths] of groups) {
+        $('ibStatus').textContent = `正在套「${byId(iconId).name}」：第 ${done + 1} / ${groups.size} 组（${paths.length} 个文件夹）…`;
+        try {
+          const r = await post('/api/icons/apply', {id: iconId, folders: paths});
+          for (const res of r.results) results.set(pathKey(res.folder), res);
+        } catch (e) { for (const p of paths) results.set(pathKey(p), {ok: false, error: e.message}); }
+        done++;
+      }
+      for (const row of assignRows) {
+        const res = results.get(pathKey(row.path));
+        if (!res) continue;
+        row.state = res.ok ? 'ok' : 'bad'; row.message = res.ok ? '' : res.error;
+      }
+      const ok = [...results.values()].filter(r => r.ok).length;
+      const bad = results.size - ok;
+      const skipped = assignRows.length - chosen.length;
+      $('ibStatus').innerHTML = (bad ? `<span class="is-warn">! 套成功 ${ok} 个文件夹，${bad} 个没成功（看行内说明）</span>`
+        : `<span class="is-ok">✓ 已给 ${ok} 个文件夹各指定图标（看不到变化就在资源管理器按 F5）</span>`)
+        + (skipped ? `<br><span class="is-warn">跳过 ${skipped} 行没挑图标的</span>` : '');
+      log('批量指定', [...groups.entries()], [...results.values()]);
+      await reload('批量指定后');
+    } catch (e) {
+      $('ibStatus').innerHTML = `<span class="is-bad">! ${esc(e.message)}</span>`;
+    } finally { setBusy(false); }
+  });
+
   // ---------- 拖放 / 事件 ----------
   const hasFiles = e => [...(e.dataTransfer?.types || [])].includes('Files');
   const drop = $('icDrop');
@@ -483,6 +617,7 @@
 
   reload('打开页面').catch(e => {
     $('icGrid').innerHTML = `<p class="ic-empty">读不了图标库：${esc(e.message)}</p>`;
+    renderAssign();
     console.error('[设置图标] 读不了图标库', e);
   });
 })();

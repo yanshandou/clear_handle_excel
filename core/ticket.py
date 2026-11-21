@@ -9,7 +9,7 @@ from contextlib import suppress
 from itertools import count
 from pathlib import Path
 
-from core import icon_library
+from core import icon_library, structure_library
 from core.common import bring_window_to_front, sanitize_filename
 
 DETAILS = {
@@ -70,6 +70,10 @@ def create(payload: dict) -> dict[str, str]:
     icon_id = _field(payload, "icon_id", "文件夹图标")
     if icon_id:
         icon_library.icon_file(icon_id, "ico")
+    structure_id = _field(payload, "structure_id", "目录结构模板")
+    overrides = structure_library.parse_overrides(payload)
+    if structure_id:
+        structure_library.get(structure_id)
 
     heading = f"Ticket #{number}" if number else "Ticket"
     lines = [heading, ""]
@@ -113,6 +117,11 @@ def create(payload: dict) -> dict[str, str]:
                     result["icon_error"] = applied["error"]
             except (OSError, ValueError) as err:
                 result["icon_error"] = str(err)
+        if structure_id:
+            try:
+                result["structure"] = structure_library.materialize(structure_id, folder, overrides)
+            except (OSError, ValueError) as err:
+                result["structure_error"] = str(err)
         return result
 
 

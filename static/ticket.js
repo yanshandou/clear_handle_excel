@@ -149,16 +149,29 @@
   const iconStatus = document.getElementById('ticketIconStatus');
   const iconApplied = document.getElementById('ticketIconApplied');
   const iconWarning = document.getElementById('ticketIconWarning');
+  const structureField = document.getElementById('ticketStructure');
+  const structureSelect = document.getElementById('ticketStructureSelect');
+  const structureRefresh = document.getElementById('ticketStructureRefresh');
+  const structureStatus = document.getElementById('ticketStructureStatus');
+  const structurePreview = document.getElementById('ticketStructurePreview');
+  const structureTree = document.getElementById('ticketStructureTree');
+  const structureApplied = document.getElementById('ticketStructureApplied');
+  const structureWarning = document.getElementById('ticketStructureWarning');
+  const structureProblems = document.getElementById('ticketStructureProblems');
   const success = document.getElementById('ticketSuccess');
   const successFolder = document.getElementById('successFolder');
   const openFolder = document.getElementById('openFolderBtn');
   const openStatus = document.getElementById('ticketOpenStatus');
   const openError = document.getElementById('ticketOpenError');
   const error = document.getElementById('ticketError');
-  const fields = [...form.querySelectorAll('input[name], textarea[name]')].filter(el => el !== source && !iconField.contains(el));
+  const fields = [...form.querySelectorAll('input[name], textarea[name], select[name]')]
+    .filter(el => el !== source && !iconField.contains(el) && !structureField.contains(el));
   const byName = Object.fromEntries(fields.map(el => [el.name, el]));
   const manual = new Set();
   let lastFolder = '';
+  let structureTemplates = [];
+  const structureExclude = new Set();
+  const structureRename = new Map();
 
   const wrapOf = el => el.closest('.pass-field, .pass-title, .stub-progress');
   const tagOf = el => wrapOf(el)?.querySelector('.auto-tag');
@@ -211,6 +224,94 @@
   }
 
   iconRefresh.addEventListener('click', loadIcons);
+
+  function currentStructure() {
+    return structureTemplates.find(t => t.id === structureSelect.value);
+  }
+
+  function renderStructurePreview() {
+    const template = currentStructure();
+    structureTree.replaceChildren();
+    structurePreview.hidden = !template;
+    if (!template) return;
+
+    const renderNodes = (nodes, container, parentExcluded) => {
+      for (const node of nodes) {
+        const excluded = structureExclude.has(node.id);
+        const item = document.createElement('li');
+        item.className = `ticket-structure-node${parentExcluded || excluded ? ' is-excluded' : ''}`;
+        const row = document.createElement('div');
+        row.className = 'ticket-structure-row';
+        const check = document.createElement('input');
+        check.type = 'checkbox';
+        check.checked = !excluded;
+        check.disabled = parentExcluded;
+        check.setAttribute('aria-label', `包含${node.kind === 'dir' ? '目录' : '文件'} ${node.name}`);
+        check.addEventListener('change', () => {
+          if (check.checked) structureExclude.delete(node.id);
+          else structureExclude.add(node.id);
+          renderStructurePreview();
+        });
+        const kind = document.createElement('span');
+        kind.className = 'ticket-structure-kind';
+        kind.textContent = node.kind === 'dir' ? '📁' : '📄';
+        kind.setAttribute('aria-hidden', 'true');
+        const name = document.createElement('input');
+        name.type = 'text';
+        name.className = 'ticket-structure-name';
+        name.maxLength = 60;
+        name.value = structureRename.get(node.id) ?? node.name;
+        name.disabled = parentExcluded || excluded;
+        name.title = node.kind === 'file' ? (node.source || '模板里未指定来源文件') : node.name;
+        name.setAttribute('aria-label', `改名：${node.name}`);
+        name.addEventListener('input', () => {
+          const value = name.value.trim();
+          if (value && value !== node.name) structureRename.set(node.id, value);
+          else structureRename.delete(node.id);
+        });
+        row.append(check, kind, name);
+        item.append(row);
+        if (node.kind === 'dir' && node.children?.length) {
+          const children = document.createElement('ul');
+          children.className = 'ticket-structure-tree';
+          renderNodes(node.children, children, parentExcluded || excluded);
+          item.append(children);
+        }
+        container.append(item);
+      }
+    };
+    renderNodes(template.tree || [], structureTree, false);
+  }
+
+  async function loadStructures() {
+    structureRefresh.disabled = true;
+    structureStatus.textContent = '正在加载目录结构模板…';
+    try {
+      const response = await fetch('/api/ticket_structures', { cache: 'no-store' });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error);
+      structureTemplates = data.templates;
+      const selected = structureSelect.value;
+      structureSelect.replaceChildren(new Option('不用模板（只建文件夹）', ''),
+        ...structureTemplates.map(t => new Option(t.name, t.id)));
+      structureSelect.value = structureTemplates.some(t => t.id === selected) ? selected : '';
+      structureStatus.textContent = !structureTemplates.some(t => t.id === selected) && selected
+        ? '原先选择的模板已删除，请重新选择。'
+        : structureTemplates.length ? '' : '还没有模板，可点「管理目录结构」新建一套。';
+      renderStructurePreview();
+    } catch {
+      structureStatus.textContent = '模板库加载失败，可点击「刷新模板」重试。';
+    } finally {
+      structureRefresh.disabled = false;
+    }
+  }
+
+  structureRefresh.addEventListener('click', loadStructures);
+  structureSelect.addEventListener('change', () => {
+    structureExclude.clear();
+    structureRename.clear();
+    renderStructurePreview();
+  });
 
   boardTicks.innerHTML = CHIPS.map(() => '<i></i>').join('');
   const ticks = [...boardTicks.children];
@@ -390,6 +491,14 @@
       headerCount.textContent = `识别 0 / ${CHIPS.length}`;
       recognition.textContent = '';
       error.textContent = '';
+      structureSelect.value = '';
+      structureExclude.clear();
+      structureRename.clear();
+      structureStatus.textContent = '';
+      renderStructurePreview();
+      structureApplied.hidden = true;
+      structureWarning.textContent = '';
+      structureProblems.replaceChildren();
       success.hidden = true;
       pass.classList.remove('is-created');
       drawLive();
@@ -658,7 +767,9 @@
     const values = Object.fromEntries(new FormData(form));
     for (const key of Object.keys(values)) values[key] = values[key].replace(/[\t\r\n]+/g, ' ').trim();
     if (!values.icon_id) delete values.icon_id;
-    create.disabled = reset.disabled = source.disabled = iconField.disabled = true;
+    if (!values.structure_id) delete values.structure_id;
+    else values.structure_overrides = { exclude: [...structureExclude], rename: Object.fromEntries(structureRename) };
+    create.disabled = reset.disabled = source.disabled = iconField.disabled = structureField.disabled = true;
     for (const el of fields) el.disabled = true;
     dateTriggers.forEach(btn => { btn.disabled = true; });
     hoursButtons.forEach(btn => { btn.disabled = true; });
@@ -666,6 +777,9 @@
     error.textContent = '';
     openStatus.textContent = '';
     openError.textContent = '';
+    structureApplied.hidden = true;
+    structureWarning.textContent = '';
+    structureProblems.replaceChildren();
     success.hidden = true;
     pass.classList.remove('is-created');
     try {
@@ -684,6 +798,22 @@
       } else if (values.icon_id && !applied) {
         iconWarning.textContent = '传票已保存，服务未确认应用图标。请重启工具服务后保留当前票面和图标，再点一次「确认创建」。';
       }
+      if (ticket.structure) {
+        structureApplied.textContent = `已按「${ticket.structure.template}」组建目录结构：${ticket.structure.dirs} 个目录、复制 ${ticket.structure.files} 个文件。`;
+        structureApplied.hidden = false;
+        for (const problem of ticket.structure.problems || []) {
+          const li = document.createElement('li');
+          li.textContent = `${problem.path}：${problem.reason}`;
+          structureProblems.append(li);
+        }
+        if (ticket.structure.problems?.length) {
+          structureWarning.textContent = '目录结构有几处没建成（见下方清单），Ticket.txt 不受影响。';
+        }
+      } else if (ticket.structure_error) {
+        structureWarning.textContent = `目录结构组建失败。${ticket.structure_error}`;
+      } else if (values.structure_id) {
+        structureWarning.textContent = '传票已保存，服务未确认组建目录结构。请重启工具服务后保留当前票面，再点一次「确认创建」。';
+      }
       success.hidden = false;
       void pass.offsetWidth;
       pass.classList.add('is-created');
@@ -691,7 +821,7 @@
     } catch (err) {
       error.textContent = err.message || '创建失败，请重试。';
     } finally {
-      create.disabled = reset.disabled = source.disabled = iconField.disabled = false;
+      create.disabled = reset.disabled = source.disabled = iconField.disabled = structureField.disabled = false;
       for (const el of fields) el.disabled = false;
       dateTriggers.forEach(btn => { btn.disabled = false; });
       hoursButtons.forEach(btn => { btn.disabled = false; });
@@ -700,4 +830,5 @@
 
   drawLive();
   loadIcons();
+  loadStructures();
 })();

@@ -71,9 +71,19 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
     await evalJS(`(() => {
       window.testIcons = ${JSON.stringify(icons)};
       window.iconResult = 'failure';
+      window.testStructures = [{id: 'st0001', name: '基本設計', tree: [
+        {id: 'n1', kind: 'dir', name: '01_要件', children: [
+          {id: 'n2', kind: 'file', name: 'ビュー定義書.xlsx', source: 'D:/模板/ビュー定義書.xlsx'},
+        ]},
+        {id: 'n3', kind: 'dir', name: '02_設計', children: []},
+      ]}];
+      window.structureResult = 'applied';
       window.fetch = async (url, options) => {
         if (url === '/api/icons') {
           return Response.json({ok: true, icons: window.testIcons});
+        }
+        if (url === '/api/ticket_structures') {
+          return Response.json({ok: true, templates: window.testStructures});
         }
         if (url === '/api/ticket/open') {
           window.openedFolder = JSON.parse(options.body).folder;
@@ -84,9 +94,14 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
         const result = {ok: true, folder: 'Desktop/test'};
         if (window.savedTicket.icon_id && window.iconResult === 'failure') result.icon_error = '图标写入失败';
         if (window.savedTicket.icon_id && window.iconResult === 'applied') result.icon_id = window.savedTicket.icon_id;
+        if (window.savedTicket.structure_id && window.structureResult === 'applied') {
+          result.structure = {template: '基本設計', dirs: 1, files: 1, problems: [{path: '02_設計/欠.txt', reason: '来源文件不存在'}], items: []};
+        }
+        if (window.savedTicket.structure_id && window.structureResult === 'error') result.structure_error = '模板已删除';
         return Response.json(result);
       };
       document.querySelector('#ticketIconRefresh').click();
+      document.querySelector('#ticketStructureRefresh').click();
     })()`);
     assert.equal((await fields()).icon_id, '');
     assert.equal(await evalJS("document.querySelectorAll('#ticketIconGrid img').length"), icons.length);
@@ -122,6 +137,40 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
     assert.match(await evalJS("document.querySelector('#ticketOpenStatus').textContent"), /任务栏/);
     await evalJS("window.folderForeground = true; document.querySelector('#openFolderBtn').click()");
     assert.equal(await evalJS("document.querySelector('#ticketOpenStatus').textContent"), '');
+    // ---------- 目录结构模板：选择、预览微调、出票反馈 ----------
+    assert.equal(await evalJS("document.querySelector('#ticketStructurePreview').hidden"), true);
+    await evalJS("(()=>{const e=document.querySelector('#ticketStructureSelect');e.value='st0001';e.dispatchEvent(new Event('change',{bubbles:true}))})()");
+    assert.equal((await fields()).structure_id, 'st0001');
+    assert.equal(await evalJS("document.querySelector('#ticketStructurePreview').hidden"), false);
+    assert.equal(await evalJS("document.querySelectorAll('#ticketStructureTree .ticket-structure-row').length"), 3);
+    await evalJS("document.querySelectorAll('#ticketStructureTree > li > .ticket-structure-row input[type=checkbox]')[1].click()");
+    assert.equal(await evalJS("document.querySelectorAll('#ticketStructureTree > li')[1].classList.contains('is-excluded')"), true);
+    await evalJS("document.querySelector('#ticketStructureTree > li > .ticket-structure-row input[type=checkbox]').click()");
+    assert.equal(await evalJS("document.querySelector('#ticketStructureTree .ticket-structure-tree input[type=checkbox]').disabled"), true);
+    assert.equal(await evalJS("document.querySelector('#ticketStructureTree .ticket-structure-tree .ticket-structure-name').disabled"), true);
+    await evalJS("document.querySelector('#ticketStructureTree > li > .ticket-structure-row input[type=checkbox]').click()");
+    await evalJS(`(()=>{const e=document.querySelector('#ticketStructureTree > li .ticket-structure-name');e.value='01_要件定義';e.dispatchEvent(new Event('input',{bubbles:true}))})()`);
+    await evalJS("window.structureResult = 'applied'; document.querySelector('#ticketForm').requestSubmit()");
+    assert.equal(await evalJS('window.savedTicket.structure_id'), 'st0001');
+    assert.deepEqual(await evalJS('window.savedTicket.structure_overrides'), {exclude: ['n3'], rename: {n1: '01_要件定義'}});
+    assert.match(await evalJS("document.querySelector('#ticketStructureApplied').textContent"), /基本設計.*1 个目录.*1 个文件/);
+    assert.equal(await evalJS("document.querySelector('#ticketStructureApplied').hidden"), false);
+    assert.match(await evalJS("document.querySelector('#ticketStructureWarning').textContent"), /没建成/);
+    assert.equal(await evalJS("document.querySelectorAll('#ticketStructureProblems li').length"), 1);
+    assert.match(await evalJS("document.querySelector('#ticketStructureProblems li').textContent"), /02_設計\/欠\.txt/);
+    await evalJS("window.structureResult = 'error'; document.querySelector('#ticketForm').requestSubmit()");
+    assert.match(await evalJS("document.querySelector('#ticketStructureWarning').textContent"), /组建失败.*模板已删除/);
+    await evalJS("window.structureResult = 'old server'; document.querySelector('#ticketForm').requestSubmit()");
+    assert.match(await evalJS("document.querySelector('#ticketStructureWarning').textContent"), /服务未确认组建目录结构/);
+    await evalJS("document.querySelector('#ticketReset').click()"); await pause(100);
+    assert.equal((await fields()).structure_id, '');
+    assert.equal(await evalJS("document.querySelector('#ticketStructurePreview').hidden"), true);
+    await evalJS("document.querySelector('#ticketSample').click()");
+    await evalJS("document.querySelector('#ticketForm').requestSubmit()");
+    assert.equal(await evalJS("Object.hasOwn(window.savedTicket, 'structure_id')"), false);
+    assert.equal(await evalJS("Object.hasOwn(window.savedTicket, 'structure_overrides')"), false);
+    assert.equal(await evalJS("document.querySelector('#ticketStructureApplied').hidden"), true);
+    assert.equal(await evalJS("document.querySelector('#ticketStructureWarning').textContent"), '');
     assert.equal(await evalJS('window.savedTicket.parent_title'), expected.parent_title);
     assert.equal(await evalJS('window.savedTicket.parent_project'), expected.parent_project);
     assert.equal(await evalJS('window.savedTicket.assignee_short'), '白');
@@ -139,12 +188,18 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
     await evalJS(`document.querySelector('#ticketIconGrid input[value="123ab1"]').labels[0].click(); window.testIcons = []; document.querySelector('#ticketIconRefresh').click()`);
     assert.equal((await fields()).icon_id, '');
     assert.match(await evalJS("document.querySelector('#ticketIconStatus').textContent"), /图标已从图标库移除/);
+    await evalJS("(()=>{const e=document.querySelector('#ticketStructureSelect');e.value='st0001';e.dispatchEvent(new Event('change',{bubbles:true}))})()");
+    await evalJS("window.testStructures = []; document.querySelector('#ticketStructureRefresh').click()");
+    assert.equal((await fields()).structure_id, '');
+    assert.match(await evalJS("document.querySelector('#ticketStructureStatus').textContent"), /模板已删除/);
+    assert.equal(await evalJS("document.querySelector('#ticketStructurePreview').hidden"), true);
     await evalJS(`(()=>{const e=document.querySelector('#ticketSource');e.value='<div id="content"><h2>task #7</h2><div class="issue details"><div class="subject"><h3>Only title</h3></div><table class="attributes"><tr><td class="status"></td></tr></table></div><div id="history">status: old</div></div>';e.dispatchEvent(new Event('input',{bubbles:true}))})()`);
     const partial=await fields(); assert.equal(partial.ticket_id,'7'); assert.equal(partial.title,'Only title'); assert.equal(partial.status,''); assert.equal(partial.parent_project,'');
     await evalJS("document.querySelector('#ticketForm').requestSubmit()");
     assert.equal(await evalJS("Object.hasOwn(window.savedTicket, 'icon_id')"), false);
+    assert.equal(await evalJS("Object.hasOwn(window.savedTicket, 'structure_id')"), false);
     assert.equal(await evalJS("document.querySelector('#ticketIconApplied').hidden"), true);
     assert.equal(await evalJS("document.querySelector('#ticketIconWarning').textContent"), '');
-    console.log('Ticket recognition, icon selection, creation and reset passed.');
+    console.log('Ticket recognition, icon and structure selection, creation and reset passed.');
   } finally {if(socket)socket.close(); edge.kill();server.kill();}
 })().catch(e=>{console.error(e);process.exitCode=1});

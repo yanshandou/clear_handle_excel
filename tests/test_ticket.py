@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core import icon_library, ticket
+from core import icon_library, structure_library, ticket
 from core.pdf_detector import fitz
 
 
@@ -98,6 +98,59 @@ class TicketTests(unittest.TestCase):
         self.assertNotIn("icon_error", retried)
         self.assertEqual(retried["folder"], saved["folder"])
         self.assertEqual(len(list(self.desktop.iterdir())), 1)
+
+    def add_structure(self, missing_source=False):
+        library = tempfile.TemporaryDirectory()
+        self.addCleanup(library.cleanup)
+        library_path = patch.object(structure_library, "LIB_DIR", Path(library.name))
+        library_path.start()
+        self.addCleanup(library_path.stop)
+        source = Path(library.name) / "来源.xlsx"
+        source.write_bytes(b"design template")
+        return structure_library.save_tree(structure_library.create("基本設計")["template"]["id"], [
+            {"kind": "dir", "name": "01_要件", "children": [
+                {"kind": "file", "name": "ビュー定義書.xlsx",
+                 "source": str(source) if not missing_source else str(source) + ".gone"},
+            ]},
+        ])["template"]
+
+    def test_builds_structure_inside_the_ticket_folder(self):
+        template = self.add_structure()
+        saved = ticket.create({"title": "Task", "structure_id": template["id"]})
+        folder = Path(saved["folder"])
+        copied = folder / "01_要件" / "ビュー定義書.xlsx"
+        self.assertEqual(copied.read_bytes(), b"design template")
+        self.assertEqual((saved["structure"]["dirs"], saved["structure"]["files"]), (1, 1))
+        self.assertEqual(saved["structure"]["problems"], [])
+        self.assertNotIn("structure_id", (folder / "Ticket.txt").read_text(encoding="utf-8-sig"))
+
+    def test_structure_overrides_exclude_and_rename(self):
+        template = self.add_structure()
+        dir_id = template["tree"][0]["id"]
+        saved = ticket.create({"title": "Task", "structure_id": template["id"],
+                               "structure_overrides": {"rename": {dir_id: "01_要件定義"}}})
+        self.assertTrue((Path(saved["folder"]) / "01_要件定義" / "ビュー定義書.xlsx").is_file())
+        dropped = ticket.create({"title": "Task2", "structure_id": template["id"],
+                                 "structure_overrides": {"exclude": [dir_id]}})
+        self.assertEqual(list(Path(dropped["folder"]).iterdir()), [Path(dropped["folder"]) / "Ticket.txt"])
+
+    def test_rejects_unknown_structure_before_creating_the_folder(self):
+        with self.assertRaisesRegex(ValueError, "模板编号"):
+            ticket.create({"title": "Task", "structure_id": "../evil"})
+        self.add_structure()
+        with self.assertRaisesRegex(ValueError, "没有这个目录结构模板"):
+            ticket.create({"title": "Task", "structure_id": "abcdef123456"})
+        self.assertEqual(list(self.desktop.iterdir()), [])
+
+    def test_structure_problems_do_not_block_the_ticket(self):
+        template = self.add_structure(missing_source=True)
+        saved = ticket.create({"title": "Task", "structure_id": template["id"]})
+        folder = Path(saved["folder"])
+        self.assertTrue((folder / "Ticket.txt").is_file())
+        self.assertEqual(saved["structure"]["files"], 0)
+        self.assertEqual(len(saved["structure"]["problems"]), 1)
+        retried = ticket.create({"title": "Task", "structure_id": template["id"]})
+        self.assertEqual(retried["folder"], saved["folder"])
 
     def test_open_reports_when_explorer_is_opened_without_foreground_focus(self):
         folder = Path(ticket.create({"title": "Task"})["folder"])

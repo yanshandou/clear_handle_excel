@@ -879,6 +879,23 @@
 .ticket-icon-library .ticket-note { margin: 0; }
 .ticket-icon-warning { margin: 0; color: #754300; font-size: 13px; }
 .ticket-icon-warning:empty { display: none; }
+.ticket-structure { min-width: 0; margin: 18px 0 0; padding: 0; border: 0; }
+.ticket-structure legend { padding: 0; color: #1b4161; font-weight: 750; }
+.ticket-structure legend small { margin-left: 4px; color: #466c8c; font-size: 12px; }
+.ticket-structure-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; font-size: 13px; }
+.ticket-structure-pick select { flex: 1; min-width: 200px; max-width: 100%; padding: 8px 10px; border: 1px solid #a3c5df; border-radius: 10px; background: rgba(255, 255, 255, 0.75); color: #173b59; font: inherit; font-weight: 700; }
+.ticket-structure-preview { margin-top: 8px; padding: 8px 10px; border: 1px solid #a3c5df; border-radius: 10px; background: rgba(255, 255, 255, 0.6); max-height: 320px; overflow-y: auto; }
+.ticket-structure-tree { margin: 0; padding: 0; list-style: none; }
+.ticket-structure-tree .ticket-structure-tree { margin-left: 20px; border-left: 2px dashed #bcd7ea; padding-left: 8px; }
+.ticket-structure-node { padding: 2px 0; }
+.ticket-structure-node.is-excluded > .ticket-structure-row { opacity: 0.45; }
+.ticket-structure-row { display: flex; align-items: center; gap: 6px; }
+.ticket-structure-kind { font-size: 14px; }
+.ticket-structure-name { flex: 1; min-width: 0; padding: 4px 8px; border: 1px solid #a3c5df; border-radius: 8px; background: #fff; color: #173b59; font: inherit; font-size: 13px; font-weight: 600; }
+.ticket-structure-name:disabled { background: transparent; border-color: transparent; }
+.ticket-structure-problems { margin: 8px 0 0; padding: 0 0 0 18px; color: #754300; font-size: 12.5px; font-weight: 600; }
+.ticket-structure-problems:empty { display: none; }
+.ticket-structure-problems li { overflow-wrap: anywhere; }
 .pass-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
 .btn-lg { padding: 12px 26px; font-size: 16px; border-radius: 17px; }
 .ticket-note { margin: 10px 0 0; color: #466c8c; font-size: 12.5px; font-weight: 600; line-height: 1.6; }

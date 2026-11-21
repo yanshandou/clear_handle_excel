@@ -300,11 +300,23 @@ class WebHandler(upload_manager.Handler):
             self._serve_static_file("pick_copy.html")
         elif parsed.path == "/ticket":
             self._serve_static_file("ticket.html")
+        elif parsed.path == "/ticket-structures":
+            self._serve_static_file("ticket_structures.html")
+        elif parsed.path == "/api/ticket_structures":
+            from core import structure_library
+            self._send_json({"ok": True, **structure_library.listing()})
         elif parsed.path == "/set-icons":  # 设置图标（用户 2026-11-20）：PNG → .ico 图标库，套到 Windows 文件夹
             self._serve_static_file("icon_library.html")
         elif parsed.path == "/api/icons":
             from core import icon_library
             self._send_json({"ok": True, **icon_library.listing()})
+        elif parsed.path == "/api/icons/subfolders":  # 批量指定图标：列父目录的第一层子文件夹
+            from core import icon_library
+            folder = parse_qs(parsed.query).get("folder", [""])[0]
+            try:
+                self._send_json({"ok": True, **icon_library.subfolders(folder)})
+            except (ValueError, OSError) as err:
+                self._send_json({"ok": False, "error": str(err)}, status=400)
         elif parsed.path == "/api/icons/file":  # 图标库里的预览 PNG / .ico 下载（带版本号的地址可以缓存）
             from core import icon_library
             from urllib.parse import quote
@@ -744,6 +756,21 @@ class WebHandler(upload_manager.Handler):
                 result = icon_library.open_library()
             else:
                 raise ValueError("不认识的图标操作")
+            self._send_json({"ok": True, **result})
+            return
+        if self.path.startswith("/api/ticket_structures/"):  # 目录结构模板：和 Excel 任务无关，别的任务在跑也能用
+            from core import structure_library
+            action = self.path.removeprefix("/api/ticket_structures/")
+            if action == "create":
+                result = structure_library.create(payload.get("name"))
+            elif action == "rename":
+                result = structure_library.rename(str(payload.get("id") or ""), payload.get("name"))
+            elif action == "delete":
+                result = structure_library.delete(str(payload.get("id") or ""))
+            elif action == "save":
+                result = structure_library.save_tree(str(payload.get("id") or ""), payload.get("tree"))
+            else:
+                raise ValueError("不认识的目录结构操作")
             self._send_json({"ok": True, **result})
             return
         if self.path == "/api/pdf_diff/path":  # PDF 批量对比：按贴进来的本机路径读一份
