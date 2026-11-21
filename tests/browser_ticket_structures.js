@@ -92,8 +92,11 @@ const pause = ms => new Promise(r => setTimeout(r, ms));
     assert.equal(await evalJS("document.querySelector('#tsStatus').textContent"), '已保存。');
     // 目录挑图标：点 📁 弹出图标库网格，选了以后存进模板，再选「默认图标」去掉
     await evalJS("window.dispatchEvent(new Event('focus'))");
-    await pause(200);
-    await evalJS("document.querySelector('#tsEditor .ts-icon').click()");
+    // 图标库是异步读的：读到之前弹出来只有「默认图标」，关掉再点，直到 3 个都在
+    for (let i = 0; i < 50 && !await evalJS("document.querySelectorAll('.ts-icon-pop .ts-icon-opt').length === 3"); i++) {
+      await evalJS("document.body.click(); document.querySelector('#tsEditor .ts-icon').click()");
+      await pause(100);
+    }
     await waitFor("document.querySelectorAll('.ts-icon-pop .ts-icon-opt').length === 3");
     await evalJS("[...document.querySelectorAll('.ts-icon-pop .ts-icon-opt')].find(b => b.textContent.includes('帆船')).click()");
     assert.equal(await evalJS("!!document.querySelector('.ts-icon-pop')"), false);
