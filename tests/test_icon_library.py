@@ -388,3 +388,119 @@ class FolderIconRequestTests(unittest.TestCase):
         self.assertTrue(r["ok"])
         self.assertFalse((folder / "desktop.ini").exists())
         self.assertEqual(list(folder.glob("*.ico")), [])
+
+
+def bmp_only_ico(body: bytes, keep=(48, 32)) -> bytes:
+    """从 build_ico 的结果里只留几张 BMP 尺寸（模拟别的软件做的老式 ICO）"""
+    entries = [(w, d) for w, d in ico_sizes(body) if w in keep]
+    head = struct.pack("<HHH", 0, 1, len(entries))
+    offset, dirs, blobs = 6 + 16 * len(entries), [], []
+    for w, d in entries:
+        dirs.append(struct.pack("<BBBBHHII", w, w, 0, 0, 1, 32, len(d), offset))
+        blobs.append(d)
+        offset += len(d)
+    return head + b"".join(dirs) + b"".join(blobs)
+
+
+def bmp24_ico(size=16) -> bytes:
+    """24 位 BMP + AND 遮罩：左半透明、右半红色"""
+    stride = ((size * 24 + 31) // 32) * 4
+    mstride = ((size + 31) // 32) * 4
+    xor = b"".join(b"".join(bytes((0, 0, 255)) for _ in range(size)).ljust(stride, b"\0") for _ in range(size))
+    mask_row = bytes([0xFF] * (size // 16) + [0x00] * (size // 16)).ljust(mstride, b"\0")
+    dib = struct.pack("<IiiHHIIiiII", 40, size, size * 2, 1, 24, 0, 0, 0, 0, 0, 0) + xor + mask_row * size
+    return struct.pack("<HHH", 0, 1, 1) + struct.pack("<BBBBHHII", size, size, 0, 0, 1, 24, len(dib), 22) + dib
+
+
+class IcoAndTransferTests(unittest.TestCase):
+    """拖 .ico 直接用原文件；导出 zip 到别的电脑导入合并（用户 2026-11-23）"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        for patcher in (patch.object(L, "LIB_DIR", self.root / "图标库"), patch.object(L, "SYSTEM_ICONS", ())):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_ico_is_kept_as_is_and_deduplicated(self):
+        ico = L.build_ico(L._load_png(png()))
+        r = L.add("别人的.ico", ico)
+        icon = r["icon"]
+        self.assertEqual(icon["format"], "ico")
+        self.assertTrue(r["info"]["ico_source"])
+        self.assertEqual((L.LIB_DIR / "icons" / f"{icon['id']}.ico").read_bytes(), ico)  # 原文件原样
+        self.assertTrue((L.LIB_DIR / "icons" / f"{icon['id']}_orig.ico").is_file())
+        self.assertEqual((icon["width"], icon["height"]), (256, 256))  # 预览取最大那张
+        with self.assertRaises(L.DuplicateIconError):
+            L.add("同一个.ico", ico)                       # 文件一样
+        biggest = dict(ico_sizes(ico))[256]      # ICO 里最大那张单独存成 PNG：像素一样也算重复
+        with self.assertRaises(L.DuplicateIconError):
+            L.add("最大一张.png", biggest)
+        with self.assertRaisesRegex(ValueError, "不用裁剪"):
+            L.retrim(icon["id"])
+        L.delete(icon["id"])
+        self.assertEqual(list((L.LIB_DIR / "icons").glob(f"{icon['id']}*")), [])
+
+    def test_bmp_only_and_24bit_ico_can_be_read(self):
+        full = L.build_ico(L._load_png(png()))
+        r = L.add("老式.ico", bmp_only_ico(full))
+        self.assertEqual((r["icon"]["width"], r["icon"]["height"]), (48, 48))
+        self.assertTrue(r["info"]["transparent"])
+        pix = L._load_png(bmp24_ico())
+        self.assertEqual((pix.width, pix.height), (16, 16))
+        alpha = L._alpha(pix)
+        self.assertEqual(alpha[0], 0)        # 左半遮罩 = 透明
+        self.assertEqual(alpha[15], 255)     # 右半不透明
+        self.assertEqual(tuple(pix.pixel(15, 0))[:3], (255, 0, 0))
+        r = L.add("红.ico", bmp24_ico())
+        self.assertEqual(r["icon"]["format"], "ico")
+
+    def test_replace_png_with_ico_and_back(self):
+        icon = L.add("a.png", png())["icon"]
+        L.replace(icon["id"], "b.ico", L.build_ico(L._load_png(png(box=(10, 10, 60, 90)))))
+        files = {p.name for p in (L.LIB_DIR / "icons").iterdir()}
+        self.assertIn(f"{icon['id']}_orig.ico", files)
+        self.assertNotIn(f"{icon['id']}_orig.png", files)
+        L.replace(icon["id"], "c.png", png(box=(20, 20, 80, 80)))
+        files = {p.name for p in (L.LIB_DIR / "icons").iterdir()}
+        self.assertIn(f"{icon['id']}_orig.png", files)
+        self.assertNotIn(f"{icon['id']}_orig.ico", files)
+        self.assertEqual(L.listing()["icons"][0]["format"], "png")
+
+    def test_export_then_import_merges_and_skips_duplicates(self):
+        a = L.add("蓝.png", png(), "文件夹")["icon"]
+        b = L.add("红.ico", bmp24_ico(32), "其他")["icon"]
+        L.set_tool_icon("clean", a["id"])
+        folder = self.root / "f"
+        folder.mkdir()
+        L.apply(a["id"], str(folder))
+        everything, count = L.export_zip()
+        self.assertEqual(count, 2)
+        only_cat, count = L.export_zip(category="其他")
+        self.assertEqual(count, 1)
+        with self.assertRaisesRegex(ValueError, "没有可以导出"):
+            L.export_zip(category="没有这个分类")
+        # 换到「新电脑」：空图标库，先手动加一个和蓝色一样的
+        L.LIB_DIR = self.root / "新电脑"
+        L.add("早就有的.png", png())
+        r = L.import_zip(everything)
+        self.assertEqual((r["total"], r["added"], len(r["skipped"]), r["failed"]), (2, 1, 1, []))
+        lib = L.listing()
+        names = {i["name"]: i for i in lib["icons"]}
+        self.assertEqual(names["红"]["category"], "其他")
+        self.assertEqual(names["红"]["format"], "ico")
+        self.assertEqual(names["红"]["folders"], [])
+        self.assertEqual(lib["tools"], {})
+        self.assertEqual((L.LIB_DIR / "icons" / f"{names['红']['id']}.ico").read_bytes(),
+                         (self.root / "图标库" / "icons" / f"{b['id']}.ico").read_bytes())
+        again = L.import_zip(everything)        # 再导一次全部跳过
+        self.assertEqual((again["added"], len(again["skipped"])), (0, 2))
+        with self.assertRaisesRegex(ValueError, "不是 zip"):
+            L.import_zip(b"not a zip")
+        import io, zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("x.txt", "x")
+        with self.assertRaisesRegex(ValueError, "manifest"):
+            L.import_zip(buf.getvalue())

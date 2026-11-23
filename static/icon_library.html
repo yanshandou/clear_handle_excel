@@ -101,7 +101,7 @@
     <section class="panel">
       <h2>加图标</h2>
       <details class="how-notes">
-        <summary>📖 程序会怎么做 <span class="how-notes-tip">PNG 生成多尺寸 .ico 存进图标库；这一页只管图标，套到文件夹在建目录时指定</span><span class="how-notes-toggle"></span></summary>
+        <summary>📖 程序会怎么做 <span class="how-notes-tip">PNG 生成多尺寸 .ico（.ico 直接用）存进图标库；可设给已有文件夹；能导出 / 导入换电脑</span><span class="how-notes-toggle"></span></summary>
         <div class="how-notes-body">
           <section class="how-notes-group">
             <h3>🖼️ 生成图标</h3>
@@ -116,9 +116,10 @@
           <section class="how-notes-group">
             <h3>📁 文件夹图标在哪里设</h3>
             <ul>
-              <li>这一页只管图标本身：上传、分类、改名、替换、删除。</li>
+              <li>这一页管图标本身（上传、分类、改名、替换、删除、导出导入），也能给已经存在的文件夹设 / 还原图标。</li>
               <li>网站自带的图标放在固定分类「<b>系统图标</b>」里，随程序更新，只能用（套文件夹、换工具箱图标、下载 .ico），不能改名、替换或删除。自己上传的图标分类名随便起，只是不能叫「系统图标」。</li>
-              <li>给文件夹指定图标，在建文件夹的地方顺便选：<a href="/ticket-structures">目录结构模板</a>里每个目录可以挑图标，<a href="/ticket">船票</a>页建 Ticket 文件夹时也能选。</li>
+              <li>拖 .ico 进来不会重新生成，原文件直接用（里面各种尺寸都留着），只拿最大的一张做预览和查重复；「自动裁掉透明边」和「重新裁剪」对 .ico 不起作用。</li>
+              <li>已经存在的文件夹：在右边「设为文件夹图标」填路径就能设 / 还原。新建文件夹时也可以顺便选：<a href="/ticket-structures">目录结构模板</a>里每个目录可以挑图标，<a href="/ticket">船票</a>页建 Ticket 文件夹时也能选。</li>
               <li>套上去的是复制件：以后删掉图标库里的图标，文件夹的图标也不会坏。替换图标图片时，套过它的文件夹一起换成新图。</li>
               <li>资源管理器有图标缓存，看不到变化时按 F5 或过一会再看。</li>
             </ul>
@@ -127,6 +128,7 @@
             <h3>💾 存在哪里</h3>
             <ul>
               <li>图标库在 <b>桌面\handle-excel\程序数据\图标库</b>，换新版本（重新下载 ZIP）不会丢。</li>
+              <li>换电脑：点「⬇ 导出」存一个 zip（点了分类就只导这个分类，批量管理里勾了就只导勾的；系统图标不导），到新电脑点「⬆ 导入图标 zip」或直接把 zip 拖进来。导入是合并：名字分类都留着，和库里重复的自动跳过；「用在哪些文件夹」「工具箱图标」是旧电脑的设置，不带过去。</li>
               <li>「工具箱图标」可以把主页工具箱里某个工具的图标换成图标库里的图，恢复默认就回到原来的图。</li>
             </ul>
           </section>
@@ -134,16 +136,19 @@
       </details>
       <div class="ic-add">
         <div id="icDrop" class="ic-drop" role="button" tabindex="0" aria-label="拖进 PNG 或点这里选图片">
-          <b>把透明底 PNG 拖到这里</b>
-          <span>可以一次拖好几张，每张变成一个图标</span>
+          <b>把透明底 PNG 或 .ico 拖到这里</b>
+          <span>可以一次拖好几张，每张变成一个图标；.ico 直接用原文件。导出的图标库 zip 拖进来就是导入</span>
           <small>或者点这里选图片</small>
         </div>
-        <input id="icFile" type="file" accept="image/png,image/*" multiple hidden>
-        <input id="icReplaceFile" type="file" accept="image/png,image/*" hidden>
+        <input id="icFile" type="file" accept="image/png,image/*,.ico" multiple hidden>
+        <input id="icReplaceFile" type="file" accept="image/png,image/*,.ico" hidden>
+        <input id="icImportFile" type="file" accept=".zip,application/zip" hidden>
         <div class="ic-add-opts">
           <label for="icNewCategory">新图标放进哪个分类 <input id="icNewCategory" type="text" list="icCategoryList" placeholder="不填就是「未分类」" maxlength="30" autocomplete="off"></label>
           <label class="ic-inline"><input id="icTrim" type="checkbox" checked> 自动裁掉透明边</label>
           <button id="icOpenDir" class="btn" type="button">📂 打开图标库文件夹</button>
+          <button id="icExport" class="btn" type="button" title="打包成 zip，换电脑时在新电脑上导入">⬇ 导出全部图标</button>
+          <button id="icImport" class="btn" type="button" title="选别的电脑导出的 zip，合并进图标库，重复的跳过">⬆ 导入图标 zip</button>
         </div>
       </div>
       <p id="icStatus" class="ic-status" role="status" aria-live="polite"></p>
@@ -181,6 +186,6 @@
     <section class="panel"><details><summary>调试日志</summary><div data-debug-log-tools></div></details></section>
   </main>
   <script src="/static/dialog.js"></script>
-  <script src="/static/icon_library.js?v=6"></script><script src="/static/debug_log.js"></script>
+  <script src="/static/icon_library.js?v=7"></script><script src="/static/debug_log.js"></script>
 </body>
 </html>
