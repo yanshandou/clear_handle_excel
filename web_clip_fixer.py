@@ -739,6 +739,10 @@ class WebHandler(upload_manager.Handler):
                 result = icon_library.delete(str(payload.get("id") or ""))
             elif action == "retrim":
                 result = icon_library.retrim(str(payload.get("id") or ""))
+            elif action == "apply":  # 给已经存在的 Windows 文件夹设图标（用户 2026-11-23 要回来）
+                result = icon_library.apply(str(payload.get("id") or ""), payload.get("folders"))
+            elif action == "restore":
+                result = icon_library.restore(payload.get("folders"))
             elif action == "tool":
                 result = icon_library.set_tool_icon(str(payload.get("tool") or ""), payload.get("id") or None)
             elif action == "open_dir":
