@@ -1,6 +1,7 @@
 // 设置图标（用户 2026-11-20 要）：拖进透明底 PNG → 生成 Windows 图标（.ico）存进图标库；
 // 图标库可以搜索、分类、改名、替换、删除，或换掉主页工具箱里某个工具的图标。
-// 这一页只管图标本身：给文件夹套图标在用到的地方做（目录结构模板 /ticket-structures、船票 /ticket 建文件夹时顺便指定）。
+// 选中的图标也能直接设给 Windows 上已经存在的文件夹 / 还原默认（用户 2026-11-23）；
+// 建新目录时另外在目录结构模板 /ticket-structures、船票 /ticket 里顺便指定。
 // 后端 core/icon_library.py；调试日志都以「[设置图标]」开头打在浏览器控制台。
 // 页面规矩：点图标只换颜色、右边详情框固定不挪，不自动滚动。
 (() => {
@@ -13,6 +14,8 @@
   let selected = '';
   let category = null;     // null = 全部，'' = 未分类
   let busy = false;
+  let folderDraft = '';    // 设文件夹图标的路径框：换选别的图标也留着
+  let lastResults = null;  // { id, html }：上次设 / 还原的结果，只在同一个图标下显示
   let batchMode = false;
   let duplicatesOnly = false;
   const checked = new Set();
@@ -21,6 +24,8 @@
   const savePrefs = () => { try { localStorage.setItem(KEY, JSON.stringify(prefs)); } catch (_) {} };
   $('icNewCategory').value = prefs.newCategory || '';
   $('icTrim').checked = prefs.trim !== false;
+  folderDraft = prefs.folders || '';
+  const lastFolder = () => { try { return (localStorage.getItem('clear_handle_excel.lastFolder') || '').trim(); } catch (_) { return ''; } };
 
   const pngUrl = icon => `/api/icons/file?id=${icon.id}&kind=png&v=${icon.version}`;
   const icoUrl = icon => `/api/icons/file?id=${icon.id}&kind=ico`;
@@ -109,6 +114,7 @@
   function setBusy(value) {
     busy = value;
     renderBatch();
+    for (const id of ['icApply', 'icRestore']) if ($(id)) $(id).disabled = value;
   }
 
   async function batchAction(remove) {
@@ -167,7 +173,7 @@
     const box = $('icDetail');
     const icon = byId(selected);
     if (!icon) {
-      box.innerHTML = '<p class="ic-detail-empty">点左边一个图标，在这里改名、分类、替换、删除。</p>';
+      box.innerHTML = '<p class="ic-detail-empty">点左边一个图标，在这里改名、分类、替换、删除，或设成文件夹图标。</p>';
       return;
     }
     const warn = [];
@@ -207,9 +213,17 @@
         <button id="icDelete" class="btn btn-danger" type="button">🗑 删除</button>
       </div>`}
       <div class="ic-sec">
-        <h3>📁 用在这些文件夹（${folders.length} 个）</h3>
-        <ul class="ic-folders">${folders.map(f => `<li><span>${esc(f)}</span></li>`).join('') || '<li><span>还没有</span></li>'}</ul>
-        <p class="ic-hint">替换图片时这些文件夹会一起换成新图。给文件夹指定图标请到「目录结构模板」或船票页建文件夹时选。</p>
+        <h3>📁 设为文件夹图标</h3>
+        <textarea id="icFolders" spellcheck="false" placeholder="每行一个已经存在的文件夹路径，可以直接粘贴「パスのコピー」带引号的">${esc(folderDraft)}</textarea>
+        <div class="ic-row">
+          <button id="icApply" class="btn btn-primary" type="button">📁 设成这个图标</button>
+          <button id="icRestore" class="btn" type="button">↩ 还原默认图标</button>
+          ${lastFolder() ? `<button id="icUseLast" class="btn" type="button" title="${esc(lastFolder())}">填上次的文件夹</button>` : ''}
+        </div>
+        ${lib.windows ? '' : '<p class="ic-hint">现在不是在 Windows 上运行：会写 desktop.ini，但看不到图标效果。</p>'}
+        <ul id="icResults" class="ic-results">${lastResults && lastResults.id === icon.id ? lastResults.html : ''}</ul>
+        <p class="ic-hint">已经用这个图标的文件夹（${folders.length} 个），替换图片时会一起换成新图：</p>
+        <ul class="ic-folders">${folders.map(f => `<li><span>${esc(f)}</span><button type="button" data-restore="${esc(f)}" title="这个文件夹还原默认图标">↩ 还原</button></li>`).join('') || '<li><span>还没有</span></li>'}</ul>
       </div>
       <div class="ic-sec">
         <h3>🧰 工具箱图标</h3>
@@ -225,6 +239,18 @@
   }
 
   function bindDetail(icon) {
+    $('icFolders').addEventListener('input', e => { folderDraft = e.target.value; prefs.folders = folderDraft; savePrefs(); });
+    $('icApply').addEventListener('click', () => applyFolders(icon, false));
+    $('icRestore').addEventListener('click', () => applyFolders(icon, true));
+    $('icUseLast')?.addEventListener('click', () => {
+      const folder = lastFolder();
+      const lines = folderDraft.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+      if (!lines.includes(folder)) lines.push(folder);
+      folderDraft = lines.join('\n'); prefs.folders = folderDraft; savePrefs();
+      $('icFolders').value = folderDraft;
+      log('填上次的文件夹', folder);
+    });
+    document.querySelectorAll('[data-restore]').forEach(btn => btn.addEventListener('click', () => restoreOne(btn.dataset.restore)));
     $('icTool').addEventListener('change', e => { prefs.tool = e.target.value; savePrefs(); });
     $('icToolSet').addEventListener('click', () => setTool(icon, true));
     $('icToolReset').addEventListener('click', () => setTool(icon, false));
@@ -358,6 +384,45 @@
       const message = trimmed ? `「${esc(icon.name)}」裁剪后为 ${width}×${height}` : `「${esc(icon.name)}」没有可裁剪的透明边`;
       status(`<span class="is-ok">✓ ${message}</span>`
         + failed.map(f => `<br><span class="is-bad">! ${esc(f.folder)}：${esc(f.error)}</span>`).join(''));
+    } catch (e) { status(`<span class="is-bad">! ${esc(e.message)}</span>`); }
+    finally { setBusy(false); }
+  }
+
+  // ---------- 文件夹 ----------
+  function resultHtml(results) {
+    return results.map(r => `<li class="${r.ok ? 'is-ok' : 'is-bad'}">${esc(r.folder)}${r.ok ? '' : `：${esc(r.error)}`}</li>`).join('');
+  }
+
+  async function applyFolders(icon, restore) {
+    const folders = $('icFolders').value;
+    if (!folders.trim()) { await window.appAlert('请先在框里填文件夹路径（每行一个）。'); return; }
+    if (busy) return;
+    setBusy(true);
+    log(restore ? '还原默认：开始' : '设文件夹图标：开始', icon.id, folders);
+    try {
+      const r = restore ? await post('/api/icons/restore', { folders }) : await post('/api/icons/apply', { id: icon.id, folders });
+      const bad = r.results.length - r.ok_count;
+      lastResults = { id: icon.id, html: resultHtml(r.results) };
+      status(bad ? `<span class="is-warn">! ${restore ? '还原' : '设图标'}成功 ${r.ok_count} 个，${bad} 个没成功（见右边）</span>`
+        : `<span class="is-ok">✓ ${restore ? '已还原默认图标' : `已把「${esc(icon.name)}」设给`} ${r.ok_count} 个文件夹（资源管理器没变就按 F5，或稍等一会儿）</span>`);
+      log(restore ? '还原默认：结果' : '设文件夹图标：结果', r);
+      await reload(restore ? '还原默认后' : '设图标后');
+    } catch (e) {
+      status(`<span class="is-bad">! ${esc(e.message)}</span>`);
+      console.error('[设置图标] 设 / 还原文件夹图标失败', e);
+    } finally { setBusy(false); }
+  }
+
+  async function restoreOne(folder) {
+    const ok = await window.appConfirm(`把这个文件夹还原成默认图标？\n${folder}`, { okText: '还原' });
+    if (!ok || busy) return;
+    setBusy(true);
+    try {
+      const r = await post('/api/icons/restore', { folders: [folder] });
+      const res = r.results[0];
+      log('单个还原', folder, res);
+      status(res.ok ? '<span class="is-ok">✓ 已还原默认图标</span>' : `<span class="is-bad">! ${esc(res.error)}</span>`);
+      await reload('单个还原后');
     } catch (e) { status(`<span class="is-bad">! ${esc(e.message)}</span>`); }
     finally { setBusy(false); }
   }

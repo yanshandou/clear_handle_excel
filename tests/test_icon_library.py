@@ -351,3 +351,40 @@ class SystemIconTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FolderIconRequestTests(unittest.TestCase):
+    """图标页「设为文件夹图标 / 还原」按真实请求从入口走到写 desktop.ini（用户 2026-11-23 要回来）"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        for patcher in (patch.object(L, "LIB_DIR", self.root / "图标库"), patch.object(L, "SYSTEM_ICONS", ())):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def post(self, path, payload):
+        try:
+            import web_clip_fixer as web
+        except (SystemExit, ImportError, AttributeError):  # 不是 Windows（没有 pywin32 / ctypes.windll）读不了主程序
+            self.skipTest("需要 pywin32")
+        handler = object.__new__(web.WebHandler)
+        handler.path, sent = path, []
+        handler._send_json = lambda data, status=200: sent.append(data)
+        handler._handle_post(payload)
+        return sent[0]
+
+    def test_apply_and_restore_existing_folder(self):
+        icon = L.add("a.png", png())["icon"]
+        folder = self.root / "已有文件夹"
+        folder.mkdir()
+        r = self.post("/api/icons/apply", {"id": icon["id"], "folders": f'"{folder}"'})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["ok_count"], 1)
+        self.assertIn("IconResource=", (folder / "desktop.ini").read_text(encoding="utf-8"))
+        self.assertEqual(L.listing()["icons"][0]["folders"], [str(folder)])
+        r = self.post("/api/icons/restore", {"folders": [str(folder)]})
+        self.assertTrue(r["ok"])
+        self.assertFalse((folder / "desktop.ini").exists())
+        self.assertEqual(list(folder.glob("*.ico")), [])

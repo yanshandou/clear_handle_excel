@@ -79,6 +79,10 @@
     .ic-folders { margin: 0; padding: 0; list-style: none; font-size: 12.5px; max-height: 8em; overflow: auto; }
     .ic-folders li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; padding: 2px 0; font-family: ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
     .ic-folders button { padding: 2px 8px; font-size: 12px; border: 1.5px solid #8a94a6; border-radius: 8px; background: #fff; cursor: pointer; }
+    .ic-results { margin: 0; padding: 0; list-style: none; font-size: 13px; max-height: 9em; overflow: auto; }
+    .ic-results li { padding: 2px 0; overflow-wrap: anywhere; }
+    .ic-results .is-ok::before { content: "✓ "; color: #14633c; font-weight: 800; }
+    .ic-results .is-bad { color: #b42318; } .ic-results .is-bad::before { content: "! "; font-weight: 800; }
     .ic-hint { font-size: 12.5px; color: #4b5563; font-weight: 600; margin: 0; }
 
     /* 批量指定：一行一个文件夹，各挑各的图标 */
