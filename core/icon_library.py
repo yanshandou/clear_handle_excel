@@ -4,7 +4,11 @@
     图标库\\index.json        名字、分类、套到了哪些文件夹、工具箱里哪个工具用哪个图标
     图标库\\icons\\<id>.ico    多尺寸图标（16/20/24/32/40/48/64/96/128/256）
     图标库\\icons\\<id>.png    256×256 预览（网页显示用）
-    图标库\\icons\\<id>_orig.png  拖进来的原图，原样留着
+    图标库\\icons\\<id>_orig.png  拖进来的原图，原样留着（拖的是 .ico 就是 <id>_orig.ico）
+- 拖进来的是 .ico（用户 2026-11-23）：不再重新生成，原文件直接当图标用（作者手调的小尺寸都留着），
+  只取里面最大的一张做网页预览和去重。去重照旧两层：文件一模一样 / 裁掉透明边后像素一样。
+- 导出 / 导入（用户 2026-11-23，换电脑用）：导出成 zip（manifest.json + icons\\），不带系统图标；
+  导入是合并，重复的跳过，「套到哪些文件夹」「工具箱用哪个」是旧电脑的设置，不带过去。
 - 生成 .ico 只用 PyMuPDF（本来就要装），不另外装 Pillow：每个尺寸从原图直接缩，居中放进正方形；
   256 存 PNG，其余存 32 位 BMP（老一点的资源管理器也认）。
 - 套到文件夹：把 .ico 复制进文件夹（隐藏 + 系统文件，文件名带版本号，换图后资源管理器不会一直显示旧图），
@@ -18,6 +22,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import os
@@ -27,6 +32,7 @@ import sys
 import threading
 import time
 import uuid
+import zipfile
 from pathlib import Path
 
 from core import data_dir
@@ -40,6 +46,8 @@ ICON_PREFIX = "_folder_icon_"   # 复制进文件夹的图标文件名前缀（�
 MAX_NAME = 60
 MAX_CATEGORY = 30
 _PIXEL_FINGERPRINT = "pixels_v1"
+EXPORT_FORMAT = "clear_handle_excel.icons"
+MAX_IMPORT_BYTES = 500 * 1024 * 1024
 
 LIB_DIR: Path | None = None   # 测试时改这里；平时用数据文件夹下的「图标库」
 _lock = threading.RLock()
@@ -143,6 +151,7 @@ def _public(icon: dict) -> dict:
         "render_width": icon.get("render_width"), "render_height": icon.get("render_height"),
         "created": icon.get("created"), "updated": icon.get("updated"), "version": icon.get("version", 1),
         "source": icon.get("source") or "", "folders": folders, "system": bool(icon.get("system")),
+        "format": icon.get("format") or "png",
     }
 
 
@@ -241,14 +250,99 @@ def _validate_image_bytes(body: bytes) -> None:
         raise ValueError("图片超过 30 MB，太大了")
 
 
+def is_ico(body: bytes) -> bool:
+    return len(body) >= 6 and body[:4] == b"\x00\x00\x01\x00" and struct.unpack_from("<H", body, 4)[0] > 0
+
+
+def _ico_entries(body: bytes) -> list[tuple[int, int, int, bytes]]:
+    """ICO 目录：[(宽, 高, 位深, 数据)]，数据是 PNG 或不带文件头的 BMP（DIB）"""
+    count = struct.unpack_from("<H", body, 4)[0]
+    if len(body) < 6 + 16 * count:
+        raise ValueError("ICO 文件不完整")
+    out = []
+    for n in range(count):
+        w, h, _colors, _reserved, _planes, bpp, size, offset = struct.unpack_from("<BBBBHHII", body, 6 + 16 * n)
+        if size <= 0 or offset + size > len(body):
+            continue
+        out.append((w or 256, h or 256, bpp, body[offset:offset + size]))
+    if not out:
+        raise ValueError("ICO 里没有能用的图")
+    return out
+
+
+def _decode_dib(data: bytes):
+    """ICO 里的 BMP：支持 1/4/8/24/32 位；没有 alpha 的看 AND 遮罩定透明。PyMuPDF 的 RGBA 是预乘 alpha 的"""
+    if len(data) < 40:
+        raise ValueError("ICO 里的 BMP 图不完整")
+    hsize, w, h2, _planes, bpp, comp = struct.unpack_from("<IiiHHI", data, 0)
+    h = abs(h2) // 2
+    if w <= 0 or h <= 0 or w * h > 1024 * 1024:
+        raise ValueError("ICO 里的 BMP 图尺寸不对")
+    if bpp not in (1, 4, 8, 24, 32) or comp not in (0, 3):
+        raise ValueError(f"不支持这种 ICO 图（{bpp} 位，压缩方式 {comp}）")
+    off = hsize
+    palette = b""
+    if bpp <= 8:
+        colors = struct.unpack_from("<I", data, 32)[0] if len(data) >= 36 else 0
+        colors = colors or (1 << bpp)
+        palette = data[off:off + 4 * colors]
+        off += 4 * colors
+    elif comp == 3 and hsize == 40:
+        off += 12   # BI_BITFIELDS 的三个颜色遮罩（ICO 里都是标准 BGRA 顺序）
+    stride = ((w * bpp + 31) // 32) * 4
+    xor = data[off:off + stride * h]
+    if len(xor) < stride * h:
+        raise ValueError("ICO 里的 BMP 图不完整")
+    mstride = ((w + 31) // 32) * 4
+    mask = data[off + stride * h: off + stride * h + mstride * h]
+    has_mask = len(mask) >= mstride * h
+    has_alpha = bpp == 32 and any(xor[i] for i in range(3, len(xor), 4))
+    out = bytearray(w * h * 4)
+    for y in range(h):
+        src = h - 1 - y if h2 > 0 else y   # BMP 一般自下而上
+        row = xor[src * stride:(src + 1) * stride]
+        mrow = mask[src * mstride:(src + 1) * mstride] if has_mask else b""
+        for x in range(w):
+            if bpp == 32:
+                b, g, r, a = row[x * 4:x * 4 + 4]
+            elif bpp == 24:
+                b, g, r = row[x * 3:x * 3 + 3]
+                a = 255
+            else:
+                bit = x * bpp
+                idx = (row[bit // 8] >> (8 - bpp - bit % 8)) & ((1 << bpp) - 1)
+                b, g, r = palette[idx * 4:idx * 4 + 3] if idx * 4 + 3 <= len(palette) else (0, 0, 0)
+                a = 255
+            if not has_alpha:
+                a = 0 if mrow and (mrow[x // 8] >> (7 - x % 8)) & 1 else 255
+            i = (y * w + x) * 4
+            out[i:i + 4] = bytes((r * a // 255, g * a // 255, b * a // 255, a))
+    fitz = _fitz()
+    return fitz.Pixmap(fitz.csRGB, w, h, bytes(out), 1)
+
+
+def _ico_pixmap(body: bytes):
+    """ICO 里最大（同尺寸取位深最高）的一张，读不了就退到下一张"""
+    fitz = _fitz()
+    last = None
+    for _w, _h, _bpp, data in sorted(_ico_entries(body), key=lambda e: (e[0] * e[1], e[2]), reverse=True):
+        try:
+            return fitz.Pixmap(data) if data[:8] == b"\x89PNG\r\n\x1a\n" else _decode_dib(data)
+        except Exception as err:  # noqa: BLE001 — 坏掉的一张就试下一张
+            last = err
+    raise ValueError(f"读不了这个 ICO 图标（{last}）")
+
+
 def _load_png(body: bytes):
-    """读 PNG（JPG/BMP 等 PyMuPDF 认的也行），统一转成 RGBA"""
+    """读 PNG（JPG/BMP 等 PyMuPDF 认的也行；.ico 取最大的一张），统一转成 RGBA"""
     _validate_image_bytes(body)
     fitz = _fitz()
     try:
-        pix = fitz.Pixmap(body)
+        pix = _ico_pixmap(body) if is_ico(body) else fitz.Pixmap(body)
+    except ValueError:
+        raise
     except Exception as err:  # noqa: BLE001 — PyMuPDF 各版本报的错不一样
-        raise ValueError(f"读不了这张图片，请拖 PNG 图片（{err}）") from None
+        raise ValueError(f"读不了这张图片，请拖 PNG 或 .ico 图标（{err}）") from None
     if pix.width < 1 or pix.height < 1:
         raise ValueError("图片是空的")
     if pix.width * pix.height > 40_000_000:
@@ -326,7 +420,16 @@ def _fingerprint(pix) -> str:
 
 
 def _original_path(icon_id: str) -> Path:
-    return _icons_dir() / f"{icon_id}_orig.png"
+    ico = _icons_dir() / f"{icon_id}_orig.ico"
+    return ico if ico.is_file() else _icons_dir() / f"{icon_id}_orig.png"
+
+
+def _write_original(icon_id: str, body: bytes) -> None:
+    keep = "_orig.ico" if is_ico(body) else "_orig.png"
+    for suffix in ("_orig.png", "_orig.ico"):
+        if suffix != keep:
+            (_icons_dir() / f"{icon_id}{suffix}").unlink(missing_ok=True)
+    (_icons_dir() / f"{icon_id}{keep}").write_bytes(body)
 
 
 def _original_stamp(path: Path) -> list[int]:
@@ -427,19 +530,20 @@ def _render(icon_id: str, body: bytes, pix, trim: bool) -> dict:
     alpha = _alpha(pix)
     transparent = alpha.count(255) != len(alpha)
     width, height = pix.width, pix.height
-    if trim and transparent:
+    from_ico = is_ico(body)
+    if trim and transparent and not from_ico:   # .ico 原样用，预览也不裁，和资源管理器里看到的一样
         pix = _crop(pix, _content_box(pix))
     folder = _icons_dir()
     folder.mkdir(parents=True, exist_ok=True)
-    ico = build_ico(pix)
+    ico = body if from_ico else build_ico(pix)
     (folder / f"{icon_id}.ico").write_bytes(ico)
     (folder / f"{icon_id}.png").write_bytes(_square(pix, 256).tobytes("png"))
-    _original_path(icon_id).write_bytes(body)
+    _write_original(icon_id, body)
     return {
         "width": width, "height": height, "transparent": transparent,
         "render_width": pix.width, "render_height": pix.height,
         "trimmed": (pix.width, pix.height) != (width, height),
-        "small": max(pix.width, pix.height) < 128, "ico_bytes": len(ico),
+        "small": max(pix.width, pix.height) < 128, "ico_bytes": len(ico), "ico_source": from_ico,
     }
 
 
@@ -464,7 +568,8 @@ def add(filename: str, body: bytes, category: str = "", trim: bool = True) -> di
         icon = {"id": icon_id, "name": _name_from_file(filename), "category": category,
                 "width": info["width"], "height": info["height"], "transparent": info["transparent"],
                 "render_width": info["render_width"], "render_height": info["render_height"],
-                "created": now, "updated": now, "version": 1, "source": Path(filename or "").name, "folders": []}
+                "created": now, "updated": now, "version": 1, "source": Path(filename or "").name, "folders": [],
+                "format": "ico" if info["ico_source"] else "png"}
         _record_fingerprints(icon, original, pixels)
         data["icons"].insert(0, icon)
         _save(data)
@@ -490,7 +595,7 @@ def replace(icon_id: str, filename: str, body: bytes, trim: bool = True) -> dict
         icon.update(width=info["width"], height=info["height"], transparent=info["transparent"],
                     render_width=info["render_width"], render_height=info["render_height"],
                     updated=time.strftime("%Y-%m-%d %H:%M:%S"), version=int(icon.get("version", 1)) + 1,
-                    source=Path(filename or "").name)
+                    source=Path(filename or "").name, format="ico" if info["ico_source"] else "png")
         _record_fingerprints(icon, hashlib.sha256(body).hexdigest(), pixels)
         _save(data)
         folders = list(icon.get("folders") or [])
@@ -515,6 +620,8 @@ def retrim(icon_id: str) -> dict:
     with _lock:
         icon = _find(_load(), icon_id)
         _check_user_icon(icon, "重新裁剪")
+        if icon.get("format") == "ico":
+            raise ValueError("这个图标用的是 .ico 原文件，不用裁剪")
         try:
             body = _original_path(icon_id).read_bytes()
         except OSError as err:
@@ -564,7 +671,7 @@ def delete(icon_id: str) -> dict:
         for key in tools:
             data["tools"].pop(key, None)
         _save(data)
-    for suffix in (".ico", ".png", "_orig.png"):
+    for suffix in (".ico", ".png", "_orig.png", "_orig.ico"):
         try:
             (_icons_dir() / f"{icon_id}{suffix}").unlink()
         except FileNotFoundError:
@@ -581,7 +688,8 @@ def icon_file(icon_id: str, kind: str) -> tuple[bytes, str]:
         raise ValueError("不认识的文件种类")
     with _lock:
         icon = _find(_load(), icon_id)
-    body = (_icons_dir() / f"{icon_id}{suffix}").read_bytes()
+    path = _original_path(icon_id) if kind == "orig" else _icons_dir() / f"{icon_id}{suffix}"
+    body = path.read_bytes()
     return body, icon.get("name") or "icon"
 
 
@@ -599,6 +707,128 @@ def set_tool_icon(tool_id: str, icon_id) -> dict:
         _save(data)
     _log("工具箱图标", 工具=tool_id, 图标=icon_id or "恢复默认")
     return {"tools": data["tools"]}
+
+
+# ---------------------------------------------------------------- 导出 / 导入（换电脑用）
+
+_ARC = re.compile(r"icons/[0-9a-f]{6,32}(\.ico|\.png|_orig\.png|_orig\.ico)")
+
+
+def export_zip(ids=None, category=None) -> tuple[bytes, int]:
+    """打包成 zip：manifest.json + icons/。ids 给了只导这些；category 给了（'' = 未分类）只导这个分类；系统图标不导"""
+    with _lock:
+        data = _load()
+    icons = [i for i in data["icons"] if not i.get("system")]
+    if ids:
+        wanted = set(ids)
+        icons = [i for i in icons if i["id"] in wanted]
+    elif category is not None:
+        icons = [i for i in icons if (i.get("category") or "") == category]
+    if not icons:
+        raise ValueError("没有可以导出的图标（系统图标是网站自带的，不用导出）")
+    buffer, manifest = io.BytesIO(), []
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for icon in icons:
+            files = {}
+            original = _original_path(icon["id"])
+            for kind, path in (("ico", _icons_dir() / f"{icon['id']}.ico"), ("png", _icons_dir() / f"{icon['id']}.png"), ("orig", original)):
+                if path.is_file():
+                    files[kind] = f"icons/{path.name}"
+                    archive.write(path, files[kind])
+            if "ico" not in files:
+                _log("导出时缺 .ico，跳过", 名字=icon.get("name"))
+                continue
+            manifest.append({k: icon.get(k) for k in ("id", "name", "category", "source", "format", "created", "width", "height",
+                                                     "transparent", "render_width", "render_height")} | {"files": files})
+        archive.writestr("manifest.json", json.dumps({"format": EXPORT_FORMAT, "version": 1,
+                                                      "exported": time.strftime("%Y-%m-%d %H:%M:%S"), "icons": manifest},
+                                                     ensure_ascii=False, indent=1))
+    _log("导出图标", 数量=len(manifest), 范围="选中" if ids else ("分类 " + (category or "未分类")) if category is not None else "全部")
+    return buffer.getvalue(), len(manifest)
+
+
+def import_zip(body: bytes) -> dict:
+    """把导出的 zip 合并进图标库：名字、分类留着，和库里重复的跳过"""
+    if not body:
+        raise ValueError("这是空文件")
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(body))
+    except zipfile.BadZipFile:
+        raise ValueError("这不是 zip 文件") from None
+    with archive:
+        try:
+            manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+        except KeyError:
+            raise ValueError("zip 里没有 manifest.json，不是从图标页导出的图标库") from None
+        except (ValueError, UnicodeError):
+            raise ValueError("zip 里的 manifest.json 读不懂") from None
+        if not isinstance(manifest, dict) or manifest.get("format") != EXPORT_FORMAT:
+            raise ValueError("这个 zip 不是从图标页导出的图标库")
+        entries = [e for e in manifest.get("icons") or [] if isinstance(e, dict)][:5000]
+
+        def read(files: dict, kind: str) -> bytes | None:
+            arc = files.get(kind)
+            if not isinstance(arc, str) or not _ARC.fullmatch(arc):
+                return None
+            try:
+                info = archive.getinfo(arc)
+            except KeyError:
+                return None
+            if info.file_size > MAX_BYTES:
+                raise ValueError("里面的图标文件太大")
+            return archive.read(arc)
+
+        added, skipped, failed = [], [], []
+        with _lock:
+            data = _load()
+            taken = {i["id"] for i in data["icons"]}
+            for entry in entries:
+                name = _clean_text(entry.get("name"), MAX_NAME) or "未命名"
+                try:
+                    files = entry.get("files") if isinstance(entry.get("files"), dict) else {}
+                    ico = read(files, "ico")
+                    if not ico or not is_ico(ico):
+                        raise ValueError("缺 .ico 文件")
+                    source = read(files, "orig") or ico
+                    original = hashlib.sha256(source).hexdigest()
+                    _check_duplicate(data, original, "original")
+                    pix = _load_png(source)
+                    pixels = _fingerprint(pix)
+                    _check_duplicate(data, pixels, _PIXEL_FINGERPRINT)
+                    old_id = str(entry.get("id") or "")
+                    icon_id = old_id if re.fullmatch(r"[0-9a-f]{6,32}", old_id) and old_id not in taken \
+                        and not (_icons_dir() / f"{old_id}.ico").exists() else uuid.uuid4().hex[:12]
+                    folder = _icons_dir()
+                    folder.mkdir(parents=True, exist_ok=True)
+                    preview = read(files, "png") or _square(_load_png(ico), 256).tobytes("png")
+                    (folder / f"{icon_id}.ico").write_bytes(ico)
+                    (folder / f"{icon_id}.png").write_bytes(preview)
+                    _write_original(icon_id, source)
+                    category = _clean_text(entry.get("category"), MAX_CATEGORY)
+                    if category == SYSTEM_CATEGORY:
+                        category = ""
+                    now = time.strftime("%Y-%m-%d %H:%M:%S")
+                    icon = {"id": icon_id, "name": name, "category": category,
+                            "width": entry.get("width") or pix.width, "height": entry.get("height") or pix.height,
+                            "transparent": entry.get("transparent", True),
+                            "render_width": entry.get("render_width"), "render_height": entry.get("render_height"),
+                            "created": _clean_text(entry.get("created"), 30) or now, "updated": now, "version": 1,
+                            "source": _clean_text(entry.get("source"), 200), "folders": [],
+                            "format": "ico" if entry.get("format") == "ico" or is_ico(source) else "png"}
+                    _record_fingerprints(icon, original, pixels)
+                    data["icons"].insert(len(added), icon)
+                    taken.add(icon_id)
+                    added.append(name)
+                except DuplicateIconError as err:
+                    skipped.append({"name": name, "reason": str(err)})
+                except (ValueError, OSError, zipfile.BadZipFile) as err:
+                    failed.append({"name": name, "reason": str(err)})
+            if added:
+                _save(data)
+    _log("导入图标", 共=len(entries), 新加=len(added), 重复跳过=len(skipped), 失败=len(failed))
+    if added:
+        console_print(f"🖼️ 已导入 {len(added)} 个图标（重复跳过 {len(skipped)} 个）")
+    return {"total": len(entries), "added": len(added), "skipped": skipped, "failed": failed}
 
 
 def open_library() -> dict:

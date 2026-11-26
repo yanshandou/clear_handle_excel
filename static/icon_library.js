@@ -1,5 +1,6 @@
 // 设置图标（用户 2026-11-20 要）：拖进透明底 PNG → 生成 Windows 图标（.ico）存进图标库；
 // 图标库可以搜索、分类、改名、替换、删除，或换掉主页工具箱里某个工具的图标。
+// .ico 直接用原文件（不重新生成）；图标库可以导出成 zip、在别的电脑导入合并（用户 2026-11-23）。
 // 选中的图标也能直接设给 Windows 上已经存在的文件夹 / 还原默认（用户 2026-11-23）；
 // 建新目录时另外在目录结构模板 /ticket-structures、船票 /ticket 里顺便指定。
 // 后端 core/icon_library.py；调试日志都以「[设置图标]」开头打在浏览器控制台。
@@ -61,6 +62,7 @@
     const chips = [`<button type="button" class="ic-cat${category === null ? ' is-on' : ''}" data-cat="*">全部<small>${lib.icons.length}</small></button>`]
       .concat(lib.categories.map(c => `<button type="button" class="ic-cat${category === c.name ? ' is-on' : ''}" data-cat="${esc(c.name)}">${esc(catLabel(c.name))}<small>${c.count}</small></button>`));
     $('icCats').innerHTML = chips.join('');
+    renderExport();
     $('icCategoryList').innerHTML = lib.categories.filter(c => c.name && c.name !== (lib.system_category || '系统图标')).map(c => `<option value="${esc(c.name)}">`).join('');
     const sysCat = lib.system_category || '系统图标';
     const canRename = category !== null && category !== '' && category !== sysCat;
@@ -101,7 +103,64 @@
     }).join('');
   }
 
+  // 导出范围：批量管理里勾了就导勾的，点了分类就导这个分类，否则全部（系统图标不导）
+  function exportScope() {
+    if (batchMode && checked.size) return { label: `⬇ 导出选中 ${checked.size} 个`, query: { ids: [...checked].join(',') } };
+    if (category !== null && category !== (lib.system_category || '系统图标')) return { label: `⬇ 导出「${catLabel(category)}」`, query: { category } };
+    return { label: '⬇ 导出全部图标', query: {} };
+  }
+
+  function renderExport() {
+    $('icExport').textContent = exportScope().label;
+    $('icExport').disabled = $('icImport').disabled = busy;
+  }
+
+  async function exportIcons() {
+    if (busy) return;
+    const scope = exportScope();
+    setBusy(true);
+    status('正在打包图标…');
+    log('导出：开始', scope.query);
+    try {
+      const response = await fetch(`/api/icons/export?${new URLSearchParams(scope.query)}`, { cache: 'no-store' });
+      if (!response.ok) { const r = await response.json().catch(() => ({})); throw Error(r.error || '导出失败'); }
+      const blob = await response.blob();
+      const match = /filename\*=UTF-8''([^;]+)/.exec(response.headers.get('Content-Disposition') || '');
+      const name = match ? decodeURIComponent(match[1]) : '图标库.zip';
+      const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: name });
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { a.remove(); URL.revokeObjectURL(a.href); }, 60000);
+      status(`<span class="is-ok">✓ 已导出 ${esc(name)}（在浏览器的下载里），到新电脑点「⬆ 导入图标 zip」</span>`);
+      log('导出：完成', name, blob.size);
+    } catch (e) {
+      status(`<span class="is-bad">! ${esc(e.message)}</span>`);
+      console.error('[设置图标] 导出失败', e);
+    } finally { setBusy(false); }
+  }
+
+  async function importZip(file) {
+    if (busy) return;
+    setBusy(true);
+    status(`正在导入 ${esc(file.name)}…`);
+    log('导入：开始', file.name, file.size);
+    try {
+      const response = await fetch('/api/icons/import', { method: 'POST', headers: { 'X-File-Name': encodeURIComponent(file.name) }, body: file });
+      const r = await response.json().catch(() => ({}));
+      if (!response.ok || !r.ok) throw Error(r.error || '导入失败');
+      log('导入：结果', r);
+      await reload('导入后');
+      const lines = [`<span class="${r.added ? 'is-ok' : 'is-warn'}">${r.added ? '✓' : '!'} zip 里 ${r.total} 个图标：新加 ${r.added} 个，重复跳过 ${r.skipped.length} 个${r.failed.length ? `，${r.failed.length} 个没导进来` : ''}</span>`];
+      lines.push(...r.failed.map(f => `<span class="is-bad">! ${esc(f.name)}：${esc(f.reason)}</span>`));
+      if (r.skipped.length) lines.push(`<span class="is-warn">跳过的：${r.skipped.slice(0, 20).map(x => esc(x.name)).join('、')}${r.skipped.length > 20 ? ' …' : ''}</span>`);
+      status(lines.join('<br>'));
+    } catch (e) {
+      status(`<span class="is-bad">! ${esc(e.message)}</span>`);
+      console.error('[设置图标] 导入失败', e);
+    } finally { setBusy(false); }
+  }
+
   function renderBatch() {
+    renderExport();
     $('icBatch').hidden = !batchMode;
     $('icBatchToggle').setAttribute('aria-pressed', String(batchMode));
     $('icBatchToggle').textContent = batchMode ? '完成批量管理' : '☑ 批量管理';
@@ -194,7 +253,7 @@
         <div class="ic-big ic-checker" id="icBig"${icon.system ? '' : ' title="把新 PNG 拖到这里 = 替换这个图标的图片"'}><img src="${pngUrl(icon)}" alt="${esc(icon.name)}"></div>
         <div>
           <div class="ic-sizes">${[48, 32, 24, 16].map(s => `<figure><span class="ic-s ic-checker"><img src="${pngUrl(icon)}" alt="" width="${s}" height="${s}"></span>${s}</figure>`).join('')}</div>
-          <p class="ic-meta">原图 ${icon.width}×${icon.height}${icon.source ? ` · ${esc(icon.source)}` : ''}${cropDetails}${squareDetails}<br>加入 ${esc(icon.created || '')}${warn.length ? '<br>' + warn.join('<br>') : ''}</p>
+          <p class="ic-meta">${icon.format === 'ico' ? '.ico 原文件，最大一张 ' : '原图 '}${icon.width}×${icon.height}${icon.source ? ` · ${esc(icon.source)}` : ''}${cropDetails}${squareDetails}<br>加入 ${esc(icon.created || '')}${warn.length ? '<br>' + warn.join('<br>') : ''}</p>
         </div>
       </div>
       ${icon.system ? `
@@ -208,7 +267,7 @@
       </div>
       <div class="ic-row">
         <button id="icReplace" class="btn" type="button">🔁 替换图片</button>
-        <button id="icRetrim" class="btn" type="button">✂ 重新裁剪</button>
+        ${icon.format === 'ico' ? '' : '<button id="icRetrim" class="btn" type="button">✂ 重新裁剪</button>'}
         <a class="btn" href="${icoUrl(icon)}" download>⬇ 下载 .ico</a>
         <button id="icDelete" class="btn btn-danger" type="button">🗑 删除</button>
       </div>`}
@@ -267,7 +326,7 @@
     $('icName').addEventListener('change', saveField);
     $('icCategory').addEventListener('change', saveField);
     $('icReplace').addEventListener('click', () => $('icReplaceFile').click());
-    $('icRetrim').addEventListener('click', () => retrimIcon(icon));
+    $('icRetrim')?.addEventListener('click', () => retrimIcon(icon));
     $('icDelete').addEventListener('click', () => removeIcon(icon));
     const big = $('icBig');
     big.addEventListener('dragover', e => { if (hasFiles(e)) { e.preventDefault(); e.stopPropagation(); big.classList.add('is-over'); } });
@@ -293,12 +352,18 @@
   function infoWarn(info) {
     const out = [];
     if (!info.transparent) out.push('没有透明背景');
-    if (info.small) out.push('用于生成图标的图片小于 128 像素，大图标可能模糊');
+    if (info.small && !info.ico_source) out.push('用于生成图标的图片小于 128 像素，大图标可能模糊');
     return out;
   }
 
   async function addFiles(files) {
     files = [...files].filter(f => f && f.size);
+    const zips = files.filter(f => /\.zip$/i.test(f.name));
+    if (zips.length) {   // 拖进来的是导出的图标库 zip：走导入（一次一个）
+      if (zips.length > 1 || zips.length !== files.length) { await window.appAlert('导入图标请一次只拖一个 zip，不要和图片混在一起。'); return; }
+      await importZip(zips[0]);
+      return;
+    }
     if (!files.length || busy) return;
     setBusy(true);
     prefs.newCategory = $('icNewCategory').value.trim(); prefs.trim = $('icTrim').checked; savePrefs();
@@ -502,6 +567,9 @@
       await reload('分类改名');
     } catch (e) { status(`<span class="is-bad">! ${esc(e.message)}</span>`); }
   });
+  $('icExport').addEventListener('click', exportIcons);
+  $('icImport').addEventListener('click', () => $('icImportFile').click());
+  $('icImportFile').addEventListener('change', e => { const file = e.target.files[0]; e.target.value = ''; if (file) importZip(file); });
   $('icOpenDir').addEventListener('click', async () => {
     try { const r = await post('/api/icons/open_dir', {}); status(`📂 已打开 ${esc(r.dir)}`); }
     catch (e) { status(`<span class="is-bad">! ${esc(e.message)}</span>`); }

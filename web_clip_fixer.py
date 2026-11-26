@@ -310,6 +310,27 @@ class WebHandler(upload_manager.Handler):
         elif parsed.path == "/api/icons":
             from core import icon_library
             self._send_json({"ok": True, **icon_library.listing()})
+        elif parsed.path == "/api/icons/export":  # 图标导出成 zip（换电脑用）：ids=逗号分隔 / category=分类（不给就全部）
+            from core import icon_library
+            from urllib.parse import quote
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            ids = [v for v in (query.get("ids") or [""])[0].split(",") if v]
+            category = query["category"][0] if "category" in query else None
+            try:
+                body, count = icon_library.export_zip(ids or None, category)
+            except (ValueError, OSError) as err:
+                debug_log.event("🚫 图标导出失败", 原因=err)
+                self._send_json({"ok": False, "error": str(err)}, status=400)
+            else:
+                debug_log.event("🖼️ 导出图标", 数量=count, 大小=len(body))
+                name = f"图标库_{time.strftime('%Y%m%d-%H%M')}.zip"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Disposition", f"attachment; filename=\"icons.zip\"; filename*=UTF-8''{quote(name)}")
+                self.end_headers()
+                self.wfile.write(body)
         elif parsed.path == "/api/icons/file":  # 图标库里的预览 PNG / .ico 下载（带版本号的地址可以缓存）
             from core import icon_library
             from urllib.parse import quote
@@ -570,7 +591,7 @@ class WebHandler(upload_manager.Handler):
         if urlparse(self.path).path == "/api/pdf_diff/upload":  # PDF 对比：网页拖进来的文件，正文就是 PDF 本身
             self._handle_pdf_diff_upload()
             return
-        if urlparse(self.path).path == "/api/icons/upload":  # 设置图标：拖进来的 PNG，正文就是图片本身
+        if urlparse(self.path).path in ("/api/icons/upload", "/api/icons/import"):  # 设置图标：拖进来的 PNG / .ico / 导出的 zip，正文就是文件本身
             self._handle_icon_upload()
             return
         try:
@@ -636,6 +657,13 @@ class WebHandler(upload_manager.Handler):
             length = int(self.headers.get("Content-Length", 0))
             if length <= 0:
                 raise ValueError(f"{name or '这张图片'} 是空文件")
+            if urlparse(self.path).path == "/api/icons/import":  # 导入图标：别的电脑导出的 zip，合并进图标库
+                if length > icon_library.MAX_IMPORT_BYTES:
+                    raise ValueError(f"{name or '这个 zip'} 超过 500 MB，太大了")
+                body = self.rfile.read(length)
+                debug_log.event("🖱️ 网页操作", 路径=self.path, 文件=name, 大小=length)
+                self._send_json({"ok": True, **icon_library.import_zip(body)})
+                return
             if length > icon_library.MAX_BYTES:
                 raise ValueError(f"{name or '这张图片'} 超过 30 MB，太大了")
             body = self.rfile.read(length)
